@@ -1,0 +1,18 @@
+# 即插即用版的重体积/生成产物不入库(由 build_bundle.py 生成)。
+models/
+vendor/
+bin/
+.venv/
+storage/
+*.log
+__pycache__/
+.ruff_cache/
+
+# build_bundle.py 从主工程复制进来的源码副本(生成物,不入库)。
+app/
+config/
+pyproject.toml
+README_MAIN.md
+
+# 体检生成的清单(每次打包/体检自动刷新,不入库)。
+manifest.json
