@@ -1,0 +1,26 @@
+# 高光评分权重配置(阶段2 使用)。
+# 各维度特征先归一化到 [0,1],再按权重加权求和得到 rule_score。
+# 权重之和不必为 1,代码内部会做归一化。
+
+weights:
+  volume: 0.25       # 音量峰值 / RMS 突增
+  danmaku: 0.30      # 弹幕速率突增(滑窗 z-score)
+  keywords: 0.20     # 关键词命中
+  speech_rate: 0.15  # 语速 / 语气变化
+  laughter: 0.10     # 笑声 / 惊呼能量
+  trend: 0.15        # 网感:片段题材与近期全网热门内容的关联度(需开启网感资料库)
+
+# 综合评分 = alpha * rule_score + beta * llm_score
+fusion:
+  alpha: 0.5
+  beta: 0.5
+
+# 切片上下文留白(秒)
+context:
+  pre_roll_s: 15
+  post_roll_s: 30
+
+# 候选去重:时间区间重叠 IoU 超过该值则合并
+dedup:
+  iou_threshold: 0.5
+  cooldown_s: 60

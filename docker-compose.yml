@@ -1,0 +1,32 @@
+# BiliLiveCut 容器编排
+# 用法:
+#   docker compose up -d        # 构建并后台启动
+#   打开 http://localhost:8000
+#
+# 说明:
+# - 运行产物(数据库、录制片段、切片、清单、日志)持久化到 ./storage 宿主目录;
+# - 配置通过 .env 注入(不要把 .env 提交到版本库);
+# - MVP 使用 SQLite + 进程内 asyncio,无需额外的 Redis/Celery。
+#   若后续要扩展到分布式任务队列,可在此追加 redis 与 worker 服务。
+
+services:
+  app:
+    build: .
+    image: bili-live-cut:latest
+    container_name: bili-live-cut
+    restart: unless-stopped
+    ports:
+      - "8000:8000"
+    env_file:
+      - .env
+    environment:
+      # 覆盖为容器内路径(优先级高于 .env)。
+      STORAGE_ROOT: /data
+      DATABASE_URL: sqlite:////data/blc.db
+    volumes:
+      - ./storage:/data
+      # 可选:把 Whisper 模型缓存挂出来,避免每次重建容器都重新下载。
+      - hf-cache:/root/.cache/huggingface
+
+volumes:
+  hf-cache:

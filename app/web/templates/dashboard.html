@@ -1,0 +1,176 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>BiliLiveCut 控制台</title>
+  <link rel="stylesheet" href="/static/style.css" />
+</head>
+<body>
+  <header class="topbar">
+    <div class="brand">🎬 BiliLiveCut <span class="muted">实时切片控制台</span></div>
+    <div class="stats" id="stats">
+      <span class="stat">候选 <b id="stat-candidates">-</b></span>
+      <span class="stat">成品 <b id="stat-clips">-</b></span>
+      <span class="stat">活跃会话 <b id="stat-sessions">-</b></span>
+    </div>
+  </header>
+
+  <nav class="tabs">
+    <button class="tab active" data-tab="rooms">直播间</button>
+    <button class="tab" data-tab="recording">录制状态</button>
+    <button class="tab" data-tab="transcripts">实时转写</button>
+    <button class="tab" data-tab="danmaku">弹幕热度</button>
+    <button class="tab" data-tab="trends">网感资料库</button>
+    <button class="tab" data-tab="candidates">候选审核</button>
+    <button class="tab" data-tab="clips">成品切片</button>
+    <button class="tab" data-tab="uploads">上传 / 设置</button>
+    <button class="tab" data-tab="models">模型</button>
+    <button class="tab" data-tab="logs">错误日志</button>
+  </nav>
+
+  <main>
+    <!-- 直播间 -->
+    <section id="tab-rooms" class="panel active">
+      <div class="card add-room">
+        <h3>添加直播间</h3>
+        <div class="row">
+          <input id="new-url" placeholder="直播间 URL 或房间号,如 https://live.bilibili.com/123" />
+          <label class="chk"><input type="checkbox" id="new-auth" /> 我已确认拥有录制授权</label>
+          <button id="btn-add" class="primary">添加</button>
+        </div>
+        <p class="hint">合规提示:仅可录制你拥有授权的内容。</p>
+      </div>
+      <div id="rooms-list"></div>
+    </section>
+
+    <!-- 录制状态 -->
+    <section id="tab-recording" class="panel">
+      <div id="recording-list"></div>
+    </section>
+
+    <!-- 实时转写 -->
+    <section id="tab-transcripts" class="panel">
+      <div id="transcripts-list"></div>
+    </section>
+
+    <!-- 弹幕热度 -->
+    <section id="tab-danmaku" class="panel">
+      <div id="danmaku-sessions"></div>
+      <h3 style="margin:18px 0 8px">最近弹幕</h3>
+      <div id="danmaku-list"></div>
+    </section>
+
+    <!-- 网感资料库 -->
+    <section id="tab-trends" class="panel">
+      <div class="card">
+        <h3>网感资料库</h3>
+        <p class="hint" id="trends-status"></p>
+        <div class="row">
+          <input id="trends-topic" placeholder="采集主题(可选,如:某游戏 近期热门切片话题)" />
+          <button id="btn-collect-trends" class="primary">立即联网采集</button>
+        </div>
+        <p class="hint">需配置 ANTHROPIC_API_KEY 且 TREND_ENABLED=true。采集结果用于高光评分的「网感」维度与文案标签参考。</p>
+      </div>
+
+      <div class="card">
+        <h3>定时采集</h3>
+        <label class="switch-row">
+          <input type="checkbox" id="sw-trend-schedule" />
+          启用每日定时采集 + 迭代
+        </label>
+        <div class="row" style="margin-top:8px; align-items:center; gap:8px">
+          <span class="muted">每日窗口</span>
+          <input id="trend-start" type="time" style="width:auto" />
+          <span class="muted">至</span>
+          <input id="trend-end" type="time" style="width:auto" />
+          <span class="muted">间隔(分钟)</span>
+          <input id="trend-interval" type="number" min="1" style="width:90px" />
+          <button id="btn-save-schedule">保存</button>
+        </div>
+        <p class="hint" id="trend-schedule-status"></p>
+        <p class="hint">说明:在每日时间段内按间隔反复采集以迭代资料库;一旦开始录制/分析,定时采集立即暂停,录制全部结束后自动恢复。</p>
+      </div>
+      <h3 style="margin:18px 0 8px">近期热词</h3>
+      <div id="trends-keywords"></div>
+      <h3 style="margin:18px 0 8px">热门条目</h3>
+      <div id="trends-list"></div>
+    </section>
+
+    <!-- 候选审核 -->
+    <section id="tab-candidates" class="panel">
+      <div class="row toolbar">
+        <select id="cand-filter">
+          <option value="">全部状态</option>
+          <option value="pending">待审 pending</option>
+          <option value="approved">已批准 approved</option>
+          <option value="rejected">已拒绝 rejected</option>
+          <option value="clipped">已出片 clipped</option>
+        </select>
+      </div>
+      <div id="candidates-list"></div>
+    </section>
+
+    <!-- 成品切片 -->
+    <section id="tab-clips" class="panel">
+      <div id="clips-list"></div>
+    </section>
+
+    <!-- 上传 / 设置 -->
+    <section id="tab-uploads" class="panel">
+      <div class="card">
+        <h3>上传设置</h3>
+        <div class="thresholds">
+          <label class="switch-row">
+            <input type="checkbox" id="sw-biliup" />
+            启用 Biliup 上传(社区方案,合规风险自负)
+          </label>
+          <label class="switch-row">
+            <input type="checkbox" id="sw-auto" />
+            成品就绪后自动上传
+          </label>
+        </div>
+        <p class="hint" id="upload-hint"></p>
+        <p class="hint" style="color:var(--yellow)">
+          ⚠ B 站无面向普通用户的官方公开投稿 API。启用 Biliup 将使用你自己的登录态走网页投稿端点,
+          可能违反平台条款、触发风控甚至封号,且接口随时变更——是否启用由你决定,风险自负。
+          关闭时:每场直播结束会自动弹出切片所在目录。
+        </p>
+        <div class="row">
+          <button id="btn-open-dir">打开切片目录</button>
+          <span class="muted" id="clips-dir-path"></span>
+        </div>
+      </div>
+      <h3 style="margin:18px 0 8px">上传队列</h3>
+      <div id="uploads-list"></div>
+    </section>
+
+    <!-- 模型(多大模型 + 优先级 + 失败回退) -->
+    <section id="tab-models" class="panel">
+      <div class="card">
+        <h3>大模型配置(多模型 · 优先级 · 失败自动回退)</h3>
+        <p class="hint" id="llm-status"></p>
+        <p class="hint">
+          可同时配置多个 OpenAI 兼容服务商(DeepSeek / 通义千问 / Kimi / 智谱 GLM 等)。
+          系统按「优先级」从小到大依次调用,某个不可用/报错会自动降级到下一个。
+          语音转写始终用本地 Whisper,不受影响。API Key 留空表示不修改沿用旧值。
+        </p>
+        <div class="row">
+          <button id="btn-add-llm">+ 新增模型</button>
+          <button id="btn-save-llm" class="primary">保存全部</button>
+          <button id="btn-test-llm">测试连通</button>
+        </div>
+      </div>
+      <div id="llm-list"></div>
+    </section>
+
+    <!-- 日志 -->
+    <section id="tab-logs" class="panel">
+      <div id="logs-list"></div>
+    </section>
+  </main>
+
+  <div id="toast" class="toast"></div>
+  <script src="/static/app.js"></script>
+</body>
+</html>
