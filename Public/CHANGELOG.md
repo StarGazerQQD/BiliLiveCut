@@ -1,22 +1,35 @@
 # Changelog — 即插即用版 (Public)
 
-## V0.1.2.1 Alpha (2026-07-02)
+## V0.1.2.2 Alpha (2026-07-02)
 
 ### 新增
 
-- **``launcher.exe`` 全自展开模式**:一个 exe 从零搭建完整运行环境
+- **``launcher.exe`` 全自展开模式**:一个 exe 从零搭建完整运行环境,无需拷贝任何其他文件
   - 自动从 GitHub 下载源码（app/config/pyproject.toml/requirements-bundle.txt）
   - 联网安装依赖（清华+阿里云镜像,无需预打包 vendor/wheels）
   - 自动下载 Whisper large-v3-turbo 模型（hf-mirror.com,~1.6GB）
   - 自动下载 ffmpeg/ffprobe（BtbN 静态构建,~80MB）
   - 自动生成 .env 配置文件
   - 所有步骤断点续跑:组件就位则跳过,中断后再次运行接续
-- **源码随仓库分发**:``app/``、``config/``、``pyproject.toml`` 现已入库
+- **启动前目录扫描**:显示工作目录文件总数,逐项报告 6 大组件状态
+  （[OK]  已就绪 / [---]  需下载）,一目了然
 
 ### 变更
 
-- ``launcher.py`` 完全重写（~650 行 → ~600 行）:集成 GitHub 下载、在线 pip、模型/ffmpeg 下载全流程
+- ``launcher.py`` 完全重写（~500 行 → ~690 行）:集成 GitHub 下载、在线 pip、模型/ffmpeg 下载、目录扫描全流程
 - ``launcher.exe`` 重新编译（8.2 MB）
+- 版本号同步:`v0.1.2.1-alpha` → `v0.1.2.2-alpha`(展示名 `V0.1.2.2 Alpha`)
+  - `pyproject.toml`、`README.md`、`launcher.py` 统一更新
+
+## V0.1.2.1 Alpha (2026-07-02)
+
+### 新增
+
+- **源码随仓库分发**:``app/``、``config/``、``pyproject.toml`` 现已入库,
+  ``git clone`` 即可用,无需先跑 ``build_bundle.py``
+
+### 变更
+
 - ``.gitignore`` 移除 ``app/``、``config/``、``pyproject.toml``、``README_MAIN.md`` 的排除,改为入库
 - ``README.md`` 重构:两种方式（A:双击 .exe / B:build_bundle 离线包）
 - 版本号同步:`v0.1.2-alpha` → `v0.1.2.1-alpha`(展示名 `V0.1.2.1 Alpha`)
