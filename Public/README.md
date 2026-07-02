@@ -2,8 +2,8 @@
 
 **版本:V0.1.2.1 Alpha** (`0.1.2.1-alpha`)
 
-一个**自包含**的分发版:把「Whisper 模型 + 全部外部依赖 + 源码」封装在本目录内,
-目标机器**无需联网**即可运行。语音转写**固定使用包内的 Whisper `large-v3-turbo`**。
+一个**自包含**的分发版:**一个 `launcher.exe` 即可从零搭建完整环境** — 源码、依赖、Whisper 模型、ffmpeg 全自动下载。
+语音转写**固定使用 large-v3-turbo**。
 
 > **V0.1.2 起**,``app/``、``config/``、``pyproject.toml`` 已随仓库分发:
 > ``git clone`` 下来即可使用,无需先跑 ``build_bundle.py``。
@@ -11,15 +11,19 @@
 
 ## 两种使用方式
 
-### 方式 A:双击 launcher.exe(推荐,有网 → 全自动)
+### 方式 A:双击 launcher.exe（推荐,有网 → 全自动）
 
-直接**双击 `launcher.exe`**,运行时自动处理一切:
+直接**双击 `launcher.exe`**,**一个 exe 从零搭建完整环境**:
 
-1. 自动检测 Python 环境(需 Python 3.11+)
-2. 自动创建虚拟环境 + 离线安装依赖(如 ``vendor/wheels`` 存在)
-3. 如缺模型/依赖/ffmpeg,会给出明确提示
+1. 自动检测系统 Python 3.11+
+2. 从 GitHub 下载源码（app/config 等,~200KB）
+3. 创建虚拟环境 + 联网安装依赖（清华+阿里云镜像,2-5 分钟）
+4. 下载 Whisper large-v3-turbo 模型（hf-mirror.com,~1.6GB,最久）
+5. 下载 ffmpeg/ffprobe（~80MB）
+6. 生成 .env 配置 → 启动 Web 管理后台
 
-> 与 ``setup.bat`` 不同:无需 .ps1/.bat,不受系统安全策略拦截。首次安装依赖 1-3 分钟,之后秒开。
+> **零文件拷贝,断点续跑**:如果某一步中断,再次双击会自动从断点继续,已下载的组件不会重复下载。
+> 无需 .ps1/.bat,不受系统安全策略拦截。
 
 ### 方式 B:完整离线包(给无网机器)
 
