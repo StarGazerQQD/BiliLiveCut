@@ -1,5 +1,19 @@
 # Changelog — 即插即用版 (Public)
 
+## V0.1.2.1 Alpha (2026-07-02)
+
+### 新增
+
+- **源码随仓库分发**:``app/``、``config/``、``pyproject.toml`` 现已入库,
+  ``git clone`` 即可用,无需先跑 ``build_bundle.py``(模型/依赖/ffmpeg 仍需联网下载)
+
+### 变更
+
+- ``.gitignore`` 移除 ``app/``、``config/``、``pyproject.toml``、``README_MAIN.md`` 的排除规律,改为入库
+- ``README.md`` 重构:两种方式(A:双击 .exe / B:完整离线包),去除冗余的"三步使用"章节
+- 版本号同步:`v0.1.2-alpha` → `v0.1.2.1-alpha`(展示名 `V0.1.2.1 Alpha`)
+  - `pyproject.toml`、`README.md`、`launcher.py` 统一更新
+
 ## V0.1.2 Alpha (2026-07-02)
 
 同步主工程 v0.1.2-alpha 全部功能。
@@ -12,8 +26,6 @@
 - **弹幕情绪分析**:基于弹幕文本的规则型情绪分析(重复率/感叹号/高情绪梗)
 - **流水线进度追踪**:Dashboard 录制状态页新增进度条
 - **Dashboard 功能开关**:每直播间「预约录制」「阈值自学习」「弹幕情绪」三项开关,录制中锁定
-- **源码随仓库分发**:``app/``、``config/``、``pyproject.toml`` 现已入库,
-  ``git clone`` 即可用,无需先跑 ``build_bundle.py``(模型/依赖/ffmpeg 仍需联网下载)
 
 ### 修复
 
@@ -25,8 +37,6 @@
 - 版本号同步:`v0.1.1-alpha` → `v0.1.2-alpha`(展示名 `V0.1.2 Alpha`)
   - `pyproject.toml`、`README.md`、`launcher.py` 统一更新
 - ``launcher.exe`` 重新编译(版本号 0.1.2,8.1 MB)
-- ``.gitignore`` 移除 ``app/``、``config/``、``pyproject.toml`` 的排除,改为入库
-- ``README.md`` 重构:两种方式(A:双击 .exe / B:完整离线包),去除冗余的"三步使用"
 
 ## V0.1.1 Alpha (2026-07-02)
 
