@@ -107,18 +107,28 @@ def _add_spend(usd: float) -> None:
         logger.warning("写入预算文件失败: {}", exc)
 
 
+# 模块级缓存:按 provider id 缓存 OpenAI 客户端实例,避免连接池泄漏。
+# 长时间录制下(如4小时240个片段),每次创建新客户端会耗尽文件描述符。
+_client_cache: dict[str, object] = {}
+
+
 def _get_client(provider: provs.LLMProvider):  # noqa: ANN202 — 返回 openai.OpenAI
-    """为指定 provider 创建 OpenAI 兼容客户端。
+    """为指定 provider 创建或复用 OpenAI 兼容客户端(模块级单例缓存)。
 
     :param provider: 目标服务商配置。
     :returns: ``openai.OpenAI`` 实例。
     :raises RuntimeError: 未安装 openai 时。
     """
+    cache_key = f"{provider.id}:{provider.base_url}:{provider.api_key[:8]}"
+    if cache_key in _client_cache:
+        return _client_cache[cache_key]
     try:
         from openai import OpenAI
     except ImportError as exc:  # pragma: no cover
         raise RuntimeError('未安装 openai。请执行: pip install -e ".[llm]"。') from exc
-    return OpenAI(api_key=provider.api_key, base_url=provider.base_url or None)
+    client = OpenAI(api_key=provider.api_key, base_url=provider.base_url or None)
+    _client_cache[cache_key] = client
+    return client
 
 
 def _account_usage(provider: provs.LLMProvider, resp: object) -> None:

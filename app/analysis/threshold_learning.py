@@ -82,9 +82,15 @@ def compute_recommended_threshold(room_id: int) -> float | None:
     if len(good_scores) < settings.threshold_learning_min_samples:
         return None
 
-    # P15 分位数:第 index = len * 0.15 个元素。
-    idx = max(0, int(len(good_scores) * 0.15))
-    new_threshold = good_scores[idx]
+    # P15 分位数:线性插值更精确。
+    n = len(good_scores)
+    k = (n - 1) * 0.15
+    f = k - int(k)
+    i = int(k)
+    if i + 1 < n:
+        new_threshold = good_scores[i] + f * (good_scores[i + 1] - good_scores[i])
+    else:
+        new_threshold = good_scores[i]
 
     # rejected 的最高分作为上界(不允许高于被拒的分数)。
     bad_scores = _collect_scores(room_id, "rejected")

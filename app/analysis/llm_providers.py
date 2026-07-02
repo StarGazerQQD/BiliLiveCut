@@ -181,11 +181,11 @@ def load_providers() -> list[LLMProvider]:
 
 
 def active_providers() -> list[LLMProvider]:
-    """返回可用的 provider(已启用且配置了 key),按优先级升序。
+    """返回可用的 provider(已启用且配置了 key 和 base_url),按优先级升序。
 
     :returns: 可用 provider 列表。
     """
-    return [p for p in load_providers() if p.enabled and p.api_key]
+    return [p for p in load_providers() if p.enabled and p.api_key and p.base_url]
 
 
 def public_view() -> list[dict]:

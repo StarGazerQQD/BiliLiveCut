@@ -289,6 +289,8 @@ def produce_clip(candidate_id: int, options: ClipOptions | None = None) -> Final
         raise ValueError(f"候选 {candidate_id} 找不到覆盖的原始片段。")
 
     base_ts = segments[0].start_ts
+    if base_ts is None:
+        raise ValueError(f"原始片段 {segments[0].id} 缺少 start_ts,无法计算裁剪偏移。")
     cut_offset = max(0.0, (start_ts - base_ts).total_seconds())
     raw_duration = (end_ts - start_ts).total_seconds()
     duration = max(2.0, min(raw_duration, float(options.max_duration_s)))
@@ -311,7 +313,10 @@ def produce_clip(candidate_id: int, options: ClipOptions | None = None) -> Final
         _run_ffmpeg_clip(concat_list, out_path, cut_offset, duration, options, srt_path)
 
     real_duration, width, height = probe_media(str(out_path))
-    _grab_cover(out_path, cover_path, min(peak_rel, max(0.5, real_duration / 2)))
+    try:
+        _grab_cover(out_path, cover_path, min(peak_rel, max(0.5, real_duration / 2)))
+    except Exception as exc:  # noqa: BLE001 — 封面抽取失败不影响切片主体
+        logger.warning("封面抽帧异常(不影响切片): {}", exc)
     content_hash = _file_sha1(out_path)
 
     clip = FinalClip(

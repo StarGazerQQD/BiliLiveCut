@@ -71,6 +71,7 @@ class Recorder:
         self._stop = asyncio.Event()
         self._session_id: int | None = None
         self._seq = 0  # 跨重连累加的全局片段序号
+        self._paths: set[str] = set()  # 已登记片段路径缓存(避免每次查全表)
         self._danmaku = None  # type: ignore[var-annotated]  # DanmakuClient(可选)
         self._danmaku_task: asyncio.Task[None] | None = None
 
@@ -124,6 +125,8 @@ class Recorder:
           避免稳定录制后再次断流时无谓等待 30s。
         """
         self._session_id = self._create_session()
+        self._seq = 0  # 每次 run() 重新开始片段计数
+        self._paths = set()  # 重置路径缓存
         out_dir = session_raw_dir(self._session_id)
         backoff = 1
         reconnect_episode = False  # 当前录制是否为重连后的一次尝试
@@ -420,6 +423,7 @@ class Recorder:
             db.refresh(segment)
 
         self._seq += 1
+        self._paths.add(str(file_path))  # 更新内存缓存,避免后续反复查表
         logger.info(
             "片段已登记 seq={} size={}KB dur={:.1f}s -> {}",
             segment.seq,
@@ -435,17 +439,20 @@ class Recorder:
                 logger.error("下游回调失败 seg={}: {}", segment.id, exc)
 
     def _registered_paths(self) -> set[str]:
-        """返回当前会话已登记片段的绝对路径集合(用于去重)。
+        """返回当前会话已登记片段的路径集合(首次查询后缓存于内存,避免每段查全表)。
 
         :returns: 已登记文件路径字符串集合。
         """
+        if self._paths:
+            return self._paths
         from sqlmodel import select
 
         with get_session() as db:
             rows = db.exec(
                 select(RawSegment.file_path).where(RawSegment.session_id == self._session_id)
             ).all()
-        return set(rows)
+        self._paths = set(rows)
+        return self._paths
 
     # ------------------------------------------------------------------ #
     # 进程与会话辅助

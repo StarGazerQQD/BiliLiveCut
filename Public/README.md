@@ -1,6 +1,6 @@
 # BiliLiveCut · 即插即用版(Public)
 
-**版本:V0.1.2.2 Alpha** (`0.1.2.2-alpha`)
+**版本:V0.1.3 Alpha** (`0.1.3-alpha`)
 
 一个**自包含**的分发版:**一个 `launcher.exe` 即可从零搭建完整环境** — 源码、依赖、Whisper 模型、ffmpeg 全自动下载。
 语音转写**固定使用 large-v3-turbo**。
