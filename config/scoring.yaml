@@ -9,6 +9,7 @@ weights:
   speech_rate: 0.15  # 语速 / 语气变化
   laughter: 0.10     # 笑声 / 惊呼能量
   trend: 0.15        # 网感:片段题材与近期全网热门内容的关联度(需开启网感资料库)
+  danmaku_sentiment: 0.15  # 弹幕情绪:弹幕文本的重复率/感叹号密度/特定梗(需房间级开关)
 
 # 综合评分 = alpha * rule_score + beta * llm_score
 fusion:

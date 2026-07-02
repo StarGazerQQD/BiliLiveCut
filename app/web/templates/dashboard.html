@@ -19,6 +19,7 @@
   <nav class="tabs">
     <button class="tab active" data-tab="rooms">直播间</button>
     <button class="tab" data-tab="recording">录制状态</button>
+    <button class="tab" data-tab="schedules">录制预约</button>
     <button class="tab" data-tab="transcripts">实时转写</button>
     <button class="tab" data-tab="danmaku">弹幕热度</button>
     <button class="tab" data-tab="trends">网感资料库</button>
@@ -46,7 +47,29 @@
 
     <!-- 录制状态 -->
     <section id="tab-recording" class="panel">
+      <div class="card">
+        <h3>流水线进度 <span class="muted" id="progress-title"></span></h3>
+        <div class="progress-bar-container">
+          <div class="progress-bar" id="progress-bar" style="width:0%"></div>
+        </div>
+        <p class="hint" id="progress-text"></p>
+      </div>
       <div id="recording-list"></div>
+    </section>
+
+    <!-- 录制预约 -->
+    <section id="tab-schedules" class="panel">
+      <div class="card">
+        <h3>创建录制预约</h3>
+        <div class="row">
+          <select id="schedule-room"></select>
+          <input id="schedule-time" type="datetime-local" style="width:auto" />
+          <label class="chk"><input type="checkbox" id="schedule-daily" /> 每日</label>
+          <button id="btn-add-schedule" class="primary">创建预约</button>
+        </div>
+        <p class="hint">预约在 Web 控制台运行时生效。到达预定时间后自动启动录制(如已录则跳过)。</p>
+      </div>
+      <div id="schedules-list"></div>
     </section>
 
     <!-- 实时转写 -->

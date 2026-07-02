@@ -24,7 +24,7 @@ from loguru import logger
 
 from app import __version__, __version_label__
 from app.core.logging import setup_logging
-from app.db.session import init_db
+from app.db.session import get_session, init_db
 from app.web import service
 from app.web.routers.api import router as api_router
 
@@ -34,7 +34,7 @@ _TEMPLATES = Jinja2Templates(directory=str(_BASE_DIR / "templates"))
 
 @asynccontextmanager
 async def lifespan(_app: FastAPI) -> AsyncIterator[None]:
-    """应用生命周期:启动初始化、关闭时优雅停止录制。"""
+    """应用生命周期:启动初始化、自动恢复录制、预约调度、关闭时优雅停止录制。"""
     setup_logging()
     init_db()
     from app.trends.scheduler import trend_scheduler
@@ -42,13 +42,83 @@ async def lifespan(_app: FastAPI) -> AsyncIterator[None]:
     trend_scheduler.start(
         recording_active=lambda: bool(service.recorder_manager.running_ids())
     )
+
+    # V0.1.2:自动恢复中断的录制会话。
+    try:
+        recovered = await service.auto_recover_interrupted_sessions()
+        if recovered:
+            logger.info("已恢复 {} 个中断的录制会话。", len(recovered))
+    except Exception as exc:  # noqa: BLE001
+        logger.warning("自动恢复跳过(无活动会话或出错): {}", exc)
+
+    # V0.1.2:启动录制预约调度后台任务。
+    schedule_task = asyncio.create_task(_schedule_loop())
+
     logger.info("Web 后台已启动。")
     try:
         yield
     finally:
+        schedule_task.cancel()
+        try:
+            await schedule_task
+        except asyncio.CancelledError:
+            pass
         await trend_scheduler.stop()
         await service.recorder_manager.stop_all()
         logger.info("Web 后台已关闭,所有录制已停止。")
+
+
+async def _schedule_loop() -> None:
+    """后台定时检查录制预约(每 ``schedule_check_interval_s`` 秒)。"""
+    from app.core.config import settings as s
+
+    while True:
+        try:
+            await asyncio.sleep(s.schedule_check_interval_s)
+            due = service.get_due_schedules()
+            for item in due:
+                if service.recorder_manager.is_running(item["room_id"]):
+                    service.mark_schedule_triggered(item["id"])
+                    continue
+                try:
+                    await service.recorder_manager.start(item["room_id"])
+                    service.mark_schedule_triggered(item["id"])
+                    logger.info("预约触发:房间 #{} 已启动录制。", item["room_id"])
+                    service.push_notification(
+                        f"预约触发:房间 #{item['room_id']} 已自动开始录制。",
+                        kind="success",
+                    )
+                except ValueError as exc:
+                    logger.warning("预约触发失败(房间 #{}): {}", item["room_id"], exc)
+                # 对 recurring 预约,重新安排下次.
+                if item["recurrent"] == "daily":
+                    _reschedule_daily(item)
+        except asyncio.CancelledError:
+            raise
+        except Exception as exc:  # noqa: BLE001
+            logger.error("预约调度异常: {}", exc)
+
+
+def _reschedule_daily(item: dict) -> None:
+    """为每日预约创建下一天的副本(原记录已标记 triggered)。"""
+    from datetime import timedelta
+
+    from app.db.models import RecordingSchedule, utcnow
+
+    try:
+        old_ts = utcnow()
+        # 取原时间的小时+分钟,放到明天同时间。
+        new_ts = old_ts.replace(hour=old_ts.hour, minute=old_ts.minute) + timedelta(days=1)
+        with get_session() as db:
+            sched = RecordingSchedule(
+                room_id=item["room_id"],
+                scheduled_at=new_ts,
+                enabled=True,
+                recurrent="daily",
+            )
+            db.add(sched)
+    except Exception:
+        pass  # 复制失败不阻塞,用户可手动重新创建。
 
 
 app = FastAPI(

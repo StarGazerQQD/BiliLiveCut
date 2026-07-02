@@ -107,6 +107,15 @@ class Settings(BaseSettings):
     clip_video_crf: int = Field(default=20, ge=0, le=51)   # x264 质量,越小越好
     clip_preset: str = "veryfast"         # x264 编码速度档
 
+    # ---------- V0.1.2 新增:高级功能 ----------
+    # 阈值自学习:收集 N 条审批反馈后自动调整房间级阈值。
+    threshold_learning_min_samples: int = Field(default=10, ge=3, description="最少反馈样本数才触发调参")
+    threshold_learning_max_delta: float = Field(default=0.1, ge=0.01, le=0.3, description="单次阈值调整最大幅度")
+    # 录制预约检查间隔(秒)。
+    schedule_check_interval_s: int = Field(default=30, ge=10, le=300)
+    # 录制自动恢复:启动时检查最近 N 小时内是否有中断的会话。
+    auto_recover_max_age_hours: int = Field(default=24, ge=1, le=72)
+
     # ---------- 上传 ----------
     uploader: str = "manual"                  # 默认上传器(manual 时不触碰平台接口)
     upload_max_retries: int = Field(default=3, ge=0, le=10)

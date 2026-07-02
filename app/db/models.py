@@ -43,6 +43,7 @@ class SessionStatus:
     RECORDING = "recording"
     RECONNECTING = "reconnecting"
     STOPPED = "stopped"
+    INTERRUPTED = "interrupted"  # 进程异常退出,可自动恢复
     ERROR = "error"
 
 
@@ -104,6 +105,10 @@ class LiveRoom(SQLModel, table=True):
     auto_publish_threshold: float = Field(default=0.85, description="自动发布阈值")
     enabled: bool = Field(default=False, description="是否启用监控/录制")
     authorized: bool = Field(default=False, description="是否已确认拥有录制授权(合规闸)")
+    # V0.1.2 新增:房间级功能开关(录制启动后锁定,不可更改启用状态)
+    schedule_enabled: bool = Field(default=False, description="是否启用录制预约")
+    auto_threshold_enabled: bool = Field(default=False, description="是否启用阈值自学习")
+    danmaku_sentiment_enabled: bool = Field(default=False, description="是否启用弹幕情绪分析")
     created_at: datetime = Field(default_factory=utcnow)
     updated_at: datetime = Field(default_factory=utcnow)
 
@@ -269,6 +274,34 @@ class TrendItem(SQLModel, table=True):
     first_seen_at: datetime = Field(default_factory=utcnow, description="首次采集时间")
     collected_at: datetime = Field(default_factory=utcnow, index=True, description="最近采集时间")
     raw_json: str | None = Field(default=None, description="原始返回数据 JSON(留档)")
+
+
+class RecordingSchedule(SQLModel, table=True):
+    """录制预约(``recording_schedules``):预定时间自动启动录制。"""
+
+    __tablename__ = "recording_schedules"
+
+    id: int | None = Field(default=None, primary_key=True)
+    room_id: int = Field(index=True, description="所属 live_rooms.id")
+    scheduled_at: datetime = Field(description="计划启动时间(UTC)")
+    enabled: bool = Field(default=True, description="是否启用")
+    recurrent: str = Field(default="", description="重复规则:空=一次性,daily=每日,weekly=每周")
+    triggered: bool = Field(default=False, description="是否已触发")
+    created_at: datetime = Field(default_factory=utcnow)
+
+
+class ThresholdFeedback(SQLModel, table=True):
+    """阈值自学习反馈记录(``threshold_feedback``):用户审批/拒绝候选时记录评分与阈值快照。"""
+
+    __tablename__ = "threshold_feedback"
+
+    id: int | None = Field(default=None, primary_key=True)
+    room_id: int = Field(index=True, description="所属 live_rooms.id")
+    candidate_id: int = Field(index=True, description="关联 highlight_candidates.id")
+    action: str = Field(description="approved 或 rejected")
+    old_threshold: float = Field(description="当前房间阈值快照")
+    highlight_score: float = Field(description="候选的综合高光评分")
+    created_at: datetime = Field(default_factory=utcnow)
 
 
 class AppSetting(SQLModel, table=True):

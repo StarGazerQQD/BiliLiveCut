@@ -89,6 +89,96 @@ def laughter_score(text: str) -> float:
     return float(min(count / 5.0, 1.0))
 
 
+def danmaku_sentiment_score(session_id: int, start_ts: object, end_ts: object) -> float:
+    """基于弹幕文本的情绪分析(规则:重复率、感叹号密度、特定梗命中)。
+
+    完全不依赖 AI/ML,仅用启发式规则评估弹幕是否处于"炸裂"状态。
+    典型高情绪信号:
+    - 短时间内高度重复的弹幕(如满屏"???"或"666")
+    - 高频感叹号密度
+    - 特定高情绪梗的出现(卧槽、绝了、离谱、破防、高能等)
+
+    :param session_id: 录制会话 id。
+    :param start_ts: 窗口开始时间(datetime)。
+    :param end_ts: 窗口结束时间(datetime)。
+    :returns: 0-1 的弹幕情绪分。
+    """
+    from app.db.models import Danmaku
+
+    def _naive(dt: object) -> object:
+        return dt.replace(tzinfo=None) if getattr(dt, "tzinfo", None) else dt
+
+    start_n = _naive(start_ts)
+    end_n = _naive(end_ts)
+
+    with get_session() as db:
+        rows = db.exec(
+            select(Danmaku.content).where(
+                Danmaku.session_id == session_id,
+                Danmaku.msg_type == "danmaku",
+            )
+        ).all()
+
+    # 取窗口内的弹幕文本。
+    window_texts: list[str] = []
+    all_ts = []
+    for row in rows:
+        if row[0] is not None:
+            # 无法精确按 ts 过滤 content-only 查询,改用两次查询取时间窗。
+            pass
+    # 重新按时间过滤。
+    window_texts = _fetch_window_danmaku_texts(session_id, start_n, end_n)
+    if len(window_texts) < 5:
+        return 0.0
+
+    # 1) 重复率:统计完全相同文本的出现率(归一化到 0-1)。
+    text_counts: dict[str, int] = {}
+    for t in window_texts:
+        text_counts[t] = text_counts.get(t, 0) + 1
+    max_dup = max(text_counts.values(), default=1)
+    dup_rate = max_dup / max(len(window_texts), 1) if len(window_texts) > 0 else 0
+    # 重复率 >= 10% 开始给分(如 20 条里 2 条相同不算), >= 40% 满分。
+    dup_score = max(0.0, min((dup_rate - 0.1) / 0.3, 1.0))
+
+    # 2) 感叹号密度:带"!"的弹幕占比。
+    exclaim_count = sum(1 for t in window_texts if "!" in t or "！" in t)
+    exclaim_rate = exclaim_count / len(window_texts)
+    # >= 10% 开始给分, >= 50% 满分。
+    exclaim_score = max(0.0, min((exclaim_rate - 0.1) / 0.4, 1.0))
+
+    # 3) 高情绪梗:特定关键词的出现密度。
+    hot_memes = {"卧槽", "绝了", "离谱", "破防", "高能", "泪目", "笑死", "什么?!", "无敌",
+                 "666", "??", "牛", "神", "厉害了", "这能忍?", "天秀", "牛逼"}
+    meme_hits = sum(
+        1 for t in window_texts if any(meme in t for meme in hot_memes)
+    )
+    meme_rate = meme_hits / len(window_texts)
+    # >= 5% 开始给分, >= 30% 满分。
+    meme_score = max(0.0, min((meme_rate - 0.05) / 0.25, 1.0))
+
+    # 加权合成:重复 0.4 + 感叹号 0.3 + 梗 0.3。
+    return float(dup_score * 0.4 + exclaim_score * 0.3 + meme_score * 0.3)
+
+
+def _fetch_window_danmaku_texts(session_id: int, start_n: object, end_n: object) -> list[str]:
+    """获取指定时间窗口内的弹幕文本(去时区)。"""
+    from app.db.models import Danmaku
+
+    with get_session() as db:
+        rows = db.exec(
+            select(Danmaku.content, Danmaku.ts).where(
+                Danmaku.session_id == session_id,
+                Danmaku.msg_type == "danmaku",
+            )
+        ).all()
+    texts = []
+    for content, ts in rows:
+        dt = ts.replace(tzinfo=None) if getattr(ts, "tzinfo", None) else ts
+        if start_n <= dt <= end_n and content:  # type: ignore[operator]
+            texts.append(content)
+    return texts
+
+
 def weighted_rule_score(features: dict[str, float], weights: dict[str, float]) -> float:
     """对各维度特征做加权求和(仅对出现的维度归一化权重)。
 
@@ -210,6 +300,16 @@ def score_segment(segment_id: int) -> HighlightCandidate | None:
         # 弹幕热度:本片段时间窗内弹幕强度相对全场平均的倍数(无弹幕数据则为 0)。
         "danmaku": _danmaku_score(session_id, seg_start_ts, seg_end_ts),
     }
+    # 弹幕情绪(V0.1.2 新增):仅当房间级开关启用且弹幕采集开启时才计入。
+    use_dm_sentiment = (
+        room is not None
+        and bool(room.danmaku_sentiment_enabled)
+        and settings.collect_danmaku
+    )
+    if use_dm_sentiment:
+        features["danmaku_sentiment"] = danmaku_sentiment_score(
+            session_id, seg_start_ts, seg_end_ts
+        )
     # 网感维度:片段题材与资料库近期热门内容的关联度(仅在启用时计入)。
     trend_hits: list[str] = []
     if settings.trend_enabled:
