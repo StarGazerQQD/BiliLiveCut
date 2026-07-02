@@ -195,6 +195,54 @@ def _has_source(root: Path) -> bool:
     return (root / "app" / "cli.py").exists() and (root / REQUIREMENTS).exists()
 
 
+def _count_files(root: Path) -> int:
+    """统计工作目录下文件总数（排除 .venv/ 和 __pycache__/）。"""
+    n = 0
+    for p in root.rglob("*"):
+        if p.is_file() and ".venv" not in p.parts and "__pycache__" not in p.parts:
+            n += 1
+    return n
+
+
+def _status_icon(ok: bool) -> str:
+    """返回状态图标,[OK] 或 [---]."""
+    return "[OK]  " if ok else "[---] "
+
+
+def _scan_and_report(root: Path) -> None:
+    """扫描目录状态并打印摘要:哪些已就绪,哪些需要下载。"""
+    before = _count_files(root)
+    source_ok = _has_source(root)
+    venv_ok = (root / VENV_DIR / "Scripts" / "python.exe").exists()
+    model_ok = (root / "models" / MODEL_DIRNAME / "model.bin").exists()
+    ffmpeg_ok = (root / "bin" / "ffmpeg.exe").exists() or (root / "bin" / "ffmpeg").exists()
+    env_ok = (root / ".env").exists()
+
+    deps_ok = False
+    if venv_ok:
+        try:
+            subprocess.run(
+                [str(root / VENV_DIR / "Scripts" / "python.exe"), "-c",
+                 "import faster_whisper, fastapi, uvicorn, sqlmodel"],
+                check=True, capture_output=True, timeout=15,
+            )
+            deps_ok = True
+        except Exception:
+            pass
+
+    all_ok = source_ok and venv_ok and deps_ok and model_ok and ffmpeg_ok and env_ok
+
+    print(f"  目录文件数: {before}  状态: {'全部就绪' if all_ok else '部分缺失,将自动补充'}")
+    print()
+    print(f"   {_status_icon(source_ok)} 源码 (app/config/...)")
+    print(f"   {_status_icon(venv_ok)}   虚拟环境 (.venv)")
+    print(f"   {_status_icon(deps_ok)}   依赖 (pip 包)")
+    print(f"   {_status_icon(model_ok)} Whisper 模型 (1.6 GB)")
+    print(f"   {_status_icon(ffmpeg_ok)} FFmpeg (ffmpeg.exe)")
+    print(f"   {_status_icon(env_ok)}   配置文件 (.env)")
+    print()
+
+
 # ── 步骤 1: 从 GitHub 下载源码 ──────────────────────────────────────
 
 
@@ -456,6 +504,9 @@ def main() -> None:
     print("=" * 60)
     print(f"  工作目录: {root}")
     print()
+
+    # 扫描并报告当前状态
+    _scan_and_report(root)
 
     # ================================================================
     # 1) 检测 Python
