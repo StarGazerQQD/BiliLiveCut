@@ -33,6 +33,7 @@ from app.db.models import (
     HighlightCandidate,
     LiveRoom,
     RawSegment,
+    RecordingSchedule,
     RecordingSession,
     RoomMode,
     SessionStatus,
@@ -261,11 +262,19 @@ def update_room(db_id: int, fields: dict[str, Any]) -> LiveRoom:
         "authorized",
         "title",
         "uploader_name",
+        "schedule_enabled",
+        "auto_threshold_enabled",
+        "danmaku_sentiment_enabled",
     }
     with get_session() as db:
         room = db.get(LiveRoom, db_id)
         if room is None:
             raise ValueError(f"房间不存在: db_id={db_id}")
+        # 录制中不允许修改功能开关(锁定保护)。
+        if recorder_manager.is_running(db_id):
+            for key in ("schedule_enabled", "auto_threshold_enabled", "danmaku_sentiment_enabled"):
+                if key in fields:
+                    raise ValueError(f"直播间正在录制,无法修改「{key}」开关。请先停止录制。")
         for key, value in fields.items():
             if key in allowed and value is not None:
                 setattr(room, key, value)
@@ -274,7 +283,7 @@ def update_room(db_id: int, fields: dict[str, Any]) -> LiveRoom:
 
 
 def set_candidate_status(candidate_id: int, status: str) -> None:
-    """设置候选状态(审核:批准/拒绝)。
+    """设置候选状态(审核:批准/拒绝),并记录阈值自学习反馈。
 
     :param candidate_id: 候选 id。
     :param status: 新状态。
@@ -286,6 +295,21 @@ def set_candidate_status(candidate_id: int, status: str) -> None:
             raise ValueError(f"候选不存在: id={candidate_id}")
         cand.status = status
         db.add(cand)
+
+    # V0.1.2:记录阈值自学习反馈。
+    if status in (CandidateStatus.APPROVED, CandidateStatus.REJECTED):
+        try:
+            from app.analysis import threshold_learning as tl
+
+            action = "approved" if status == CandidateStatus.APPROVED else "rejected"
+            with get_session() as db:
+                session = db.get(RecordingSession, cand.session_id)
+                if session is not None:
+                    tl.record_feedback(session.room_id, candidate_id, action)
+                    # 尝试自动调整阈值。
+                    tl.apply_threshold_if_changed(session.room_id)
+        except Exception as exc:  # noqa: BLE001
+            logger.warning("阈值自学习反馈记录失败: {}", exc)
 
 
 async def approve_candidate(candidate_id: int) -> int | None:
@@ -519,6 +543,9 @@ def _room_dict(room: LiveRoom, running: bool) -> dict[str, Any]:
         "authorized": room.authorized,
         "enabled": room.enabled,
         "running": running,
+        "schedule_enabled": room.schedule_enabled,
+        "auto_threshold_enabled": room.auto_threshold_enabled,
+        "danmaku_sentiment_enabled": room.danmaku_sentiment_enabled,
     }
 
 
@@ -762,6 +789,246 @@ def list_logs(limit: int = 100, level: str | None = None) -> list[dict[str, Any]
         }
         for x in rows
     ]
+
+
+# --------------------------------------------------------------------------- #
+# 录制预约(V0.1.2)
+# --------------------------------------------------------------------------- #
+def list_schedules() -> list[dict[str, Any]]:
+    """返回所有录制预约(含房间名)。
+
+    :returns: 预约列表(按计划时间升序)。
+    """
+    with get_session() as db:
+        rows = db.exec(
+            select(RecordingSchedule).order_by(RecordingSchedule.scheduled_at)
+        ).all()
+        result = []
+        for s in rows:
+            room = db.get(LiveRoom, s.room_id)
+            result.append({
+                "id": s.id,
+                "room_id": s.room_id,
+                "scheduled_at": s.scheduled_at.isoformat() if s.scheduled_at else None,
+                "enabled": s.enabled,
+                "recurrent": s.recurrent,
+                "triggered": s.triggered,
+                "room_title": room.title if room else "",
+                "uploader_name": room.uploader_name if room else "",
+            })
+    return result
+
+
+def create_schedule(room_id: int, scheduled_at: str, recurrent: str = "") -> dict[str, Any]:
+    """创建一个录制预约。
+
+    :param room_id: 直播间 db id。
+    :param scheduled_at: ISO 格式的计划时间字符串。
+    :param recurrent: 空=一次性, daily=每日。
+    :returns: 新建的预约摘要。
+    :raises ValueError: 房间不存在或未授权时。
+    """
+    from datetime import datetime as dt
+
+    with get_session() as db:
+        room = db.get(LiveRoom, room_id)
+        if room is None:
+            raise ValueError(f"房间不存在: id={room_id}")
+        if settings.require_authorization and not room.authorized:
+            raise ValueError("该直播间未确认授权,无法创建预约。")
+
+        try:
+            ts = dt.fromisoformat(scheduled_at)
+        except ValueError as exc:
+            raise ValueError(f"时间格式无效({scheduled_at}),请用 ISO 格式。") from exc
+
+        sched = RecordingSchedule(
+            room_id=room_id,
+            scheduled_at=ts,
+            enabled=True,
+            recurrent=recurrent,
+        )
+        db.add(sched)
+        db.flush()
+        db.refresh(sched)
+        return {"id": sched.id, "room_id": sched.room_id, "scheduled_at": sched.scheduled_at.isoformat()}
+
+
+def delete_schedule(schedule_id: int) -> None:
+    """删除一个录制预约。
+
+    :param schedule_id: 预约 id。
+    :raises ValueError: 预约不存在时。
+    """
+    with get_session() as db:
+        sched = db.get(RecordingSchedule, schedule_id)
+        if sched is None:
+            raise ValueError(f"预约不存在: id={schedule_id}")
+        db.delete(sched)
+
+
+def toggle_schedule(schedule_id: int, enabled: bool) -> dict[str, Any]:
+    """切换录制预约的启用/禁用。
+
+    :param schedule_id: 预约 id。
+    :param enabled: 新状态。
+    :returns: 更新后的摘要。
+    :raises ValueError: 预约不存在时。
+    """
+    with get_session() as db:
+        sched = db.get(RecordingSchedule, schedule_id)
+        if sched is None:
+            raise ValueError(f"预约不存在: id={schedule_id}")
+        sched.enabled = enabled
+        db.add(sched)
+        return {"id": sched.id, "enabled": sched.enabled}
+
+
+def get_due_schedules() -> list[dict[str, Any]]:
+    """返回到期且尚未触发的预约(供后台定时器调用)。
+
+    :returns: 到期预约列表。
+    """
+    from app.db.models import utcnow
+
+    now = utcnow()
+    with get_session() as db:
+        rows = db.exec(
+            select(RecordingSchedule).where(
+                RecordingSchedule.enabled == True,  # noqa: E712
+                RecordingSchedule.triggered == False,  # noqa: E712
+                RecordingSchedule.scheduled_at <= now,
+            )
+        ).all()
+    return [
+        {"id": r.id, "room_id": r.room_id, "scheduled_at": r.scheduled_at.isoformat(),
+         "recurrent": r.recurrent}
+        for r in rows
+    ]
+
+
+def mark_schedule_triggered(schedule_id: int) -> None:
+    """标记预约已触发。
+
+    :param schedule_id: 预约 id。
+    """
+    with get_session() as db:
+        sched = db.get(RecordingSchedule, schedule_id)
+        if sched is not None:
+            sched.triggered = True
+            db.add(sched)
+
+
+# --------------------------------------------------------------------------- #
+# 进度追踪(V0.1.2)
+# --------------------------------------------------------------------------- #
+def pipeline_progress(session_id: int | None = None) -> dict[str, Any]:
+    """返回录制→转写→评分的流水线进度统计。
+
+    :param session_id: 可选,限定某会话。
+    :returns: 含各阶段计数的字典。
+    """
+    with get_session() as db:
+        stmt = select(RawSegment)
+        if session_id is not None:
+            stmt = stmt.where(RawSegment.session_id == session_id)
+        segments = db.exec(stmt).all()
+
+    recorded = sum(1 for s in segments if s.status in (SegmentStatus.RECORDED, "recorded"))
+    transcribed = sum(1 for s in segments if s.status in (SegmentStatus.TRANSCRIBED, "transcribed"))
+    scored = sum(1 for s in segments if s.status in (SegmentStatus.SCORED, "scored"))
+
+    total = len(segments)
+    return {
+        "total_segments": total,
+        "recorded": recorded,
+        "transcribed": transcribed,
+        "scored": scored,
+        "progress_pct": round(scored / total * 100, 1) if total > 0 else 0,
+        "active_session_id": session_id,
+    }
+
+
+# --------------------------------------------------------------------------- #
+# 阈值自学习查询(V0.1.2)
+# --------------------------------------------------------------------------- #
+def threshold_learning_status(room_id: int) -> dict[str, Any]:
+    """返回某房间的阈值自学习状态。
+
+    :param room_id: 直播间 db id。
+    :returns: 含样本数、推荐阈值等信息的字典。
+    """
+    from app.analysis import threshold_learning as tl
+
+    return tl.feedback_summary(room_id)
+
+
+# --------------------------------------------------------------------------- #
+# 录制自动恢复(V0.1.2)
+# --------------------------------------------------------------------------- #
+async def auto_recover_interrupted_sessions() -> list[int]:
+    """启动时扫描中断的录制会话并尝试恢复。
+
+    查找最近 N 小时内状态为 RECORDING/RECONNECTING/STARTING 的会话,
+    对归属房间自动重新启动录制任务。
+
+    :returns: 已恢复的房间 db_id 列表。
+    """
+    from datetime import timedelta
+
+    from app.db.models import utcnow
+
+    cutoff = utcnow() - timedelta(hours=settings.auto_recover_max_age_hours)
+    with get_session() as db:
+        sessions = db.exec(
+            select(RecordingSession).where(
+                RecordingSession.status.in_(
+                    [SessionStatus.RECORDING, SessionStatus.RECONNECTING, SessionStatus.STARTING]
+                ),
+                RecordingSession.started_at >= cutoff,
+            )
+        ).all()
+
+    recovered: list[int] = []
+    for sess in sessions:
+        room_id = sess.room_id
+        if recorder_manager.is_running(room_id):
+            continue
+        try:
+            with get_session() as db:
+                room = db.get(LiveRoom, room_id)
+                if room is None or not room.authorized:
+                    continue
+            # 标记旧会话为中断。
+            _mark_session_interrupted(sess.id)
+            await recorder_manager.start(room_id, pipeline=True, produce=False)
+            recovered.append(room_id)
+            logger.info("自动恢复录制:房间 #{} (会话 {})", room_id, sess.id)
+            push_notification(
+                f"检测到中断的录制会话(房间 #{room_id}),已自动恢复。",
+                kind="warning",
+            )
+        except Exception as exc:  # noqa: BLE001
+            logger.warning("自动恢复房间 #{} 失败: {}", room_id, exc)
+            push_notification(
+                f"自动恢复房间 #{room_id} 失败:{exc}", kind="warning"
+            )
+
+    if recovered:
+        logger.info("自动恢复完成:共恢复 {} 个房间。", len(recovered))
+    return recovered
+
+
+def _mark_session_interrupted(session_id: int) -> None:
+    """将会话标记为中断。
+
+    :param session_id: 会话 id。
+    """
+    with get_session() as db:
+        sess = db.get(RecordingSession, session_id)
+        if sess is not None:
+            sess.status = SessionStatus.INTERRUPTED
+            db.add(sess)
 
 
 def recording_status() -> list[dict[str, Any]]:

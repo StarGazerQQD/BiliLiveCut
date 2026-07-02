@@ -19,6 +19,9 @@ _DEFAULTS: dict[str, str] = {
     "trend_schedule_start": "03:00",     # 每日采集窗口起(HH:MM,本地时间)
     "trend_schedule_end": "05:00",       # 每日采集窗口止(HH:MM,本地时间)
     "trend_schedule_interval_min": "30", # 窗口内每隔多少分钟迭代采集一次
+    # V0.1.2 新增:全局功能开关
+    "threshold_learning_enabled": "true",  # 阈值自学习全局总开关
+    "danmaku_sentiment_enabled": "true",   # 弹幕情绪分析全局总开关
 }
 
 _TRUE = {"1", "true", "yes", "on"}

@@ -39,6 +39,9 @@ class UpdateRoomRequest(BaseModel):
     authorized: bool | None = None
     title: str | None = None
     uploader_name: str | None = None
+    schedule_enabled: bool | None = None
+    auto_threshold_enabled: bool | None = None
+    danmaku_sentiment_enabled: bool | None = None
 
 
 class StartRequest(BaseModel):
@@ -63,6 +66,14 @@ class TrendCollectRequest(BaseModel):
     """网感采集请求(主题可选)。"""
 
     topic: str = ""
+
+
+class ScheduleRequest(BaseModel):
+    """录制预约请求。"""
+
+    room_id: int
+    scheduled_at: str  # ISO 格式时间,如 "2026-07-03T20:00:00"
+    recurrent: str = ""  # 空=一次性, daily=每日
 
 
 class LLMProviderIn(BaseModel):
@@ -296,6 +307,55 @@ async def collect_trends(req: TrendCollectRequest | None = None) -> dict[str, An
 def get_logs(limit: int = 100, level: str | None = None) -> list[dict[str, Any]]:
     """返回系统日志(WARNING 及以上)。"""
     return service.list_logs(limit=limit, level=level)
+
+
+# ----------------------------- V0.1.2 新增:录制预约 ----------------------------- #
+@router.get("/schedules")
+def get_schedules() -> list[dict[str, Any]]:
+    """返回所有录制预约。"""
+    return service.list_schedules()
+
+
+@router.post("/schedules")
+def create_schedule(req: ScheduleRequest) -> dict[str, Any]:
+    """创建一个录制预约。"""
+    try:
+        return service.create_schedule(req.room_id, req.scheduled_at, req.recurrent)
+    except (ValueError, Exception) as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
+
+
+@router.delete("/schedules/{schedule_id}")
+def delete_schedule(schedule_id: int) -> dict[str, str]:
+    """删除一个录制预约。"""
+    try:
+        service.delete_schedule(schedule_id)
+    except ValueError as exc:
+        raise HTTPException(status_code=404, detail=str(exc)) from exc
+    return {"status": "deleted"}
+
+
+@router.patch("/schedules/{schedule_id}")
+def patch_schedule(schedule_id: int, enabled: bool) -> dict[str, Any]:
+    """启用/禁用录制预约。"""
+    try:
+        return service.toggle_schedule(schedule_id, enabled)
+    except ValueError as exc:
+        raise HTTPException(status_code=404, detail=str(exc)) from exc
+
+
+# ----------------------------- V0.1.2 新增:进度追踪 ----------------------------- #
+@router.get("/progress")
+def get_progress(session_id: int | None = None) -> dict[str, Any]:
+    """返回录制→转写→评分的进度统计。"""
+    return service.pipeline_progress(session_id=session_id)
+
+
+# ----------------------------- V0.1.2 新增:阈值自学习 ----------------------------- #
+@router.get("/rooms/{db_id}/threshold-learning")
+def threshold_learning(db_id: int) -> dict[str, Any]:
+    """返回某房间的阈值自学习摘要。"""
+    return service.threshold_learning_status(db_id)
 
 
 # ----------------------------- 媒体预览 ----------------------------- #

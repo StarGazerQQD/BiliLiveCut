@@ -23,6 +23,7 @@ _DEFAULT_WEIGHTS: dict[str, float] = {
     "speech_rate": 0.15,
     "laughter": 0.10,
     "trend": 0.15,  # 网感资料库:片段题材与近期热门内容的关联度
+    "danmaku_sentiment": 0.15,  # 弹幕情绪:重复率/感叹号密度/特定梗
 }
 
 

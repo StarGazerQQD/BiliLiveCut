@@ -97,8 +97,29 @@ async function loadRooms() {
         </label>
         <button onclick="saveRoom(${r.id})">保存</button>
       </div>
+      <div class="thresholds" style="margin-top: 6px">
+        <label class="switch-row">
+          <input type="checkbox" id="sw-se-${r.id}" ${r.schedule_enabled ? "checked" : ""} ${r.running ? "disabled" : ""} />
+          预约录制
+        </label>
+        <label class="switch-row">
+          <input type="checkbox" id="sw-at-${r.id}" ${r.auto_threshold_enabled ? "checked" : ""} ${r.running ? "disabled" : ""} />
+          阈值自学习
+        </label>
+        <label class="switch-row">
+          <input type="checkbox" id="sw-ds-${r.id}" ${r.danmaku_sentiment_enabled ? "checked" : ""} ${r.running ? "disabled" : ""} />
+          弹幕情绪
+        </label>
+        ${r.running ? '<span class="muted">(录制中锁定)</span>' : ""}
+      </div>
+      ${r.auto_threshold_enabled ? `<div id="tl-${r.id}" class="threshold-learning"></div>` : ""}
     </div>`).join("");
   $("#rooms-list").innerHTML = html || `<div class="empty">还没有直播间,先在上方添加。</div>`;
+
+  // 异步加载阈值学习摘要。
+  data.rooms.forEach((r) => {
+    if (r.auto_threshold_enabled) loadThresholdLearning(r.id);
+  });
 }
 
 window.startRoom = async (id) => {
@@ -117,6 +138,9 @@ window.saveRoom = async (id) => {
       mode: $(`#mode-${id}`).value,
       highlight_threshold: parseFloat($(`#ht-${id}`).value),
       auto_publish_threshold: parseFloat($(`#at-${id}`).value),
+      schedule_enabled: ($(`#sw-se-${id}`) || {}).checked,
+      auto_threshold_enabled: ($(`#sw-at-${id}`) || {}).checked,
+      danmaku_sentiment_enabled: ($(`#sw-ds-${id}`) || {}).checked,
     });
     toast("已保存阈值/模式");
   } catch (e) { toast("保存失败:" + e.message); }
@@ -124,7 +148,15 @@ window.saveRoom = async (id) => {
 
 // ----------------------------- 渲染:录制状态 ----------------------------- //
 async function loadRecording() {
-  const rows = await api("GET", "/api/recording");
+  const [rows, prog] = await Promise.all([
+    api("GET", "/api/recording"),
+    api("GET", "/api/progress"),
+  ]);
+  $("#progress-title").textContent = prog.total_segments ? `总片段 ${prog.total_segments}` : "";
+  $("#progress-bar").style.width = prog.progress_pct + "%";
+  $("#progress-text").textContent = prog.total_segments
+    ? `已录制 ${prog.recorded} · 已转写 ${prog.transcribed} · 已评分 ${prog.scored} (${prog.progress_pct}%)`
+    : "暂无进行中的录制会话";
   $("#recording-list").innerHTML = rows.length ? rows.map((s) => `
     <div class="item">
       <div class="head">
@@ -367,6 +399,81 @@ async function loadLogs() {
     : `<div class="empty">暂无 WARNING/ERROR 日志。</div>`;
 }
 
+// ----------------------------- V0.1.2 渲染:录制预约 ----------------------------- //
+async function loadSchedules() {
+  const data = await api("GET", "/api/dashboard");
+  // 填充预约创建表单的房间下拉。
+  let roomOpts = data.rooms.map((r) =>
+    `<option value="${r.id}">#${r.id} ${esc(r.title || r.input_url)}</option>`
+  ).join("");
+  $("#schedule-room").innerHTML = roomOpts;
+
+  const rows = await api("GET", "/api/schedules");
+  $("#schedules-list").innerHTML = rows.length ? rows.map((s) => `
+    <div class="item">
+      <div class="head">
+        <div>
+          <div class="title">预约 #${s.id} · 房间 #${s.room_id} ${esc(s.uploader_name || s.room_title || "")}</div>
+          <div class="sub">${esc(s.scheduled_at || "")} · ${s.recurrent === "daily" ? "每日" : "单次"} · ${s.triggered ? "已触发" : (s.enabled ? "等待中" : "已禁用")}</div>
+        </div>
+        <div class="actions">
+          <button class="danger" onclick="delSchedule(${s.id})">删除</button>
+        </div>
+      </div>
+    </div>`).join("") : `<div class="empty">暂无录制预约。</div>`;
+}
+window.delSchedule = async (id) => {
+  try { await api("DELETE", `/api/schedules/${id}`); toast("已删除"); loadSchedules(); }
+  catch (e) { toast(e.message); }
+};
+$("#btn-add-schedule").addEventListener("click", async () => {
+  const roomId = parseInt($("#schedule-room").value, 10);
+  const time = $("#schedule-time").value;
+  const daily = $("#schedule-daily").checked;
+  if (!time) return toast("请选择预约时间");
+  try {
+    await api("POST", "/api/schedules", {
+      room_id: roomId,
+      scheduled_at: new Date(time).toISOString(),
+      recurrent: daily ? "daily" : "",
+    });
+    toast("已创建预约");
+    loadSchedules();
+  } catch (e) { toast("创建失败:" + e.message); }
+});
+
+// ----------------------------- V0.1.2 阈值自学习摘要 ----------------------------- //
+async function loadThresholdLearning(roomId) {
+  try {
+    const tl = await api("GET", `/api/rooms/${roomId}/threshold-learning`);
+    const div = $(`#tl-${roomId}`);
+    if (!div) return;
+    if (!tl.samples) {
+      div.innerHTML = `<span class="muted">阈值自学习:尚无反馈样本</span>`;
+      return;
+    }
+    const approvedRange = tl.approved_range
+      ? `${tl.approved_range[0]}–${tl.approved_range[1]}`
+      : "—";
+    const rejectedRange = tl.rejected_range
+      ? `${tl.rejected_range[0]}–${tl.rejected_range[1]}`
+      : "—";
+    let recHtml = "";
+    if (tl.recommended && tl.recommended !== tl.current_threshold) {
+      recHtml = ` · <span style="color:var(--accent)">推荐阈值:${tl.recommended}</span>`;
+    }
+    div.innerHTML = `
+      <div class="row">
+        <span class="score-chip">样本:${tl.samples}</span>
+        <span class="score-chip">当前阈值:${tl.current_threshold}</span>
+        <span class="score-chip">通过分:${approvedRange}</span>
+        <span class="score-chip">拒绝分:${rejectedRange}</span>
+        ${recHtml}
+        ${!tl.ready ? `<span class="muted">(需${tl.min_samples}条)</span>` : ""}
+      </div>`;
+  } catch (e) { /* 静默 */ }
+}
+
 // 开关与按钮事件
 $("#sw-biliup").addEventListener("change", saveSwitch);
 $("#sw-auto").addEventListener("change", saveSwitch);
@@ -447,6 +554,7 @@ const loaders = {
   rooms: loadRooms, recording: loadRecording, transcripts: loadTranscripts,
   danmaku: loadDanmaku, trends: loadTrends, candidates: loadCandidates,
   clips: loadClips, uploads: loadUploads, models: loadLLM, logs: loadLogs,
+  schedules: loadSchedules,
 };
 async function refresh() {
   try {

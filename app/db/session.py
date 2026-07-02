@@ -52,8 +52,29 @@ if _db_url.startswith("sqlite"):
         cursor.close()
 
 
+def _migrate_add_columns() -> None:
+    """为旧表追加 V0.1.2 新增列(缺失则添加,幂等安全)。"""
+    _migrations = [
+        # 格式: (表名, 列名, SQL 类型, 默认值)
+        ("live_rooms", "schedule_enabled", "INTEGER NOT NULL DEFAULT 0", None),
+        ("live_rooms", "auto_threshold_enabled", "INTEGER NOT NULL DEFAULT 0", None),
+        ("live_rooms", "danmaku_sentiment_enabled", "INTEGER NOT NULL DEFAULT 0", None),
+    ]
+    with engine.connect() as conn:
+        existing = {r[1] for r in conn.exec_driver_sql(
+            "PRAGMA table_info(live_rooms)"
+        ).fetchall()}
+        for table, col, sql_type, _ in _migrations:
+            if col not in existing:
+                try:
+                    conn.exec_driver_sql(f"ALTER TABLE {table} ADD COLUMN {col} {sql_type}")
+                    conn.commit()
+                except Exception:
+                    pass  # 列已存在或其他兼容性问题,安全忽略
+
+
 def init_db() -> None:
-    """创建所有表(若不存在)。
+    """创建所有表(若不存在),并对旧表执行轻量迁移(追加缺失列)。
 
     导入模型模块以触发表注册,然后调用 ``SQLModel.metadata.create_all``。
     可安全重复调用。
@@ -62,6 +83,9 @@ def init_db() -> None:
     from app.db import models  # noqa: F401
 
     SQLModel.metadata.create_all(engine)
+
+    # 轻量迁移:为已存在的 live_rooms 表补充 V0.1.2 新增列(SQLite 的 ALTER 语义)。
+    _migrate_add_columns()
 
 
 @contextmanager
