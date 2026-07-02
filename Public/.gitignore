@@ -16,3 +16,7 @@ README_MAIN.md
 
 # 体检生成的清单(每次打包/体检自动刷新,不入库)。
 manifest.json
+
+# PyInstaller 构建产物(launcher.py/build_exe.py 和输出 launcher.exe 均入库)。
+build/
+*.spec
