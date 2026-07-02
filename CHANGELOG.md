@@ -1,5 +1,14 @@
 # Changelog
 
+## V0.1.1 Alpha (2026-07-02)
+
+### 变更
+
+- 新增 `launcher.exe` 即插即用启动器,无需 `.ps1`/`.bat` 脚本即可运行
+- 显式将 `.env.example` 排除出 `.gitignore`,确保配置模板正常入库
+- `.gitattributes` 规范化行尾(LF 入库 / 自动 CRLF Windows 检出)
+- 修复 `Recorder.run()` 中 `backoff` 变量未初始化导致 `NameError` 的问题
+
 ## V0.1.0 Alpha (2026-07-01)
 
 首个可运行 Alpha 版本,涵盖 B 站 AI 直播实时切片全链路 MVP。

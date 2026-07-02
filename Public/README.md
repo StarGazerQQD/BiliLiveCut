@@ -1,6 +1,6 @@
 # BiliLiveCut · 即插即用版(Public)
 
-**版本:V0.1.0 Alpha** (`0.1.0-alpha`)
+**版本:V0.1.1 Alpha** (`0.1.1-alpha`)
 
 一个**自包含**的分发版:把「Whisper 模型 + 全部外部依赖 + 源码」封装在本目录内,
 目标机器**无需联网**即可运行。语音转写**固定使用包内的 Whisper `large-v3-turbo`**。
