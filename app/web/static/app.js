@@ -31,7 +31,7 @@ function esc(s) {
 function badge(status) {
   const map = {
     running: "green", recording: "green", ready: "green", approved: "green",
-    pending: "yellow", reviewing: "yellow", reconnecting: "yellow",
+    pending: "yellow", reviewing: "yellow", reconnecting: "yellow", reconnected: "green",
     rejected: "red", error: "red",
   };
   return `<span class="badge ${map[status] || "gray"}">${esc(status)}</span>`;
@@ -157,14 +157,18 @@ async function loadRecording() {
   $("#progress-text").textContent = prog.total_segments
     ? `已录制 ${prog.recorded} · 已转写 ${prog.transcribed} · 已评分 ${prog.scored} (${prog.progress_pct}%)`
     : "暂无进行中的录制会话";
-  $("#recording-list").innerHTML = rows.length ? rows.map((s) => `
+  $("#recording-list").innerHTML = rows.length ? rows.map((s) => {
+    const reconnectInfo = s.last_reconnected_at
+      ? ` · 最近重连 ${esc(s.last_reconnected_at).substring(11, 19)}`
+      : "";
+    return `
     <div class="item">
       <div class="head">
         <div class="title">会话 #${s.id} · room ${s.room_id} ${badge(s.status)}</div>
-        <div class="sub">${s.segments} 个片段 · 重连 ${s.reconnect_count} 次 · ${esc(s.stream_format || "-")}</div>
+        <div class="sub">${s.segments} 个片段 · 重连 ${s.reconnect_count} 次${reconnectInfo} · ${esc(s.stream_format || "-")}</div>
       </div>
       ${s.error_message ? `<div class="sub" style="color:var(--red)">${esc(s.error_message)}</div>` : ""}
-    </div>`).join("") : `<div class="empty">暂无录制会话。</div>`;
+    </div>`}).join("") : `<div class="empty">暂无录制会话。</div>`;
 }
 
 // ----------------------------- 渲染:实时转写 ----------------------------- //

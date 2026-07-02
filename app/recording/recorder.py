@@ -115,16 +115,23 @@ class Recorder:
         self._danmaku_task = None
 
     async def run(self) -> None:
-        """启动录制主循环:取流 -> 录制 -> 断流重连,直到被请求停止。"""
+        """启动录制主循环:取流 -> 录制 -> 断流重连,直到被请求停止。
+
+        关键设计:
+        - 每次断流都重新调用 ``_fetch_stream`` 获取新播放地址(地址有时效);
+        - 超管断流/主播主动下播/网络闪断 均被统一处理为 FFmpeg 退出;
+        - 重连成功后首个片段写入即重置退避计数器(backoff→1),
+          避免稳定录制后再次断流时无谓等待 30s。
+        """
         self._session_id = self._create_session()
         out_dir = session_raw_dir(self._session_id)
         backoff = 1
+        reconnect_episode = False  # 当前录制是否为重连后的一次尝试
 
         # 会话期间并行采集弹幕(用于弹幕热度与高光评分的弹幕维度)。
         self._start_danmaku()
 
         async with BilibiliLiveClient(cookie=settings.bilibili_cookie) as client:
-            backoff = 1
             while not self._stop.is_set():
                 stream = await self._fetch_stream(client)
                 if stream is None:
@@ -140,19 +147,50 @@ class Recorder:
                     quality=stream.quality,
                 )
                 logger.info(
-                    "开始录制 room={} 协议={} 清晰度={}",
+                    "开始录制 room={} 协议={} 清晰度={} reconnect_episode={}",
                     self.room_id,
                     stream.protocol,
                     stream.quality,
+                    reconnect_episode,
                 )
 
+                # 记录录制前的 seq 用于判断是否产生过片段。
+                seq_before = self._seq
                 exit_code = await self._record_once(stream, out_dir)
 
                 if self._stop.is_set():
                     break
 
-                # 进程退出 => 视为断流,指数退避后重连。
+                # ---- 重连成功后重置退避 ----
+                # 如果本次录制实际上是重连且成功产出了至少 1 个片段,
+                # 说明重连成功、流已稳定,把 backoff 重置为 1。
+                # 避免"稳定录制 30 分钟后再次被断流,却要白等 30s"。
+                if reconnect_episode and self._seq > seq_before:
+                    logger.info(
+                        "重连成功并产出片段 room={} seq={}→{}, backoff 重置 30→1。",
+                        self.room_id,
+                        seq_before,
+                        self._seq,
+                    )
+                    self._update_session(
+                        status=SessionStatus.RECONNECTED,
+                        reconnected=True,
+                    )
+                    self._update_session(status=SessionStatus.RECORDING)
+                    reconnect_episode = False
+                    backoff = 1
+
+                # ---- 断流处理 ----
+                # FFmpeg 退出可能是:
+                #   a) 超管断流(超管中断推流,主播重新推流后地址可能变)
+                #   b) 主播主动下播(无新流,后续 _fetch_stream 返回 None)
+                #   c) 网络闪断(主播仍在推,短暂丢包后恢复)
+                # 这三种情况都走"重新取流→指数退避→重连"流程。
+                reconnect_episode = True
                 self._increment_reconnect()
+                # -1 = 被我们主动 kill(正常停止),不计为重连。
+                if exit_code != -1:
+                    self._update_session(status=SessionStatus.RECONNECTING)
                 logger.warning(
                     "录制中断 room={} exit_code={},{}s 后重连。",
                     self.room_id,
@@ -476,6 +514,7 @@ class Recorder:
         quality: int | None = None,
         error_message: str | None = None,
         ended: bool = False,
+        reconnected: bool = False,
     ) -> None:
         """更新当前会话的字段(仅更新传入的非 ``None`` 项)。
 
@@ -485,6 +524,7 @@ class Recorder:
         :param quality: 清晰度码。
         :param error_message: 错误信息。
         :param ended: 是否标记结束时间。
+        :param reconnected: 是否标记最近重连成功时间(V0.1.2 新增)。
         """
         if self._session_id is None:
             return
@@ -504,6 +544,8 @@ class Recorder:
                 session.error_message = error_message
             if ended:
                 session.ended_at = utcnow()
+            if reconnected:
+                session.last_reconnected_at = utcnow()
             db.add(session)
 
     def _increment_reconnect(self) -> None:
