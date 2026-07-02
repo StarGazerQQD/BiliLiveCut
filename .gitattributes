@@ -1,0 +1,33 @@
+# 强制所有文本文件在仓库中以 LF 存储，checkout 时按系统转换为 CRLF(Windows) 或 LF(Linux/macOS)。
+# 这样 Windows 本地文件仍是 CRLF，但 git diff 不会因行尾差异误报大量改动。
+* text=auto
+
+# 明确指定文本文件（不要让 git 误判为二进制）
+*.py text
+*.js text
+*.css text
+*.html text
+*.md text
+*.txt text
+*.yaml text
+*.yml text
+*.toml text
+*.ini text
+*.bat text
+*.ps1 text
+*.cfg text
+
+# 二进制文件不回过来回转换行符
+*.exe binary
+*.whl binary
+*.bin binary
+*.db binary
+*.sqlite3 binary
+*.jpg binary
+*.jpeg binary
+*.png binary
+*.gif binary
+*.mp4 binary
+*.ts binary
+*.mp3 binary
+*.wav binary
