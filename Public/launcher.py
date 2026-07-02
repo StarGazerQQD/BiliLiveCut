@@ -91,7 +91,7 @@ def main() -> None:
     os.environ.setdefault("PYTHONIOENCODING", "utf-8")
 
     print("=" * 60)
-    print("  BiliLiveCut V0.1.0 Alpha — 即插即用启动器")
+    print("  BiliLiveCut V0.1.1 Alpha — 即插即用启动器")
     print("=" * 60)
     print(f"  工作目录: {root}")
     print()
