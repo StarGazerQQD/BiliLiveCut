@@ -59,12 +59,17 @@ def _migrate_add_columns() -> None:
         ("live_rooms", "schedule_enabled", "INTEGER NOT NULL DEFAULT 0", None),
         ("live_rooms", "auto_threshold_enabled", "INTEGER NOT NULL DEFAULT 0", None),
         ("live_rooms", "danmaku_sentiment_enabled", "INTEGER NOT NULL DEFAULT 0", None),
+        ("recording_sessions", "last_reconnected_at", "TEXT", None),
     ]
     with engine.connect() as conn:
-        existing = {r[1] for r in conn.exec_driver_sql(
+        existing_lr = {r[1] for r in conn.exec_driver_sql(
             "PRAGMA table_info(live_rooms)"
         ).fetchall()}
+        existing_rs = {r[1] for r in conn.exec_driver_sql(
+            "PRAGMA table_info(recording_sessions)"
+        ).fetchall()}
         for table, col, sql_type, _ in _migrations:
+            existing = existing_lr if table == "live_rooms" else existing_rs
             if col not in existing:
                 try:
                     conn.exec_driver_sql(f"ALTER TABLE {table} ADD COLUMN {col} {sql_type}")

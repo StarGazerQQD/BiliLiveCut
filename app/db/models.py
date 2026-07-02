@@ -42,6 +42,7 @@ class SessionStatus:
     STARTING = "starting"
     RECORDING = "recording"
     RECONNECTING = "reconnecting"
+    RECONNECTED = "reconnected"  # 断流后成功重连(短暂状态,很快切回 RECORDING)
     STOPPED = "stopped"
     INTERRUPTED = "interrupted"  # 进程异常退出,可自动恢复
     ERROR = "error"
@@ -127,6 +128,7 @@ class RecordingSession(SQLModel, table=True):
     started_at: datetime = Field(default_factory=utcnow)
     ended_at: datetime | None = Field(default=None)
     reconnect_count: int = Field(default=0, description="断流重连次数")
+    last_reconnected_at: datetime | None = Field(default=None, description="最近一次重连成功时刻(UTC)")
     error_message: str | None = Field(default=None, description="最后一次错误信息")
 
 

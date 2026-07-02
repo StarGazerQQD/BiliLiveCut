@@ -21,9 +21,16 @@
 
 - 数据库模型新增 ``RecordingSchedule``、``ThresholdFeedback`` 两张表;``LiveRoom``
   表新增 ``schedule_enabled`` / ``auto_threshold_enabled`` / ``danmaku_sentiment_enabled`` 字段
+- ``RecordingSession`` 表新增 ``last_reconnected_at`` 字段用于追踪重连成功时间
 - 评分配置 ``scoring.yaml`` 增加 ``danmaku_sentiment`` 维度(权重 0.15)
-- ``SessionStatus`` 新增 ``INTERRUPTED`` 状态用于标识异常中断的会话
+- ``SessionStatus`` 新增 ``INTERRUPTED`` / ``RECONNECTED`` 状态
 - 后端 ``init_db()`` 现已包含轻量迁移逻辑(为旧表补充缺失列)
+
+### 修复
+
+- **超管断流重连优化**:断流重连成功后首个片段写入即重置退避计数器(backoff→1),
+  避免"稳定录制 30 分钟后再次被断流,却要白等 30s"。Dashboard 录制状态页
+  现在展示最近重连成功时间与 ``RECONNECTED`` 绿色徽章。
 
 ## V0.1.1 Alpha (2026-07-02)
 

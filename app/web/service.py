@@ -516,7 +516,7 @@ def dashboard_state() -> dict[str, Any]:
         sessions = db.exec(
             select(RecordingSession).where(
                 RecordingSession.status.in_(  # type: ignore[attr-defined]
-                    [SessionStatus.RECORDING, SessionStatus.RECONNECTING, SessionStatus.STARTING]
+                    [SessionStatus.RECORDING, SessionStatus.RECONNECTING, SessionStatus.STARTING, SessionStatus.RECONNECTED]
                 )
             )
         ).all()
@@ -1055,6 +1055,7 @@ def recording_status() -> list[dict[str, Any]]:
                     "stream_format": s.stream_format,
                     "quality": s.quality,
                     "reconnect_count": s.reconnect_count,
+                    "last_reconnected_at": s.last_reconnected_at.isoformat() if s.last_reconnected_at else None,
                     "segments": n_seg,
                     "started_at": s.started_at.isoformat() if s.started_at else None,
                     "error_message": s.error_message,
