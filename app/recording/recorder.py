@@ -124,6 +124,7 @@ class Recorder:
         self._start_danmaku()
 
         async with BilibiliLiveClient(cookie=settings.bilibili_cookie) as client:
+            backoff = 1
             while not self._stop.is_set():
                 stream = await self._fetch_stream(client)
                 if stream is None:
