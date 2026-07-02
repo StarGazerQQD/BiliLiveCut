@@ -111,22 +111,8 @@ def danmaku_sentiment_score(session_id: int, start_ts: object, end_ts: object) -
     start_n = _naive(start_ts)
     end_n = _naive(end_ts)
 
-    with get_session() as db:
-        rows = db.exec(
-            select(Danmaku.content).where(
-                Danmaku.session_id == session_id,
-                Danmaku.msg_type == "danmaku",
-            )
-        ).all()
-
-    # 取窗口内的弹幕文本。
+    # 直接按时间窗查询弹幕文本(SQL 级时间过滤,避免全表扫描)。
     window_texts: list[str] = []
-    all_ts = []
-    for row in rows:
-        if row[0] is not None:
-            # 无法精确按 ts 过滤 content-only 查询,改用两次查询取时间窗。
-            pass
-    # 重新按时间过滤。
     window_texts = _fetch_window_danmaku_texts(session_id, start_n, end_n)
     if len(window_texts) < 5:
         return 0.0
@@ -161,7 +147,13 @@ def danmaku_sentiment_score(session_id: int, start_ts: object, end_ts: object) -
 
 
 def _fetch_window_danmaku_texts(session_id: int, start_n: object, end_n: object) -> list[str]:
-    """获取指定时间窗口内的弹幕文本(去时区)。"""
+    """获取指定时间窗口内的弹幕文本(SQL 级时间过滤,去时区)。
+
+    :param session_id: 录制会话 id。
+    :param start_n: 窗口开始(datetime,已去时区)。
+    :param end_n: 窗口结束(datetime,已去时区)。
+    :returns: 时间窗内的弹幕文本列表。
+    """
     from app.db.models import Danmaku
 
     with get_session() as db:
@@ -169,12 +161,13 @@ def _fetch_window_danmaku_texts(session_id: int, start_n: object, end_n: object)
             select(Danmaku.content, Danmaku.ts).where(
                 Danmaku.session_id == session_id,
                 Danmaku.msg_type == "danmaku",
+                Danmaku.ts >= start_n,
+                Danmaku.ts <= end_n,
             )
         ).all()
-    texts = []
+    texts: list[str] = []
     for content, ts in rows:
-        dt = ts.replace(tzinfo=None) if getattr(ts, "tzinfo", None) else ts
-        if start_n <= dt <= end_n and content:  # type: ignore[operator]
+        if content is not None:
             texts.append(content)
     return texts
 
@@ -480,23 +473,29 @@ def _danmaku_score(session_id: int, start_ts: object, end_ts: object) -> float:
     :param end_ts: 窗口结束时间(datetime)。
     :returns: 0-1 的弹幕热度分;无弹幕数据时返回 0。
     """
+    from datetime import datetime as _datetime
     from app.db.models import Danmaku
 
-    def _naive(dt: object) -> object:
+    def _naive(dt: _datetime) -> _datetime:
         # 统一去掉时区信息,避免 naive(DB 读回)与 aware 混比报错。
         return dt.replace(tzinfo=None) if getattr(dt, "tzinfo", None) else dt
 
+    start_n = _naive(start_ts)  # type: ignore[arg-type]
+    end_n = _naive(end_ts)  # type: ignore[arg-type]
+
     with get_session() as db:
         rows = db.exec(
-            select(Danmaku.ts, Danmaku.value).where(Danmaku.session_id == session_id)
+            select(Danmaku.ts, Danmaku.value).where(
+                Danmaku.session_id == session_id,
+                Danmaku.ts >= start_n,
+                Danmaku.ts <= end_n,
+            )
         ).all()
     if not rows:
         return 0.0
 
-    start_n = _naive(start_ts)
-    end_n = _naive(end_ts)
-    times = [_naive(r[0]) for r in rows]
-    span = (max(times) - min(times)).total_seconds()  # type: ignore[operator]
+    times = [_naive(r[0]) for r in rows]  # type: ignore[arg-type]
+    span = (max(times) - min(times)).total_seconds()
     total_intensity = sum(float(r[1]) for r in rows)
     window_intensity = sum(
         float(v) for (t, v) in zip(times, (r[1] for r in rows), strict=True)

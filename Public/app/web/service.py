@@ -509,10 +509,12 @@ def dashboard_state() -> dict[str, Any]:
 
     :returns: 含房间、运行状态、计数的字典。
     """
+    from sqlalchemy import func
+
     with get_session() as db:
         rooms = db.exec(select(LiveRoom)).all()
-        n_candidates = len(db.exec(select(HighlightCandidate)).all())
-        n_clips = len(db.exec(select(FinalClip)).all())
+        n_candidates = db.scalar(select(func.count()).select_from(HighlightCandidate)) or 0
+        n_clips = db.scalar(select(func.count()).select_from(FinalClip)) or 0
         sessions = db.exec(
             select(RecordingSession).where(
                 RecordingSession.status.in_(  # type: ignore[attr-defined]
@@ -934,9 +936,9 @@ def pipeline_progress(session_id: int | None = None) -> dict[str, Any]:
             stmt = stmt.where(RawSegment.session_id == session_id)
         segments = db.exec(stmt).all()
 
-    recorded = sum(1 for s in segments if s.status in (SegmentStatus.RECORDED, "recorded"))
-    transcribed = sum(1 for s in segments if s.status in (SegmentStatus.TRANSCRIBED, "transcribed"))
-    scored = sum(1 for s in segments if s.status in (SegmentStatus.SCORED, "scored"))
+    recorded = sum(1 for s in segments if s.status == SegmentStatus.RECORDED)
+    transcribed = sum(1 for s in segments if s.status == SegmentStatus.TRANSCRIBED)
+    scored = sum(1 for s in segments if s.status == SegmentStatus.SCORED)
 
     total = len(segments)
     return {

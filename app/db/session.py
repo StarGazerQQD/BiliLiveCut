@@ -16,6 +16,7 @@ from collections.abc import Iterator
 from contextlib import contextmanager
 from pathlib import Path
 
+from loguru import logger
 from sqlalchemy import event
 from sqlmodel import Session, SQLModel, create_engine
 
@@ -75,7 +76,7 @@ def _migrate_add_columns() -> None:
                     conn.exec_driver_sql(f"ALTER TABLE {table} ADD COLUMN {col} {sql_type}")
                     conn.commit()
                 except Exception:
-                    pass  # 列已存在或其他兼容性问题,安全忽略
+                    logger.warning("迁移失败(可能列已存在): {}.{} {}", table, col, sql_type)
 
 
 def init_db() -> None:

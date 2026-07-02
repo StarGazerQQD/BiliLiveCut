@@ -17,6 +17,8 @@ from loguru import logger
 _CONFIG_PATH = Path(__file__).resolve().parents[2] / "config" / "scoring.yaml"
 
 _DEFAULT_WEIGHTS: dict[str, float] = {
+    # 权重和 > 1.0 是预期行为:weighted_rule_score() 会对参与维度自动归一化,
+    # 因此这里反映的是各维度的**相对重要性**而非百分比。
     "volume": 0.25,
     "danmaku": 0.30,
     "keywords": 0.20,

@@ -225,7 +225,7 @@ class DanmakuClient:
             heartbeat = asyncio.create_task(self._heartbeat(ws))
             try:
                 while not self._stop.is_set():
-                    frame = await asyncio.wait_for(ws.recv(), timeout=40)
+                    frame = await asyncio.wait_for(ws.recv(), timeout=35)
                     if isinstance(frame, str):
                         frame = frame.encode("utf-8")
                     self._handle_frame(frame)
@@ -271,8 +271,7 @@ class DanmakuClient:
                 )
         if rows:
             with get_session() as db:
-                for r in rows:
-                    db.add(r)
+                db.add_all(rows)
 
     async def _sleep_or_stop(self, seconds: float) -> None:
         """休眠指定秒数,期间收到停止信号则提前返回。

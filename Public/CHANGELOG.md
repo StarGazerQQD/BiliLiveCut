@@ -1,5 +1,22 @@
 # Changelog — 即插即用版 (Public)
 
+## V0.1.3 Alpha (2026-07-02)
+
+同步主工程 v0.1.3-alpha 全部 Bug 修复(审计共修复 26 个问题)。
+
+### 修复
+
+- 同步主工程全部 26 项代码质量修复
+  - **CRITICAL**: OpenAI 客户端连接池泄漏、`base_url` 空值检查、`None` 崩溃保护
+  - **HIGH**: 弹幕查询全表扫描→SQL 过滤、`_registered_paths` 内存缓存、`add_all` 批量写入
+  - **MEDIUM**: 分位数精度、WebSocket 超时、封面异常保护、`COUNT(*)` 计数优化
+  - **LOW**: 迁移异常日志记录、权重归一化说明
+
+### 变更
+
+- 版本号同步 `v0.1.2.2-alpha` → `v0.1.3-alpha` (与主工程对齐)
+- ``launcher.exe`` 重新编译(8.2 MB)
+
 ## V0.1.2.2 Alpha (2026-07-02)
 
 ### 新增

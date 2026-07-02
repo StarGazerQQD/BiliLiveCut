@@ -50,11 +50,11 @@ def produce_clip(candidate_id: int) -> FinalClip | None:
     :returns: 成品 :class:`FinalClip`;失败时 ``None``。
     """
     # 延迟导入:切片/文案依赖较重(FFmpeg、可选 LLM),按需加载。
-    from app.clipping.clipper import produce_clip as _make_clip
+    from app.clipping.clipper import produce_clip as _cut_clip
     from app.publishing.copywriter import generate_copy
 
     try:
-        clip = _make_clip(candidate_id)
+        clip = _cut_clip(candidate_id)
     except Exception as exc:  # noqa: BLE001
         logger.error("候选 {} 切片失败: {}", candidate_id, exc)
         return None

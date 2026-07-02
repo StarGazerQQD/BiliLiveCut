@@ -375,6 +375,8 @@ def _finish_task(
 
     with get_session() as db:
         task = db.get(UploadTask, task_id)
+        if task is None:
+            raise ValueError(f"上传任务不存在: id={task_id}")
         task.status = status
         task.remote_id = remote_id
         task.last_error = error
