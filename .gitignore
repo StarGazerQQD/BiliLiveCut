@@ -14,6 +14,8 @@ env/
 # 配置与密钥(绝不入库)
 .env
 *.env.local
+# 以下为模板文件，不含真实密钥，应当入库
+!.env.example
 
 # 运行产物
 storage/
