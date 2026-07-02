@@ -3,31 +3,44 @@
 **版本:V0.1.0 Alpha** (`0.1.0-alpha`)
 
 一个**自包含**的分发版:把「Whisper 模型 + 全部外部依赖 + 源码」封装在本目录内,
-目标机器无需联网即可运行。语音转写**固定使用包内的 Whisper `large-v3-turbo`**。
+目标机器**无需联网**即可运行。语音转写**固定使用包内的 Whisper `large-v3-turbo`**。
+
+## 最简单的方式:双击 .exe(推荐,无需 .ps1/.bat)
+
+打包完成后,直接**双击 `launcher.exe`** 即可:
+
+1. 自动检测 Python 环境(需 Python 3.11+)
+2. 自动创建虚拟环境 + 离线安装依赖
+3. 自动启动 Web 管理后台
+4. 自动打开浏览器访问 http://127.0.0.1:8000
+
+> 全程无需 .ps1 / .bat 脚本,不受系统安全策略拦截。首次启动会安装依赖(1-3 分钟),之后秒开。
 
 ## 目录结构(打包完成后)
 
 ```
 Public/
+├─ launcher.exe                 # ★ 双击即用(无需脚本),含 build_exe.py
 ├─ app/                         # 主工程源码副本(由 build_bundle.py 复制)
 ├─ config/                      # 关键词/评分等配置副本
 ├─ models/whisper-large-v3-turbo/   # 包内 Whisper 模型(约 1.6GB)
 ├─ bin/                         # 包内 ffmpeg.exe / ffprobe.exe(免另装)
 ├─ vendor/wheels/               # 全部依赖的离线 wheel(封装的外部库)
-├─ .venv/                       # 离线安装生成的虚拟环境
+├─ .venv/                       # 初次运行时自动创建(动态生成)
 ├─ storage/                     # 运行产物(录制/切片/数据库/日志)
 ├─ .env                         # 预置配置(已锁定包内模型)
 ├─ requirements-bundle.txt      # 运行时依赖清单
 ├─ build_bundle.py              # 一键打包(联网机器执行一次)
-├─ install.ps1 / install.bat    # 离线安装依赖
-├─ run.ps1 / run.bat            # 启动 Web 后台
-├─ setup.ps1 / setup.bat        # 全自动一键即用(自动修复→安装→启动)
+├─ launcher.py / build_exe.py   # 启动器源码(重新编译所用)
+├─ install.ps1 / install.bat    # 离线安装依赖(备用)
+├─ run.ps1 / run.bat            # 启动 Web 后台(备用)
+├─ setup.ps1 / setup.bat        # 自动修复+安装+启动(备用)
 ├─ check.ps1 / check.bat        # 分发前一键体检
 ├─ manifest.json                # 体检生成的自校验清单(打包后自动产出)
 └─ README_MAIN.md               # 主工程 README(参考)
 ```
 
-## 全自动一键即用(推荐)
+## 备用:脚本方式(如遇到 .exe 问题)
 
 拿到 `Public/` 后,直接双击 **`setup.bat`**(或 `./setup.ps1`)即可:
 
