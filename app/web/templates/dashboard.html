@@ -31,6 +31,7 @@
     <button class="tab" data-tab="models">模型</button>
     <button class="tab" data-tab="login">账号管理</button>
     <button class="tab" data-tab="tasks">任务队列</button>
+    <button class="tab" data-tab="templates">字幕模板</button>
     <button class="tab" data-tab="monitor">运维面板</button>
     <button class="tab" data-tab="logs">错误日志</button>
   </nav>
@@ -135,6 +136,13 @@
           <option value="rejected">已拒绝 rejected</option>
           <option value="clipped">已出片 clipped</option>
         </select>
+      </div>
+      <div class="row toolbar" id="batch-bar" style="display:none">
+        <input type="checkbox" id="select-all-candidates" title="全选" /> <label for="select-all-candidates">全选</label>
+        <button class="danger" id="btn-batch-reject">批量拒绝</button>
+        <button class="primary" id="btn-batch-approve">批量批准</button>
+        <button class="secondary" id="btn-batch-publish">批量发布</button>
+        <span id="batch-count"></span>
       </div>
       <div id="candidates-list"></div>
     </section>
@@ -245,6 +253,19 @@
           </thead>
           <tbody id="task-tbody"></tbody>
         </table>
+      </div>
+    </section>
+
+    <!-- 字幕模板(V0.1.8 P0) -->
+    <section id="tab-templates" class="panel">
+      <div class="card">
+        <h3>ASS 字幕模板</h3>
+        <div class="row toolbar">
+          <button id="btn-add-template" class="primary">新建默认模板</button>
+          <input type="file" id="file-import-ass" accept=".ass" style="display:none" />
+          <button id="btn-import-ass" class="secondary">导入 .ass 文件</button>
+        </div>
+        <div id="templates-list"></div>
       </div>
     </section>
 

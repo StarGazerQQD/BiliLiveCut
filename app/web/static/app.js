@@ -45,6 +45,9 @@ document.querySelectorAll(".tab").forEach((btn) => {
     btn.classList.add("active");
     activeTab = btn.dataset.tab;
     $(`#tab-${activeTab}`).classList.add("active");
+    // V0.1.8 P0:显示/隐藏批量操作栏
+    const batchBar = document.getElementById("batch-bar");
+    if (batchBar) batchBar.style.display = activeTab === "candidates" ? "" : "none";
     refresh();
   });
 });
@@ -322,9 +325,12 @@ async function loadCandidates() {
   $("#candidates-list").innerHTML = rows.length ? rows.map((c) => `
     <div class="item">
       <div class="head">
-        <div>
-          <div class="title">候选 #${c.id} · 分数 ${c.highlight_score} ${badge(c.status)}</div>
-          <div class="sub">规则 ${c.rule_score} / LLM ${c.llm_score} · ${esc(c.reason || "")}</div>
+        <div style="display:flex;align-items:center;gap:6px">
+          <input type="checkbox" class="cand-check" data-id="${c.id}" /> 
+          <div>
+            <div class="title">候选 #${c.id} · 分数 ${c.highlight_score} ${badge(c.status)}</div>
+            <div class="sub">规则 ${c.rule_score} / LLM ${c.llm_score} · ${esc(c.reason || "")}</div>
+          </div>
         </div>
         <div class="actions">
           <a class="ok btn-link" href="/review/${c.id}" target="_blank" style="text-decoration:none;color:inherit">🎬 审片</a>
@@ -335,6 +341,9 @@ async function loadCandidates() {
       </div>
       <div class="score-bar"><span style="width:${Math.round(c.highlight_score * 100)}%"></span></div>
     </div>`).join("") : `<div class="empty">暂无候选。</div>`;
+
+  // V0.1.8 P0:刷新复选框事件绑定
+  bindBatchCheckboxes();
 }
 window.approveCand = async (id) => {
   toast("出片中,请稍候…");
@@ -349,6 +358,42 @@ window.delCand = async (id) => {
   try { await api("DELETE", `/api/candidates/${id}`); toast("已删除"); loadCandidates(); }
   catch (e) { toast(e.message); }
 };
+
+// V0.1.8 P0:批量操作
+function getCheckedCandidates() {
+  return [...$$(".cand-check:checked")].map(cb => parseInt(cb.dataset.id));
+}
+
+function bindBatchCheckboxes() {
+  $$(".cand-check").forEach(cb => {
+    cb.addEventListener("change", () => {
+      const checked = getCheckedCandidates();
+      $("#batch-count").textContent = checked.length ? `已选 ${checked.length} 个` : "";
+      $("#select-all-candidates").checked = checked.length && checked.length === $$(".cand-check").length;
+    });
+  });
+}
+
+$("#select-all-candidates").addEventListener("change", (e) => {
+  const checked = e.target.checked;
+  $$(".cand-check").forEach(cb => { cb.checked = checked; cb.dispatchEvent(new Event("change")); });
+  $("#batch-count").textContent = checked ? `已选 ${$$(".cand-check").length} 个` : "";
+});
+
+async function batchAction(action) {
+  const ids = getCheckedCandidates();
+  if (!ids.length) { toast("请先勾选候选"); return; }
+  const label = { approve: "批准", reject: "拒绝", publish: "发布", delete: "删除" }[action] || action;
+  if (!confirm(`确认批量${label} ${ids.length} 个候选?`)) return;
+  const r = await api("POST", "/api/candidates/batch", { candidate_ids: ids, action });
+  toast(`成功 ${r.success.length} 个${r.failed.length ? `, 失败 ${r.failed.length} 个` : ""}`);
+  loadCandidates();
+}
+
+$("#btn-batch-approve").addEventListener("click", () => batchAction("approve"));
+$("#btn-batch-reject").addEventListener("click", () => batchAction("reject"));
+$("#btn-batch-publish").addEventListener("click", () => batchAction("publish"));
+
 $("#cand-filter").addEventListener("change", loadCandidates);
 
 // ----------------------------- 渲染:成品切片 ----------------------------- //
@@ -808,7 +853,7 @@ const loaders = {
   danmaku: loadDanmaku, trends: loadTrends, candidates: loadCandidates,
   clips: loadClips, uploads: loadUploads, models: loadLLM, logs: loadLogs,
   schedules: loadSchedules, login: loadCookieStatus, tasks: loadTasks,
-  topics: loadTopics, monitor: loadMonitor,
+  topics: loadTopics, monitor: loadMonitor, templates: loadTemplates,
 };
 async function refresh() {
   try {
@@ -817,5 +862,55 @@ async function refresh() {
   } catch (e) { /* 静默,避免打断轮询 */ }
   pollNotifications();
 }
+// ----------------------------- 字幕模板(V0.1.8 P0) ----------------------------- //
+async function loadTemplates() {
+  const rows = await api("GET", "/api/templates");
+  $("#templates-list").innerHTML = rows.length ? rows.map((t) => `
+    <div class="item">
+      <div class="head">
+        <div>
+          <div class="title">${esc(t.name)} ${t.is_default ? badge("默认") : ""}</div>
+          <div class="sub">${esc(t.font_name || "")} ${t.font_size}px · 轮廓${t.outline} · 阴影${t.shadow} · 每行${t.max_chars_per_line}字</div>
+        </div>
+        <div class="actions">
+          <button class="ok" onclick="exportTemplate(${t.id})">导出 .ass</button>
+          <button onclick="detTempl(${t.id})">删除</button>
+        </div>
+      </div>
+    </div>`).join("") : `<div class="empty">暂无模板。可导入 .ass 文件或新建默认模板。</div>`;
+}
+window.exportTemplate = (id) => { window.open(`/api/templates/${id}/export`, "_blank"); };
+window.detTempl = async (id) => {
+  if (!confirm("确认删除?")) return;
+  try { await api("DELETE", `/api/templates/${id}`); loadTemplates(); }
+  catch (e) { toast(e.message); }
+};
+
+$("#btn-add-template").addEventListener("click", async () => {
+  try { await api("POST", "/api/templates"); toast("默认模板已创建"); loadTemplates(); }
+  catch (e) { toast(e.message); }
+});
+
+$("#btn-import-ass").addEventListener("click", () => {
+  document.getElementById("file-import-ass").click();
+});
+
+document.getElementById("file-import-ass").addEventListener("change", async (e) => {
+  const file = e.target.files[0];
+  if (!file) return;
+  const fd = new FormData();
+  fd.append("file", file);
+  try {
+    const r = await fetch("/api/templates/import/ass", { method: "POST", body: fd });
+    const data = await r.json();
+    if (!r.ok) throw new Error(data.detail || "导入失败");
+    toast(`成功导入 ${data.imported.length} 个样式`);
+    loadTemplates();
+  } catch (err) {
+    toast("导入失败: " + err.message);
+  }
+  e.target.value = "";
+});
+
 refresh();
 setInterval(refresh, 5000);

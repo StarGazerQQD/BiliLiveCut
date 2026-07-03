@@ -71,6 +71,13 @@ class TrendCollectRequest(BaseModel):
     topic: str = ""
 
 
+class BatchRequest(BaseModel):
+    """批量操作请求(V0.1.8 P0)。"""
+
+    candidate_ids: list[int]
+    action: str  # approve|reject|publish|delete
+
+
 class ScheduleRequest(BaseModel):
     """录制预约请求。"""
 
@@ -215,6 +222,36 @@ def remove_candidate(candidate_id: int) -> dict[str, str]:
     """删除候选。"""
     service.delete_candidate(candidate_id)
     return {"status": "deleted"}
+
+
+@router.post("/candidates/batch")
+async def batch_candidates(request: BatchRequest) -> dict[str, Any]:
+    """批量审核/发布/删除候选(V0.1.8 P0)。
+
+    :param request: 包含 candidate_ids 和 action。
+    :returns: 各候选操作结果。
+    """
+    results: list[dict[str, Any]] = []
+    failures: list[dict[str, Any]] = []
+    for cid in request.candidate_ids:
+        try:
+            if request.action == "approve":
+                clip_id = await service.approve_candidate(cid)
+                results.append({"candidate_id": cid, "status": "approved", "clip_id": clip_id})
+            elif request.action == "reject":
+                service.set_candidate_status(cid, CandidateStatus.REJECTED)
+                results.append({"candidate_id": cid, "status": "rejected"})
+            elif request.action == "publish":
+                result = service.publish_clip(cid)
+                results.append({"candidate_id": cid, "status": "ready", **result})
+            elif request.action == "delete":
+                service.delete_candidate(cid)
+                results.append({"candidate_id": cid, "status": "deleted"})
+            else:
+                raise HTTPException(status_code=400, detail=f"未知操作: {request.action}")
+        except (ValueError, HTTPException) as exc:
+            failures.append({"candidate_id": cid, "error": str(exc)})
+    return {"success": results, "failed": failures}
 
 
 # ----------------------------- 成品切片 ----------------------------- #

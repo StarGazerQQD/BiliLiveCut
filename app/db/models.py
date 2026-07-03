@@ -573,3 +573,59 @@ class SegmentTask(SQLModel, table=True):
     total_elapsed_ms: int | None = Field(default=None, description="任务总耗时(创建到完成,毫秒)")
 
     context_json: str | None = Field(default=None, description="任务上下文 JSON(如错误堆栈、配置快照等)")
+
+
+class SubtitleTemplate(SQLModel, table=True):
+    """ASS 字幕样式模板(``subtitle_templates``)
+
+    V0.1.8 P0:存储自定义 ASS 字幕样式配置,支持导入 ASS 文件并提取样式,
+    导出应用到字幕生成管线。
+    """
+
+    __tablename__ = "subtitle_templates"
+
+    id: int | None = Field(default=None, primary_key=True)
+    name: str = Field(index=True, description="模板名称(用户自定义)")
+    description: str | None = Field(default=None, description="模板描述")
+
+    # ASS [V4+ Styles] 字段:Fontname Fontsize PrimaryColour SecondaryColour OutlineColour BackColour Bold Italic Underline StrikeOut ScaleX ScaleY Spacing Angle BorderStyle Outline Shadow Alignment MarginL MarginR MarginV Encoding
+    font_name: str = Field(default="Noto Sans SC", description="字体名称")
+    font_size: int = Field(default=36, description="字体大小")
+    primary_color: str = Field(default="&H00FFFFFF", description="主要颜色(ABGR)")
+    secondary_color: str = Field(default="&H000000FF", description="次要颜色")
+    outline_color: str = Field(default="&H00000000", description="轮廓颜色")
+    back_color: str = Field(default="&H80000000", description="阴影颜色")
+    bold: int = Field(default=0, description="粗体 0/-1")
+    italic: int = Field(default=0, description="斜体 0/-1")
+    underline: int = Field(default=0, description="下划线 0/-1")
+    strikeout: int = Field(default=0, description="删除线 0/-1")
+    scale_x: int = Field(default=100, description="横向缩放%")
+    scale_y: int = Field(default=100, description="纵向缩放%")
+    spacing: int = Field(default=0, description="字间距像素")
+    angle: float = Field(default=0.0, description="旋转角度")
+    border_style: int = Field(default=1, description="边框样式:1=轮廓+阴影,3=不透明背景")
+    outline: float = Field(default=2.0, description="轮廓宽度")
+    shadow: float = Field(default=2.0, description="阴影深度")
+    alignment: int = Field(default=2, description="对齐:1/2/3=底部,5/6/7=顶部,9/10/11=中部")
+    margin_l: int = Field(default=20, description="左边距像素")
+    margin_r: int = Field(default=20, description="右边距像素")
+    margin_v: int = Field(default=20, description="垂直边距像素")
+    encoding: int = Field(default=1, description="编码:0=ANSI,1=Default,134=GB2312")
+
+    # 扩展:字幕行为配置
+    max_chars_per_line: int = Field(default=30, description="每行最大字数(适用于中文)")
+    min_display_ms: int = Field(default=800, description="最短显示时长(毫秒)")
+    max_display_ms: int = Field(default=5000, description="最长显示时长(毫秒)")
+    line_gap_ms: int = Field(default=200, description="行间间隔(毫秒)")
+
+    # ASS 分辨率
+    play_res_x: int = Field(default=1920, description="播放分辨率-宽")
+    play_res_y: int = Field(default=1080, description="播放分辨率-高")
+
+    # 原始样式文本(用于完整导入/导出)
+    raw_style_line: str | None = Field(default=None, description="原始 ASS [V4+ Styles] 行文本")
+    raw_format_line: str | None = Field(default=None, description="原始 ASS Format 行文本")
+
+    is_default: bool = Field(default=False, description="是否为默认模板")
+    created_at: datetime = Field(default_factory=utcnow)
+    updated_at: datetime = Field(default_factory=utcnow)

@@ -31,6 +31,7 @@ from app.web.routers.api import router as api_router
 from app.web.routers.review_router import review_router
 from app.web.routers.collection_router import collection_router
 from app.web.routers.monitor_router import monitor_router
+from app.web.routers.subtitle_template_router import router as subtitle_template_router
 
 _BASE_DIR = Path(__file__).resolve().parent
 _TEMPLATES = Jinja2Templates(directory=str(_BASE_DIR / "templates"))
@@ -146,6 +147,7 @@ app.include_router(api_router)
 app.include_router(review_router)
 app.include_router(collection_router)
 app.include_router(monitor_router)
+app.include_router(subtitle_template_router)
 app.mount("/static", StaticFiles(directory=str(_BASE_DIR / "static")), name="static")
 
 
