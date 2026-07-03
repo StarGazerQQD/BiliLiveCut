@@ -425,3 +425,98 @@ async def rerender_clip(candidate_id: int) -> dict:
     if clip is None:
         raise HTTPException(status_code=500, detail="渲染失败")
     return {"clip_id": clip.id, "file_path": clip.file_path, "title": clip.title}
+
+
+@review_router.get("/api/{candidate_id}/waveform")
+def get_waveform(candidate_id: int, resolution: int = 400) -> dict:
+    """生成音频波形采样数据(FFmpeg→PCM→RMS峰值数组)。
+
+    :param candidate_id: 候选 id。
+    :param resolution: 采样点数(默认 400,前端 Canvas 宽度)。
+    :returns: ``{peaks, duration_s, sample_rate}``。
+    """
+    import json as _json
+    import subprocess as _sp
+    import struct as _struct
+    import tempfile as _tf
+    from pathlib import Path as _Path
+
+    from app.db.session import get_session
+    from app.db.models import FinalClip, HighlightCandidate
+
+    with get_session() as db:
+        c = db.get(HighlightCandidate, candidate_id)
+        if c is None:
+            raise HTTPException(status_code=404, detail="候选不存在")
+        # 找已有成品。
+        clip = db.exec(
+            __import__("sqlmodel").select(FinalClip).where(
+                FinalClip.candidate_id == candidate_id,
+            ).limit(1)
+        ).first()
+        if clip is None or not clip.file_path or not _Path(clip.file_path).exists():
+            return {"peaks": [], "duration_s": 0, "sample_rate": 0, "error": "尚未生成切片,请先「批准并出片」或「重新渲染」"}
+
+        file_path = clip.file_path
+        duration_s = clip.duration_s or 0
+
+    if duration_s <= 0:
+        # 用 ffprobe 获取时长。
+        try:
+            result = _sp.run(
+                ["ffprobe", "-v", "quiet", "-print_format", "json", "-show_format", file_path],
+                capture_output=True, text=True, timeout=10,
+            )
+            info = _json.loads(result.stdout)
+            duration_s = float(info.get("format", {}).get("duration", 0))
+        except Exception:
+            duration_s = 30  # fallback
+
+    if duration_s <= 0:
+        return {"peaks": [0.0] * resolution, "duration_s": 0, "sample_rate": 0}
+
+    # FFmpeg 提取单声道 16-bit PCM,并降采样到约 resolution*2 个样本。
+    sample_rate = 8000  # 低频足以表示波形包络
+    total_samples = resolution * 2  # 每点 2 个样本取 max
+    with _tf.NamedTemporaryFile(suffix=".pcm", delete=False) as tmp:
+        tmp_path = tmp.name
+
+    try:
+        _sp.run(
+            [
+                "ffmpeg", "-y", "-v", "quiet",
+                "-i", file_path,
+                "-ac", "1", "-ar", str(sample_rate),
+                "-f", "s16le", tmp_path,
+            ],
+            check=True, timeout=30,
+        )
+        with open(tmp_path, "rb") as f:
+            raw = f.read()
+    except Exception as exc:
+        return {"peaks": [], "duration_s": duration_s, "sample_rate": sample_rate, "error": f"FFmpeg 波形生成失败: {exc}"}
+    finally:
+        try:
+            _Path(tmp_path).unlink()
+        except OSError:
+            pass
+
+    # 解析 16-bit signed PCM。
+    sample_count = len(raw) // 2
+    if sample_count < resolution:
+        return {"peaks": [0.0] * resolution, "duration_s": duration_s, "sample_rate": sample_rate}
+
+    samples_per_bucket = max(1, sample_count // resolution)
+    peaks = []
+    for i in range(resolution):
+        start = i * samples_per_bucket
+        end = min(sample_count, start + samples_per_bucket * 2)
+        chunk = raw[start * 2:end * 2]
+        max_val = 0
+        for j in range(0, len(chunk), 2):
+            val = abs(_struct.unpack_from("<h", chunk, j)[0])
+            if val > max_val:
+                max_val = val
+        peaks.append(round(max_val / 32768.0, 4))
+
+    return {"peaks": peaks, "duration_s": round(duration_s, 2), "sample_rate": sample_rate}
