@@ -28,6 +28,7 @@ from app.core.logging import setup_logging
 from app.db.session import get_session, init_db
 from app.web import service
 from app.web.routers.api import router as api_router
+from app.web.routers.review_router import review_router
 
 _BASE_DIR = Path(__file__).resolve().parent
 _TEMPLATES = Jinja2Templates(directory=str(_BASE_DIR / "templates"))
@@ -134,6 +135,7 @@ app = FastAPI(
     lifespan=lifespan,
 )
 app.include_router(api_router)
+app.include_router(review_router)
 app.mount("/static", StaticFiles(directory=str(_BASE_DIR / "static")), name="static")
 
 

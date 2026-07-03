@@ -299,6 +299,7 @@ async function loadCandidates() {
           <div class="sub">规则 ${c.rule_score} / LLM ${c.llm_score} · ${esc(c.reason || "")}</div>
         </div>
         <div class="actions">
+          <a class="ok btn-link" href="/review/${c.id}" target="_blank" style="text-decoration:none;color:inherit">🎬 审片</a>
           <button class="ok" onclick="approveCand(${c.id})">批准并出片</button>
           <button class="danger" onclick="rejectCand(${c.id})">拒绝</button>
           <button onclick="delCand(${c.id})">删除</button>
@@ -457,6 +458,54 @@ window.cancelTask = async (id) => {
   try { await api("POST", `/api/tasks/${id}/cancel`); toast("任务已取消"); loadTasks(); }
   catch (e) { toast("取消失败:" + e.message); }
 };
+
+// ----------------------------- V0.1.6 P1 渲染:主题管理 ----------------------------- //
+async function loadTopics() {
+  try {
+    // 加载会话列表供聚类选择。
+    const dbData = await api("GET", "/api/dashboard");
+    const sessions = dbData.sessions || [];
+    const sessionsWithActive = sessions.filter(s => s.status === "stopped" || s.status === "recording");
+    let selHtml = '<option value="">选择录制会话</option>';
+    for (const s of sessionsWithActive) {
+      selHtml += `<option value="${s.id}">会话 #${s.id} (房间 ${s.room_id}) - ${s.status}</option>`;
+    }
+    $("#topic-session-select").innerHTML = selHtml;
+
+    // 加载已有主题。
+    const data = await api("GET", "/api/topics");
+    const topics = data.topics || [];
+    $("#topics-list").innerHTML = topics.length ? topics.map(t => `
+      <div class="item">
+        <div class="head">
+          <div>
+            <div class="title">${esc(t.title || "未命名主题")}</div>
+            <div class="sub">置信度 ${(t.confidence*100).toFixed(0)}% · ${t.event_count} 个事件 · ${esc(t.status)}</div>
+            ${t.summary ? `<div class="sub">${esc(t.summary.substring(0,100))}</div>` : ""}
+          </div>
+          <div class="actions">
+            <button onclick="toggleCollection(${t.id},${!t.is_collection})">
+              ${t.is_collection ? "取消合集" : "标适合合集"}
+            </button>
+          </div>
+        </div>
+      </div>`).join("") : `<div class="empty">暂无主题。先执行聚类。</div>`;
+  } catch (e) { /* 静默 */ }
+}
+window.toggleCollection = async (topicId, value) => {
+  try { await api("PATCH", `/api/topics/${topicId}`, {is_collection: value}); toast(value ? "已标记为合集" : "已取消合集"); loadTopics(); }
+  catch (e) { toast("操作失败:" + e.message); }
+};
+$("#btn-cluster").addEventListener("click", async () => {
+  const sid = $("#topic-session-select").value;
+  if (!sid) { toast("请先选择一个录制会话"); return; }
+  toast("聚类中…");
+  try {
+    const res = await api("POST", `/api/sessions/${sid}/cluster`);
+    toast(`聚类完成:${res.topics.length} 个主题`);
+    loadTopics();
+  } catch (e) { toast("聚类失败:" + e.message); }
+});
 
 // ----------------------------- V0.1.2 渲染:录制预约 ----------------------------- //
 async function loadSchedules() {
@@ -691,6 +740,7 @@ const loaders = {
   danmaku: loadDanmaku, trends: loadTrends, candidates: loadCandidates,
   clips: loadClips, uploads: loadUploads, models: loadLLM, logs: loadLogs,
   schedules: loadSchedules, login: loadCookieStatus, tasks: loadTasks,
+  topics: loadTopics,
 };
 async function refresh() {
   try {

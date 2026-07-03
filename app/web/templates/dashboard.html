@@ -25,6 +25,7 @@
     <button class="tab" data-tab="danmaku">弹幕热度</button>
     <button class="tab" data-tab="trends">网感资料库</button>
     <button class="tab" data-tab="candidates">候选审核</button>
+    <button class="tab" data-tab="topics">主题管理</button>
     <button class="tab" data-tab="clips">成品切片</button>
     <button class="tab" data-tab="uploads">上传 / 设置</button>
     <button class="tab" data-tab="models">模型</button>
@@ -135,6 +136,19 @@
         </select>
       </div>
       <div id="candidates-list"></div>
+    </section>
+
+    <!-- 主题管理(V0.1.6 P1) -->
+    <section id="tab-topics" class="panel">
+      <div class="card">
+        <h3>主题聚类</h3>
+        <div class="row">
+          <select id="topic-session-select"></select>
+          <button id="btn-cluster" class="primary">执行聚类</button>
+        </div>
+        <p class="hint" id="topic-cluster-status"></p>
+      </div>
+      <div id="topics-list"></div>
     </section>
 
     <!-- 成品切片 -->

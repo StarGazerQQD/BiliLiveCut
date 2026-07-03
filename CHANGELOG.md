@@ -25,6 +25,23 @@
 - 状态机:13 个合法转换、6 个非法转换验证,终态不出转换。幂等键 `segment_id:stage` 格式。
 - 队列推进:`enqueue_next` 合法转换、非法→ValueError。
 
+### P1 横屏审片工作台 + 主题识别
+- **HighlightEvent 数据模型**(`highlight_events`):独立的高光事件,含原始/人工调整边界、细粒度审核决断(14种)、主题归属、审核原因、ASR 文本留存。
+- **ClipVariant 数据模型**(`clip_variants`):同一事件的多版本成品(single/full_context/collection_chapter/subtitled/no_subtitles/compressed/archive)。
+- **Topic + HighlightTopic 模型**:主题聚类与事件-主题多对多关联,支持 auto/confirmed/split/blocked 状态,is_collection 合集标记。
+- **审片工作台**(`/review/{candidate_id}`):16:9 横屏视频播放器、弹幕密度 Canvas 图(5s桶)、评分维度贡献柱状图、弹幕解释文本。键盘快捷键(Space/I/O/J/K/L/←→)、入/出点 ±3/5/10/30s 调整按钮、重新渲染、上一个/下一个候选导航。
+- **细粒度审核决断**(`ReviewStatus`):14种状态(独立成片/合集候选/保留待定/不够精彩/上下文不足/开头截晚/结尾截早/内容重复/字幕错误/画面异常/敏感内容/拒绝等)。审核原因和人工边界持久化。
+- **主题识别模块**(`app/analysis/topic_cluster.py`):基于 ASR 文本字符级 bigram TF-IDF 余弦相似度(权重55%)+关键词重叠(权重25%)+时间衰减(权重20%)的综合相似度计算。阈值分层:≥0.82自动归组、0.60-0.82人工确认、<0.60独立。Union-Find 聚类算法。
+- **主题 API**:`GET /api/topics`(列表)、`GET /api/topics/{id}`(详情)、`PATCH /api/topics/{id}`(更新)、`POST/DELETE /api/topics/{id}/events/{eid}`(加入/移除)、`POST /api/topics/merge`(合并)、`POST /api/topics/{id}/split`(拆分)、`POST /api/topics/{id}/reorder`(重排)、`POST /api/sessions/{id}/cluster`(触发聚类)。
+- **ClipVariant API**:`GET /api/events/{id}/variants`(列出某事件的所有版本)。
+- **审片 API**:`GET /review/{candidate_id}`(页面)、`GET /review/api/{candidate_id}`(数据)、`POST /review/api/{candidate_id}/adjust`(调整边界)、`POST /review/api/{candidate_id}/review`(提交审核)、`POST /review/api/{candidate_id}/rerender`(重新渲染)。
+- **Dashboard 集成**:候选审核卡片新增"🎬 审片"链接(新窗口打开工作台)；新增"主题管理"选项卡(选择会话触发聚类、查看主题列表、标记合集)。
+- **数据库**:新增 `highlight_events`/`clip_variants`/`topics`/`highlight_topics` 四张表(SQLModel 自建)。
+
+### P1 测试
+- 主题相似度:文本相似度5项(相同/相近/无关/空/单字)、关键词重叠4项(全重叠/部分/无/空)、余弦相似度3项(相同/正交/空)、事件综合相似度3项(相同/不同主题/空字段)、阈值常量2项,共 **17 项全部通过**。
+- 全量回归 **126 项全部通过**(109旧+17新),无回归。
+
 ## V0.1.5.1 Alpha (2026-07-03)
 
 ### 修复
