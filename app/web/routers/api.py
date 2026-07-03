@@ -100,6 +100,21 @@ class LLMProvidersRequest(BaseModel):
     providers: list[LLMProviderIn]
 
 
+class MergeTopicsRequest(BaseModel):
+    """合井主题请求。"""
+    source_id: int
+    target_id: int
+
+
+class TopicUpdateRequest(BaseModel):
+    """更新主题请求(仅允许白名单字段)。"""
+    title: str | None = None
+    summary: str | None = None
+    keywords_json: str | None = None
+    status: str | None = None
+    is_collection: bool | None = None
+
+
 # ----------------------------- 概览 ----------------------------- #
 @router.get("/dashboard")
 def get_dashboard() -> dict[str, Any]:
@@ -365,21 +380,35 @@ def threshold_learning(db_id: int) -> dict[str, Any]:
 @router.get("/clips/{clip_id}/video")
 def clip_video(clip_id: int) -> FileResponse:
     """返回成品 MP4 以便页面内预览。"""
+    from app.core.paths import clips_dir as _clips_dir
+
     clips = {c["id"]: c for c in service.list_clips(limit=1000)}
     clip = clips.get(clip_id)
     if not clip or not clip["file_path"] or not Path(clip["file_path"]).exists():
         raise HTTPException(status_code=404, detail="视频不存在")
-    return FileResponse(clip["file_path"], media_type="video/mp4")
+    # 路径遍历保护:确保文件在 clips 目录内。
+    file_path = Path(clip["file_path"]).resolve()
+    clips_root = _clips_dir().resolve()
+    if not str(file_path).startswith(str(clips_root)):
+        raise HTTPException(status_code=403, detail="禁止访问")
+    return FileResponse(str(file_path), media_type="video/mp4")
 
 
 @router.get("/clips/{clip_id}/cover")
 def clip_cover(clip_id: int) -> FileResponse:
     """返回成品封面图。"""
+    from app.core.paths import clips_dir as _clips_dir
+
     clips = {c["id"]: c for c in service.list_clips(limit=1000)}
     clip = clips.get(clip_id)
     if not clip or not clip["cover_path"] or not Path(clip["cover_path"]).exists():
         raise HTTPException(status_code=404, detail="封面不存在")
-    return FileResponse(clip["cover_path"], media_type="image/jpeg")
+    # 路径遍历保护:确保文件在 clips 目录内。
+    file_path = Path(clip["cover_path"]).resolve()
+    clips_root = _clips_dir().resolve()
+    if not str(file_path).startswith(str(clips_root)):
+        raise HTTPException(status_code=403, detail="禁止访问")
+    return FileResponse(str(file_path), media_type="image/jpeg")
 
 
 # ----------------------------- 账号登录 / Cookie 管理 ----------------------------- #
@@ -472,11 +501,11 @@ def get_topic(topic_id: int) -> dict[str, Any]:
 
 
 @router.patch("/topics/{topic_id}")
-def update_topic(topic_id: int, body: dict[str, Any]) -> dict[str, str]:
+def update_topic(topic_id: int, body: TopicUpdateRequest) -> dict[str, str]:
     """更新主题属性(title/summary/keywords/status/is_collection)。"""
     from app.analysis.topic_cluster import update_topic as _ut
 
-    ok = _ut(topic_id, **body)
+    ok = _ut(topic_id, **body.model_dump(exclude_none=True))
     if not ok:
         raise HTTPException(status_code=404, detail="主题不存在")
     return {"status": "updated"}
@@ -503,11 +532,11 @@ def remove_event_from_topic(topic_id: int, event_id: int) -> dict[str, str]:
 
 
 @router.post("/topics/merge")
-def merge_topics(source_id: int, target_id: int) -> dict[str, str]:
+def merge_topics(req: MergeTopicsRequest) -> dict[str, str]:
     """合并两个主题。"""
     from app.analysis.topic_cluster import merge_topics as _mt
 
-    ok = _mt(source_id, target_id)
+    ok = _mt(req.source_id, req.target_id)
     if not ok:
         raise HTTPException(status_code=400, detail="合并失败")
     return {"status": "merged"}

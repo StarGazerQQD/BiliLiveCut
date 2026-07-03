@@ -69,6 +69,8 @@ def _migrate_add_columns() -> None:
         ("live_rooms", "auto_upload", "INTEGER NOT NULL DEFAULT 0", None),
         ("live_rooms", "auto_approve_threshold", "REAL NOT NULL DEFAULT 0.82", None),
         ("live_rooms", "review_threshold", "REAL NOT NULL DEFAULT 0.50", None),
+        # V0.1.6 P2: 房间配置。
+        ("live_rooms", "room_config_json", "TEXT", None),
     ]
     with engine.connect() as conn:
         existing_lr = {r[1] for r in conn.exec_driver_sql(

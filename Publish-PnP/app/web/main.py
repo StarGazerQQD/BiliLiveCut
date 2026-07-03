@@ -12,6 +12,7 @@
 
 from __future__ import annotations
 
+import asyncio
 from collections.abc import AsyncIterator
 from contextlib import asynccontextmanager
 from pathlib import Path
@@ -27,6 +28,9 @@ from app.core.logging import setup_logging
 from app.db.session import get_session, init_db
 from app.web import service
 from app.web.routers.api import router as api_router
+from app.web.routers.review_router import review_router
+from app.web.routers.collection_router import collection_router
+from app.web.routers.monitor_router import monitor_router
 
 _BASE_DIR = Path(__file__).resolve().parent
 _TEMPLATES = Jinja2Templates(directory=str(_BASE_DIR / "templates"))
@@ -34,7 +38,7 @@ _TEMPLATES = Jinja2Templates(directory=str(_BASE_DIR / "templates"))
 
 @asynccontextmanager
 async def lifespan(_app: FastAPI) -> AsyncIterator[None]:
-    """应用生命周期:启动初始化、自动恢复录制、预约调度、关闭时优雅停止录制。"""
+    """应用生命周期:启动初始化、启动 TaskWorker、自动恢复、预约调度、关闭时优雅停止。"""
     setup_logging()
     init_db()
     from app.trends.scheduler import trend_scheduler
@@ -42,6 +46,11 @@ async def lifespan(_app: FastAPI) -> AsyncIterator[None]:
     trend_scheduler.start(
         recording_active=lambda: bool(service.recorder_manager.running_ids())
     )
+
+    # V0.1.6:启动持久化任务队列 Worker。
+    from app.pipeline.task_worker import task_worker
+
+    await task_worker.start()
 
     # V0.1.2:自动恢复中断的录制会话。
     try:
@@ -56,6 +65,11 @@ async def lifespan(_app: FastAPI) -> AsyncIterator[None]:
 
     logger.info("Web 后台已启动。")
     try:
+        # V0.1.7 P3:启动开播自动录制监控器。
+        from app.pipeline.live_monitor import live_monitor
+
+        await live_monitor.start()
+
         yield
     finally:
         schedule_task.cancel()
@@ -64,7 +78,9 @@ async def lifespan(_app: FastAPI) -> AsyncIterator[None]:
         except asyncio.CancelledError:
             pass
         await trend_scheduler.stop()
+        await live_monitor.stop()
         await service.recorder_manager.stop_all()
+        await task_worker.stop()
         logger.info("Web 后台已关闭,所有录制已停止。")
 
 
@@ -127,6 +143,9 @@ app = FastAPI(
     lifespan=lifespan,
 )
 app.include_router(api_router)
+app.include_router(review_router)
+app.include_router(collection_router)
+app.include_router(monitor_router)
 app.mount("/static", StaticFiles(directory=str(_BASE_DIR / "static")), name="static")
 
 

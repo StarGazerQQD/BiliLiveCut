@@ -65,6 +65,7 @@ class CandidateStatus:
     REJECTED = "rejected"
     CLIPPED = "clipped"
     MERGED = "merged"
+    CLEANED = "cleaned"  # V0.1.7 P3:已清理
 
 
 class ClipStatus:
@@ -75,6 +76,74 @@ class ClipStatus:
     READY = "ready"
     PUBLISHED = "published"
     REJECTED = "rejected"
+
+
+class ReviewStatus:
+    """V0.1.6 P1 审核决断(细化原 approve/reject 二值)。"""
+
+    APPROVED_SOLO = "approved_solo"          # 独立成片
+    APPROVED_COLLECTION = "approved_collection"  # 同主题合集候选
+    IN_COLLECTION = "in_collection"          # 已加入主题合集
+    MAYBE_TOPIC = "maybe_topic"              # 可能属于某主题
+    HOLD = "hold"                            # 保留待定
+    NOT_EXCITING = "not_exciting"            # 不够精彩
+    INSUFFICIENT_CONTEXT = "insufficient_context"  # 上下文不足
+    START_TOO_LATE = "start_too_late"         # 开头截晚
+    END_TOO_EARLY = "end_too_early"           # 结尾截早
+    DUPLICATE_CONTENT = "duplicate_content"   # 内容重复
+    SUBTITLE_ERROR = "subtitle_error"         # 字幕错误
+    VISUAL_ISSUE = "visual_issue"             # 画面异常
+    SENSITIVE = "sensitive"                   # 涉及敏感内容
+    REJECTED = "rejected"                     # 拒绝
+    PENDING = "pending"                       # 待审
+
+    # 正面状态集合(可用于统计)。
+    POSITIVE = {APPROVED_SOLO, APPROVED_COLLECTION, IN_COLLECTION}
+    # 需要持久化边界和数据的状态。
+    KEEP_ASSETS = {APPROVED_SOLO, APPROVED_COLLECTION, IN_COLLECTION, MAYBE_TOPIC, HOLD}
+
+
+class ClipVariantType:
+    """成品版本类型。"""
+
+    SINGLE = "single"               # 单段高光版
+    FULL_CONTEXT = "full_context"   # 完整上下文版
+    COLLECTION_CHAPTER = "collection_chapter"  # 同主题合集章节
+    SUBTITLED = "subtitled"         # 带字幕版
+    NO_SUBTITLES = "no_subtitles"   # 无字幕净版
+    COMPRESSED = "compressed"       # 投稿压制版
+    ARCHIVE = "archive"             # 高码率归档版
+
+
+class TopicStatus:
+    """主题状态。"""
+
+    AUTO = "auto"           # 自动聚类,待确认
+    CONFIRMED = "confirmed"  # 人工确认
+    SPLIT = "split"         # 已拆分(错误聚类)
+    BLOCKED = "blocked"     # 不适合生成合集
+
+
+class TaskStatus:
+    """分段处理任务状态(V0.1.6 持久化任务队列)。"""
+
+    RECORDED = "recorded"                    # 片段已录制,待入队
+    QUEUED_FOR_TRANS = "queued_for_transcription"  # 等待转写
+    TRANSCRIBING = "transcribing"            # 正在转写(Whisper GPU)
+    TRANSCRIBED = "transcribed"              # 转写完成,待评分(与旧 SegmentStatus 互操作性)
+    QUEUED_FOR_ANALYSIS = "queued_for_analysis"    # 等待分析
+    ANALYZING = "analyzing"                  # 正在分析(规则+LLM)
+    CANDIDATE_CREATED = "candidate_created"  # 已生成候选
+    QUEUED_FOR_RENDER = "queued_for_render"  # 等待渲染
+    RENDERING = "rendering"                  # 正在渲染(FFmpeg)
+    AWAITING_REVIEW = "awaiting_review"      # 候选待审核
+    APPROVED = "approved"                    # 人工/自动批准
+    COMPLETED = "completed"                  # 最终完成
+    FAILED = "failed"                        # 永久失败(不可重试)
+    CANCELLED = "cancelled"                  # 已取消
+
+    # 临时失败子状态
+    TRANSIENT_FAILED = "transient_failed"    # 临时失败,等待重试
 
 
 class UploadStatus:
@@ -122,6 +191,9 @@ class LiveRoom(SQLModel, table=True):
     schedule_enabled: bool = Field(default=False, description="是否启用录制预约")
     auto_threshold_enabled: bool = Field(default=False, description="是否启用阈值自学习")
     danmaku_sentiment_enabled: bool = Field(default=False, description="是否启用弹幕情绪分析")
+
+    # V0.1.6 P2:房间级配置(热词/别名/高光关键词/屏蔽主题,存储为 JSON)。
+    room_config_json: str | None = Field(default=None, description="房间配置 JSON(hotwords/aliases/highlight_keywords/blocked_topics)")
     created_at: datetime = Field(default_factory=utcnow)
     updated_at: datetime = Field(default_factory=utcnow)
 
@@ -191,6 +263,122 @@ class HighlightCandidate(SQLModel, table=True):
     reason: str | None = Field(default=None, description="LLM 给出的高光理由")
     status: str = Field(default=CandidateStatus.PENDING, description="候选状态")
     dedup_hash: str | None = Field(default=None, index=True, description="内容指纹,用于查重")
+    created_at: datetime = Field(default_factory=utcnow)
+
+
+class HighlightEvent(SQLModel, table=True):
+    """高光事件(``highlight_events``):V0.1.6 P1 拆分为独立事件模型。
+
+    代表"直播中发生了一件值得剪辑的事情",与 highlight_candidates 共存。
+    新增:人工调整边界、细粒度审核决断、主题归属、审核原因、ASR 文本留存。
+    """
+
+    __tablename__ = "highlight_events"
+
+    id: int | None = Field(default=None, primary_key=True)
+    candidate_id: int | None = Field(default=None, index=True, description="关联 highlight_candidates.id(可空)")
+    session_id: int = Field(index=True, description="所属 recording_sessions.id")
+    segment_id: int | None = Field(default=None, description="来源 raw_segments.id")
+
+    # 时间边界(原始 + 人工调整)。
+    raw_start_ts: datetime | None = Field(default=None, description="原始评分起点")
+    raw_end_ts: datetime | None = Field(default=None, description="原始评分终点")
+    adjusted_start_ts: datetime | None = Field(default=None, description="人工调整后起点")
+    adjusted_end_ts: datetime | None = Field(default=None, description="人工调整后终点")
+
+    # 评分。
+    rule_score: float = Field(default=0.0)
+    llm_score: float = Field(default=0.0)
+    highlight_score: float = Field(default=0.0, description="综合高光评分")
+    features_json: str | None = Field(default=None, description="各维度特征 JSON(含 danmaku_explain)")
+    reason: str | None = Field(default=None, description="LLM 高光理由")
+    asr_text: str | None = Field(default=None, description="ASR 转写文本(留存)")
+    danmaku_explain_json: str | None = Field(default=None, description="弹幕评分解释 JSON")
+
+    # 审核。
+    review_status: str = Field(default=ReviewStatus.PENDING, description="审核决断")
+    review_reason: str | None = Field(default=None, description="审核原因/备注")
+    review_by: str = Field(default="auto", description="审核者:auto/manual")
+
+    # 主题。
+    topic_id: int | None = Field(default=None, index=True, description="所属 highlight_topics.id")
+
+    created_at: datetime = Field(default_factory=utcnow)
+    updated_at: datetime = Field(default_factory=utcnow)
+
+
+class ClipVariant(SQLModel, table=True):
+    """成品版本(``clip_variants``):同一事件的不同渲染版本。
+
+    一个 HighlightEvent 可产生多个 ClipVariant:
+    - 单段高光版(single)
+    - 完整上下文版(full_context)
+    - 合集章节(collection_chapter)
+    - 带字幕版(subtitled)
+    - 无字幕净版(no_subtitles)
+    - 投稿压制版(compressed)
+    - 高码率归档版(archive)
+    """
+
+    __tablename__ = "clip_variants"
+
+    id: int | None = Field(default=None, primary_key=True)
+    event_id: int = Field(index=True, description="关联 highlight_events.id")
+    candidate_id: int | None = Field(default=None, index=True, description="关联 highlight_candidates.id(向后兼容)")
+
+    variant_type: str = Field(default=ClipVariantType.SINGLE, description="版本类型")
+
+    # 渲染参数。
+    start_ts: datetime | None = Field(default=None, description="实际渲染起点")
+    end_ts: datetime | None = Field(default=None, description="实际渲染终点")
+    has_subtitles: bool = Field(default=True, description="是否包含字幕")
+    resolution: str | None = Field(default=None, description="输出分辨率,如 1920×1080")
+    codec_params: str | None = Field(default=None, description="编码参数")
+
+    # 文件。
+    file_path: str | None = Field(default=None, description="文件路径")
+    file_hash: str | None = Field(default=None, description="文件 SHA256")
+    cover_path: str | None = Field(default=None, description="封面图路径")
+    duration_s: float | None = Field(default=None, description="时长(秒)")
+
+    render_status: str = Field(default="queued", description="渲染状态:queued/rendering/done/failed")
+    version_number: int = Field(default=1, description="版本号(同 variant_type 同 event 递增)")
+
+    created_at: datetime = Field(default_factory=utcnow)
+
+
+class Topic(SQLModel, table=True):
+    """主题/事件簇(``topics``):同一直播中语义相关的多个高光。
+
+    主题判定分为三级:同一主题 > 可能相关 > 不同主题。
+    """
+
+    __tablename__ = "topics"
+
+    id: int | None = Field(default=None, primary_key=True)
+    session_id: int = Field(index=True, description="所属 recording_sessions.id")
+    title: str | None = Field(default=None, description="主题标题")
+    summary: str | None = Field(default=None, description="主题摘要")
+    keywords_json: str | None = Field(default=None, description="关键词 JSON 数组")
+    entities_json: str | None = Field(default=None, description="实体 JSON(人物/游戏/歌曲等)")
+    confidence: float = Field(default=0.0, description="主题置信度")
+    status: str = Field(default=TopicStatus.AUTO, description="auto/confirmed/split/blocked")
+    is_collection: bool = Field(default=False, description="是否适合生成合集")
+    created_at: datetime = Field(default_factory=utcnow)
+    updated_at: datetime = Field(default_factory=utcnow)
+
+
+class HighlightTopic(SQLModel, table=True):
+    """事件-主题关联(``highlight_topics``):多对多映射。"""
+
+    __tablename__ = "highlight_topics"
+
+    id: int | None = Field(default=None, primary_key=True)
+    event_id: int = Field(index=True, description="关联 highlight_events.id")
+    topic_id: int = Field(index=True, description="关联 topics.id")
+    confidence: float = Field(default=0.0, description="该事件属于本主题的相似度")
+    is_manual: bool = Field(default=False, description="是否人工手动归类")
+    sort_order: int = Field(default=0, description="在合集中的顺序")
     created_at: datetime = Field(default_factory=utcnow)
 
 
@@ -345,3 +533,42 @@ class SystemLog(SQLModel, table=True):
     message: str = Field(default="", description="详情")
     context_json: str | None = Field(default=None, description="上下文 JSON")
     created_at: datetime = Field(default_factory=utcnow)
+
+
+class SegmentTask(SQLModel, table=True):
+    """分段处理任务(``segment_tasks``):持久化的异步任务队列。
+
+    每个 RawSegment 录制完成后创建一条任务,按流水线阶段独立推进:
+    recorded → transcribing → analyzing → rendering → approved/completed/failed。
+
+    支持:
+    - 幂等键(segment_id+stage)避免重复处理
+    - 重试次数与指数退避
+    - 临时失败(transient_failed)与永久失败(failed)区分
+    - 处理耗时统计
+    """
+
+    __tablename__ = "segment_tasks"
+
+    id: int | None = Field(default=None, primary_key=True)
+    segment_id: int = Field(index=True, description="关联 raw_segments.id")
+    session_id: int = Field(index=True, description="关联 recording_sessions.id")
+    candidate_id: int | None = Field(default=None, index=True, description="关联 highlight_candidates.id(若有)")
+    clip_id: int | None = Field(default=None, index=True, description="关联 final_clips.id(若有)")
+
+    stage: str = Field(default=TaskStatus.RECORDED, index=True, description="当前处理阶段")
+    priority: int = Field(default=100, description="优先级(数值越小越优先)")
+    idempotency_key: str | None = Field(default=None, index=True, description="幂等键:segment_id:stage,防重复")
+    attempts: int = Field(default=0, description="当前阶段已尝试次数")
+    max_retries: int = Field(default=3, description="当前阶段最大重试次数")
+    next_retry_at: datetime | None = Field(default=None, description="下次重试时间(指数退避)")
+    last_error: str | None = Field(default=None, description="最近一次错误信息")
+    error_is_permanent: bool = Field(default=False, description="是否为不可恢复的永久错误")
+
+    created_at: datetime = Field(default_factory=utcnow)
+    started_at: datetime | None = Field(default=None, description="当前阶段开始处理时间")
+    completed_at: datetime | None = Field(default=None, description="当前阶段完成时间")
+    processing_time_ms: int | None = Field(default=None, description="当前阶段处理耗时(毫秒)")
+    total_elapsed_ms: int | None = Field(default=None, description="任务总耗时(创建到完成,毫秒)")
+
+    context_json: str | None = Field(default=None, description="任务上下文 JSON(如错误堆栈、配置快照等)")

@@ -1,0 +1,160 @@
+"""P3 运维面板路由(V0.1.7)。"""
+
+from __future__ import annotations
+
+from fastapi import APIRouter
+from fastapi.responses import JSONResponse
+
+monitor_router = APIRouter(prefix="/api/monitor", tags=["monitor"])
+
+
+@monitor_router.get("")
+def get_monitor_data() -> dict:
+    """运维面板数据:磁盘/CPU/任务统计/录制状态。"""
+    import time
+
+    from app.pipeline.storage_lifecycle import (
+        check_disk_safe,
+        get_directory_size,
+        get_disk_usage,
+    )
+    from app.core.paths import clips_dir, raw_dir
+
+    # 磁盘。
+    disk = get_disk_usage()
+    raw_size = get_directory_size(raw_dir())
+    clips_size = get_directory_size(clips_dir())
+    safe, safe_msg = check_disk_safe()
+
+    # 系统资源。
+    cpu = _get_cpu_percent()
+    memory = _get_memory()
+
+    # 任务队列统计。
+    tasks = _get_task_stats()
+
+    # 录制状态。
+    from app.web.service import recorder_manager
+    from app.pipeline.live_monitor import live_monitor
+
+    running_rooms = recorder_manager.running_ids()
+    monitor_status = live_monitor.status()
+
+    # 最近失败任务。
+    recent_failures = _get_recent_failures()
+
+    return {
+        "disk": dict(disk),
+        "raw_size_gb": raw_size,
+        "clips_size_gb": clips_size,
+        "disk_safe": safe,
+        "disk_safe_message": safe_msg,
+        "cpu_percent": cpu,
+        "memory": dict(memory),
+        "tasks": tasks,
+        "running_rooms": running_rooms,
+        "running_room_count": len(running_rooms),
+        "monitor": monitor_status,
+        "recent_failures": recent_failures,
+        "checked_at": time.time(),
+    }
+
+
+@monitor_router.post("/disk-maintenance")
+def trigger_maintenance() -> dict:
+    """手动触发磁盘维护。"""
+    from app.pipeline.storage_lifecycle import run_disk_maintenance
+
+    result = run_disk_maintenance()
+    return result
+
+
+def _get_cpu_percent() -> float | None:
+    """获取 CPU 使用率。"""
+    try:
+        import psutil
+
+        return psutil.cpu_percent(interval=0.1)
+    except ImportError:
+        return None
+
+
+def _get_memory() -> dict:
+    """获取内存使用情况。"""
+    try:
+        import psutil
+
+        mem = psutil.virtual_memory()
+        return {
+            "total_gb": round(mem.total / (1024**3), 1),
+            "used_gb": round(mem.used / (1024**3), 1),
+            "percent": mem.percent,
+        }
+    except ImportError:
+        return {"total_gb": 0, "used_gb": 0, "percent": 0}
+
+
+def _get_task_stats() -> dict:
+    """获取任务队列统计(各阶段数量/最老任务等待时间)。"""
+    import time
+
+    from app.db.session import get_session
+    from app.db.models import SegmentTask, TaskStatus
+    from sqlmodel import select, func
+
+    with get_session() as db:
+        all_tasks = db.exec(select(SegmentTask).order_by(SegmentTask.created_at.asc())).all()
+
+    by_stage: dict[str, int] = {}
+    oldest_wait_s = 0
+    now = time.time()
+
+    for t in all_tasks:
+        stage = t.stage.value if hasattr(t.stage, "value") else str(t.stage)
+        by_stage[stage] = by_stage.get(stage, 0) + 1
+        if t.created_at and t.stage not in (
+            TaskStatus.COMPLETED, TaskStatus.CANCELLED, TaskStatus.FAILED,
+        ):
+            age = now - t.created_at.timestamp()
+            if age > oldest_wait_s:
+                oldest_wait_s = age
+
+    total = len(all_tasks)
+    completed = by_stage.get("completed", 0)
+    failed = by_stage.get("failed", 0) + by_stage.get("transient_failed", 0)
+    in_progress = total - completed - failed - by_stage.get("cancelled", 0)
+
+    return {
+        "total": total,
+        "completed": completed,
+        "failed": failed,
+        "in_progress": in_progress,
+        "by_stage": by_stage,
+        "oldest_wait_s": round(oldest_wait_s),
+    }
+
+
+def _get_recent_failures() -> list[dict]:
+    """获取最近 20 个失败任务。"""
+    from app.db.models import SegmentTask
+    from app.db.session import get_session
+    from sqlmodel import select
+
+    with get_session() as db:
+        failed = db.exec(
+            select(SegmentTask).where(
+                SegmentTask.last_error.is_not(None),
+            ).order_by(SegmentTask.updated_at.desc()).limit(20)
+        ).all()
+
+    return [
+        {
+            "id": t.id,
+            "segment_id": t.segment_id,
+            "stage": t.stage.value if hasattr(t.stage, "value") else str(t.stage),
+            "error": (t.last_error or "")[:200],
+            "attempts": t.attempts,
+            "created": t.created_at.isoformat() if t.created_at else None,
+        }
+        for t in failed
+    ]

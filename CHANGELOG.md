@@ -1,5 +1,18 @@
 # Changelog
 
+## V0.1.7.1 Alpha (2026-07-04)
+
+### 安全修复
+- **FFmpeg 命令注入防护**:章节标题卡改用 textfile 方式传递文本,消除 drawtext 参数注入风险。
+- **路径遍历防护**:`clip_video`/`clip_cover`/`waveform` 端点增加路径验证,确保只返回 clips 目录内文件。
+- **XSS 防护**:`review.html`/`collection.html` 模板中 `candidate_id`/`topic_id` 强制转为整数,防止 JS 注入。
+- **代码质量**:清除 `review_router.py` 中 9 处 `__import__("sqlmodel")` 反模式为顶部 import;`topics/merge` POST 使用 Pydantic 模型验证参数;`topics/{id}` PATCH 增加字段白名单。
+
+### Publish-PnP 同步
+- 同步所有 v0.1.6–v0.1.7 新增/变更文件到 `Publish-PnP/app/`(task_worker, live_monitor, storage_lifecycle, collection, topic_cluster, room_config, review_router, collection_router, monitor_router, collection_copywriter, cover 等)。
+
+---
+
 ## V0.1.7 Alpha (2026-07-03)
 
 ### P1 补齐
