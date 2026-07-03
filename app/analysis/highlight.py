@@ -600,6 +600,9 @@ def _danmaku_score(session_id: int, start_ts: object, end_ts: object) -> float:
     from datetime import datetime as _datetime
     from app.db.models import Danmaku
 
+    if start_ts is None or end_ts is None:
+        return 0.0
+
     def _n(dt: _datetime) -> _datetime:
         return dt.replace(tzinfo=None) if getattr(dt, "tzinfo", None) else dt
 
@@ -661,6 +664,9 @@ def danmaku_score_explain(session_id: int, start_ts: object, end_ts: object) -> 
     """
     from datetime import datetime as _datetime
     from app.db.models import Danmaku
+
+    if start_ts is None or end_ts is None:
+        return {"window_count": 0, "window_rate": 0.0, "baseline_rate": 0.0, "ratio": 0.0, "score": 0.0}
 
     def _n(dt: _datetime) -> _datetime:
         return dt.replace(tzinfo=None) if getattr(dt, "tzinfo", None) else dt

@@ -98,41 +98,39 @@ def make_pipeline_callback(
 ):  # noqa: ANN201 — 返回异步回调
     """构造可传给 :class:`~app.recording.recorder.Recorder` 的片段回调。
 
-    回调在独立线程中运行 CPU 密集流程,避免阻塞录制事件循环。
-    V0.1.6: 根据房间级 auto_analyze / auto_render / auto_upload 开关分别控制各阶段。
+    V0.1.6: 录制回调只负责创建 SegmentTask 并登记到持久化队列,
+    不再同步等待转写/分析/渲染。后台 TaskWorker 异步消费队列。
 
-    :param backend: 可选转写后端。
-    :param produce: 为 ``True`` 时,产生候选后立即自动切片+文案(全自动链路)。
-    :param room_id: 房间 id,用于读取房间级开关(可空,默认使用 produce 参数)。
+    :param backend: 可选转写后端(已弃用,由 TaskWorker 统一管理)。
+    :param produce: 为 ``True`` 时允许自动进入渲染阶段。
+    :param room_id: 房间 id,用于读取房间级开关。
     :returns: 形如 ``async def cb(segment)`` 的协程回调。
     """
     from app.db.models import LiveRoom
     from app.db.session import get_session as _gs
+    from app.pipeline.task_worker import create_task as _create_task
 
     # 预读房间开关配置。
     room_auto_analyze = produce
     room_auto_render = produce
-    room_auto_upload = False
     if room_id is not None:
         with _gs() as _db:
             room = _db.get(LiveRoom, room_id)
             if room is not None:
                 room_auto_analyze = room.auto_analyze
                 room_auto_render = room.auto_render
-                room_auto_upload = room.auto_upload
 
     async def _callback(segment: RawSegment) -> None:
-        if segment.id is None:
+        if segment.id is None or segment.session_id is None:
             return
         seg_id = segment.id
         if not room_auto_analyze:
             logger.debug("房间 auto_analyze=off,跳过片段 {} 的分析。", seg_id)
             return
-        logger.info("流水线接收片段 segment={},提交后台分析。", seg_id)
-        candidate = await asyncio.to_thread(process_segment_sync, seg_id, backend)
-        if room_auto_render and candidate is not None and candidate.id is not None:
-            cand_id = candidate.id
-            logger.info("候选 {} 已生成,自动进入切片+文案。", cand_id)
-            await asyncio.to_thread(produce_clip, cand_id, auto_upload=room_auto_upload)
+        task = _create_task(seg_id, segment.session_id)
+        if task is None:
+            logger.debug("片段 {} 已有任务记录,幂等跳过。", seg_id)
+        else:
+            logger.info("流水线登记片段 segment={},任务 id={}。", seg_id, task.id)
 
     return _callback

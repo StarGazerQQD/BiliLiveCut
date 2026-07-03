@@ -12,6 +12,7 @@
 
 from __future__ import annotations
 
+import asyncio
 from collections.abc import AsyncIterator
 from contextlib import asynccontextmanager
 from pathlib import Path
@@ -34,7 +35,7 @@ _TEMPLATES = Jinja2Templates(directory=str(_BASE_DIR / "templates"))
 
 @asynccontextmanager
 async def lifespan(_app: FastAPI) -> AsyncIterator[None]:
-    """应用生命周期:启动初始化、自动恢复录制、预约调度、关闭时优雅停止录制。"""
+    """应用生命周期:启动初始化、启动 TaskWorker、自动恢复、预约调度、关闭时优雅停止。"""
     setup_logging()
     init_db()
     from app.trends.scheduler import trend_scheduler
@@ -42,6 +43,11 @@ async def lifespan(_app: FastAPI) -> AsyncIterator[None]:
     trend_scheduler.start(
         recording_active=lambda: bool(service.recorder_manager.running_ids())
     )
+
+    # V0.1.6:启动持久化任务队列 Worker。
+    from app.pipeline.task_worker import task_worker
+
+    await task_worker.start()
 
     # V0.1.2:自动恢复中断的录制会话。
     try:
@@ -65,6 +71,7 @@ async def lifespan(_app: FastAPI) -> AsyncIterator[None]:
             pass
         await trend_scheduler.stop()
         await service.recorder_manager.stop_all()
+        await task_worker.stop()
         logger.info("Web 后台已关闭,所有录制已停止。")
 
 

@@ -13,6 +13,7 @@
       <span class="stat">候选 <b id="stat-candidates">-</b></span>
       <span class="stat">成品 <b id="stat-clips">-</b></span>
       <span class="stat">活跃会话 <b id="stat-sessions">-</b></span>
+      <span class="stat">任务队列 <b id="stat-tasks">-</b></span>
     </div>
   </header>
 
@@ -28,6 +29,7 @@
     <button class="tab" data-tab="uploads">上传 / 设置</button>
     <button class="tab" data-tab="models">模型</button>
     <button class="tab" data-tab="login">账号管理</button>
+    <button class="tab" data-tab="tasks">任务队列</button>
     <button class="tab" data-tab="logs">错误日志</button>
   </nav>
 
@@ -205,6 +207,29 @@
           Cookie 会自动保存并关闭窗口。<br/>
           清除 Cookie 或退出登录后,弹幕采集等需要登录态的功能将不可用。
         </p>
+      </div>
+    </section>
+
+    <!-- 任务队列(V0.1.6) -->
+    <section id="tab-tasks" class="panel">
+      <div class="card">
+        <h3>持久化任务队列</h3>
+        <div class="row" id="task-stats-bar">
+          <span class="stat">总计 <b id="task-stat-total">-</b></span>
+          <span class="stat">排队 <b id="task-stat-queued">-</b></span>
+          <span class="stat">进行中 <b id="task-stat-active">-</b></span>
+          <span class="stat">失败 <b id="task-stat-failed">-</b></span>
+          <span class="stat">已完成 <b id="task-stat-completed">-</b></span>
+        </div>
+        <hr style="margin:12px 0" />
+        <table id="task-table" border="1" cellpadding="6" style="width:100%;font-size:13px">
+          <thead>
+            <tr>
+              <th>ID</th><th>片段ID</th><th>阶段</th><th>重试</th><th>耗时(ms)</th><th>最近错误</th><th>创建时间</th><th>操作</th>
+            </tr>
+          </thead>
+          <tbody id="task-tbody"></tbody>
+        </table>
       </div>
     </section>
 
