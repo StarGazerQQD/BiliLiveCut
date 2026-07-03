@@ -32,6 +32,7 @@
     <button class="tab" data-tab="login">账号管理</button>
     <button class="tab" data-tab="tasks">任务队列</button>
     <button class="tab" data-tab="templates">字幕模板</button>
+    <button class="tab" data-tab="intro-templates">片头片尾</button>
     <button class="tab" data-tab="monitor">运维面板</button>
     <button class="tab" data-tab="logs">错误日志</button>
   </nav>
@@ -266,6 +267,17 @@
           <button id="btn-import-ass" class="secondary">导入 .ass 文件</button>
         </div>
         <div id="templates-list"></div>
+      </div>
+    </section>
+
+    <!-- 片头片尾模板(V0.1.8 P1.2) -->
+    <section id="tab-intro-templates" class="panel">
+      <div class="card">
+        <h3>片头/片尾模板</h3>
+        <div class="row toolbar">
+          <button id="btn-add-intro" class="primary">新建默认模板</button>
+        </div>
+        <div id="intro-templates-list"></div>
       </div>
     </section>
 

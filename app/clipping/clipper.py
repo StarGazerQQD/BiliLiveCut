@@ -29,6 +29,8 @@ from app.core.paths import clips_dir
 from app.db.models import (
     CandidateStatus,
     ClipStatus,
+    ClipVariant,
+    ClipVariantType,
     FinalClip,
     HighlightCandidate,
     RawSegment,
@@ -197,6 +199,142 @@ def _write_concat_list(segments: list[RawSegment], work_dir: Path) -> Path:
     return list_path
 
 
+def _render_intro_outro_cards(
+    candidate_id: int,
+    work_dir: Path,
+    options: ClipOptions,
+    width: int = 1920,
+    height: int = 1080,
+) -> list[Path]:
+    """渲染片头/片尾标题卡视频片段(V0.1.8 P1.2)。
+
+    从数据库加载片头/片尾模板,用模板变量替换后,
+    通过 FFmpeg 生成带文字的视频卡。
+
+    :param candidate_id: 候选 ID。
+    :param work_dir: 临时工作目录。
+    :param options: ClipOptions。
+    :param width: 视频宽。
+    :param height: 视频高。
+    :returns: 按顺序排列的卡片文件列表[]。
+    """
+    from datetime import date
+
+    from app.db.models import HighlightCandidate, IntroTemplate, LiveRoom, RecordingSession
+
+    cards: list[Path] = []
+
+    # 查找默认模板。
+    with get_session() as db:
+        tmpl = db.exec(
+            select(IntroTemplate).where(IntroTemplate.is_default == True)  # noqa: E712
+        ).first()
+        if tmpl is None:
+            tmpl = db.exec(select(IntroTemplate)).first()
+        if tmpl is None:
+            return cards
+
+        # 构建模板变量。
+        cand = db.get(HighlightCandidate, candidate_id)
+        vars_dict: dict[str, str] = {
+            "date": date.today().isoformat(),
+            "time": "",
+            "streamer_name": "",
+            "game_name": "",
+            "room_title": "",
+        }
+        if cand and cand.session_id:
+            session = db.get(RecordingSession, cand.session_id)
+            if session and session.room_id:
+                room = db.get(LiveRoom, session.room_id)
+                if room:
+                    vars_dict["streamer_name"] = room.name or ""
+                    vars_dict["game_name"] = room.game_name or ""
+        if cand:
+            vars_dict["time"] = cand.start_ts.strftime("%H:%M") if cand.start_ts else ""
+
+    # 生成片头。
+    if tmpl.intro_enabled and tmpl.intro_text:
+        text = _resolve_variables(tmpl.intro_text, vars_dict)
+        card_path = work_dir / "intro_card.mp4"
+        _render_text_card(card_path, text, tmpl.intro_duration_s,
+                         tmpl.intro_font_name, tmpl.intro_font_size,
+                         tmpl.intro_font_color, tmpl.intro_bg_color,
+                         width, height)
+        cards.append(card_path)
+
+    # 片尾稍后在主视频后添加(通过修改 concat pipeline 实现)。
+    return cards
+
+
+def _render_text_card(
+    out_path: Path,
+    text: str,
+    duration_s: float,
+    font_name: str,
+    font_size: int,
+    font_color: str,
+    bg_color: str,
+    width: int,
+    height: int,
+) -> None:
+    """用 FFmpeg color 源 + drawtext 生成文字标题卡视频。
+
+    :param out_path: 输出文件路径。
+    :param text: 显示文字。
+    :param duration_s: 时长(秒)。
+    :param font_name: 字体名。
+    :param font_size: 字号。
+    :param font_color: 文字颜色。
+    :param bg_color: 背景颜色(支持透明度如 black@0.6)。
+    :param width: 视频宽。
+    :param height: 视频高。
+    """
+    import tempfile as _tmp
+    tf = _tmp.NamedTemporaryFile(mode="w", suffix=".txt", delete=False, encoding="utf-8")
+    tf.write(text)
+    tf.close()
+
+    cmd = [
+        settings.ffmpeg_path, "-hide_banner", "-loglevel", "error",
+        "-f", "lavfi", "-i", f"color=c={bg_color}:s={width}x{height}:d={duration_s}",
+        "-vf", (
+            f"drawtext=textfile='{tf.name}':"
+            f"fontfile=/usr/share/fonts/opentype/noto/NotoSansCJK-Regular.ttc:"
+            f"fontcolor={font_color}:fontsize={font_size}:"
+            f"x=(w-text_w)/2:y=(h-text_h)/2:"
+            f"box=1:boxcolor=black@0.4:boxborderw=20"
+        ),
+        "-c:v", "libx264", "-crf", "18", "-preset", "ultrafast",
+        "-c:a", "an",
+        "-y", str(out_path),
+    ]
+    try:
+        subprocess.run(cmd, capture_output=True, check=True)
+        logger.info("标题卡已生成: {} ({}s)", out_path.name, duration_s)
+    except subprocess.CalledProcessError as exc:
+        logger.warning("标题卡渲染失败: {}", exc.stderr.decode("utf-8", errors="ignore"))
+    finally:
+        import os
+        try:
+            os.unlink(tf.name)
+        except OSError:
+            pass
+
+
+def _resolve_variables(text: str, vars_dict: dict[str, str]) -> str:
+    """替换模板变量。
+
+    :param text: 含 ``{key}`` 占位符的文本。
+    :param vars_dict: 变量名->值映射。
+    :returns: 替换后的文本。
+    """
+    import re
+    def _repl(m: re.Match[str]) -> str:
+        return vars_dict.get(m.group(1), m.group(0))
+    return re.sub(r"\{(\w+)\}", _repl, text)
+
+
 def _build_srt(segments: list[RawSegment], cut_offset: float, duration: float) -> str:
     """从覆盖片段的转写词级时间戳构造剪辑相对时间轴的 SRT 字幕。
 
@@ -226,15 +364,41 @@ def _build_srt(segments: list[RawSegment], cut_offset: float, duration: float) -
                 entries.append((max(0.0, start), min(duration, end), str(w["w"]).strip()))
         cumulative += seg.duration_s or float(settings.segment_duration_s)
 
-    # 把词聚合成短句字幕(每约 12 个字或遇到停顿断行)。
-    return _group_srt(entries)
+    # V0.1.8 P1.3:加载字幕模板断句配置。
+    max_chars = 14
+    min_ms = 800
+    max_ms = 5000
+    line_gap = 200
+    with get_session() as db:
+        from app.db.models import SubtitleTemplate
+        tmpl = db.exec(
+            select(SubtitleTemplate).where(SubtitleTemplate.is_default == True)  # noqa: E712
+        ).first()
+        if tmpl:
+            max_chars = tmpl.max_chars_per_line
+            min_ms = tmpl.min_display_ms
+            max_ms = tmpl.max_display_ms
+            line_gap = tmpl.line_gap_ms
+
+    # 把词聚合成短句字幕(每约 N 个字或遇到停顿断行)。
+    return _group_srt(entries, max_chars=max_chars, min_display_ms=min_ms,
+                      max_display_ms=max_ms, line_gap_ms=line_gap)
 
 
-def _group_srt(words: list[tuple[float, float, str]], max_chars: int = 14) -> str:
+def _group_srt(
+    words: list[tuple[float, float, str]],
+    max_chars: int = 14,
+    min_display_ms: int = 800,
+    max_display_ms: int = 5000,
+    line_gap_ms: int = 200,
+) -> str:
     """把词级条目聚合成 SRT 字幕块。
 
     :param words: ``(start, end, text)`` 列表。
     :param max_chars: 每条字幕最大字符数。
+    :param min_display_ms: 最短显示时长(毫秒)。
+    :param max_display_ms: 最长显示时长(毫秒)。
+    :param line_gap_ms: 行间间隔(毫秒)。
     :returns: SRT 文本。
     """
     if not words:
@@ -260,6 +424,12 @@ def _group_srt(words: list[tuple[float, float, str]], max_chars: int = 14) -> st
 
     lines = []
     for i, (start, end, text) in enumerate(blocks, 1):
+        # V0.1.8 P1.3:应用最短/最长显示时长。
+        dur_ms = (end - start) * 1000
+        if dur_ms < min_display_ms:
+            end = start + min_display_ms / 1000
+        elif dur_ms > max_display_ms:
+            end = start + max_display_ms / 1000
         lines.append(f"{i}\n{fmt(start)} --> {fmt(end)}\n{text}\n")
     return "\n".join(lines)
 
@@ -302,6 +472,17 @@ def produce_clip(candidate_id: int, options: ClipOptions | None = None) -> Final
     with tempfile.TemporaryDirectory(prefix="blc_clip_") as tmp:
         work_dir = Path(tmp)
         concat_list = _write_concat_list(segments, work_dir)
+
+        # V0.1.8 P1.2:生成片头/片尾标题卡。
+        intro_cards = _render_intro_outro_cards(candidate_id, work_dir, options)
+        if intro_cards:
+            # 将片头卡片插入 concat 列表最前面。
+            card_lines = [f"file '{card.as_posix()}'" for card in intro_cards]
+            existing = concat_list.read_text(encoding="utf-8")
+            new_concat = work_dir / "concat_with_intro.txt"
+            new_concat.write_text("\n".join(card_lines) + "\n" + existing, encoding="utf-8")
+            concat_list = new_concat
+            logger.info("片头卡片已注入 concat,共 {} 段", len(intro_cards))
 
         srt_path: Path | None = None
         if options.subtitle:
@@ -352,6 +533,9 @@ def produce_clip(candidate_id: int, options: ClipOptions | None = None) -> Final
     # V0.1.8: 生成多版本 ClipVariant 记录。
     _create_clip_variants(clip, options, segments, cut_offset)
 
+    # V0.1.8 P1.1: 渲染多版本出片(归档版+压制版+互补字幕版)。
+    _render_variants(clip, options, concat_list, cut_offset, duration, srt_path)
+
     return clip
 
 
@@ -367,17 +551,15 @@ def _create_clip_variants(
     - 主版本记作 SINGLE(已渲染,直接关联)。
     - 如果渲染了字幕,同时记作 SUBTITLED。
     - 净版(NO_SUBTITLES)在渲染时未生成字幕则自动记。
-    - 压制版(COMPRESSED)和归档版(ARCHIVE)由独立渲染流程产出(见 P1.1)。
+    - 压制版(COMPRESSED)和归档版(ARCHIVE):先标记 queued,P1.1 渲染流程更新。
 
     :param clip: 新创建的 FinalClip。
     :param options: 渲染选项。
     :param segments: 覆盖片段列表。
     :param cut_offset: 裁剪偏移。
     """
-    from app.db.models import ClipVariant, ClipVariantType
-
     with get_session() as db:
-        # SINGLE:主版本(总是生成)。
+        # SINGLE:主版本(总是生成,已渲染完成)。
         db.add(ClipVariant(
             event_id=clip.candidate_id,
             variant_type=ClipVariantType.SINGLE,
@@ -412,8 +594,23 @@ def _create_clip_variants(
                 version_number=1,
                 created_at=clip.created_at,
             ))
+        # ARCHIVE + COMPRESSED:先标记 queued,由 _render_variants 完成后更新。
+        db.add(ClipVariant(
+            event_id=clip.candidate_id,
+            variant_type=ClipVariantType.ARCHIVE,
+            has_subtitles=options.subtitle,
+            render_status="queued",
+            version_number=1,
+        ))
+        db.add(ClipVariant(
+            event_id=clip.candidate_id,
+            variant_type=ClipVariantType.COMPRESSED,
+            has_subtitles=options.subtitle,
+            render_status="queued",
+            version_number=1,
+        ))
         logger.info(
-            "ClipVariant 已创建 candidate={} variants={}",
+            "ClipVariant 队列已创建 candidate={} variants={}",
             clip.candidate_id,
             "SUBTITLED" if options.subtitle else "NO_SUBTITLES",
         )
@@ -520,6 +717,185 @@ def _grab_cover(video_path: Path, cover_path: Path, at_s: float) -> None:
     result = subprocess.run(cmd, capture_output=True)
     if result.returncode != 0:
         logger.warning("封面抽帧失败: {}", result.stderr.decode("utf-8", errors="ignore"))
+
+
+def _render_variants(
+    clip: FinalClip,
+    options: ClipOptions,
+    concat_list: Path,
+    cut_offset: float,
+    duration: float,
+    srt_path: Path | None,
+) -> None:
+    """渲染多版本出片(V0.1.8 P1.1)。
+
+    在主干视频生成后,异步渲染:
+    - ARCHIVE:高码率归档版(CRF 14,preset medium,256k 音频)
+    - COMPRESSED:投稿压制版(CRF 26,preset veryfast,128k 音频)
+    - 互补字幕版:与主干相反(主干有字幕→净版,主干无字幕→带字幕版)
+
+    每个变体渲染完成即更新对应的 ClipVariant 记录。
+
+    :param clip: 主干 FinalClip。
+    :param options: 主干渲染选项。
+    :param concat_list: concat 清单文件。
+    :param cut_offset: 裁剪偏移(秒)。
+    :param duration: 时长(秒)。
+    :param srt_path: 字幕文件(可空)。
+    """
+    variants_dir = Path(clip.file_path).parent
+
+    # --- ARCHIVE:高码率归档 ---
+    archive_path = variants_dir / f"clip_{clip.candidate_id}_archive.mp4"
+    _render_single_variant(
+        concat_list, archive_path, cut_offset, duration,
+        crf=14, preset="medium", audio_bitrate="256k",
+        subtitle=options.subtitle, srt_path=srt_path,
+        variant_type=ClipVariantType.ARCHIVE, clip=clip,
+    )
+
+    # --- COMPRESSED:投稿压制 ---
+    compressed_path = variants_dir / f"clip_{clip.candidate_id}_compressed.mp4"
+    _render_single_variant(
+        concat_list, compressed_path, cut_offset, duration,
+        crf=26, preset="veryfast", audio_bitrate="128k",
+        subtitle=options.subtitle, srt_path=srt_path,
+        variant_type=ClipVariantType.COMPRESSED, clip=clip,
+    )
+
+    # --- 互补字幕版 ---
+    counterpart_subtitle = not options.subtitle
+    if counterpart_subtitle:
+        # 主干无字幕 → 渲染带字幕版
+        # 需要先构造 SRT
+        counterpart_srt: Path | None = None
+        with get_session() as db:
+            segments = db.exec(
+                select(RawSegment)
+                .where(RawSegment.session_id == clip.candidate_id)
+                .order_by(RawSegment.seq)
+            ).all()
+        # 用候选关联的 session 查找 segments
+        from app.db.models import HighlightCandidate as HC
+        with get_session() as db:
+            cand = db.get(HC, clip.candidate_id)
+            if cand:
+                segs = db.exec(
+                    select(RawSegment)
+                    .where(RawSegment.session_id == cand.session_id)
+                    .order_by(RawSegment.seq)
+                ).all()
+                srt_text = _build_srt(list(segs), cut_offset, duration)
+                if srt_text:
+                    counterpart_srt = variants_dir / f"clip_{clip.candidate_id}_sub.srt"
+                    counterpart_srt.write_text(srt_text, encoding="utf-8")
+        sub_path = variants_dir / f"clip_{clip.candidate_id}_subtitled.mp4"
+        _render_single_variant(
+            concat_list, sub_path, cut_offset, duration,
+            crf=options.crf, preset=options.preset, audio_bitrate="160k",
+            subtitle=True, srt_path=counterpart_srt,
+            variant_type=ClipVariantType.SUBTITLED, clip=clip,
+        )
+        # 清理临时字幕
+        if counterpart_srt and counterpart_srt.exists():
+            try:
+                counterpart_srt.unlink()
+            except OSError:
+                pass
+    else:
+        # 主干有字幕 → 渲染无字幕净版
+        clean_path = variants_dir / f"clip_{clip.candidate_id}_clean.mp4"
+        _render_single_variant(
+            concat_list, clean_path, cut_offset, duration,
+            crf=options.crf, preset=options.preset, audio_bitrate="160k",
+            subtitle=False, srt_path=None,
+            variant_type=ClipVariantType.NO_SUBTITLES, clip=clip,
+        )
+
+
+def _render_single_variant(
+    concat_list: Path,
+    out_path: Path,
+    cut_offset: float,
+    duration: float,
+    *,
+    crf: int,
+    preset: str,
+    audio_bitrate: str,
+    subtitle: bool,
+    srt_path: Path | None,
+    variant_type: str,
+    clip: FinalClip,
+) -> None:
+    """执行单个变体的 FFmpeg 渲染并更新数据库。
+
+    :param concat_list: concat 清单文件。
+    :param out_path: 输出文件路径。
+    :param cut_offset: 裁剪偏移(秒)。
+    :param duration: 时长(秒)。
+    :param crf: x264 CRF 值。
+    :param preset: x264 preset。
+    :param audio_bitrate: 音频码率。
+    :param subtitle: 是否烧录字幕。
+    :param srt_path: SRT 字幕路径(可空)。
+    :param variant_type: 变体类型。
+    :param clip: 关联的 FinalClip。
+    """
+    # 构建简化的 ClipOptions 用于滤镜构建
+    from dataclasses import replace
+
+    var_opts = replace(
+        ClipOptions.from_settings(),
+        crf=crf,
+        preset=preset,
+        subtitle=subtitle,
+    )
+
+    af = _build_audio_filter(var_opts)
+    vf = _build_video_filter(var_opts, srt_path)
+
+    cmd = [
+        settings.ffmpeg_path,
+        "-hide_banner", "-loglevel", "error",
+        "-f", "concat", "-safe", "0", "-i", str(concat_list),
+        "-ss", f"{cut_offset:.3f}",
+        "-t", f"{duration:.3f}",
+    ]
+    if af:
+        cmd += ["-af", af]
+    if vf:
+        cmd += ["-vf", vf]
+    cmd += [
+        "-c:v", "libx264", "-crf", str(crf), "-preset", preset,
+        "-c:a", "aac", "-b:a", audio_bitrate,
+        "-movflags", "+faststart", "-y", str(out_path),
+    ]
+
+    logger.info("渲染变体 {} {} -> {} (CRF={} preset={})", variant_type, clip.candidate_id, out_path.name, crf, preset)
+    result = subprocess.run(cmd, capture_output=True)
+
+    with get_session() as db:
+        variant = db.exec(
+            select(ClipVariant).where(
+                ClipVariant.event_id == clip.candidate_id,
+                ClipVariant.variant_type == variant_type,
+            )
+        ).first()
+        if variant:
+            if result.returncode == 0:
+                real_dur, w, h = probe_media(str(out_path))
+                variant.file_path = str(out_path)
+                variant.duration_s = real_dur or duration
+                variant.resolution = f"{w}x{h}" if w and h else None
+                variant.has_subtitles = subtitle
+                variant.render_status = "completed"
+                logger.success("变体 {} candidate={} 渲染完成 -> {}", variant_type, clip.candidate_id, out_path.name)
+            else:
+                variant.render_status = "failed"
+                stderr = result.stderr.decode("utf-8", errors="ignore")
+                logger.error("变体 {} candidate={} 渲染失败: {}", variant_type, clip.candidate_id, stderr)
+            db.add(variant)
+            db.commit()
 
 
 def _file_sha1(path: Path) -> str:

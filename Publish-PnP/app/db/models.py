@@ -629,3 +629,38 @@ class SubtitleTemplate(SQLModel, table=True):
     is_default: bool = Field(default=False, description="是否为默认模板")
     created_at: datetime = Field(default_factory=utcnow)
     updated_at: datetime = Field(default_factory=utcnow)
+
+
+class IntroTemplate(SQLModel, table=True):
+    """片头/片尾模板(``intro_templates``)
+
+    V0.1.8 P1.2:存储片头/片尾的文字与样式配置。
+    支持模板变量:``{streamer_name}``,``{date}``,``{time}``,``{game_name}``,``{room_title}``。
+    """
+
+    __tablename__ = "intro_templates"
+
+    id: int | None = Field(default=None, primary_key=True)
+    name: str = Field(index=True, description="模板名称")
+
+    # 片头。
+    intro_enabled: bool = Field(default=True, description="是否启用片头")
+    intro_text: str = Field(default="{streamer_name} · {date}", description="片头文字(支持变量)")
+    intro_duration_s: float = Field(default=3.0, description="片头时长(秒)")
+    intro_font_name: str = Field(default="Noto Sans SC", description="片头字体")
+    intro_font_size: int = Field(default=48, description="片头字号")
+    intro_font_color: str = Field(default="white", description="片头文字颜色")
+    intro_bg_color: str = Field(default="black@0.6", description="片头背景色(支持透明度)")
+
+    # 片尾。
+    outro_enabled: bool = Field(default=True, description="是否启用片尾")
+    outro_text: str = Field(default="感谢观看", description="片尾文字(支持变量)")
+    outro_duration_s: float = Field(default=2.0, description="片尾时长(秒)")
+    outro_font_name: str = Field(default="Noto Sans SC", description="片尾字体")
+    outro_font_size: int = Field(default=48, description="片尾字号")
+    outro_font_color: str = Field(default="white", description="片尾文字颜色")
+    outro_bg_color: str = Field(default="black@0.6", description="片尾背景色")
+
+    is_default: bool = Field(default=False, description="是否为默认模板")
+    created_at: datetime = Field(default_factory=utcnow)
+    updated_at: datetime = Field(default_factory=utcnow)

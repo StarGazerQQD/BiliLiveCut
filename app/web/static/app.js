@@ -854,6 +854,7 @@ const loaders = {
   clips: loadClips, uploads: loadUploads, models: loadLLM, logs: loadLogs,
   schedules: loadSchedules, login: loadCookieStatus, tasks: loadTasks,
   topics: loadTopics, monitor: loadMonitor, templates: loadTemplates,
+  introTemplates: loadIntroTemplates,
 };
 async function refresh() {
   try {
@@ -910,6 +911,35 @@ document.getElementById("file-import-ass").addEventListener("change", async (e) 
     toast("导入失败: " + err.message);
   }
   e.target.value = "";
+});
+
+// ----------------------------- 片头片尾模板(V0.1.8 P1.2) ----------------------------- //
+async function loadIntroTemplates() {
+  const rows = await api("GET", "/api/intro-templates");
+  $("#intro-templates-list").innerHTML = rows.length ? rows.map((t) => `
+    <div class="item">
+      <div class="head">
+        <div>
+          <div class="title">${esc(t.name)} ${t.is_default ? badge("默认") : ""}</div>
+          <div class="sub">
+            片头 ${t.intro_enabled ? esc(t.intro_text) + " (" + t.intro_duration_s + "s)" : "禁用"}
+            / 片尾 ${t.outro_enabled ? esc(t.outro_text) + " (" + t.outro_duration_s + "s)" : "禁用"}
+          </div>
+        </div>
+        <div class="actions">
+          <button onclick="detIntro(${t.id})">删除</button>
+        </div>
+      </div>
+    </div>`).join("") : `<div class="empty">暂无模板。</div>`;
+}
+window.detIntro = async (id) => {
+  if (!confirm("确认删除?")) return;
+  try { await api("DELETE", `/api/intro-templates/${id}`); loadIntroTemplates(); }
+  catch (e) { toast(e.message); }
+};
+$("#btn-add-intro").addEventListener("click", async () => {
+  try { await api("POST", "/api/intro-templates"); toast("默认模板已创建"); loadIntroTemplates(); }
+  catch (e) { toast(e.message); }
 });
 
 refresh();
