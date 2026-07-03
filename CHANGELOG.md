@@ -1,5 +1,14 @@
 # Changelog
 
+## V0.1.8.1 Alpha (2026-07-04)
+
+### P2 运营增强
+- **P2.1 Dashboard 统计分析**: `GET /api/analytics` + 核心指标/分数分布/每日趋势 Canvas 图表/直播间 TOP10 排行
+- **P2.2 多通道通知**: 钉钉/企业微信机器人 Webhook + SMTP 邮件;切片完成/磁盘不足/任务失败实时推送
+- 配置: `.env` 新增 `NOTIFY_*` / `DINGTALK_*` / `WECOM_*` / `SMTP_*` 通知配置项
+
+---
+
 ## V0.1.8 Alpha (2026-07-04)
 
 ### P0 管线强化

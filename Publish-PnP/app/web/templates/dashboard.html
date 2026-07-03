@@ -33,6 +33,7 @@
     <button class="tab" data-tab="tasks">任务队列</button>
     <button class="tab" data-tab="templates">字幕模板</button>
     <button class="tab" data-tab="intro-templates">片头片尾</button>
+    <button class="tab" data-tab="analytics">数据分析</button>
     <button class="tab" data-tab="monitor">运维面板</button>
     <button class="tab" data-tab="logs">错误日志</button>
   </nav>
@@ -278,6 +279,39 @@
           <button id="btn-add-intro" class="primary">新建默认模板</button>
         </div>
         <div id="intro-templates-list"></div>
+      </div>
+    </section>
+
+    <!-- 数据分析(V0.1.8 P2) -->
+    <section id="tab-analytics" class="panel">
+      <div class="card">
+        <h3>核心指标</h3>
+        <div class="row" id="stats-overview">
+          <span class="stat">🎬 总切片 <b id="stat-total-clips">-</b></span>
+          <span class="stat">📤 已发布 <b id="stat-published">-</b></span>
+          <span class="stat">⏱ 总时长 <b id="stat-duration">-</b>h</span>
+          <span class="stat">⭐ 平均分 <b id="stat-avg-score">-</b></span>
+          <span class="stat">🎯 候选数 <b id="stat-candidates">-</b></span>
+          <span class="stat">📹 录制场次 <b id="stat-sessions">-</b></span>
+          <span class="stat">🔁 重连次数 <b id="stat-reconnects">-</b></span>
+          <span class="stat">💿 原始数据 <b id="stat-raw-gb">-</b>GB</span>
+          <span class="stat">❌ 任务失败 <b id="stat-task-fail">-</b></span>
+        </div>
+      </div>
+
+      <div class="card">
+        <h3>分数分布</h3>
+        <div id="score-dist" style="display:flex;gap:8px;align-items:end;height:120px;padding:8px 0"></div>
+      </div>
+
+      <div class="card">
+        <h3>每日趋势 (近30天)</h3>
+        <canvas id="trend-canvas" width="720" height="200" style="max-width:100%"></canvas>
+      </div>
+
+      <div class="card" id="room-rank-card">
+        <h3>直播间排行 (TOP 10)</h3>
+        <div id="room-ranking"></div>
       </div>
     </section>
 

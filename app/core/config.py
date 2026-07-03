@@ -138,6 +138,31 @@ class Settings(BaseSettings):
     # biliup_upload_cmd=biliup upload "{file}" --title "{title}"
     biliup_upload_cmd: str = ""
 
+    # ---------- 通知/Webhook (V0.1.8 P2) ----------
+    notify_enabled: bool = False           # 是否启用通知
+
+    # 钉钉机器人 Webhook。
+    dingtalk_webhook: str = ""             # 钉钉机器人 Webhook 地址
+    dingtalk_secret: str = ""              # 钉钉机器人加签密钥(可选)
+
+    # 企业微信机器人 Webhook。
+    wecom_webhook: str = ""                # 企业微信机器人 Webhook 地址
+
+    # 邮件通知(SMTP)。
+    smtp_host: str = ""                    # SMTP 服务器
+    smtp_port: int = 465                   # SMTP 端口(默认 SSL 465)
+    smtp_user: str = ""                    # SMTP 用户名
+    smtp_password: str = ""                # SMTP 密码
+    smtp_from: str = ""                    # 发件人地址
+    smtp_to: str = ""                      # 收件人地址(多个用逗号分隔)
+
+    # 通知规则。
+    notify_on_clip: bool = True            # 切片完成时通知
+    notify_on_upload: bool = False         # 投稿完成时通知
+    notify_on_disk_alert: bool = True      # 磁盘不足时通知
+    notify_on_error: bool = True           # 任务永久失败时通知
+    disk_alert_threshold_gb: int = 10      # 磁盘告警阈值(GB)
+
 
 @lru_cache(maxsize=1)
 def get_settings() -> Settings:
