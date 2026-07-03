@@ -197,3 +197,65 @@ class TestBlockedTopics:
     def test_empty_blocked() -> None:
         """空屏蔽列表。"""
         assert is_blocked_topic("任何内容", []) is False
+
+
+# ======================== 文案生成(回退) ========================
+
+class TestFallbackCopywriter:
+    """规则回退文案生成。"""
+
+    @staticmethod
+    def test_generates_all_fields() -> None:
+        """验证回退生成所有必要字段。"""
+        from app.publishing.collection_copywriter import _fallback_copywriter
+
+        events = [
+            {"score": 0.85, "reason": "弹幕突增", "duration_s": 30},
+            {"score": 0.72, "reason": "主播反应", "duration_s": 45},
+        ]
+        result = _fallback_copywriter("审判翻盘合集", events, 75.0)
+
+        assert "summary" in result
+        assert "bilibili_title" in result
+        assert "youtube_title" in result
+        assert "description" in result
+        assert "chapters" in result
+        assert "tags" in result
+        assert "cover_title" in result
+        assert len(result["chapters"]) == 2
+        assert "审判" in result["bilibili_title"]
+
+    @staticmethod
+    def test_empty_title() -> None:
+        """空主题标题也能生成。"""
+        from app.publishing.collection_copywriter import _fallback_copywriter
+
+        result = _fallback_copywriter("", [{"score": 0.5, "duration_s": 10}], 10.0)
+        assert result["bilibili_title"] != ""
+        assert result["youtube_title"] != ""
+
+    @staticmethod
+    def test_sec_to_hhmmss() -> None:
+        """秒转时间格式。"""
+        from app.publishing.collection_copywriter import sec_to_hhmmss
+
+        assert sec_to_hhmmss(0) == "00:00:00"
+        assert sec_to_hhmmss(65) == "00:01:05"
+        assert sec_to_hhmmss(3661) == "01:01:01"
+
+    @staticmethod
+    def test_chapter_ts_accumulates() -> None:
+        """章节时间戳正确累积。"""
+        from app.publishing.collection_copywriter import _fallback_copywriter
+
+        events = [
+            {"score": 0.8, "duration_s": 30},
+            {"score": 0.7, "duration_s": 45},
+            {"score": 0.6, "duration_s": 15},
+        ]
+        result = _fallback_copywriter("合集", events, 90)
+        chapters = result["chapters"]
+        assert len(chapters) == 3
+        assert chapters[0]["ts"] == "00:00:00"
+        assert chapters[1]["ts"] == "00:00:30"
+        assert chapters[2]["ts"] == "00:01:15"
