@@ -43,10 +43,11 @@ def process_segment_sync(
         return None
 
 
-def produce_clip(candidate_id: int) -> FinalClip | None:
+def produce_clip(candidate_id: int, auto_upload: bool = False) -> FinalClip | None:
     """把一个高光候选生成成品切片并配上文案(阶段3)。
 
     :param candidate_id: ``highlight_candidates`` 主键。
+    :param auto_upload: 是否在 ready 后自动入队上传(由房间 auto_upload 开关控制)。
     :returns: 成品 :class:`FinalClip`;失败时 ``None``。
     """
     # 延迟导入:切片/文案依赖较重(FFmpeg、可选 LLM),按需加载。
@@ -67,11 +68,11 @@ def produce_clip(candidate_id: int) -> FinalClip | None:
         logger.error("切片 {} 文案生成失败: {}", clip.id, exc)
         return clip
 
-    # 成品就绪且上传模块开启时,自动入队并上传(全自动链路)。
+    # 成品就绪且上传模块开启且房间允许自动上传时,自动入队上传。
     from app.core import settings_store
     from app.db.models import ClipStatus
 
-    if clip.status == ClipStatus.READY and settings_store.upload_active() and clip.id is not None:
+    if clip.status == ClipStatus.READY and settings_store.upload_active() and auto_upload and clip.id is not None:
         try:
             from app.publishing.uploader import enqueue_and_upload
 
@@ -93,25 +94,45 @@ def process_candidate(candidate_id: int) -> FinalClip | None:
 def make_pipeline_callback(
     backend: TranscriberBackend | None = None,
     produce: bool = False,
+    room_id: int | None = None,
 ):  # noqa: ANN201 — 返回异步回调
     """构造可传给 :class:`~app.recording.recorder.Recorder` 的片段回调。
 
     回调在独立线程中运行 CPU 密集流程,避免阻塞录制事件循环。
+    V0.1.6: 根据房间级 auto_analyze / auto_render / auto_upload 开关分别控制各阶段。
 
     :param backend: 可选转写后端。
     :param produce: 为 ``True`` 时,产生候选后立即自动切片+文案(全自动链路)。
+    :param room_id: 房间 id,用于读取房间级开关(可空,默认使用 produce 参数)。
     :returns: 形如 ``async def cb(segment)`` 的协程回调。
     """
+    from app.db.models import LiveRoom
+    from app.db.session import get_session as _gs
+
+    # 预读房间开关配置。
+    room_auto_analyze = produce
+    room_auto_render = produce
+    room_auto_upload = False
+    if room_id is not None:
+        with _gs() as _db:
+            room = _db.get(LiveRoom, room_id)
+            if room is not None:
+                room_auto_analyze = room.auto_analyze
+                room_auto_render = room.auto_render
+                room_auto_upload = room.auto_upload
 
     async def _callback(segment: RawSegment) -> None:
         if segment.id is None:
             return
         seg_id = segment.id
+        if not room_auto_analyze:
+            logger.debug("房间 auto_analyze=off,跳过片段 {} 的分析。", seg_id)
+            return
         logger.info("流水线接收片段 segment={},提交后台分析。", seg_id)
         candidate = await asyncio.to_thread(process_segment_sync, seg_id, backend)
-        if produce and candidate is not None and candidate.id is not None:
+        if room_auto_render and candidate is not None and candidate.id is not None:
             cand_id = candidate.id
             logger.info("候选 {} 已生成,自动进入切片+文案。", cand_id)
-            await asyncio.to_thread(produce_clip, cand_id)
+            await asyncio.to_thread(produce_clip, cand_id, auto_upload=room_auto_upload)
 
     return _callback

@@ -101,11 +101,23 @@ class LiveRoom(SQLModel, table=True):
     room_id: int | None = Field(default=None, index=True, description="归一化后的真实房间号")
     uploader_name: str | None = Field(default=None, description="主播名")
     title: str | None = Field(default=None, description="直播间标题")
-    mode: str = Field(default=RoomMode.MANUAL, description="审核模式:manual/semi/auto")
+    mode: str = Field(default=RoomMode.MANUAL, description="[已废弃 V0.1.6]审核模式:manual/semi/auto;请改用 auto_* 开关")
     highlight_threshold: float = Field(default=0.65, description="进入候选池的综合评分阈值")
     auto_publish_threshold: float = Field(default=0.85, description="自动发布阈值")
     enabled: bool = Field(default=False, description="是否启用监控/录制")
     authorized: bool = Field(default=False, description="是否已确认拥有录制授权(合规闸)")
+
+    # V0.1.6: 独立自动化开关(替代旧 mode)。
+    auto_record: bool = Field(default=False, description="是否允许自动开始录制")
+    auto_analyze: bool = Field(default=False, description="是否自动执行转写+高光分析")
+    auto_render: bool = Field(default=False, description="是否自动生成切片成品")
+    auto_approve: bool = Field(default=False, description="是否自动批准高分候选(免人工审核)")
+    auto_upload: bool = Field(default=False, description="是否自动提交上传任务")
+
+    # V0.1.6: 审核阈值。
+    auto_approve_threshold: float = Field(default=0.82, description="≥此分自动批准")
+    review_threshold: float = Field(default=0.50, description="≥此分进入人工审核;低于此分自动淘汰")
+
     # V0.1.2 新增:房间级功能开关(录制启动后锁定,不可更改启用状态)
     schedule_enabled: bool = Field(default=False, description="是否启用录制预约")
     auto_threshold_enabled: bool = Field(default=False, description="是否启用阈值自学习")

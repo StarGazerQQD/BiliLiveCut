@@ -187,31 +187,40 @@ def weighted_rule_score(features: dict[str, float], weights: dict[str, float]) -
 
 
 def danmaku_rate_score(
-    window_intensity: float,
-    window_seconds: float,
-    total_intensity: float,
-    span_seconds: float,
+    window_rate: float,
+    baseline_rate: float,
+    window_count: int = 0,
+    min_samples: int = 10,
 ) -> float:
-    """根据"窗口弹幕强度相对全场平均"的倍数给出弹幕热度分。
+    """根据窗口弹幕速率与基线速率的比值,使用 Sigmoid 映射为 0-1 分数。
 
-    强度为弹幕/礼物/SC 的加权和(普通弹幕=1,礼物/SC 按价值折算)。窗口速率
-    明显高于全场平均时给高分(典型的"刷屏/爆点")。
+    设计原则:
+    - 少量弹幕(低于 min_samples)不做过度放大,直接返回 0;
+    - 基线为 0 时,若有足够样本则给中等置信分;
+    - 使用平滑 Sigmoid 替代线性映射,避免极端比值主导评分。
 
-    :param window_intensity: 候选窗口内的弹幕强度之和。
-    :param window_seconds: 候选窗口时长(秒)。
-    :param total_intensity: 全场弹幕强度之和。
-    :param span_seconds: 全场弹幕时间跨度(秒)。
+    :param window_rate: 当前窗口的弹幕速率(条/秒)。
+    :param baseline_rate: 基线弹幕速率(条/秒,来自中位数分桶)。
+    :param window_count: 当前窗口弹幕总条数(用于最小样本量保护)。
+    :param min_samples: 最低弹幕条数阈值,低于此值视为噪声。
     :returns: 0-1 的弹幕热度分。
     """
-    if window_seconds <= 0 or span_seconds <= 0 or total_intensity <= 0:
+    import math
+
+    if window_count < min_samples or window_rate <= 0:
         return 0.0
-    avg_rate = total_intensity / span_seconds
-    if avg_rate <= 0:
-        return 0.0
-    window_rate = window_intensity / window_seconds
-    ratio = window_rate / avg_rate
-    # ratio<=1 -> 0;ratio>=3 -> 满分,中间线性。
-    return float(min(max((ratio - 1.0) / 2.0, 0.0), 1.0))
+
+    # 基线为 0 但有足够弹幕:可能是第一波弹幕,给中等分。
+    if baseline_rate <= 0:
+        return 0.35
+
+    ratio = window_rate / baseline_rate
+
+    # Sigmoid 映射:ratio=1→0.05, ratio=2→0.35, ratio=3→0.73, ratio=5→0.95, ratio=10→~1.0
+    # 公式: 1 / (1 + exp(-(ratio - 1.8) * 1.6))
+    # 无量纲转换,ratio 越大越接近 1,但增速递减(避免单一极端值主导)。
+    score = 1.0 / (1.0 + math.exp(-(ratio - 1.8) * 1.6))
+    return float(round(score, 4))
 
 
 def temporal_iou(a: tuple[float, float], b: tuple[float, float]) -> float:
@@ -368,9 +377,28 @@ def score_segment(segment_id: int) -> HighlightCandidate | None:
         logger.info("片段 {} 候选与既有候选重叠,跳过。", segment_id)
         return None
 
+    # ---- 5b) V0.1.6 审核状态:根据房间阈值自动决定初始状态 ----
+    # P0 重构:取代旧 mode 逻辑。
+    auto_approve_threshold = room.auto_approve_threshold if room else 0.82
+    review_threshold = room.review_threshold if room else 0.50
+    room_auto_approve = bool(room.auto_approve) if room else False
+
+    if room_auto_approve and highlight_score >= auto_approve_threshold:
+        initial_status = CandidateStatus.APPROVED
+        logger.info("片段 {} 达自动批准阈值({}≥{}),自动批准。", segment_id, highlight_score, auto_approve_threshold)
+    elif highlight_score >= review_threshold:
+        initial_status = CandidateStatus.PENDING
+    else:
+        initial_status = CandidateStatus.REJECTED
+        logger.info("片段 {} 低于审核阈值({}<{}),自动淘汰。", segment_id, highlight_score, review_threshold)
+
+    # 自动淘汰的候选仍然入库(供后续调参参考),但标记为 REJECTED。
     dedup_hash = hashlib.sha1(
         f"{session_id}:{round(start_ts.timestamp())}:{round(end_ts.timestamp())}".encode()
     ).hexdigest()
+
+    # 弹幕可解释数据(P0):供审核页展示。
+    danmaku_explain = danmaku_score_explain(session_id, seg_start_ts, seg_end_ts)
 
     candidate = HighlightCandidate(
         session_id=session_id,
@@ -381,11 +409,16 @@ def score_segment(segment_id: int) -> HighlightCandidate | None:
         llm_score=llm_score or 0.0,
         highlight_score=highlight_score,
         features_json=json.dumps(
-            {"features": features, "keyword_hits": kw_hits, "audio": _audio_meta(feats)},
+            {
+                "features": features,
+                "keyword_hits": kw_hits,
+                "audio": _audio_meta(feats),
+                "danmaku_explain": danmaku_explain,
+            },
             ensure_ascii=False,
         ),
         reason=reason,
-        status=CandidateStatus.PENDING,
+        status=initial_status,
         dedup_hash=dedup_hash,
     )
     with get_session() as db:
@@ -465,44 +498,205 @@ def _trend_score(text: str) -> tuple[float, list[str]]:
         return 0.0, []
 
 
+# ---- 弹幕热度评分(P0 重构) ----
+_DANMAKU_BUCKET_S = 10          # 基线计算的分桶粒度(秒)
+_DANMAKU_BASELINE_MINUTES = 20  # 基线窗口:候选前 N 分钟(不足则用全场历史)
+_DANMAKU_MIN_SAMPLES = 10       # 最低弹幕样本量,低于此值视为噪声(0 分)
+# 中心加权窗口:越靠近候选中心时刻的弹幕权重越高(分段线性)。
+_DANMAKU_CENTER_WEIGHT_WINDOW = 30.0  # 中心加权半径(秒)
+_DANMAKU_CENTER_WEIGHT_PEAK = 3.0     # 中心权重峰值倍数
+
+
+def _danmaku_baseline(
+    session_id: int,
+    before_end: object,
+    window_start: object,
+    window_end: object,
+) -> tuple[float, int]:
+    """计算弹幕基线速率(条/秒)。
+
+    使用候选窗口前 _DANMAKU_BASELINE_MINUTES 分钟的数据,按 _DANMAKU_BUCKET_S
+    秒分桶后取中位数速率;样本不足时扩大至排除当前窗口的整场历史。
+
+    :param session_id: 录制会话 id。
+    :param before_end: 基线的结束时间(当前窗口起点,不含窗口内弹幕)。
+    :param window_start: 候选窗口起点(用于排除)。
+    :param window_end: 候选窗口终点(用于排除)。
+    :returns: ``(baseline_rate, total_baseline_count)``。
+    """
+    from datetime import datetime as _datetime, timedelta
+    from app.db.models import Danmaku
+
+    def _n(dt: _datetime) -> _datetime:
+        return dt.replace(tzinfo=None) if getattr(dt, "tzinfo", None) else dt
+
+    before_n = _n(before_end)  # type: ignore[arg-type]
+    baseline_start = before_n - timedelta(minutes=_DANMAKU_BASELINE_MINUTES)  # type: ignore[operator]
+
+    with get_session() as db:
+        rows = db.exec(
+            select(Danmaku.ts).where(
+                Danmaku.session_id == session_id,
+                Danmaku.ts >= baseline_start,
+                Danmaku.ts < before_n,
+                Danmaku.msg_type == "danmaku",
+            )
+        ).all()
+
+    if len(rows) < _DANMAKU_MIN_SAMPLES:
+        # 扩大:取整场弹幕(排除当前窗口)。
+        with get_session() as db:
+            all_rows = db.exec(
+                select(Danmaku.ts).where(
+                    Danmaku.session_id == session_id,
+                    Danmaku.msg_type == "danmaku",
+                )
+            ).all()
+        # 排除落在窗口内的弹幕。
+        w_start_n = _n(window_start) if window_start else None  # type: ignore[arg-type]
+        w_end_n = _n(window_end) if window_end else None  # type: ignore[arg-type]
+        filtered: list[_datetime] = []
+        for (ts,) in all_rows:
+            t = _n(ts)  # type: ignore[arg-type]
+            if w_start_n is not None and w_end_n is not None and w_start_n <= t <= w_end_n:  # type: ignore[operator]
+                continue
+            filtered.append(t)
+        rows = [(t,) for t in filtered]
+
+    if not rows or len(rows) < _DANMAKU_MIN_SAMPLES:
+        return 0.0, 0
+
+    # 按 _DANMAKU_BUCKET_S 秒分桶,计算每桶速率。
+    times_sorted = sorted(_n(r[0]) for r in rows)  # type: ignore[arg-type]
+    t0 = times_sorted[0]
+    buckets: dict[int, int] = {}
+    for t in times_sorted:
+        idx = int((t - t0).total_seconds() / _DANMAKU_BUCKET_S)  # type: ignore[operator]
+        buckets[idx] = buckets.get(idx, 0) + 1
+
+    rates = [v / _DANMAKU_BUCKET_S for v in buckets.values()]
+
+    # 中位数基线
+    rates.sort()
+    n = len(rates)
+    if n == 0:
+        return 0.0, 0
+    median = rates[n // 2] if n % 2 == 1 else (rates[n // 2 - 1] + rates[n // 2]) / 2
+    return float(median), len(rows)
+
+
 def _danmaku_score(session_id: int, start_ts: object, end_ts: object) -> float:
-    """查询会话弹幕并计算给定时间窗的弹幕热度分。
+    """查询会话弹幕并计算给定时间窗的弹幕热度分(P0 重构版)。
+
+    - 当前窗口速率:统计 start_ts~end_ts 内弹幕,靠近中心时刻加权。
+    - 基线速率:使用窗口前 20 分钟数据按 10 秒分桶取中位数。
+    - 最终分:通过 Sigmoid 函数将窗口/基线比值映射为 0-1。
 
     :param session_id: 录制会话 id。
     :param start_ts: 窗口开始时间(datetime)。
     :param end_ts: 窗口结束时间(datetime)。
-    :returns: 0-1 的弹幕热度分;无弹幕数据时返回 0。
+    :returns: 0-1 的弹幕热度分;无足够弹幕数据时返回 0。
     """
     from datetime import datetime as _datetime
     from app.db.models import Danmaku
 
-    def _naive(dt: _datetime) -> _datetime:
-        # 统一去掉时区信息,避免 naive(DB 读回)与 aware 混比报错。
+    def _n(dt: _datetime) -> _datetime:
         return dt.replace(tzinfo=None) if getattr(dt, "tzinfo", None) else dt
 
-    start_n = _naive(start_ts)  # type: ignore[arg-type]
-    end_n = _naive(end_ts)  # type: ignore[arg-type]
+    start_n = _n(start_ts)  # type: ignore[arg-type]
+    end_n = _n(end_ts)  # type: ignore[arg-type]
 
+    # 1) 窗口弹幕:带中心加权。
     with get_session() as db:
-        rows = db.exec(
+        window_rows = db.exec(
             select(Danmaku.ts, Danmaku.value).where(
                 Danmaku.session_id == session_id,
                 Danmaku.ts >= start_n,
                 Danmaku.ts <= end_n,
+                Danmaku.msg_type == "danmaku",
             )
         ).all()
-    if not rows:
+
+    if not window_rows or len(window_rows) < _DANMAKU_MIN_SAMPLES:
         return 0.0
 
-    times = [_naive(r[0]) for r in rows]  # type: ignore[arg-type]
-    span = (max(times) - min(times)).total_seconds()
-    total_intensity = sum(float(r[1]) for r in rows)
-    window_intensity = sum(
-        float(v) for (t, v) in zip(times, (r[1] for r in rows), strict=True)
-        if start_n <= t <= end_n  # type: ignore[operator]
-    )
+    center = start_n + (end_n - start_n) / 2  # type: ignore[operator]
     window_seconds = (end_n - start_n).total_seconds()  # type: ignore[operator]
-    return danmaku_rate_score(window_intensity, window_seconds, total_intensity, span)
+    if window_seconds <= 0:
+        return 0.0
+
+    # 中心加权:距 center 越近权重越高(分段线性,最大 _DANMAKU_CENTER_WEIGHT_PEAK 倍)。
+    weighted_count = 0.0
+    for ts_dt, value in window_rows:
+        t = _n(ts_dt)  # type: ignore[arg-type]
+        dist = abs((t - center).total_seconds())  # type: ignore[operator]
+        if dist <= _DANMAKU_CENTER_WEIGHT_WINDOW:
+            w = 1.0 + (_DANMAKU_CENTER_WEIGHT_PEAK - 1.0) * (1.0 - dist / _DANMAKU_CENTER_WEIGHT_WINDOW)
+        else:
+            w = 1.0
+        weighted_count += float(value) * w
+
+    window_rate = weighted_count / window_seconds
+
+    # 2) 基线速率(排除当前窗口)。
+    baseline_rate, baseline_count = _danmaku_baseline(
+        session_id, start_ts, start_ts, end_ts,
+    )
+
+    # 3) 最终评分。
+    score = danmaku_rate_score(
+        window_rate=window_rate,
+        baseline_rate=baseline_rate,
+        window_count=len(window_rows),
+        min_samples=_DANMAKU_MIN_SAMPLES,
+    )
+    return score
+
+
+def danmaku_score_explain(session_id: int, start_ts: object, end_ts: object) -> dict:
+    """返回弹幕评分的可解释数据,供审核页面展示。
+
+    :returns: 包含 ``window_count``、``window_rate``、``baseline_rate``、
+        ``ratio``、``score`` 等字段的字典。
+    """
+    from datetime import datetime as _datetime
+    from app.db.models import Danmaku
+
+    def _n(dt: _datetime) -> _datetime:
+        return dt.replace(tzinfo=None) if getattr(dt, "tzinfo", None) else dt
+
+    start_n = _n(start_ts)  # type: ignore[arg-type]
+    end_n = _n(end_ts)  # type: ignore[arg-type]
+
+    with get_session() as db:
+        window_rows = db.exec(
+            select(Danmaku.ts).where(
+                Danmaku.session_id == session_id,
+                Danmaku.ts >= start_n,
+                Danmaku.ts <= end_n,
+                Danmaku.msg_type == "danmaku",
+            )
+        ).all()
+
+    window_count = len(window_rows)
+    window_seconds = (end_n - start_n).total_seconds()  # type: ignore[operator]
+    window_rate = window_count / max(window_seconds, 1)
+
+    baseline_rate, baseline_count = _danmaku_baseline(
+        session_id, start_ts, start_ts, end_ts,
+    )
+
+    score = _danmaku_score(session_id, start_ts, end_ts)
+    ratio = (window_rate / baseline_rate) if baseline_rate > 0 else float("inf")
+
+    return {
+        "window_danmaku_count": window_count,
+        "window_rate_ps": round(window_rate, 2),
+        "baseline_rate_ps": round(baseline_rate, 2),
+        "baseline_count": baseline_count,
+        "ratio": f"{ratio:.1f}x" if ratio != float("inf") else "N/A(基线为0)",
+        "score": round(score, 4),
+    }
 
 
 def _mark_scored(segment_id: int) -> None:

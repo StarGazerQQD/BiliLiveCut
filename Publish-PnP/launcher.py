@@ -34,7 +34,7 @@ VENV_DIR = ".venv"
 WHEELS_DIR = "vendor" + os.sep + "wheels"
 REQUIREMENTS = "requirements-bundle.txt"
 APP_NAME = "BiliLiveCut"
-VERSION = "V0.1.5.1 Alpha"
+VERSION = "V0.1.6 Alpha"
 
 # GitHub 源码归档（公共仓库无需 token）
 GITHUB_REPO = "StarGazerQQD/BiliLiveCut"
@@ -57,10 +57,10 @@ FFMPEG_WIN_URL = (
     "ffmpeg-master-latest-win64-gpl.zip"
 )
 
-# pip 镜像（国内极速）
-PIP_INDEX = "https://pypi.tuna.tsinghua.edu.cn/simple"
-PIP_EXTRA_INDEX = "https://mirrors.aliyun.com/pypi/simple/"
-PIP_TRUSTED_HOSTS = ["pypi.tuna.tsinghua.edu.cn", "mirrors.aliyun.com"]
+# pip 镜像（国内极速）: 阿里云优先、清华备用;环境变量 PIP_INDEX_URL/PIP_EXTRA_INDEX_URL 可覆盖。
+PIP_INDEX = "https://mirrors.aliyun.com/pypi/simple/"
+PIP_EXTRA_INDEX = "https://pypi.tuna.tsinghua.edu.cn/simple"
+PIP_TRUSTED_HOSTS = ["mirrors.aliyun.com", "pypi.tuna.tsinghua.edu.cn"]
 
 DOWNLOAD_TIMEOUT_S = 60
 
@@ -73,6 +73,11 @@ ENV_TEMPLATE = """\
 # ---------- 通用 ----------
 APP_ENV=prod
 LOG_LEVEL=INFO
+
+# ---------- pip 镜像（中国大陆加速;可通过环境变量 PIP_INDEX_URL / PIP_EXTRA_INDEX_URL 覆盖）----------
+# 默认: 阿里云优先、清华备用
+# PIP_INDEX_URL=https://mirrors.aliyun.com/pypi/simple/
+# PIP_EXTRA_INDEX_URL=https://pypi.tuna.tsinghua.edu.cn/simple
 
 # ---------- 存储 ----------
 STORAGE_ROOT=./storage
@@ -189,13 +194,15 @@ def _step_header(step: str, root: Path) -> None:
 
 
 def _pip_install(venv_python: Path, root: Path) -> None:
-    """联网安装依赖（清华为主 + 阿里云备选）。"""
+    """联网安装依赖（阿里云优先、清华备用;可通过 PIP_INDEX_URL / PIP_EXTRA_INDEX_URL 环境变量覆盖）。"""
     req = root / REQUIREMENTS
+    index = os.environ.get("PIP_INDEX_URL", PIP_INDEX)
+    extra = os.environ.get("PIP_EXTRA_INDEX_URL", PIP_EXTRA_INDEX)
     cmd = [
         str(venv_python), "-m", "pip", "install",
         "-r", str(req),
-        "-i", PIP_INDEX,
-        "--extra-index-url", PIP_EXTRA_INDEX,
+        "-i", index,
+        "--extra-index-url", extra,
         *[f"--trusted-host={h}" for h in PIP_TRUSTED_HOSTS],
     ]
     subprocess.run(cmd, check=True, timeout=900)
@@ -631,7 +638,7 @@ def main() -> None:
             except subprocess.CalledProcessError as exc:
                 msg = "依赖安装失败。常见原因:\n"
                 msg += "  1) Python 3.13 不兼容:请换用 Python 3.11 或 3.12\n"
-                msg += "  2) 网络问题:请检查是否能访问 pypi.tuna.tsinghua.edu.cn\n"
+                msg += "  2) 网络问题:请检查是否能访问 mirrors.aliyun.com 和 pypi.tuna.tsinghua.edu.cn\n"
                 _fail(msg)
             except subprocess.TimeoutExpired:
                 _fail("依赖安装超时（>15分钟）。请检查网络后重试。")
