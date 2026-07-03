@@ -1,7 +1,7 @@
 """大模型(OpenAI 兼容协议)高光复核与文案能力的底层封装。
 
-系统主要在中国大陆境内运行,Anthropic/Cursor 系模型连接不稳定,故 LLM 层采用
-**OpenAI 兼容协议**,可对接境内可稳定访问的服务商(DeepSeek / 通义千问 Qwen /
+    系统主要在中国大陆境内运行,故 LLM 层采用
+    **OpenAI 兼容协议**,可对接境内可稳定访问的服务商(DeepSeek / 通义千问 Qwen /
 Moonshot Kimi / 智谱 GLM 等)——只需在 ``.env`` 配置 ``LLM_BASE_URL`` /
 ``LLM_API_KEY`` / ``LLM_MODEL``。语音转写仍由本地 Whisper 完成,不依赖联网大模型。
 
@@ -255,6 +255,64 @@ def call_web_search(
     return None
 
 
+def call_trend_search(
+    prompt: str,
+    max_tokens: int = 2048,
+    max_searches: int = 5,
+) -> str | None:
+    """趋势采集专用:使用 ``TREND_API_KEY`` / ``TREND_BASE_URL`` / ``TREND_MODEL`` 的独立配置;
+    若未配置趋势专用 API 则回退到通用 LLM 的多模型列表。
+
+    用于网感资料库的联网采集,可与通用 LLM 使用不同的模型/服务商。
+
+    :param prompt: 用户提示词。
+    :param max_tokens: 最大输出 token 数。
+    :param max_searches: 最大搜索次数(兼容占位,实际取决于服务商)。
+    :returns: 模型输出文本;全部不可用时返回 ``None``。
+    """
+    from app.analysis.llm_providers import LLMProvider
+
+    # 是否配置了趋势专用 API
+    trend_key = settings.trend_api_key.strip()
+    trend_url = settings.trend_base_url.strip()
+
+    if trend_key and trend_url:
+        from app.core.config import settings as cfg
+
+        trend_provider = LLMProvider(
+            id="trend",
+            name="网感采集专用",
+            base_url=trend_url,
+            api_key=trend_key,
+            model=settings.trend_model or cfg.llm_model or "deepseek-chat",
+            web_search_param=cfg.llm_web_search_param,
+        )
+        search_param = trend_provider.web_search_param.strip()
+        # 1) 带联网搜索参数尝试。
+        if search_param:
+            try:
+                text = _complete(trend_provider, prompt, max_tokens, {search_param: True})
+                if text:
+                    logger.info("趋势采集(专用 API + 联网搜索)成功,model={}", trend_provider.model)
+                    return text
+            except Exception as exc:
+                logger.warning(
+                    "趋势采集专用 API 联网搜索失败({}),改普通调用: {}", trend_provider.model, exc,
+                )
+        # 2) 普通调用(无联网)。
+        try:
+            text = _complete(trend_provider, prompt, max_tokens)
+            if text:
+                logger.info("趋势采集(专用 API 普通调用)成功,model={}", trend_provider.model)
+                return text
+        except Exception as exc:
+            logger.warning("趋势采集专用 API 调用失败({}),回退通用 LLM: {}", trend_provider.model, exc)
+
+    # 回退:使用通用 LLM 多模型列表(含联网搜索)
+    logger.info("趋势采集未配置专用 API,回退到通用 LLM。")
+    return call_web_search(prompt, max_tokens, max_searches)
+
+
 def extract_json_array(raw: str) -> list | None:
     """从模型输出中鲁棒地抽取首个 JSON 数组。
 
@@ -316,7 +374,7 @@ def judge_highlight(
     features: dict[str, float],
     danmaku_summary: str = "",
 ) -> HighlightJudgement | None:
-    """调用 Claude 复核某片段是否为高光。
+    """调用 LLM 复核某片段是否为高光。
 
     :param text: 转写文本。
     :param features: 规则特征字典(维度名->0-1 分)。

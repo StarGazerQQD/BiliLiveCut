@@ -1,6 +1,6 @@
 # BiliLiveCut — AI 直播实时切片系统
 
-**当前版本:V0.1.3 Alpha** (`0.1.3-alpha`)
+**当前版本:V0.1.5 Alpha** (`0.1.5-alpha`)
 
 针对 Bilibili 直播的全自动工作流:实时录制 → 转写 → 识别高光 → 生成切片 → 生成文案 → (可选)上传。
 阶段 1–5 全链路已可用;即插即用分发包见 [`Public/`](Public/README.md)。
@@ -75,8 +75,8 @@ python -m app.cli record <db_id> --pipeline
 才调用大模型复核(`HIGHLIGHT_THRESHOLD` 控制最终入候选)。未配置 `LLM_API_KEY`
 时自动走**纯规则模式**,完全可用、零费用。切片边界会吸附到音频静音处,避免断在词中间。
 
-> **大模型选型(境内)**:系统主要在中国大陆运行,Anthropic/Cursor 系连接不稳定,故 LLM
-> 层采用 **OpenAI 兼容协议**,可对接 DeepSeek / 通义千问 / Kimi / 智谱 GLM——只需在 `.env`
+> **大模型选型(境内)**:系统主要在中国大陆运行,故 LLM 层采用 **OpenAI 兼容协议**,
+> 可对接 DeepSeek / 通义千问 / Kimi / 智谱 GLM——只需在 `.env`
 > 配 `LLM_BASE_URL` + `LLM_API_KEY` + `LLM_MODEL`(示例见 `.env.example`)。语音转写始终由
 > 本地 Whisper 完成,不依赖联网。
 

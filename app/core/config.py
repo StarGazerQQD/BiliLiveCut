@@ -79,14 +79,18 @@ class Settings(BaseSettings):
     llm_price_output_per_m: float = 0.0
     llm_daily_budget: float = 0.0
 
-    # 兼容旧配置:若未填 llm_* 而填了 anthropic_*,仍可回退读取(不推荐,境内多不可用)。
+    # 兼容旧配置:若未填 llm_* 而填了 anthropic_*,仍可回退读取(已废弃,仅为兼容保留)。
     anthropic_api_key: str = ""
     anthropic_model: str = ""
     llm_daily_budget_usd: float = 0.0
 
     # ---------- 网感资料库(联网采集热门内容,供评分/文案参考) ----------
     trend_enabled: bool = False           # 是否启用网感资料库(默认关闭,按需开启)
-    trend_model: str = ""                 # 联网搜索用模型(留空则用 anthropic_model)
+    # 趋势采集专用 API 配置(独立于通用 LLM,可指定不同的模型/服务商)。
+    # 留空则回退到通用 LLM 配置(多模型列表或 .env LLM_* 单模型)。
+    trend_api_key: str = ""               # 趋势采集专用 API Key
+    trend_base_url: str = ""              # 趋势采集专用 base_url(OpenAI 兼容)
+    trend_model: str = ""                 # 趋势采集专用模型名(留空则用 llm_model)
     trend_web_search: bool = True         # 是否启用联网搜索工具采集(关闭则仅靠模型知识)
     trend_max_searches: int = Field(default=5, ge=1, le=20)  # 单次采集最多联网搜索次数
     trend_max_items: int = Field(default=40, ge=1, le=200)   # 单次采集解析条目上限

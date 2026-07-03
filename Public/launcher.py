@@ -34,7 +34,7 @@ VENV_DIR = ".venv"
 WHEELS_DIR = "vendor" + os.sep + "wheels"
 REQUIREMENTS = "requirements-bundle.txt"
 APP_NAME = "BiliLiveCut"
-VERSION = "V0.1.4 Alpha"
+VERSION = "V0.1.5 Alpha"
 
 # GitHub 源码归档（公共仓库无需 token）
 GITHUB_REPO = "StarGazerQQD/BiliLiveCut"
@@ -108,6 +108,17 @@ LLM_WEB_SEARCH_PARAM=enable_search
 LLM_PRICE_INPUT_PER_M=0
 LLM_PRICE_OUTPUT_PER_M=0
 LLM_DAILY_BUDGET=0
+
+# ---------- 网感资料库（可选;需配置趋势采集专用 API 或复用上面的 LLM）----------
+TREND_ENABLED=false
+TREND_API_KEY=
+TREND_BASE_URL=
+TREND_MODEL=
+TREND_WEB_SEARCH=true
+TREND_MAX_SEARCHES=5
+TREND_MAX_ITEMS=40
+TREND_RETENTION_DAYS=14
+TREND_MATCH_DAYS=7
 
 # ---------- 高光判断阈值 ----------
 HIGHLIGHT_INIT_THRESHOLD=0.5
