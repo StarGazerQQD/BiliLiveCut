@@ -22,6 +22,22 @@
 - Python **3.11 / 3.12**(推荐;部分 AI 依赖对 3.13/3.14 的预编译包可能尚未就绪)
 - FFmpeg(已加入 PATH,或在 `.env` 指定 `FFMPEG_PATH`)
 
+### Python 依赖源
+
+境内安装推荐优先使用**阿里云 PyPI 镜像**,清华大学镜像作为备用源:
+
+```
+默认源  https://mirrors.aliyun.com/pypi/simple/
+备用源  https://pypi.tuna.tsinghua.edu.cn/simple/
+```
+
+可通过环境变量覆盖(不修改系统级 pip 配置):
+
+```
+PIP_INDEX_URL=https://mirrors.aliyun.com/pypi/simple/
+PIP_EXTRA_INDEX_URL=https://pypi.tuna.tsinghua.edu.cn/simple/
+```
+
 ## 快速开始(Windows PowerShell)
 
 ```powershell
@@ -30,7 +46,9 @@ cd D:\Vibe\BiliLiveCut
 # 1) 创建虚拟环境并安装(阶段1 仅需核心依赖)
 python -m venv .venv
 .\.venv\Scripts\Activate.ps1
-pip install -e .
+pip install -e . `
+  --index-url https://mirrors.aliyun.com/pypi/simple/ `
+  --extra-index-url https://pypi.tuna.tsinghua.edu.cn/simple/
 
 # 2) 准备配置
 Copy-Item .env.example .env   # 按需修改
@@ -57,8 +75,12 @@ python -m app.cli record <db_id>       # db_id 见 list-rooms
 安装 AI 依赖后即可对片段做语音转写与高光评分:
 
 ```powershell
-pip install -e ".[asr]"        # faster-whisper(本地转写,免 API 费,境内可用)
-pip install -e ".[llm]"        # 可选:大模型复核与文案(OpenAI 兼容,配 LLM_API_KEY/LLM_BASE_URL/LLM_MODEL)
+pip install -e ".[asr]" `
+  --index-url https://mirrors.aliyun.com/pypi/simple/ `
+  --extra-index-url https://pypi.tuna.tsinghua.edu.cn/simple/
+pip install -e ".[llm]" `
+  --index-url https://mirrors.aliyun.com/pypi/simple/ `
+  --extra-index-url https://pypi.tuna.tsinghua.edu.cn/simple/
 
 # 对已录制的片段:转写 -> 评分(也可一步 process)
 python -m app.cli transcribe <segment_id>
@@ -114,7 +136,9 @@ python -m app.cli record <db_id> --pipeline --produce
 ## 阶段 4:Web 管理后台
 
 ```powershell
-pip install -e ".[web]"
+pip install -e ".[web]" `
+  --index-url https://mirrors.aliyun.com/pypi/simple/ `
+  --extra-index-url https://pypi.tuna.tsinghua.edu.cn/simple/
 python -m app.cli serve              # 默认 http://127.0.0.1:8000
 python -m app.cli serve --port 8080 --reload
 ```
@@ -158,7 +182,9 @@ docker compose up -d          # 构建并启动(镜像内置 FFmpeg)
 ## 测试
 
 ```powershell
-pip install -e ".[dev]"
+pip install -e ".[dev]" `
+  --index-url https://mirrors.aliyun.com/pypi/simple/ `
+  --extra-index-url https://pypi.tuna.tsinghua.edu.cn/simple/`
 pytest -q
 ```
 
