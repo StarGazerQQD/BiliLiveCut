@@ -112,6 +112,24 @@ async function loadRooms() {
         </label>
         ${r.running ? '<span class="muted">(录制中锁定)</span>' : ""}
       </div>
+      <details class="room-config-detail" style="margin-top:8px">
+        <summary style="font-size:12px;color:var(--muted);cursor:pointer">房间配置(热词/别名/屏蔽)</summary>
+        <div class="thresholds" style="margin-top:6px;flex-direction:column;align-items:stretch">
+          <label>热词(换行分隔)
+            <textarea id="hw-${r.id}" rows="2" style="width:100%;font-size:11px">${(r.room_config.hotwords||[]).join("\n")}</textarea>
+          </label>
+          <label>高光关键词(换行分隔)
+            <textarea id="hk-${r.id}" rows="2" style="width:100%;font-size:11px">${(r.room_config.highlight_keywords||[]).join("\n")}</textarea>
+          </label>
+          <label>别名(每行:错误=正确)
+            <textarea id="al-${r.id}" rows="2" style="width:100%;font-size:11px">${Object.entries(r.room_config.aliases||{}).map(([k,v])=>`${k}=${v}`).join("\n")}</textarea>
+          </label>
+          <label>屏蔽话题(换行分隔)
+            <textarea id="bt-${r.id}" rows="2" style="width:100%;font-size:11px">${(r.room_config.blocked_topics||[]).join("\n")}</textarea>
+          </label>
+          <button onclick="saveRoomConfig(${r.id})" style="margin-top:4px">保存房间配置</button>
+        </div>
+      </details>
       ${r.auto_threshold_enabled ? `<div id="tl-${r.id}" class="threshold-learning"></div>` : ""}
     </div>`).join("");
   $("#rooms-list").innerHTML = html || `<div class="empty">还没有直播间,先在上方添加。</div>`;
@@ -143,6 +161,16 @@ window.saveRoom = async (id) => {
       danmaku_sentiment_enabled: ($(`#sw-ds-${id}`) || {}).checked,
     });
     toast("已保存阈值/模式");
+  } catch (e) { toast("保存失败:" + e.message); }
+};
+window.saveRoomConfig = async (id) => {
+  try {
+    const hw = ($(`#hw-${id}`).value || "").split("\n").map(s => s.trim()).filter(Boolean);
+    const hk = ($(`#hk-${id}`).value || "").split("\n").map(s => s.trim()).filter(Boolean);
+    const al = {}; ($(`#al-${id}`).value || "").split("\n").forEach(line => { const eq = line.indexOf("="); if (eq > 0) al[line.slice(0, eq).trim()] = line.slice(eq + 1).trim(); });
+    const bt = ($(`#bt-${id}`).value || "").split("\n").map(s => s.trim()).filter(Boolean);
+    await api("PATCH", `/api/rooms/${id}`, { room_config: { hotwords: hw, aliases: al, highlight_keywords: hk, blocked_topics: bt } });
+    toast("房间配置已保存");
   } catch (e) { toast("保存失败:" + e.message); }
 };
 
@@ -484,6 +512,7 @@ async function loadTopics() {
             ${t.summary ? `<div class="sub">${esc(t.summary.substring(0,100))}</div>` : ""}
           </div>
           <div class="actions">
+            <a href="/collection/${t.id}" target="_blank" style="text-decoration:none;color:var(--accent);font-size:12px">🎬 编辑合集</a>
             <button onclick="toggleCollection(${t.id},${!t.is_collection})">
               ${t.is_collection ? "取消合集" : "标适合合集"}
             </button>
