@@ -66,6 +66,18 @@
     .badge-approved { background:var(--green); color:#000; }
     .badge-rejected { background:var(--red); color:#fff; }
     .badge-pending { background:var(--yellow); color:#000; }
+    /* 音频波形 */
+    .waveform-chart { background:var(--surface); border-bottom:1px solid var(--border); padding:6px 16px; }
+    .waveform-chart canvas { width:100%; height:60px; display:block; }
+    .waveform-chart .legend { font-size:10px; color:var(--muted); display:flex; gap:12px; margin-top:2px; }
+    /* 字幕时间轴 */
+    .subtitle-card { max-height:200px; overflow-y:auto; }
+    .sub-word { display:inline-block; padding:1px 3px; margin:1px; border-radius:2px; font-size:12px; cursor:pointer; color:var(--muted); transition:background .15s; }
+    .sub-word:hover { color:var(--text); background:var(--border); }
+    .sub-word.active { color:#fff; background:var(--accent); font-weight:600; }
+    .sub-line { display:flex; flex-wrap:wrap; align-items:baseline; padding:2px 0; border-bottom:1px solid var(--border); }
+    .sub-line.active { background:rgba(91,156,245,0.1); }
+    .sub-time { font-size:10px; color:var(--muted); font-family:monospace; min-width:60px; margin-right:6px; flex-shrink:0; }
   </style>
 </head>
 <body>
@@ -92,6 +104,14 @@
       <video id="player" controls style="display:none" crossorigin="anonymous">
         <source id="player-src" src="" type="video/mp4" />
       </video>
+    </div>
+    <div class="waveform-chart" id="waveform-chart">
+      <canvas id="wf-canvas"></canvas>
+      <div class="legend">
+        <span>🔊 音频波形</span>
+        <span style="color:var(--accent)">▌ 播放头</span>
+        <span style="color:var(--green)">▬ 入/出点区间</span>
+      </div>
     </div>
     <div class="danmaku-chart" id="danmaku-chart">
       <canvas id="dm-canvas"></canvas>
@@ -152,6 +172,11 @@
     <div class="card" id="danmaku-explain-card" style="display:none">
       <h3>弹幕解释</h3>
       <div class="explain-text" id="danmaku-explain"></div>
+    </div>
+
+    <div class="card subtitle-card" id="subtitle-card">
+      <h3>字幕时间轴</h3>
+      <div id="subtitle-timeline"></div>
     </div>
 
     <div class="card">
@@ -303,6 +328,12 @@ function renderReview() {
   // 弹幕密度图。
   drawDanmakuChart(d.danmaku_buckets, c.start_ts, c.end_ts, d.danmaku_window);
 
+  // 音频波形。
+  loadWaveform();
+
+  // 字幕。
+  renderSubtitles(d.transcript);
+
   // 视频播放器。
   if (d.existing_clips && d.existing_clips.length > 0) {
     const clip = d.existing_clips[0];
@@ -445,6 +476,181 @@ async function navCandidate(direction) {
   if (!targetId) return;
   window.location.href = `/review/${targetId}`;
 }
+
+// ===== 音频波形 =====
+let waveformPeaks = [];
+let waveformDuration = 0;
+
+async function loadWaveform() {
+  try {
+    const wf = await api("GET", `/review/api/${CAND_ID}/waveform`);
+    waveformPeaks = wf.peaks || [];
+    waveformDuration = wf.duration_s || 0;
+    drawWaveform();
+  } catch (e) { /* 波形生成失败不影响其他功能 */ }
+}
+
+function drawWaveform(playheadTime) {
+  const canvas = $("#wf-canvas");
+  if (!canvas) return;
+  const ctx = canvas.getContext("2d");
+  const rect = canvas.parentElement.getBoundingClientRect();
+  canvas.width = rect.width;
+  canvas.height = 60;
+
+  const W = canvas.width;
+  const H = canvas.height;
+  ctx.clearRect(0, 0, W, H);
+
+  if (!waveformPeaks.length) {
+    ctx.fillStyle = "#888";
+    ctx.font = "11px sans-serif";
+    ctx.fillText("生成中或暂无切片…", 10, H/2);
+    return;
+  }
+
+  const margin = 20;
+  const barW = Math.max(1, (W - margin * 2) / waveformPeaks.length);
+  const midY = H / 2;
+
+  // 计算入/出点在波形上的位置。
+  const dur = waveformDuration || 30;
+  const inOffset = 0; // 波形始终从 0 开始
+  const outOffset = dur;
+  const inX = margin;
+  const outX = W - margin;
+
+  // 绘制波形柱。
+  for (let i = 0; i < waveformPeaks.length; i++) {
+    const x = margin + i * barW;
+    const h = Math.max(1, (waveformPeaks[i] || 0) * (H - 8));
+    const inWindow = x >= inX && x <= outX;
+    ctx.fillStyle = inWindow ? "#34d399" : "#444";
+    ctx.globalAlpha = inWindow ? 0.9 : 0.4;
+    ctx.fillRect(x, midY - h / 2, Math.max(1, barW - 1), h);
+  }
+  ctx.globalAlpha = 1;
+
+  // 播放头。
+  if (playheadTime != null && dur > 0) {
+    const px = margin + (playheadTime / dur) * (W - margin * 2);
+    ctx.strokeStyle = "#5b9cf5";
+    ctx.lineWidth = 2;
+    ctx.beginPath();
+    ctx.moveTo(px, 4);
+    ctx.lineTo(px, H - 4);
+    ctx.stroke();
+    // 播放头三角。
+    ctx.fillStyle = "#5b9cf5";
+    ctx.beginPath();
+    ctx.moveTo(px, 0);
+    ctx.lineTo(px - 4, 8);
+    ctx.lineTo(px + 4, 8);
+    ctx.fill();
+  }
+}
+
+// ===== 字幕时间轴 =====
+let subtitleWords = [];
+
+function renderSubtitles(transcript) {
+  const el = $("#subtitle-timeline");
+  if (!transcript || !transcript.words || !transcript.words.length) {
+    el.innerHTML = "<span style='font-size:11px;color:var(--muted)'>暂无字幕时间轴数据</span>";
+    subtitleWords = [];
+    return;
+  }
+  const words = transcript.words;
+  subtitleWords = words;
+
+  // 按3秒窗口分行。
+  let html = "";
+  let lineWords = [];
+  let lineStart = words[0].start || 0;
+  const WINDOW = 2.5; // 每行最大秒数
+
+  for (const w of words) {
+    const ws = w.start || 0;
+    if (ws - lineStart > WINDOW && lineWords.length > 0) {
+      html += buildSubLine(lineWords, lineStart);
+      lineWords = [];
+      lineStart = ws;
+    }
+    lineWords.push(w);
+  }
+  if (lineWords.length > 0) {
+    html += buildSubLine(lineWords, lineStart);
+  }
+  el.innerHTML = html || "<span style='font-size:11px;color:var(--muted)'>暂无字幕</span>";
+
+  // 点击字幕跳转。
+  $$(".sub-word").forEach(el => {
+    el.addEventListener("click", () => {
+      const t = parseFloat(el.dataset.t);
+      if (!isNaN(t)) {
+        const player = $("#player");
+        if (player) player.currentTime = t;
+      }
+    });
+  });
+}
+
+function buildSubLine(words, lineStart) {
+  let lineHtml = `<div class="sub-line" data-start="${lineStart}">
+    <span class="sub-time">${secToHHMMSS(lineStart)}</span>`;
+  for (const w of words) {
+    lineHtml += `<span class="sub-word" data-t="${w.start || 0}">${esc(w.w || "")} </span>`;
+  }
+  lineHtml += "</div>";
+  return lineHtml;
+}
+
+function esc(s) {
+  if (!s) return "";
+  return s.replace(/&/g,"&amp;").replace(/</g,"&lt;").replace(/>/g,"&gt;").replace(/"/g,"&quot;");
+}
+
+function updateSubtitleHighlight(currentTime) {
+  if (!subtitleWords.length) return;
+  // 高亮当前词。
+  $$(".sub-word").forEach(el => el.classList.remove("active"));
+  $$(".sub-line").forEach(el => el.classList.remove("active"));
+
+  let found = false;
+  for (let i = 0; i < subtitleWords.length; i++) {
+    const w = subtitleWords[i];
+    const ws = w.start || 0;
+    const we = w.end || ws + 0.5;
+    if (currentTime >= ws && currentTime < we) {
+      const wordEls = $$(".sub-word");
+      if (wordEls[i]) {
+        wordEls[i].classList.add("active");
+        // 高亮所在行。
+        const line = wordEls[i].closest(".sub-line");
+        if (line) line.classList.add("active");
+        // 自动滚动。
+        line?.scrollIntoView({ behavior: "smooth", block: "nearest" });
+      }
+      found = true;
+      break;
+    }
+  }
+}
+
+// 播放器时间同步。
+$("#player").addEventListener ? null : null;
+(function initPlayerSync() {
+  let lastT = -1;
+  setInterval(() => {
+    const player = $("#player");
+    if (!player || player.paused || player.readyState < 2) return;
+    const t = player.currentTime;
+    if (Math.abs(t - lastT) < 0.3) return; // 减少不必要的重绘
+    lastT = t;
+    drawWaveform(t);
+    updateSubtitleHighlight(t);
+  }, 200);
+})();
 
 // ===== 键盘快捷键 =====
 document.addEventListener("keydown", (e) => {
