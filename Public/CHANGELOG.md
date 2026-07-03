@@ -16,6 +16,9 @@
 
 - 版本号同步 `v0.1.2.2-alpha` → `v0.1.3-alpha` (与主工程对齐)
 - ``launcher.exe`` 重新编译(8.2 MB)
+- **移除冗余脚本**:``setup.bat/ps1``、``install.bat/ps1``、``run.bat/ps1``、``check.bat/ps1``
+  — 全功能已被 ``launcher.exe`` 覆盖,无需保留
+- ``README.md`` 精简:移除脚本方式章节,目录结构和体检说明更简洁
 
 ## V0.1.2.2 Alpha (2026-07-02)
 
