@@ -1,0 +1,510 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>横屏审片工作台 — BiliLiveCut</title>
+  <link rel="stylesheet" href="/static/style.css" />
+  <style>
+    :root { --bg: #0d0d1a; --surface: #16162a; --border: #2a2a4a; --accent: #5b9cf5; --green: #34d399; --yellow: #fbbf24; --red: #f87171; --text: #e2e2f0; --muted: #8888aa; }
+    * { box-sizing:border-box; margin:0; padding:0; }
+    body { background:var(--bg); color:var(--text); font-family: -apple-system, "Segoe UI", sans-serif; height:100vh; display:flex; flex-direction:column; overflow:hidden; }
+    .topbar { background:var(--surface); border-bottom:1px solid var(--border); padding:8px 20px; display:flex; align-items:center; gap:16px; z-index:10; min-height:48px; }
+    .topbar .brand { font-weight:700; font-size:15px; }
+    .topbar .muted { color:var(--muted); font-size:12px; }
+    .topbar .stats { margin-left:auto; display:flex; gap:14px; font-size:12px; }
+    .topbar .stat b { color:var(--accent); }
+    .shortcut-hint { font-size:11px; color:var(--muted); background:var(--surface); padding:2px 8px; border-radius:4px; border:1px solid var(--border); }
+    .main { display:flex; flex:1; overflow:hidden; }
+    /* 左侧播放器区域 */
+    .player-col { flex:2; display:flex; flex-direction:column; min-width:0; border-right:1px solid var(--border); }
+    .player-area { flex:1; display:flex; align-items:center; justify-content:center; background:#000; position:relative; min-height:300px; }
+    .player-area video { width:100%; height:100%; max-height:60vh; object-fit:contain; }
+    .player-placeholder { color:var(--muted); font-size:14px; text-align:center; }
+    .player-placeholder p { margin:4px 0; }
+    .player-placeholder .msg { font-size:13px; color:var(--yellow); }
+    /* 时间轴控制条 */
+    .timeline-bar { background:var(--surface); padding:10px 16px; display:flex; align-items:center; gap:10px; border-top:1px solid var(--border); flex-wrap:wrap; }
+    .timeline-bar label { font-size:11px; color:var(--muted); }
+    .timeline-bar .time-input { width:90px; padding:4px 6px; background:var(--bg); color:var(--text); border:1px solid var(--border); border-radius:4px; font-family:monospace; font-size:13px; text-align:center; }
+    .timeline-bar .btn-group { display:flex; gap:2px; }
+    .timeline-bar button { padding:4px 8px; font-size:11px; background:var(--surface); color:var(--text); border:1px solid var(--border); border-radius:3px; cursor:pointer; white-space:nowrap; }
+    .timeline-bar button:hover { background:var(--accent); color:#fff; }
+    .timeline-bar button.active { background:var(--accent); color:#fff; }
+    .spacer { flex:1; }
+    /* 弹幕密度图 */
+    .danmaku-chart { background:var(--surface); border-bottom:1px solid var(--border); padding:8px 16px; }
+    .danmaku-chart canvas { width:100%; height:80px; display:block; }
+    .danmaku-chart .legend { font-size:10px; color:var(--muted); display:flex; gap:12px; margin-top:2px; }
+    /* 右侧信息面板 */
+    .info-col { flex:1; display:flex; flex-direction:column; overflow-y:auto; min-width:350px; max-width:480px; }
+    .info-col .card { background:var(--surface); border:1px solid var(--border); border-radius:6px; padding:14px; margin:8px; }
+    .info-col .card h3 { font-size:14px; margin-bottom:8px; color:var(--accent); }
+    .info-col .score-bar { height:6px; background:var(--border); border-radius:3px; margin:6px 0; overflow:hidden; }
+    .info-col .score-fill { height:100%; background:linear-gradient(90deg, var(--accent), var(--green)); border-radius:3px; transition:width .3s; }
+    .score-grid { display:grid; grid-template-columns:1fr 1fr; gap:6px; font-size:12px; }
+    .score-item { display:flex; justify-content:space-between; padding:3px 6px; background:var(--bg); border-radius:3px; }
+    .score-item .val { font-weight:600; }
+    .dim-bars { margin:8px 0; }
+    .dim-row { display:flex; align-items:center; gap:8px; margin:3px 0; font-size:11px; }
+    .dim-row .dim-label { width:70px; text-align:right; color:var(--muted); }
+    .dim-row .dim-bar-wrap { flex:1; height:10px; background:var(--border); border-radius:3px; overflow:hidden; }
+    .dim-row .dim-bar-fill { height:100%; border-radius:3px; }
+    .dim-row .dim-val { width:40px; font-family:monospace; font-size:10px; }
+    .explain-text { font-size:12px; color:var(--yellow); margin-top:6px; }
+    .review-actions { display:flex; flex-wrap:wrap; gap:6px; margin-top:10px; }
+    .review-actions button { padding:6px 12px; font-size:12px; border-radius:4px; border:1px solid var(--border); cursor:pointer; background:var(--surface); color:var(--text); }
+    .review-actions button:hover { opacity:0.85; }
+    .btn-approve { background:var(--green) !important; color:#000 !important; }
+    .btn-reject { background:var(--red) !important; color:#fff !important; }
+    .btn-hold { background:var(--yellow) !important; color:#000 !important; }
+    .review-reason { width:100%; margin-top:8px; padding:6px; background:var(--bg); color:var(--text); border:1px solid var(--border); border-radius:4px; font-size:12px; min-height:50px; }
+    .nav-row { display:flex; gap:4px; }
+    .nav-row button { flex:1; padding:8px; font-size:12px; background:var(--surface); color:var(--text); border:1px solid var(--border); border-radius:4px; cursor:pointer; }
+    .nav-row button:hover { background:var(--accent); color:#fff; }
+    .badge { font-size:10px; padding:1px 6px; border-radius:3px; }
+    .badge-approved { background:var(--green); color:#000; }
+    .badge-rejected { background:var(--red); color:#fff; }
+    .badge-pending { background:var(--yellow); color:#000; }
+  </style>
+</head>
+<body>
+<div class="topbar">
+  <div class="brand">🎬 审片工作台</div>
+  <span class="muted">候选 #<span id="cand-id">-</span></span>
+  <span class="stat">总分 <b id="cand-score">-</b></span>
+  <span class="stat">规则 <b id="rule-score">-</b></span>
+  <span class="stat">LLM <b id="llm-score">-</b></span>
+  <span class="stat">状态 <b id="cand-status">-</b></span>
+  <span class="shortcut-hint">Space 播放/暂停</span>
+  <span class="shortcut-hint">I/O 设入/出点</span>
+  <span class="shortcut-hint">J/K/L ← →</span>
+</div>
+
+<div class="main">
+  <!-- 左侧:播放器+弹幕图 -->
+  <div class="player-col">
+    <div class="player-area" id="player-area">
+      <div class="player-placeholder" id="player-placeholder">
+        <p>🎥 视频播放器</p>
+        <p class="msg">请先在"成品切片"页面生成切片,或通过边界调整后点击「重新渲染」</p>
+      </div>
+      <video id="player" controls style="display:none" crossorigin="anonymous">
+        <source id="player-src" src="" type="video/mp4" />
+      </video>
+    </div>
+    <div class="danmaku-chart" id="danmaku-chart">
+      <canvas id="dm-canvas"></canvas>
+      <div class="legend">
+        <span>📊 弹幕密度 (5s桶)</span>
+        <span style="color:var(--green)">▬ 入/出点区间</span>
+      </div>
+    </div>
+    <div class="timeline-bar" id="timeline">
+      <label>入点:</label>
+      <input class="time-input" id="in-point" value="00:00:00" readonly />
+      <div class="btn-group">
+        <button onclick="adjust('start',-30)" title="左移 30s">-30s</button>
+        <button onclick="adjust('start',-10)">-10s</button>
+        <button onclick="adjust('start',-5)">-5s</button>
+        <button onclick="adjust('start',-3)">-3s</button>
+        <button onclick="adjust('start',+3)" class="active">+3s</button>
+        <button onclick="adjust('start',+5)">+5s</button>
+        <button onclick="adjust('start',+10)">+10s</button>
+        <button onclick="adjust('start',+30)">+30s</button>
+      </div>
+      <span class="spacer"></span>
+      <label>出点:</label>
+      <input class="time-input" id="out-point" value="00:00:30" readonly />
+      <div class="btn-group">
+        <button onclick="adjust('end',-30)">-30s</button>
+        <button onclick="adjust('end',-10)">-10s</button>
+        <button onclick="adjust('end',-5)">-5s</button>
+        <button onclick="adjust('end',-3)">-3s</button>
+        <button onclick="adjust('end',+3)">+3s</button>
+        <button onclick="adjust('end',+5)">+5s</button>
+        <button onclick="adjust('end',+10)" class="active">+10s</button>
+        <button onclick="adjust('end',+30)">+30s</button>
+      </div>
+      <button onclick="doRerender()" style="background:var(--accent);color:#fff;font-weight:600;">🔄 重新渲染</button>
+    </div>
+  </div>
+
+  <!-- 右侧:评分+审核+导航 -->
+  <div class="info-col" id="info-col">
+    <div class="card">
+      <h3>总评分</h3>
+      <div class="score-bar"><div class="score-fill" id="score-fill" style="width:0%"></div></div>
+      <div class="score-grid">
+        <div class="score-item"><span>规则分</span><span class="val" id="rule-val">-</span></div>
+        <div class="score-item"><span>LLM分</span><span class="val" id="llm-val">-</span></div>
+        <div class="score-item"><span>综合分</span><span class="val" id="total-val">-</span></div>
+        <div class="score-item"><span>状态</span><span class="val" id="status-val">-</span></div>
+        <div class="score-item" style="grid-column:span 2"><span>LLM理由</span><span id="reason-val" style="font-size:11px">-</span></div>
+      </div>
+    </div>
+
+    <div class="card" id="score-breakdown-card">
+      <h3>评分维度贡献</h3>
+      <div class="dim-bars" id="dim-bars"></div>
+    </div>
+
+    <div class="card" id="danmaku-explain-card" style="display:none">
+      <h3>弹幕解释</h3>
+      <div class="explain-text" id="danmaku-explain"></div>
+    </div>
+
+    <div class="card">
+      <h3>审核决断</h3>
+      <div class="review-actions">
+        <button class="btn-approve" onclick="submitReview('approved_solo')">✅ 独立成片</button>
+        <button class="btn-approve" onclick="submitReview('approved_collection')">📦 合集候选</button>
+        <button class="btn-hold" onclick="submitReview('hold')">⏸ 保留待定</button>
+        <button onclick="submitReview('maybe_topic')">🔗 可能属某主题</button>
+        <button onclick="submitReview('not_exciting')">💤 不够精彩</button>
+        <button onclick="submitReview('insufficient_context')">📐 上下文不足</button>
+        <button onclick="submitReview('start_too_late')">⏪ 开头截晚</button>
+        <button onclick="submitReview('end_too_early')">⏩ 结尾截早</button>
+        <button onclick="submitReview('duplicate_content')">🔄 内容重复</button>
+        <button onclick="submitReview('subtitle_error')">📝 字幕错误</button>
+        <button onclick="submitReview('visual_issue')">🖼 画面异常</button>
+        <button onclick="submitReview('sensitive')">⚠ 敏感内容</button>
+        <button class="btn-reject" onclick="submitReview('rejected')">❌ 拒绝</button>
+      </div>
+      <textarea class="review-reason" id="review-reason" placeholder="审核备注(选填)…"></textarea>
+    </div>
+
+    <div class="card">
+      <h3>导航</h3>
+      <div class="nav-row">
+        <button id="btn-prev" onclick="navCandidate('prev')">◀ 上一个分段</button>
+        <button id="btn-next" onclick="navCandidate('next')">下一个分段 ▶</button>
+      </div>
+    </div>
+  </div>
+</div>
+
+<div id="toast" class="toast"></div>
+
+<script>
+// ===== 状态 =====
+const CAND_ID = {{ candidate_id }};
+let reviewData = null;
+let adjustedStart = null;
+let adjustedEnd = null;
+let eventId = null;
+
+// ===== 工具函数 =====
+const $ = (s) => document.querySelector(s);
+const $$ = (s) => document.querySelectorAll(s);
+
+function fmtTime(iso) {
+  if (!iso) return "--";
+  const d = new Date(iso);
+  return d.toLocaleTimeString("zh-CN", { hour12: false });
+}
+
+function fmtTimeShort(iso) {
+  if (!iso) return "--";
+  const m = iso.match(/T(\d{2}:\d{2}:\d{2})/);
+  return m ? m[1] : iso.substring(0, 19);
+}
+
+function pad(n) { return String(n).padStart(2,"0"); }
+function secToHHMMSS(total) {
+  const s = Math.abs(Math.round(total));
+  const h = Math.floor(s/3600);
+  const m = Math.floor((s%3600)/60);
+  const sec = s%60;
+  return `${pad(h)}:${pad(m)}:${pad(sec)}`;
+}
+
+function durationSec(isoStart, isoEnd) {
+  if (!isoStart || !isoEnd) return 0;
+  return (new Date(isoEnd) - new Date(isoStart)) / 1000;
+}
+
+async function api(method, url, body) {
+  const opts = { method, headers: {} };
+  if (body) { opts.headers["Content-Type"] = "application/json"; opts.body = JSON.stringify(body); }
+  const resp = await fetch(url, opts);
+  if (!resp.ok) {
+    const t = await resp.text();
+    throw new Error(t.substring(0, 100));
+  }
+  const ct = resp.headers.get("content-type") || "";
+  return ct.includes("json") ? resp.json() : resp.text();
+}
+
+function toast(msg) {
+  const el = $("#toast");
+  el.textContent = msg;
+  el.classList.add("show");
+  setTimeout(() => el.classList.remove("show"), 2500);
+}
+
+// ===== 加载数据 =====
+async function loadReviewData() {
+  try {
+    reviewData = await api("GET", `/review/api/${CAND_ID}`);
+    renderReview();
+  } catch (e) {
+    toast("加载失败:" + e.message);
+  }
+}
+
+function renderReview() {
+  const d = reviewData;
+  const c = d.candidate;
+
+  $("#cand-id").textContent = c.id;
+  $("#cand-score").textContent = c.highlight_score.toFixed(3);
+  $("#rule-score").textContent = c.rule_score.toFixed(2);
+  $("#llm-score").textContent = c.llm_score.toFixed(2);
+  $("#cand-status").textContent = c.status;
+
+  $("#score-fill").style.width = Math.round(c.highlight_score * 100) + "%";
+  $("#rule-val").textContent = c.rule_score.toFixed(3);
+  $("#llm-val").textContent = c.llm_score.toFixed(3);
+  $("#total-val").textContent = c.highlight_score.toFixed(3);
+  $("#status-val").textContent = c.status;
+  $("#reason-val").textContent = c.reason || "(无)";
+
+  // 入/出点。
+  const dur = durationSec(c.start_ts, c.end_ts);
+  $("#in-point").value = secToHHMMSS(0);
+  $("#out-point").value = secToHHMMSS(dur);
+
+  adjustedStart = c.start_ts;
+  adjustedEnd = c.end_ts;
+
+  // 评分维度贡献。
+  let barsHtml = "";
+  const colors = {"volume":"#f87171","keywords":"#fbbf24","speech_rate":"#34d399","laughter":"#a78bfa","danmaku":"#5b9cf5","danmaku_sentiment":"#f472b6","trend":"#fb923c"};
+  for (const dim of d.score_breakdown) {
+    const pct = Math.round(dim.value * 100);
+    barsHtml += `
+      <div class="dim-row">
+        <span class="dim-label">${dim.label}</span>
+        <div class="dim-bar-wrap"><div class="dim-bar-fill" style="width:${pct}%;background:${colors[dim.dim]||"#888"}"></div></div>
+        <span class="dim-val">${dim.value.toFixed(3)}</span>
+      </div>`;
+  }
+  $("#dim-bars").innerHTML = barsHtml || "<span style='font-size:11px;color:var(--muted)'>暂无维度数据</span>";
+
+  // 弹幕解释。
+  if (d.danmaku_explain && d.danmaku_explain.window_count !== undefined) {
+    $("#danmaku-explain-card").style.display = "";
+    const de = d.danmaku_explain;
+    $("#danmaku-explain").textContent =
+      `当前窗口 ${de.window_rate?.toFixed(1) || 0} 条/秒, 房间基线 ${de.baseline_rate?.toFixed(1) || 0} 条/秒, 热度为平时的 ${(de.ratio || 0).toFixed(1)} 倍。(窗口弹幕 ${de.window_count || 0} 条)`;
+  }
+
+  // 弹幕密度图。
+  drawDanmakuChart(d.danmaku_buckets, c.start_ts, c.end_ts, d.danmaku_window);
+
+  // 视频播放器。
+  if (d.existing_clips && d.existing_clips.length > 0) {
+    const clip = d.existing_clips[0];
+    $("#player-src").src = clip.file_path;
+    $("#player").style.display = "";
+    $("#player-placeholder").style.display = "none";
+    $("#player").load();
+  }
+
+  // 导航按钮。
+  if (d.prev_candidates && d.prev_candidates.length > 0) {
+    $("#btn-prev").textContent = `◀ 上一个 (#${d.prev_candidates[d.prev_candidates.length-1].id} ${d.prev_candidates[d.prev_candidates.length-1].score?.toFixed(2)})`;
+    $("#btn-prev").dataset.target = d.prev_candidates[d.prev_candidates.length-1].id;
+  } else {
+    $("#btn-prev").disabled = true;
+  }
+  if (d.next_candidates && d.next_candidates.length > 0) {
+    $("#btn-next").textContent = `下一个 (#${d.next_candidates[0].id} ${d.next_candidates[0].score?.toFixed(2)}) ▶`;
+    $("#btn-next").dataset.target = d.next_candidates[0].id;
+  } else {
+    $("#btn-next").disabled = true;
+  }
+}
+
+// ===== 弹幕密度图 =====
+function drawDanmakuChart(buckets, startTs, endTs, windowCtx) {
+  const canvas = $("#dm-canvas");
+  const ctx = canvas.getContext("2d");
+  const rect = canvas.parentElement.getBoundingClientRect();
+  canvas.width = rect.width;
+  canvas.height = 80;
+
+  const W = canvas.width;
+  const H = canvas.height;
+  ctx.clearRect(0, 0, W, H);
+
+  if (!buckets || buckets.length === 0) {
+    ctx.fillStyle = "#888";
+    ctx.font = "11px sans-serif";
+    ctx.fillText("暂无弹幕数据", 10, H/2);
+    return;
+  }
+
+  const maxCount = Math.max(...buckets.map(b => b.count), 1);
+  const margin = 30;
+  const barW = Math.max(1, (W - margin * 2) / buckets.length);
+
+  // 绘制柱状图。
+  for (let i = 0; i < buckets.length; i++) {
+    const h = (buckets[i].count / maxCount) * (H - 20);
+    const x = margin + i * barW;
+    const y = H - h - 10;
+
+    // 判断该 bucket 是否在候选窗口内。
+    const bucketTime = new Date(buckets[i].t * 1000).toISOString();
+    const inWindow = bucketTime >= startTs && bucketTime <= endTs;
+
+    ctx.fillStyle = inWindow ? "#34d399" : "#5b9cf5";
+    ctx.globalAlpha = inWindow ? 1.0 : 0.4;
+    ctx.fillRect(x, y, Math.max(1, barW - 1), h);
+  }
+  ctx.globalAlpha = 1;
+
+  // 底部时间轴。
+  if (buckets.length > 0) {
+    ctx.fillStyle = "#888";
+    ctx.font = "9px monospace";
+    const t0 = new Date(buckets[0].t * 1000);
+    const t1 = new Date(buckets[buckets.length - 1].t * 1000);
+    ctx.fillText(t0.toLocaleTimeString("zh-CN", {hour:"2-digit",minute:"2-digit",second:"2-digit"}), margin, H - 2);
+    const endLabel = t1.toLocaleTimeString("zh-CN", {hour:"2-digit",minute:"2-digit",second:"2-digit"});
+    ctx.fillText(endLabel, W - margin - 60, H - 2);
+  }
+
+  // 最大值标注。
+  ctx.fillStyle = "#fff";
+  ctx.font = "10px monospace";
+  ctx.fillText(maxCount + "", margin, 12);
+}
+
+// ===== 边界调整 =====
+async function adjust(side, secs) {
+  const currentIn = $("#in-point").value;
+  const currentOut = $("#out-point").value;
+
+  try {
+    const res = await api("POST", `/review/api/${CAND_ID}/adjust`, { adjust_s: secs, side });
+    if (res.adjusted_start_ts) adjustedStart = res.adjusted_start_ts;
+    if (res.adjusted_end_ts) adjustedEnd = res.adjusted_end_ts;
+    if (res.event_id) eventId = res.event_id;
+
+    // 更新显示。
+    const dur = durationSec(reviewData.candidate.start_ts, reviewData.candidate.end_ts);
+    if (side === "start" || side === "both") {
+      const origStart = new Date(reviewData.candidate.start_ts).getTime() / 1000;
+      const adjStart = new Date(adjustedStart).getTime() / 1000;
+      const offset = adjStart - origStart;
+      $("#in-point").value = secToHHMMSS(offset);
+    }
+    if (side === "end" || side === "both") {
+      const origStart = new Date(reviewData.candidate.start_ts).getTime() / 1000;
+      const adjEnd = new Date(adjustedEnd).getTime() / 1000;
+      const offset = adjEnd - origStart;
+      $("#out-point").value = secToHHMMSS(offset);
+    }
+    toast(`边界已调整:${side} ${secs > 0 ? "+" : ""}${secs}s`);
+  } catch (e) {
+    toast("调整失败:" + e.message);
+  }
+}
+
+async function doRerender() {
+  toast("正在重新渲染,请稍候…");
+  try {
+    const res = await api("POST", `/review/api/${CAND_ID}/rerender`);
+    toast("渲染完成! clip #" + res.clip_id);
+    // 重新加载以获取新 clip。
+    reviewData = await api("GET", `/review/api/${CAND_ID}`);
+    renderReview();
+  } catch (e) {
+    toast("渲染失败:" + e.message);
+  }
+}
+
+async function submitReview(decision) {
+  const reason = $("#review-reason").value;
+  try {
+    await api("POST", `/review/api/${CAND_ID}/review`, { decision, reason });
+    toast("审核已提交:" + decision);
+    reviewData.candidate.status = decision.startsWith("approved") ? "approved" : (decision === "rejected" ? "rejected" : "pending");
+    renderReview();
+  } catch (e) {
+    toast("审核失败:" + e.message);
+  }
+}
+
+async function navCandidate(direction) {
+  const btn = direction === "prev" ? $("#btn-prev") : $("#btn-next");
+  const targetId = btn.dataset.target;
+  if (!targetId) return;
+  window.location.href = `/review/${targetId}`;
+}
+
+// ===== 键盘快捷键 =====
+document.addEventListener("keydown", (e) => {
+  // 忽略在输入框中按键。
+  if (e.target.tagName === "INPUT" || e.target.tagName === "TEXTAREA" || e.target.tagName === "SELECT") return;
+
+  const player = $("#player");
+  switch (e.key) {
+    case " ": case "Spacebar":
+      e.preventDefault();
+      if (player.paused) player.play(); else player.pause();
+      break;
+    case "i": case "I":
+      e.preventDefault();
+      // 在当前位置设入点。
+      if (player.currentTime !== undefined) {
+        const cur = player.currentTime;
+        const origStart = new Date(reviewData.candidate.start_ts).getTime() / 1000;
+        adjust("start", cur - (new Date(adjustedStart).getTime()/1000 - origStart));
+      }
+      break;
+    case "o": case "O":
+      e.preventDefault();
+      if (player.currentTime !== undefined) {
+        const cur = player.currentTime;
+        const origStart = new Date(reviewData.candidate.start_ts).getTime() / 1000;
+        adjust("end", cur - (new Date(adjustedEnd).getTime()/1000 - origStart));
+      }
+      break;
+    case "ArrowLeft":
+      e.preventDefault();
+      player.currentTime = Math.max(0, player.currentTime - 5);
+      break;
+    case "ArrowRight":
+      e.preventDefault();
+      player.currentTime = Math.min(player.duration || Infinity, player.currentTime + 5);
+      break;
+    case "j": case "J":
+      e.preventDefault();
+      player.currentTime = Math.max(0, player.currentTime - 10);
+      break;
+    case "l": case "L":
+      e.preventDefault();
+      player.currentTime = Math.min(player.duration || Infinity, player.currentTime + 10);
+      break;
+    case "k": case "K":
+      e.preventDefault();
+      player.pause();
+      break;
+  }
+});
+
+// ===== 启动 =====
+loadReviewData();
+
+window.addEventListener("resize", () => {
+  if (reviewData) {
+    drawDanmakuChart(reviewData.danmaku_buckets, reviewData.candidate.start_ts, reviewData.candidate.end_ts, reviewData.danmaku_window);
+  }
+});
+</script>
+</body>
+</html>

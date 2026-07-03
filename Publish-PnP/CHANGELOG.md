@@ -4,6 +4,10 @@
 
 ### P0
 - 弹幕评分重构、自动化开关拆分、持久化任务队列、pip 镜像阿里云优先。详见根目录 `CHANGELOG.md`。
+
+### P1
+- 横屏审片工作台、主题识别与聚类、HighlightEvent/ClipVariant 模型。详见根目录 `CHANGELOG.md`。
+
 - `launcher.exe` 需重新编译同步。
 
 ## V0.1.5.1 Alpha (2026-07-03)
