@@ -763,13 +763,52 @@ document.addEventListener("DOMContentLoaded", () => {
 });
 
 
+// ----------------------------- P3 运维面板 ----------------------------- //
+async function loadMonitor() {
+  try {
+    const d = await api("GET", "/api/monitor");
+    $("#mon-disk").textContent = `${d.disk.free_gb}GB / ${d.disk.total_gb}GB (${d.disk.free_percent}%)`;
+    $("#mon-raw").textContent = d.raw_size_gb;
+    $("#mon-clips").textContent = d.clips_size_gb;
+    $("#mon-cpu").textContent = d.cpu_percent != null ? d.cpu_percent.toFixed(0) : "--";
+    $("#mon-mem").textContent = d.memory.percent.toFixed(0);
+    const safeEl = $("#mon-safe");
+    safeEl.textContent = d.disk_safe ? "✅ 磁盘安全" : "⚠ 磁盘不足";
+    safeEl.style.color = d.disk_safe ? "var(--green)" : "var(--red)";
+    let stageHtml = "";
+    for (const [stage, count] of Object.entries(d.tasks.by_stage || {})) {
+      stageHtml += `<span class="stat">${stage} <b>${count}</b></span>`;
+    }
+    $("#task-stage-stats").innerHTML = stageHtml || "<span>无任务</span>";
+    $("#mon-oldest").textContent = d.tasks.oldest_wait_s;
+    $("#mon-running").textContent = d.running_room_count;
+    $("#mon-monitor").textContent = d.monitor.running ? "运行中" : "已停止";
+    const failures = d.recent_failures || [];
+    $("#mon-failures").innerHTML = failures.length ? failures.map(f =>
+      `<div style="border-bottom:1px solid var(--border);padding:4px 0">
+        <span class="muted">#${f.id} seg=${f.segment_id} ${f.stage} 重试${f.attempts}</span>
+        <div style="color:var(--red);font-size:11px">${esc(f.error||"")}</div>
+      </div>`
+    ).join("") : "<span class='muted'>无失败任务 ✅</span>";
+  } catch (e) { /* 静默 */ }
+}
+window.triggerMaintenance = async () => {
+  toast("维护中…");
+  try {
+    const r = await api("POST", "/api/monitor/disk-maintenance");
+    toast(`维护完成:清理原始 ${r.cleaned_raw} 个,被拒切片 ${r.cleaned_rejected} 个`);
+    loadMonitor();
+  } catch (e) { toast("维护失败:" + e.message); }
+};
+
+
 // ----------------------------- 轮询 ----------------------------- //
 const loaders = {
   rooms: loadRooms, recording: loadRecording, transcripts: loadTranscripts,
   danmaku: loadDanmaku, trends: loadTrends, candidates: loadCandidates,
   clips: loadClips, uploads: loadUploads, models: loadLLM, logs: loadLogs,
   schedules: loadSchedules, login: loadCookieStatus, tasks: loadTasks,
-  topics: loadTopics,
+  topics: loadTopics, monitor: loadMonitor,
 };
 async function refresh() {
   try {

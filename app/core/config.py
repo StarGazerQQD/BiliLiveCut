@@ -120,6 +120,11 @@ class Settings(BaseSettings):
     # 录制自动恢复:启动时检查最近 N 小时内是否有中断的会话。
     auto_recover_max_age_hours: int = Field(default=24, ge=1, le=72)
 
+    # ---------- V0.1.7 P3:磁盘保护与存储生命周期 ----------
+    min_free_disk_gb: float = Field(default=10.0, ge=1.0, description="最低剩余磁盘空间(GB),低于此值暂停高风险任务")
+    raw_retention_days: int = Field(default=7, ge=1, le=90, description="原始录像保留天数")
+    clip_cleanup_delay_hours: int = Field(default=24, ge=1, le=720, description="成片成功后原始分段延迟清理(小时)")
+
     # ---------- 上传 ----------
     uploader: str = "manual"                  # 默认上传器(manual 时不触碰平台接口)
     upload_max_retries: int = Field(default=3, ge=0, le=10)

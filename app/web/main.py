@@ -30,6 +30,7 @@ from app.web import service
 from app.web.routers.api import router as api_router
 from app.web.routers.review_router import review_router
 from app.web.routers.collection_router import collection_router
+from app.web.routers.monitor_router import monitor_router
 
 _BASE_DIR = Path(__file__).resolve().parent
 _TEMPLATES = Jinja2Templates(directory=str(_BASE_DIR / "templates"))
@@ -64,6 +65,11 @@ async def lifespan(_app: FastAPI) -> AsyncIterator[None]:
 
     logger.info("Web 后台已启动。")
     try:
+        # V0.1.7 P3:启动开播自动录制监控器。
+        from app.pipeline.live_monitor import live_monitor
+
+        await live_monitor.start()
+
         yield
     finally:
         schedule_task.cancel()
@@ -72,6 +78,7 @@ async def lifespan(_app: FastAPI) -> AsyncIterator[None]:
         except asyncio.CancelledError:
             pass
         await trend_scheduler.stop()
+        await live_monitor.stop()
         await service.recorder_manager.stop_all()
         await task_worker.stop()
         logger.info("Web 后台已关闭,所有录制已停止。")
@@ -138,6 +145,7 @@ app = FastAPI(
 app.include_router(api_router)
 app.include_router(review_router)
 app.include_router(collection_router)
+app.include_router(monitor_router)
 app.mount("/static", StaticFiles(directory=str(_BASE_DIR / "static")), name="static")
 
 
