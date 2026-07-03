@@ -89,20 +89,20 @@ class FasterWhisperBackend:
         """
         return _load_whisper_model(self.model_size, self.device, self.compute_type)
 
-    def transcribe(self, audio_path: str) -> TranscriptionResult:
+    def transcribe(self, audio_path: str, initial_prompt: str | None = None) -> TranscriptionResult:
         """转写文件;开启 VAD 过滤与词级时间戳。
 
         :param audio_path: 文件路径。
+        :param initial_prompt: Whisper 提示词(hotwords),引导模型识别特定词汇。
         :returns: :class:`TranscriptionResult`。
         """
         model = self._load_model()
         # vad_filter:先用语音活动检测去掉静音段,减少幻觉与无效计算(降本)。
         # word_timestamps:输出词级时间,供边界吸附与语速分析使用。
-        segments, info = model.transcribe(
-            audio_path,
-            vad_filter=True,
-            word_timestamps=True,
-        )
+        kwargs = {"vad_filter": True, "word_timestamps": True}
+        if initial_prompt:
+            kwargs["initial_prompt"] = initial_prompt
+        segments, info = model.transcribe(audio_path, **kwargs)
 
         words: list[Word] = []
         texts: list[str] = []
@@ -164,6 +164,9 @@ def transcribe_segment(
 ) -> Transcript:
     """转写指定片段并把结果写入数据库。
 
+    自动注入房间级 hotwords 到 Whisper initial_prompt,并对转写结果
+    应用房间级 aliases 纠错。
+
     :param segment_id: ``raw_segments`` 主键。
     :param backend: 可选转写后端;默认使用 faster-whisper。
     :returns: 已写入的 :class:`Transcript`。
@@ -177,8 +180,14 @@ def transcribe_segment(
             raise ValueError(f"片段不存在: id={segment_id}")
         file_path = segment.file_path
 
-    logger.info("开始转写 segment={} -> {}", segment_id, file_path)
-    result = backend.transcribe(file_path)
+        # V0.1.8 P0:加载房间配置获取 hotwords 作为 Whisper initial_prompt。
+        initial_prompt = _build_whisper_prompt(db, segment)
+
+    logger.info("开始转写 segment={} -> {} initial_prompt={!r}", segment_id, file_path, initial_prompt)
+    result = backend.transcribe(file_path, initial_prompt=initial_prompt)
+
+    # V0.1.8 P0:应用房间级 aliases 纠错。
+    text = _apply_room_aliases(result.text, segment_id)
 
     words_json = json.dumps(
         [{"w": w.word, "start": w.start, "end": w.end} for w in result.words],
@@ -187,7 +196,7 @@ def transcribe_segment(
     transcript = Transcript(
         segment_id=segment_id,
         language=result.language,
-        text=result.text,
+        text=text,
         words_json=words_json,
         avg_logprob=result.avg_logprob,
     )
@@ -209,3 +218,58 @@ def transcribe_segment(
         result.language,
     )
     return transcript
+
+
+def _build_whisper_prompt(db, segment) -> str | None:
+    """从房间配置构建 Whisper initial_prompt(hotwords)。
+
+    格式:用逗号分隔的专有名词列表,引导 Whisper 识别主播名/游戏名/角色名。
+
+    :param db: 数据库会话。
+    :param segment: RawSegment 实例。
+    :returns: initial_prompt 字符串或 ``None``。
+    """
+    from app.analysis.room_config import load_room_config
+    from app.db.models import LiveRoom, RecordingSession
+
+    session = db.get(RecordingSession, segment.session_id) if segment.session_id else None
+    if session is None:
+        return None
+    room = db.get(LiveRoom, session.room_id) if session.room_id else None
+    if room is None:
+        return None
+
+    cfg = load_room_config(room)
+    hotwords: list[str] = cfg.get("hotwords", [])
+    if not hotwords:
+        return None
+    return ", ".join(hotwords)
+
+
+def _apply_room_aliases(text: str, segment_id: int) -> str:
+    """对转写文本应用房间级 aliases 纠错。
+
+    :param text: 转写原始文本。
+    :param segment_id: 片段 id(用于查找房间配置)。
+    :returns: 纠错后的文本。
+    """
+    from app.analysis.room_config import apply_aliases, load_room_config
+    from app.db.models import LiveRoom, RawSegment, RecordingSession
+    from app.db.session import get_session as _gs
+
+    with _gs() as db:
+        seg = db.get(RawSegment, segment_id)
+        if seg is None:
+            return text
+        session = db.get(RecordingSession, seg.session_id) if seg.session_id else None
+        if session is None:
+            return text
+        room = db.get(LiveRoom, session.room_id) if session.room_id else None
+        if room is None:
+            return text
+        cfg = load_room_config(room)
+
+    aliases: dict[str, str] = cfg.get("aliases", {})
+    if not aliases:
+        return text
+    return apply_aliases(text, aliases)
