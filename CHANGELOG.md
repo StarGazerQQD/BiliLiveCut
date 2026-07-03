@@ -1,5 +1,29 @@
 # Changelog
 
+## V0.1.7 Alpha (2026-07-03)
+
+### P1 补齐
+- **音频波形**:FFmpeg PCM 采样 + Canvas 柱状图渲染,播放头三角同步,入/出点绿色区间标注。
+- **字幕时间轴**:词级时间戳渲染,按 2.5s 分窗,点击跳转,播放同步高亮行/词。
+
+### P2 合集编辑 + 渲染
+- **合集编辑器**:`/collection/{topic_id}` 拖拽排序、时长汇总、相邻事件重叠/间隙检测(≤2s 可合并)、章节标题编辑、文案生成。
+- **合集成片**:FFmpeg concat 多片段拼接,EBU R128 响度标准化,可选章节标题卡(纯色背景+白色文字,2s)。
+- **文案生成**:LLM 辅助 + 规则回退双路。输出:主题摘要、B站/YouTube 标题、简介、章节时间戳、封面短标题、标签。
+- **房间级配置**:热词/别名/高光关键词/屏蔽话题,存储于 `LiveRoom.room_config_json`,Dashboard 折叠面板编辑。
+
+### 新增文件
+- `app/pipeline/collection.py` — 合集渲染 + 重叠检测
+- `app/web/routers/collection_router.py` — 合集编辑 API
+- `app/web/templates/collection.html` — 合集编辑器页面
+- `app/publishing/collection_copywriter.py` — 合集文案生成
+- `app/analysis/room_config.py` — 房间配置工具
+
+### 测试
+- 新增 27 项 P1/P2 单元测试,全量 149 项通过,零回归。
+
+---
+
 ## V0.1.6 Alpha (2026-07-03)
 
 ### P0 重构
