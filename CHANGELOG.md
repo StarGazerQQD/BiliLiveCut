@@ -12,8 +12,18 @@
 
 ### P0 基础设施
 - **pip 镜像源调整**:默认源→阿里云 PyPI 镜像,备用源→清华大学镜像。支持 `PIP_INDEX_URL` / `PIP_EXTRA_INDEX_URL` 环境变量覆盖。更新 `pip.ini`、`launcher.py`、`build_bundle.py`、`.env.example`。
-- **数据库迁移**:`live_rooms` 表新增 7 列(`auto_record`/`auto_analyze`/`auto_render`/`auto_approve`/`auto_upload`/`auto_approve_threshold`/`review_threshold`)及旧 mode→新开关的兼容迁移。
+- **持久化任务队列**:新增 `SegmentTask` 模型与 14 个阶段状态(`RECORDED`→`QUEUED_FOR_TRANS`→`TRANSCRIBING`→...→`COMPLETED`/`FAILED`/`CANCELLED`)。阶段独立执行、独立重试,幂等键防重复。GPU 转写和 FFmpeg 渲染分别控制并发数。
+- **任务 Worker (`app/pipeline/task_worker.py`)**:异步轮询调度器,崩溃恢复(启动时回退中间状态、补充孤立片段),指数退避重试,临时/永久失败区分。`retry_task()` / `cancel_task()` 提供手动干预。
+- **流水线解耦**:录制回调只创建 `SegmentTask` 登记到队列,不再同步等待转写/分析/渲染。Web 生命周期启动/停止 Worker。
+- **API 新增**:`GET /api/tasks`(任务列表+统计)、`POST /api/tasks/{id}/retry`、`POST /api/tasks/{id}/cancel`。
+- **前端新增**:"任务队列"Dashboard 选项卡,顶部导航栏显示任务积压数,支持手动重试和取消。
+- **数据库迁移**:`live_rooms` 表新增 7 列(`auto_record`/`auto_analyze`/`auto_render`/`auto_approve`/`auto_upload`/`auto_approve_threshold`/`review_threshold`)及旧 mode→新开关的兼容迁移。新增 `segment_tasks` 表。
 - `launcher.exe` 重新编译同步。
+
+### P0 测试
+- 弹幕评分:`danmaku_rate_score` Sigmoid 映射、基线保护、除零保护。`fuse_scores` / `weighted_rule_score` 融合/加权。
+- 状态机:13 个合法转换、6 个非法转换验证,终态不出转换。幂等键 `segment_id:stage` 格式。
+- 队列推进:`enqueue_next` 合法转换、非法→ValueError。
 
 ## V0.1.5.1 Alpha (2026-07-03)
 

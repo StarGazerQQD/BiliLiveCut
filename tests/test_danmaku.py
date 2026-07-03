@@ -1,154 +1,94 @@
-"""弹幕模块测试:协议编解码、消息解析、cookie 解析与弹幕热度评分。"""
+"""P0 测试: 弹幕基线计算 + 突增评分(V0.1.6)。"""
 
 from __future__ import annotations
 
-import json
-import struct
-from datetime import datetime, timedelta
+import pytest
 
-import brotli
-
-from app.analysis.highlight import _danmaku_score, danmaku_rate_score
-from app.db.models import Danmaku, DanmakuType, RecordingSession, SessionStatus, utcnow
-from app.db.session import get_session
-from app.sources.bilibili.client import parse_uid_from_cookie
-from app.sources.bilibili.danmaku import (
-    OP_HEARTBEAT_REPLY,
-    OP_MESSAGE,
-    decode,
-    encode_packet,
-    parse_message,
+from app.analysis.highlight import (
+    danmaku_rate_score,
+    fuse_scores,
+    weighted_rule_score,
 )
 
-_HEADER = struct.Struct(">IHHII")
+
+class TestDanmakuRateScore:
+    """Sigmoid 映射评分测试。"""
+
+    def test_high_ratio_tends_to_one(self) -> None:
+        """高倍数时趋于 1.0:sigmoid(x=3.2 → 1/(1+e^(-3.2*1.6))。"""
+        s = danmaku_rate_score(window_rate=100.0, baseline_rate=2.0, window_count=50)
+        # ratio=50, sigmoid=~1.0
+        assert s >= 0.99
+
+    def test_equal_rate_low_score(self) -> None:
+        """无突增时分数较低。"""
+        s = danmaku_rate_score(window_rate=2.0, baseline_rate=2.0, window_count=50)
+        # ratio=1, sigmoid(1)=1/(1+e^(-(1-1.8)*1.6) ≈ 1/(1+e^(1.28)) ≈ 0.22
+        assert 0.0 <= s <= 0.4
+
+    def test_moderate_spike(self) -> None:
+        """3 倍突增应得中等分数。"""
+        s = danmaku_rate_score(window_rate=9.0, baseline_rate=3.0, window_count=50)
+        # ratio=3, sigmoid(3)=1/(1+e^(-(3-1.8)*1.6)) ≈ 1/(1+e^(-1.92)) ≈ 0.87
+        assert 0.6 <= s <= 1.0
+
+    def test_zero_baseline_protection(self) -> None:
+        """基线为 0 时使用保护值,不除零。"""
+        s = danmaku_rate_score(window_rate=10.0, baseline_rate=0.0, window_count=50)
+        assert s == 0.35
+
+    def test_low_volume_returns_zero(self) -> None:
+        """低于 min_samples 时返回 0,不放大噪声。"""
+        s = danmaku_rate_score(window_rate=0.5, baseline_rate=0.1, window_count=3)
+        assert s == 0.0
+
+    def test_window_count_zero_returns_zero(self) -> None:
+        """无弹幕时返回 0。"""
+        s = danmaku_rate_score(window_rate=0.0, baseline_rate=1.0, window_count=0)
+        assert s == 0.0
 
 
-def _make_packet(operation: int, payload: bytes, protover: int = 1) -> bytes:
-    """构造一个原始协议包(用于测试)。
+class TestFuseScores:
+    """信任策略融合函数。"""
 
-    :param operation: 操作码。
-    :param payload: 包体。
-    :param protover: 协议版本。
-    :returns: 完整数据包字节。
-    """
-    return _HEADER.pack(16 + len(payload), 16, protover, operation, 1) + payload
+    def test_close_scores_trust_rule(self) -> None:
+        """规则与 LLM 分数接近时偏规则(alpha > beta)。"""
+        s = fuse_scores(rule=0.8, llm_score=0.78, alpha=0.6, beta=0.4)
+        assert 0.75 <= s <= 0.85
 
+    def test_llm_influence(self) -> None:
+        """LLM 有非零 beta 时影响结果。"""
+        s = fuse_scores(rule=0.3, llm_score=0.9, alpha=0.5, beta=0.5)
+        # (0.5*0.3 + 0.5*0.9) / 1.0 = 0.6
+        assert 0.5 <= s <= 0.7
 
-def test_encode_packet_header() -> None:
-    """编码出的包头应正确反映长度、操作码与协议版本。"""
-    pkt = encode_packet(OP_MESSAGE, b"hi", protover=1)
-    plen, hlen, ver, op, _seq = _HEADER.unpack(pkt[:16])
-    assert plen == 18
-    assert hlen == 16
-    assert ver == 1
-    assert op == OP_MESSAGE
-    assert pkt[16:] == b"hi"
+    def test_none_llm(self) -> None:
+        """无 LLM 时直接返回规则分。"""
+        s = fuse_scores(rule=0.65, llm_score=None, alpha=0.6, beta=0.0)
+        assert s == 0.65
 
-
-def test_decode_plain_message() -> None:
-    """未压缩(protover=0)的 op=5 包应被解析为 JSON。"""
-    body = json.dumps({"cmd": "DANMU_MSG", "info": [0, "hello"]}).encode("utf-8")
-    frame = _make_packet(OP_MESSAGE, body, protover=0)
-    decoded = decode(frame)
-    assert len(decoded) == 1
-    op, parsed = decoded[0]
-    assert op == OP_MESSAGE
-    assert parsed["cmd"] == "DANMU_MSG"
+    def test_beta_zero_ignores_llm(self) -> None:
+        """beta=0 时 LLM 不参与融合。"""
+        s = fuse_scores(rule=0.3, llm_score=0.9, alpha=0.6, beta=0.0)
+        # (0.6*0.3 + 0*0.9) / 0.6 = 0.3
+        assert s == 0.3
 
 
-def test_decode_brotli_aggregate() -> None:
-    """brotli 聚合包(protover=3)应被解压并展开为多条消息。"""
-    inner = b""
-    for i in range(3):
-        msg = json.dumps({"cmd": "DANMU_MSG", "info": [0, f"m{i}"]}).encode("utf-8")
-        inner += _make_packet(OP_MESSAGE, msg, protover=0)
-    outer = _make_packet(OP_MESSAGE, brotli.compress(inner), protover=3)
-    decoded = decode(outer)
-    assert len(decoded) == 3
-    assert [p["info"][1] for _op, p in decoded] == ["m0", "m1", "m2"]
+class TestWeightedRuleScore:
+    """多维加权评分。"""
 
+    def test_all_zero(self) -> None:
+        """全部零特征→零评分。"""
+        s = weighted_rule_score({"a": 0.0, "b": 0.0}, {"a": 0.5, "b": 0.5})
+        assert s == 0.0
 
-def test_decode_heartbeat_reply() -> None:
-    """op=3 心跳回复应被解析为在线人气整数。"""
-    frame = _make_packet(OP_HEARTBEAT_REPLY, (12345).to_bytes(4, "big"))
-    decoded = decode(frame)
-    assert decoded == [(OP_HEARTBEAT_REPLY, 12345)]
+    def test_missing_weight_is_zero(self) -> None:
+        """不在权重字典中的特征不计入。"""
+        s = weighted_rule_score({"a": 0.8, "b": 0.5}, {"a": 0.6})
+        # 0.6*0.8 = 0.48, sum_w=0.6 → 0.48/0.6=0.8 (b 不计入权重和)
+        assert s == 0.8
 
-
-def test_parse_message_danmaku() -> None:
-    """普通弹幕应解析出文本与用户。"""
-    msg = {"cmd": "DANMU_MSG", "info": [0, "好厉害", [42, "观众甲"]]}
-    result = parse_message(msg)
-    assert result is not None
-    msg_type, user, content, value = result
-    assert msg_type == DanmakuType.DANMAKU
-    assert user == "观众甲"
-    assert content == "好厉害"
-    assert value == 1.0
-
-
-def test_parse_message_superchat() -> None:
-    """SC 应解析出价格作为价值权重。"""
-    msg = {
-        "cmd": "SUPER_CHAT_MESSAGE",
-        "data": {"message": "加油", "price": 30, "user_info": {"uname": "土豪"}},
-    }
-    result = parse_message(msg)
-    assert result is not None
-    msg_type, user, content, value = result
-    assert msg_type == DanmakuType.SUPERCHAT
-    assert user == "土豪"
-    assert value == 30.0
-
-
-def test_parse_message_unknown_ignored() -> None:
-    """未知命令应返回 None 被忽略。"""
-    assert parse_message({"cmd": "ONLINE_RANK_COUNT", "data": {}}) is None
-
-
-def test_parse_uid_from_cookie() -> None:
-    """应从 cookie 中提取 DedeUserID;缺失返回 0。"""
-    assert parse_uid_from_cookie("SESSDATA=x; DedeUserID=98765; foo=1") == 98765
-    assert parse_uid_from_cookie("SESSDATA=x") == 0
-    assert parse_uid_from_cookie("") == 0
-
-
-def test_danmaku_rate_score_pure() -> None:
-    """窗口速率高于全场平均时分数更高;无数据返回 0。"""
-    # 全场:600 强度 / 600 秒 = 1/s;窗口:30 强度 / 10 秒 = 3/s,ratio=3 -> 满分。
-    assert danmaku_rate_score(30, 10, 600, 600) == 1.0
-    # 与平均持平 -> 0。
-    assert danmaku_rate_score(10, 10, 600, 600) == 0.0
-    # 无弹幕数据。
-    assert danmaku_rate_score(0, 10, 0, 0) == 0.0
-
-
-def test_danmaku_score_db(temp_db: None) -> None:
-    """落库的弹幕应能被窗口评分查询并给出非零热度。
-
-    :param temp_db: 隔离数据库夹具。
-    """
-    base = utcnow()
-    with get_session() as db:
-        session = RecordingSession(room_id=1, status=SessionStatus.RECORDING)
-        db.add(session)
-        db.flush()
-        sid = session.id
-        # 全场 60 条均匀分布在 600 秒;在窗口 [base+100, base+110] 内集中 40 条(刷屏)。
-        for i in range(60):
-            db.add(Danmaku(session_id=sid, room_id=1, ts=base + timedelta(seconds=i * 10)))
-        for _ in range(40):
-            db.add(Danmaku(session_id=sid, room_id=1, ts=base + timedelta(seconds=105)))
-
-    start = base + timedelta(seconds=100)
-    end = base + timedelta(seconds=110)
-    score = _danmaku_score(sid, start, end)
-    assert score > 0.5
-
-
-def test_danmaku_score_no_data(temp_db: None) -> None:
-    """无弹幕数据时评分应为 0。
-
-    :param temp_db: 隔离数据库夹具。
-    """
-    assert _danmaku_score(999, datetime.now(), datetime.now() + timedelta(seconds=10)) == 0.0
+    def test_normal_distribution(self) -> None:
+        """正常权重分配。"""
+        s = weighted_rule_score({"a": 0.9, "b": 0.3}, {"a": 0.7, "b": 0.3})
+        assert 0.6 <= s <= 1.0

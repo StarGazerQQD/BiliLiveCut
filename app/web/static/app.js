@@ -408,6 +408,56 @@ async function loadLogs() {
     : `<div class="empty">暂无 WARNING/ERROR 日志。</div>`;
 }
 
+// ----------------------------- V0.1.6 渲染:任务队列 ----------------------------- //
+async function loadTasks() {
+  try {
+    const data = await api("GET", "/api/tasks?limit=40");
+    const { tasks, stats } = data;
+    // 顶部统计。
+    const w = stats.worker || {};
+    $("#task-stat-total").textContent = stats.total || 0;
+    $("#task-stat-queued").textContent = (
+      (stats.queued_for_transcription || 0) + (stats.queued_for_analysis || 0) + (stats.queued_for_render || 0)
+    );
+    $("#task-stat-active").textContent = (
+      (w.transcribing || 0) + (w.analyzing || 0) + (w.rendering || 0)
+    );
+    $("#task-stat-failed").textContent = (stats.failed || 0) + (stats.transient_failed || 0);
+    $("#task-stat-completed").textContent = stats.completed || 0;
+    // 顶部导航栏任务计数。
+    const el = $("#stat-tasks");
+    if (el) el.textContent = stats.total || 0;
+
+    // 表格。
+    $("#task-tbody").innerHTML = tasks.length ? tasks.map(t => `
+      <tr>
+        <td>${esc(t.id)}</td>
+        <td>${esc(t.segment_id)}</td>
+        <td><span class="badge badge-${esc(t.stage.replace(/_/g,'-'))}">${esc(t.stage)}</span></td>
+        <td>${t.attempts}/${t.max_retries}</td>
+        <td>${t.processing_time_ms != null ? t.processing_time_ms : "-"}</td>
+        <td title="${esc(t.last_error || "")}">${(t.last_error || "").substring(0,40)}</td>
+        <td>${esc(t.created_at || "").substring(0,19)}</td>
+        <td>
+          ${t.stage === "failed" || t.stage === "cancelled"
+            ? `<button class="small" onclick="retryTask(${t.id})">重试</button>`
+            : t.stage === "completed" || t.stage === "failed" || t.stage === "cancelled"
+              ? "-"
+              : `<button class="small danger" onclick="cancelTask(${t.id})">取消</button>`
+          }
+        </td>
+      </tr>`).join("") : `<tr><td colspan="8" class="empty">暂无任务。</td></tr>`;
+  } catch (e) { /* 静默 */ }
+}
+window.retryTask = async (id) => {
+  try { await api("POST", `/api/tasks/${id}/retry`); toast("任务已重新入队"); loadTasks(); }
+  catch (e) { toast("重试失败:" + e.message); }
+};
+window.cancelTask = async (id) => {
+  try { await api("POST", `/api/tasks/${id}/cancel`); toast("任务已取消"); loadTasks(); }
+  catch (e) { toast("取消失败:" + e.message); }
+};
+
 // ----------------------------- V0.1.2 渲染:录制预约 ----------------------------- //
 async function loadSchedules() {
   const data = await api("GET", "/api/dashboard");
@@ -640,7 +690,7 @@ const loaders = {
   rooms: loadRooms, recording: loadRecording, transcripts: loadTranscripts,
   danmaku: loadDanmaku, trends: loadTrends, candidates: loadCandidates,
   clips: loadClips, uploads: loadUploads, models: loadLLM, logs: loadLogs,
-  schedules: loadSchedules, login: loadCookieStatus,
+  schedules: loadSchedules, login: loadCookieStatus, tasks: loadTasks,
 };
 async function refresh() {
   try {

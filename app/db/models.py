@@ -77,6 +77,28 @@ class ClipStatus:
     REJECTED = "rejected"
 
 
+class TaskStatus:
+    """分段处理任务状态(V0.1.6 持久化任务队列)。"""
+
+    RECORDED = "recorded"                    # 片段已录制,待入队
+    QUEUED_FOR_TRANS = "queued_for_transcription"  # 等待转写
+    TRANSCRIBING = "transcribing"            # 正在转写(Whisper GPU)
+    TRANSCRIBED = "transcribed"              # 转写完成,待评分(与旧 SegmentStatus 互操作性)
+    QUEUED_FOR_ANALYSIS = "queued_for_analysis"    # 等待分析
+    ANALYZING = "analyzing"                  # 正在分析(规则+LLM)
+    CANDIDATE_CREATED = "candidate_created"  # 已生成候选
+    QUEUED_FOR_RENDER = "queued_for_render"  # 等待渲染
+    RENDERING = "rendering"                  # 正在渲染(FFmpeg)
+    AWAITING_REVIEW = "awaiting_review"      # 候选待审核
+    APPROVED = "approved"                    # 人工/自动批准
+    COMPLETED = "completed"                  # 最终完成
+    FAILED = "failed"                        # 永久失败(不可重试)
+    CANCELLED = "cancelled"                  # 已取消
+
+    # 临时失败子状态
+    TRANSIENT_FAILED = "transient_failed"    # 临时失败,等待重试
+
+
 class UploadStatus:
     """上传任务状态。"""
 
@@ -345,3 +367,42 @@ class SystemLog(SQLModel, table=True):
     message: str = Field(default="", description="详情")
     context_json: str | None = Field(default=None, description="上下文 JSON")
     created_at: datetime = Field(default_factory=utcnow)
+
+
+class SegmentTask(SQLModel, table=True):
+    """分段处理任务(``segment_tasks``):持久化的异步任务队列。
+
+    每个 RawSegment 录制完成后创建一条任务,按流水线阶段独立推进:
+    recorded → transcribing → analyzing → rendering → approved/completed/failed。
+
+    支持:
+    - 幂等键(segment_id+stage)避免重复处理
+    - 重试次数与指数退避
+    - 临时失败(transient_failed)与永久失败(failed)区分
+    - 处理耗时统计
+    """
+
+    __tablename__ = "segment_tasks"
+
+    id: int | None = Field(default=None, primary_key=True)
+    segment_id: int = Field(index=True, description="关联 raw_segments.id")
+    session_id: int = Field(index=True, description="关联 recording_sessions.id")
+    candidate_id: int | None = Field(default=None, index=True, description="关联 highlight_candidates.id(若有)")
+    clip_id: int | None = Field(default=None, index=True, description="关联 final_clips.id(若有)")
+
+    stage: str = Field(default=TaskStatus.RECORDED, index=True, description="当前处理阶段")
+    priority: int = Field(default=100, description="优先级(数值越小越优先)")
+    idempotency_key: str | None = Field(default=None, index=True, description="幂等键:segment_id:stage,防重复")
+    attempts: int = Field(default=0, description="当前阶段已尝试次数")
+    max_retries: int = Field(default=3, description="当前阶段最大重试次数")
+    next_retry_at: datetime | None = Field(default=None, description="下次重试时间(指数退避)")
+    last_error: str | None = Field(default=None, description="最近一次错误信息")
+    error_is_permanent: bool = Field(default=False, description="是否为不可恢复的永久错误")
+
+    created_at: datetime = Field(default_factory=utcnow)
+    started_at: datetime | None = Field(default=None, description="当前阶段开始处理时间")
+    completed_at: datetime | None = Field(default=None, description="当前阶段完成时间")
+    processing_time_ms: int | None = Field(default=None, description="当前阶段处理耗时(毫秒)")
+    total_elapsed_ms: int | None = Field(default=None, description="任务总耗时(创建到完成,毫秒)")
+
+    context_json: str | None = Field(default=None, description="任务上下文 JSON(如错误堆栈、配置快照等)")
