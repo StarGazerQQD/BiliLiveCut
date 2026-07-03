@@ -75,3 +75,14 @@ async def render_collection(
         "file_path": result.file_path,
         "duration_s": result.duration_s,
     }
+
+
+@collection_router.post("/api/{topic_id}/copywriter")
+def generate_copywriter(topic_id: int) -> dict:
+    """为主题合集生成标题/简介/章节/标签等文案。"""
+    from app.publishing.collection_copywriter import generate_copywriter_for_topic
+
+    result = generate_copywriter_for_topic(topic_id)
+    if result is None:
+        raise HTTPException(status_code=500, detail="文案生成失败")
+    return result

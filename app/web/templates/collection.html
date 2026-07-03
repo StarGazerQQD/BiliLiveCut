@@ -60,8 +60,14 @@
   <div class="row">
     <button class="btn-primary" id="btn-render" onclick="doRender()">🎬 渲染合集</button>
     <button onclick="saveOrder()">💾 保存顺序</button>
+    <button onclick="generateCopywriter()">📝 生成文案</button>
   </div>
   <p class="hint" id="render-status"></p>
+</div>
+
+<div class="card" id="copywriter-card" style="display:none">
+  <h3>生成文案</h3>
+  <div id="copywriter-output"></div>
 </div>
 
 <div id="toast" class="toast"></div>
@@ -155,6 +161,29 @@ async function doRender(){
     $("#render-status").textContent="渲染完成:"+res.file_path;
   }catch(e){toast("渲染失败:"+e.message)}
 }
+
+async function generateCopywriter(){
+  toast("文案生成中…");
+  try{
+    const res=await api("POST",`/collection/api/${TOPIC_ID}/copywriter`);
+    const el=$("#copywriter-output");
+    el.innerHTML=`
+      <p><b>主题摘要:</b> ${esc(res.summary||"")}</p>
+      <p><b>B站标题:</b> <span style="color:var(--accent)">${esc(res.bilibili_title||"")}</span></p>
+      <p><b>YouTube 标题:</b> <span style="color:var(--accent)">${esc(res.youtube_title||"")}</span></p>
+      <p><b>封面短标题:</b> <span style="color:var(--yellow)">${esc(res.cover_title||"")}</span></p>
+      <p><b>简介:</b></p>
+      <pre style="font-size:11px;white-space:pre-wrap;background:var(--bg);padding:8px;border-radius:4px;max-height:200px;overflow-y:auto">${esc(res.description||"")}</pre>
+      <p><b>标签:</b> ${esc(res.tags||"")}</p>
+      <p><b>章节:</b></p>
+      <ul>${(res.chapters||[]).map(c=>`<li><code>${esc(c.ts)}</code> ${esc(c.title)}</li>`).join("")}</ul>
+    `;
+    $("#copywriter-card").style.display="";
+    toast("文案生成完成");
+  }catch(e){toast("文案生成失败:"+e.message)}
+}
+
+function esc(s){if(!s)return"";return s.replace(/&/g,"&amp;").replace(/</g,"&lt;").replace(/>/g,"&gt;")}
 
 loadData();
 </script>
