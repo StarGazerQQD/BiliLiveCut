@@ -1,5 +1,12 @@
 # Changelog — 即插即用版 (Publish-PnP)
 
+## V0.1.8 Alpha (2026-07-04)
+
+- P0 管线强化:hotword注入、aliases纠错、批量审核、ASS模板管理
+- 详见根目录 `CHANGELOG.md`。
+
+---
+
 ## V0.1.7.2 Alpha (2026-07-04)
 
 - 半成品清理:状态机迁移、章节持久化、asr_text填充、ClipVariant落地
