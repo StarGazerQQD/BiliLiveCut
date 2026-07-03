@@ -112,6 +112,24 @@ async function loadRooms() {
         </label>
         ${r.running ? '<span class="muted">(录制中锁定)</span>' : ""}
       </div>
+      <details class="room-config-detail" style="margin-top:8px">
+        <summary style="font-size:12px;color:var(--muted);cursor:pointer">房间配置(热词/别名/屏蔽)</summary>
+        <div class="thresholds" style="margin-top:6px;flex-direction:column;align-items:stretch">
+          <label>热词(换行分隔)
+            <textarea id="hw-${r.id}" rows="2" style="width:100%;font-size:11px">${(r.room_config.hotwords||[]).join("\n")}</textarea>
+          </label>
+          <label>高光关键词(换行分隔)
+            <textarea id="hk-${r.id}" rows="2" style="width:100%;font-size:11px">${(r.room_config.highlight_keywords||[]).join("\n")}</textarea>
+          </label>
+          <label>别名(每行:错误=正确)
+            <textarea id="al-${r.id}" rows="2" style="width:100%;font-size:11px">${Object.entries(r.room_config.aliases||{}).map(([k,v])=>`${k}=${v}`).join("\n")}</textarea>
+          </label>
+          <label>屏蔽话题(换行分隔)
+            <textarea id="bt-${r.id}" rows="2" style="width:100%;font-size:11px">${(r.room_config.blocked_topics||[]).join("\n")}</textarea>
+          </label>
+          <button onclick="saveRoomConfig(${r.id})" style="margin-top:4px">保存房间配置</button>
+        </div>
+      </details>
       ${r.auto_threshold_enabled ? `<div id="tl-${r.id}" class="threshold-learning"></div>` : ""}
     </div>`).join("");
   $("#rooms-list").innerHTML = html || `<div class="empty">还没有直播间,先在上方添加。</div>`;
@@ -143,6 +161,16 @@ window.saveRoom = async (id) => {
       danmaku_sentiment_enabled: ($(`#sw-ds-${id}`) || {}).checked,
     });
     toast("已保存阈值/模式");
+  } catch (e) { toast("保存失败:" + e.message); }
+};
+window.saveRoomConfig = async (id) => {
+  try {
+    const hw = ($(`#hw-${id}`).value || "").split("\n").map(s => s.trim()).filter(Boolean);
+    const hk = ($(`#hk-${id}`).value || "").split("\n").map(s => s.trim()).filter(Boolean);
+    const al = {}; ($(`#al-${id}`).value || "").split("\n").forEach(line => { const eq = line.indexOf("="); if (eq > 0) al[line.slice(0, eq).trim()] = line.slice(eq + 1).trim(); });
+    const bt = ($(`#bt-${id}`).value || "").split("\n").map(s => s.trim()).filter(Boolean);
+    await api("PATCH", `/api/rooms/${id}`, { room_config: { hotwords: hw, aliases: al, highlight_keywords: hk, blocked_topics: bt } });
+    toast("房间配置已保存");
   } catch (e) { toast("保存失败:" + e.message); }
 };
 
@@ -299,6 +327,7 @@ async function loadCandidates() {
           <div class="sub">规则 ${c.rule_score} / LLM ${c.llm_score} · ${esc(c.reason || "")}</div>
         </div>
         <div class="actions">
+          <a class="ok btn-link" href="/review/${c.id}" target="_blank" style="text-decoration:none;color:inherit">🎬 审片</a>
           <button class="ok" onclick="approveCand(${c.id})">批准并出片</button>
           <button class="danger" onclick="rejectCand(${c.id})">拒绝</button>
           <button onclick="delCand(${c.id})">删除</button>
@@ -407,6 +436,105 @@ async function loadLogs() {
       ${esc(l.created_at || "")} ${esc(l.module || "")}:${esc(l.event || "")} — ${esc(l.message)}</div>`).join("")}</div>`
     : `<div class="empty">暂无 WARNING/ERROR 日志。</div>`;
 }
+
+// ----------------------------- V0.1.6 渲染:任务队列 ----------------------------- //
+async function loadTasks() {
+  try {
+    const data = await api("GET", "/api/tasks?limit=40");
+    const { tasks, stats } = data;
+    // 顶部统计。
+    const w = stats.worker || {};
+    $("#task-stat-total").textContent = stats.total || 0;
+    $("#task-stat-queued").textContent = (
+      (stats.queued_for_transcription || 0) + (stats.queued_for_analysis || 0) + (stats.queued_for_render || 0)
+    );
+    $("#task-stat-active").textContent = (
+      (w.transcribing || 0) + (w.analyzing || 0) + (w.rendering || 0)
+    );
+    $("#task-stat-failed").textContent = (stats.failed || 0) + (stats.transient_failed || 0);
+    $("#task-stat-completed").textContent = stats.completed || 0;
+    // 顶部导航栏任务计数。
+    const el = $("#stat-tasks");
+    if (el) el.textContent = stats.total || 0;
+
+    // 表格。
+    $("#task-tbody").innerHTML = tasks.length ? tasks.map(t => `
+      <tr>
+        <td>${esc(t.id)}</td>
+        <td>${esc(t.segment_id)}</td>
+        <td><span class="badge badge-${esc(t.stage.replace(/_/g,'-'))}">${esc(t.stage)}</span></td>
+        <td>${t.attempts}/${t.max_retries}</td>
+        <td>${t.processing_time_ms != null ? t.processing_time_ms : "-"}</td>
+        <td title="${esc(t.last_error || "")}">${(t.last_error || "").substring(0,40)}</td>
+        <td>${esc(t.created_at || "").substring(0,19)}</td>
+        <td>
+          ${t.stage === "failed" || t.stage === "cancelled"
+            ? `<button class="small" onclick="retryTask(${t.id})">重试</button>`
+            : t.stage === "completed" || t.stage === "failed" || t.stage === "cancelled"
+              ? "-"
+              : `<button class="small danger" onclick="cancelTask(${t.id})">取消</button>`
+          }
+        </td>
+      </tr>`).join("") : `<tr><td colspan="8" class="empty">暂无任务。</td></tr>`;
+  } catch (e) { /* 静默 */ }
+}
+window.retryTask = async (id) => {
+  try { await api("POST", `/api/tasks/${id}/retry`); toast("任务已重新入队"); loadTasks(); }
+  catch (e) { toast("重试失败:" + e.message); }
+};
+window.cancelTask = async (id) => {
+  try { await api("POST", `/api/tasks/${id}/cancel`); toast("任务已取消"); loadTasks(); }
+  catch (e) { toast("取消失败:" + e.message); }
+};
+
+// ----------------------------- V0.1.6 P1 渲染:主题管理 ----------------------------- //
+async function loadTopics() {
+  try {
+    // 加载会话列表供聚类选择。
+    const dbData = await api("GET", "/api/dashboard");
+    const sessions = dbData.sessions || [];
+    const sessionsWithActive = sessions.filter(s => s.status === "stopped" || s.status === "recording");
+    let selHtml = '<option value="">选择录制会话</option>';
+    for (const s of sessionsWithActive) {
+      selHtml += `<option value="${s.id}">会话 #${s.id} (房间 ${s.room_id}) - ${s.status}</option>`;
+    }
+    $("#topic-session-select").innerHTML = selHtml;
+
+    // 加载已有主题。
+    const data = await api("GET", "/api/topics");
+    const topics = data.topics || [];
+    $("#topics-list").innerHTML = topics.length ? topics.map(t => `
+      <div class="item">
+        <div class="head">
+          <div>
+            <div class="title">${esc(t.title || "未命名主题")}</div>
+            <div class="sub">置信度 ${(t.confidence*100).toFixed(0)}% · ${t.event_count} 个事件 · ${esc(t.status)}</div>
+            ${t.summary ? `<div class="sub">${esc(t.summary.substring(0,100))}</div>` : ""}
+          </div>
+          <div class="actions">
+            <a href="/collection/${t.id}" target="_blank" style="text-decoration:none;color:var(--accent);font-size:12px">🎬 编辑合集</a>
+            <button onclick="toggleCollection(${t.id},${!t.is_collection})">
+              ${t.is_collection ? "取消合集" : "标适合合集"}
+            </button>
+          </div>
+        </div>
+      </div>`).join("") : `<div class="empty">暂无主题。先执行聚类。</div>`;
+  } catch (e) { /* 静默 */ }
+}
+window.toggleCollection = async (topicId, value) => {
+  try { await api("PATCH", `/api/topics/${topicId}`, {is_collection: value}); toast(value ? "已标记为合集" : "已取消合集"); loadTopics(); }
+  catch (e) { toast("操作失败:" + e.message); }
+};
+$("#btn-cluster").addEventListener("click", async () => {
+  const sid = $("#topic-session-select").value;
+  if (!sid) { toast("请先选择一个录制会话"); return; }
+  toast("聚类中…");
+  try {
+    const res = await api("POST", `/api/sessions/${sid}/cluster`);
+    toast(`聚类完成:${res.topics.length} 个主题`);
+    loadTopics();
+  } catch (e) { toast("聚类失败:" + e.message); }
+});
 
 // ----------------------------- V0.1.2 渲染:录制预约 ----------------------------- //
 async function loadSchedules() {
@@ -635,12 +763,52 @@ document.addEventListener("DOMContentLoaded", () => {
 });
 
 
+// ----------------------------- P3 运维面板 ----------------------------- //
+async function loadMonitor() {
+  try {
+    const d = await api("GET", "/api/monitor");
+    $("#mon-disk").textContent = `${d.disk.free_gb}GB / ${d.disk.total_gb}GB (${d.disk.free_percent}%)`;
+    $("#mon-raw").textContent = d.raw_size_gb;
+    $("#mon-clips").textContent = d.clips_size_gb;
+    $("#mon-cpu").textContent = d.cpu_percent != null ? d.cpu_percent.toFixed(0) : "--";
+    $("#mon-mem").textContent = d.memory.percent.toFixed(0);
+    const safeEl = $("#mon-safe");
+    safeEl.textContent = d.disk_safe ? "✅ 磁盘安全" : "⚠ 磁盘不足";
+    safeEl.style.color = d.disk_safe ? "var(--green)" : "var(--red)";
+    let stageHtml = "";
+    for (const [stage, count] of Object.entries(d.tasks.by_stage || {})) {
+      stageHtml += `<span class="stat">${stage} <b>${count}</b></span>`;
+    }
+    $("#task-stage-stats").innerHTML = stageHtml || "<span>无任务</span>";
+    $("#mon-oldest").textContent = d.tasks.oldest_wait_s;
+    $("#mon-running").textContent = d.running_room_count;
+    $("#mon-monitor").textContent = d.monitor.running ? "运行中" : "已停止";
+    const failures = d.recent_failures || [];
+    $("#mon-failures").innerHTML = failures.length ? failures.map(f =>
+      `<div style="border-bottom:1px solid var(--border);padding:4px 0">
+        <span class="muted">#${f.id} seg=${f.segment_id} ${f.stage} 重试${f.attempts}</span>
+        <div style="color:var(--red);font-size:11px">${esc(f.error||"")}</div>
+      </div>`
+    ).join("") : "<span class='muted'>无失败任务 ✅</span>";
+  } catch (e) { /* 静默 */ }
+}
+window.triggerMaintenance = async () => {
+  toast("维护中…");
+  try {
+    const r = await api("POST", "/api/monitor/disk-maintenance");
+    toast(`维护完成:清理原始 ${r.cleaned_raw} 个,被拒切片 ${r.cleaned_rejected} 个`);
+    loadMonitor();
+  } catch (e) { toast("维护失败:" + e.message); }
+};
+
+
 // ----------------------------- 轮询 ----------------------------- //
 const loaders = {
   rooms: loadRooms, recording: loadRecording, transcripts: loadTranscripts,
   danmaku: loadDanmaku, trends: loadTrends, candidates: loadCandidates,
   clips: loadClips, uploads: loadUploads, models: loadLLM, logs: loadLogs,
-  schedules: loadSchedules, login: loadCookieStatus,
+  schedules: loadSchedules, login: loadCookieStatus, tasks: loadTasks,
+  topics: loadTopics, monitor: loadMonitor,
 };
 async function refresh() {
   try {

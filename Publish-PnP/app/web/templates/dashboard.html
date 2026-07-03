@@ -13,6 +13,7 @@
       <span class="stat">候选 <b id="stat-candidates">-</b></span>
       <span class="stat">成品 <b id="stat-clips">-</b></span>
       <span class="stat">活跃会话 <b id="stat-sessions">-</b></span>
+      <span class="stat">任务队列 <b id="stat-tasks">-</b></span>
     </div>
   </header>
 
@@ -24,10 +25,13 @@
     <button class="tab" data-tab="danmaku">弹幕热度</button>
     <button class="tab" data-tab="trends">网感资料库</button>
     <button class="tab" data-tab="candidates">候选审核</button>
+    <button class="tab" data-tab="topics">主题管理</button>
     <button class="tab" data-tab="clips">成品切片</button>
     <button class="tab" data-tab="uploads">上传 / 设置</button>
     <button class="tab" data-tab="models">模型</button>
     <button class="tab" data-tab="login">账号管理</button>
+    <button class="tab" data-tab="tasks">任务队列</button>
+    <button class="tab" data-tab="monitor">运维面板</button>
     <button class="tab" data-tab="logs">错误日志</button>
   </nav>
 
@@ -135,6 +139,19 @@
       <div id="candidates-list"></div>
     </section>
 
+    <!-- 主题管理(V0.1.6 P1) -->
+    <section id="tab-topics" class="panel">
+      <div class="card">
+        <h3>主题聚类</h3>
+        <div class="row">
+          <select id="topic-session-select"></select>
+          <button id="btn-cluster" class="primary">执行聚类</button>
+        </div>
+        <p class="hint" id="topic-cluster-status"></p>
+      </div>
+      <div id="topics-list"></div>
+    </section>
+
     <!-- 成品切片 -->
     <section id="tab-clips" class="panel">
       <div id="clips-list"></div>
@@ -205,6 +222,65 @@
           Cookie 会自动保存并关闭窗口。<br/>
           清除 Cookie 或退出登录后,弹幕采集等需要登录态的功能将不可用。
         </p>
+      </div>
+    </section>
+
+    <!-- 任务队列(V0.1.6) -->
+    <section id="tab-tasks" class="panel">
+      <div class="card">
+        <h3>持久化任务队列</h3>
+        <div class="row" id="task-stats-bar">
+          <span class="stat">总计 <b id="task-stat-total">-</b></span>
+          <span class="stat">排队 <b id="task-stat-queued">-</b></span>
+          <span class="stat">进行中 <b id="task-stat-active">-</b></span>
+          <span class="stat">失败 <b id="task-stat-failed">-</b></span>
+          <span class="stat">已完成 <b id="task-stat-completed">-</b></span>
+        </div>
+        <hr style="margin:12px 0" />
+        <table id="task-table" border="1" cellpadding="6" style="width:100%;font-size:13px">
+          <thead>
+            <tr>
+              <th>ID</th><th>片段ID</th><th>阶段</th><th>重试</th><th>耗时(ms)</th><th>最近错误</th><th>创建时间</th><th>操作</th>
+            </tr>
+          </thead>
+          <tbody id="task-tbody"></tbody>
+        </table>
+      </div>
+    </section>
+
+    <!-- 运维面板(P3) -->
+    <section id="tab-monitor" class="panel">
+      <div class="card">
+        <h3>系统资源</h3>
+        <div class="row" id="sys-resources">
+          <span class="stat">💾 磁盘 <b id="mon-disk">-</b></span>
+          <span class="stat">📹 原始录像 <b id="mon-raw">-</b> GB</span>
+          <span class="stat">🎬 成品 <b id="mon-clips">-</b> GB</span>
+          <span class="stat">🧠 CPU <b id="mon-cpu">-</b>%</span>
+          <span class="stat">📊 内存 <b id="mon-mem">-</b>%</span>
+          <span class="stat" id="mon-safe"></span>
+        </div>
+      </div>
+      <div class="card">
+        <h3>任务统计</h3>
+        <div class="row" id="task-stage-stats">
+          <span>加载中…</span>
+        </div>
+        <p class="hint">最老任务等待: <b id="mon-oldest">-</b> 秒</p>
+      </div>
+      <div class="card">
+        <h3>录制状态</h3>
+        <p>运行中房间: <b id="mon-running">-</b> | 监控状态: <b id="mon-monitor">-</b></p>
+      </div>
+      <div class="card">
+        <h3>最近失败任务</h3>
+        <div id="mon-failures" style="max-height:300px;overflow-y:auto;font-size:12px">
+          <span class="muted">加载中…</span>
+        </div>
+      </div>
+      <div class="row" style="margin-top:12px">
+        <button onclick="triggerMaintenance()" class="primary">🔧 执行磁盘维护</button>
+        <span id="mon-refresh-hint" class="hint">每 5 秒自动刷新</span>
       </div>
     </section>
 

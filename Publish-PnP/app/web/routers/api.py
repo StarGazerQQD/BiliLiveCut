@@ -43,6 +43,8 @@ class UpdateRoomRequest(BaseModel):
     schedule_enabled: bool | None = None
     auto_threshold_enabled: bool | None = None
     danmaku_sentiment_enabled: bool | None = None
+    # V0.1.6 P2: 房间配置。
+    room_config: dict | None = None
 
 
 class StartRequest(BaseModel):
@@ -96,6 +98,21 @@ class LLMProvidersRequest(BaseModel):
     """多大模型配置保存请求。"""
 
     providers: list[LLMProviderIn]
+
+
+class MergeTopicsRequest(BaseModel):
+    """合井主题请求。"""
+    source_id: int
+    target_id: int
+
+
+class TopicUpdateRequest(BaseModel):
+    """更新主题请求(仅允许白名单字段)。"""
+    title: str | None = None
+    summary: str | None = None
+    keywords_json: str | None = None
+    status: str | None = None
+    is_collection: bool | None = None
 
 
 # ----------------------------- 概览 ----------------------------- #
@@ -363,21 +380,35 @@ def threshold_learning(db_id: int) -> dict[str, Any]:
 @router.get("/clips/{clip_id}/video")
 def clip_video(clip_id: int) -> FileResponse:
     """返回成品 MP4 以便页面内预览。"""
+    from app.core.paths import clips_dir as _clips_dir
+
     clips = {c["id"]: c for c in service.list_clips(limit=1000)}
     clip = clips.get(clip_id)
     if not clip or not clip["file_path"] or not Path(clip["file_path"]).exists():
         raise HTTPException(status_code=404, detail="视频不存在")
-    return FileResponse(clip["file_path"], media_type="video/mp4")
+    # 路径遍历保护:确保文件在 clips 目录内。
+    file_path = Path(clip["file_path"]).resolve()
+    clips_root = _clips_dir().resolve()
+    if not str(file_path).startswith(str(clips_root)):
+        raise HTTPException(status_code=403, detail="禁止访问")
+    return FileResponse(str(file_path), media_type="video/mp4")
 
 
 @router.get("/clips/{clip_id}/cover")
 def clip_cover(clip_id: int) -> FileResponse:
     """返回成品封面图。"""
+    from app.core.paths import clips_dir as _clips_dir
+
     clips = {c["id"]: c for c in service.list_clips(limit=1000)}
     clip = clips.get(clip_id)
     if not clip or not clip["cover_path"] or not Path(clip["cover_path"]).exists():
         raise HTTPException(status_code=404, detail="封面不存在")
-    return FileResponse(clip["cover_path"], media_type="image/jpeg")
+    # 路径遍历保护:确保文件在 clips 目录内。
+    file_path = Path(clip["cover_path"]).resolve()
+    clips_root = _clips_dir().resolve()
+    if not str(file_path).startswith(str(clips_root)):
+        raise HTTPException(status_code=403, detail="禁止访问")
+    return FileResponse(str(file_path), media_type="image/jpeg")
 
 
 # ----------------------------- 账号登录 / Cookie 管理 ----------------------------- #
@@ -415,3 +446,153 @@ def login_clear() -> dict[str, str]:
 
     settings_store.set_setting("bilibili_cookie", "")
     return {"status": "cleared"}
+
+
+# ----------------------------- V0.1.6 任务队列 ----------------------------- #
+@router.get("/tasks")
+def get_tasks(limit: int = 50, stage: str | None = None) -> dict[str, Any]:
+    """返回任务队列列表及各阶段统计。"""
+    from app.pipeline.task_worker import list_tasks as _list, task_worker
+
+    tasks = _list(limit=limit, stage=stage)
+    return {"tasks": tasks, "stats": task_worker.stats()}
+
+
+@router.post("/tasks/{task_id}/retry")
+def retry_task(task_id: int) -> dict[str, Any]:
+    """手动重试一个失败/取消的任务。"""
+    from app.pipeline.task_worker import retry_task as _retry
+
+    ok = _retry(task_id)
+    if not ok:
+        raise HTTPException(status_code=400, detail="任务不存在或状态不允许重试")
+    return {"status": "retried"}
+
+
+@router.post("/tasks/{task_id}/cancel")
+def cancel_task(task_id: int) -> dict[str, Any]:
+    """取消一个未完成的任务。"""
+    from app.pipeline.task_worker import cancel_task as _cancel
+
+    ok = _cancel(task_id)
+    if not ok:
+        raise HTTPException(status_code=400, detail="任务不存在或已完成/失败/取消")
+    return {"status": "cancelled"}
+
+
+# ----------------------------- V0.1.6 P1 主题管理 ----------------------------- #
+@router.get("/topics")
+def list_topics(session_id: int | None = None) -> dict[str, Any]:
+    """获取主题列表。"""
+    from app.analysis.topic_cluster import list_topics as _lt
+
+    return {"topics": _lt(session_id=session_id)}
+
+
+@router.get("/topics/{topic_id}")
+def get_topic(topic_id: int) -> dict[str, Any]:
+    """获取单个主题详情。"""
+    from app.analysis.topic_cluster import get_topic as _gt
+
+    t = _gt(topic_id)
+    if t is None:
+        raise HTTPException(status_code=404, detail="主题不存在")
+    return t
+
+
+@router.patch("/topics/{topic_id}")
+def update_topic(topic_id: int, body: TopicUpdateRequest) -> dict[str, str]:
+    """更新主题属性(title/summary/keywords/status/is_collection)。"""
+    from app.analysis.topic_cluster import update_topic as _ut
+
+    ok = _ut(topic_id, **body.model_dump(exclude_none=True))
+    if not ok:
+        raise HTTPException(status_code=404, detail="主题不存在")
+    return {"status": "updated"}
+
+
+@router.post("/topics/{topic_id}/events/{event_id}")
+def add_event_to_topic(topic_id: int, event_id: int) -> dict[str, str]:
+    """将事件加入主题。"""
+    from app.analysis.topic_cluster import add_event_to_topic as _ae
+
+    _ae(event_id, topic_id)
+    return {"status": "added"}
+
+
+@router.delete("/topics/{topic_id}/events/{event_id}")
+def remove_event_from_topic(topic_id: int, event_id: int) -> dict[str, str]:
+    """从主题移除事件。"""
+    from app.analysis.topic_cluster import remove_event_from_topic as _re
+
+    ok = _re(event_id, topic_id)
+    if not ok:
+        raise HTTPException(status_code=404, detail="关联不存在")
+    return {"status": "removed"}
+
+
+@router.post("/topics/merge")
+def merge_topics(req: MergeTopicsRequest) -> dict[str, str]:
+    """合并两个主题。"""
+    from app.analysis.topic_cluster import merge_topics as _mt
+
+    ok = _mt(req.source_id, req.target_id)
+    if not ok:
+        raise HTTPException(status_code=400, detail="合并失败")
+    return {"status": "merged"}
+
+
+@router.post("/topics/{topic_id}/split")
+def split_topic(topic_id: int, event_ids: list[int]) -> dict[str, Any]:
+    """拆分主题:将指定事件移出并创建新主题。"""
+    from app.analysis.topic_cluster import split_topic as _st
+
+    new_id = _st(topic_id, event_ids)
+    if new_id is None:
+        raise HTTPException(status_code=400, detail="拆分失败")
+    return {"status": "split", "new_topic_id": new_id}
+
+
+@router.post("/topics/{topic_id}/reorder")
+def reorder_topic_events(topic_id: int, event_ids: list[int]) -> dict[str, str]:
+    """重排主题内事件顺序。"""
+    from app.analysis.topic_cluster import reorder_topic_events as _ro
+
+    _ro(topic_id, event_ids)
+    return {"status": "reordered"}
+
+
+@router.post("/sessions/{session_id}/cluster")
+def cluster_session_candidates(session_id: int) -> dict[str, Any]:
+    """对一场直播的候选进行主题聚类。"""
+    from app.analysis.topic_cluster import cluster_candidates
+
+    topics = cluster_candidates(session_id)
+    return {"status": "clustered", "topics": topics}
+
+
+# ----------------------------- V0.1.6 P1 ClipVariant ----------------------------- #
+@router.get("/events/{event_id}/variants")
+def list_variants(event_id: int) -> list[dict[str, Any]]:
+    """列出某事件的所有成品版本。"""
+    from app.db.models import ClipVariant
+    from app.db.session import get_session
+
+    with get_session() as db:
+        from sqlmodel import select as _sel
+
+        variants = db.exec(
+            _sel(ClipVariant).where(ClipVariant.event_id == event_id).order_by(
+                ClipVariant.created_at.desc()
+            )
+        ).all()
+    return [
+        {
+            "id": v.id, "variant_type": v.variant_type,
+            "has_subtitles": v.has_subtitles, "resolution": v.resolution,
+            "file_path": v.file_path, "file_hash": v.file_hash,
+            "render_status": v.render_status, "version_number": v.version_number,
+            "duration_s": v.duration_s, "created_at": v.created_at.isoformat() if v.created_at else None,
+        }
+        for v in variants
+    ]
