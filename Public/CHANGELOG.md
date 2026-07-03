@@ -1,5 +1,11 @@
 # Changelog — 即插即用版 (Public)
 
+## V0.1.5 Alpha (2026-07-03)
+
+### 重构
+- 去 Anthropic 化、趋势采集独立 API 接入点。详见根目录 `CHANGELOG.md`。
+- `launcher.exe` 重新编译同步。
+
 ## V0.1.4 Alpha (2026-07-03)
 
 ### 新增

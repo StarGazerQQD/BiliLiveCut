@@ -266,7 +266,7 @@ async function loadTrends() {
   const data = await api("GET", "/api/trends?limit=30&days=7");
   $("#trends-status").innerHTML = data.enabled
     ? `已启用 · 联网搜索 ${data.web_search ? "开" : "关"} · 近 ${data.days} 天`
-    : `未启用(设置 TREND_ENABLED=true 并配置 ANTHROPIC_API_KEY 后可用)`;
+    : `未启用(设置 TREND_ENABLED=true 并配置大模型 API 后可用)`;
   renderScheduler(data.scheduler || {});
   const kw = data.keywords || [];
   $("#trends-keywords").innerHTML = kw.length

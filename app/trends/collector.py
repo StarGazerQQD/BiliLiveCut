@@ -110,11 +110,10 @@ def collect_trends(topic: str = "") -> list[TrendRecord]:
     )
 
     if settings.trend_web_search:
-        raw = llm_mod.call_web_search(
+        raw = llm_mod.call_trend_search(
             prompt,
             max_tokens=4096,
             max_searches=settings.trend_max_searches,
-            model=settings.trend_model,
         )
     else:
         raw = llm_mod.call_text(prompt, max_tokens=4096)

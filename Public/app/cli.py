@@ -453,7 +453,7 @@ def trends_collect(
 ) -> None:
     """联网采集近期热门内容并写入网感资料库。
 
-    需配置 ANTHROPIC_API_KEY 且 TREND_ENABLED=true。未启用或不可用时不入库。
+    需配置大模型 API 且 TREND_ENABLED=true。未启用或不可用时不入库。
 
     :param topic: 采集主题提示。
     """
