@@ -27,6 +27,7 @@
     <button class="tab" data-tab="clips">成品切片</button>
     <button class="tab" data-tab="uploads">上传 / 设置</button>
     <button class="tab" data-tab="models">模型</button>
+    <button class="tab" data-tab="login">账号管理</button>
     <button class="tab" data-tab="logs">错误日志</button>
   </nav>
 
@@ -185,6 +186,26 @@
         </div>
       </div>
       <div id="llm-list"></div>
+    </section>
+
+    <!-- 账号管理:Bilibili Cookie 登录 -->
+    <section id="tab-login" class="panel">
+      <div class="card">
+        <h3>Bilibili 账号登录</h3>
+        <p class="hint" id="cookie-hint">载入中…</p>
+        <div class="row">
+          <button id="btn-login" class="primary">🔑 登录</button>
+          <button id="btn-clear-cookie" class="danger">🗑 清除 Cookie</button>
+        </div>
+        <p class="hint" id="login-status" style="margin-top:8px"></p>
+        <hr style="margin:16px 0" />
+        <p class="hint">
+          登录后系统自动收集 Bilibili 登录态 Cookie,用于弹幕采集、鉴权接口等。<br/>
+          点击「登录」将弹出无痕浏览器窗口,在窗口中完成扫码或密码登录后,
+          Cookie 会自动保存并关闭窗口。<br/>
+          清除 Cookie 或退出登录后,弹幕采集等需要登录态的功能将不可用。
+        </p>
+      </div>
     </section>
 
     <!-- 日志 -->

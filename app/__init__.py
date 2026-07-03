@@ -5,5 +5,5 @@
 publishing / pipeline / web),通过数据库与任务队列解耦。
 """
 
-__version__ = "0.1.3-alpha"
-__version_label__ = "V0.1.3 Alpha"
+__version__ = "0.1.4-alpha"
+__version_label__ = "V0.1.4 Alpha"
