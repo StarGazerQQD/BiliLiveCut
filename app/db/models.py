@@ -65,6 +65,7 @@ class CandidateStatus:
     REJECTED = "rejected"
     CLIPPED = "clipped"
     MERGED = "merged"
+    CLEANED = "cleaned"  # V0.1.7 P3:已清理
 
 
 class ClipStatus:
