@@ -203,6 +203,7 @@ async function loadDanmaku() {
 
 // 仅在用户未编辑时同步定时采集控件,避免覆盖正在输入的值。
 let scheduleDirty = false;
+let switchesDirty = false;  // 上传开关:用户操作后到保存完成前阻止轮询覆盖
 function renderScheduler(s) {
   if (!scheduleDirty) {
     $("#sw-trend-schedule").checked = !!s.schedule_enabled;
@@ -357,8 +358,10 @@ window.rejectClip = async (id) => {
 // ----------------------------- 渲染:上传 / 设置 ----------------------------- //
 async function loadUploads() {
   const s = await api("GET", "/api/settings");
-  $("#sw-biliup").checked = s.biliup_enabled;
-  $("#sw-auto").checked = s.auto_upload;
+  if (!switchesDirty) {
+    $("#sw-biliup").checked = s.biliup_enabled;
+    $("#sw-auto").checked = s.auto_upload;
+  }
   $("#clips-dir-path").textContent = s.clips_dir;
   $("#upload-hint").textContent = s.upload_active
     ? "上传模块:已开启(biliup)。" + (s.biliup_cmd_configured ? "" : " 但未配置 BILIUP_UPLOAD_CMD,上传会安全失败。")
@@ -380,14 +383,16 @@ async function loadUploads() {
     </div>`).join("") : `<div class="empty">暂无上传任务。</div>`;
 }
 async function saveSwitch() {
+  switchesDirty = true;
   try {
     await api("PATCH", "/api/settings", {
       biliup_enabled: $("#sw-biliup").checked,
       auto_upload: $("#sw-auto").checked,
     });
     toast("已保存上传开关");
-    loadUploads();
   } catch (e) { toast(e.message); }
+  finally { switchesDirty = false; }
+  loadUploads();
 }
 window.retryUpload = async (id) => {
   try { const r = await api("POST", `/api/uploads/${id}/retry`); toast("重试结果:" + r.status); loadUploads(); }
