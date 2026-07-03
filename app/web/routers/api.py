@@ -43,6 +43,8 @@ class UpdateRoomRequest(BaseModel):
     schedule_enabled: bool | None = None
     auto_threshold_enabled: bool | None = None
     danmaku_sentiment_enabled: bool | None = None
+    # V0.1.6 P2: 房间配置。
+    room_config: dict | None = None
 
 
 class StartRequest(BaseModel):

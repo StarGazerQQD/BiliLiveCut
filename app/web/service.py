@@ -275,6 +275,8 @@ def update_room(db_id: int, fields: dict[str, Any]) -> LiveRoom:
         "auto_upload",
         "auto_approve_threshold",
         "review_threshold",
+        # V0.1.6 P2: 房间配置。
+        "room_config",
     }
     with get_session() as db:
         room = db.get(LiveRoom, db_id)
@@ -287,6 +289,8 @@ def update_room(db_id: int, fields: dict[str, Any]) -> LiveRoom:
                     raise ValueError(f"直播间正在录制,无法修改「{key}」开关。请先停止录制。")
         for key, value in fields.items():
             if key in allowed and value is not None:
+                if key == "room_config" and isinstance(value, dict):
+                    value = json.dumps(value, ensure_ascii=False)
                 setattr(room, key, value)
         db.add(room)
         return room
@@ -566,6 +570,8 @@ def _room_dict(room: LiveRoom, running: bool) -> dict[str, Any]:
         "schedule_enabled": room.schedule_enabled,
         "auto_threshold_enabled": room.auto_threshold_enabled,
         "danmaku_sentiment_enabled": room.danmaku_sentiment_enabled,
+        # V0.1.6 P2: 房间配置。
+        "room_config": json.loads(room.room_config_json) if room.room_config_json else {},
     }
 
 

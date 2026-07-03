@@ -190,6 +190,9 @@ class LiveRoom(SQLModel, table=True):
     schedule_enabled: bool = Field(default=False, description="是否启用录制预约")
     auto_threshold_enabled: bool = Field(default=False, description="是否启用阈值自学习")
     danmaku_sentiment_enabled: bool = Field(default=False, description="是否启用弹幕情绪分析")
+
+    # V0.1.6 P2:房间级配置(热词/别名/高光关键词/屏蔽主题,存储为 JSON)。
+    room_config_json: str | None = Field(default=None, description="房间配置 JSON(hotwords/aliases/highlight_keywords/blocked_topics)")
     created_at: datetime = Field(default_factory=utcnow)
     updated_at: datetime = Field(default_factory=utcnow)
 
