@@ -1,5 +1,20 @@
 # Changelog
 
+## V0.1.6 Alpha (2026-07-03)
+
+### P0 重构
+- **弹幕热度评分修复**:窗口速率与基线速率完全分离,基线使用分桶中位数,窗口内中心加权,Sigmoid 函数映射 0-1。新增可解释字段(窗口条数/速率/基线速率/倍数)。
+- **自动化开关拆分**:废弃 `mode`(manual/semi/auto),新增 5 个独立开关:`auto_record` / `auto_analyze` / `auto_render` / `auto_approve` / `auto_upload`。新增两个阈值:`auto_approve_threshold`(≥自动批准)、`review_threshold`(≥进入审核,<自动淘汰)。旧 mode 自动迁移到新开关。
+- **弹幕基线计算**:`:func:`_danmaku_baseline` 使用窗口前 20 分钟历史数据,按 10 秒分桶取中位数速率。
+- **弹幕可解释数据**:`:func:`danmaku_score_explain` 返回审核页面可用的窗口速率、基线速率、比值等信息。
+- **审核状态自动决定**:`score_segment` 根据房间 `auto_approve_threshold` / `review_threshold` 自动设置候选的初始状态。
+- **流水线房间感知**:`make_pipeline_callback` 读取房间级 `auto_analyze` / `auto_render` / `auto_upload` 开关,分别控制各阶段。
+
+### P0 基础设施
+- **pip 镜像源调整**:默认源→阿里云 PyPI 镜像,备用源→清华大学镜像。支持 `PIP_INDEX_URL` / `PIP_EXTRA_INDEX_URL` 环境变量覆盖。更新 `pip.ini`、`launcher.py`、`build_bundle.py`、`.env.example`。
+- **数据库迁移**:`live_rooms` 表新增 7 列(`auto_record`/`auto_analyze`/`auto_render`/`auto_approve`/`auto_upload`/`auto_approve_threshold`/`review_threshold`)及旧 mode→新开关的兼容迁移。
+- `launcher.exe` 重新编译同步。
+
 ## V0.1.5.1 Alpha (2026-07-03)
 
 ### 修复

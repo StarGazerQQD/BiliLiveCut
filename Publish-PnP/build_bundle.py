@@ -51,14 +51,14 @@ GH_PROXY_PREFIX = "https://gh-proxy.com/"
 # 下载超时(秒),避免网络不通时长时间卡死。
 DOWNLOAD_TIMEOUT_S = 30
 
-# pip 镜像(中国内地更快):清华为主、阿里云为备选(extra-index)。
-PIP_INDEX_PRIMARY = "https://pypi.tuna.tsinghua.edu.cn/simple"
+# pip 镜像(中国内地更快):阿里云优先、清华备用。环境变量 PIP_INDEX_URL/PIP_EXTRA_INDEX_URL 可覆盖。
+PIP_INDEX_PRIMARY = "https://mirrors.aliyun.com/pypi/simple/"
 PIP_INDEX_EXTRAS = [
-    "https://pypi.tuna.tsinghua.edu.cn/simple",
     "https://mirrors.aliyun.com/pypi/simple/",
+    "https://pypi.tuna.tsinghua.edu.cn/simple",
 ]
 # 上述镜像域名(用于 --trusted-host,规避个别环境的证书问题)。
-PIP_TRUSTED_HOSTS = ["pypi.tuna.tsinghua.edu.cn", "mirrors.aliyun.com"]
+PIP_TRUSTED_HOSTS = ["mirrors.aliyun.com", "pypi.tuna.tsinghua.edu.cn"]
 
 DIST_DIR = Path(__file__).resolve().parent
 PROJECT_ROOT = DIST_DIR.parent

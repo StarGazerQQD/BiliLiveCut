@@ -267,6 +267,14 @@ def update_room(db_id: int, fields: dict[str, Any]) -> LiveRoom:
         "schedule_enabled",
         "auto_threshold_enabled",
         "danmaku_sentiment_enabled",
+        # V0.1.6: 独立自动化开关。
+        "auto_record",
+        "auto_analyze",
+        "auto_render",
+        "auto_approve",
+        "auto_upload",
+        "auto_approve_threshold",
+        "review_threshold",
     }
     with get_session() as db:
         room = db.get(LiveRoom, db_id)
@@ -544,6 +552,14 @@ def _room_dict(room: LiveRoom, running: bool) -> dict[str, Any]:
         "mode": room.mode,
         "highlight_threshold": room.highlight_threshold,
         "auto_publish_threshold": room.auto_publish_threshold,
+        # V0.1.6: 独立自动化开关。
+        "auto_record": room.auto_record,
+        "auto_analyze": room.auto_analyze,
+        "auto_render": room.auto_render,
+        "auto_approve": room.auto_approve,
+        "auto_upload": room.auto_upload,
+        "auto_approve_threshold": room.auto_approve_threshold,
+        "review_threshold": room.review_threshold,
         "authorized": room.authorized,
         "enabled": room.enabled,
         "running": running,
