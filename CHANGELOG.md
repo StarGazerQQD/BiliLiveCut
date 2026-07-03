@@ -1,5 +1,15 @@
 # Changelog
 
+## V0.1.8 Alpha (2026-07-04)
+
+### P0 管线强化
+- **P0.1 Whisper hotword 注入**: `room_config.hotwords` -> Whisper `initial_prompt` 参数
+- **P0.2 aliases 纠错**: `room_config.aliases` -> 转写文本自动替换专有名词
+- **P0.3 Dashboard 批量操作**: `POST /api/candidates/batch` + 全选/批量批准/批量拒绝 UI
+- **P0.4 ASS 字幕模板**: CRUD + 导入 .ass 提取样式 + 导出完整 ASS 文件
+
+---
+
 ## V0.1.7.2 Alpha (2026-07-04)
 
 ### 半成品清理 (审计 F3/F4/F6/F1)
