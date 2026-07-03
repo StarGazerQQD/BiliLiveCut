@@ -175,6 +175,15 @@ class DanmakuClient:
             except asyncio.CancelledError:
                 break
             except Exception as exc:  # noqa: BLE001 — 弹幕断线不应中断录制
+                msg = str(exc)
+                # B 站 getDanmuInfo 接口要求登录态:未配置 cookie 时返回 code=-352
+                # 这不是网络问题,重试也不会成功,无需反复打印 WARNING。
+                if "-352" in msg and not self.cookie:
+                    logger.info("弹幕接口需要登录态({}),跳过弹幕采集。", msg.strip())
+                    break
+                if "-352" in msg:
+                    logger.warning("弹幕鉴权失败,请检查 Cookie 是否过期: {}", msg.strip())
+                    break
                 logger.warning("弹幕连接异常 room={}: {},{}s 后重连。", self.room_id, exc, backoff)
             if self._stop.is_set():
                 break

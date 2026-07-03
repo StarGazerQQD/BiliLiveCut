@@ -83,8 +83,11 @@ class Recorder:
     # 弹幕采集(与录制并行,贯穿整个会话)
     # ------------------------------------------------------------------ #
     def _start_danmaku(self) -> None:
-        """若开启则启动弹幕采集后台任务(失败不影响录制)。"""
+        """若开启且配置了登录 cookie 则启动弹幕采集后台任务(失败不影响录制)。"""
         if not settings.collect_danmaku or self._session_id is None:
+            return
+        if not settings.bilibili_cookie:
+            logger.info("未配置 Bilibili Cookie,跳过弹幕采集(接口需要登录态)。")
             return
         try:
             from app.sources.bilibili.danmaku import DanmakuClient
