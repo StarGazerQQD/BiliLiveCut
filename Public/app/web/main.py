@@ -12,8 +12,6 @@
 
 from __future__ import annotations
 
-import asyncio
-
 from collections.abc import AsyncIterator
 from contextlib import asynccontextmanager
 from pathlib import Path

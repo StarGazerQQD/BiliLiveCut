@@ -553,12 +553,89 @@ async function pollNotifications() {
   } catch (e) { /* 静默 */ }
 }
 
+// ----------------------------- 账号管理 ----------------------------- //
+async function loadCookieStatus() {
+  try {
+    const info = await api("GET", "/api/cookie-status");
+    const hint = $("#cookie-hint");
+    if (info.has_cookie) {
+      hint.innerHTML = `已登录 · UID: <b>${esc(info.uid || "?")}</b> · Cookie: <code>${esc(info.hint || "")}</code>`;
+      hint.className = "hint ok";
+    } else {
+      hint.textContent = info.hint || "未配置 Cookie,弹幕采集/鉴权功能不可用。";
+      hint.className = "hint warn";
+    }
+    hint.style.display = "";
+  } catch (e) { /* 静默 */ }
+}
+
+let _loginPolling = null;
+async function doLogin() {
+  const btn = $("#btn-login");
+  const status = $("#login-status");
+  btn.disabled = true;
+  status.textContent = "正在启动浏览器…";
+  try {
+    const resp = await api("POST", "/api/login");
+    const taskId = resp.task_id;
+    // 轮询登录状态
+    if (_loginPolling) clearInterval(_loginPolling);
+    _loginPolling = setInterval(async () => {
+      try {
+        const s = await api("GET", `/api/login/status?task_id=${taskId}`);
+        status.textContent = { starting: "正在启动浏览器…", waiting: "请在弹出窗口中完成登录…" }[s.status] || s.status;
+        if (s.status === "done") {
+          clearInterval(_loginPolling);
+          _loginPolling = null;
+          status.textContent = "登录成功！Cookie 已自动保存。";
+          btn.disabled = false;
+          toast("Bilibili 登录成功");
+          await loadCookieStatus();
+        } else if (s.error) {
+          clearInterval(_loginPolling);
+          _loginPolling = null;
+          status.textContent = "登录失败: " + esc(s.error);
+          btn.disabled = false;
+        }
+      } catch (e) {
+        clearInterval(_loginPolling);
+        _loginPolling = null;
+        status.textContent = "状态查询异常: " + esc(e.message);
+        btn.disabled = false;
+      }
+    }, 2000);
+  } catch (e) {
+    status.textContent = "启动失败: " + esc(e.message);
+    btn.disabled = false;
+  }
+}
+
+async function clearCookie() {
+  if (!confirm("确定要清除 Cookie？\n清除后弹幕采集等需要登录态的功能将不可用。")) return;
+  try {
+    await api("POST", "/api/login/clear");
+    toast("Cookie 已清除。");
+    await loadCookieStatus();
+  } catch (e) {
+    toast("清除失败: " + esc(e.message));
+  }
+}
+
+// 绑定事件（DOM 加载后执行）
+document.addEventListener("DOMContentLoaded", () => {
+  const btnLogin = $("#btn-login");
+  const btnClear = $("#btn-clear-cookie");
+  if (btnLogin) btnLogin.addEventListener("click", doLogin);
+  if (btnClear) btnClear.addEventListener("click", clearCookie);
+});
+
+
 // ----------------------------- 轮询 ----------------------------- //
 const loaders = {
   rooms: loadRooms, recording: loadRecording, transcripts: loadTranscripts,
   danmaku: loadDanmaku, trends: loadTrends, candidates: loadCandidates,
   clips: loadClips, uploads: loadUploads, models: loadLLM, logs: loadLogs,
-  schedules: loadSchedules,
+  schedules: loadSchedules, login: loadCookieStatus,
 };
 async function refresh() {
   try {

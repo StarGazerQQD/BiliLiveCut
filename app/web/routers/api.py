@@ -18,6 +18,7 @@ from pydantic import BaseModel
 
 from app.db.models import CandidateStatus
 from app.web import service
+from app.web.login_handler import get_cookie_info, get_login_status, start_login
 
 router = APIRouter(prefix="/api")
 
@@ -377,3 +378,40 @@ def clip_cover(clip_id: int) -> FileResponse:
     if not clip or not clip["cover_path"] or not Path(clip["cover_path"]).exists():
         raise HTTPException(status_code=404, detail="封面不存在")
     return FileResponse(clip["cover_path"], media_type="image/jpeg")
+
+
+# ----------------------------- 账号登录 / Cookie 管理 ----------------------------- #
+@router.get("/cookie-status")
+def cookie_status() -> dict[str, Any]:
+    """返回当前 Bilibili Cookie 存续状态。"""
+    return get_cookie_info()
+
+
+@router.post("/login")
+def login_start() -> dict[str, Any]:
+    """启动一次浏览器登录流程（Playwright）,返回任务 ID 供前端轮询。"""
+    try:
+        return start_login()
+    except Exception as exc:
+        raise HTTPException(status_code=500, detail=str(exc)) from exc
+
+
+@router.get("/login/status")
+def login_status(task_id: int) -> dict[str, Any]:
+    """查询登录任务当前状态。
+
+    - ``starting``: 正在启动浏览器
+    - ``waiting``: 等待用户在浏览器中完成登录
+    - ``done``: 登录成功,Cookie 已保存
+    - 含 ``error`` 时表示登录失败
+    """
+    return get_login_status(task_id)
+
+
+@router.post("/login/clear")
+def login_clear() -> dict[str, str]:
+    """清除已保存的 Bilibili Cookie。"""
+    from app.core import settings_store
+
+    settings_store.set_setting("bilibili_cookie", "")
+    return {"status": "cleared"}

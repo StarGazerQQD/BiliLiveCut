@@ -1,5 +1,13 @@
 # Changelog — 即插即用版 (Public)
 
+## V0.1.4 Alpha (2026-07-03)
+
+### 新增
+- **GUI 账号登录**:Dashboard「账号管理」Tab,浏览器扫码登录自动采集 Cookie。详见根目录 `CHANGELOG.md`。
+
+### 内部
+- `launcher.exe` 重新编译同步。
+
 ## V0.1.3 Alpha (2026-07-02)
 
 同步主工程 v0.1.3-alpha 全部 Bug 修复(审计共修复 26 个问题)。

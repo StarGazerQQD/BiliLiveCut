@@ -23,6 +23,7 @@ from pathlib import Path
 from loguru import logger
 
 from app.core.config import settings
+from app.core.cookie import get_bilibili_cookie
 from app.core.paths import session_raw_dir
 from app.db.models import (
     RawSegment,
@@ -86,7 +87,7 @@ class Recorder:
         """若开启且配置了登录 cookie 则启动弹幕采集后台任务(失败不影响录制)。"""
         if not settings.collect_danmaku or self._session_id is None:
             return
-        if not settings.bilibili_cookie:
+        if not get_bilibili_cookie():
             logger.info("未配置 Bilibili Cookie,跳过弹幕采集(接口需要登录态)。")
             return
         try:
@@ -95,7 +96,7 @@ class Recorder:
             self._danmaku = DanmakuClient(
                 room_id=self.room_id,
                 session_id=self._session_id,
-                cookie=settings.bilibili_cookie,
+                cookie=get_bilibili_cookie(),
             )
             self._danmaku_task = asyncio.create_task(self._danmaku.run())
             logger.info("弹幕采集已启动 room={} session={}", self.room_id, self._session_id)
@@ -137,7 +138,7 @@ class Recorder:
         # 会话期间并行采集弹幕(用于弹幕热度与高光评分的弹幕维度)。
         self._start_danmaku()
 
-        async with BilibiliLiveClient(cookie=settings.bilibili_cookie) as client:
+        async with BilibiliLiveClient(cookie=get_bilibili_cookie()) as client:
             while not self._stop.is_set():
                 stream = await self._fetch_stream(client)
                 if stream is None:

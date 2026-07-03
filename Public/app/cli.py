@@ -28,6 +28,7 @@ from rich.table import Table
 from sqlmodel import select
 
 from app.core.config import settings
+from app.core.cookie import get_bilibili_cookie
 from app.core.logging import setup_logging
 from app.db.models import FinalClip, HighlightCandidate, LiveRoom
 from app.db.session import get_session, init_db
@@ -73,7 +74,7 @@ def add_room(
         raise typer.Exit(code=1)
 
     async def _resolve() -> LiveRoom:
-        async with BilibiliLiveClient(cookie=settings.bilibili_cookie) as client:
+        async with BilibiliLiveClient(cookie=get_bilibili_cookie()) as client:
             info = await client.get_room_info(url)
         return LiveRoom(
             input_url=url,
@@ -134,7 +135,7 @@ def check(url: str = typer.Argument(..., help="直播间 URL 或房间号")) -> 
     """
 
     async def _check() -> None:
-        async with BilibiliLiveClient(cookie=settings.bilibili_cookie) as client:
+        async with BilibiliLiveClient(cookie=get_bilibili_cookie()) as client:
             info = await client.get_room_info(url)
             console.print(
                 f"room_id=[bold]{info.room_id}[/bold] live_status={info.live_status} "

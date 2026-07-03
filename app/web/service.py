@@ -23,6 +23,7 @@ from sqlmodel import select
 
 from app.core import settings_store
 from app.core.config import settings
+from app.core.cookie import get_bilibili_cookie
 from app.core.osutil import open_path
 from app.core.paths import clips_dir, ready_to_upload_dir
 from app.db.models import (
@@ -223,7 +224,7 @@ async def add_room(url: str, authorized: bool) -> LiveRoom:
     if settings.require_authorization and not authorized:
         raise ValueError("需要确认授权才能添加直播间。")
 
-    async with BilibiliLiveClient(cookie=settings.bilibili_cookie) as client:
+    async with BilibiliLiveClient(cookie=get_bilibili_cookie()) as client:
         info = await client.get_room_info(url)
 
     with get_session() as db:
