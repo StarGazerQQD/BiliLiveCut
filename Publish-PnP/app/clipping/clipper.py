@@ -536,6 +536,10 @@ def produce_clip(candidate_id: int, options: ClipOptions | None = None) -> Final
     # V0.1.8 P1.1: 渲染多版本出片(归档版+压制版+互补字幕版)。
     _render_variants(clip, options, concat_list, cut_offset, duration, srt_path)
 
+    # V0.1.8 P2:切片完成通知。
+    from app.notify.webhook import notify_clip_complete
+    notify_clip_complete(candidate_id, str(out_path), real_duration)
+
     return clip
 
 

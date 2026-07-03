@@ -854,7 +854,7 @@ const loaders = {
   clips: loadClips, uploads: loadUploads, models: loadLLM, logs: loadLogs,
   schedules: loadSchedules, login: loadCookieStatus, tasks: loadTasks,
   topics: loadTopics, monitor: loadMonitor, templates: loadTemplates,
-  introTemplates: loadIntroTemplates,
+  introTemplates: loadIntroTemplates, analytics: loadAnalytics,
 };
 async function refresh() {
   try {
@@ -941,6 +941,112 @@ $("#btn-add-intro").addEventListener("click", async () => {
   try { await api("POST", "/api/intro-templates"); toast("默认模板已创建"); loadIntroTemplates(); }
   catch (e) { toast(e.message); }
 });
+
+// ----------------------------- 数据分析(V0.1.8 P2) ----------------------------- //
+async function loadAnalytics() {
+  const data = await api("GET", "/api/analytics");
+
+  // 核心指标
+  $("#stat-total-clips").textContent = data.overview.total_clips;
+  $("#stat-published").textContent = data.overview.published_clips;
+  $("#stat-duration").textContent = data.overview.total_duration_h;
+  $("#stat-avg-score").textContent = data.overview.avg_highlight_score;
+  $("#stat-candidates").textContent = data.overview.total_candidates;
+  $("#stat-sessions").textContent = data.overview.total_sessions;
+  $("#stat-reconnects").textContent = data.overview.total_reconnects;
+  $("#stat-raw-gb").textContent = data.overview.total_raw_gb;
+  $("#stat-task-fail").textContent = data.overview.task_failed;
+
+  // 分数分布
+  const dist = data.score_distribution;
+  const maxCount = Math.max(...Object.values(dist), 1);
+  let distHtml = "";
+  for (const [k, v] of Object.entries(dist)) {
+    const pct = Math.round(v / maxCount * 100);
+    distHtml += `<div style="flex:1;text-align:center;font-size:11px">
+      <div style="background:#3b82f6;height:${pct}px;border-radius:4px 4px 0 0;min-height:4px"></div>
+      ${v}<br/>${k}
+    </div>`;
+  }
+  $("#score-dist").innerHTML = distHtml;
+
+  // 每日趋势 Canvas
+  renderTrendChart(data.daily_trend);
+
+  // 直播间排行
+  const ranks = data.room_ranking;
+  $("#room-ranking").innerHTML = ranks.length ? ranks.map((r, i) =>
+    `<div style="display:flex;justify-content:space-between;padding:4px 0;border-bottom:1px solid #333">
+      <span>${i + 1}. ${esc(r.name)}</span>
+      <span>${r.clips} 片 · ${r.duration_h}h</span>
+    </div>`).join("") : `<div class="empty">暂无数据。</div>`;
+}
+
+function renderTrendChart(daily) {
+  const canvas = document.getElementById("trend-canvas");
+  if (!canvas) return;
+  const ctx = canvas.getContext("2d");
+  const W = canvas.width, H = canvas.height;
+  ctx.clearRect(0, 0, W, H);
+
+  const pad = { top: 20, right: 20, bottom: 40, left: 40 };
+  const pw = W - pad.left - pad.right;
+  const ph = H - pad.top - pad.bottom;
+
+  // 找最大值
+  let maxVal = 1;
+  daily.forEach(d => {
+    maxVal = Math.max(maxVal, d.sessions, d.clips, d.candidates);
+  });
+  maxVal = Math.ceil(maxVal * 1.2);
+
+  const n = daily.length;
+  const xStep = pw / (n - 1);
+  const yScale = (v) => pad.top + ph - (v / maxVal * ph);
+
+  // 坐标轴
+  ctx.strokeStyle = "#555"; ctx.lineWidth = 1;
+  ctx.beginPath();
+  ctx.moveTo(pad.left, pad.top); ctx.lineTo(pad.left, pad.top + ph);
+  ctx.lineTo(pad.left + pw, pad.top + ph);
+  ctx.stroke();
+
+  // Y 刻度
+  ctx.fillStyle = "#999"; ctx.font = "10px sans-serif"; ctx.textAlign = "right";
+  for (let i = 0; i <= 4; i++) {
+    const v = Math.round(maxVal * i / 4);
+    const y = pad.top + ph - (v / maxVal * ph);
+    ctx.fillText(v, pad.left - 6, y + 4);
+    if (i > 0) {
+      ctx.strokeStyle = "#333"; ctx.lineWidth = 0.5;
+      ctx.beginPath(); ctx.moveTo(pad.left, y); ctx.lineTo(pad.left + pw, y); ctx.stroke();
+    }
+  }
+
+  // X 刻度(每 5 天)
+  ctx.textAlign = "center";
+  for (let i = 0; i < n; i += 5) {
+    const x = pad.left + i * xStep;
+    ctx.fillText(daily[i].date, x, pad.top + ph + 16);
+  }
+
+  // 绘制三条曲线
+  const colors = ["#3b82f6", "#10b981", "#f59e0b"];
+  const keys = ["clips", "sessions", "candidates"];
+  keys.forEach((key, ki) => {
+    ctx.strokeStyle = colors[ki]; ctx.lineWidth = 2;
+    ctx.beginPath();
+    daily.forEach((d, i) => {
+      const x = pad.left + i * xStep;
+      const y = yScale(d[key] || 0);
+      if (i === 0) ctx.moveTo(x, y); else ctx.lineTo(x, y);
+    });
+    ctx.stroke();
+    // 图例
+    ctx.fillStyle = colors[ki];
+    ctx.fillText({ clips: "切片", sessions: "录制", candidates: "候选" }[key], pad.left + 10 + ki * 70, pad.top - 6);
+  });
+}
 
 refresh();
 setInterval(refresh, 5000);

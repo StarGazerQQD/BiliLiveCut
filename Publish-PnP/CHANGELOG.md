@@ -1,5 +1,12 @@
 # Changelog — 即插即用版 (Publish-PnP)
 
+## V0.1.8.1 Alpha (2026-07-04)
+
+- P2 运营增强:数据分析面板、钉钉/微信/邮件通知
+- 详见根目录 `CHANGELOG.md`。
+
+---
+
 ## V0.1.8 Alpha (2026-07-04)
 
 - P0 管线强化:hotword注入、aliases纠错、批量审核、ASS模板管理

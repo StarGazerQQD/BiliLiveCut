@@ -19,12 +19,24 @@ def get_monitor_data() -> dict:
         get_disk_usage,
     )
     from app.core.paths import clips_dir, raw_dir
+    from app.core.config import settings
 
     # 磁盘。
     disk = get_disk_usage()
     raw_size = get_directory_size(raw_dir())
     clips_size = get_directory_size(clips_dir())
     safe, safe_msg = check_disk_safe()
+
+    # V0.1.8 P2:磁盘不足告警通知。
+    if not safe:
+        from app.notify.webhook import notify_disk_alert
+        free_gb = disk.get("free_gb", 0) if isinstance(disk, dict) else getattr(disk, "free_gb", 0)
+        notify_disk_alert(
+            free_gb,
+            settings.disk_alert_threshold_gb,
+            raw_size,
+            clips_size,
+        )
 
     # 系统资源。
     cpu = _get_cpu_percent()
