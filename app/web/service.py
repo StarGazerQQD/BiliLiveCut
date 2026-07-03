@@ -36,6 +36,7 @@ from app.db.models import (
     RecordingSchedule,
     RecordingSession,
     RoomMode,
+    SegmentStatus,
     SessionStatus,
     SystemLog,
     Transcript,
