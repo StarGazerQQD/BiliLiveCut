@@ -44,11 +44,11 @@ def get_collection_data(topic_id: int) -> dict:
 
 
 @collection_router.post("/api/{topic_id}/reorder")
-def reorder_events(topic_id: int, event_ids: list[int]) -> dict:
-    """保存事件顺序。"""
+def reorder_events(topic_id: int, event_ids: list[int], chapter_titles: dict[str, str] | None = None) -> dict:
+    """保存事件顺序及章节标题。"""
     from app.analysis.topic_cluster import reorder_topic_events
 
-    ok = reorder_topic_events(topic_id, event_ids)
+    ok = reorder_topic_events(topic_id, event_ids, chapter_titles)
     if not ok:
         raise HTTPException(status_code=400, detail="排序保存失败")
     return {"status": "reordered"}

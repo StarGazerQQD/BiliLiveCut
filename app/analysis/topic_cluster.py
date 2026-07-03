@@ -580,11 +580,12 @@ def split_topic(topic_id: int, event_ids: list[int]) -> int | None:
     return new_id
 
 
-def reorder_topic_events(topic_id: int, event_ids: list[int]) -> bool:
-    """对主题内高光重新排序(设置 sort_order)。
+def reorder_topic_events(topic_id: int, event_ids: list[int], chapter_titles: dict[str, str] | None = None) -> bool:
+    """对主题内高光重新排序(设置 sort_order),并保存章节标题。
 
     :param topic_id: 主题 id。
     :param event_ids: 按新顺序排列的事件 id 列表。
+    :param chapter_titles: ``{event_id_str: title}`` 章节标题映射。
     :returns: 成功返回 ``True``。
     """
     with get_session() as db:
@@ -597,5 +598,7 @@ def reorder_topic_events(topic_id: int, event_ids: list[int]) -> bool:
             ).first()
             if link:
                 link.sort_order = i
+                if chapter_titles and str(eid) in chapter_titles:
+                    link.chapter_title = chapter_titles[str(eid)]
                 db.add(link)
     return True

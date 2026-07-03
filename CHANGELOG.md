@@ -1,5 +1,20 @@
 # Changelog
 
+## V0.1.7.2 Alpha (2026-07-04)
+
+### 半成品清理 (审计 F3/F4/F6/F1)
+- **F3**: `_decide_status` 迁移到 `auto_approve` + `auto_approve_threshold` 新开关,废弃旧 `mode`
+- **F4**: `HighlightTopic` 新增 `chapter_title` 字段,合集章节标题持久化到数据库
+- **F6**: `HighlightEvent.asr_text` 创建时自动从 `Transcript` 填充
+- **F1**: `produce_clip` 末尾自动创建 `ClipVariant` 多版本记录(SINGLE+按字幕标记)
+
+### 文档清理
+- 删除所有 YouTube 相关描述/代码/测试断言
+- `collection_copywriter` LLM prompt 和回退输出统一为单一 `title` 字段
+- README pip 源顺序统一为阿里云优先+清华备用
+
+---
+
 ## V0.1.7.1 Alpha (2026-07-04)
 
 ### 安全修复
@@ -22,7 +37,7 @@
 ### P2 合集编辑 + 渲染
 - **合集编辑器**:`/collection/{topic_id}` 拖拽排序、时长汇总、相邻事件重叠/间隙检测(≤2s 可合并)、章节标题编辑、文案生成。
 - **合集成片**:FFmpeg concat 多片段拼接,EBU R128 响度标准化,可选章节标题卡(纯色背景+白色文字,2s)。
-- **文案生成**:LLM 辅助 + 规则回退双路。输出:主题摘要、B站/YouTube 标题、简介、章节时间戳、封面短标题、标签。
+- **文案生成**:LLM 辅助 + 规则回退双路。输出:主题摘要、标题、简介、章节时间戳、封面短标题、标签。
 - **房间级配置**:热词/别名/高光关键词/屏蔽话题,存储于 `LiveRoom.room_config_json`,Dashboard 折叠面板编辑。
 
 ### 新增文件

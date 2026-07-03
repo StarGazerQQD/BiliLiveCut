@@ -27,7 +27,6 @@ from app.db.models import (
     HighlightCandidate,
     LiveRoom,
     RecordingSession,
-    RoomMode,
     Transcript,
 )
 from app.db.session import get_session
@@ -201,15 +200,15 @@ def generate_copy(clip_id: int) -> FinalClip:
         cand = db.get(HighlightCandidate, candidate_id)
         session = db.get(RecordingSession, cand.session_id) if cand else None
         room = db.get(LiveRoom, session.room_id) if session else None
-        mode = room.mode if room else RoomMode.MANUAL
-        auto_threshold = room.auto_publish_threshold if room else 0.85
+        # 使用新版 auto_* 独立开关。
+        auto_approve = room.auto_approve if room else False
+        auto_approve_threshold = room.auto_approve_threshold if room else 0.82
         score = cand.highlight_score if cand else 0.0
 
     text, reason = gather_clip_text(candidate_id)
     copy = _llm_copy(text, reason) or _fallback_copy(text, reason)
 
-    # 状态决策:人工模式一律待审;半自动按分数;全自动按是否值得发布。
-    status = _decide_status(mode, copy.worth_publishing, score, auto_threshold)
+    status = _decide_status(auto_approve, auto_approve_threshold, score, copy.worth_publishing)
 
     with get_session() as db:
         clip = db.get(FinalClip, clip_id)
@@ -235,26 +234,22 @@ def generate_copy(clip_id: int) -> FinalClip:
 
 
 def _decide_status(
-    mode: str,
-    worth_publishing: bool,
+    auto_approve: bool,
+    auto_approve_threshold: float,
     score: float,
-    auto_threshold: float,
+    worth_publishing: bool,
 ) -> str:
-    """根据审核模式决定切片状态。
+    """根据 auto_* 开关决定切片状态。
 
-    :param mode: 直播间审核模式。
-    :param worth_publishing: 文案判断是否值得发布。
+    :param auto_approve: 是否启用自动批准。
+    :param auto_approve_threshold: 自动批准分数阈值。
     :param score: 候选综合分。
-    :param auto_threshold: 自动发布阈值。
+    :param worth_publishing: 文案判断是否值得发布。
     :returns: :class:`~app.db.models.ClipStatus` 之一。
     """
-    if mode == RoomMode.AUTO:
-        return ClipStatus.READY if worth_publishing else ClipStatus.REJECTED
-    if mode == RoomMode.SEMI:
-        if worth_publishing and score >= auto_threshold:
-            return ClipStatus.READY
-        return ClipStatus.REVIEWING
-    # 默认 manual:始终等待人工审核。
+    if worth_publishing and auto_approve and score >= auto_approve_threshold:
+        return ClipStatus.READY
+    # 默认:等待人工审核。
     return ClipStatus.REVIEWING
 
 
