@@ -15,7 +15,7 @@ from app.clipping.clipper import (
     _build_video_filter,
     _group_srt,
 )
-from app.db.models import ClipStatus, RoomMode
+from app.db.models import ClipStatus
 from app.publishing.copywriter import _decide_status, _fallback_copy
 
 if TYPE_CHECKING:
@@ -55,12 +55,15 @@ def test_group_srt_format() -> None:
 
 
 def test_decide_status() -> None:
-    """各审核模式的状态决策符合预期。"""
-    assert _decide_status(RoomMode.AUTO, True, 0.9, 0.85) == ClipStatus.READY
-    assert _decide_status(RoomMode.AUTO, False, 0.9, 0.85) == ClipStatus.REJECTED
-    assert _decide_status(RoomMode.SEMI, True, 0.9, 0.85) == ClipStatus.READY
-    assert _decide_status(RoomMode.SEMI, True, 0.5, 0.85) == ClipStatus.REVIEWING
-    assert _decide_status(RoomMode.MANUAL, True, 0.99, 0.85) == ClipStatus.REVIEWING
+    """auto_* 开关的状态决策符合预期。"""
+    # auto_approve=on, worth, score >= threshold → READY
+    assert _decide_status(True, 0.82, 0.9, True) == ClipStatus.READY
+    # auto_approve=on, not worth → REVIEWING
+    assert _decide_status(True, 0.82, 0.9, False) == ClipStatus.REVIEWING
+    # auto_approve=on, score < threshold → REVIEWING
+    assert _decide_status(True, 0.82, 0.5, True) == ClipStatus.REVIEWING
+    # auto_approve=off → REVIEWING (不管分数和 worth)
+    assert _decide_status(False, 0.82, 0.99, True) == ClipStatus.REVIEWING
 
 
 def test_fallback_copy_uses_keywords() -> None:
@@ -124,7 +127,6 @@ def test_produce_clip_end_to_end(
         LiveRoom,
         RawSegment,
         RecordingSession,
-        RoomMode,
         Transcript,
     )
     from app.db.session import get_session
@@ -135,7 +137,7 @@ def test_produce_clip_end_to_end(
 
     base = datetime.now(UTC)
     with get_session() as db:
-        room = LiveRoom(input_url="x", room_id=1, authorized=True, mode=RoomMode.AUTO)
+        room = LiveRoom(input_url="x", room_id=1, authorized=True, auto_approve=True)
         db.add(room)
         db.flush()
         session = RecordingSession(room_id=room.id)

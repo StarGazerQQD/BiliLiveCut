@@ -277,7 +277,7 @@ async def adjust_boundary(
                 highlight_score=c.highlight_score,
                 features_json=c.features_json,
                 reason=c.reason,
-                asr_text=None,  # 由后续流程填充。
+                asr_text=_get_candidate_asr_text(db, c),
             )
             db.add(event)
             db.flush()
@@ -371,6 +371,7 @@ def submit_review(
                 highlight_score=c.highlight_score,
                 features_json=c.features_json,
                 reason=c.reason,
+                asr_text=_get_candidate_asr_text(db, c),
             )
             db.add(event)
             db.flush()
@@ -533,3 +534,27 @@ def get_waveform(candidate_id: int, resolution: int = 400) -> dict:
         peaks.append(round(max_val / 32768.0, 4))
 
     return {"peaks": peaks, "duration_s": round(duration_s, 2), "sample_rate": sample_rate}
+
+
+def _get_candidate_asr_text(db, candidate) -> str | None:
+    """根据候选关联的片段获取转写文本。
+
+    :param db: 数据库会话。
+    :param candidate: HighlightCandidate 实例。
+    :returns: ASR 文本或 ``None``。
+    """
+    from app.db.models import RawSegment, Transcript
+
+    segment = db.exec(
+        _sql_select(RawSegment).where(
+            RawSegment.session_id == candidate.session_id,
+        )
+    ).first()
+    if segment is None:
+        return None
+    trans = db.exec(
+        _sql_select(Transcript).where(
+            Transcript.segment_id == segment.id,
+        )
+    ).first()
+    return trans.text if trans else None

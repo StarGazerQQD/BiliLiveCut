@@ -71,6 +71,8 @@ def _migrate_add_columns() -> None:
         ("live_rooms", "review_threshold", "REAL NOT NULL DEFAULT 0.50", None),
         # V0.1.6 P2: 房间配置。
         ("live_rooms", "room_config_json", "TEXT", None),
+        # V0.1.8: 合集章节标题持久化。
+        ("highlight_topics", "chapter_title", "TEXT", None),
     ]
     with engine.connect() as conn:
         existing_lr = {r[1] for r in conn.exec_driver_sql(
@@ -79,8 +81,20 @@ def _migrate_add_columns() -> None:
         existing_rs = {r[1] for r in conn.exec_driver_sql(
             "PRAGMA table_info(recording_sessions)"
         ).fetchall()}
+        existing_ht = {r[1] for r in conn.exec_driver_sql(
+            "PRAGMA table_info(highlight_topics)"
+        ).fetchall()} if conn.exec_driver_sql(
+            "SELECT name FROM sqlite_master WHERE type='table' AND name='highlight_topics'"
+        ).fetchone() else set()
         for table, col, sql_type, _ in _migrations:
-            existing = existing_lr if table == "live_rooms" else existing_rs
+            if table == "live_rooms":
+                existing = existing_lr
+            elif table == "recording_sessions":
+                existing = existing_rs
+            elif table == "highlight_topics":
+                existing = existing_ht
+            else:
+                existing = set()
             if col not in existing:
                 try:
                     conn.exec_driver_sql(f"ALTER TABLE {table} ADD COLUMN {col} {sql_type}")

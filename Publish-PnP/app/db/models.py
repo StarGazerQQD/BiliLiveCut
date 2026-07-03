@@ -379,6 +379,7 @@ class HighlightTopic(SQLModel, table=True):
     confidence: float = Field(default=0.0, description="该事件属于本主题的相似度")
     is_manual: bool = Field(default=False, description="是否人工手动归类")
     sort_order: int = Field(default=0, description="在合集中的顺序")
+    chapter_title: str | None = Field(default=None, description="V0.1.8:合集内章节标题")
     created_at: datetime = Field(default_factory=utcnow)
 
 

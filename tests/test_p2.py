@@ -216,14 +216,13 @@ class TestFallbackCopywriter:
         result = _fallback_copywriter("审判翻盘合集", events, 75.0)
 
         assert "summary" in result
-        assert "bilibili_title" in result
-        assert "youtube_title" in result
+        assert "title" in result
         assert "description" in result
         assert "chapters" in result
         assert "tags" in result
         assert "cover_title" in result
         assert len(result["chapters"]) == 2
-        assert "审判" in result["bilibili_title"]
+        assert "审判" in result["title"]
 
     @staticmethod
     def test_empty_title() -> None:
@@ -231,8 +230,7 @@ class TestFallbackCopywriter:
         from app.publishing.collection_copywriter import _fallback_copywriter
 
         result = _fallback_copywriter("", [{"score": 0.5, "duration_s": 10}], 10.0)
-        assert result["bilibili_title"] != ""
-        assert result["youtube_title"] != ""
+        assert result["title"] != ""
 
     @staticmethod
     def test_sec_to_hhmmss() -> None:

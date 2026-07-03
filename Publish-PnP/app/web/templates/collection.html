@@ -169,8 +169,7 @@ async function generateCopywriter(){
     const el=$("#copywriter-output");
     el.innerHTML=`
       <p><b>主题摘要:</b> ${esc(res.summary||"")}</p>
-      <p><b>B站标题:</b> <span style="color:var(--accent)">${esc(res.bilibili_title||"")}</span></p>
-      <p><b>YouTube 标题:</b> <span style="color:var(--accent)">${esc(res.youtube_title||"")}</span></p>
+      <p><b>标题:</b> <span style="color:var(--accent)">${esc(res.title||"")}</span></p>
       <p><b>封面短标题:</b> <span style="color:var(--yellow)">${esc(res.cover_title||"")}</span></p>
       <p><b>简介:</b></p>
       <pre style="font-size:11px;white-space:pre-wrap;background:var(--bg);padding:8px;border-radius:4px;max-height:200px;overflow-y:auto">${esc(res.description||"")}</pre>

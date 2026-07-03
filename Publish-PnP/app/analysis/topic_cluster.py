@@ -22,7 +22,6 @@ import json
 import math
 import re
 from collections import Counter
-from datetime import datetime as _dt, UTC
 
 from loguru import logger
 from sqlmodel import select
@@ -53,6 +52,7 @@ def _tokenize(text: str) -> list[str]:
         return []
     text = re.sub(r"[\.\,\!\?\;\:\"\'\(\)\[\]\{\}\s\n\r\t]+", " ", text)
     tokens = [t.strip() for t in text.split() if len(t.strip()) >= 1]
+    # 单字集合词（中文通常按 n-gram 更有效,但这里用字符级 bigram 模拟 TF-IDF,对短文本友好）。
     return tokens
 
 
@@ -97,8 +97,10 @@ def text_similarity(text_a: str, text_b: str) -> float:
     """
     if not text_a or not text_b:
         return 0.0
+    # 计算词频。
     freq_a = Counter(_char_bigrams(text_a))
     freq_b = Counter(_char_bigrams(text_b))
+    # 小的 IDF 惩罚:对极高频 bigram 打折扣。
     total_docs = max(len(freq_a), len(freq_b), 2)
     def idf_weight(freq: Counter[str]) -> dict[str, float]:
         result = {}
@@ -148,16 +150,21 @@ def event_similarity(event_a: dict, event_b: dict) -> float:
     text_a = event_a.get("asr_text", "") or ""
     text_b = event_b.get("asr_text", "") or ""
 
+    # ASR 文本相似度。
     sim_text = text_similarity(text_a, text_b)
 
+    # 关键词重叠。
     kw_a = event_a.get("keywords", []) or []
     kw_b = event_b.get("keywords", []) or []
     sim_kw = keyword_overlap(kw_a, kw_b)
 
+    # 时间接近度:1 小时内线性衰减。
     ts_a = event_a.get("start_ts")
     ts_b = event_b.get("start_ts")
     time_sim = 0.0
     if ts_a and ts_b:
+        from datetime import datetime as _dt
+
         if isinstance(ts_a, str):
             ts_a = _dt.fromisoformat(ts_a)
         if isinstance(ts_b, str):
@@ -167,6 +174,7 @@ def event_similarity(event_a: dict, event_b: dict) -> float:
             if diff_s < TOPIC_TIME_WINDOW_S:
                 time_sim = max(0.0, 1.0 - diff_s / TOPIC_TIME_WINDOW_S)
 
+    # 加权融合。
     score = sim_text * 0.55 + sim_kw * 0.25 + time_sim * 0.20
 
     return round(score, 4)
@@ -186,6 +194,7 @@ def _extract_keywords(text: str, max_keywords: int = 8) -> list[str]:
         return []
     counter = Counter(bigrams)
     total = sum(counter.values())
+    # 取频率 > 平均的词作为关键词。
     avg = total / len(counter) if counter else 0
     keywords = [k for k, v in counter.most_common(max_keywords * 2) if v > avg]
     return keywords[:max_keywords]
@@ -214,6 +223,7 @@ def cluster_candidates(session_id: int) -> list[dict]:
         logger.info("会话 {} 候选不足 2 个,跳过主题聚类。", session_id)
         return []
 
+    # 收集候选数据。
     items: list[dict] = []
     for c in candidates:
         features = {}
@@ -222,6 +232,7 @@ def cluster_candidates(session_id: int) -> list[dict]:
                 features = json.loads(c.features_json)
             except json.JSONDecodeError:
                 pass
+        # 尝试取转写文本。
         asr_text = ""
         with get_session() as db:
             from app.db.models import Transcript
@@ -246,6 +257,7 @@ def cluster_candidates(session_id: int) -> list[dict]:
             "start_ts": c.start_ts.isoformat() if c.start_ts else None,
         })
 
+    # 两两相似度。
     n = len(items)
     matrix: list[list[float]] = [[0.0] * n for _ in range(n)]
     for i in range(n):
@@ -254,6 +266,7 @@ def cluster_candidates(session_id: int) -> list[dict]:
             matrix[i][j] = sim
             matrix[j][i] = sim
 
+    # 聚类:Union-Find。
     parent = list(range(n))
 
     def find(x: int) -> int:
@@ -272,16 +285,19 @@ def cluster_candidates(session_id: int) -> list[dict]:
             if matrix[i][j] >= TOPIC_CONFIDENCE_HIGH:
                 union(i, j)
 
+    # 收集簇。
     clusters: dict[int, list[int]] = {}
     for i in range(n):
         root = find(i)
         clusters.setdefault(root, []).append(i)
 
+    # 写入数据库。
     topics_created = []
     with get_session() as db:
         for root, indices in clusters.items():
             if len(indices) < 2:
                 continue
+            # 计算簇内平均相似度。
             avg_sim = 0.0
             count = 0
             for a in indices:
@@ -291,6 +307,7 @@ def cluster_candidates(session_id: int) -> list[dict]:
                         count += 1
             avg_sim = avg_sim / count if count > 0 else 0.0
 
+            # 生成标题和摘要。
             kw_pool: set[str] = set()
             all_text = ""
             for idx in indices:
@@ -301,6 +318,7 @@ def cluster_candidates(session_id: int) -> list[dict]:
             topic_title = ", ".join(topic_kw[:3]) if topic_kw else f"主题簇 #{root}"
             topic_summary = all_text[:200].strip() if all_text else None
 
+            # 检查是否已有相似主题(通过标题去重)。
             existing = db.exec(
                 select(Topic).where(
                     Topic.session_id == session_id,
@@ -323,9 +341,10 @@ def cluster_candidates(session_id: int) -> list[dict]:
             else:
                 topic_id = existing.id
 
+            # 关联。
             for idx in indices:
                 cid = items[idx]["id"]
-                sim = 1.0
+                sim = 1.0  # 同簇默认 1.0
                 existing_link = db.exec(
                     select(HighlightTopic).where(
                         HighlightTopic.event_id == cid,
@@ -437,7 +456,7 @@ def update_topic(topic_id: int, **kwargs) -> bool:
                 t.entities_json = json.dumps(v, ensure_ascii=False) if isinstance(v, list) else v
             elif hasattr(t, k):
                 setattr(t, k, v)
-        t.updated_at = _dt.now(UTC)
+        t.updated_at = __import__("datetime").datetime.now(__import__("datetime").UTC)
         db.add(t)
     return True
 
@@ -512,6 +531,7 @@ def merge_topics(source_id: int, target_id: int) -> bool:
                     is_manual=True,
                     sort_order=l.sort_order,
                 ))
+        # 删除源主题关联和新主题。
         for l in links:
             db.delete(l)
         db.delete(src)
@@ -554,16 +574,18 @@ def split_topic(topic_id: int, event_ids: list[int]) -> int | None:
                 confidence=0.0,
                 is_manual=True,
             ))
+        # 标记原主题为已拆分。
         t.status = TopicStatus.SPLIT
         db.add(t)
     return new_id
 
 
-def reorder_topic_events(topic_id: int, event_ids: list[int]) -> bool:
-    """对主题内高光重新排序(设置 sort_order)。
+def reorder_topic_events(topic_id: int, event_ids: list[int], chapter_titles: dict[str, str] | None = None) -> bool:
+    """对主题内高光重新排序(设置 sort_order),并保存章节标题。
 
     :param topic_id: 主题 id。
     :param event_ids: 按新顺序排列的事件 id 列表。
+    :param chapter_titles: ``{event_id_str: title}`` 章节标题映射。
     :returns: 成功返回 ``True``。
     """
     with get_session() as db:
@@ -576,5 +598,7 @@ def reorder_topic_events(topic_id: int, event_ids: list[int]) -> bool:
             ).first()
             if link:
                 link.sort_order = i
+                if chapter_titles and str(eid) in chapter_titles:
+                    link.chapter_title = chapter_titles[str(eid)]
                 db.add(link)
     return True

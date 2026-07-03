@@ -348,7 +348,75 @@ def produce_clip(candidate_id: int, options: ClipOptions | None = None) -> Final
         height,
         out_path.name,
     )
+
+    # V0.1.8: 生成多版本 ClipVariant 记录。
+    _create_clip_variants(clip, options, segments, cut_offset)
+
     return clip
+
+
+def _create_clip_variants(
+    clip: FinalClip,
+    options: ClipOptions,
+    segments: list[RawSegment],
+    cut_offset: float,
+) -> None:
+    """为成品切片创建多版本 ClipVariant 记录。
+
+    规则:
+    - 主版本记作 SINGLE(已渲染,直接关联)。
+    - 如果渲染了字幕,同时记作 SUBTITLED。
+    - 净版(NO_SUBTITLES)在渲染时未生成字幕则自动记。
+    - 压制版(COMPRESSED)和归档版(ARCHIVE)由独立渲染流程产出(见 P1.1)。
+
+    :param clip: 新创建的 FinalClip。
+    :param options: 渲染选项。
+    :param segments: 覆盖片段列表。
+    :param cut_offset: 裁剪偏移。
+    """
+    from app.db.models import ClipVariant, ClipVariantType
+
+    with get_session() as db:
+        # SINGLE:主版本(总是生成)。
+        db.add(ClipVariant(
+            event_id=clip.candidate_id,
+            variant_type=ClipVariantType.SINGLE,
+            file_path=clip.file_path,
+            duration_s=clip.duration_s,
+            resolution=f"{clip.width}x{clip.height}" if clip.width and clip.height else None,
+            has_subtitles=options.subtitle,
+            render_status="completed",
+            version_number=1,
+            created_at=clip.created_at,
+        ))
+        # 按字幕状态标记。
+        if options.subtitle:
+            db.add(ClipVariant(
+                event_id=clip.candidate_id,
+                variant_type=ClipVariantType.SUBTITLED,
+                file_path=clip.file_path,
+                duration_s=clip.duration_s,
+                has_subtitles=True,
+                render_status="completed",
+                version_number=1,
+                created_at=clip.created_at,
+            ))
+        else:
+            db.add(ClipVariant(
+                event_id=clip.candidate_id,
+                variant_type=ClipVariantType.NO_SUBTITLES,
+                file_path=clip.file_path,
+                duration_s=clip.duration_s,
+                has_subtitles=False,
+                render_status="completed",
+                version_number=1,
+                created_at=clip.created_at,
+            ))
+        logger.info(
+            "ClipVariant 已创建 candidate={} variants={}",
+            clip.candidate_id,
+            "SUBTITLED" if options.subtitle else "NO_SUBTITLES",
+        )
 
 
 def _run_ffmpeg_clip(

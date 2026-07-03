@@ -2,7 +2,7 @@
 
 基于主题整体生成:
 - 主题摘要
-- B站/YouTube 标题
+- 视频标题
 - 视频简介
 - 章节时间戳
 - 各章节标题
@@ -32,7 +32,7 @@ def generate_copywriter(
     :param topic_title: 主题标题。
     :param event_summaries: 事件摘要列表。
     :param total_duration_s: 合集总时长(秒)。
-    :returns: ``{summary, bilibili_title, youtube_title, description, chapters, tags, cover_title}``。
+    :returns: ``{summary, title, description, chapters, tags, cover_title}``。
     """
     if is_llm_enabled():
         result = _llm_copywriter(topic_title, event_summaries, total_duration_s)
@@ -67,7 +67,7 @@ def _llm_copywriter(
             events_text += f" | 内容:{asr_short}"
         events_text += "\n"
 
-    prompt = f"""你是一个横屏长视频网站的合集写手。请基于以下主题和事件列表,生成横屏投稿所需的全部文案。
+    prompt = f"""你是一个横屏长视频平台的合集写手。请基于以下主题和事件列表,生成投稿所需的全部文案。
 
 主题标题:{topic_title}
 总时长:{sec_to_hhmmss(total_duration_s)} (约 {total_duration_s:.0f} 秒)
@@ -77,15 +77,14 @@ def _llm_copywriter(
 
 任务:
 1. 主题摘要 - 用 2-3 句话总结这些事件共同讲述了什么故事,事件如何发展。
-2. B站标题 - 吸引眼球、不超30字的横屏视频标题。
-3. YouTube 标题 - 英文或中英双语,适合油管的标题。
-4. 视频简介 - 包含主题概述、事件列表、时间戳的完整简介(100-200字)。
-5. 章节时间戳 - 为每个事件起一个有吸引力的章节标题。
-6. 标签 - 5-10 个关键词标签(以逗号分隔)。
-7. 封面短标题 - 适合印在封面上的 5-10 字标题。
+2. 标题 - 吸引眼球、不超30字的横屏视频标题。
+3. 视频简介 - 包含主题概述、事件列表、时间戳的完整简介(100-200字)。
+4. 章节时间戳 - 为每个事件起一个有吸引力的章节标题。
+5. 标签 - 5-10 个关键词标签(以逗号分隔)。
+6. 封面短标题 - 适合印在封面上的 5-10 字标题。
 
 请以 JSON 格式输出:
-{{"summary":"...","bilibili_title":"...","youtube_title":"...","description":"...","chapters":[{{"ts":"HH:MM:SS","title":"..."}},...],"tags":"...","cover_title":"..."}}
+{{"summary":"...","title":"...","description":"...","chapters":[{{"ts":"HH:MM:SS","title":"..."}},...],"tags":"...","cover_title":"..."}}
 只输出 JSON,不要其他内容。""".strip()
 
     try:
@@ -134,13 +133,9 @@ def _fallback_copywriter(
 
     return {
         "summary": summary,
-        "bilibili_title": (
+        "title": (
             f"「{topic_title}」高光合集 · {count}段名场面一次看完"
             if topic_title else f"{count}段高光合集"
-        ),
-        "youtube_title": (
-            f"[Highlight Montage] {topic_title} ({count} Clips)"
-            if topic_title else f"Highlight Montage ({count} Clips)"
         ),
         "description": summary,
         "chapters": chapters,

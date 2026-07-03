@@ -1,5 +1,13 @@
 # Changelog — 即插即用版 (Publish-PnP)
 
+## V0.1.7.2 Alpha (2026-07-04)
+
+- 半成品清理:状态机迁移、章节持久化、asr_text填充、ClipVariant落地
+- 文档清理:删除YouTube引用、pip源顺序统一
+- 详见根目录 `CHANGELOG.md`。
+
+---
+
 ## V0.1.7.1 Alpha (2026-07-04)
 
 - 安全修复:FFmpeg 注入/路径遍历/XSS/代码质量
