@@ -45,8 +45,7 @@ def get_collection_events(topic_id: int) -> list[dict]:
     :returns: 事件列表(按 sort_order 排序)。
     """
     with get_session() as db:
-        t = db.get(Topic, topic_id)
-        if t is None:
+        if db.get(Topic, topic_id) is None:
             return []
         links = db.exec(
             select(HighlightTopic).where(
@@ -191,6 +190,7 @@ def render_collection(
 
     # 构建 concat 文件列表。
     # 方案:将所有 clip 先做响度标准化,再用 concat demuxer 拼接。
+    # 注意:所有临时文件操作必须在 with 块内完成,不可跨上下文边界。
     normalized_paths = []
     with tempfile.TemporaryDirectory(prefix="blc_collection_") as tmp:
         tmp_path = Path(tmp)

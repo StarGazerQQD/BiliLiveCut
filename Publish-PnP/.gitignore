@@ -1,4 +1,7 @@
-# 即插即用版的重体积/生成产物不入库(由 build_bundle.py 生成或联网下载)。
+# 即插即用版：仅 launcher.exe + 脚本入库。
+# 所有业务代码(app/config/pyproject.toml等)由 launcher.exe 首次运行时自动从 GitHub 主仓库下载。
+
+# 运行时生成（launcher.exe 下载/创建）
 models/
 vendor/
 bin/
@@ -7,14 +10,19 @@ storage/
 *.log
 __pycache__/
 .ruff_cache/
-
-# 源码副本 — 入库,使 git clone 即可用(无需先跑 build_bundle.py)。
-# build_bundle.py 仍会在打包时刷新这些文件以保持最新。
-# app/ config/ pyproject.toml README_MAIN.md 已从此列表移除,改为入库。
-
-# 体检生成的清单(每次打包/体检自动刷新,不入库)。
 manifest.json
 
-# PyInstaller 构建产物(launcher.py/build_exe.py 和输出 launcher.exe 均入库)。
+# 从主仓库拉取的源码副本 — 由 launcher.exe 自动下载,不入库
+app/
+config/
+pyproject.toml
+setup.py
+setup_c.py
+requirements-bundle.txt
+CHANGELOG.md
+README_MAIN.md
+tests/
+
+# PyInstaller 构建产物
 build/
 *.spec

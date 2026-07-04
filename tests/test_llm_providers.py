@@ -82,7 +82,7 @@ def test_merge_and_save_preserves_key(temp_db: None) -> None:
 
 
 def test_public_view_masks_key(temp_db: None) -> None:
-    """对外视图不含明文 key,仅含 set 标志与末四位提示。
+    """对外视图不含明文 key,仅含 set 标志。
 
     :param temp_db: 隔离数据库夹具。
     """
@@ -90,7 +90,6 @@ def test_public_view_masks_key(temp_db: None) -> None:
     view = provs.public_view()[0]
     assert "api_key" not in view
     assert view["api_key_set"] is True
-    assert view["api_key_hint"] == "****1234"
 
 
 def test_load_falls_back_to_env(temp_db: None, monkeypatch: MonkeyPatch) -> None:

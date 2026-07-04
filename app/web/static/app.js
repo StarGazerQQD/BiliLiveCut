@@ -328,7 +328,7 @@ function renderScheduler(s) {
 // ----------------------------- 渲染:多大模型配置 ----------------------------- //
 function llmRow(p) {
   p = p || {};
-  const keyPlaceholder = p.api_key_set ? `已配置 ${esc(p.api_key_hint || "")}(留空不改)` : "填写 API Key";
+  const keyPlaceholder = p.api_key_set ? "已配置 (留空不改)" : "填写 API Key";
   return `
   <div class="item llm-row" data-id="${esc(p.id || "")}">
     <div class="row" style="gap:8px; flex-wrap:wrap">
@@ -596,7 +596,7 @@ async function loadTasks() {
           }
         </td>
       </tr>`).join("") : `<tr><td colspan="8" class="empty">暂无任务。</td></tr>`;
-  } catch (e) { /* 静默 */ }
+  } catch (e) { console.warn("加载失败:", e); }
 }
 window.retryTask = async (id) => {
   try { await api("POST", `/api/tasks/${id}/retry`); toast("任务已重新入队"); loadTasks(); }
@@ -639,7 +639,7 @@ async function loadTopics() {
           </div>
         </div>
       </div>`).join("") : `<div class="empty">暂无主题。先执行聚类。</div>`;
-  } catch (e) { /* 静默 */ }
+  } catch (e) { console.warn("加载失败:", e); }
 }
 window.toggleCollection = async (topicId, value) => {
   try { await api("PATCH", `/api/topics/${topicId}`, {is_collection: value}); toast(value ? "已标记为合集" : "已取消合集"); loadTopics(); }
@@ -728,7 +728,7 @@ async function loadThresholdLearning(roomId) {
         ${recHtml}
         ${!tl.ready ? `<span class="muted">(需${tl.min_samples}条)</span>` : ""}
       </div>`;
-  } catch (e) { /* 静默 */ }
+  } catch (e) { console.warn("加载失败:", e); }
 }
 
 // 开关与按钮事件
@@ -803,7 +803,7 @@ async function pollNotifications() {
         console.info("切片目录:", n.data.clips_dir);
       }
     }
-  } catch (e) { /* 静默 */ }
+  } catch (e) { console.warn("加载失败:", e); }
 }
 
 // ----------------------------- 账号管理 ----------------------------- //
@@ -819,7 +819,7 @@ async function loadCookieStatus() {
       hint.className = "hint warn";
     }
     hint.style.display = "";
-  } catch (e) { /* 静默 */ }
+  } catch (e) { console.warn("加载失败:", e); }
 }
 
 let _loginPolling = null;
@@ -910,7 +910,7 @@ async function loadMonitor() {
         <div style="color:var(--red);font-size:11px">${esc(f.error||"")}</div>
       </div>`
     ).join("") : "<span class='muted'>无失败任务 ✅</span>";
-  } catch (e) { /* 静默 */ }
+  } catch (e) { console.warn("加载失败:", e); }
 }
 window.triggerMaintenance = async () => {
   toast("维护中…");
@@ -1130,7 +1130,7 @@ let _refresh_lock = false;
 async function scheduleRefresh() {
     if (_refresh_lock) return;
     _refresh_lock = true;
-    try { await refresh(); } catch (e) { /* 静默 */ }
+    try { await refresh(); } catch (e) { console.warn("定时刷新失败:", e); }
     _refresh_lock = false;
     setTimeout(scheduleRefresh, 5000);
 }

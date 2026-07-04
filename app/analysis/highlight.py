@@ -108,8 +108,12 @@ def danmaku_sentiment_score(session_id: int, start_ts: object, end_ts: object) -
     """
     from app.db.models import Danmaku
 
-    def _naive(dt: object) -> object:
-        return dt.replace(tzinfo=None) if getattr(dt, "tzinfo", None) else dt
+    import datetime as _dtmod
+
+    def _naive(dt: object) -> datetime:
+        if not isinstance(dt, _dtmod.datetime):
+            return _dtmod.datetime.min.replace(tzinfo=None)
+        return dt.replace(tzinfo=None) if dt.tzinfo else dt
 
     if start_ts is None or end_ts is None:
         return 0.0
@@ -138,18 +142,28 @@ def danmaku_sentiment_score(session_id: int, start_ts: object, end_ts: object) -
     # >= 10% 开始给分, >= 50% 满分。
     exclaim_score = max(0.0, min((exclaim_rate - 0.1) / 0.4, 1.0))
 
-    # 3) 高情绪梗:特定关键词的出现密度。
-    hot_memes = {"卧槽", "绝了", "离谱", "破防", "高能", "泪目", "笑死", "什么?!", "无敌",
-                 "666", "??", "牛", "神", "厉害了", "这能忍?", "天秀", "牛逼"}
-    meme_hits = sum(
-        1 for t in window_texts if any(meme in t for meme in hot_memes)
-    )
+    # 3) 高情绪梗:特定关键词的出现密度(V0.1.9 AC 加速)。
+    hot_memes = ("卧槽", "绝了", "离谱", "破防", "高能", "泪目", "笑死", "什么?!", "无敌",
+                 "666", "??", "牛", "神", "厉害了", "这能忍?", "天秀", "牛逼")
+    meme_hits = _fast_meme_hit_count(window_texts, hot_memes)
     meme_rate = meme_hits / len(window_texts)
     # >= 5% 开始给分, >= 30% 满分。
     meme_score = max(0.0, min((meme_rate - 0.05) / 0.25, 1.0))
 
     # 加权合成:重复 0.4 + 感叹号 0.3 + 梗 0.3。
     return float(dup_score * 0.4 + exclaim_score * 0.3 + meme_score * 0.3)
+
+
+def _fast_meme_hit_count(texts: list[str], memes: tuple[str, ...]) -> int:
+    """使用 Aho-Corasick 加速统计梗词命中条数(V0.1.9)。
+
+    :param texts: 弹幕文本列表。
+    :param memes: 梗词元组。
+    :returns: 命中条数。
+    """
+    from app.analysis.speedups import fast_meme_count
+
+    return fast_meme_count(texts, memes)
 
 
 def _fetch_window_danmaku_texts(session_id: int, start_n: object, end_n: object) -> list[str]:

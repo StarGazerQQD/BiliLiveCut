@@ -189,7 +189,7 @@ def generate_copywriter_for_topic(topic_id: int) -> dict | None:
                 "candidate_id": cand.id,
                 "score": cand.highlight_score,
                 "reason": cand.reason or "",
-                "asr_text": cand.snapshot.get("asr_text", "") if cand.snapshot else "",
+                "asr_text": "",
                 "duration_s": round(dur, 1),
             })
 

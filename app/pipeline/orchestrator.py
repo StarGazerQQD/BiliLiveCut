@@ -77,6 +77,11 @@ def produce_clip(candidate_id: int, auto_upload: bool = False) -> FinalClip | No
             from app.publishing.uploader import enqueue_and_upload
 
             enqueue_and_upload(clip.id)
+            try:
+                from app.notify.webhook import notify_upload_complete
+                notify_upload_complete(clip.id, clip.title)
+            except Exception:
+                pass
         except Exception as exc:  # noqa: BLE001
             logger.error("切片 {} 自动上传失败: {}", clip.id, exc)
     return clip

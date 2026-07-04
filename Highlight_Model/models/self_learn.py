@@ -1,4 +1,4 @@
-"""自学习引擎 (v0.1.8.2-HL-alpha)。
+"""自学习引擎 (v0.1.9.1-HL-alpha)。
 
 自动从 ThresholdFeedback 表提取所有已审批样本的特征，
 训练 XGBoost/LightGBM 模型，保存到 storage/models/。

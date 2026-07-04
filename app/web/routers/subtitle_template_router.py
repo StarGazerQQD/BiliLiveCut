@@ -219,7 +219,17 @@ async def update_template(template_id: int, request: Request) -> dict[str, str]:
         if not t:
             raise HTTPException(status_code=404, detail="模板不存在")
 
-        if body.get("is_default"):
+        # V0.1.9.1: 基础类型校验
+        for k in ("font_size", "max_chars_per_line", "min_display_ms", "max_display_ms"):
+            v = body.get(k)
+            if v is not None and (not isinstance(v, (int, float)) or v <= 0):
+                raise HTTPException(status_code=422, detail=f"{k} 必须为正数")
+        for k in ("scale_x", "scale_y", "spacing", "play_res_x", "play_res_y"):
+            v = body.get(k)
+            if v is not None and (not isinstance(v, (int, float)) or v < 0):
+                raise HTTPException(status_code=422, detail=f"{k} 不能为负数")
+        if body.get("is_default") is not None and not isinstance(body.get("is_default"), bool):
+            raise HTTPException(status_code=422, detail="is_default 必须为布尔值")
             # 只有一个默认模板
             defaults = db.exec(
                 _sql_select(SubtitleTemplate).where(SubtitleTemplate.is_default == True)  # noqa: E712
@@ -255,9 +265,10 @@ def delete_template(template_id: int, request: Request) -> dict[str, str]:
 
 
 @router.post("/import/ass")
-async def import_ass_file(file: UploadFile = File(...)) -> dict[str, object]:
+async def import_ass_file(file: UploadFile = File(..., max_size=1_048_576)) -> dict[str, object]:  # 1MB 上限
     """导入 ASS 文件,提取其样式配置并创建模板。
 
+    限制:最大 1MB,防止内存耗尽。
     会自动解析 [V4+ Styles] 段落的 Style 行,提取所有字段。
     如果有多个 Style 行,为每个 Style 创建一个模板。
 

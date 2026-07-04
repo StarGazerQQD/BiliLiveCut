@@ -1,4 +1,4 @@
-"""模型推理接口 (v0.1.8.2-HL-alpha)。
+"""模型推理接口 (v0.1.9.1-HL-alpha)。
 
 加载训练好的 XGBoost/LightGBM 模型，提供 predict_proba 接口
 供母仓库 score_segment() 可插拔调用。纯本地推理，无 API 依赖。
