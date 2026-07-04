@@ -441,10 +441,10 @@ def get_waveform(candidate_id: int, resolution: int = 400) -> dict:
     import subprocess as _sp
     import struct as _struct
     import tempfile as _tf
-    from pathlib import Path as _Path
 
     from app.db.session import get_session
     from app.db.models import FinalClip, HighlightCandidate
+    from app.core.paths import clips_dir
 
     with get_session() as db:
         c = db.get(HighlightCandidate, candidate_id)
@@ -456,17 +456,13 @@ def get_waveform(candidate_id: int, resolution: int = 400) -> dict:
                 FinalClip.candidate_id == candidate_id,
             ).limit(1)
         ).first()
-        if clip is None or not clip.file_path or not _Path(clip.file_path).exists():
+        if clip is None or not clip.file_path or not Path(clip.file_path).exists():
             return {"peaks": [], "duration_s": 0, "sample_rate": 0, "error": "尚未生成切片,请先「批准并出片」或「重新渲染」"}
 
         file_path = clip.file_path
-        # 路径遍历保护:确保文件在合法目录内。
-        resolved = _Path(file_path).resolve()
-        if str(resolved) != str(_Path(file_path).resolve()):
-            # 防符号链接攻击:不公开任意路径。
-            pass
-        # 检查 resolved 是 clips_dir 的子路径才继续。
-        clips_root = _Path(__import__("app.core.paths").clips_dir()).resolve()
+        # 路径遍历保护:确保文件在 clips 目录内。
+        resolved = Path(file_path).resolve()
+        clips_root = Path(clips_dir()).resolve()
         if resolved.parent != clips_root and not any(
             p == clips_root for p in resolved.parents
         ):
@@ -511,7 +507,7 @@ def get_waveform(candidate_id: int, resolution: int = 400) -> dict:
         return {"peaks": [], "duration_s": duration_s, "sample_rate": sample_rate, "error": f"FFmpeg 波形生成失败: {exc}"}
     finally:
         try:
-            _Path(tmp_path).unlink()
+            Path(tmp_path).unlink()
         except OSError:
             pass
 
