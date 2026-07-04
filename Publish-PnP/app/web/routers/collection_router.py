@@ -7,8 +7,25 @@ from pathlib import Path
 from fastapi import APIRouter, HTTPException, Request
 from fastapi.responses import HTMLResponse
 from fastapi.templating import Jinja2Templates
+from pydantic import BaseModel
 
 collection_router = APIRouter(prefix="/collection", tags=["collection"])
+
+
+class ReorderEventsRequest(BaseModel):
+    """重排事件请求。"""
+
+    event_ids: list[int]
+    chapter_titles: dict[str, str] | None = None
+
+
+class RenderCollectionRequest(BaseModel):
+    """渲染合集请求。"""
+
+    event_ids: list[int]
+    chapter_titles: list[str] | None = None
+    include_chapter_cards: bool = True
+
 
 _TEMPLATES = Jinja2Templates(
     directory=str(Path(__file__).resolve().parent.parent / "web" / "templates")
@@ -44,11 +61,11 @@ def get_collection_data(topic_id: int) -> dict:
 
 
 @collection_router.post("/api/{topic_id}/reorder")
-def reorder_events(topic_id: int, event_ids: list[int], chapter_titles: dict[str, str] | None = None) -> dict:
+def reorder_events(topic_id: int, req: ReorderEventsRequest) -> dict:
     """保存事件顺序及章节标题。"""
     from app.analysis.topic_cluster import reorder_topic_events
 
-    ok = reorder_topic_events(topic_id, event_ids, chapter_titles)
+    ok = reorder_topic_events(topic_id, req.event_ids, req.chapter_titles)
     if not ok:
         raise HTTPException(status_code=400, detail="排序保存失败")
     return {"status": "reordered"}
@@ -57,16 +74,14 @@ def reorder_events(topic_id: int, event_ids: list[int], chapter_titles: dict[str
 @collection_router.post("/api/{topic_id}/render")
 async def render_collection(
     topic_id: int,
-    event_ids: list[int],
-    chapter_titles: list[str] | None = None,
-    include_chapter_cards: bool = True,
+    req: RenderCollectionRequest,
 ) -> dict:
     """渲染合集 MP4(异步)。"""
     import asyncio
     from app.pipeline.collection import render_collection as _rc
 
     result = await asyncio.to_thread(
-        _rc, topic_id, event_ids, chapter_titles, include_chapter_cards,
+        _rc, topic_id, req.event_ids, req.chapter_titles, req.include_chapter_cards,
     )
     if result is None:
         raise HTTPException(status_code=500, detail="合集渲染失败(需至少2个可用成品)")
