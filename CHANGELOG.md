@@ -1,5 +1,15 @@
 # Changelog
 
+## V0.1.8.1d Alpha (2026-07-04)
+
+### 安全审计修复 (本轮)
+- **C2**: `cover.py`/`collection.py` 硬编码 ffmpeg 路径 → 统一使用 settings 配置
+- **C4**: `clipper.py` drawtext 参数清洗(font_name 去特殊字符,color 正则校验)
+- **H4**: `app.js` `esc()` 补充单引号转义
+- **H1**: `clipper.py` concat 清单 `\`/`'` 转义
+
+---
+
 ## V0.1.8.1c Alpha (2026-07-04)
 
 ### 补充审计修复 (第一轮:前端/路由)
