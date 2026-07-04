@@ -31,6 +31,15 @@ storage/
 htmlcov/
 .git_msg.txt
 
+# C 扩展编译产物 (V0.1.9)
+*.pyd
+*.so
+*.dll
+*.exp
+*.lib
+*.obj
+build/temp.*/
+
 # IDE / OS
 .vscode/
 .idea/
