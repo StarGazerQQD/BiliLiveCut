@@ -19,6 +19,28 @@
 |------|------|------|
 | `speedups.py:10` | `from typing import Any` 未使用 | 移除 |
 
+### 全量审计修复 (第二轮)
+
+全量审计覆盖 C 扩展 / Web 路由 / 中间件 / 前端 / PnP 启动器。修复 2 项 HIGH + 6 项 MEDIUM:
+
+#### HIGH 修复
+
+| # | 文件:行 | 问题 | 修复 |
+|---|---------|------|------|
+| A2 | `_c_speedups.c:111` | `ac_build_failure` 栈分配 `int queue[16384]` 硬上限,`ac_add_node` 可无限制扩容 → 超限时栈缓冲区溢出 (CWE-121) | 改为 `malloc` + 动态 `realloc` 扩容队列 |
+| A3 | `_c_speedups.c:428` | `fast_match_keywords` 中 `PyList_New(0)` 返回 NULL 时仅 `free(nodes)`,未释放各节点 `strndup` 分配的输出字符串 → 内存泄漏 | 失败路径上先释放所有 output 字符串再 free nodes |
+
+#### MEDIUM 修复
+
+| # | 文件:行 | 问题 | 修复 |
+|---|---------|------|------|
+| A1 | `monitor_router.py:38` | `_now` 未定义 → 调用时 `NameError`,运维面板接口直接崩溃 | 改为 `time.time()` |
+| A4 | `_c_speedups.c:97` | `ac_insert_pattern` 调用 `ac_add_node` 失败时静默返回,模式被丢弃无报错 | 改为返回错误码;所有调用方检查并传播 `PyErr_NoMemory` |
+| A5 | `api.py` 多个端点 | `limit`/`days` 参数无上限 → 可构造超大值导致 OOM | 新增 `_clamp()` helper,所有查询端点 `limit ≤ 500`, `days ≤ 365` |
+| A10 | `api.py` | `BatchRequest.candidate_ids` / `SplitTopicRequest.event_ids` 可传空列表,无校验 | Pydantic `@field_validator` 拒空,批量操作单次 ≤ 200 |
+| A11 | `subtitle_template_router.py:200` | `update_template` JSON body 无类型校验 → 可注入非法值 | 新增 font_size/max_chars_per_line 等数值正数检查和 is_default 布尔检查 |
+| — | `launcher.py` / `_speedups_py.py` / `highlight.py` / `topic_cluster.py` | 子agent 报告的 subprocess timeout / json 保护 / 类型注解 / None 引用 | 全部验证:launcher.py 已有 timeout; `object` 类型是跨时区 datetime 设计; topic_cluster.py line 225 已有 `asr_text = ""` 默认值 — **无实际缺陷** |
+
 ---
 
 ## V0.1.9 Alpha (2026-07-04)

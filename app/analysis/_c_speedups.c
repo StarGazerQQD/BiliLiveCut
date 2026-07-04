@@ -88,13 +88,13 @@ static int ac_add_node(ACAutomaton *self) {
     return idx;
 }
 
-static void ac_insert_pattern(ACAutomaton *self, const char *pattern, int plen) {
+static int ac_insert_pattern(ACAutomaton *self, const char *pattern, int plen) {
     int node = 0;
     for (int i = 0; i < plen; i++) {
         unsigned char c = (unsigned char)pattern[i];
         if (self->nodes[node].next[c] == -1) {
             int child = ac_add_node(self);
-            if (child < 0) return;
+            if (child < 0) return -1;  /* OOM: 通知调用方 */
             self->nodes[node].next[c] = child;
         }
         node = self->nodes[node].next[c];
@@ -102,14 +102,21 @@ static void ac_insert_pattern(ACAutomaton *self, const char *pattern, int plen) 
     if (self->nodes[node].output_len < 8) {
         int oi = self->nodes[node].output_len++;
         self->nodes[node].outputs[oi] = strndup(pattern, plen);
+        if (!self->nodes[node].outputs[oi]) { self->nodes[node].output_len--; return -1; }
         self->nodes[node].output_lens[oi] = plen;
     }
+    return 0;
 }
 
-/* BFS 构造失败链接 */
+/* BFS 构造失败链接 — V0.1.9.1: 使用堆分配队列防止节点数超 AC_MAX_NODES 时栈溢出。 */
 static void ac_build_failure(ACAutomaton *self) {
-    int queue[AC_MAX_NODES];
+    int *queue = malloc(self->node_cap * sizeof(int));
+    if (!queue) {
+        PyErr_NoMemory();
+        return;
+    }
     int head = 0, tail = 0;
+    int qcap = self->node_cap;
     for (int c = 0; c < AC_ALPHABET; c++) {
         int child = self->nodes[0].next[c];
         if (child != -1) {
@@ -124,6 +131,14 @@ static void ac_build_failure(ACAutomaton *self) {
         for (int c = 0; c < AC_ALPHABET; c++) {
             int child = self->nodes[r].next[c];
             if (child != -1) {
+                /* 队列扩容 (节点数可能超过初始 cap) */
+                if (tail >= qcap) {
+                    int new_cap = qcap * 2;
+                    int *nq = realloc(queue, new_cap * sizeof(int));
+                    if (!nq) { free(queue); PyErr_NoMemory(); return; }
+                    queue = nq;
+                    qcap = new_cap;
+                }
                 queue[tail++] = child;
                 int f = self->nodes[r].fail;
                 while (self->nodes[f].next[c] == -1) f = self->nodes[f].fail;
@@ -141,6 +156,7 @@ static void ac_build_failure(ACAutomaton *self) {
             }
         }
     }
+    free(queue);
 }
 
 /* ───────────────────────────────────────────────────────────────────────
@@ -177,7 +193,11 @@ static PyObject *fast_ahocorasick_build(PyObject *self, PyObject *args) {
             PyBytes_AsStringAndSize(item, (char **)&pstr, &plen);
         }
         if (pstr && plen > 0 && plen < 256) {
-            ac_insert_pattern(am, pstr, (int)plen);
+            if (ac_insert_pattern(am, pstr, (int)plen) < 0) {
+                Py_DECREF(item);
+                Py_DECREF(am);
+                return PyErr_NoMemory();
+            }
         }
         Py_DECREF(item);
     }
@@ -418,14 +438,27 @@ static PyObject *fast_match_keywords(PyObject *self, PyObject *args) {
             pstr = PyUnicode_AsUTF8AndSize(item, &plen);
         }
         if (pstr && plen > 0 && plen < 256) {
-            ac_insert_pattern(&am_local, pstr, (int)plen);
+            if (ac_insert_pattern(&am_local, pstr, (int)plen) < 0) {
+                Py_DECREF(item);
+                for (int k = 0; k < am_local.node_count; k++)
+                    for (int j = 0; j < am_local.nodes[k].output_len; j++)
+                        free(am_local.nodes[k].outputs[j]);
+                free(am_local.nodes);
+                return PyErr_NoMemory();
+            }
         }
         Py_DECREF(item);
     }
     ac_build_failure(&am_local);
 
     PyObject *result = PyList_New(0);
-    if (!result) { free(am_local.nodes); return NULL; }
+    if (!result) {
+        for (int i = 0; i < am_local.node_count; i++)
+            for (int j = 0; j < am_local.nodes[i].output_len; j++)
+                free(am_local.nodes[i].outputs[j]);
+        free(am_local.nodes);
+        return NULL;
+    }
 
     int node = 0;
     for (Py_ssize_t i = 0; i < tlen; i++) {
@@ -480,7 +513,10 @@ static PyObject *fast_meme_count(PyObject *self, PyObject *args) {
             pstr = PyUnicode_AsUTF8AndSize(item, &plen);
         }
         if (pstr && plen > 0) {
-            ac_insert_pattern(&am_local, pstr, (int)plen);
+            if (ac_insert_pattern(&am_local, pstr, (int)plen) < 0) {
+                /* 梗词 OOM: 静默跳过个别模式,构建失败则返回 0 */
+                continue;
+            }
         }
     }
     ac_build_failure(&am_local);
