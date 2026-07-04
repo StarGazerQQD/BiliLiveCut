@@ -29,6 +29,7 @@ storage/
 .mypy_cache/
 .coverage
 htmlcov/
+.git_msg.txt
 
 # IDE / OS
 .vscode/
