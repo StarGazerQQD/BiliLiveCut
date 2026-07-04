@@ -737,7 +737,7 @@ async function loadCookieStatus() {
     const info = await api("GET", "/api/cookie-status");
     const hint = $("#cookie-hint");
     if (info.has_cookie) {
-      hint.innerHTML = `已登录 · UID: <b>${esc(info.uid || "?")}</b> · Cookie: <code>${esc(info.hint || "")}</code>`;
+        hint.innerHTML = `已登录 · UID: <b>${esc(info.uid || "?")}</b>`;
       hint.className = "hint ok";
     } else {
       hint.textContent = info.hint || "未配置 Cookie,弹幕采集/鉴权功能不可用。";
@@ -1049,4 +1049,12 @@ function renderTrendChart(daily) {
 }
 
 refresh();
-setInterval(refresh, 5000);
+let _refresh_lock = false;
+async function scheduleRefresh() {
+    if (_refresh_lock) return;
+    _refresh_lock = true;
+    try { await refresh(); } catch (e) { /* 静默 */ }
+    _refresh_lock = false;
+    setTimeout(scheduleRefresh, 5000);
+}
+setTimeout(scheduleRefresh, 5000);

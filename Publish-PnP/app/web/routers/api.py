@@ -10,7 +10,7 @@
 from __future__ import annotations
 
 from pathlib import Path
-from typing import Any
+from typing import Any, Literal
 
 from fastapi import APIRouter, HTTPException
 from fastapi.responses import FileResponse
@@ -75,7 +75,7 @@ class BatchRequest(BaseModel):
     """批量操作请求(V0.1.8 P0)。"""
 
     candidate_ids: list[int]
-    action: str  # approve|reject|publish|delete
+    action: Literal["approve", "reject", "publish", "delete"]
 
 
 class ScheduleRequest(BaseModel):
@@ -120,6 +120,21 @@ class TopicUpdateRequest(BaseModel):
     keywords_json: str | None = None
     status: str | None = None
     is_collection: bool | None = None
+
+
+class SplitTopicRequest(BaseModel):
+    """拆分主题请求。"""
+    event_ids: list[int]
+
+
+class ReorderTopicRequest(BaseModel):
+    """重排主题事件请求。"""
+    event_ids: list[int]
+
+
+class ClusterSessionRequest(BaseModel):
+    """聚类请求(空体, session_id 从路径获取)。"""
+    pass
 
 
 # ----------------------------- 概览 ----------------------------- #
@@ -580,22 +595,22 @@ def merge_topics(req: MergeTopicsRequest) -> dict[str, str]:
 
 
 @router.post("/topics/{topic_id}/split")
-def split_topic(topic_id: int, event_ids: list[int]) -> dict[str, Any]:
+def split_topic(topic_id: int, req: SplitTopicRequest) -> dict[str, Any]:
     """拆分主题:将指定事件移出并创建新主题。"""
     from app.analysis.topic_cluster import split_topic as _st
 
-    new_id = _st(topic_id, event_ids)
+    new_id = _st(topic_id, req.event_ids)
     if new_id is None:
         raise HTTPException(status_code=400, detail="拆分失败")
     return {"status": "split", "new_topic_id": new_id}
 
 
 @router.post("/topics/{topic_id}/reorder")
-def reorder_topic_events(topic_id: int, event_ids: list[int]) -> dict[str, str]:
+def reorder_topic_events(topic_id: int, req: ReorderTopicRequest) -> dict[str, str]:
     """重排主题内事件顺序。"""
     from app.analysis.topic_cluster import reorder_topic_events as _ro
 
-    _ro(topic_id, event_ids)
+    _ro(topic_id, req.event_ids)
     return {"status": "reordered"}
 
 

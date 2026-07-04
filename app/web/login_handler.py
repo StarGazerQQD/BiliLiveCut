@@ -123,7 +123,6 @@ def _login_task(result_store: dict) -> None:
             cookie_str = _extract_cookie_string(page)
             if cookie_str and _LOGIN_MARKER.lower() in cookie_str.lower():
                 _save_cookie(cookie_str)
-                result_store["cookie"] = cookie_str[:120] + "…"  # 截断显示
                 result_store["status"] = "done"
                 logger.info("Bilibili 登录成功,Cookie 已自动保存。")
             else:
@@ -193,16 +192,13 @@ def get_cookie_info() -> dict:
         raw = settings.bilibili_cookie
 
     if not raw:
-        return {"has_cookie": False, "hint": "未配置 Cookie,弹幕采集/鉴权功能不可用。"}
+        return {"has_cookie": False}
 
     # 解析 UID
     match = re.search(r"DedeUserID=(\d+)", raw)
     uid = match.group(1) if match else None
 
-    # 显示脱敏摘要
-    hint = raw[:30] + "…" if len(raw) > 30 else raw
     return {
         "has_cookie": True,
         "uid": uid,
-        "hint": hint,
     }

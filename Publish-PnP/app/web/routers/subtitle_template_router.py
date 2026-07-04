@@ -327,5 +327,5 @@ def export_template(template_id: int, request: Request) -> PlainTextResponse:
     return PlainTextResponse(
         content=text,
         media_type="text/plain; charset=utf-8",
-        headers={"Content-Disposition": f"attachment; filename={t.name}.ass"},
+        headers={"Content-Disposition": f"attachment; filename={t.name.replace('\r','').replace('\n','')}.ass"},
     )
