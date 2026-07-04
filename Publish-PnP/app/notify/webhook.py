@@ -26,6 +26,19 @@ from loguru import logger
 from app.core.config import settings
 
 
+# 允许的 webhook 域名白名单。
+_ALLOWED_WEBHOOK_DOMAINS = {"oapi.dingtalk.com", "qyapi.weixin.qq.com"}
+
+
+def _validate_webhook(url: str, name: str = "") -> bool:
+    """校验 webhook URL 域名是否在白名单内。"""
+    parsed = urllib.parse.urlparse(url)
+    if parsed.hostname not in _ALLOWED_WEBHOOK_DOMAINS:
+        logger.warning("{}webhook 域名不在白名单: {}", name, parsed.hostname)
+        return False
+    return True
+
+
 def _enabled() -> bool:
     """检查是否有任一通知通道已配置。"""
     return bool(settings.notify_enabled and (
@@ -73,6 +86,10 @@ def send_dingtalk(title: str, text: str) -> bool:
         webhook = f"{settings.dingtalk_webhook}?timestamp={ts}&sign={sign}"
 
     import httpx
+
+    if not _validate_webhook(webhook, "钉钉"):
+        return False
+
     payload = {
         "msgtype": "markdown",
         "markdown": {
@@ -109,6 +126,10 @@ def send_wecom(title: str, text: str) -> bool:
         return False
 
     import httpx
+
+    if not _validate_webhook(settings.wecom_webhook, "企微"):
+        return False
+
     payload = {
         "msgtype": "markdown",
         "markdown": {
@@ -151,9 +172,11 @@ def send_email(subject: str, body: str) -> bool:
 
     try:
         server = smtplib.SMTP_SSL(settings.smtp_host, settings.smtp_port, timeout=10)
-        server.login(settings.smtp_user, settings.smtp_password)
-        server.send_message(msg)
-        server.quit()
+        try:
+            server.login(settings.smtp_user, settings.smtp_password)
+            server.send_message(msg)
+        finally:
+            server.quit()
         logger.info("邮件通知已发送: {}", subject)
         return True
     except Exception as exc:

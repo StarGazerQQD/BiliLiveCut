@@ -128,7 +128,7 @@ def probe_media(path: str) -> tuple[float, int, int]:
         path,
     ]
     try:
-        out = subprocess.run(cmd, capture_output=True, check=True).stdout
+        out = subprocess.run(cmd, capture_output=True, check=True, timeout=30).stdout
         data = json.loads(out)
     except (subprocess.CalledProcessError, json.JSONDecodeError) as exc:
         logger.warning("ffprobe 探测失败 {}: {}", path, exc)
@@ -690,7 +690,7 @@ def _run_ffmpeg_clip(
     ]
 
     logger.debug("切片 FFmpeg 命令: {}", " ".join(cmd))
-    result = subprocess.run(cmd, capture_output=True)
+    result = subprocess.run(cmd, capture_output=True, timeout=600)
     if result.returncode != 0:
         stderr = result.stderr.decode("utf-8", errors="ignore")
         raise RuntimeError(f"FFmpeg 切片失败: {stderr}")
@@ -719,7 +719,7 @@ def _grab_cover(video_path: Path, cover_path: Path, at_s: float) -> None:
         "-y",
         str(cover_path),
     ]
-    result = subprocess.run(cmd, capture_output=True)
+    result = subprocess.run(cmd, capture_output=True, timeout=30)
     if result.returncode != 0:
         logger.warning("封面抽帧失败: {}", result.stderr.decode("utf-8", errors="ignore"))
 
@@ -869,7 +869,7 @@ def _render_single_variant(
     ]
 
     logger.info("渲染变体 {} {} -> {} (CRF={} preset={})", variant_type, clip.candidate_id, out_path.name, crf, preset)
-    result = subprocess.run(cmd, capture_output=True)
+    result = subprocess.run(cmd, capture_output=True, timeout=1800)
 
     with get_session() as db:
         variant = db.exec(

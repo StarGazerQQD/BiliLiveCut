@@ -232,16 +232,18 @@ def cluster_candidates(session_id: int) -> list[dict]:
                 features = json.loads(c.features_json)
             except json.JSONDecodeError:
                 pass
-        # 尝试取转写文本。
+        # 尝试取转写文本:通过时间范围匹配 RawSegment 再关联 Transcript。
         asr_text = ""
         with get_session() as db:
-            from app.db.models import Transcript
+            from app.db.models import RawSegment, Transcript
 
             for seg in db.exec(
                 select(Transcript).where(
                     Transcript.segment_id.in_(
-                        select(HighlightCandidate.id).where(
-                            HighlightCandidate.id == c.id,
+                        select(RawSegment.id).where(
+                            RawSegment.session_id == c.session_id,
+                            RawSegment.start_ts <= c.start_ts,
+                            RawSegment.end_ts >= c.end_ts,
                         )
                     )
                 )

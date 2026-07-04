@@ -108,6 +108,9 @@ def danmaku_sentiment_score(session_id: int, start_ts: object, end_ts: object) -
     def _naive(dt: object) -> object:
         return dt.replace(tzinfo=None) if getattr(dt, "tzinfo", None) else dt
 
+    if start_ts is None or end_ts is None:
+        return 0.0
+
     start_n = _naive(start_ts)
     end_n = _naive(end_ts)
 
@@ -279,6 +282,9 @@ def score_segment(segment_id: int) -> HighlightCandidate | None:
         file_path = segment.file_path
         seg_start_ts = segment.start_ts
         seg_end_ts = segment.end_ts
+        if seg_start_ts is None or seg_end_ts is None:
+            logger.error("片段 {} 缺少时间戳,无法评分", segment_id)
+            return None
         duration = segment.duration_s or float(settings.segment_duration_s)
         session_id = segment.session_id
         threshold = room.highlight_threshold if room else settings.highlight_threshold

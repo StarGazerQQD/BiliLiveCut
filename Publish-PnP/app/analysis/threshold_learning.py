@@ -58,7 +58,7 @@ def _collect_scores(room_id: int, action: str = "approved") -> list[float]:
                 ThresholdFeedback.action == action,
             )
         ).all()
-    return sorted(rows)
+    return sorted(float(r[0]) for r in rows)  # 提取标量值,避免 Row 对象运算异常
 
 
 def compute_recommended_threshold(room_id: int) -> float | None:

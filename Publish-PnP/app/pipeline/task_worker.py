@@ -17,6 +17,7 @@ from collections import Counter
 from datetime import UTC, datetime, timedelta
 
 from loguru import logger
+from sqlalchemy import or_
 from sqlmodel import select
 
 from app.core.config import settings
@@ -25,6 +26,7 @@ from app.db.models import (
     SegmentStatus as OldStatus,
     SegmentTask,
     TaskStatus,
+    utcnow,
 )
 from app.db.session import get_session
 
@@ -224,6 +226,8 @@ def _retry_expired() -> None:
 
 def _recover_orphans() -> None:
     with get_session() as db:
+        # 仅回退超过 30 分钟的中间状态任务,避免误伤刚启动的任务。
+        stale_cutoff = utcnow() - timedelta(minutes=30)
         stuck = db.exec(
             select(SegmentTask).where(
                 SegmentTask.stage.in_([
@@ -231,6 +235,10 @@ def _recover_orphans() -> None:
                     TaskStatus.ANALYZING,
                     TaskStatus.RENDERING,
                 ]),
+                or_(
+                    SegmentTask.started_at == None,
+                    SegmentTask.started_at < stale_cutoff,
+                ),
             )
         ).all()
         for task in stuck:

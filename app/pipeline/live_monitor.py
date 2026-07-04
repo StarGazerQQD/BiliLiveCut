@@ -150,14 +150,21 @@ class LiveMonitor:
                             count,
                             _SESSION_END_DELAY_S,
                         )
-                        await asyncio.sleep(_SESSION_END_DELAY_S)
-                        if not self._stop.is_set():
-                            await recorder_manager.stop(db_id)
                         self._offline_counts.pop(db_id, None)
                         self._started_at.pop(db_id, None)
+                        # 异步延迟停止,不阻塞其他房间监控。
+                        asyncio.create_task(_delayed_stop(db_id))
                 elif not is_live and not is_recording:
                     # 未开播也未录制,重置状态。
                     self._offline_counts.pop(db_id, None)
+
+    async def _delayed_stop(self, db_id: int) -> None:
+        """延迟停止录制(不阻塞 check_all 循环)。"""
+        await asyncio.sleep(_SESSION_END_DELAY_S)
+        from app.web.service import recorder_manager
+
+        if not self._stop.is_set():
+            await recorder_manager.stop(db_id)
 
     async def _start_recording(self, db_id: int, room: LiveRoom) -> None:
         """启动录制。"""
