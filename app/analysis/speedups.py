@@ -19,6 +19,9 @@ try:
         fast_cosine_similarity,
         fast_match_keywords,
         fast_meme_count,
+        fast_multi_emotion,
+        fast_sliding_max,
+        fast_count_bursts,
     )
     _BACKEND = "C"
     _logger.info("加速模块: C 扩展已加载 (app.analysis._c_speedups)")
@@ -31,6 +34,9 @@ except ImportError:
         fast_cosine_similarity,
         fast_match_keywords,
         fast_meme_count,
+        fast_multi_emotion,
+        fast_sliding_max,
+        fast_count_bursts,
     )
     _BACKEND = "python"
     _logger.info("加速模块: 使用纯 Python 后备 (_speedups_py)")
@@ -49,5 +55,8 @@ __all__ = [
     "fast_cosine_similarity",
     "fast_match_keywords",
     "fast_meme_count",
+    "fast_multi_emotion",
+    "fast_sliding_max",
+    "fast_count_bursts",
     "get_backend",
 ]

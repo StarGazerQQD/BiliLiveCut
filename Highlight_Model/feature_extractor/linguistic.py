@@ -131,13 +131,9 @@ def _load_transcript(segment_id: int) -> tuple[str, list[dict], float, float]:
 
 
 def _sliding_max_density(starts: list[float], window: float) -> float:
-    j = 0
-    best = 0
-    for i in range(len(starts)):
-        while starts[i] - starts[j] > window:
-            j += 1
-        best = max(best, i - j + 1)
-    return best / window
+    """滑窗峰值语速密度 (C 加速)。"""
+    from app.analysis.speedups import fast_sliding_max
+    return fast_sliding_max(starts, window)
 
 
 def _rule_sentiment(text: str, excl: float, laugh: float) -> float:
@@ -150,28 +146,26 @@ def _rule_sentiment(text: str, excl: float, laugh: float) -> float:
 
 def _rule_emotion_multi(text: str, feats: np.ndarray, base_idx: int,
                         excl: float, laugh: float) -> None:
-    """规则型多维情绪分析（5维：sentiment/joy/surprise/anger/sadness）。
+    """规则型多维情绪分析（5维），C 加速扫描。"""
+    joy_words = ("哈", "笑", "开心", "爽", "牛", "666", "厉害", "赢了", "漂亮")
+    surprise_words = ("卧槽", "什么", "?!", "我靠", "天", "离谱", "绝了", "竟然")
+    anger_words = ("草", "气死", "恶心", "烦", "傻逼", "垃圾", "别", "滚")
+    sadness_words = ("泪目", "可惜", "难受", "呜呜", "痛苦", "难", "遗憾", "没了")
 
-    不依赖任何 NLP 库，纯关键词+标点启发式，所有维度都非零。
-    """
-    # 情绪关键词
-    joy_words = ["哈", "笑", "开心", "爽", "牛", "666", "厉害", "赢了", "漂亮"]
-    surprise_words = ["卧槽", "什么", "?!", "我靠", "天", "离谱", "绝了", "竟然"]
-    anger_words = ["草", "气死", "恶心", "烦", "傻逼", "垃圾", "别", "滚"]
-    sadness_words = ["泪目", "可惜", "难受", "呜呜", "痛苦", "难", "遗憾", "没了"]
+    from app.analysis.speedups import fast_multi_emotion
+    jh, sh, ah, sd = fast_multi_emotion(text, joy_words, surprise_words,
+                                          anger_words, sadness_words)
 
-    def _ratio(word_list: list[str]) -> float:
-        hits = sum(text.count(w) for w in word_list)
+    def _ratio(hits: int) -> float:
         return float(min(hits / max(len(text), 1) * 5, 1.0))
 
-    feats[base_idx] = _rule_sentiment(text, excl, laugh)          # L11 sentiment
-    feats[base_idx + 1] = float(min(laugh + _ratio(joy_words), 1.0))       # L12 joy
-    feats[base_idx + 2] = float(min(excl * 1.5 + _ratio(surprise_words), 1.0))  # L13 surprise
-    feats[base_idx + 3] = _ratio(anger_words)                               # L14 anger
-    feats[base_idx + 4] = _ratio(sadness_words)                             # L15 sadness
+    feats[base_idx] = _rule_sentiment(text, excl, laugh)
+    feats[base_idx + 1] = float(min(laugh + _ratio(jh), 1.0))
+    feats[base_idx + 2] = float(min(excl * 1.5 + _ratio(sh), 1.0))
+    feats[base_idx + 3] = _ratio(ah)
+    feats[base_idx + 4] = _ratio(sd)
     feats[base_idx + 5] = 0.0  # fear (直播中极少，保留)
 
-    # 异常数量归一化（总和不应超过 ~2）
     total = sum(feats[base_idx:base_idx + 6])
     if total > 1.2:
         for i in range(6):
@@ -179,26 +173,32 @@ def _rule_emotion_multi(text: str, feats: np.ndarray, base_idx: int,
 
 
 def _topic_coherence(text: str) -> float:
-    """基于 bigram 自身的自相似度近似主题一致性。"""
+    """基于 bigram 自身的自相似度近似主题一致性 (C 加速)。"""
     if len(text) < 4:
         return 0.0
-    clean = re.sub(r"\s+", "", text)
-    bigrams = [clean[i:i + 2] for i in range(len(clean) - 1)]
-    if not bigrams:
+    try:
+        from app.analysis.speedups import fast_char_bigrams
+        bg = fast_char_bigrams(text)
+    except ImportError:
+        import re
+        clean = re.sub(r"\s+", "", text)
+        bg = [clean[i:i + 2] for i in range(len(clean) - 1)]
+    if not bg:
         return 0.0
-    unique_ratio = len(set(bigrams)) / len(bigrams)
-    return float(1.0 - unique_ratio * 0.7)  # 重复率高 → 主题集中
+    unique_ratio = len(set(bg)) / len(bg)
+    return float(1.0 - unique_ratio * 0.7)
 
 
 def _entity_density(text: str) -> float:
-    """基于规则提取命名实体密度（游戏/人物/平台）。"""
-    entities = [
+    """基于规则提取命名实体密度（游戏/人物/平台），使用 C 加速匹配。"""
+    entities = (
         "王者荣耀", "英雄联盟", "原神", "崩坏", "星穹铁道", "绝区零",
         "超级小桀", "周淑怡", "PDD", "Uzi", "TheShy",
         "B站", "抖音", "微博",
-    ]
-    hits = sum(1 for e in entities if e in text)
-    return float(min(hits / 3.0, 1.0))
+    )
+    from app.analysis.speedups import fast_match_keywords
+    hits = fast_match_keywords(text, entities)
+    return float(min(len(hits) / 3.0, 1.0))
 
 
 # ---- BGE Embedding（国产 SOTA）----

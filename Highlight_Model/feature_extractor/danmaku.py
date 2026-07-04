@@ -139,19 +139,12 @@ def _call_baseline(session_id: int, start: datetime, end: datetime) -> float:
 
 
 def _count_bursts(dms: list, window_s: float, burst_win: float = 2.0) -> int:
-    """统计 2 秒短窗内的爆发次数（密度 > 3条/2s）。"""
+    """统计 2 秒短窗内的爆发次数（C 加速循环）。"""
     if not dms:
         return 0
     times_sorted = sorted(ts.timestamp() for ts, _ in dms)
-    bursts = 0
-    j = 0
-    for i in range(len(times_sorted)):
-        while times_sorted[i] - times_sorted[j] > burst_win:
-            j += 1
-        if i - j + 1 >= 3:
-            bursts += 1
-            j = i + 1  # 跳过已计数窗口
-    return bursts
+    from app.analysis.speedups import fast_count_bursts
+    return fast_count_bursts(times_sorted, burst_win, 3)
 
 
 def _text_entropy(texts: list[str]) -> float:

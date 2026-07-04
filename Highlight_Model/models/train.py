@@ -1,4 +1,4 @@
-"""模型训练入口 (v0.1.9.1-HL-alpha)。
+"""模型训练入口 (v0.1.9.1b-HL-Alpha)。
 
 采用 XGBoost 作为主模型（纯本地，无 API 依赖，国产可控），
 LightGBM 作为备选方案。支持从 ThresholdFeedback 表自动构建

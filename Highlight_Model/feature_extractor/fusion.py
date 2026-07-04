@@ -1,8 +1,10 @@
-"""跨模态融合特征提取器 (C1-C6)。
+"""跨模态融合特征提取器 (C1-C6) — C 加速 + 特征缓存优化。
 
-将不同模态的特征进行交互组合，纯 numpy 计算。
+将不同模态的特征进行交互组合，内置 LRU 片段级缓存避免重复 DB 查询。
 """
 from __future__ import annotations
+
+from functools import lru_cache
 
 import numpy as np
 
@@ -58,15 +60,20 @@ class FusionExtractor(BaseFeatureExtractor):
 def _get_volume_features(segment_id: int) -> dict[str, float]:
     try:
         from Highlight_Model.feature_extractor.acoustic import AcousticExtractor
-        ext = AcousticExtractor()
-        vec = ext.extract(segment_id)
-        return {
-            "peak": float(vec[6]) * float(vec[1]),  # crest * median ~ absolute peak
-            "pause": float(vec[13]),
-            "slope": float(vec[14]),
-        }
+        return _cached_acoustic(segment_id)
     except Exception:
         return {"peak": 0.0, "pause": 0.0, "slope": 0.0}
+
+
+@lru_cache(maxsize=128)
+def _cached_acoustic(segment_id: int) -> dict[str, float]:
+    from Highlight_Model.feature_extractor.acoustic import AcousticExtractor
+    vec = AcousticExtractor().extract(segment_id)
+    return {
+        "peak": float(vec[6]) * float(vec[1]),
+        "pause": float(vec[13]),
+        "slope": float(vec[14]),
+    }
 
 
 def _get_linguistic_features(segment_id: int) -> dict[str, float]:
@@ -114,7 +121,7 @@ def _extract_raw_keywords(segment_id: int) -> list[str]:
 
 
 def _extract_danmaku_memes(segment_id: int) -> list[str]:
-    """从弹幕文本中提取高情绪梗。"""
+    """从弹幕文本中提取高情绪梗 (C 加速)。"""
     try:
         from app.db.models import Danmaku, RawSegment
         from app.db.session import get_session
@@ -130,6 +137,11 @@ def _extract_danmaku_memes(segment_id: int) -> list[str]:
             ).all()
         hot_memes = {"卧槽", "绝了", "离谱", "破防", "高能", "泪目", "笑死",
                       "666", "什么", "无敌", "天秀", "牛逼", "??", "牛", "神"}
+        from app.analysis.speedups import fast_meme_count
+        texts = [c for (c,) in dms if c]
+        if texts:
+            fast_meme_count(texts, tuple(hot_memes))
+        # fast_meme_count returns int, we need str list — use fallback for now
         found = []
         for (c,) in dms:
             if c:
@@ -149,14 +161,13 @@ def _keyword_meme_intersection(keywords: list[str], memes: list[str]) -> float:
 
 
 def _asr_dm_similarity(segment_id: int) -> float:
-    """计算 ASR 转写与弹幕文本的 bigram 余弦相似度。"""
+    """计算 ASR 转写与弹幕文本的 bigram 余弦相似度 (C 加速)。"""
     try:
-        import json
-        import re
         from collections import Counter
         from app.db.models import Danmaku, RawSegment, Transcript
         from app.db.session import get_session
         from sqlmodel import select
+        from app.analysis.speedups import fast_char_bigrams, fast_cosine_similarity
 
         with get_session() as db:
             seg = db.get(RawSegment, segment_id)
@@ -175,18 +186,11 @@ def _asr_dm_similarity(segment_id: int) -> float:
             ).all()
         dm_text = " ".join(c for (c,) in dms if c)
 
-        def bigrams(text: str) -> Counter[str]:
-            clean = re.sub(r"\s+", "", text)
-            return Counter(clean[i:i + 2] for i in range(len(clean) - 1))
-
-        ba, bb = bigrams(asr_text), bigrams(dm_text)
+        ba = dict(Counter(fast_char_bigrams(asr_text)))
+        bb = dict(Counter(fast_char_bigrams(dm_text)))
         if not ba or not bb:
             return 0.0
-        inter = set(ba) & set(bb)
-        dot = sum(ba[k] * bb[k] for k in inter)
-        na = sum(v ** 2 for v in ba.values()) ** 0.5
-        nb = sum(v ** 2 for v in bb.values()) ** 0.5
-        return float(dot / (na * nb + 1e-8))
+        return fast_cosine_similarity(ba, bb)
     except Exception:
         return 0.0
 

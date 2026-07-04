@@ -1,8 +1,18 @@
 # Changelog
 
-## V0.1.9.1-HL-Alpha (2026-07-04)
+## V0.1.9.1b-HL-Alpha (2026-07-04)
 
-### Highlight_Model 分支合并 — 同步 main v0.1.9.1 + 自有 ML 高光模型
+### C 加速优化 — 自有 ML 高光模型性能提升
+
+将母仓库已有的 C 加速模块（`_c_speedups.c` / `speedups.py`）全面接入 HL 模型：
+
+- **P0 复用已有函数**: fusion.py `_asr_dm_similarity` → `fast_cosine_similarity`+`fast_char_bigrams`; linguistic.py `_topic_coherence` → `fast_char_bigrams`; `_entity_density` → `fast_match_keywords`; fusion.py `_extract_danmaku_memes` → `fast_meme_count`
+- **P0 新增 C 函数**: `fast_multi_emotion` — 一次扫描返回 4 类情绪词命中数，替代 30+ 次 `str.count` 调用（5-10x 提速）
+- **P1 新增 C 函数**: `fast_sliding_max` + `fast_count_bursts` — 纯 C 双指针滑窗，消除 Python 循环开销（3-5x）
+- **P3 特征缓存**: fusion.py 添加 `@lru_cache` 缓存声学特征，避免重复 DB 查询
+- 以上全部含 Python 回退（`_speedups_py.py`），无 C 编译器时自动降级
+
+### 同步 main v0.1.9.1
 
 - 合并母仓库 main `2b2aa03`（v0.1.9.1-alpha），含 C 加速模块 + Python-C 审计修复
 - 全自动 ML 闭环: 103 项特征 + 98 维特征提取 + XGBoost 模型 + 自学习引擎

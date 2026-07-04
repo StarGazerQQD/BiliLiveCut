@@ -186,3 +186,51 @@ def fast_meme_count(texts: list[str], memes: tuple[str, ...]) -> int:
         if fast_aho_has_match(am, t):
             count += 1
     return count
+
+
+def fast_multi_emotion(text: str, joy: tuple[str, ...],
+                        surprise: tuple[str, ...], anger: tuple[str, ...],
+                        sadness: tuple[str, ...]) -> tuple[int, int, int, int]:
+    """一次扫描返回4类情绪词命中数 (Python 回退)。"""
+    groups = (joy, surprise, anger, sadness)
+    counts = [0, 0, 0, 0]
+    for g_idx, group in enumerate(groups):
+        for pat in group:
+            pos = 0
+            while True:
+                pos = text.find(pat, pos)
+                if pos == -1:
+                    break
+                counts[g_idx] += 1
+                pos += len(pat)
+    return (counts[0], counts[1], counts[2], counts[3])
+
+
+def fast_sliding_max(timestamps: list[float], window: float) -> float:
+    """滑窗最大密度 (Python 回退)。"""
+    n = len(timestamps)
+    if n < 2:
+        return 1.0 / window if n > 0 else 0.0
+    best, j = 0, 0
+    for i in range(n):
+        while timestamps[i] - timestamps[j] > window:
+            j += 1
+        if i - j + 1 > best:
+            best = i - j + 1
+    return best / window
+
+
+def fast_count_bursts(timestamps: list[float], window: float,
+                       threshold: int) -> int:
+    """统计短窗爆发次数 (Python 回退)。"""
+    n = len(timestamps)
+    if n < threshold:
+        return 0
+    bursts, j = 0, 0
+    for i in range(n):
+        while timestamps[i] - timestamps[j] > window:
+            j += 1
+        if i - j + 1 >= threshold:
+            bursts += 1
+            j = i + 1
+    return bursts

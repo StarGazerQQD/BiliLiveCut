@@ -552,21 +552,127 @@ static PyObject *fast_meme_count(PyObject *self, PyObject *args) {
 /* ───────────────────────────────────────────────────────────────────────
  * 模块方法列表
  * ─────────────────────────────────────────────────────────────────────── */
+/* ───────────────────────────────────────────────────────────────────────
+ * fast_multi_emotion(text, patterns_tuple, text_len)
+ *   patterns_tuple: ((joy_words), (surprise_words), (anger_words), (sadness_words))
+ *   一次扫描返回 4 个命中数。
+ * ─────────────────────────────────────────────────────────────────────── */
+static PyObject *fast_multi_emotion(PyObject *self, PyObject *args) {
+    const char *text;
+    Py_ssize_t text_len;
+    PyObject *joy, *surprise, *anger, *sadness;
+    if (!PyArg_ParseTuple(args, "s#OOOO", &text, &text_len, &joy, &surprise, &anger, &sadness))
+        return NULL;
+
+    int counts[4] = {0, 0, 0, 0};
+    PyObject *groups[4] = {joy, surprise, anger, sadness};
+
+    for (int g = 0; g < 4; g++) {
+        Py_ssize_t n = PyTuple_Size(groups[g]);
+        for (Py_ssize_t i = 0; i < n; i++) {
+            PyObject *pat_obj = PyTuple_GetItem(groups[g], i);
+            if (!PyUnicode_Check(pat_obj)) continue;
+            Py_ssize_t plen;
+            const char *pat = PyUnicode_AsUTF8AndSize(pat_obj, &plen);
+            if (!pat || plen == 0) continue;
+            /* Boyer-Moore-Horspool 简化: 单字符匹配滑动 */
+            for (Py_ssize_t pos = 0; pos <= text_len - plen; pos++) {
+                if (memcmp(text + pos, pat, plen) == 0) {
+                    counts[g]++;
+                    pos += plen - 1;
+                }
+            }
+        }
+    }
+    return Py_BuildValue("(iiii)", counts[0], counts[1], counts[2], counts[3]);
+}
+
+/* ───────────────────────────────────────────────────────────────────────
+ * fast_sliding_max(timestamps, window) -> float
+ *   双指针滑窗，求最大密度（纯 C double 循环，无 Python 对象开销）
+ * ─────────────────────────────────────────────────────────────────────── */
+static PyObject *fast_sliding_max(PyObject *self, PyObject *args) {
+    PyObject *list_obj;
+    double window;
+    if (!PyArg_ParseTuple(args, "Od", &list_obj, &window)) return NULL;
+    if (!PyList_Check(list_obj)) { Py_RETURN_NONE; }
+
+    Py_ssize_t n = PyList_Size(list_obj);
+    if (n < 2) return PyFloat_FromDouble(n > 0 ? 1.0 / window : 0.0);
+
+    double *times = (double *)PyMem_Malloc(n * sizeof(double));
+    if (!times) return PyErr_NoMemory();
+    for (Py_ssize_t i = 0; i < n; i++) {
+        PyObject *item = PyList_GetItem(list_obj, i);
+        times[i] = PyFloat_AsDouble(item);
+    }
+
+    Py_ssize_t best = 0, j = 0;
+    for (Py_ssize_t i = 0; i < n; i++) {
+        while (times[i] - times[j] > window) j++;
+        if (i - j + 1 > best) best = i - j + 1;
+    }
+    PyMem_Free(times);
+    return PyFloat_FromDouble((double)best / window);
+}
+
+/* ───────────────────────────────────────────────────────────────────────
+ * fast_count_bursts(timestamps, window, threshold) -> int
+ *   统计指定短窗内超过阈值的爆发次数。
+ * ─────────────────────────────────────────────────────────────────────── */
+static PyObject *fast_count_bursts(PyObject *self, PyObject *args) {
+    PyObject *list_obj;
+    double window;
+    int threshold;
+    if (!PyArg_ParseTuple(args, "Odi", &list_obj, &window, &threshold)) return NULL;
+    if (!PyList_Check(list_obj)) return PyLong_FromLong(0);
+
+    Py_ssize_t n = PyList_Size(list_obj);
+    if (n < threshold) return PyLong_FromLong(0);
+
+    double *times = (double *)PyMem_Malloc(n * sizeof(double));
+    if (!times) return PyErr_NoMemory();
+    for (Py_ssize_t i = 0; i < n; i++) {
+        times[i] = PyFloat_AsDouble(PyList_GetItem(list_obj, i));
+    }
+
+    int bursts = 0;
+    Py_ssize_t j = 0;
+    for (Py_ssize_t i = 0; i < n; i++) {
+        while (times[i] - times[j] > window) j++;
+        if (i - j + 1 >= threshold) {
+            bursts++;
+            j = i + 1;
+        }
+    }
+    PyMem_Free(times);
+    return PyLong_FromLong(bursts);
+}
+
+/* ───────────────────────────────────────────────────────────────────────
+ * 方法表
+ * ─────────────────────────────────────────────────────────────────────── */
 static PyMethodDef speedups_methods[] = {
     {"fast_ahocorasick_build", fast_ahocorasick_build, METH_VARARGS,
-     "构建 Aho-Corasick 多模式匹配自动机。\n\n:param patterns: 模式字符串列表。\n:returns: ACAutomaton 对象。"},
+     "构建 Aho-Corasick 多模式匹配自动机。"},
     {"fast_ahocorasick_search", fast_ahocorasick_search, METH_VARARGS,
-     "用自动机搜索文本,返回所有命中的模式。\n\n:param automaton: ACAutomaton。\n:param text: 待搜索文本。\n:returns: 命中模式列表。"},
+     "用自动机搜索文本,返回所有命中的模式。"},
     {"fast_char_bigrams", fast_char_bigrams, METH_O,
-     "字符级 bigram 提取(零拷贝风格)。\n\n:param text: 文本。\n:returns: bigram 字符串列表。"},
+     "字符级 bigram 提取(零拷贝风格)。"},
     {"fast_cosine_similarity", fast_cosine_similarity, METH_VARARGS,
-     "基于 Python dict 的余弦相似度。\n\n:param vec_a: {str: float}。\n:param vec_b: {str: float}。\n:returns: 0-1 相似度。"},
+     "基于 Python dict 的余弦相似度。"},
     {"fast_aho_has_match", fast_aho_has_match, METH_VARARGS,
-     "快速判断文本中是否有模式匹配(提前终止)。\n\n:param automaton: ACAutomaton。\n:param text: 文本。\n:returns: bool。"},
+     "快速判断文本中是否有模式匹配(提前终止)。"},
     {"fast_match_keywords", fast_match_keywords, METH_VARARGS,
-     "一次构建自动机+扫描,返回命中的关键词列表。\n\n:param text: 文本。\n:param patterns: 关键词元组。\n:returns: 命中关键词列表。"},
+     "一次构建自动机+扫描,返回命中的关键词列表。"},
     {"fast_meme_count", fast_meme_count, METH_VARARGS,
-     "统计弹幕列表中命中梗词的条数。\n\n:param texts: 弹幕文本列表。\n:param memes: 梗词元组。\n:returns: 命中条数。"},
+     "统计弹幕列表中命中梗词的条数。"},
+    {"fast_multi_emotion", fast_multi_emotion, METH_VARARGS,
+     "一次扫描返回4类情绪词命中数 (joy/surprise/anger/sadness)。"},
+    {"fast_sliding_max", fast_sliding_max, METH_VARARGS,
+     "滑窗最大密度 (timestamps列表, double窗口)。"},
+    {"fast_count_bursts", fast_count_bursts, METH_VARARGS,
+     "统计短窗爆发次数 (timestamps列表, double窗口, int阈值)。"},
     {NULL, NULL, 0, NULL}
 };
 

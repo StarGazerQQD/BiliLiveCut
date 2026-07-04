@@ -1,4 +1,4 @@
-"""Highlight_Model 完整测试 (v0.1.9.1-HL-alpha)。"""
+"""Highlight_Model 完整测试 (v0.1.9.1b-HL-Alpha)。"""
 from __future__ import annotations
 import numpy as np
 import pytest

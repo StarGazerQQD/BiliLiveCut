@@ -1,4 +1,4 @@
-"""特征预处理器 (v0.1.9.1-HL-alpha)。
+"""特征预处理器 (v0.1.9.1b-HL-Alpha)。
 
 缺失值中位数填充 + StandardScaler 标准化，支持 fit/transform 和序列化。
 """

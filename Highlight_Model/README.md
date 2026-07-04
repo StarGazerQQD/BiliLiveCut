@@ -1,6 +1,6 @@
 # Highlight_Model — BiliLiveCut 自有机器学习高光模型
 
-**当前版本: v0.1.9.1-HL-alpha** (`0.1.9.1-HL-alpha`)
+**当前版本: v0.1.9.1b-HL-Alpha** (`0.1.9.1b-HL-alpha`)
 
 本分支为 [BiliLiveCut](https://github.com/StarGazerQQD/BiliLiveCut) 母仓库的阶段 2（高光判断）设计并实现一个**自有机器学习高光模型**，替代现有的"规则+LLM 复核"混合管线，在保持零费用、完全本地化的前提下，提升高光识别的准确率与召回率。
 
@@ -191,10 +191,10 @@
 
 | 阶段 | 内容 | 版本 | 状态 |
 |------|------|------|------|
-| 0 | 概念设计与特征清单 | v0.1.9.1-HL-alpha | ✅ 完成 |
-| 1 | 特征提取管线 (FeatureExtractor) | v0.1.9.1-HL-alpha | ✅ 完成 |
-| 2 | 训练数据构建 (DatasetBuilder) | v0.1.9.1-HL-alpha | ✅ 完成 |
-| 3 | 模型训练 + 自学习引擎 | v0.1.9.1-HL-alpha | ✅ 完成 |
+| 0 | 概念设计与特征清单 | v0.1.9.1b-HL-Alpha | ✅ 完成 |
+| 1 | 特征提取管线 (FeatureExtractor) | v0.1.9.1b-HL-Alpha | ✅ 完成 |
+| 2 | 训练数据构建 (DatasetBuilder) | v0.1.9.1b-HL-Alpha | ✅ 完成 |
+| 3 | 模型训练 + 自学习引擎 | v0.1.9.1b-HL-Alpha | ✅ 完成 |
 | 1 | 特征提取管线 (FeatureExtractor) | v0.1.0 | ⬜ |
 | 2 | 训练数据构建 (DatasetBuilder) | v0.2.0 | ⬜ |
 | 3 | 模型选型与训练 (XGBoost / LightGBM / MLP) | v0.3.0 | ⬜ |
