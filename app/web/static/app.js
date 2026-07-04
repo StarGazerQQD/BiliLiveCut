@@ -113,6 +113,12 @@ async function loadRooms() {
           <input type="checkbox" id="sw-ds-${r.id}" ${r.danmaku_sentiment_enabled ? "checked" : ""} ${r.running ? "disabled" : ""} />
           弹幕情绪
         </label>
+        <label class="switch-row">
+          <input type="checkbox" id="sw-ml-${r.id}" ${r.ml_highlight_enabled ? "checked" : ""} disabled />
+          <span class="muted">ML高光模型 (开发中)</span>
+        </label>
+        <button id="btn-ml-learn" onclick="triggerMLLearn()" style="margin-top:4px;font-size:11px">🔄 自学习</button>
+        <span id="ml-status" class="muted" style="font-size:11px;display:block;margin-top:2px"></span>
         ${r.running ? '<span class="muted">(录制中锁定)</span>' : ""}
       </div>
       <details class="room-config-detail" style="margin-top:8px">
@@ -162,6 +168,7 @@ window.saveRoom = async (id) => {
       schedule_enabled: ($(`#sw-se-${id}`) || {}).checked,
       auto_threshold_enabled: ($(`#sw-at-${id}`) || {}).checked,
       danmaku_sentiment_enabled: ($(`#sw-ds-${id}`) || {}).checked,
+      ml_highlight_enabled: ($(`#sw-ml-${id}`) || {}).checked,
     });
     toast("已保存阈值/模式");
   } catch (e) { toast("保存失败:" + e.message); }
@@ -175,6 +182,41 @@ window.saveRoomConfig = async (id) => {
     await api("PATCH", `/api/rooms/${id}`, { room_config: { hotwords: hw, aliases: al, highlight_keywords: hk, blocked_topics: bt } });
     toast("房间配置已保存");
   } catch (e) { toast("保存失败:" + e.message); }
+};
+
+// ----------------------------- ML 高光模型自学习 ----------------------------- //
+window.triggerMLLearn = async () => {
+  const btn = $("#btn-ml-learn");
+  if (!btn) return;
+  btn.disabled = true;
+  btn.textContent = "⏳ 学习中...";
+  try {
+    const r = await api("POST", "/api/ml/self-learn");
+    if (r.success) {
+      const m = r.metrics || {};
+      toast(`自学习完成! 迭代#${r.iteration} 样本:${r.n_samples}(+${r.n_new}新) AUC:${m.auc} F1:${m.f1}`);
+    } else {
+      toast("自学习失败:" + (r.error || "未知错误"));
+    }
+    loadMLStatus();
+  } catch (e) { toast("自学习请求失败:" + e.message); }
+  finally { btn.disabled = false; btn.textContent = "🔄 自学习"; }
+};
+
+window.loadMLStatus = async () => {
+  try {
+    const s = await api("GET", "/api/ml/status");
+    const el = $("#ml-status");
+    if (!el) return;
+    if (s.model_available) {
+      const m = s.last_metrics || {};
+      el.textContent = `模型就绪 · 迭代#${s.iteration} · 样本${s.n_total_samples}(正${s.n_total_positive}) · AUC:${(m.auc||0).toFixed(3)}`;
+      el.style.color = "var(--green)";
+    } else {
+      el.textContent = "模型未训练 · 请审批候选后点击「自学习」";
+      el.style.color = "var(--muted)";
+    }
+  } catch (e) { /* 静默 */ }
 };
 
 // ----------------------------- 渲染:录制状态 ----------------------------- //
@@ -855,10 +897,12 @@ const loaders = {
   schedules: loadSchedules, login: loadCookieStatus, tasks: loadTasks,
   topics: loadTopics, monitor: loadMonitor, templates: loadTemplates,
   introTemplates: loadIntroTemplates, analytics: loadAnalytics,
+  ml: loadMLStatus,
 };
 async function refresh() {
   try {
     await loadRooms(); // 始终刷新顶部统计
+    loadMLStatus();    // ML 状态轻量轮询
     if (activeTab !== "rooms" && loaders[activeTab]) await loaders[activeTab]();
   } catch (e) { /* 静默,避免打断轮询 */ }
   pollNotifications();

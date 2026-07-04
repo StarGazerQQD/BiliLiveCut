@@ -659,5 +659,44 @@ def serve(
     uvicorn.run("app.web.main:app", host=host, port=port, reload=reload)
 
 
+# --------------------------------------------------------------------------- #
+# V0.1.9: ML 高光模型自学习
+# --------------------------------------------------------------------------- #
+@app.command()
+def ml_learn(
+    room_id: int = typer.Option(-1, help="限定直播间 db_id(-1=全量)"),
+    model_type: str = typer.Option("xgboost", help="模型类型:xgboost/lightgbm"),
+) -> None:
+    """触发一次 ML 高光模型自学习迭代。
+
+    从 ThresholdFeedback 表中提取所有已审批/拒绝样本的特征，
+    训练 XGBoost/LightGBM 模型并保存到 storage/models/。
+
+    使用前请先在 Dashboard 审批一些高光候选（记录到 threshold_feedback）。
+    """
+    from Highlight_Model.models.self_learn import SelfLearnEngine
+
+    engine = SelfLearnEngine(model_type=model_type)
+    rid = room_id if room_id > 0 else None
+
+    console.print(f"[bold blue]ML 高光模型自学习[/bold blue]")
+    console.print(f"  模型: {model_type} | 房间: {'全部' if rid is None else f'#{rid}'}")
+
+    result = engine.run(room_id=rid)
+
+    if result.success:
+        m = result.metrics
+        console.print(f"[green]✓ 训练完成[/green] 迭代 #{result.iteration}  耗时 {result.elapsed_s}s")
+        console.print(f"  样本: {result.n_samples} (正 {result.n_positive}, +{result.n_new} 新)")
+        console.print(f"  AUC: {m.get('auc', 0):.3f}  F1: {m.get('f1', 0):.3f}  "
+                      f"P: {m.get('precision', 0):.3f}  R: {m.get('recall', 0):.3f}")
+        console.print(f"  模型: {result.model_path}")
+    else:
+        console.print(f"[red]✗ 自学习失败: {result.error}[/red]")
+        if result.n_samples == 0:
+            console.print("[dim]提示: 请先在 Dashboard 审批一些高光候选，"
+                          "审批结果会自动记录到 threshold_feedback 表。[/dim]")
+
+
 if __name__ == "__main__":
     app()

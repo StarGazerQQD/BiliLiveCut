@@ -267,6 +267,7 @@ def update_room(db_id: int, fields: dict[str, Any]) -> LiveRoom:
         "schedule_enabled",
         "auto_threshold_enabled",
         "danmaku_sentiment_enabled",
+        "ml_highlight_enabled",
         # V0.1.6: 独立自动化开关。
         "auto_record",
         "auto_analyze",
@@ -284,7 +285,7 @@ def update_room(db_id: int, fields: dict[str, Any]) -> LiveRoom:
             raise ValueError(f"房间不存在: db_id={db_id}")
         # 录制中不允许修改功能开关(锁定保护)。
         if recorder_manager.is_running(db_id):
-            for key in ("schedule_enabled", "auto_threshold_enabled", "danmaku_sentiment_enabled"):
+            for key in ("schedule_enabled", "auto_threshold_enabled", "danmaku_sentiment_enabled", "ml_highlight_enabled"):
                 if key in fields:
                     raise ValueError(f"直播间正在录制,无法修改「{key}」开关。请先停止录制。")
         for key, value in fields.items():
@@ -570,6 +571,7 @@ def _room_dict(room: LiveRoom, running: bool) -> dict[str, Any]:
         "schedule_enabled": room.schedule_enabled,
         "auto_threshold_enabled": room.auto_threshold_enabled,
         "danmaku_sentiment_enabled": room.danmaku_sentiment_enabled,
+        "ml_highlight_enabled": room.ml_highlight_enabled,
         # V0.1.6 P2: 房间配置。
         "room_config": json.loads(room.room_config_json) if room.room_config_json else {},
     }
@@ -987,6 +989,50 @@ def threshold_learning_status(room_id: int) -> dict[str, Any]:
     from app.analysis import threshold_learning as tl
 
     return tl.feedback_summary(room_id)
+
+
+# --------------------------------------------------------------------------- #
+# V0.1.9: ML 高光模型自学习
+# --------------------------------------------------------------------------- #
+def ml_learn_status() -> dict[str, Any]:
+    """返回 ML 高光模型的自学习状态摘要。
+
+    :returns: 含模型可用性、迭代数、指标等。
+    """
+    try:
+        from Highlight_Model.models.self_learn import SelfLearnEngine
+        engine = SelfLearnEngine()
+        return engine.status
+    except Exception as exc:
+        return {"model_available": False, "error": str(exc)}
+
+
+def trigger_ml_self_learn(room_id: int | None = None) -> dict[str, Any]:
+    """触发一次 ML 高光模型自学习。
+
+    从 ThresholdFeedback 表中提取所有已审批/拒绝样本，
+    构建 98 维特征矩阵，训练 XGBoost 模型并保存。
+
+    :param room_id: 可选，仅用指定房间的反馈数据。
+    :returns: 训练结果字典。
+    """
+    try:
+        from Highlight_Model.models.self_learn import SelfLearnEngine
+        engine = SelfLearnEngine()
+        result = engine.run(room_id=room_id)
+        return {
+            "success": result.success,
+            "model_path": result.model_path,
+            "n_samples": result.n_samples,
+            "n_positive": result.n_positive,
+            "n_new": result.n_new,
+            "metrics": result.metrics,
+            "iteration": result.iteration,
+            "elapsed_s": result.elapsed_s,
+            "error": result.error,
+        }
+    except Exception as exc:
+        return {"success": False, "error": str(exc)}
 
 
 # --------------------------------------------------------------------------- #

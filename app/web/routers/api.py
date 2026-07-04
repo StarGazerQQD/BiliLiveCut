@@ -43,6 +43,7 @@ class UpdateRoomRequest(BaseModel):
     schedule_enabled: bool | None = None
     auto_threshold_enabled: bool | None = None
     danmaku_sentiment_enabled: bool | None = None
+    ml_highlight_enabled: bool | None = None  # V0.1.9: ML 高光模型开关(开发中)
     # V0.1.6 P2: 房间配置。
     room_config: dict | None = None
 
@@ -426,6 +427,25 @@ def get_progress(session_id: int | None = None) -> dict[str, Any]:
 def threshold_learning(db_id: int) -> dict[str, Any]:
     """返回某房间的阈值自学习摘要。"""
     return service.threshold_learning_status(db_id)
+
+
+# ----------------------------- V0.1.9: ML 高光模型自学习 ----------------------------- #
+@router.get("/ml/status")
+def ml_learn_status() -> dict[str, Any]:
+    """返回 ML 高光模型自学习状态。"""
+    return service.ml_learn_status()
+
+
+@router.post("/ml/self-learn")
+def ml_self_learn(room_id: int | None = None) -> dict[str, Any]:
+    """触发一次 ML 高光模型自学习迭代。
+
+    从所有已审批的 ThresholdFeedback 记录中提取特征并训练模型。
+    """
+    result = service.trigger_ml_self_learn(room_id=room_id)
+    if not result.get("success"):
+        raise HTTPException(status_code=400, detail=result.get("error", "自学习失败"))
+    return result
 
 
 # ----------------------------- 媒体预览 ----------------------------- #

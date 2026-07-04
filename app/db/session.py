@@ -71,6 +71,8 @@ def _migrate_add_columns() -> None:
         ("live_rooms", "review_threshold", "REAL NOT NULL DEFAULT 0.50", None),
         # V0.1.6 P2: 房间配置。
         ("live_rooms", "room_config_json", "TEXT", None),
+        # V0.1.9: ML 高光模型开关。
+        ("live_rooms", "ml_highlight_enabled", "INTEGER NOT NULL DEFAULT 0", None),
         # V0.1.8: 合集章节标题持久化。
         ("highlight_topics", "chapter_title", "TEXT", None),
     ]
