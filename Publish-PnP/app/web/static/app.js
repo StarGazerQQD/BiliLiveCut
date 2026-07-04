@@ -24,8 +24,8 @@ function toast(msg) {
 }
 
 function esc(s) {
-  return (s ?? "").toString().replace(/[&<>"]/g, (c) =>
-    ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;" }[c]));
+  return (s ?? "").toString().replace(/[&<>"']/g, (c) =>
+    ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;", "'": "&#39;" }[c]));
 }
 
 function badge(status) {

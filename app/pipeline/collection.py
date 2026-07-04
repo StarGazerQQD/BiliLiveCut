@@ -201,7 +201,7 @@ def render_collection(
             try:
                 subprocess.run(
                     [
-                        "ffmpeg", "-y", "-v", "quiet",
+                        settings.ffmpeg_path, "-y", "-v", "quiet",
                         "-i", cf["path"],
                         "-af", "loudnorm=I=-16:TP=-1.5:LRA=11:linear=true",
                         "-c:v", "copy",
@@ -230,7 +230,7 @@ def render_collection(
         try:
             subprocess.run(
                 [
-                    "ffmpeg", "-y", "-v", "warning",
+                    settings.ffmpeg_path, "-y", "-v", "warning",
                     "-f", "concat", "-safe", "0",
                     "-i", str(concat_list_path),
                     "-c:v", "libx264", "-crf", "23", "-preset", "medium",
@@ -256,7 +256,7 @@ def render_collection(
     duration_s = 0.0
     try:
         result = subprocess.run(
-            ["ffprobe", "-v", "quiet", "-print_format", "json", "-show_format", str(out_file)],
+            [settings.ffprobe_path, "-v", "quiet", "-print_format", "json", "-show_format", str(out_file)],
             capture_output=True, text=True, timeout=10,
         )
         info = json.loads(result.stdout)
@@ -334,7 +334,7 @@ def _generate_chapter_card(title: str, out_dir: Path) -> str | None:
     try:
         subprocess.run(
             [
-                "ffmpeg", "-y", "-v", "quiet",
+                settings.ffmpeg_path, "-y", "-v", "quiet",
                 "-f", "lavfi", "-i", "color=c=0x1a1a2e:s=1920x1080:d=2:r=30",
                 "-vf", (
                     f"drawtext=textfile='{text_file_path}':"
