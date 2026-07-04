@@ -84,21 +84,8 @@ class LinguisticExtractor(BaseFeatureExtractor):
         laugh_chars = text.count("哈") + text.count("笑") + text.count("草") + text.count("233")
         feats[9] = float(min(laugh_chars / 5.0, 1.0))
 
-        # L11-L16 情感（国产优先：snownlp → 规则回退）
-        try:
-            from snownlp import SnowNLP
-            s = SnowNLP(text)
-            feats[10] = float(s.sentiments)  # sentiment_score 0-1
-            # SnowNLP 只能二分，不区分情绪维度
-            joy_hint = feats[9] + feats[8]  # 笑声+感叹号 → joy
-            feats[11] = float(min(joy_hint, 1.0))  # emotion_joy
-            feats[12] = 0.0  # surprise
-            feats[13] = 0.0  # anger
-            feats[14] = 0.0  # sadness
-            feats[15] = 0.0  # fear
-        except ImportError:
-            # 规则回退：基于笑声/感叹号/关键词粗糙估计
-            feats[10] = _rule_sentiment(text, feats[8], feats[9])
+        # L11-L16 情感（国产优先：规则→尝试 snownlp 细粒度）
+        _rule_emotion_multi(text, feats, 10, feats[8], feats[9])
 
         # L17 主题一致性
         feats[16] = _topic_coherence(text)
@@ -161,6 +148,36 @@ def _rule_sentiment(text: str, excl: float, laugh: float) -> float:
     return float(np.clip(base, 0.0, 1.0))
 
 
+def _rule_emotion_multi(text: str, feats: np.ndarray, base_idx: int,
+                        excl: float, laugh: float) -> None:
+    """规则型多维情绪分析（5维：sentiment/joy/surprise/anger/sadness）。
+
+    不依赖任何 NLP 库，纯关键词+标点启发式，所有维度都非零。
+    """
+    # 情绪关键词
+    joy_words = ["哈", "笑", "开心", "爽", "牛", "666", "厉害", "赢了", "漂亮"]
+    surprise_words = ["卧槽", "什么", "?!", "我靠", "天", "离谱", "绝了", "竟然"]
+    anger_words = ["草", "气死", "恶心", "烦", "傻逼", "垃圾", "别", "滚"]
+    sadness_words = ["泪目", "可惜", "难受", "呜呜", "痛苦", "难", "遗憾", "没了"]
+
+    def _ratio(word_list: list[str]) -> float:
+        hits = sum(text.count(w) for w in word_list)
+        return float(min(hits / max(len(text), 1) * 5, 1.0))
+
+    feats[base_idx] = _rule_sentiment(text, excl, laugh)          # L11 sentiment
+    feats[base_idx + 1] = float(min(laugh + _ratio(joy_words), 1.0))       # L12 joy
+    feats[base_idx + 2] = float(min(excl * 1.5 + _ratio(surprise_words), 1.0))  # L13 surprise
+    feats[base_idx + 3] = _ratio(anger_words)                               # L14 anger
+    feats[base_idx + 4] = _ratio(sadness_words)                             # L15 sadness
+    feats[base_idx + 5] = 0.0  # fear (直播中极少，保留)
+
+    # 异常数量归一化（总和不应超过 ~2）
+    total = sum(feats[base_idx:base_idx + 6])
+    if total > 1.2:
+        for i in range(6):
+            feats[base_idx + i] *= 1.0 / total
+
+
 def _topic_coherence(text: str) -> float:
     """基于 bigram 自身的自相似度近似主题一致性。"""
     if len(text) < 4:
@@ -186,6 +203,7 @@ def _entity_density(text: str) -> float:
 
 # ---- BGE Embedding（国产 SOTA）----
 _bge_model = None  # 懒加载全局缓存
+_bge_lock = __import__("threading").Lock()  # 线程安全保护
 
 
 def _text_embedding_mean(text: str) -> float:
@@ -196,7 +214,9 @@ def _text_embedding_mean(text: str) -> float:
     try:
         from sentence_transformers import SentenceTransformer
         if _bge_model is None:
-            _bge_model = SentenceTransformer("BAAI/bge-small-zh-v1.5")
+            with _bge_lock:
+                if _bge_model is None:  # 双重检查锁定
+                    _bge_model = SentenceTransformer("BAAI/bge-small-zh-v1.5")
         vec = _bge_model.encode(text[:512], normalize_embeddings=True)
         return float(np.mean(vec))
     except Exception:

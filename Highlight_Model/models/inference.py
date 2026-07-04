@@ -67,7 +67,7 @@ class ModelInference:
                 except Exception as exc:
                     raise RuntimeError(f"无法加载模型: {exc}") from exc
 
-        # 加载元数据
+        # 加载元数据（含特征名和预处理参数）
         meta_path = self.model_path.with_suffix(".meta.json")
         if meta_path.exists():
             try:
@@ -75,6 +75,21 @@ class ModelInference:
                 self._feature_names = self._meta.get("feature_names", [])
             except Exception:
                 pass
+
+        # 加载预处理器参数（训练时拟合的均值/标准差/填充值）
+        pp_path = self.model_path.with_suffix(".preprocessor.json")
+        self._impute_values: np.ndarray | None = None
+        self._pp_mean: np.ndarray | None = None
+        self._pp_std: np.ndarray | None = None
+        if pp_path.exists():
+            try:
+                pp_meta = json.loads(pp_path.read_text(encoding="utf-8"))
+                self._impute_values = np.array(pp_meta.get("impute_values", []), dtype=np.float64)
+                self._pp_mean = np.array(pp_meta.get("mean", []), dtype=np.float64)
+                self._pp_std = np.array(pp_meta.get("std", []), dtype=np.float64)
+                logger.info("预处理参数已加载 n_features=%d", len(self._impute_values))
+            except Exception as exc:
+                logger.warning("预处理参数加载失败: %s", exc)
 
         self._loaded = True
         logger.info("模型加载成功: %s (n_features=%d)",
@@ -92,21 +107,42 @@ class ModelInference:
 
         from Highlight_Model.feature_extractor.base import FeatureExtractor
         extractor = FeatureExtractor()
-        feats = extractor.extract(segment_id).reshape(1, -1)
+        feats = extractor.extract(segment_id).reshape(1, -1).astype(np.float64)
+
+        # 应用与训练时一致的预处理
+        feats = self._apply_preprocessing(feats)
 
         try:
             import xgboost as xgb
-            dmat = xgb.DMatrix(feats)
+            dmat = xgb.DMatrix(feats.astype(np.float32))
             prob = float(self._model.predict(dmat)[0])
         except Exception:
             if hasattr(self._model, "predict_proba"):
-                prob = float(self._model.predict_proba(feats)[0, 1])
+                prob = float(self._model.predict_proba(feats.astype(np.float32))[0, 1])
             elif hasattr(self._model, "predict"):
-                prob = float(self._model.predict(feats)[0])
+                prob = float(self._model.predict(feats.astype(np.float32))[0])
             else:
                 prob = 0.0
 
         return float(np.clip(prob, 0.0, 1.0))
+
+    def _apply_preprocessing(self, X: np.ndarray) -> np.ndarray:  # noqa: N803
+        """对推理特征应用训练时的预处理参数。
+
+        :param X: shape (1, n_features) 原始特征。
+        :returns: 预处理后的特征。
+        """
+        if self._impute_values is None or len(self._impute_values) == 0:
+            return X.astype(np.float64)
+        # 填充缺失值
+        X = np.where(np.isnan(X), self._impute_values[:X.shape[1]], X)
+        # Z-score 标准化
+        if self._pp_mean is not None and self._pp_std is not None:
+            m = self._pp_mean[:X.shape[1]]
+            s = self._pp_std[:X.shape[1]]
+            s = np.where(s < 1e-8, 1.0, s)
+            X = (X - m) / s
+        return X.astype(np.float64)
 
     def predict(self, segment_id: int) -> bool:
         """对指定片段预测是否高光 (阈值二值化)。

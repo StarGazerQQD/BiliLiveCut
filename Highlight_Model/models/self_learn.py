@@ -81,7 +81,8 @@ class SelfLearnEngine:
         result = SelfLearnResult(success=False, iteration=self._state.get("iteration", 0) + 1)
 
         # 1) 收集数据
-        records = _load_feedback(room_id)
+        from Highlight_Model.dataset.shared import load_feedback, candidate_to_segment
+        records = load_feedback(room_id)
         if len(records) < self.min_positive * 2:
             result.error = f"样本不足（需 ≥{self.min_positive * 2}，当前 {len(records)}）"
             logger.warning(result.error)
@@ -212,6 +213,9 @@ class SelfLearnEngine:
         }
         _META_PATH.write_text(json.dumps(meta, ensure_ascii=False, indent=2), encoding="utf-8")
 
+        # 保存预处理参数供推理使用
+        _save_preprocessor_params(preprocessor, _MODEL_PATH)
+
         # 更新状态
         self._state.update({
             "iteration": result.iteration,
@@ -277,49 +281,6 @@ class SelfLearnEngine:
 # ------------------------------------------------------------------ #
 # 内部辅助
 # ------------------------------------------------------------------ #
-def _load_feedback(room_id: int | None) -> list[dict]:
-    """加载 ThresholdFeedback 记录。"""
-    try:
-        from app.db.models import ThresholdFeedback
-        from app.db.session import get_session
-        from sqlmodel import select
-        with get_session() as db:
-            stmt = select(ThresholdFeedback).where(
-                ThresholdFeedback.action.in_(["approved", "rejected"])
-            )
-            if room_id is not None:
-                stmt = stmt.where(ThresholdFeedback.room_id == room_id)
-            rows = db.exec(stmt).all()
-        return [
-            {"candidate_id": r.candidate_id, "room_id": r.room_id,
-             "action": r.action, "highlight_score": r.highlight_score}
-            for r in rows
-        ]
-    except Exception:
-        return []
-
-
-def _candidate_to_segment(candidate_id: int) -> int | None:
-    try:
-        from app.db.models import HighlightCandidate, RawSegment
-        from app.db.session import get_session
-        from sqlmodel import select
-        with get_session() as db:
-            cand = db.get(HighlightCandidate, candidate_id)
-            if cand is None:
-                return None
-            seg = db.exec(
-                select(RawSegment).where(
-                    RawSegment.session_id == cand.session_id,
-                    RawSegment.start_ts <= cand.peak_ts,
-                    RawSegment.end_ts >= cand.peak_ts,
-                ).limit(1)
-            ).first()
-            return seg.id if seg else None
-    except Exception:
-        return None
-
-
 def _split_data(X, y, ids, names, test_ratio):
     from Highlight_Model.dataset.builder import DatasetBundle
     rng = np.random.RandomState(42)
@@ -395,6 +356,18 @@ def _save_model_xgb(model, path: Path) -> None:
     else:
         import pickle as _pkl
         path.write_bytes(_pkl.dumps(model))
+
+
+def _save_preprocessor_params(preprocessor, model_path: Path) -> None:
+    """保存 FeaturePreprocessor 参数供推理时加载。"""
+    pp_path = model_path.with_suffix(".preprocessor.json")
+    pp_path.write_text(json.dumps({
+        "impute_values": preprocessor._impute_values.tolist() if preprocessor._impute_values is not None else [],
+        "mean": preprocessor._mean.tolist() if preprocessor._mean is not None else [],
+        "std": preprocessor._std.tolist() if preprocessor._std is not None else [],
+        "impute_strategy": preprocessor.impute_strategy,
+    }, ensure_ascii=False), encoding="utf-8")
+    logger.info("预处理参数已保存: %s", pp_path)
 
 
 # ---- 状态持久化 ----

@@ -64,7 +64,8 @@ class DatasetBuilder:
         :param room_id: 可选，限定指定房间。
         :param preprocess: 是否对特征做标准化。
         """
-        records = _load_feedback(room_id)
+        from Highlight_Model.dataset.shared import load_feedback, candidate_to_segment
+        records = load_feedback(room_id)
         if len(records) < self.min_positive * 2:
             return None
 
@@ -98,52 +99,3 @@ class DatasetBuilder:
             X = self._preprocessor.fit_transform(X)
 
         return DatasetBundle(X, y, list(extractor.feature_names), ids)
-
-
-# ------------------------------------------------------------------ #
-def _load_feedback(room_id: int | None) -> list[dict]:
-    try:
-        from app.db.models import ThresholdFeedback
-        from app.db.session import get_session
-        from sqlmodel import select
-        with get_session() as db:
-            stmt = select(ThresholdFeedback)
-            if room_id is not None:
-                stmt = stmt.where(ThresholdFeedback.room_id == room_id)
-            stmt = stmt.where(
-                ThresholdFeedback.action.in_(["approved", "rejected"])
-            )
-            rows = db.exec(stmt).all()
-        return [
-            {
-                "candidate_id": r.candidate_id,
-                "room_id": r.room_id,
-                "action": r.action,
-                "highlight_score": r.highlight_score,
-            }
-            for r in rows
-        ]
-    except Exception:
-        return []
-
-
-def _candidate_to_segment(candidate_id: int) -> int | None:
-    try:
-        from app.db.models import HighlightCandidate, RawSegment
-        from app.db.session import get_session
-        from sqlmodel import select
-        with get_session() as db:
-            cand = db.get(HighlightCandidate, candidate_id)
-            if cand is None:
-                return None
-            # 找到覆盖 peak_ts 的片段
-            seg = db.exec(
-                select(RawSegment).where(
-                    RawSegment.session_id == cand.session_id,
-                    RawSegment.start_ts <= cand.peak_ts,
-                    RawSegment.end_ts >= cand.peak_ts,
-                ).limit(1)
-            ).first()
-            return seg.id if seg else None
-    except Exception:
-        return None

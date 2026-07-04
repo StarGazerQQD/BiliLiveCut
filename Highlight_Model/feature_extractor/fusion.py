@@ -55,16 +55,6 @@ class FusionExtractor(BaseFeatureExtractor):
         return feats
 
 
-def _get_danmaku_features(segment_id: int) -> dict[str, float]:
-    try:
-        from Highlight_Model.feature_extractor.danmaku import DanmakuExtractor
-        ext = DanmakuExtractor()
-        vec = ext.extract(segment_id)
-        return {"rate": float(vec[1]), "memes": []}
-    except Exception:
-        return {"rate": 0.0, "memes": []}
-
-
 def _get_volume_features(segment_id: int) -> dict[str, float]:
     try:
         from Highlight_Model.feature_extractor.acoustic import AcousticExtractor
@@ -84,12 +74,71 @@ def _get_linguistic_features(segment_id: int) -> dict[str, float]:
         from Highlight_Model.feature_extractor.linguistic import LinguisticExtractor
         ext = LinguisticExtractor()
         vec = ext.extract(segment_id)
+        # 从原始转写文本中提取关键词
+        keywords = _extract_raw_keywords(segment_id)
         return {
             "speech_peak": float(vec[4]),
-            "keywords": [],
+            "keywords": keywords,
         }
     except Exception:
         return {"speech_peak": 0.0, "keywords": []}
+
+
+def _get_danmaku_features(segment_id: int) -> dict[str, float]:
+    try:
+        from Highlight_Model.feature_extractor.danmaku import DanmakuExtractor
+        ext = DanmakuExtractor()
+        vec = ext.extract(segment_id)
+        # 从弹幕中提取实际梗词
+        memes = _extract_danmaku_memes(segment_id)
+        return {"rate": float(vec[1]), "memes": memes}
+    except Exception:
+        return {"rate": 0.0, "memes": []}
+
+
+def _extract_raw_keywords(segment_id: int) -> list[str]:
+    """从转写文本中提取高光关键词。"""
+    try:
+        from app.db.models import Transcript
+        from app.db.session import get_session
+        from sqlmodel import select
+        with get_session() as db:
+            t = db.exec(select(Transcript).where(Transcript.segment_id == segment_id)).first()
+        if t and t.text:
+            from app.analysis.keywords import match_keywords
+            _, hits = match_keywords(t.text)
+            return hits
+    except Exception:
+        pass
+    return []
+
+
+def _extract_danmaku_memes(segment_id: int) -> list[str]:
+    """从弹幕文本中提取高情绪梗。"""
+    try:
+        from app.db.models import Danmaku, RawSegment
+        from app.db.session import get_session
+        from sqlmodel import select
+        with get_session() as db:
+            seg = db.get(RawSegment, segment_id)
+            if seg is None: return []
+            dms = db.exec(
+                select(Danmaku.content).where(
+                    Danmaku.session_id == seg.session_id,
+                    Danmaku.ts >= seg.start_ts, Danmaku.ts <= seg.end_ts,
+                ).limit(100)
+            ).all()
+        hot_memes = {"卧槽", "绝了", "离谱", "破防", "高能", "泪目", "笑死",
+                      "666", "什么", "无敌", "天秀", "牛逼", "??", "牛", "神"}
+        found = []
+        for (c,) in dms:
+            if c:
+                for m in hot_memes:
+                    if m in c and m not in found:
+                        found.append(m)
+        return found
+    except Exception:
+        return []
 
 
 def _keyword_meme_intersection(keywords: list[str], memes: list[str]) -> float:
