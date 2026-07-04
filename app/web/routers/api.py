@@ -657,7 +657,6 @@ def get_analytics() -> dict[str, Any]:
 
     now = datetime.now(UTC)
     days_30 = now - timedelta(days=30)
-    days_7 = now - timedelta(days=7)
 
     with get_session() as db:
         # --- 切片统计 ---
@@ -766,7 +765,8 @@ def get_analytics() -> dict[str, Any]:
             )
             .select_from(LiveRoom)
             .join(RecordingSession, RecordingSession.room_id == LiveRoom.id, isouter=True)
-            .join(FinalClip, FinalClip.candidate_id == RecordingSession.id, isouter=True)
+            .join(HighlightCandidate, HighlightCandidate.session_id == RecordingSession.id, isouter=True)
+            .join(FinalClip, FinalClip.candidate_id == HighlightCandidate.id, isouter=True)
             .where(LiveRoom.uploader_name is not None)
             .group_by(LiveRoom.id)
             .order_by(func.count(FinalClip.id).desc())

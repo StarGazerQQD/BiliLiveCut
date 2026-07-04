@@ -248,8 +248,9 @@ def _render_intro_outro_cards(
             if session and session.room_id:
                 room = db.get(LiveRoom, session.room_id)
                 if room:
-                    vars_dict["streamer_name"] = room.name or ""
-                    vars_dict["game_name"] = room.game_name or ""
+                    vars_dict["streamer_name"] = room.uploader_name or ""
+                    vars_dict["game_name"] = ""
+                    vars_dict["room_title"] = room.title or ""
         if cand:
             vars_dict["time"] = cand.start_ts.strftime("%H:%M") if cand.start_ts else ""
 
@@ -300,7 +301,7 @@ def _render_text_card(
         "-f", "lavfi", "-i", f"color=c={bg_color}:s={width}x{height}:d={duration_s}",
         "-vf", (
             f"drawtext=textfile='{tf.name}':"
-            f"fontfile=/usr/share/fonts/opentype/noto/NotoSansCJK-Regular.ttc:"
+            f"font='{font_name}':"
             f"fontcolor={font_color}:fontsize={font_size}:"
             f"x=(w-text_w)/2:y=(h-text_h)/2:"
             f"box=1:boxcolor=black@0.4:boxborderw=20"
@@ -770,16 +771,8 @@ def _render_variants(
     # --- 互补字幕版 ---
     counterpart_subtitle = not options.subtitle
     if counterpart_subtitle:
-        # 主干无字幕 → 渲染带字幕版
-        # 需要先构造 SRT
+        # 主干无字幕 → 渲染带字幕版:用候选关联的 session 查找 segments 构建 SRT。
         counterpart_srt: Path | None = None
-        with get_session() as db:
-            segments = db.exec(
-                select(RawSegment)
-                .where(RawSegment.session_id == clip.candidate_id)
-                .order_by(RawSegment.seq)
-            ).all()
-        # 用候选关联的 session 查找 segments
         from app.db.models import HighlightCandidate as HC
         with get_session() as db:
             cand = db.get(HC, clip.candidate_id)

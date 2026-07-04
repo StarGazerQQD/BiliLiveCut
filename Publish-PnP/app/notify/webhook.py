@@ -15,7 +15,6 @@ from __future__ import annotations
 
 import hashlib
 import hmac
-import json
 import smtplib
 import time
 import urllib.parse
@@ -54,13 +53,8 @@ def _dingtalk_sign(secret: str) -> tuple[str, str]:
         string_to_sign.encode("utf-8"),
         hashlib.sha256,
     ).digest()
-    sign_encoded = urllib.parse.quote_plus(
-        sign if isinstance(sign, str) else sign.hex() if not sign else ""
-    )
-    # 改用 base64 编码。
     import base64
-    sign_b64 = base64.b64encode(sign).decode("utf-8")
-    sign_encoded = urllib.parse.quote_plus(sign_b64)
+    sign_encoded = urllib.parse.quote_plus(base64.b64encode(sign).decode("utf-8"))
     return ts, sign_encoded
 
 
