@@ -1,5 +1,26 @@
 # Changelog
 
+## V0.1.8.1c Alpha (2026-07-04)
+
+### 补充审计修复 (第一轮:前端/路由)
+- **Bug**: `split_topic`/`reorder` 的 `list[int]` 查询参数改为 Pydantic 请求体
+- **校验**: `BatchRequest.action` 添加 `Literal` 白名单
+- **头注入**: 字幕导出 `Content-Disposition` 清除 CR/LF 换行
+- **冷却**: 磁盘告警通知添加 30 分钟冷却,避免轮询轰炸
+- **安全**: 移除 `get_login_status`/`get_cookie_info` 中的 Cookie 前缀泄露
+- **竞态**: JS 轮询 `setInterval` 改为 `setTimeout` + 防重入锁
+
+### 补充审计修复 (第二轮:管线/核心)
+- **Critical**: `threshold_learning.py` Row 对象提取为 float,修复运行时 TypeError
+- **Critical**: `topic_cluster.py` 修正 ASR 文本查询(从错误 `candidate.id` 改为时间窗口匹配 `RawSegment`)
+- **Critical**: `clipper.py` 全部 `subprocess.run` 添加 timeout(切片 600s/渲染 1800s/封面 30s)
+- **Critical**: `highlight.py` `score_segment` 添加 `start_ts`/`end_ts` None 检查
+- **High**: `danmaku_sentiment_score` None 保护 / `live_monitor` `asyncio.create_task` 异步延迟 / `task_worker` 孤儿恢复 30min stale 检查
+- **High**: `storage_lifecycle` 除零防护 / SMTP `try/finally` 连接清理 / webhook URL 域名白名单
+- **Medium**: `cover.py` `mkdtemp` 清理+持久化复制
+
+---
+
 ## V0.1.8.1b Alpha (2026-07-04)
 
 ### 代码审计修复
