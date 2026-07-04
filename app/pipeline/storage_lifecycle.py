@@ -38,7 +38,7 @@ def get_disk_usage(path: str | Path | None = None) -> dict:
         "total_gb": round(usage.total / (1024**3), 1),
         "used_gb": round(usage.used / (1024**3), 1),
         "free_gb": round(usage.free / (1024**3), 1),
-        "free_percent": round(usage.free / usage.total * 100, 1),
+        "free_percent": round(usage.free / usage.total * 100, 1) if usage.total > 0 else 0.0,
     }
 
 

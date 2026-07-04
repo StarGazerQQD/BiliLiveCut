@@ -43,45 +43,64 @@ def extract_cover_candidates(
     step = usable / (count * 3)  # 抽取 3x 候选帧再筛选
     timestamps = [1.0 + i * step for i in range(count * 3)]
 
+    own_tmp = out_dir is None
     out = Path(out_dir) if out_dir else Path(tempfile.mkdtemp(prefix="blc_covers_"))
     out.mkdir(parents=True, exist_ok=True)
 
-    candidates = []
-    for i, ts in enumerate(timestamps):
-        cover_path = out / f"cover_{i:03d}.jpg"
-        try:
-            subprocess.run(
-                [
-                    "ffmpeg", "-y", "-v", "quiet",
-                    "-ss", f"{ts:.3f}",
-                    "-i", str(vp),
-                    "-vframes", "1",
-                    "-q:v", "2",
-                    str(cover_path),
-                ],
-                check=True, timeout=10,
-            )
-            if cover_path.exists() and cover_path.stat().st_size > 1000:
-                blur = _detect_blur(cover_path)
-                brightness = _detect_brightness(cover_path)
-                face_score = _detect_face_score(cover_path)
-                # 综合分:越低越好(模糊少=高分,亮度适中=高分,有人脸=加分)。
-                blur_norm = max(0, min(1, blur / 500))  # Laplacian 方差归一化
-                bright_dist = abs(brightness - 128) / 128  # 偏离 128 的程度
-                score = blur_norm * 0.5 + (1 - bright_dist) * 0.3 + face_score * 0.2
-                candidates.append({
-                    "file_path": str(cover_path),
-                    "score": round(score, 3),
-                    "blur_score": round(blur, 1),
-                    "brightness": round(brightness, 1),
-                    "timestamp_s": round(ts, 1),
-                })
-        except subprocess.CalledProcessError:
-            continue
+    try:
+        candidates = []
+        for i, ts in enumerate(timestamps):
+            cover_path = out / f"cover_{i:03d}.jpg"
+            try:
+                subprocess.run(
+                    [
+                        "ffmpeg", "-y", "-v", "quiet",
+                        "-ss", f"{ts:.3f}",
+                        "-i", str(vp),
+                        "-vframes", "1",
+                        "-q:v", "2",
+                        str(cover_path),
+                    ],
+                    check=True, timeout=10,
+                )
+                if cover_path.exists() and cover_path.stat().st_size > 1000:
+                    blur = _detect_blur(cover_path)
+                    brightness = _detect_brightness(cover_path)
+                    face_score = _detect_face_score(cover_path)
+                    blur_norm = max(0, min(1, blur / 500))
+                    bright_dist = abs(brightness - 128) / 128
+                    score = blur_norm * 0.5 + (1 - bright_dist) * 0.3 + face_score * 0.2
+                    candidates.append({
+                        "file_path": str(cover_path),
+                        "score": round(score, 3),
+                        "blur_score": round(blur, 1),
+                        "brightness": round(brightness, 1),
+                        "timestamp_s": round(ts, 1),
+                    })
+            except subprocess.CalledProcessError:
+                continue
 
-    # 按综合分降序,取 Top N。
-    candidates.sort(key=lambda c: -c["score"])
-    return candidates[:count]
+        # 按综合分降序,取 Top N。
+        candidates.sort(key=lambda c: -c["score"])
+        result = candidates[:count]
+
+        # 若是自动创建的临时目录,将 Top 候选复制到持久化位置并清理临时目录。
+        if own_tmp and result:
+            from app.core.paths import covers_dir
+            persistent = covers_dir()
+            persistent.mkdir(parents=True, exist_ok=True)
+            for c in result:
+                src = Path(c["file_path"])
+                dst = persistent / src.name
+                import shutil as _shutil
+                _shutil.copy2(src, dst)
+                c["file_path"] = str(dst)
+
+        return result
+    finally:
+        if own_tmp:
+            import shutil as _shutil2
+            _shutil2.rmtree(out, ignore_errors=True)
 
 
 def _probe_duration(video_path: Path) -> float:
