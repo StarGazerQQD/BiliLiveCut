@@ -7,6 +7,9 @@ from fastapi.responses import JSONResponse
 
 monitor_router = APIRouter(prefix="/api/monitor", tags=["monitor"])
 
+# V0.1.8.2: 模块级冷却状态变量,替代模块对象动态属性挂载。
+_last_disk_alert: float = 0.0
+
 
 @monitor_router.get("")
 def get_monitor_data() -> dict:
@@ -30,20 +33,16 @@ def get_monitor_data() -> dict:
     # V0.1.8 P2:磁盘不足告警通知(带冷却:每30分钟最多发一次)。
     if not safe:
         from app.notify.webhook import notify_disk_alert
+        global _last_disk_alert
         free_gb = disk.get("free_gb", 0) if isinstance(disk, dict) else getattr(disk, "free_gb", 0)
-        last = getattr(monitor, "_last_disk_alert", 0)
-        _now = time.time()
-        if _now - last > 1800:  # 30 分钟冷却
+        if _now - _last_disk_alert > 1800:  # 30 分钟冷却
             notify_disk_alert(
                 free_gb,
                 settings.disk_alert_threshold_gb,
                 raw_size,
                 clips_size,
             )
-            try:
-                monitor._last_disk_alert = _now
-            except AttributeError:
-                pass
+            _last_disk_alert = _now
 
     # 系统资源。
     cpu = _get_cpu_percent()

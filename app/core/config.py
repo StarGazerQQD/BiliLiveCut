@@ -34,6 +34,7 @@ class Settings(BaseSettings):
     # ---------- 通用 ----------
     app_env: Literal["dev", "prod"] = "dev"
     log_level: str = "INFO"
+    admin_password: str = ""  # V0.1.8.2: Web 管理后台认证密码(空则无认证)
 
     # ---------- 存储 ----------
     storage_root: str = "./storage"
@@ -63,7 +64,7 @@ class Settings(BaseSettings):
     # ---------- AI:大模型(OpenAI 兼容协议,境内推荐 DeepSeek/通义/Kimi/GLM) ----------
     # provider 仅作标识;真正决定连接的是 base_url + api_key + model。
     llm_provider: str = "deepseek"
-    llm_api_key: str = ""
+    llm_api_key: str = ""  # Deprecated: 已迁移至 LLMProvider 系统
     # OpenAI 兼容 API 的 base_url(须含 /v1 等版本前缀,视服务商而定):
     #   DeepSeek: https://api.deepseek.com/v1
     #   通义千问 : https://dashscope.aliyuncs.com/compatible-mode/v1
@@ -80,8 +81,8 @@ class Settings(BaseSettings):
     llm_daily_budget: float = 0.0
 
     # 兼容旧配置:若未填 llm_* 而填了 anthropic_*,仍可回退读取(已废弃,仅为兼容保留)。
-    anthropic_api_key: str = ""
-    anthropic_model: str = ""
+    anthropic_api_key: str = ""           # Deprecated: 已迁移至多 LLM 供应商系统 (app/analysis/llm_providers.py)
+    anthropic_model: str = ""            # Deprecated: 未使用,仅保留向后兼容
     llm_daily_budget_usd: float = 0.0
 
     # ---------- 网感资料库(联网采集热门内容,供评分/文案参考) ----------
@@ -152,7 +153,7 @@ class Settings(BaseSettings):
     smtp_host: str = ""                    # SMTP 服务器
     smtp_port: int = 465                   # SMTP 端口(默认 SSL 465)
     smtp_user: str = ""                    # SMTP 用户名
-    smtp_password: str = ""                # SMTP 密码
+    smtp_password: str = ""                # SMTP 密码 (repr=False 防止日志泄露)
     smtp_from: str = ""                    # 发件人地址
     smtp_to: str = ""                      # 收件人地址(多个用逗号分隔)
 

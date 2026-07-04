@@ -255,9 +255,10 @@ def delete_template(template_id: int, request: Request) -> dict[str, str]:
 
 
 @router.post("/import/ass")
-async def import_ass_file(file: UploadFile = File(...)) -> dict[str, object]:
+async def import_ass_file(file: UploadFile = File(..., max_size=1_048_576)) -> dict[str, object]:  # 1MB 上限
     """导入 ASS 文件,提取其样式配置并创建模板。
 
+    限制:最大 1MB,防止内存耗尽。
     会自动解析 [V4+ Styles] 段落的 Style 行,提取所有字段。
     如果有多个 Style 行,为每个 Style 创建一个模板。
 

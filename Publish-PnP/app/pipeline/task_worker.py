@@ -138,6 +138,12 @@ def mark_failed(task: SegmentTask, error: str, permanent: bool = False) -> None:
     if permanent:
         task.stage = TaskStatus.FAILED
         task.completed_at = _now()
+        # H3: 任务永久失败时触发通知。
+        try:
+            from app.notify.webhook import notify_task_failed
+            notify_task_failed(task.id, task.stage, error[:200])
+        except Exception:
+            pass
     else:
         delay = min(_RETRY_BASE_S * (2 ** (task.attempts - 1)), _RETRY_MAX_S) if task.attempts > 0 else _RETRY_BASE_S
         task.next_retry_at = _now() + timedelta(seconds=delay)
@@ -153,7 +159,7 @@ def _pop_one(stage: str) -> SegmentTask | None:
             select(SegmentTask)
             .where(
                 SegmentTask.stage == stage,
-                (SegmentTask.next_retry_at == None) | (SegmentTask.next_retry_at <= now),
+                (SegmentTask.next_retry_at.is_(None)) | (SegmentTask.next_retry_at <= now),
             )
             .order_by(SegmentTask.priority.asc(), SegmentTask.created_at.asc())
             .limit(1)

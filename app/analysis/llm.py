@@ -109,6 +109,7 @@ def _add_spend(usd: float) -> None:
 
 # 模块级缓存:按 provider id 缓存 OpenAI 客户端实例,避免连接池泄漏。
 # 长时间录制下(如4小时240个片段),每次创建新客户端会耗尽文件描述符。
+# 注意:缓存无 TTL 过期,provider 配置变更需重启应用生效。
 _client_cache: dict[str, object] = {}
 
 

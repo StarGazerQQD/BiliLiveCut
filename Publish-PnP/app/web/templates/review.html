@@ -310,7 +310,7 @@ function renderReview() {
     const pct = Math.round(dim.value * 100);
     barsHtml += `
       <div class="dim-row">
-        <span class="dim-label">${dim.label}</span>
+        <span class="dim-label">${esc(dim.label)}</span>
         <div class="dim-bar-wrap"><div class="dim-bar-fill" style="width:${pct}%;background:${colors[dim.dim]||"#888"}"></div></div>
         <span class="dim-val">${dim.value.toFixed(3)}</span>
       </div>`;

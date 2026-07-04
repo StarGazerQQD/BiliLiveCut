@@ -105,8 +105,12 @@ def danmaku_sentiment_score(session_id: int, start_ts: object, end_ts: object) -
     """
     from app.db.models import Danmaku
 
-    def _naive(dt: object) -> object:
-        return dt.replace(tzinfo=None) if getattr(dt, "tzinfo", None) else dt
+    import datetime as _dtmod
+
+    def _naive(dt: object) -> datetime:
+        if not isinstance(dt, _dtmod.datetime):
+            return _dtmod.datetime.min.replace(tzinfo=None)
+        return dt.replace(tzinfo=None) if dt.tzinfo else dt
 
     if start_ts is None or end_ts is None:
         return 0.0

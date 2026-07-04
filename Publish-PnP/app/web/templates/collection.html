@@ -113,8 +113,8 @@ function render(){
       <span class="drag">⠿</span>
       <span class="num">${i+1}</span>
       <div class="info">
-        <div class="title">#${e.candidate_id} · ${(e.score||0).toFixed(2)}分 ${e.reason||""}</div>
-        <div class="sub">${e.clip?e.clip.title||"":"(无成品)"}</div>
+        <div class="title">#${e.candidate_id} · ${(e.score||0).toFixed(2)}分 ${esc(e.reason||"")}</div>
+        <div class="sub">${e.clip?esc(e.clip.title)||"":"(无成品)"}</div>
       </div>
       <input class="ch-title" placeholder="章节标题" value="" data-idx="${i}" />
       <span class="dur">${e.duration_s?s=>(Math.floor(s/60)+":"+String(Math.floor(s%60)).padStart(2,"0"))(e.duration_s):"--"}</span>

@@ -52,10 +52,11 @@ class TranscriptionResult:
 class TranscriberBackend(Protocol):
     """转写后端协议。"""
 
-    def transcribe(self, audio_path: str) -> TranscriptionResult:
+    def transcribe(self, audio_path: str, initial_prompt: str | None = None) -> TranscriptionResult:
         """转写指定音频/视频文件。
 
         :param audio_path: 文件路径。
+        :param initial_prompt: Whisper 初始提示词(热词注入,可选)。
         :returns: :class:`TranscriptionResult`。
         """
         ...
