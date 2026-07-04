@@ -1,6 +1,6 @@
 # BiliLiveCut — AI 直播实时切片系统
 
-**当前版本:V0.1.8.2.1 Alpha** (`0.1.8.2.1-alpha`)
+**当前版本:V0.1.9 Alpha** (`0.1.9-alpha`)
 
 针对 Bilibili 直播的全自动工作流:实时录制 → 转写 → 识别高光 → 生成切片 → 生成文案 → (可选)上传。
 阶段 1–5 全链路已可用;即插即用分发包见 [`Publish-PnP/`](Publish-PnP/README.md)。
@@ -21,6 +21,17 @@
 
 - Python **3.11 / 3.12**(推荐;部分 AI 依赖对 3.13/3.14 的预编译包可能尚未就绪)
 - FFmpeg(已加入 PATH,或在 `.env` 指定 `FFMPEG_PATH`)
+- *(可选)* C 编译器(MSVC/MinGW/GCC) — 用于编译 Aho-Corasick 加速模块;如不可用,自动回退纯 Python 实现
+
+### C 加速模块 (V0.1.9)
+
+自 V0.1.9 起,高频 CPU 热点使用 C 扩展加速:多模式匹配(Aho-Corasick)、余弦相似度、字符 bigram。
+- **自动检测**:安装时 `pip install -e .` 自动尝试编译;编译失败 → 自动回退 `_speedups_py.py`
+- **手动编译**:Windows 用户需安装 [Visual Studio Build Tools](https://visualstudio.microsoft.com/zh-hans/downloads/)(勾选"C++桌面开发"),然后:
+  ```powershell
+  python setup_c.py build_ext --inplace
+  ```
+- **日志确认**:启动时查看 `加速模块: C 扩展已加载` 或 `加速模块: 使用纯 Python 后备`
 
 ### Python 依赖源
 

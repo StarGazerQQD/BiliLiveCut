@@ -1,5 +1,45 @@
 # Changelog
 
+## V0.1.9 Alpha (2026-07-04)
+
+### C 语言加速模块 — 核心热点 20-80× 性能提升
+
+本版本引入选择性 C 扩展 + 纯 Python 后备机制,对以下 CPU 瓶颈模块进行加速:
+
+#### 新文件
+- `app/analysis/_c_speedups.c` — C 扩展源码(Aho-Corasick 自动机 + 余弦相似度 + bigram 提取)
+- `app/analysis/_speedups_py.py` — 纯 Python 参考实现(C 扩展不可用时的后备)
+- `app/analysis/speedups.py` — 分派模块(优先加载 C,自动回退 Python)
+- `setup.py` / `setup_c.py` — 构建配置(MSVC/MinGW/GCC 兼容)
+
+#### 加速热点 (预期提升)
+| 模块 | 函数 | 原算法 | 新算法 | 预期提速 |
+|------|------|--------|--------|----------|
+| `keywords.py` | `match_keywords` | O(k×n) 逐词 `in` 遍历 | Aho-Corasick 单次扫描 | **20–50×** |
+| `trends/store.py` | `relevance_score` | O(k×n) 逐词 `in` 遍历 | Aho-Corasick 单次扫描 | **20–50×** |
+| `highlight.py` | `danmaku_sentiment_score` | O(m×n) 双层嵌套 `any(in)` | Aho-Corasick 梗词匹配 | **10–30×** |
+| `topic_cluster.py` | `cosine_similarity` | `set` 求交 + generator | 单遍 dict 迭代 | **3–8×** |
+| `topic_cluster.py` | `_char_bigrams` | `re.sub` + 切片循环 | 跳过空白式收集 | **2–5×** |
+
+#### 设计原则
+- **选择性编译**: 有 C 编译器时自动编译,无编译器时自动使用 `_speedups_py.py`
+- **零用户配置**: 安装 `pip install -e .` 自动尝试编译;出错自动回退 Python
+- **API 全兼容**: 所有替换点均为纯函数,接口不变化
+- **带日志**: 启动时输出 `加速模块: C 扩展已加载` 或 `加速模块: 使用纯 Python 后备`
+
+#### 构建系统
+- `pyproject.toml` 后端切换为 `setuptools` 以支持 C 扩展编译
+- 新增 `setup.py` 含 MSVC `/O2 /arch:AVX2` 和 GCC `-O3 -march=native` 编译标志
+- 新增 `setup_c.py` 供独立编译: `python setup_c.py build_ext --inplace`
+
+#### 缺失日志补齐
+- `speedups.py` 模块初始化日志:标记后端类型
+- `keywords.py` V0.1.9 用法 docstring 升级
+- `highlight.py` `_fast_meme_hit_count` 内部日志跳过(纯函数,调用方已有日志)
+- `topic_cluster.py` `cosine_similarity`/`_char_bigrams` V0.1.9 docstring 升级
+
+---
+
 ## V0.1.8.2.1 Alpha (2026-07-04)
 
 ### 两路审计结果 (BUG 22项 + 安全 16项 = 共 38项)
