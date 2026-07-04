@@ -1,0 +1,12 @@
+Publish-PnP 极致精简:删 app/config/tests/pyproject.toml/CHANGELOG/缓存/运行时产物(~2.3GB)
+
+精简后仅8个文件(~8.4MB):
+- launcher.exe / launcher.py — 入口
+- build_exe.py / build_bundle.py — 编译&打包
+- pip.ini / .env.example / .gitignore / README.md
+
+核心变更:
+- 所有源码(app/config/pyproject.toml)由 launcher.exe 从 GitHub 仓库根目录拉取
+- requirements-bundle.txt 从仓库 Publish-PnP/ 提取
+- launcher 不再依赖 Publish-PnP/app/ 子目录
+- README 重写贴合新结构,补充 ADMIN_PASSWORD 认证说明

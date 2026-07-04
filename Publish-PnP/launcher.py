@@ -312,16 +312,26 @@ def _download_source(root: Path) -> None:
             if repo_prefix is None:
                 raise RuntimeError("无法识别 GitHub archive 内部结构")
 
-            # 提取 Publish-PnP 目录下的文件到工作目录
-            public_prefix = repo_prefix + "Publish-PnP/"
+            # V0.1.8.2:从仓库根目录提取源码(不再依赖 Publish-PnP 子目录)。
+            # 提取 app/ config/ pyproject.toml 到工作目录。
+            # requirements-bundle.txt 从 Publish-PnP/ 提取到根目录。
             for member in zf.namelist():
-                if not member.startswith(public_prefix) or member == public_prefix:
+                if not member.startswith(repo_prefix) or member == repo_prefix:
                     continue
-                rel = member[len(public_prefix):]
+                rel = member[len(repo_prefix):]
+                # requirements-bundle.txt 特殊处理:从 Publish-PnP/ 提取到根
+                if rel == "Publish-PnP/requirements-bundle.txt":
+                    target = root / "requirements-bundle.txt"
+                    target.parent.mkdir(parents=True, exist_ok=True)
+                    target.write_bytes(zf.read(member))
+                    continue
+                # 跳过 Publish-PnP 自身的其他文件
+                if "/" in rel and rel.split("/", 1)[0] in ("Publish-PnP",):
+                    continue
                 # 只提取需要的目录和文件
                 keep = (
                     rel.startswith("app/") or rel.startswith("config/") or
-                    rel in ("pyproject.toml", "requirements-bundle.txt")
+                    rel == "pyproject.toml"
                 )
                 if not keep:
                     continue
