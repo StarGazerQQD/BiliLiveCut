@@ -166,7 +166,7 @@ def trend_to_dict(rec: TrendRecord) -> dict:
 
 
 def _dumps(obj: object) -> str:
-    """紧凑 JSON 序列化(中文不转义)。
+    """紧凑 JSON 序列化(中文不转义)(未使用,保留备用)。
 
     :param obj: 任意可序列化对象。
     :returns: JSON 字符串。

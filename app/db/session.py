@@ -99,8 +99,8 @@ def _migrate_add_columns() -> None:
                 try:
                     conn.exec_driver_sql(f"ALTER TABLE {table} ADD COLUMN {col} {sql_type}")
                     conn.commit()
-                except Exception:
-                    logger.warning("迁移失败(可能列已存在): {}.{} {}", table, col, sql_type)
+                except Exception as exc:
+                    logger.warning("迁移失败(可能列已存在或被并发修改): {}.{} {} ({})", table, col, sql_type, exc)
 
     # V0.1.6: 迁移旧 mode → 新 auto_* 开关(仅对尚未设置过开关的行生效)。
     _migrate_old_mode_to_switches()
@@ -136,6 +136,7 @@ def _migrate_old_mode_to_switches() -> None:
                 room.auto_approve = False
                 room.auto_upload = False
                 updated += 1
+                db.add(room)
             elif mode == RoomMode.SEMI:
                 room.auto_record = True
                 room.auto_analyze = True
@@ -143,6 +144,7 @@ def _migrate_old_mode_to_switches() -> None:
                 room.auto_approve = False
                 room.auto_upload = False
                 updated += 1
+                db.add(room)
             elif mode == RoomMode.AUTO:
                 room.auto_record = True
                 room.auto_analyze = True
@@ -150,7 +152,6 @@ def _migrate_old_mode_to_switches() -> None:
                 room.auto_approve = True
                 room.auto_upload = False  # 上传始终需人工确认
                 updated += 1
-            if updated > 0:
                 db.add(room)
         if updated:
             logger.info("已迁移 {} 个房间的旧 mode→新 auto_* 开关。", updated)

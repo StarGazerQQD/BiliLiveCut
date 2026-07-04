@@ -124,9 +124,10 @@ def _reschedule_daily(item: dict) -> None:
     from app.db.models import RecordingSchedule, utcnow
 
     try:
-        old_ts = utcnow()
-        # 取原时间的小时+分钟,放到明天同时间。
-        new_ts = old_ts.replace(hour=old_ts.hour, minute=old_ts.minute) + timedelta(days=1)
+        # 取原预约的时间(hour+minute),放到下一天。
+        from datetime import datetime, timedelta
+        old_dt = datetime.fromisoformat(item.get("scheduled_at", "")) if item.get("scheduled_at") else utcnow()
+        new_ts = utcnow().replace(hour=old_dt.hour, minute=old_dt.minute) + timedelta(days=1)
         with get_session() as db:
             sched = RecordingSchedule(
                 room_id=item["room_id"],
@@ -144,6 +145,83 @@ app = FastAPI(
     version=f"{__version_label__} ({__version__})",
     lifespan=lifespan,
 )
+
+
+# ── 认证中间件(V0.1.8.2) ──────────────────────────────────────────────────
+# 当 ADMIN_PASSWORD 被设置时,所有 /api/* /review/* /collection/* 路由要求 Basic Auth。
+# 页面浏览(GET /)和静态资源不受影响。
+# 请求头格式: Authorization: Basic <base64(admin:<密码>)>
+import base64 as _base64
+from starlette.middleware.base import BaseHTTPMiddleware as _BaseMiddleware
+from starlette.responses import JSONResponse as _JSONResponse
+from app.core.config import settings as _cfg
+
+_ADMIN_PASSWORD = _cfg.admin_password
+
+_AUTH_PROTECTED_PREFIXES = ("/api/", "/review/", "/collection/")
+_AUTH_WHITE_LIST = tuple()  # 未来可扩展公开端点
+
+
+class _AuthMiddleware(_BaseMiddleware):
+    """轻量 Basic Auth 中间件。只在 ADMIN_PASSWORD 设置后生效。"""
+
+    async def dispatch(self, request: Request, call_next):
+        if not _ADMIN_PASSWORD:
+            return await call_next(request)
+        path = request.url.path
+        if not any(path.startswith(p) for p in _AUTH_PROTECTED_PREFIXES):
+            return await call_next(request)
+        if path.startswith(_AUTH_WHITE_LIST):
+            return await call_next(request)
+        auth = request.headers.get("Authorization", "")
+        if not auth.startswith("Basic "):
+            return _JSONResponse({"detail": "需要认证"}, status_code=401, headers={"WWW-Authenticate": "Basic"})
+        try:
+            decoded = _base64.b64decode(auth[6:]).decode("utf-8", errors="ignore")
+            username, _, password = decoded.partition(":")
+            if password != _ADMIN_PASSWORD:
+                return _JSONResponse({"detail": "认证失败"}, status_code=403)
+        except Exception:
+            return _JSONResponse({"detail": "认证格式错误"}, status_code=400)
+        return await call_next(request)
+
+
+app.add_middleware(_AuthMiddleware)
+# ── 简易速率限制中间件(V0.1.8.2) ──────────────────────────────────────────
+# 使用内存计数器(非分布式),仅对写操作端点做基本保护。
+import time as _time
+
+_RATE_LIMIT = 30  # 每窗口最多 30 次请求
+_RATE_WINDOW = 60  # 窗口 60 秒
+_rate_buckets: dict[str, tuple[float, int]] = {}  # key → (window_start, count)
+
+
+class _RateLimitMiddleware(_BaseMiddleware):
+    """简易速率限制中间件(写操作端点)。"""
+
+    async def dispatch(self, request: Request, call_next):
+        if request.method in ("GET", "HEAD", "OPTIONS"):
+            return await call_next(request)
+        key = request.client.host if request.client else "unknown"
+        now = _time.time()
+        entry = _rate_buckets.get(key)
+        if entry is None or now - entry[0] > _RATE_WINDOW:
+            _rate_buckets[key] = (now, 1)
+        else:
+            count = entry[1] + 1
+            if count > _RATE_LIMIT:
+                return _JSONResponse(
+                    {"detail": "请求过于频繁,请稍后重试。"}, status_code=429,
+                )
+            _rate_buckets[key] = (entry[0], count)
+        # 定期清理过期桶(每 100 次触发一次)。
+        if sum(1 for _ in _rate_buckets) > 500:
+            _rate_buckets.clear()
+        return await call_next(request)
+
+
+app.add_middleware(_RateLimitMiddleware)
+
 app.include_router(api_router)
 app.include_router(review_router)
 app.include_router(collection_router)

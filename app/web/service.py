@@ -155,7 +155,7 @@ class RecorderManager:
         if pipeline:
             from app.pipeline.orchestrator import make_pipeline_callback
 
-            on_segment = make_pipeline_callback(produce=produce)
+            on_segment = make_pipeline_callback(produce=produce, room_id=db_id)
 
         recorder = Recorder(
             room_id=room_id,

@@ -28,7 +28,7 @@ class RenderCollectionRequest(BaseModel):
 
 
 _TEMPLATES = Jinja2Templates(
-    directory=str(Path(__file__).resolve().parent.parent / "web" / "templates")
+    directory=str(Path(__file__).resolve().parent.parent / "templates")
 )
 
 

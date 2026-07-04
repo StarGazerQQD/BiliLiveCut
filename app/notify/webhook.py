@@ -170,13 +170,15 @@ def send_email(subject: str, body: str) -> bool:
     msg["To"] = settings.smtp_to
     msg["Date"] = datetime.now(UTC).strftime("%a, %d %b %Y %H:%M:%S +0000")
 
+    server = None
     try:
         server = smtplib.SMTP_SSL(settings.smtp_host, settings.smtp_port, timeout=10)
         try:
             server.login(settings.smtp_user, settings.smtp_password)
             server.send_message(msg)
         finally:
-            server.quit()
+            if server is not None:
+                server.quit()
         logger.info("邮件通知已发送: {}", subject)
         return True
     except Exception as exc:
@@ -251,4 +253,20 @@ def notify_task_failed(task_id: int, stage: str, error: str) -> None:
         f"任务失败 #{task_id}",
         f"**任务 #{task_id}** 在阶段 `{stage}` 永久失败。\n"
         f"- 错误: {error}",
+    )
+
+
+def notify_upload_complete(clip_id: int, title: str, remote_id: str | None = None) -> None:
+    """投稿完成通知。
+
+    :param clip_id: 成品 ID。
+    :param title: 视频标题。
+    :param remote_id: 远程平台 ID(如 BV 号)。
+    """
+    if not settings.notify_on_upload:
+        return
+    extra = f"\n- 稿件号: {remote_id}" if remote_id else ""
+    notify(
+        f"投稿完成 #{clip_id}",
+        f"**{title or '未命名切片'}** 已成功投稿。{extra}",
     )

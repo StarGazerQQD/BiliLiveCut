@@ -32,6 +32,7 @@ from app.db.models import (
     HighlightTopic,
     Topic,
     TopicStatus,
+    utcnow,
 )
 from app.db.session import get_session
 
@@ -458,7 +459,7 @@ def update_topic(topic_id: int, **kwargs) -> bool:
                 t.entities_json = json.dumps(v, ensure_ascii=False) if isinstance(v, list) else v
             elif hasattr(t, k):
                 setattr(t, k, v)
-        t.updated_at = __import__("datetime").datetime.now(__import__("datetime").UTC)
+        t.updated_at = utcnow()
         db.add(t)
     return True
 

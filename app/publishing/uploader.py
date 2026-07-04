@@ -218,10 +218,12 @@ class BiliupUploader(Uploader):
                 message="未配置 BILIUP_UPLOAD_CMD,biliup 上传未执行(合规风险自负)。",
             )
 
+        # V0.1.8.2:使用 shlex.quote 包裹参数,防止命令注入。
+        import shlex as _shlex
         cmd_str = template.format(
-            file=clip["file_path"],
-            title=(clip.get("title") or "").replace('"', "'"),
-            desc=(clip.get("description") or "").replace('"', "'"),
+            file=_shlex.quote(str(clip["file_path"])),
+            title=_sanitize_biliup(clip.get("title") or ""),
+            desc=_sanitize_biliup(clip.get("description") or ""),
         )
         try:
             args = shlex.split(cmd_str, posix=False)
@@ -239,6 +241,12 @@ class BiliupUploader(Uploader):
         # 尽力从输出解析稿件号(BV 号)。
         remote_id = _parse_bv(out) or _parse_bv(err)
         return UploadResult(success=True, remote_id=remote_id, message="biliup 上传完成。")
+
+
+def _sanitize_biliup(value: str) -> str:
+    """对 biliup 命令行参数做安全清洗:仅保留安全字符。"""
+    import re as _re
+    return _re.sub(r"[^\w\u4e00-\u9fff\u3000-\u303f\uff00-\uffef .,!?()（）《》\[\]【】\-+#&;:/@]", "", value)
 
 
 def _parse_bv(text: str) -> str | None:

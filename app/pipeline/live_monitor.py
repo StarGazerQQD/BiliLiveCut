@@ -98,15 +98,22 @@ class LiveMonitor:
                     LiveRoom.room_id.is_not(None),
                 )
             ).all()
+            # V0.1.8.2: 在 session 内提取标量属性,避免 session 关闭后懒加载触发 DetachedInstanceError。
+            room_info: list[dict[str, object]] = [
+                {"db_id": r.id, "room_id": r.room_id, "auto_analyze": r.auto_analyze, "auto_render": r.auto_render}
+                for r in rooms
+            ]
 
         from app.web.service import recorder_manager
 
         async with BilibiliLiveClient(cookie=get_bilibili_cookie()) as client:
-            for room in rooms:
+            for info in room_info:
                 if self._stop.is_set():
                     return
-                db_id = room.id
-                room_id = room.room_id
+                db_id: int = info["db_id"]
+                room_id: int = info["room_id"]
+                auto_analyze: bool = info["auto_analyze"]
+                auto_render: bool = info["auto_render"]
                 self._last_check_at[db_id] = asyncio.get_event_loop().time()
 
                 if db_id in self._starting:
@@ -115,7 +122,7 @@ class LiveMonitor:
                 try:
                     info = await client.get_room_info(str(room_id))
                 except Exception as exc:
-                    logger.debug("房间 {} 状态查询失败: {}", room_id, exc)
+                    logger.warning("房间 {} 状态查询失败: {}", room_id, exc)
                     continue
 
                 is_live = info.live_status == 1
@@ -124,7 +131,7 @@ class LiveMonitor:
                 if is_live and not is_recording:
                     # 开播,启动录制。
                     self._offline_counts[db_id] = 0
-                    await self._start_recording(db_id, room)
+                    await self._start_recording(db_id, auto_analyze, auto_render)
                 elif is_live and is_recording:
                     # 持续直播,重置离线计数。
                     self._offline_counts[db_id] = 0
@@ -153,7 +160,7 @@ class LiveMonitor:
                         self._offline_counts.pop(db_id, None)
                         self._started_at.pop(db_id, None)
                         # 异步延迟停止,不阻塞其他房间监控。
-                        asyncio.create_task(_delayed_stop(db_id))
+                        asyncio.create_task(self._delayed_stop(db_id))
                 elif not is_live and not is_recording:
                     # 未开播也未录制,重置状态。
                     self._offline_counts.pop(db_id, None)
@@ -166,17 +173,22 @@ class LiveMonitor:
         if not self._stop.is_set():
             await recorder_manager.stop(db_id)
 
-    async def _start_recording(self, db_id: int, room: LiveRoom) -> None:
-        """启动录制。"""
+    async def _start_recording(self, db_id: int, auto_analyze: bool, auto_render: bool) -> None:
+        """启动录制。
+
+        :param db_id: 直播间数据库 ID。
+        :param auto_analyze: 是否启用自动分析。
+        :param auto_render: 是否启用自动渲染。
+        """
         from app.web.service import recorder_manager
 
         self._starting.add(db_id)
         try:
-            logger.info("检测到开播,自动启动录制 room_id={} db_id={}", room.room_id, db_id)
+            logger.info("检测到开播,自动启动录制 db_id={}", db_id)
             await recorder_manager.start(
                 db_id,
-                pipeline=room.auto_analyze,
-                produce=room.auto_render,
+                pipeline=auto_analyze,
+                produce=auto_render,
             )
             self._started_at[db_id] = asyncio.get_event_loop().time()
             # 从 RecordingSession 获取重连次数。

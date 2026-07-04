@@ -25,7 +25,7 @@ from app.web import service
 review_router = APIRouter(prefix="/review", tags=["review"])
 
 _TEMPLATES = Jinja2Templates(
-    directory=str(Path(__file__).resolve().parent.parent / "web" / "templates")
+    directory=str(Path(__file__).resolve().parent.parent / "templates")
 )
 
 
@@ -100,40 +100,43 @@ def get_review_data(candidate_id: int) -> dict:
         # 弹幕密度数据:按 5 秒分桶。
         start = c.start_ts
         end = c.end_ts
-        margin = 30  # 前后各 30 秒的上下文。
-        danmaku_window_start = start.replace(tzinfo=None) if hasattr(start, "replace") and start.tzinfo else start
-        # Only import timedelta once.
-        from datetime import timedelta
+        if start is None or end is None:
+            danmaku_buckets = []
+        else:
+            margin = 30  # 前后各 30 秒的上下文。
+            danmaku_window_start = start.replace(tzinfo=None) if hasattr(start, "replace") and start.tzinfo else start
+            # Only import timedelta once.
+            from datetime import timedelta
 
-        ctx_start = danmaku_window_start - timedelta(seconds=margin)
-        ctx_end = danmaku_window_start + (end - start) + timedelta(seconds=margin)
-        danmaku_buckets: list[dict] = []
-        if session:
-            danmaku_rows = db.exec(
-                _sql_select(Danmaku.ts).where(
-                    Danmaku.session_id == c.session_id,
-                    Danmaku.ts >= ctx_start.replace(tzinfo=None) if hasattr(ctx_start, "tzinfo") and ctx_start.tzinfo else ctx_start,
-                    Danmaku.ts <= ctx_end.replace(tzinfo=None) if hasattr(ctx_end, "tzinfo") and ctx_end.tzinfo else ctx_end,
-                    Danmaku.msg_type == "danmaku",
-                ).order_by(Danmaku.ts.asc())
-            ).all()
+            ctx_start = danmaku_window_start - timedelta(seconds=margin)
+            ctx_end = danmaku_window_start + (end - start) + timedelta(seconds=margin)
+            danmaku_buckets: list[dict] = []
+            if session:
+                danmaku_rows = db.exec(
+                    _sql_select(Danmaku.ts).where(
+                        Danmaku.session_id == c.session_id,
+                        Danmaku.ts >= ctx_start.replace(tzinfo=None) if hasattr(ctx_start, "tzinfo") and ctx_start.tzinfo else ctx_start,
+                        Danmaku.ts <= ctx_end.replace(tzinfo=None) if hasattr(ctx_end, "tzinfo") and ctx_end.tzinfo else ctx_end,
+                        Danmaku.msg_type == "danmaku",
+                    ).order_by(Danmaku.ts.asc())
+                ).all()
 
-            bucket_s = 5
-            t0 = ctx_start
-            total_s = (ctx_end - ctx_start).total_seconds()
-            num_buckets = max(1, int(total_s / bucket_s))
-            counts = [0] * num_buckets
-            t0_ts = int(t0.timestamp()) if hasattr(t0, "timestamp") else 0
-            for (ts,) in danmaku_rows:
-                ts_ts = int(ts.timestamp()) if hasattr(ts, "timestamp") else 0
-                idx = (ts_ts - t0_ts) // bucket_s
-                if 0 <= idx < num_buckets:
-                    counts[idx] += 1
-            for i, cnt in enumerate(counts):
-                danmaku_buckets.append({
-                    "t": round(t0_ts + i * bucket_s, 1),
-                    "count": cnt,
-                })
+                bucket_s = 5
+                t0 = ctx_start
+                total_s = (ctx_end - ctx_start).total_seconds()
+                num_buckets = max(1, int(total_s / bucket_s))
+                counts = [0] * num_buckets
+                t0_ts = int(t0.timestamp()) if hasattr(t0, "timestamp") else 0
+                for (ts,) in danmaku_rows:
+                    ts_ts = int(ts.timestamp()) if hasattr(ts, "timestamp") else 0
+                    idx = (ts_ts - t0_ts) // bucket_s
+                    if 0 <= idx < num_buckets:
+                        counts[idx] += 1
+                for i, cnt in enumerate(counts):
+                    danmaku_buckets.append({
+                        "t": round(t0_ts + i * bucket_s, 1),
+                        "count": cnt,
+                    })
 
         # 评分解释。
         import json as _json2

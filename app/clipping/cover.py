@@ -88,8 +88,8 @@ def extract_cover_candidates(
 
         # 若是自动创建的临时目录,将 Top 候选复制到持久化位置并清理临时目录。
         if own_tmp and result:
-            from app.core.paths import covers_dir
-            persistent = covers_dir()
+            from app.core.paths import clips_dir
+            persistent = clips_dir() / "covers"
             persistent.mkdir(parents=True, exist_ok=True)
             for c in result:
                 src = Path(c["file_path"])

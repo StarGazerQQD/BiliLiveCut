@@ -74,12 +74,11 @@ class LLMProvider:
     def public_dict(self) -> dict:
         """序列化为对外视图(key 掩码,不泄露明文)。
 
-        :returns: 字典(含 ``api_key_set`` / ``api_key_hint``)。
+        :returns: 字典(含 ``api_key_set`` 标志)。
         """
         d = self.to_dict()
         d.pop("api_key")
         d["api_key_set"] = bool(self.api_key)
-        d["api_key_hint"] = f"****{self.api_key[-4:]}" if self.api_key else ""
         return d
 
 

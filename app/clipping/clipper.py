@@ -319,8 +319,10 @@ def _render_text_card(
         "-y", str(out_path),
     ]
     try:
-        subprocess.run(cmd, capture_output=True, check=True)
+        subprocess.run(cmd, capture_output=True, check=True, timeout=60)
         logger.info("标题卡已生成: {} ({}s)", out_path.name, duration_s)
+    except subprocess.TimeoutExpired:
+        logger.error("标题卡渲染超时(60s): {}", out_path.name)
     except subprocess.CalledProcessError as exc:
         logger.warning("标题卡渲染失败: {}", exc.stderr.decode("utf-8", errors="ignore"))
     finally:
@@ -502,6 +504,10 @@ def produce_clip(candidate_id: int, options: ClipOptions | None = None) -> Final
 
         _run_ffmpeg_clip(concat_list, out_path, cut_offset, duration, options, srt_path)
 
+        # V0.1.8.2: 提前保存临时文件内容,供 with 块外部重建使用(临时目录退出后会清理)。
+        _concat_content = concat_list.read_text(encoding="utf-8")
+        _srt_content = srt_path.read_text(encoding="utf-8") if srt_path else None
+
     real_duration, width, height = probe_media(str(out_path))
     try:
         _grab_cover(out_path, cover_path, min(peak_rel, max(0.5, real_duration / 2)))
@@ -542,8 +548,16 @@ def produce_clip(candidate_id: int, options: ClipOptions | None = None) -> Final
     # V0.1.8: 生成多版本 ClipVariant 记录。
     _create_clip_variants(clip, options, segments, cut_offset)
 
+    # V0.1.8.2: 在持久化目录中重建 concat 清单和 SRT,供变体渲染使用。
+    _recon_dir = Path(clip.file_path).parent
+    _recon_concat = _recon_dir / f"clip_{candidate_id}_concat.txt"
+    _recon_concat.write_text(_concat_content, encoding="utf-8")
+    _recon_srt: Path | None = None
+    if _srt_content:
+        _recon_srt = _recon_dir / f"clip_{candidate_id}.srt"
+        _recon_srt.write_text(_srt_content, encoding="utf-8")
     # V0.1.8 P1.1: 渲染多版本出片(归档版+压制版+互补字幕版)。
-    _render_variants(clip, options, concat_list, cut_offset, duration, srt_path)
+    _render_variants(clip, options, _recon_concat, cut_offset, duration, _recon_srt)
 
     # V0.1.8 P2:切片完成通知。
     from app.notify.webhook import notify_clip_complete

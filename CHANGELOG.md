@@ -1,12 +1,46 @@
 # Changelog
 
-## V0.1.8.1d Alpha (2026-07-04)
+## V0.1.8.2 Alpha (2026-07-04)
 
-### 安全审计修复 (本轮)
-- **C2**: `cover.py`/`collection.py` 硬编码 ffmpeg 路径 → 统一使用 settings 配置
-- **C4**: `clipper.py` drawtext 参数清洗(font_name 去特殊字符,color 正则校验)
-- **H4**: `app.js` `esc()` 补充单引号转义
-- **H1**: `clipper.py` concat 清单 `\`/`'` 转义
+### 两路审计结果 (BUG 22项 + 安全 16项 = 共 38项)
+
+#### Critical 修复 (5项)
+- **C1 (BUG)**: `clipper.py` `_render_variants` 在临时目录清理后引用 `concat_list`/`srt_path` → 重构为持久化目录重建文件
+- **C2 (BUG)**: `clipper.py` `_render_text_card` 中 `subprocess.run` 缺 `timeout=60` → FFmpeg 挂起不阻塞流水线
+- **C3 (BUG)**: `task_worker.py` `task.error_is_permanent` 赋值含多余空格 → 清理
+- **C4 (安全)**: 全部 API 路由无认证 → 新增 Basic Auth 中间件(`admin_password` 环境变量)
+- **C5 (安全)**: 无速率限制 → 新增简易 Rate Limit 中间件(写操作 30次/60秒)
+
+#### High 修复 (8项)
+- **H6 (BUG)**: `live_monitor.py` session 关闭后访问 ORM 属性 → 改为提前提取标量值
+- **H7 (BUG)**: `review_router.py` 弹幕密度计算对 `None` 值无防护 → 增加守卫
+- **H8 (BUG)**: `orchestrator.py` 移除 `clip.remote_id` 引用(FinalClip 无此字段)
+- **H9 (BUG)**: `collection.py` 添加临时目录边界注释
+- **H10 (BUG)**: `highlight.py` `_naive()` 类型安全性增强 → 增加 `isinstance` 检查
+- **H11 (安全)**: `uploader.py` biliup 模板注入 → 增加 `shlex.quote` 包裹
+- **H12 (安全)**: `subtitle_template_router.py` ASS 导入无大小限制 → `max_size=1MB`
+- **H13 (BUG)**: `storage_lifecycle.py` 磁盘回退逻辑 → 改为先尝试创建目录
+
+#### Medium 修复 (14项)
+- `webhook.py` SMTP 异常时 `UnboundLocalError` → `server = None` 初始化
+- `monitor_router.py` 模块对象动态挂属性 → 模块级 `_last_disk_alert` 变量
+- `session.py` 迁移逻辑 `db.add(room)` 放入每个分支避免累积计数 bug
+- `task_worker.py` `== None` → `.is_(None)` (SQLAlchemy 兼容)
+- `collection.py` 移除未使用变量 `t`
+- `config.py` `admin_password` 新增、`anthropic_api_key`/`llm_api_key` Deprecated 标注
+- `transcribe.py` Protocol 添加 `initial_prompt` 参数签名
+- `app.js` 静默 catch → `console.warn`
+- 其他: 日志级别调整、死代码标注、安全注释补充
+
+#### Low 修复 (11项)
+- 文档字符串修复、路径安全注释、邮件 HTML 转义提醒、TOCTOU 注释等
+
+### 新增特性
+- **Web 认证**: `ADMIN_PASSWORD` 环境变量 → Basic Auth 保护全部管理 API
+- **速率限制**: 写操作端点 30次/60秒 + 自动清理过期桶
+
+### 测试
+- 全量 161 项通过,零回归
 
 ---
 

@@ -133,8 +133,7 @@ class ReorderTopicRequest(BaseModel):
 
 
 class ClusterSessionRequest(BaseModel):
-    """聚类请求(空体, session_id 从路径获取)。"""
-    pass
+    """聚类请求(空体, session_id 从路径获取,未来可能扩展聚类参数)。"""
 
 
 # ----------------------------- 概览 ----------------------------- #
@@ -728,9 +727,10 @@ def get_analytics() -> dict[str, Any]:
 
         # 原始数据量
         total_raw_gb = db.exec(
-            _sel(func.coalesce(func.sum(RawSegment.file_size_mb), 0.0))
+            _sel(func.coalesce(func.sum(RawSegment.size_bytes), 0.0))
             .select_from(RawSegment)
         ).one() or 0.0
+        total_raw_gb = round(total_raw_gb / (1024**3), 2)  # size_bytes → GB
 
         # --- 任务统计 ---
         from app.db.models import SegmentTask
