@@ -105,13 +105,7 @@ def text_similarity(text_a: str, text_b: str) -> float:
         return result
     wa = idf_weight(freq_a)
     wb = idf_weight(freq_b)
-    intersection = set(wa.keys()) & set(wb.keys())
-    dot = sum(wa[k] * wb[k] for k in intersection)
-    na = math.sqrt(sum(v ** 2 for v in wa.values()))
-    nb = math.sqrt(sum(v ** 2 for v in wb.values()))
-    if na == 0 or nb == 0:
-        return 0.0
-    return min(dot / (na * nb), 1.0)
+    return fast_cosine_similarity(wa, wb)
 
 
 def keyword_overlap(keywords_a: list[str], keywords_b: list[str]) -> float:

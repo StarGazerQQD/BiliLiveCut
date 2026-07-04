@@ -1,5 +1,26 @@
 # Changelog
 
+## V0.1.9.1 Alpha (2026-07-04)
+
+### Python-C 中间件审计修复
+
+全量审计 C 扩展与 Python 分派层的接口一致性,修复 3 项问题:
+
+#### BUG 修复
+
+| 文件 | 问题 | 修复 |
+|------|------|------|
+| `topic_cluster.py:108-114` | `text_similarity` 使用旧内联余弦相似度(`set()` 求交 + `sum` + `math.sqrt`),未接入 `fast_cosine_similarity` 加速层 | 替换为 `fast_cosine_similarity(wa, wb)` |
+| `_c_speedups.c:291` | `fast_char_bigrams` 在构造中文 bigram 后只 `p++`(字节级)而非 `p += first_len`(字符级),导致在 UTF-8 continuation byte 上构造非法字符串 | 改为 `p += first_len` |
+
+#### 代码整洁
+
+| 文件 | 问题 | 修复 |
+|------|------|------|
+| `speedups.py:10` | `from typing import Any` 未使用 | 移除 |
+
+---
+
 ## V0.1.9 Alpha (2026-07-04)
 
 ### C 语言加速模块 — 核心热点 20-80× 性能提升
