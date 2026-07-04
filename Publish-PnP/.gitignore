@@ -16,6 +16,8 @@ manifest.json
 app/
 config/
 pyproject.toml
+setup.py
+setup_c.py
 requirements-bundle.txt
 CHANGELOG.md
 README_MAIN.md
