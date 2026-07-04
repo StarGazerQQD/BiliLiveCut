@@ -204,16 +204,52 @@ window.loadMLStatus = async () => {
   try {
     const s = await api("GET", "/api/ml/status");
     const el = $("#ml-status");
-    if (!el) return;
-    if (s.model_available) {
-      const m = s.last_metrics || {};
-      el.textContent = `模型就绪 · 迭代#${s.iteration} · 样本${s.n_total_samples}(正${s.n_total_positive}) · AUC:${(m.auc||0).toFixed(3)}`;
-      el.style.color = "var(--green)";
-    } else {
-      el.textContent = "模型未训练 · 请审批候选后点击「自学习」";
-      el.style.color = "var(--muted)";
+    if (el) {
+      if (s.model_available) {
+        const m = s.last_metrics || {};
+        el.textContent = `模型就绪 · 迭代#${s.iteration} · 样本${s.n_total_samples}(正${s.n_total_positive}) · AUC:${(m.auc||0).toFixed(3)}`;
+        el.style.color = "var(--green)";
+      } else {
+        el.textContent = "模型未训练 · 请审批候选后点击「自学习」";
+        el.style.color = "var(--muted)";
+      }
     }
+    // Dashboard ML 卡片
+    const dashEl = $("#ml-dash-status");
+    if (dashEl) {
+      if (s.model_available) {
+        const m = s.last_metrics || {};
+        dashEl.textContent = `✅ 模型就绪 v${s.iteration} · AUC=${(m.auc||0).toFixed(3)} F1=${(m.f1||0).toFixed(3)} · ${s.n_total_samples}样本`;
+        dashEl.style.color = "var(--green)";
+      } else {
+        dashEl.textContent = "⚠ 尚未训练 · 请在直播间审批候选后点击「触发自学习」按钮或使用 CLI: python -m app.cli ml-learn";
+        dashEl.style.color = "var(--yellow)";
+      }
+    }
+    // 版本列表
+    try {
+      const versions = await api("GET", "/api/ml/versions");
+      const vEl = $("#ml-version-list");
+      if (vEl && versions.length) {
+        vEl.innerHTML = versions.map(v => {
+          const badge = v.is_champion ? "🏆" : (v.is_shadow ? "👁 Shadow" : "📦");
+          const m = v.metrics || {};
+          return `<div style="padding:2px 0">${badge} v${v.version} AUC:${(m.auc||0).toFixed(3)} F1:${(m.f1||0).toFixed(3)} · ${v.n_samples}样本 · ${(v.created_at||"").substr(0,16)}</div>`;
+        }).join("");
+      }
+    } catch (e) {}
   } catch (e) {}
+};
+
+window.triggerMLAudit = async () => {
+  try {
+    const r = await api("POST", "/api/ml/audit");
+    if (r.drifted) {
+      toast(`⚠ 漂移告警! PSI=${r.psi} 偏移特征:${(r.shifted_features||[]).length}个`);
+    } else {
+      toast(`✓ 模型正常 PSI=${r.psi}`);
+    }
+  } catch (e) { toast("审计失败:" + e.message); }
 };
 
 // ----------------------------- 渲染:录制状态 ----------------------------- //

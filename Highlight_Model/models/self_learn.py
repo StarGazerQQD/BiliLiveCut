@@ -95,6 +95,18 @@ class SelfLearnEngine:
             _save_result(result)
             return result
 
+        # 数据质量检查
+        try:
+            from Highlight_Model.dataset.guard import DataQualityGuard
+            guard = DataQualityGuard()
+            qr = guard.check_feedback(records)
+            if qr.conflicts > len(records) * 0.1:  # >10% 冲突 → 警告
+                logger.warning("数据质量: 标签冲突=%d/%d", qr.conflicts, len(records))
+            for issue in qr.issues:
+                logger.warning("数据质量问题: %s", issue)
+        except Exception:
+            pass
+
         # 2) 提取特征
         from Highlight_Model.feature_extractor.base import FeatureExtractor
         extractor = FeatureExtractor()
@@ -149,9 +161,36 @@ class SelfLearnEngine:
             _save_result(result)
             return result
 
-        # 6) 保存模型 + 元数据
+        # 6) 保存模型 + 元数据 + 注册版本
         _MODEL_DIR.mkdir(parents=True, exist_ok=True)
         _save_model_xgb(model, _MODEL_PATH)
+
+        # 注册到版本管理系统
+        try:
+            from Highlight_Model.models.registry import ModelRegistry
+            registry = ModelRegistry()
+            registry.register(str(_MODEL_PATH), metrics, len(ids), int(sum(y)),
+                              list(extractor.feature_names))
+            # 如果启用 shadow 模式，新训练版本自动设为 shadow 候选
+            try:
+                from app.core.config import settings as _s
+                if _s.ml_shadow_mode and registry.champion is not None:
+                    newest = registry.versions[0]
+                    if newest.version != registry.champion.version:
+                        registry.set_shadow(newest.version)
+            except Exception:
+                pass
+        except Exception as exc:
+            logger.debug("模型注册表更新失败(非关键): %s", exc)
+
+        # 设置漂移基线（首次训练或无基线时）
+        try:
+            from Highlight_Model.models.drift import PredictionDriftDetector
+            drift = PredictionDriftDetector()
+            y_pred = model.predict(xgb.DMatrix(X)) if self.model_type == "xgboost" else model.predict(X)
+            drift.set_baseline(y_pred, X, list(extractor.feature_names))
+        except Exception:
+            pass
 
         # 计算新旧样本增量
         prev_sample_ids = set(self._state.get("trained_sample_ids", []))

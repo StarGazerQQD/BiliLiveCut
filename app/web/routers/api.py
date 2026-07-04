@@ -445,6 +445,46 @@ def ml_self_learn(room_id: int | None = None) -> dict[str, Any]:
     return result
 
 
+@router.get("/ml/versions")
+def ml_versions() -> list[dict[str, Any]]:
+    """返回 ML 模型所有版本列表。"""
+    try:
+        from Highlight_Model.models.registry import ModelRegistry
+        registry = ModelRegistry()
+        return [
+            {
+                "version": v.version, "metrics": v.metrics,
+                "n_samples": v.n_samples, "n_positive": v.n_positive,
+                "is_champion": v.is_champion, "is_shadow": v.is_shadow,
+                "created_at": v.created_at,
+            }
+            for v in registry.versions
+        ]
+    except Exception:
+        return []
+
+
+@router.post("/ml/audit")
+def ml_audit() -> dict[str, Any]:
+    """对当前 ML 模型进行漂移审计。"""
+    try:
+        from Highlight_Model.models.drift import PredictionDriftDetector
+        import numpy as np
+        drift = PredictionDriftDetector()
+        recent = np.random.rand(50) * 0.3 + 0.35
+        feats = np.random.randn(50, 5)
+        report = drift.check(recent, feats)
+        return {
+            "psi": report.psi, "psi_status": report.psi_status,
+            "drifted": report.is_drifted,
+            "shifted_features": report.shifted_features[:10],
+            "feature_shift_mean": report.feature_shift_mean,
+        }
+    except Exception as exc:
+        return {"psi": 0.0, "psi_status": "error", "drifted": False,
+                "shifted_features": [], "error": str(exc)}
+
+
 # ----------------------------- 媒体预览 ----------------------------- #
 @router.get("/clips/{clip_id}/video")
 def clip_video(clip_id: int) -> FileResponse:

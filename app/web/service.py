@@ -312,6 +312,7 @@ def set_candidate_status(candidate_id: int, status: str) -> None:
         db.add(cand)
 
     # V0.1.2:记录阈值自学习反馈。
+    # V0.1.9:同时触发 ML 模型自动重训练。
     if status in (CandidateStatus.APPROVED, CandidateStatus.REJECTED):
         try:
             from app.analysis import threshold_learning as tl
@@ -321,10 +322,71 @@ def set_candidate_status(candidate_id: int, status: str) -> None:
                 session = db.get(RecordingSession, cand.session_id)
                 if session is not None:
                     tl.record_feedback(session.room_id, candidate_id, action)
-                    # 尝试自动调整阈值。
                     tl.apply_threshold_if_changed(session.room_id)
         except Exception as exc:  # noqa: BLE001
             logger.warning("阈值自学习反馈记录失败: {}", exc)
+
+        # V0.1.9: 自动触发 ML 模型重训练
+        _maybe_auto_ml_learn()
+
+
+# --------------------------------------------------------------------------- #
+# V0.1.9: 自动 ML 重训练调度
+# --------------------------------------------------------------------------- #
+_last_ml_learn_at: float = 0.0  # epoch 秒
+
+
+def _maybe_auto_ml_learn() -> None:
+    """如果满足条件（冷却时间+新样本足够），在后台线程自动触发 ML 重训练。"""
+    global _last_ml_learn_at
+    try:
+        from app.core.config import settings as _s
+        if not _s.ml_auto_learn:
+            return
+        import time
+        cooldown_s = _s.ml_auto_learn_cooldown_min * 60
+        if time.monotonic() - _last_ml_learn_at < cooldown_s:
+            return
+
+        # 检查是否有足够新样本
+        from Highlight_Model.models.self_learn import SelfLearnEngine
+        engine = SelfLearnEngine()
+        state = engine._state
+        prev_ids = set(state.get("trained_sample_ids", []))
+        # 从反馈表统计当前总样本数
+        try:
+            from app.db.models import ThresholdFeedback
+            from app.db.session import get_session
+            from sqlmodel import select, func
+            with get_session() as db:
+                total = db.scalar(select(func.count()).select_from(ThresholdFeedback)) or 0
+            n_new = total - len(prev_ids)
+            if n_new < _s.ml_min_new_samples:
+                return
+        except Exception:
+            pass
+
+        _last_ml_learn_at = time.monotonic()
+        import threading
+        t = threading.Thread(target=_run_auto_learn, daemon=True)
+        t.start()
+    except Exception:
+        pass
+
+
+def _run_auto_learn() -> None:
+    try:
+        from Highlight_Model.models.self_learn import SelfLearnEngine
+        from loguru import logger as _log
+        engine = SelfLearnEngine()
+        result = engine.run()
+        if result.success:
+            _log.info("✅ 自动重训练完成 迭代#{} AUC={:.3f}", result.iteration, result.metrics.get("auc", 0))
+        else:
+            _log.info("自动重训练跳过: {}", result.error)
+    except Exception as exc:
+        from loguru import logger as _log
+        _log.warning("自动重训练失败: {}", exc)
 
 
 async def approve_candidate(candidate_id: int) -> int | None:

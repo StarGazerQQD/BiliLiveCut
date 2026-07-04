@@ -1,10 +1,13 @@
-"""高光判断:多维规则打分 + 可选 LLM 复核 + 边界吸附 + 查重 + 候选入库。
+"""高光判断:多维规则打分 + 可选 LLM 复核 + ML 模型(可选) + 边界吸附 + 查重 + 候选入库。
 
 成本分层(对应"降低 AI 成本"):
 
 1. 先用几乎零成本的规则特征(音量/关键词/语速/弹幕)算出 ``rule_score``;
 2. 仅当 ``rule_score`` 超过初筛阈值,才花钱调用 LLM 复核;
 3. 综合分超过房间阈值才写入候选池,并做区间去重。
+
+V0.1.9: 新增 ML 高光模型支持。当房间启用 ``ml_highlight_enabled`` 且模型文件存在时,
+优先使用本地 XGBoost 模型预测替代规则+LLM 管线。Shadow 模式下同时跑规则+ML 双轨并记录对比。
 
 边界处理(对应"避免切在奇怪位置"):用音频静音区间把"爆点±留白"的起止点
 吸附到最近的自然停顿。
@@ -296,6 +299,54 @@ def score_segment(segment_id: int) -> HighlightCandidate | None:
         raise ValueError(f"片段尚未转写: id={segment_id}")
 
     words = json.loads(words_json) if words_json else []
+
+    # ---- V0.1.9: ML 高光模型 (可选) ----
+    use_ml = (room is not None and bool(room.ml_highlight_enabled)
+              and _ml_model_available())
+    ml_shadow = use_ml and settings.ml_shadow_mode
+    ml_score: float | None = None
+    ml_used_for_decision = False
+
+    if use_ml:
+        try:
+            ml_score = _ml_predict(segment_id)
+            if ml_shadow:
+                logger.info("Shadow模式: segment={} ML={:.3f} (规则管线继续运行以供对比)",
+                            segment_id, ml_score)
+            else:
+                logger.info("ML模型预测: segment={} score={:.3f}", segment_id, ml_score)
+        except Exception as exc:
+            logger.warning("ML预测失败,回退规则管线: {}", exc)
+
+    # 非 Shadow 模式下 ML 可用 → 直接用 ML 结果替代规则+LLM
+    if use_ml and not ml_shadow and ml_score is not None:
+        highlight_score = float(ml_score)
+        reason = f"ML模型预测 (score={highlight_score:.3f})"
+        rule_score = 0.0
+        llm_score = 0.0
+        ml_used_for_decision = True
+        feats = audio_mod.analyze_audio(file_path)  # 仍需音频特征用于边界吸附
+        kw_hits: list[str] = []
+        logger.info("片段 {} 使用ML模型直接判定 score={:.3f}", segment_id, highlight_score)
+        # 跳到阈值判断
+        if highlight_score < threshold:
+            _mark_scored(segment_id)
+            return None
+        # 跳到候选入库
+        peak_off = feats.peak_offset()
+        start_off = peak_off - cfg.pre_roll_s
+        end_off = peak_off + cfg.post_roll_s
+        start_off = audio_mod.snap_to_silence(start_off, feats.silences)
+        end_off = audio_mod.snap_to_silence(end_off, feats.silences)
+        peak_ts = seg_start_ts + timedelta(seconds=peak_off)
+        start_ts = seg_start_ts + timedelta(seconds=start_off)
+        end_ts = seg_start_ts + timedelta(seconds=end_off)
+        if _is_duplicate(session_id, (start_ts.timestamp(), end_ts.timestamp()), cfg.iou_threshold):
+            _mark_scored(segment_id)
+            return None
+        _ml_create_candidate(segment_id, session_id, highlight_score, reason, peak_ts, start_ts, end_ts,
+                             threshold, room)
+        return
 
     # ---- 1) 规则特征 ----
     feats = audio_mod.analyze_audio(file_path)
@@ -721,3 +772,62 @@ def _mark_scored(segment_id: int) -> None:
         if seg is not None and seg.status != SegmentStatus.SCORED:
             seg.status = SegmentStatus.SCORED
             db.add(seg)
+
+
+# --------------------------------------------------------------------------- #
+# V0.1.9: ML 高光模型集成
+# --------------------------------------------------------------------------- #
+_ml_inference = None  # 模块级懒加载单例
+
+
+def _ml_model_available() -> bool:
+    """检查 ML 模型文件是否存在。"""
+    from pathlib import Path as _Path
+    return _Path("storage/models/highlight_model.pkl").exists()
+
+
+def _ml_predict(segment_id: int) -> float:
+    """调用 ML 模型预测高光概率。"""
+    global _ml_inference
+    if _ml_inference is None:
+        from Highlight_Model.models.inference import ModelInference
+        _ml_inference = ModelInference(threshold=0.5)
+        _ml_inference.load()
+    return _ml_inference.predict_proba(segment_id)
+
+
+def _ml_create_candidate(segment_id: int, session_id: int, highlight_score: float,
+                         reason: str, peak_ts, start_ts, end_ts,
+                         threshold: float, room) -> None:
+    """用 ML 模型评分结果创建高光候选（规则管线复用此逻辑）。"""
+    from app.db.models import CandidateStatus, HighlightCandidate
+
+    auto_approve_threshold = room.auto_approve_threshold if room else 0.82
+    review_threshold = room.review_threshold if room else 0.50
+    room_auto_approve = bool(room.auto_approve) if room else False
+
+    if room_auto_approve and highlight_score >= auto_approve_threshold:
+        initial_status = CandidateStatus.APPROVED
+    elif highlight_score >= review_threshold:
+        initial_status = CandidateStatus.PENDING
+    else:
+        initial_status = CandidateStatus.REJECTED
+
+    dedup_hash = hashlib.sha1(
+        f"{session_id}:{round(start_ts.timestamp())}:{round(end_ts.timestamp())}".encode()
+    ).hexdigest()
+
+    candidate = HighlightCandidate(
+        session_id=session_id, peak_ts=peak_ts, start_ts=start_ts, end_ts=end_ts,
+        rule_score=0.0, llm_score=0.0, highlight_score=highlight_score,
+        features_json=json.dumps({"source": "ml_model", "score": highlight_score}, ensure_ascii=False),
+        reason=reason, status=initial_status, dedup_hash=dedup_hash,
+    )
+    with get_session() as db:
+        db.add(candidate)
+        db.flush()
+        db.refresh(candidate)
+        cid = candidate.id
+
+    _mark_scored(segment_id)
+    logger.success("★ ML高光候选 id={} segment={} score={:.3f} status={}", cid, segment_id, highlight_score, initial_status)

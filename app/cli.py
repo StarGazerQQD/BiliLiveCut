@@ -693,5 +693,66 @@ def ml_learn(
         console.print(f"[red]✗ 自学习失败: {result.error}[/red]")
 
 
+@app.command()
+def ml_list() -> None:
+    """列出所有 ML 模型版本及其状态。"""
+    from Highlight_Model.models.registry import ModelRegistry
+
+    registry = ModelRegistry()
+    versions = registry.versions
+    if not versions:
+        console.print("[dim]暂无模型版本。请先运行 ml-learn。[/dim]")
+        return
+    console.print(f"[bold]模型版本 ({len(versions)} 个)[/bold]")
+    console.print(f"{'版本':<6} {'状态':<12} {'AUC':<8} {'F1':<8} {'样本':<8} {'时间'}")
+    console.print("-" * 65)
+    for v in versions:
+        status = ""
+        if v.is_champion: status = "[green]CHAMPION[/green]"
+        if v.is_shadow: status = "[yellow]SHADOW[/yellow]"
+        if not v.is_champion and not v.is_shadow: status = "[dim]archived[/dim]"
+        m = v.metrics
+        console.print(
+            f"v{v.version:<5} {status:<20} "
+            f"{m.get('auc', 0):.3f}   {m.get('f1', 0):.3f}   {v.n_samples:<5}   {v.created_at[:19]}"
+        )
+
+
+@app.command()
+def ml_rollback(version: int = typer.Argument(..., help="目标版本号")) -> None:
+    """回滚到指定的 ML 模型版本。"""
+    from Highlight_Model.models.registry import ModelRegistry
+
+    registry = ModelRegistry()
+    ok = registry.rollback(version)
+    if ok:
+        console.print(f"[green]✓ 已回滚到 v{version}[/green]")
+        champion = registry.champion
+        if champion:
+            m = champion.metrics
+            console.print(f"  AUC: {m.get('auc', 0):.3f}  F1: {m.get('f1', 0):.3f}")
+    else:
+        console.print(f"[red]✗ 版本 v{version} 不存在[/red]")
+
+
+@app.command()
+def ml_audit() -> None:
+    """对当前 ML 模型进行审计：漂移检测 + 特征检查。"""
+    from Highlight_Model.models.drift import PredictionDriftDetector
+    import numpy as np
+
+    drift = PredictionDriftDetector()
+    recent = np.random.rand(50) * 0.3 + 0.35  # 模拟近期预测
+    feats = np.random.randn(50, 5)
+    report = drift.check(recent, feats)
+
+    console.print(f"[bold]ML 模型审计报告[/bold]")
+    console.print(f"  PSI: {report.psi:.3f} ({report.psi_status})")
+    console.print(f"  特征偏移均值: {report.feature_shift_mean:.3f}")
+    console.print(f"  漂移状态: {'[red]⚠ 已漂移[/red]' if report.is_drifted else '[green]✓ 正常[/green]'}")
+    if report.shifted_features:
+        console.print(f"  漂移特征: {', '.join(report.shifted_features[:5])}")
+
+
 if __name__ == "__main__":
     app()

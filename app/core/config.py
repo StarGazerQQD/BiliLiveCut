@@ -102,6 +102,14 @@ class Settings(BaseSettings):
     highlight_threshold: float = Field(default=0.65, ge=0.0, le=1.0)
     auto_publish_threshold: float = Field(default=0.85, ge=0.0, le=1.0)
 
+    # ---------- V0.1.9: ML 高光模型 ----------
+    ml_model_enabled: bool = False            # 是否启用 ML 模型替代规则+LLM
+    ml_shadow_mode: bool = True               # Shadow 模式:同时跑 ML+规则,只记录差异不替代
+    ml_auto_learn: bool = True                # 审批反馈后是否自动触发重训练
+    ml_auto_learn_cooldown_min: int = 30      # 自动重训练冷却时间(分钟)
+    ml_min_new_samples: int = 5               # 至少新增 N 条反馈才触发自动重训练
+    ml_confidence_threshold: float = 0.8      # ML 预测阈值,高于此值可自动批准
+
     # ---------- 切片后处理 ----------
     clip_loudnorm: bool = True            # 响度标准化(EBU R128)
     clip_remove_silence: bool = False     # 去除首尾静默
