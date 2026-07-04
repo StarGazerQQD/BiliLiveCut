@@ -192,9 +192,6 @@ class LiveRoom(SQLModel, table=True):
     auto_threshold_enabled: bool = Field(default=False, description="是否启用阈值自学习")
     danmaku_sentiment_enabled: bool = Field(default=False, description="是否启用弹幕情绪分析")
 
-    # V0.1.9: ML 高光模型开关(Highlight_Model 分支,开发中,默认关闭且前端灰显)
-    ml_highlight_enabled: bool = Field(default=False, description="是否使用 ML 高光模型替代规则+LLM(开发中)")
-
     # V0.1.6 P2:房间级配置(热词/别名/高光关键词/屏蔽主题,存储为 JSON)。
     room_config_json: str | None = Field(default=None, description="房间配置 JSON(hotwords/aliases/highlight_keywords/blocked_topics)")
     created_at: datetime = Field(default_factory=utcnow)

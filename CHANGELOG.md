@@ -1,5 +1,17 @@
 # Changelog
 
+## V0.1.8.2-HL-alpha (2026-07-04)
+
+### Highlight_Model 分支 — 自有 ML 高光模型概念设计
+
+- **103 项候选特征清单**: 系统梳理 6 大家族特征（声学 38 + 语义 21 + 弹幕 13 + 时序 9 + 画像 11 + 融合 6）+ 5 项训练标签
+- **基本工程架构**: `feature_extractor/` (6 子模块) + `dataset/` + `models/` + `tests/` (8 项单元测试骨架)
+- **接口设计**: `BaseFeatureExtractor` 抽象基类 → `FeatureExtractor` 统一调度器 → `ModelInference` 推理接口
+- **前端预留**: Dashboard 新增 "ML高光模型" 灰色开关（开发中，暂不可选）
+- **分支**: `Highlight_Model`，工作区 `BiliLiveCut_HighLight`
+
+---
+
 ## V0.1.8.1d Alpha (2026-07-04)
 
 ### 安全审计修复 (本轮)

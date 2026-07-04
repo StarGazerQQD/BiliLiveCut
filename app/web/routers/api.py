@@ -43,7 +43,6 @@ class UpdateRoomRequest(BaseModel):
     schedule_enabled: bool | None = None
     auto_threshold_enabled: bool | None = None
     danmaku_sentiment_enabled: bool | None = None
-    ml_highlight_enabled: bool | None = None  # V0.1.9: ML 高光模型开关(开发中)
     # V0.1.6 P2: 房间配置。
     room_config: dict | None = None
 

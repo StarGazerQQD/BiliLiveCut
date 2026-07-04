@@ -267,7 +267,6 @@ def update_room(db_id: int, fields: dict[str, Any]) -> LiveRoom:
         "schedule_enabled",
         "auto_threshold_enabled",
         "danmaku_sentiment_enabled",
-        "ml_highlight_enabled",
         # V0.1.6: 独立自动化开关。
         "auto_record",
         "auto_analyze",
@@ -285,7 +284,7 @@ def update_room(db_id: int, fields: dict[str, Any]) -> LiveRoom:
             raise ValueError(f"房间不存在: db_id={db_id}")
         # 录制中不允许修改功能开关(锁定保护)。
         if recorder_manager.is_running(db_id):
-            for key in ("schedule_enabled", "auto_threshold_enabled", "danmaku_sentiment_enabled", "ml_highlight_enabled"):
+            for key in ("schedule_enabled", "auto_threshold_enabled", "danmaku_sentiment_enabled"):
                 if key in fields:
                     raise ValueError(f"直播间正在录制,无法修改「{key}」开关。请先停止录制。")
         for key, value in fields.items():
@@ -571,7 +570,6 @@ def _room_dict(room: LiveRoom, running: bool) -> dict[str, Any]:
         "schedule_enabled": room.schedule_enabled,
         "auto_threshold_enabled": room.auto_threshold_enabled,
         "danmaku_sentiment_enabled": room.danmaku_sentiment_enabled,
-        "ml_highlight_enabled": room.ml_highlight_enabled,
         # V0.1.6 P2: 房间配置。
         "room_config": json.loads(room.room_config_json) if room.room_config_json else {},
     }

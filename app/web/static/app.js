@@ -113,10 +113,6 @@ async function loadRooms() {
           <input type="checkbox" id="sw-ds-${r.id}" ${r.danmaku_sentiment_enabled ? "checked" : ""} ${r.running ? "disabled" : ""} />
           弹幕情绪
         </label>
-        <label class="switch-row">
-          <input type="checkbox" id="sw-ml-${r.id}" ${r.ml_highlight_enabled ? "checked" : ""} disabled />
-          <span class="muted">ML高光模型 (开发中)</span>
-        </label>
         ${r.running ? '<span class="muted">(录制中锁定)</span>' : ""}
       </div>
       <details class="room-config-detail" style="margin-top:8px">
@@ -166,7 +162,6 @@ window.saveRoom = async (id) => {
       schedule_enabled: ($(`#sw-se-${id}`) || {}).checked,
       auto_threshold_enabled: ($(`#sw-at-${id}`) || {}).checked,
       danmaku_sentiment_enabled: ($(`#sw-ds-${id}`) || {}).checked,
-      ml_highlight_enabled: ($(`#sw-ml-${id}`) || {}).checked,
     });
     toast("已保存阈值/模式");
   } catch (e) { toast("保存失败:" + e.message); }

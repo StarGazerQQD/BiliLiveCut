@@ -197,6 +197,19 @@ pytest -q
 | 取流报错 / 403 | 部分高清晰度需登录态,可在 `.env` 配置 `BILIBILI_COOKIE`(自担风险) |
 | 片段未生成 | 看 `storage/logs/blc.log` 中 `[ffmpeg]` 行;确认流地址可达 |
 
+## 自有 ML 高光模型 (Alpha 开发中)
+
+我们正在建设一个不依赖外部 LLM API 的本地机器学习高光识别模型，逐步替代现有的"规则打分 + LLM 复核"混合管线。详见 [`Highlight_Model` 分支](https://github.com/StarGazerQQD/BiliLiveCut/tree/Highlight_Model)。
+
+| 阶段 | 内容 | 状态 |
+|------|------|------|
+| 0 | 概念设计 — 103 项候选特征梳理 + 工程规划 | ✅ v0.1.8.2-HL-alpha |
+| 1 | 特征提取管线 (FeatureExtractor) | 🚧 开发中 |
+| 2 | 训练数据构建 (DatasetBuilder) | ⬜ |
+| 3 | 模型选型与训练 (XGBoost / LightGBM / MLP) | ⬜ |
+| 4 | 模型评估与阈值校准 | ⬜ |
+| 5 | 接入主程序 (替换 score_segment) | ⬜ |
+
 ## 目录结构
 
 见 `app/`(后端主包)、`config/`(权重与关键词)、`storage/`(运行产物,已 gitignore)、`tests/`。
