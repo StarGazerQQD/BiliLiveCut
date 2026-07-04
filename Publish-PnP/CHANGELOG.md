@@ -1,5 +1,12 @@
 # Changelog — 即插即用版 (Publish-PnP)
 
+## V0.1.8.1d Alpha (2026-07-04)
+
+- 安全审计修复:ffmpeg路径统一/drawtext清洗/esc单引号/concat转义
+- 详见根目录 `CHANGELOG.md`。
+
+---
+
 ## V0.1.8.1c Alpha (2026-07-04)
 
 - 补充审计修复(两轮共 19 项):路由参数/头注入/Cookie 泄露/JS 竞态/管线 Critical 修复
