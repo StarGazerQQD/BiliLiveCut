@@ -288,7 +288,7 @@ static PyObject *fast_char_bigrams(PyObject *self, PyObject *arg) {
         }
         PyObject *bg = PyUnicode_FromStringAndSize(p, second_start + second_len);
         if (bg) PyList_SET_ITEM(result, idx++, bg);
-        p++;
+        p += first_len;  /* 跳到下一个字符(而非字节级 p++) */
     }
 
     /* 如果实际 bigram 少于预估,调整大小 — 实际上我们可能高估了 */
