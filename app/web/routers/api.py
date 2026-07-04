@@ -14,13 +14,23 @@ from typing import Any, Literal
 
 from fastapi import APIRouter, HTTPException
 from fastapi.responses import FileResponse
-from pydantic import BaseModel
+from pydantic import BaseModel, field_validator
 
 from app.db.models import CandidateStatus
 from app.web import service
 from app.web.login_handler import get_cookie_info, get_login_status, start_login
 
 router = APIRouter(prefix="/api")
+
+# V0.1.9.1: 参数上界保护,防止客户端传超大 limit/days/resolution 导致 OOM。
+_MAX_QUERY_LIMIT = 500
+_MAX_QUERY_DAYS = 365
+_MAX_RESOLUTION = 4096
+
+
+def _clamp(v: int, lo: int, hi: int) -> int:
+    """夹紧整数到 [lo, hi] 区间。"""
+    return max(lo, min(v, hi))
 
 
 # ----------------------------- 请求模型 ----------------------------- #
@@ -77,6 +87,15 @@ class BatchRequest(BaseModel):
     candidate_ids: list[int]
     action: Literal["approve", "reject", "publish", "delete"]
 
+    @field_validator("candidate_ids")
+    @classmethod
+    def _non_empty(cls, v: list[int]) -> list[int]:
+        if not v:
+            raise ValueError("candidate_ids 不能为空")
+        if len(v) > 200:
+            raise ValueError("单次批量操作不超过 200 项")
+        return v
+
 
 class ScheduleRequest(BaseModel):
     """录制预约请求。"""
@@ -125,6 +144,13 @@ class TopicUpdateRequest(BaseModel):
 class SplitTopicRequest(BaseModel):
     """拆分主题请求。"""
     event_ids: list[int]
+
+    @field_validator("event_ids")
+    @classmethod
+    def _non_empty_ids(cls, v: list[int]) -> list[int]:
+        if not v:
+            raise ValueError("event_ids 不能为空")
+        return v
 
 
 class ReorderTopicRequest(BaseModel):
@@ -191,6 +217,7 @@ def get_recording() -> list[dict[str, Any]]:
 @router.get("/transcripts")
 def get_transcripts(limit: int = 30) -> list[dict[str, Any]]:
     """返回最近转写文本。"""
+    limit = _clamp(limit, 1, _MAX_QUERY_LIMIT)
     return service.list_transcripts(limit=limit)
 
 
@@ -201,6 +228,7 @@ def get_danmaku(limit: int = 50, session_id: int | None = None) -> dict[str, Any
     :param limit: 返回的最近弹幕条数。
     :param session_id: 仅查询指定会话(可选)。
     """
+    limit = _clamp(limit, 1, _MAX_QUERY_LIMIT)
     return service.danmaku_overview(limit=limit, session_id=session_id)
 
 
@@ -208,6 +236,7 @@ def get_danmaku(limit: int = 50, session_id: int | None = None) -> dict[str, Any
 @router.get("/candidates")
 def get_candidates(limit: int = 50, status: str | None = None) -> list[dict[str, Any]]:
     """返回高光候选列表。"""
+    limit = _clamp(limit, 1, _MAX_QUERY_LIMIT)
     return service.list_candidates(limit=limit, status=status)
 
 
@@ -272,6 +301,7 @@ async def batch_candidates(request: BatchRequest) -> dict[str, Any]:
 @router.get("/clips")
 def get_clips(limit: int = 50) -> list[dict[str, Any]]:
     """返回成品切片列表。"""
+    limit = _clamp(limit, 1, _MAX_QUERY_LIMIT)
     return service.list_clips(limit=limit)
 
 
@@ -311,6 +341,7 @@ def patch_settings(req: SettingsRequest) -> dict[str, Any]:
 @router.get("/uploads")
 def get_uploads(limit: int = 50) -> list[dict[str, Any]]:
     """返回上传任务队列。"""
+    limit = _clamp(limit, 1, _MAX_QUERY_LIMIT)
     return service.list_uploads(limit=limit)
 
 
@@ -361,6 +392,8 @@ async def test_llm_providers() -> dict[str, Any]:
 @router.get("/trends")
 def get_trends(limit: int = 30, days: int = 7) -> dict[str, Any]:
     """返回网感资料库概览(近期热门条目 + 热词排行)。"""
+    limit = _clamp(limit, 1, _MAX_QUERY_LIMIT)
+    days = _clamp(days, 1, _MAX_QUERY_DAYS)
     return service.trends_overview(limit=limit, days=days)
 
 
@@ -375,6 +408,7 @@ async def collect_trends(req: TrendCollectRequest | None = None) -> dict[str, An
 @router.get("/logs")
 def get_logs(limit: int = 100, level: str | None = None) -> list[dict[str, Any]]:
     """返回系统日志(WARNING 及以上)。"""
+    limit = _clamp(limit, 1, _MAX_QUERY_LIMIT)
     return service.list_logs(limit=limit, level=level)
 
 
@@ -503,6 +537,7 @@ def login_clear() -> dict[str, str]:
 @router.get("/tasks")
 def get_tasks(limit: int = 50, stage: str | None = None) -> dict[str, Any]:
     """返回任务队列列表及各阶段统计。"""
+    limit = _clamp(limit, 1, _MAX_QUERY_LIMIT)
     from app.pipeline.task_worker import list_tasks as _list, task_worker
 
     tasks = _list(limit=limit, stage=stage)

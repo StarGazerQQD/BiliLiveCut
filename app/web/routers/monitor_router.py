@@ -35,7 +35,7 @@ def get_monitor_data() -> dict:
         from app.notify.webhook import notify_disk_alert
         global _last_disk_alert
         free_gb = disk.get("free_gb", 0) if isinstance(disk, dict) else getattr(disk, "free_gb", 0)
-        if _now - _last_disk_alert > 1800:  # 30 分钟冷却
+        if time.time() - _last_disk_alert > 1800:  # 30 分钟冷却
             notify_disk_alert(
                 free_gb,
                 settings.disk_alert_threshold_gb,
