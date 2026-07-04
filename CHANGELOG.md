@@ -1,5 +1,17 @@
 # Changelog
 
+## V0.1.8.1b Alpha (2026-07-04)
+
+### 代码审计修复
+- **Bug**: 直播间排行 JOIN 链路修正(`FinalClip.candidate_id - HighlightCandidate.id - RecordingSession.room_id`)
+- **Bug**: `LiveRoom.name`→`uploader_name`, `game_name` 字段补全
+- **Bug**: `room_title` 模板变量从 `room.title` 填充
+- **死代码**: 清理 `_render_variants` 未使用 segments 查询与 `_dingtalk_sign` hex 编码
+- **移植性**: 标题卡 `fontfile` 改为跨平台 `font` 参数
+- **清理**: 去除未使用导入(`json`)与变量(`days_7`)
+
+---
+
 ## V0.1.8.1 Alpha (2026-07-04)
 
 ### P2 运营增强
