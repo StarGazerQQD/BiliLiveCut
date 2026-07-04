@@ -995,10 +995,7 @@ def threshold_learning_status(room_id: int) -> dict[str, Any]:
 # V0.1.9: ML 高光模型自学习
 # --------------------------------------------------------------------------- #
 def ml_learn_status() -> dict[str, Any]:
-    """返回 ML 高光模型的自学习状态摘要。
-
-    :returns: 含模型可用性、迭代数、指标等。
-    """
+    """返回 ML 高光模型的自学习状态摘要。"""
     try:
         from Highlight_Model.models.self_learn import SelfLearnEngine
         engine = SelfLearnEngine()
@@ -1008,14 +1005,7 @@ def ml_learn_status() -> dict[str, Any]:
 
 
 def trigger_ml_self_learn(room_id: int | None = None) -> dict[str, Any]:
-    """触发一次 ML 高光模型自学习。
-
-    从 ThresholdFeedback 表中提取所有已审批/拒绝样本，
-    构建 98 维特征矩阵，训练 XGBoost 模型并保存。
-
-    :param room_id: 可选，仅用指定房间的反馈数据。
-    :returns: 训练结果字典。
-    """
+    """触发一次 ML 高光模型自学习。"""
     try:
         from Highlight_Model.models.self_learn import SelfLearnEngine
         engine = SelfLearnEngine()

@@ -1,16 +1,20 @@
 # Changelog
 
-## V0.1.8.2-HL-alpha (2026-07-04)
+## V0.1.8.2.1-HL-Alpha (2026-07-04)
 
-### Highlight_Model 分支 — 自有 ML 高光模型概念设计
+### Highlight_Model 分支合并 — 自有 ML 高光模型 + 自学习系统
 
-- **103 项候选特征清单**: 系统梳理 6 大家族特征（声学 38 + 语义 21 + 弹幕 13 + 时序 9 + 画像 11 + 融合 6）+ 5 项训练标签
-- **基本工程架构**: `feature_extractor/` (6 子模块) + `dataset/` + `models/` + `tests/` (8 项单元测试骨架)
-- **接口设计**: `BaseFeatureExtractor` 抽象基类 → `FeatureExtractor` 统一调度器 → `ModelInference` 推理接口
-- **前端预留**: Dashboard 新增 "ML高光模型" 灰色开关（开发中，暂不可选）
-- **分支**: `Highlight_Model`，工作区 `BiliLiveCut_HighLight`
+基基于母仓库 main 分支干净代码，合并 `Highlight_Model` 分支全部产出：
 
----
+- **103 项特征清单 + 98 维特征提取管线**: 6 子模块全部实现（声学 38 + 语义 21 + 弹幕 13 + 时序 9 + 画像 11 + 融合 6）
+- **XGBoost 高光预测模型**: 纯本地训练 + warm-start 增量学习，零 API 费用
+- **自学习引擎 (SelfLearnEngine)**: 自动从 ThresholdFeedback 表提取特征并训练
+- **Web 控制台集成**: ML高光模型灰色开关 + 「🔄 自学习」按钮 + 实时状态
+- **CLI 命令**: `python -m app.cli ml-learn [--room-id N] [--model-type xgboost]`
+- **API 端点**: `GET /api/ml/status` + `POST /api/ml/self-learn`
+- **数据库**: `LiveRoom.ml_highlight_enabled` 字段 + 轻量迁移
+- **国产模型策略**: DeepSeek 情感回退 + BAAI/bge-small-zh-v1.5 Embedding + SnowNLP
+- **测试**: 35 项全部通过
 
 ## V0.1.8.1d Alpha (2026-07-04)
 

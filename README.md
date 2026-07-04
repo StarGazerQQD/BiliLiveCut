@@ -1,6 +1,6 @@
 # BiliLiveCut — AI 直播实时切片系统
 
-**当前版本:V0.1.8.1d Alpha** (`0.1.8.1d-alpha`)
+**当前版本:V0.1.8.2.1-HL-Alpha** (`0.1.8.2.1-HL-alpha`)
 
 针对 Bilibili 直播的全自动工作流:实时录制 → 转写 → 识别高光 → 生成切片 → 生成文案 → (可选)上传。
 阶段 1–5 全链路已可用;即插即用分发包见 [`Publish-PnP/`](Publish-PnP/README.md)。
@@ -197,16 +197,16 @@ pytest -q
 | 取流报错 / 403 | 部分高清晰度需登录态,可在 `.env` 配置 `BILIBILI_COOKIE`(自担风险) |
 | 片段未生成 | 看 `storage/logs/blc.log` 中 `[ffmpeg]` 行;确认流地址可达 |
 
-## 自有 ML 高光模型 (Alpha 开发中)
+## 自有 ML 高光模型 (开发中)
 
 我们正在建设一个不依赖外部 LLM API 的本地机器学习高光识别模型，逐步替代现有的"规则打分 + LLM 复核"混合管线。详见 [`Highlight_Model` 分支](https://github.com/StarGazerQQD/BiliLiveCut/tree/Highlight_Model)。
 
 | 阶段 | 内容 | 状态 |
 |------|------|------|
-| 0 | 概念设计 — 103 项候选特征梳理 + 工程规划 | ✅ v0.1.8.2-HL-alpha |
-| 1 | 特征提取管线 (FeatureExtractor) | 🚧 开发中 |
-| 2 | 训练数据构建 (DatasetBuilder) | ⬜ |
-| 3 | 模型选型与训练 (XGBoost / LightGBM / MLP) | ⬜ |
+| 0 | 概念设计 — 103 项特征列表 | ✅ |
+| 1 | 98 维特征提取管线 (FeatureExtractor) | ✅ |
+| 2 | 训练数据构建 (DatasetBuilder) + XGBoost 训练 | ✅ |
+| 3 | 自学习引擎 (SelfLearnEngine) + CLI/Web 集成 | ✅ |
 | 4 | 模型评估与阈值校准 | ⬜ |
 | 5 | 接入主程序 (替换 score_segment) | ⬜ |
 

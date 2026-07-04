@@ -671,8 +671,6 @@ def ml_learn(
 
     从 ThresholdFeedback 表中提取所有已审批/拒绝样本的特征，
     训练 XGBoost/LightGBM 模型并保存到 storage/models/。
-
-    使用前请先在 Dashboard 审批一些高光候选（记录到 threshold_feedback）。
     """
     from Highlight_Model.models.self_learn import SelfLearnEngine
 
@@ -693,9 +691,6 @@ def ml_learn(
         console.print(f"  模型: {result.model_path}")
     else:
         console.print(f"[red]✗ 自学习失败: {result.error}[/red]")
-        if result.n_samples == 0:
-            console.print("[dim]提示: 请先在 Dashboard 审批一些高光候选，"
-                          "审批结果会自动记录到 threshold_feedback 表。[/dim]")
 
 
 if __name__ == "__main__":

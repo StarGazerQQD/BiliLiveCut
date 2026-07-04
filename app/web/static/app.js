@@ -188,16 +188,13 @@ window.saveRoomConfig = async (id) => {
 window.triggerMLLearn = async () => {
   const btn = $("#btn-ml-learn");
   if (!btn) return;
-  btn.disabled = true;
-  btn.textContent = "⏳ 学习中...";
+  btn.disabled = true; btn.textContent = "⏳ 学习中...";
   try {
     const r = await api("POST", "/api/ml/self-learn");
     if (r.success) {
       const m = r.metrics || {};
       toast(`自学习完成! 迭代#${r.iteration} 样本:${r.n_samples}(+${r.n_new}新) AUC:${m.auc} F1:${m.f1}`);
-    } else {
-      toast("自学习失败:" + (r.error || "未知错误"));
-    }
+    } else { toast("自学习失败:" + (r.error || "未知错误")); }
     loadMLStatus();
   } catch (e) { toast("自学习请求失败:" + e.message); }
   finally { btn.disabled = false; btn.textContent = "🔄 自学习"; }
@@ -216,7 +213,7 @@ window.loadMLStatus = async () => {
       el.textContent = "模型未训练 · 请审批候选后点击「自学习」";
       el.style.color = "var(--muted)";
     }
-  } catch (e) { /* 静默 */ }
+  } catch (e) {}
 };
 
 // ----------------------------- 渲染:录制状态 ----------------------------- //

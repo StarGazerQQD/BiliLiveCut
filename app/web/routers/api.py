@@ -438,10 +438,7 @@ def ml_learn_status() -> dict[str, Any]:
 
 @router.post("/ml/self-learn")
 def ml_self_learn(room_id: int | None = None) -> dict[str, Any]:
-    """触发一次 ML 高光模型自学习迭代。
-
-    从所有已审批的 ThresholdFeedback 记录中提取特征并训练模型。
-    """
+    """触发一次 ML 高光模型自学习迭代。"""
     result = service.trigger_ml_self_learn(room_id=room_id)
     if not result.get("success"):
         raise HTTPException(status_code=400, detail=result.get("error", "自学习失败"))
