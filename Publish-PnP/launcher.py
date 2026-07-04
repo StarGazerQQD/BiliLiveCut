@@ -331,7 +331,8 @@ def _download_source(root: Path) -> None:
                 # 只提取需要的目录和文件
                 keep = (
                     rel.startswith("app/") or rel.startswith("config/") or
-                    rel == "pyproject.toml"
+                    rel == "pyproject.toml" or
+                    rel == "setup.py" or rel == "setup_c.py"
                 )
                 if not keep:
                     continue
