@@ -15,6 +15,8 @@ from pathlib import Path
 
 from loguru import logger
 
+from app.core.config import settings
+
 
 def extract_cover_candidates(
     video_path: str | Path,
@@ -54,7 +56,7 @@ def extract_cover_candidates(
             try:
                 subprocess.run(
                     [
-                        "ffmpeg", "-y", "-v", "quiet",
+                        settings.ffmpeg_path, "-y", "-v", "quiet",
                         "-ss", f"{ts:.3f}",
                         "-i", str(vp),
                         "-vframes", "1",
@@ -109,7 +111,7 @@ def _probe_duration(video_path: Path) -> float:
 
     try:
         result = subprocess.run(
-            ["ffprobe", "-v", "quiet", "-print_format", "json", "-show_format", str(video_path)],
+            [settings.ffprobe_path, "-v", "quiet", "-print_format", "json", "-show_format", str(video_path)],
             capture_output=True, text=True, timeout=10,
         )
         info = json.loads(result.stdout)

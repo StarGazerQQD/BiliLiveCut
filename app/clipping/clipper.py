@@ -192,8 +192,9 @@ def _write_concat_list(segments: list[RawSegment], work_dir: Path) -> Path:
     list_path = work_dir / "concat.txt"
     lines = []
     for seg in segments:
-        # concat demuxer 要求 POSIX 风格路径并对单引号转义。
-        p = Path(seg.file_path).as_posix().replace("'", r"'\''")
+        # concat demuxer 要求 POSIX 风格路径并对特殊字符转义。
+        p = Path(seg.file_path).as_posix()
+        p = p.replace("\\", "\\\\").replace("'", "'\\''")
         lines.append(f"file '{p}'")
     list_path.write_text("\n".join(lines), encoding="utf-8")
     return list_path
@@ -291,18 +292,25 @@ def _render_text_card(
     :param width: 视频宽。
     :param height: 视频高。
     """
+    import re as _re
     import tempfile as _tmp
+
+    # C4:清洗 FFmpeg drawtext 参数,防止滤镜注入。
+    safe_font = _re.sub(r"[':,;\\]", "", font_name or "sans")
+    safe_font_color = font_color if _re.fullmatch(r"#?[0-9a-fA-F]{3,8}", font_color or "") else "white"
+    safe_bg_color = bg_color if _re.fullmatch(r"#?[0-9a-fA-F]{3,8}", bg_color or "") else "black"
+
     tf = _tmp.NamedTemporaryFile(mode="w", suffix=".txt", delete=False, encoding="utf-8")
     tf.write(text)
     tf.close()
 
     cmd = [
         settings.ffmpeg_path, "-hide_banner", "-loglevel", "error",
-        "-f", "lavfi", "-i", f"color=c={bg_color}:s={width}x{height}:d={duration_s}",
+        "-f", "lavfi", "-i", f"color=c={safe_bg_color}:s={width}x{height}:d={duration_s}",
         "-vf", (
             f"drawtext=textfile='{tf.name}':"
-            f"font='{font_name}':"
-            f"fontcolor={font_color}:fontsize={font_size}:"
+            f"font='{safe_font}':"
+            f"fontcolor={safe_font_color}:fontsize={font_size}:"
             f"x=(w-text_w)/2:y=(h-text_h)/2:"
             f"box=1:boxcolor=black@0.4:boxborderw=20"
         ),
