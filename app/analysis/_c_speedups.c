@@ -143,12 +143,16 @@ static void ac_build_failure(ACAutomaton *self) {
                 int f = self->nodes[r].fail;
                 while (self->nodes[f].next[c] == -1) f = self->nodes[f].fail;
                 self->nodes[child].fail = self->nodes[f].next[c];
-                /* 合并输出 */
+                /* 合并输出 — V0.1.9.2: strndup 独立副本,避免 double-free。
+                   原代码直接复制指针,导致 child 和 of 持有同一堆地址,
+                   dealloc 时对同一指针多次 free()。 */
                 int of = self->nodes[child].fail;
                 for (int j = 0; j < self->nodes[of].output_len; j++) {
                     if (self->nodes[child].output_len >= 8) break;
                     int oi = self->nodes[child].output_len++;
-                    self->nodes[child].outputs[oi] = self->nodes[of].outputs[j];
+                    char *dup = strndup(self->nodes[of].outputs[j], self->nodes[of].output_lens[j]);
+                    if (!dup) { self->nodes[child].output_len--; continue; }
+                    self->nodes[child].outputs[oi] = dup;
                     self->nodes[child].output_lens[oi] = self->nodes[of].output_lens[j];
                 }
             } else {
