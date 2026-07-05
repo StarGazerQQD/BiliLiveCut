@@ -1,5 +1,24 @@
 # Changelog
 
+## V0.1.10.1 Alpha (2026-07-05)
+
+### 全量审计修复
+
+V0.1.10 引入 Rust+rayon 并行聚类矩阵后,全量代码审计发现并修复 2 项 bug:
+
+#### 修复
+
+| # | 严重度 | 文件:行 | 问题 | 修复 |
+|---|--------|---------|------|------|
+| C1 | **Critical** | `topic_cluster.py:255` | `n` 变量未定义 — V0.1.10 替换为 `cluster_similarity_matrix(items)` 时删除了原 `n = len(items)` 行,导致后续 `range(n)` 报 `NameError`,主题聚类功能完全不可用 | 在 `matrix = cluster_similarity_matrix(items)` 之前恢复 `n = len(items)` |
+| H1 | **High** | `monitor_router.py:45` | `_last_disk_alert = _now` 中 `_now` 未定义 — V0.1.9.1 审计修复了第 38 行 (`time.time()`) 但遗漏了第 45 行赋值语句 | 改为 `_last_disk_alert = time.time()` |
+
+#### 测试
+
+- 全量 161 项通过,零回归
+
+---
+
 ## V0.1.10 Alpha (2026-07-05)
 
 ### 第二轮 C/Rust/Cython 加速 — 聚类矩阵 + 弹幕基线 + SRT 组装

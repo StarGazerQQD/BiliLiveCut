@@ -1,4 +1,4 @@
-"""BiliLiveCut 构建配置 — 含 C 加速模块编译 (V0.1.10)."""
+"""BiliLiveCut 构建配置 — 含 C 加速模块编译 (V0.1.10.1)."""
 
 import sys
 
@@ -37,7 +37,7 @@ except ImportError:
 
 setup(
     name="bili-live-cut",
-    version="0.1.10-alpha",
+    version="0.1.10.1-alpha",
     description="AI 直播实时切片系统",
     packages=find_packages(include=["app", "app.*"]),
     ext_modules=_extensions,
