@@ -1,6 +1,6 @@
 # BiliLiveCut — AI 直播实时切片系统
 
-**当前版本:V0.1.9.1b-HL-Alpha** (`0.1.9.1b-HL-alpha`)
+**当前版本:V0.1.10.1-HL-Alpha** (`0.1.10.1-HL-alpha`)
 
 针对 Bilibili 直播的全自动工作流:实时录制 → 转写 → 识别高光 → 生成切片 → 生成文案 → (可选)上传。
 阶段 1–5 全链路已可用;即插即用分发包见 [`Publish-PnP/`](Publish-PnP/README.md)。
@@ -23,10 +23,19 @@
 - FFmpeg(已加入 PATH,或在 `.env` 指定 `FFMPEG_PATH`)
 - *(可选)* C 编译器(MSVC/MinGW/GCC) — 用于编译 Aho-Corasick 加速模块;如不可用,自动回退纯 Python 实现
 
-### C 加速模块 (V0.1.9)
+### C 加速模块 (V0.1.9 / V0.1.10)
 
 自 V0.1.9 起,高频 CPU 热点使用 C 扩展加速:多模式匹配(Aho-Corasick)、余弦相似度、字符 bigram。
-- **自动检测**:安装时 `pip install -e .` 自动尝试编译;编译失败 → 自动回退 `_speedups_py.py`
+V0.1.10 新增第二轮加速:O(N²) 聚类矩阵构建、弹幕基线分桶+中位数、SRT 字幕组装。
+
+- **第一轮 (V0.1.9)**: Aho-Corasick 多模式匹配 20–50×、余弦相似度 3–8×、字符 bigram 2–5×
+- **第二轮 (V0.1.10)**: 聚类矩阵 5–15× (Python) / 30–80× (Rust+rayon)、弹幕基线 10–30×、SRT 组装 3–8×
+- **Rust 加速 (V0.1.10)**: 聚类矩阵支持 PyO3+rayon 并行计算,有 Rust 工具链时编译自动启用 (无则自动回退 Python)
+  ```powershell
+  python build_rust.py      # 检测 Rust 环境 + 编译 + 复制 .pyd
+  python build_rust.py --check  # 仅检测
+  ```
+- **自动检测**:安装时 `pip install -e .` 自动尝试编译;编译失败 → 自动回退 Python 实现
 - **手动编译**:Windows 用户需安装 [Visual Studio Build Tools](https://visualstudio.microsoft.com/zh-hans/downloads/)(勾选"C++桌面开发"),然后:
   ```powershell
   python setup_c.py build_ext --inplace

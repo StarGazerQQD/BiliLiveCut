@@ -37,6 +37,7 @@ from app.db.models import (
     Transcript,
 )
 from app.db.session import get_session
+from app.analysis.speedups import group_srt_blocks
 
 # 竖屏目标分辨率(适合手机端短视频)。
 _VERT_W, _VERT_H = 1080, 1920
@@ -391,9 +392,9 @@ def _build_srt(segments: list[RawSegment], cut_offset: float, duration: float) -
             max_ms = tmpl.max_display_ms
             line_gap = tmpl.line_gap_ms
 
-    # 把词聚合成短句字幕(每约 N 个字或遇到停顿断行)。
-    return _group_srt(entries, max_chars=max_chars, min_display_ms=min_ms,
-                      max_display_ms=max_ms, line_gap_ms=line_gap)
+    # 把词聚合成短句字幕(每约 N 个字或遇到停顿断行)。 V0.1.10: 使用加速版 SRT 组装。
+    return group_srt_blocks(entries, max_chars=max_chars, min_display_ms=min_ms,
+                            max_display_ms=max_ms, line_gap_ms=line_gap)
 
 
 def _group_srt(

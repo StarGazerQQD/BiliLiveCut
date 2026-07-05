@@ -42,7 +42,7 @@ def get_monitor_data() -> dict:
                 raw_size,
                 clips_size,
             )
-            _last_disk_alert = _now
+            _last_disk_alert = time.time()
 
     # 系统资源。
     cpu = _get_cpu_percent()

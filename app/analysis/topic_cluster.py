@@ -35,7 +35,7 @@ from app.db.models import (
     utcnow,
 )
 from app.db.session import get_session
-from app.analysis.speedups import fast_char_bigrams, fast_cosine_similarity
+from app.analysis.speedups import fast_char_bigrams, fast_cosine_similarity, cluster_similarity_matrix
 
 
 # 可配置阈值(后续迁移到 settings)。
@@ -248,14 +248,9 @@ def cluster_candidates(session_id: int) -> list[dict]:
             "start_ts": c.start_ts.isoformat() if c.start_ts else None,
         })
 
-    # 两两相似度。
+    # 两两相似度 — V0.1.10: 使用预提取 bigram/kw 加速 O(N**2) 矩阵构建 (5-15x)。
     n = len(items)
-    matrix: list[list[float]] = [[0.0] * n for _ in range(n)]
-    for i in range(n):
-        for j in range(i + 1, n):
-            sim = event_similarity(items[i], items[j])
-            matrix[i][j] = sim
-            matrix[j][i] = sim
+    matrix = cluster_similarity_matrix(items)
 
     # 聚类:Union-Find。
     parent = list(range(n))

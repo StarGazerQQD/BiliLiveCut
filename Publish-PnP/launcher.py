@@ -34,7 +34,7 @@ VENV_DIR = ".venv"
 WHEELS_DIR = "vendor" + os.sep + "wheels"
 REQUIREMENTS = "requirements-bundle.txt"
 APP_NAME = "BiliLiveCut"
-VERSION = "V0.1.9.1 Alpha"
+VERSION = "V0.1.10.1 Alpha"
 
 # GitHub 源码归档（公共仓库无需 token）
 GITHUB_REPO = "StarGazerQQD/BiliLiveCut"
@@ -332,7 +332,8 @@ def _download_source(root: Path) -> None:
                 keep = (
                     rel.startswith("app/") or rel.startswith("config/") or
                     rel == "pyproject.toml" or
-                    rel == "setup.py" or rel == "setup_c.py"
+                    rel == "setup.py" or rel == "setup_c.py" or
+                    rel == "build_rust.py"
                 )
                 if not keep:
                     continue

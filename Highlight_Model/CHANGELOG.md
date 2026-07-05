@@ -1,6 +1,6 @@
 # Changelog — Highlight_Model
 
-## v0.1.9.1b-HL-Alpha (2026-07-04)
+## v0.1.10.1-HL-Alpha (2026-07-04)
 
 ### 概念设计
 
@@ -25,5 +25,5 @@
 
 - 分支名: `Highlight_Model`
 - 基于: `main` @ `5d0405e` (V0.1.8.1d Alpha)
-- 版本号: `v0.1.9.1b-HL-Alpha`（完整工程架构 + XGBoost模型 + 自学习引擎）
+- 版本号: `v0.1.10.1-HL-Alpha`（完整工程架构 + XGBoost模型 + 自学习引擎）
 - 状态: 阶段 1-3 已完成，待模型评估与生产接入
