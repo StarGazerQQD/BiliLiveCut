@@ -40,6 +40,9 @@ htmlcov/
 *.obj
 build/temp.*/
 
+# 审计工具缓存
+.audit_cache/
+
 # IDE / OS
 .vscode/
 .idea/
