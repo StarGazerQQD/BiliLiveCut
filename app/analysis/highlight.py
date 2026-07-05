@@ -586,23 +586,11 @@ def _danmaku_baseline(
     if not rows or len(rows) < _DANMAKU_MIN_SAMPLES:
         return 0.0, 0
 
-    # 按 _DANMAKU_BUCKET_S 秒分桶,计算每桶速率。
-    times_sorted = sorted(_n(r[0]) for r in rows)  # type: ignore[arg-type]
-    t0 = times_sorted[0]
-    buckets: dict[int, int] = {}
-    for t in times_sorted:
-        idx = int((t - t0).total_seconds() / _DANMAKU_BUCKET_S)  # type: ignore[operator]
-        buckets[idx] = buckets.get(idx, 0) + 1
+    # V0.1.10: 使用加速版分桶+中位数 (排序→float 秒→分桶→速率→中位数)。
+    from app.analysis.speedups import danmaku_baseline_rate
 
-    rates = [v / _DANMAKU_BUCKET_S for v in buckets.values()]
-
-    # 中位数基线
-    rates.sort()
-    n = len(rates)
-    if n == 0:
-        return 0.0, 0
-    median = rates[n // 2] if n % 2 == 1 else (rates[n // 2 - 1] + rates[n // 2]) / 2
-    return float(median), len(rows)
+    times_sorted = sorted((_n(r[0]) - _n(rows[0][0])).total_seconds() for r in rows)  # type: ignore[arg-type]
+    return danmaku_baseline_rate(times_sorted, _DANMAKU_BUCKET_S)
 
 
 def _danmaku_score(session_id: int, start_ts: object, end_ts: object) -> float:
