@@ -18,13 +18,20 @@
 
 - `app/analysis/_speedups_round2.pyx` — Cython 源码 (A 聚类矩阵 + B 弹幕基线 + C SRT 组装)
 - `app/analysis/_speedups_round2_py.py` — 纯 Python 后备 (Cython 不可用时自动使用)
+- `app/analysis/_rust_src/` — **Rust 加速源码** (PyO3 + rayon 并行 N² 聚类矩阵,自动检测编译)
+- `build_rust.py` — Rust 编译脚本 (`python build_rust.py` → 自动检测 cargo + 编译 + 复制 .pyd)
 
 #### 修改文件
 
-- `app/analysis/speedups.py` — 分派层新增 `cluster_similarity_matrix` / `danmaku_baseline_rate` / `group_srt_blocks`
+- `app/analysis/speedups.py` — 分派层重构为**三级加速链**: Rust (并行) → Cython → Python,新增 `get_cluster_backend()` 诊断接口
 - `app/analysis/topic_cluster.py` — 聚类矩阵构建替换为 `cluster_similarity_matrix(items)`
 - `app/analysis/highlight.py` — 弹幕基线计算替换为 `danmaku_baseline_rate`
 - `app/clipping/clipper.py` — SRT 组装替换为 `group_srt_blocks`
+- `.gitignore` — 新增 Rust `target/` 编译缓存忽略
+
+#### 审计发现与修复
+
+- **Rust IDF bug (`lib.rs:70`)**: `idf_weight` 使用 `all_keys.contains(k)` (union) 替代交叉检查 `other.contains_key(k)`,导致 IDF 惩罚恒为 1.0。已修复为传递 `other` 参数双向检查。
 
 #### 测试
 

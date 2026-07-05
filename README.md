@@ -29,7 +29,12 @@
 V0.1.10 新增第二轮加速:O(N²) 聚类矩阵构建、弹幕基线分桶+中位数、SRT 字幕组装。
 
 - **第一轮 (V0.1.9)**: Aho-Corasick 多模式匹配 20–50×、余弦相似度 3–8×、字符 bigram 2–5×
-- **第二轮 (V0.1.10)**: 聚类矩阵 5–15×、弹幕基线 10–30×、SRT 组装 3–8×
+- **第二轮 (V0.1.10)**: 聚类矩阵 5–15× (Python) / 30–80× (Rust+rayon)、弹幕基线 10–30×、SRT 组装 3–8×
+- **Rust 加速 (V0.1.10)**: 聚类矩阵支持 PyO3+rayon 并行计算,有 Rust 工具链时编译自动启用 (无则自动回退 Python)
+  ```powershell
+  python build_rust.py      # 检测 Rust 环境 + 编译 + 复制 .pyd
+  python build_rust.py --check  # 仅检测
+  ```
 - **自动检测**:安装时 `pip install -e .` 自动尝试编译;编译失败 → 自动回退 Python 实现
 - **手动编译**:Windows 用户需安装 [Visual Studio Build Tools](https://visualstudio.microsoft.com/zh-hans/downloads/)(勾选"C++桌面开发"),然后:
   ```powershell

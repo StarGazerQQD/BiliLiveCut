@@ -31,6 +31,12 @@ storage/
 htmlcov/
 .git_msg.txt
 
+# Rust 编译产物 (V0.1.10)
+app/analysis/_rust_src/target/
+app/analysis/_rust_cluster.pyd
+app/analysis/_rust_cluster.so
+app/analysis/_rust_cluster.dll
+
 # C 扩展编译产物 (V0.1.9)
 *.pyd
 *.so

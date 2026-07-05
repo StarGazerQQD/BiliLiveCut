@@ -332,7 +332,8 @@ def _download_source(root: Path) -> None:
                 keep = (
                     rel.startswith("app/") or rel.startswith("config/") or
                     rel == "pyproject.toml" or
-                    rel == "setup.py" or rel == "setup_c.py"
+                    rel == "setup.py" or rel == "setup_c.py" or
+                    rel == "build_rust.py"
                 )
                 if not keep:
                     continue

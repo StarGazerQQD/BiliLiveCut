@@ -18,6 +18,7 @@ config/
 pyproject.toml
 setup.py
 setup_c.py
+build_rust.py
 requirements-bundle.txt
 CHANGELOG.md
 README_MAIN.md
