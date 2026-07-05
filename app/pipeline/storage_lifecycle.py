@@ -18,6 +18,29 @@ from loguru import logger
 from app.core.config import settings
 from app.core.paths import clips_dir, raw_dir
 
+
+def _safe_unlink(disk_path: str, allowed_root: Path) -> bool:
+    """安全删除文件: resolve() 路径必须在 allowed_root 前缀下,防止路径遍历攻击。
+
+    :param disk_path: 数据库中记录的文件路径。
+    :param allowed_root: 允许的根目录 (如 clips_dir)。
+    :returns: 是否成功删除。
+    """
+    try:
+        resolved = Path(disk_path).resolve()
+        allowed_root.resolve()
+        # resolved 必须在 allowed_root 子树内
+        resolved.relative_to(allowed_root.resolve())
+    except (ValueError, OSError):
+        logger.warning("拒绝删除非托管路径 (不在 {} 下): {}", allowed_root, disk_path)
+        return False
+    try:
+        Path(disk_path).unlink(missing_ok=True)
+        return True
+    except OSError as exc:
+        logger.debug("删除文件失败 {}: {}", disk_path, exc)
+        return False
+
 # 可配置的默认值(可通过 settings 覆盖)。
 _MIN_FREE_GB = 10
 _RAW_RETENTION_DAYS = 7
@@ -101,6 +124,9 @@ def cleanup_old_raw_files(retention_days: int | None = None) -> int:
         try:
             mtime = session_path.stat().st_mtime
             if mtime < cutoff:
+                if session_path.is_symlink():
+                    logger.warning("跳过符号链接目录 (安全防护): {}", session_path)
+                    continue
                 shutil.rmtree(session_path)
                 cleaned += 1
                 logger.info("已清理过期原始文件: {}", session_path)
@@ -136,17 +162,10 @@ def cleanup_rejected_candidates() -> int:
                 )
             ).all()
             for clip in clips:
-                if clip.file_path:
-                    try:
-                        Path(clip.file_path).unlink(missing_ok=True)
-                        cleaned += 1
-                    except OSError as exc:
-                        logger.debug("删除切片文件失败 {}: {}", clip.file_path, exc)
+                if clip.file_path and _safe_unlink(clip.file_path, clips_dir()):
+                    cleaned += 1
                 if clip.cover_path:
-                    try:
-                        Path(clip.cover_path).unlink(missing_ok=True)
-                    except OSError:
-                        pass
+                    _safe_unlink(clip.cover_path, clips_dir())
             # 更新状态为已清理。
             cand.status = CandidateStatus.CLEANED
             db.add(cand)
