@@ -1,4 +1,4 @@
-"""BiliLiveCut Rust 加速模块编译脚本 (V0.1.10).
+"""BiliLiveCut Rust 加速模块编译脚本 (V0.1.10.1).
 
 编译 O(N**2) 聚类矩阵 Rust 扩展 (_rust_cluster.pyd/.so)。
 

@@ -249,6 +249,7 @@ def cluster_candidates(session_id: int) -> list[dict]:
         })
 
     # 两两相似度 — V0.1.10: 使用预提取 bigram/kw 加速 O(N**2) 矩阵构建 (5-15x)。
+    n = len(items)
     matrix = cluster_similarity_matrix(items)
 
     # 聚类:Union-Find。
