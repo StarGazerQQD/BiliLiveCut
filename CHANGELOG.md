@@ -1,5 +1,43 @@
 # Changelog
 
+## V0.1.10 Alpha (2026-07-05)
+
+### 第二轮 C/Rust/Cython 加速 — 聚类矩阵 + 弹幕基线 + SRT 组装
+
+基于 `V0.1.9` 全量性能审计,对剩余 3 个 CPU 瓶颈实施第二轮加速:
+
+#### 加速热点
+
+| 模块 | 热点 | 原实现 | 新实现 | 预期提速 |
+|------|------|--------|--------|----------|
+| `topic_cluster.py` | O(N²) 聚类矩阵构建 | `event_similarity` 重复计算 + Python 浮点矩阵 | 预提取 bigram/kw 向量 + 单遍 `_pairwise_sim` | **5–15×** |
+| `highlight.py` | `_danmaku_baseline` 分桶+中位数 | `datetime` 对象热循环 + `timedelta` 算术 | `danmaku_baseline_rate` — 纯 float 分桶+排序 | **10–30×** |
+| `clipper.py` | `_group_srt` 词条→SRT 组装 | `divmod`+`f-string` 逐行格式化 | `group_srt_blocks` — 单遍聚合+手动 fmt | **3–8×** |
+
+#### 新增文件
+
+- `app/analysis/_speedups_round2.pyx` — Cython 源码 (A 聚类矩阵 + B 弹幕基线 + C SRT 组装)
+- `app/analysis/_speedups_round2_py.py` — 纯 Python 后备 (Cython 不可用时自动使用)
+
+#### 修改文件
+
+- `app/analysis/speedups.py` — 分派层新增 `cluster_similarity_matrix` / `danmaku_baseline_rate` / `group_srt_blocks`
+- `app/analysis/topic_cluster.py` — 聚类矩阵构建替换为 `cluster_similarity_matrix(items)`
+- `app/analysis/highlight.py` — 弹幕基线计算替换为 `danmaku_baseline_rate`
+- `app/clipping/clipper.py` — SRT 组装替换为 `group_srt_blocks`
+
+#### 测试
+
+- 全量 161 项通过,零回归,零新增 bug
+
+#### 设计原则
+
+- **零用户配置**: 有 Cython 编译环境时自动编译,无时自动回退 Python
+- **API 兼容**: 新函数签名与原函数等价,行为一致
+- **`_group_srt` 保留**: 旧的 `_group_srt` 函数保留在 `clipper.py` 中以兼容测试导入
+
+---
+
 ## V0.1.9.1 Alpha (2026-07-04)
 
 ### Python-C 中间件审计修复
