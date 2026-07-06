@@ -19,13 +19,20 @@ COPY pyproject.toml README.md ./
 COPY app ./app
 COPY config ./config
 
-# 安装核心 + asr + web(如需 llm 可自行加 .[llm])。
+# 生成带哈希的锁定文件(先装 pip-tools)。
+# 注: 如需生产部署, 请提前在本机执行 `pip-compile --generate-hashes pyproject.toml -o requirements.lock`,
+# 然后将 requirements.lock COPY 进镜像, 替换下面两行为:
+#   RUN pip install --require-hashes -r requirements.lock
 RUN pip install --upgrade pip \
     && pip install -e ".[asr,web]"
 
 # 运行产物挂载到 /data(见 docker-compose)。
 VOLUME ["/data"]
 EXPOSE 8000
+
+# 创建非 root 用户, 限制容器权限。
+RUN useradd -m appuser && chown -R appuser:appuser /data /app
+USER appuser
 
 # 默认启动 Web 控制台;监听 0.0.0.0 以便容器外访问。
 CMD ["python", "-m", "app.cli", "serve", "--host", "0.0.0.0", "--port", "8000"]
