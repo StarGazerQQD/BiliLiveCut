@@ -767,6 +767,7 @@ class TaskWorker:
         while self._running and not _shutting_down:
             try:
                 _retry_expired()
+                _recover_stale()
                 _advance_recorded()
                 _advance_transcribed()
                 _advance_candidate()
