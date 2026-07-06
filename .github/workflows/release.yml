@@ -1,0 +1,180 @@
+# BiliLiveCut Release 工作流
+# 触发: 推送 v* 标签 (如 v0.1.12.3-alpha)
+#   1) 全量测试
+#   2) 构建源码包 (sdist + wheel)
+#   3) 构建 Windows 便携包
+#   4) 生成 SHA256 校验文件
+#   5) 上传到 GitHub Release
+# 注意: 不上传到 PyPI
+name: Release
+
+on:
+  push:
+    tags:
+      - "v*"
+  workflow_dispatch:
+    inputs:
+      tag:
+        description: "发布 tag 名称 (如 v0.1.12.3-alpha)"
+        required: true
+
+permissions:
+  contents: write   # 创建 Release + 上传资产
+  actions: read
+
+jobs:
+  # ── Step 1: 全量测试 ──
+  test:
+    name: "Test (py3.12 / ubuntu)"
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+
+      - name: Install system deps
+        run: |
+          sudo apt-get update -qq
+          sudo apt-get install -y -qq ffmpeg
+
+      - name: Install dev dependencies
+        run: |
+          python -m pip install --upgrade pip
+          pip install -e ".[dev,web]" \
+            --index-url https://mirrors.aliyun.com/pypi/simple/ \
+            --extra-index-url https://pypi.tuna.tsinghua.edu.cn/simple \
+            --trusted-host mirrors.aliyun.com \
+            --trusted-host pypi.tuna.tsinghua.edu.cn
+          pip install python-multipart
+
+      - name: Ruff lint
+        run: ruff check app/ tests/
+
+      - name: Run pytest
+        env:
+          ASR_NO_MODEL_DOWNLOAD: "1"
+          WHISPER_MODEL: ""
+        run: python -m pytest tests/ -v --tb=short
+        timeout-minutes: 15
+
+  # ── Step 2: 构建发布包 ──
+  build:
+    name: "Build packages"
+    needs: test
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+
+      - name: Install build tools
+        run: |
+          python -m pip install --upgrade pip build wheel
+
+      - name: Extract tag version
+        id: tag
+        run: |
+          TAG=${GITHUB_REF#refs/tags/}
+          VERSION=${TAG#v}
+          echo "tag=$TAG" >> $GITHUB_OUTPUT
+          echo "version=$VERSION" >> $GITHUB_OUTPUT
+          echo "Release $TAG (version $VERSION)"
+
+      # 构建 sdist (源码 tar.gz)
+      - name: Build sdist
+        run: python -m build --sdist --outdir dist/
+
+      # 构建纯 Python wheel
+      - name: Build wheel
+        run: python -m build --wheel --outdir dist/
+
+      # 生成 Windows 便携源码包 (zip)
+      - name: Create Windows source package
+        run: |
+          mkdir -p dist/bili-live-cut-${{ steps.tag.outputs.version }}
+          cp -r app/ config/ pyproject.toml README.md CHANGELOG.md LICENSE* dist/bili-live-cut-${{ steps.tag.outputs.version }}/ 2>/dev/null || true
+          cd dist
+          zip -r "bili-live-cut-${{ steps.tag.outputs.version }}-win-portable.zip" "bili-live-cut-${{ steps.tag.outputs.version }}"
+          rm -rf "bili-live-cut-${{ steps.tag.outputs.version }}"
+
+      # 生成 SHA256 校验文件
+      - name: Generate SHA256 checksums
+        run: |
+          cd dist
+          sha256sum * > SHA256SUMS
+          sha256sum -c SHA256SUMS
+
+      - name: List artifacts
+        run: ls -la dist/
+
+      # 上传构建产物 (供 Release job 使用)
+      - name: Upload build artifacts
+        uses: actions/upload-artifact@v4
+        with:
+          name: dist
+          path: dist/*
+          retention-days: 1
+
+  # ── Step 3: 创建 GitHub Release ──
+  release:
+    name: "Create GitHub Release"
+    needs: build
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: Download build artifacts
+        uses: actions/download-artifact@v4
+        with:
+          name: dist
+          path: dist/
+
+      - name: Extract tag version
+        id: tag
+        run: |
+          TAG=${GITHUB_REF#refs/tags/}
+          echo "tag=$TAG" >> $GITHUB_OUTPUT
+
+      - name: Generate release notes from CHANGELOG
+        id: changelog
+        run: |
+          VERSION="${{ steps.tag.outputs.tag }}"
+          # 提取当前版本对应的 CHANGELOG 内容
+          cat > /tmp/extract_notes.py << 'PYEOF'
+          import re, sys, os
+          version = os.environ["RELEASE_VERSION"]
+          with open("CHANGELOG.md", "r", encoding="utf-8") as f:
+              content = f.read()
+          escaped = re.escape(version)
+          pattern = re.compile(rf"(## {escaped}.+?)(?=\n## |\Z)", re.DOTALL)
+          m = pattern.search(content)
+          if m:
+              print(m.group(1).strip())
+          else:
+              print(f"Release {version}")
+          PYEOF
+          RELEASE_VERSION="$VERSION" python /tmp/extract_notes.py > /tmp/release_notes.md
+          cat /tmp/release_notes.md
+
+      - name: Create GitHub Release
+        uses: softprops/action-gh-release@v2
+        with:
+          tag_name: ${{ steps.tag.outputs.tag }}
+          body_path: /tmp/release_notes.md
+          files: |
+            dist/*
+          draft: false
+          prerelease: ${{ contains(steps.tag.outputs.tag, 'alpha') || contains(steps.tag.outputs.tag, 'beta') || contains(steps.tag.outputs.tag, 'rc') }}
+        env:
+          # GitHub Actions 自动提供, 无需手动配置
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
