@@ -83,7 +83,10 @@ def send_dingtalk(title: str, text: str) -> bool:
     webhook = settings.dingtalk_webhook
     if settings.dingtalk_secret:
         ts, sign = _dingtalk_sign(settings.dingtalk_secret)
-        webhook = f"{settings.dingtalk_webhook}?timestamp={ts}&sign={sign}"
+        parsed = urllib.parse.urlparse(webhook)
+        params = urllib.parse.parse_qs(parsed.query)
+        params.update({"timestamp": [ts], "sign": [sign]})
+        webhook = parsed._replace(query=urllib.parse.urlencode(params, doseq=True)).geturl()
 
     import httpx
 

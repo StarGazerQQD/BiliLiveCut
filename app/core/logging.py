@@ -88,4 +88,5 @@ def _db_sink(message: object) -> None:
                 )
             )
     except Exception:  # noqa: BLE001 — 日志 sink 绝不能抛出
-        pass
+        import sys
+        print("数据库日志写入失败 (system_logs sink)", file=sys.stderr)

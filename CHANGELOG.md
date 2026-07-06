@@ -1,5 +1,23 @@
 # Changelog
 
+## V0.1.12.1 Alpha (2026-07-06)
+
+### 安全加固 (CodeAuditTool 审计修复)
+
+**HIGH — 修复项**:
+- `Dockerfile`: 容器以非 root 用户 `appuser` 运行，限制权限；增加 pip 哈希校验指引
+- `app/analysis/_c_speedups.c`: `fast_char_bigrams()` 增加指针边界检查，防止单字符残片越界
+- `app/web/login_handler.py`: 登录状态接口不再返回完整 Cookie 值，仅返回 `cookie_available` 布尔标记
+
+**MEDIUM — 修复项**:
+- `app/notify/webhook.py`: 钉钉 webhook URL 拼接改用 `urllib.parse`，防止原 query 参数被覆盖
+- `app/core/logging.py`: 数据库 sink 异常写入 stderr，不再完全静默
+- `app/clipping/cover.py`: `out` 变量提至 try 前初始化，避免 `mktemp` 异常时 finally 块访问未定义变量
+
+**确认已有防护 (无需操作)**:
+- `Publish-PnP/build_bundle.py`: zip-slip 已防护 (L252 `".." in member`)
+- `app/pipeline/storage_lifecycle.py`: 符号链接检测 (L127) + 路径前缀验证 (`_safe_unlink`) 均已就位
+
 ## V0.1.12 Alpha (2026-07-06)
 
 ### 多引擎 ASR 流水线重构

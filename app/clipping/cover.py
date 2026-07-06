@@ -46,7 +46,12 @@ def extract_cover_candidates(
     timestamps = [1.0 + i * step for i in range(count * 3)]
 
     own_tmp = out_dir is None
-    out = Path(out_dir) if out_dir else Path(tempfile.mkdtemp(prefix="blc_covers_"))
+    out = None
+    try:
+        out = Path(out_dir) if out_dir else Path(tempfile.mkdtemp(prefix="blc_covers_"))
+    except Exception:
+        logger.warning("无法创建封面输出目录,回退到临时目录")
+        out = Path(tempfile.mkdtemp(prefix="blc_covers_"))
     out.mkdir(parents=True, exist_ok=True)
 
     try:
