@@ -79,7 +79,7 @@ def build(clean: bool = False) -> None:
         size = OUTPUT.stat().st_size / (1024 * 1024)
         print()
         print(f"  [OK] 编译成功: {OUTPUT} ({size:.1f} MB)")
-        print(f"  将此文件放在 Publish-PnP/ 目录下,双击即可启动。")
+        print("  将此文件放在 Publish-PnP/ 目录下,双击即可启动。")
     else:
         print("\n[错误] 未生成 launcher.exe,编译可能失败。")
         sys.exit(1)

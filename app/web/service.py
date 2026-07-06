@@ -390,12 +390,49 @@ def _run_auto_learn() -> None:
 
 
 async def approve_candidate(candidate_id: int) -> int | None:
-    """批准候选并出片(切片+文案);在线程池执行 CPU 密集流程。
+    """批准候选并出片(切片+文案); V0.1.12.8: 传入外层 db 消除事务割裂。
+
+    在同一个 session 中完成审批 + produce_clip,
+    fallback 路径也同步更新 Task 状态。
 
     :param candidate_id: 候选 id。
     :returns: 生成的 clip_id;失败返回 ``None``。
     """
-    set_candidate_status(candidate_id, CandidateStatus.APPROVED)
+    from app.db.models import HighlightEvent, SegmentTask
+    from app.db.models import TaskStatus as _Ts
+    from app.pipeline.approval import approve_event_and_task
+
+    with get_session() as db:
+        # 查找关联 task 和 event
+        task = db.exec(
+            select(SegmentTask).where(
+                SegmentTask.candidate_id == candidate_id,
+            ).order_by(SegmentTask.created_at.desc())
+        ).first()
+        event = db.exec(
+            select(HighlightEvent).where(
+                HighlightEvent.candidate_id == candidate_id,
+            )
+        ).first()
+
+        # V0.1.12.8: 统一审批, 传入外层 db session
+        if task is not None and event is not None:
+            approve_event_and_task(
+                task_id=task.id,
+                event_id=event.id,
+                approved_by="web_admin",
+                reason=None,
+                source="human",
+                review_decision="approved_solo",
+                db=db,
+            )
+        else:
+            # fallback: 更新 Candidate + Task 状态
+            set_candidate_status(candidate_id, CandidateStatus.APPROVED)
+            if task is not None:
+                task.stage = _Ts.APPROVED
+                db.add(task)
+
     from app.pipeline.orchestrator import produce_clip
 
     clip = await asyncio.to_thread(produce_clip, candidate_id)
@@ -595,7 +632,7 @@ def dashboard_state() -> dict[str, Any]:
         sessions = db.exec(
             select(RecordingSession).where(
                 RecordingSession.status.in_(  # type: ignore[attr-defined]
-                    [SessionStatus.RECORDING, SessionStatus.RECONNECTING, SessionStatus.STARTING, SessionStatus.RECONNECTED]
+                    [SessionStatus.RECORDING, SessionStatus.RECONNECTING, SessionStatus.STARTING, SessionStatus.RECONNECTED]  # noqa: E501
                 )
             )
         ).all()

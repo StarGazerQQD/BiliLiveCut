@@ -1,0 +1,77 @@
+{
+  "_description": "BiliLiveCut ASR Golden Set 样本清单 (V0.1.12.2)",
+  "_instructions": [
+    "此文件定义评测集结构和标注规范。",
+    "真实音频文件不在此提交 (版权), 仅提交格式、标注规则和示例占位。",
+    "运行 golden_eval.py 时, 将实际音频放入此目录并修改 manifest 中的 audio_path。"
+  ],
+  "config": {
+    "model_revision": "v2.0.4",
+    "primary_engine": "paraformer",
+    "review_engine": "funasr-nano",
+    "fallback_engine": "whisper-large-v3-turbo"
+  },
+  "samples": [
+    {
+      "sample_id": "sample_001",
+      "audio_path": "placeholder_mandarin_talk.mp3",
+      "reference_text": "大家好今天是七月六号我们继续玩原神新版本",
+      "reference_segments": [
+        {"start": 0.0, "end": 5.0, "text": "大家好今天是七月六号"},
+        {"start": 5.0, "end": 8.0, "text": "我们继续玩原神新版本"}
+      ],
+      "hotwords": ["原神", "七月"],
+      "category": ["mandarin", "gaming"],
+      "notes": "普通话游戏杂谈, 含专有名词"
+    },
+    {
+      "sample_id": "sample_002",
+      "audio_path": "placeholder_mixed_cn_en.mp3",
+      "reference_text": "wow this play is insane 这波操作太离谱了",
+      "reference_segments": [
+        {"start": 0.0, "end": 6.0, "text": "wow this play is insane 这波操作太离谱了"}
+      ],
+      "hotwords": [],
+      "category": ["mixed_cn_en", "gaming"],
+      "notes": "中英混说, 游戏场景"
+    },
+    {
+      "sample_id": "sample_003",
+      "audio_path": "placeholder_singing.mp3",
+      "reference_text": "后来我总算学会了如何去爱可惜你早已远去消失在人海",
+      "reference_segments": [
+        {"start": 0.0, "end": 15.0, "text": "后来我总算学会了如何去爱可惜你早已远去消失在人海"}
+      ],
+      "hotwords": [],
+      "category": ["singing"],
+      "notes": "唱歌场景, 对 ASR 挑战大"
+    },
+    {
+      "sample_id": "sample_004",
+      "audio_path": "placeholder_laughing.mp3",
+      "reference_text": "哈哈哈哈这太搞笑了我不行了笑死我了",
+      "reference_segments": [
+        {"start": 0.0, "end": 5.0, "text": "哈哈哈哈这太搞笑了我不行了笑死我了"}
+      ],
+      "hotwords": [],
+      "category": ["laughter"],
+      "notes": "笑声/惊呼, SenseVoice 应检测到 LAUGHTER 事件"
+    },
+    {
+      "sample_id": "sample_005",
+      "audio_path": "placeholder_noise.mp3",
+      "reference_text": "这段音频背景有键盘声和风扇声请注意降噪",
+      "reference_segments": [
+        {"start": 0.0, "end": 7.0, "text": "这段音频背景有键盘声和风扇声请注意降噪"}
+      ],
+      "hotwords": [],
+      "category": ["noise"],
+      "notes": "强背景噪声, 考验降噪能力"
+    }
+  ],
+  "split": {
+    "train": ["sample_001", "sample_002"],
+    "test": ["sample_003", "sample_004", "sample_005"],
+    "calibration": ["sample_001"]
+  }
+}

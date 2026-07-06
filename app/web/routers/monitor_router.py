@@ -16,13 +16,13 @@ def get_monitor_data() -> dict:
     """运维面板数据:磁盘/CPU/任务统计/录制状态。"""
     import time
 
+    from app.core.config import settings
+    from app.core.paths import clips_dir, raw_dir
     from app.pipeline.storage_lifecycle import (
         check_disk_safe,
         get_directory_size,
         get_disk_usage,
     )
-    from app.core.paths import clips_dir, raw_dir
-    from app.core.config import settings
 
     # 磁盘。
     disk = get_disk_usage()
@@ -52,8 +52,8 @@ def get_monitor_data() -> dict:
     tasks = _get_task_stats()
 
     # 录制状态。
-    from app.web.service import recorder_manager
     from app.pipeline.live_monitor import live_monitor
+    from app.web.service import recorder_manager
 
     running_rooms = recorder_manager.running_ids()
     monitor_status = live_monitor.status()
@@ -116,9 +116,10 @@ def _get_task_stats() -> dict:
     """获取任务队列统计(各阶段数量/最老任务等待时间)。"""
     import time
 
-    from app.db.session import get_session
+    from sqlmodel import select
+
     from app.db.models import SegmentTask, TaskStatus
-    from sqlmodel import select, func
+    from app.db.session import get_session
 
     with get_session() as db:
         all_tasks = db.exec(select(SegmentTask).order_by(SegmentTask.created_at.asc())).all()
@@ -154,9 +155,10 @@ def _get_task_stats() -> dict:
 
 def _get_recent_failures() -> list[dict]:
     """获取最近 20 个失败任务。"""
+    from sqlmodel import select
+
     from app.db.models import SegmentTask
     from app.db.session import get_session
-    from sqlmodel import select
 
     with get_session() as db:
         failed = db.exec(
@@ -176,3 +178,39 @@ def _get_recent_failures() -> list[dict]:
         }
         for t in failed
     ]
+
+
+# V0.1.12.2: ASR 指标
+@monitor_router.get("/asr-metrics")
+def get_asr_metrics() -> JSONResponse:
+    """返回 ASR 调用指标 (调用次数、耗时、复核、fallback、RTF)。"""
+    try:
+        from app.analysis.asr_metrics import get_snapshot
+        return JSONResponse(get_snapshot())
+    except Exception as exc:
+        return JSONResponse({"error": str(exc)}, status_code=500)
+
+
+# V0.1.12.2: ASR 模型状态
+@monitor_router.get("/asr-models")
+def get_asr_models() -> JSONResponse:
+    """返回当前已加载 ASR 模型状态。"""
+    try:
+        from app.analysis.asr_manager import get_asr_manager
+        mgr = get_asr_manager()
+        infos = []
+        for info in mgr.all_infos():
+            infos.append({
+                "key": info.key,
+                "model_id": info.model_id,
+                "device": info.device,
+                "is_loaded": info.is_loaded,
+                "loaded_at": info.loaded_at,
+                "last_used_at": info.last_used_at,
+                "load_duration": info.load_duration,
+                "keep_loaded": info.keep_loaded,
+                "revision": info.revision,
+            })
+        return JSONResponse({"models": infos})
+    except Exception as exc:
+        return JSONResponse({"error": str(exc)}, status_code=500)

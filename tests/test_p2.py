@@ -2,14 +2,13 @@
 
 from __future__ import annotations
 
-from app.pipeline.collection import detect_overlap, _generate_chapter_card  # noqa: F811
 from app.analysis.room_config import (
     apply_aliases,
     is_blocked_topic,
     load_room_config,
     match_extra_keywords,
 )
-
+from app.pipeline.collection import detect_overlap  # noqa: F811
 
 # ======================== 重合检测 ========================
 

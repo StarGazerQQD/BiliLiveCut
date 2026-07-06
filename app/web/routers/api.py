@@ -9,10 +9,11 @@
 
 from __future__ import annotations
 
+import time as _login_time
 from pathlib import Path
 from typing import Any, Literal
 
-from fastapi import APIRouter, HTTPException
+from fastapi import APIRouter, HTTPException, Request
 from fastapi.responses import FileResponse
 from pydantic import BaseModel, field_validator
 
@@ -129,12 +130,14 @@ class LLMProvidersRequest(BaseModel):
 
 class MergeTopicsRequest(BaseModel):
     """合井主题请求。"""
+
     source_id: int
     target_id: int
 
 
 class TopicUpdateRequest(BaseModel):
     """更新主题请求(仅允许白名单字段)。"""
+
     title: str | None = None
     summary: str | None = None
     keywords_json: str | None = None
@@ -144,6 +147,7 @@ class TopicUpdateRequest(BaseModel):
 
 class SplitTopicRequest(BaseModel):
     """拆分主题请求。"""
+
     event_ids: list[int]
 
     @field_validator("event_ids")
@@ -156,6 +160,7 @@ class SplitTopicRequest(BaseModel):
 
 class ReorderTopicRequest(BaseModel):
     """重排主题事件请求。"""
+
     event_ids: list[int]
 
 
@@ -314,6 +319,75 @@ def publish_clip(clip_id: int) -> dict[str, Any]:
     except ValueError as exc:
         raise HTTPException(status_code=404, detail=str(exc)) from exc
     return {"status": "ready", **result}
+
+
+@router.post("/clips/{clip_id}/confirm-manual-upload")
+def confirm_manual_upload(
+    clip_id: int,
+    platform: str | None = None,
+    submission_id: str | None = None,
+    published_url: str | None = None,
+) -> dict[str, Any]:
+    """V0.1.12.7: 确认手动上传完成, 将 FinalClip 标记为 PUBLISHED。
+
+    ManualUploader 导出清单后, FinalClip 不会自动标记为 PUBLISHED。
+    用户需在前端确认已完成手动投稿, 然后调用此接口完成状态更新。
+
+    :param clip_id: FinalClip.id。
+    :param platform: 投稿平台 (如 bilibili)。
+    :param submission_id: 稿件号 (如 BV 号)。
+    :param published_url: 已发布链接。
+    :returns: 操作结果。
+    """
+    import json as _json
+
+    from loguru import logger as _log
+
+    from app.db.models import ClipStatus, FinalClip, SegmentTask, SystemLog
+    from app.db.models import TaskStatus as _Ts
+    from app.db.session import get_session
+
+    with get_session() as db:
+        clip = db.get(FinalClip, clip_id)
+        if clip is None:
+            raise HTTPException(status_code=404, detail="切片不存在")
+        clip.status = ClipStatus.PUBLISHED
+        db.add(clip)
+
+        # 如果有关联的 SegmentTask, 推进到 COMPLETED
+        from sqlmodel import select as _sel
+        task = db.exec(
+            _sel(SegmentTask).where(
+                SegmentTask.clip_id == clip_id,
+            ).order_by(SegmentTask.created_at.desc())
+        ).first()
+        if task and task.stage in (
+            _Ts.AWAITING_PUBLISH_CONFIRMATION, _Ts.PUBLISHING,
+            _Ts.QUEUED_FOR_PUBLISH, _Ts.RENDERED,
+        ):
+            task.stage = _Ts.COMPLETED
+            from datetime import UTC
+            from datetime import datetime as _dt_now
+            task.completed_at = _dt_now(UTC)
+            db.add(task)
+
+        # 日志记录
+        db.add(SystemLog(
+            level="INFO",
+            module="web",
+            event="manual_upload_confirmed",
+            message=f"clip={clip_id} 手动上传已确认",
+            context_json=_json.dumps({
+                "clip_id": clip_id,
+                "platform": platform,
+                "submission_id": submission_id,
+                "published_url": published_url,
+            }) if (platform or submission_id or published_url) else None,
+        ))
+
+    _log.info("manual_upload_confirmed: clip={} platform={} submission_id={}",
+              clip_id, platform, submission_id)
+    return {"status": "published", "clip_id": clip_id}
 
 
 @router.post("/clips/{clip_id}/reject")
@@ -553,6 +627,35 @@ def clip_cover(clip_id: int) -> FileResponse:
     return FileResponse(str(file_path), media_type="image/jpeg")
 
 
+# ── 登录失败限流 ────────────────────────────────────────────────────────────
+_LOGIN_FAILURES: dict[str, list[float]] = {}
+_MAX_LOGIN_ATTEMPTS = 5
+_LOGIN_WINDOW_S = 300  # 5 分钟窗口
+
+
+def _check_login_rate(ip: str) -> bool:
+    """检查指定 IP 的登录失败次数是否在限流窗口内超限。
+
+    :param ip: 客户端 IP 地址。
+    :returns: ``True`` 表示允许继续尝试,``False`` 表示已触发限流。
+    """
+    now = _login_time.time()
+    timestamps = _LOGIN_FAILURES.get(ip, [])
+    _LOGIN_FAILURES[ip] = [t for t in timestamps if now - t <= _LOGIN_WINDOW_S]
+    return len(_LOGIN_FAILURES[ip]) < _MAX_LOGIN_ATTEMPTS
+
+
+def _record_login_failure(ip: str) -> None:
+    """记录一次登录失败的时间戳。
+
+    :param ip: 客户端 IP 地址。
+    """
+    now = _login_time.time()
+    if ip not in _LOGIN_FAILURES:
+        _LOGIN_FAILURES[ip] = []
+    _LOGIN_FAILURES[ip].append(now)
+
+
 # ----------------------------- 账号登录 / Cookie 管理 ----------------------------- #
 @router.get("/cookie-status")
 def cookie_status() -> dict[str, Any]:
@@ -561,11 +664,17 @@ def cookie_status() -> dict[str, Any]:
 
 
 @router.post("/login")
-def login_start() -> dict[str, Any]:
+def login_start(request: Request) -> dict[str, Any]:
     """启动一次浏览器登录流程（Playwright）,返回任务 ID 供前端轮询。"""
+    ip = request.client.host if request.client else "unknown"
+    if not _check_login_rate(ip):
+        raise HTTPException(
+            status_code=429, detail="登录尝试过于频繁,请稍后再试"
+        )
     try:
         return start_login()
     except Exception as exc:
+        _record_login_failure(ip)
         raise HTTPException(status_code=500, detail=str(exc)) from exc
 
 
@@ -595,7 +704,8 @@ def login_clear() -> dict[str, str]:
 def get_tasks(limit: int = 50, stage: str | None = None) -> dict[str, Any]:
     """返回任务队列列表及各阶段统计。"""
     limit = _clamp(limit, 1, _MAX_QUERY_LIMIT)
-    from app.pipeline.task_worker import list_tasks as _list, task_worker
+    from app.pipeline.task_worker import list_tasks as _list
+    from app.pipeline.task_worker import task_worker
 
     tasks = _list(limit=limit, stage=stage)
     return {"tasks": tasks, "stats": task_worker.stats()}
@@ -754,10 +864,17 @@ def get_analytics() -> dict[str, Any]:
     """
     from datetime import UTC, datetime, timedelta
 
-    from sqlmodel import func, select as _sel
+    from sqlmodel import func
+    from sqlmodel import select as _sel
+
     from app.db.models import (
-        ClipStatus, FinalClip, HighlightCandidate,
-        LiveRoom, RawSegment, RecordingSession, TaskStatus,
+        ClipStatus,
+        FinalClip,
+        HighlightCandidate,
+        LiveRoom,
+        RawSegment,
+        RecordingSession,
+        TaskStatus,
     )
     from app.db.session import get_session
 
@@ -797,11 +914,16 @@ def get_analytics() -> dict[str, Any]:
         ).all()
         for s in all_scores:
             s = s or 0
-            if s < 0.3: score_buckets["0.0-0.3"] += 1
-            elif s < 0.5: score_buckets["0.3-0.5"] += 1
-            elif s < 0.7: score_buckets["0.5-0.7"] += 1
-            elif s < 0.85: score_buckets["0.7-0.85"] += 1
-            else: score_buckets["0.85-1.0"] += 1
+            if s < 0.3:
+                score_buckets["0.0-0.3"] += 1
+            elif s < 0.5:
+                score_buckets["0.3-0.5"] += 1
+            elif s < 0.7:
+                score_buckets["0.5-0.7"] += 1
+            elif s < 0.85:
+                score_buckets["0.7-0.85"] += 1
+            else:
+                score_buckets["0.85-1.0"] += 1
 
         # --- 录制统计 ---
         total_sessions = db.exec(
@@ -903,4 +1025,47 @@ def get_analytics() -> dict[str, Any]:
         "score_distribution": score_buckets,
         "daily_trend": daily_record,
         "room_ranking": room_ranks,
+    }
+
+
+@router.get("/metrics")
+def get_metrics() -> dict[str, Any]:
+    """返回实时运行指标 (V0.1.12.9)。
+
+    轻量级监控端点, 包含:
+    - 任务计数
+    - Worker/录制状态
+    - 平均性能耗时
+    - 磁盘使用
+    - 历史趋势 (最近 60 点)
+    """
+    from app.core.metrics import get_history, snapshot
+
+    snap = snapshot()
+    history = get_history(limit=60)
+
+    return {
+        "current": {
+            "tasks": {
+                "queued": snap.tasks_queued,
+                "processing": snap.tasks_processing,
+                "completed": snap.tasks_completed,
+                "failed": snap.tasks_failed,
+            },
+            "workers": snap.active_workers,
+            "recordings": snap.active_recordings,
+            "recording_hours": snap.total_recording_hours,
+            "avg_times": {
+                "asr_ms": snap.asr_avg_ms,
+                "render_ms": snap.render_avg_ms,
+                "upload_ms": snap.upload_avg_ms,
+            },
+            "disk": {
+                "free_gb": snap.disk_free_gb,
+                "raw_gb": snap.disk_raw_gb,
+                "clips_gb": snap.disk_clips_gb,
+            },
+            "db_lock_wait_avg_ms": snap.db_lock_wait_avg_ms,
+        },
+        "history": history,
     }

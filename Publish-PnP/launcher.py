@@ -22,7 +22,6 @@ import shutil
 import subprocess
 import sys
 import tempfile
-import time
 import traceback
 import urllib.request
 import webbrowser
@@ -34,7 +33,7 @@ VENV_DIR = ".venv"
 WHEELS_DIR = "vendor" + os.sep + "wheels"
 REQUIREMENTS = "requirements-bundle.txt"
 APP_NAME = "BiliLiveCut"
-VERSION = "V0.1.12.1 Alpha"
+VERSION = "V0.1.12.9 Alpha"
 
 # GitHub 源码归档（公共仓库无需 token）
 GITHUB_REPO = "StarGazerQQD/BiliLiveCut"
@@ -647,7 +646,7 @@ def main() -> None:
             try:
                 _pip_install(venv_python, root)
                 print("      [OK] 依赖安装完成")
-            except subprocess.CalledProcessError as exc:
+            except subprocess.CalledProcessError:
                 msg = "依赖安装失败。常见原因:\n"
                 msg += "  1) Python 3.13 不兼容:请换用 Python 3.11 或 3.12\n"
                 msg += "  2) 网络问题:请检查是否能访问 mirrors.aliyun.com 和 pypi.tuna.tsinghua.edu.cn\n"
@@ -683,7 +682,7 @@ def main() -> None:
     print("=" * 60)
     print("  环境就绪,启动 Web 控制台…")
     print()
-    print(f"  浏览器将自动打开: http://127.0.0.1:8000")
+    print("  浏览器将自动打开: http://127.0.0.1:8000")
     print("  按 Ctrl+C 停止服务。")
     print("=" * 60)
     print()

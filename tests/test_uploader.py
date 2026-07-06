@@ -68,12 +68,13 @@ def test_precheck_frequency_limit(temp_db: None, tmp_path: Path) -> None:
 
     cid = _make_clip(tmp_path)
     with get_session() as db:
-        for _ in range(settings.upload_max_per_hour):
+        for i in range(settings.upload_max_per_hour):
             db.add(
                 UploadTask(
                     clip_id=cid,
                     status=UploadStatus.SUCCESS,
                     updated_at=datetime.now(UTC),
+                    uploader=f"test_{i}",  # V0.1.12.7: UNIQUE(clip_id,uploader) 要求不同 uploader
                 )
             )
     result = precheck_clip(cid)
@@ -82,7 +83,7 @@ def test_precheck_frequency_limit(temp_db: None, tmp_path: Path) -> None:
 
 
 def test_manual_upload_success_and_publish(temp_db: None, tmp_path: Path) -> None:
-    """manual 上传成功:导出清单、任务 success、成品标记 published。"""
+    """V0.1.12.7: manual 上传成功:导出清单、任务 success, 不再标记 PUBLISHED (需人工确认)。"""
     from app.core.paths import ready_to_upload_dir
     from app.db.models import ClipStatus, FinalClip, UploadStatus
     from app.db.session import get_session
@@ -93,9 +94,10 @@ def test_manual_upload_success_and_publish(temp_db: None, tmp_path: Path) -> Non
     assert task.status == UploadStatus.SUCCESS
     assert task.uploader == "manual"
     assert (ready_to_upload_dir() / f"clip_{cid}.json").exists()
+    # V0.1.12.7: ManualUploader 不再标记 FinalClip 为 PUBLISHED
     with get_session() as db:
         clip = db.get(FinalClip, cid)
-        assert clip.status == ClipStatus.PUBLISHED
+        assert clip.status != ClipStatus.PUBLISHED, "ManualUploader 不应自动标记 PUBLISHED"
 
 
 def test_settings_store_toggle(temp_db: None) -> None:

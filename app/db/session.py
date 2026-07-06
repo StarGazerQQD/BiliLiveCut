@@ -1,13 +1,16 @@
-"""数据库引擎与会话管理。
+"""数据库引擎与会话管理 (V0.1.12.9)。
 
 提供:
 
 * :data:`engine` —— 全局 SQLModel/SQLAlchemy 引擎(SQLite);
-* :func:`init_db` —— 建表(幂等);
+* :func:`init_db` —— 建表或校验 Schema (V0.1.12.9: 使用 Schema 系统, 移除迁移框架);
 * :func:`get_session` —— 上下文管理器,自动提交/回滚/关闭。
 
 SQLite 在多线程访问时需要 ``check_same_thread=False``;录制与下游任务
 运行在不同线程/进程时由各自获取独立连接。
+
+V0.1.12.9: 移除 _migrate_add_columns、_migrate_old_mode_to_switches
+和所有迁移相关逻辑。Schema 创建由 app.db.schema 统一管理。
 """
 
 from __future__ import annotations
@@ -18,7 +21,7 @@ from pathlib import Path
 
 from loguru import logger
 from sqlalchemy import event
-from sqlmodel import Session, SQLModel, create_engine
+from sqlmodel import Session, create_engine
 
 from app.core.config import settings
 
@@ -44,153 +47,33 @@ if _db_url.startswith("sqlite"):
 
         * ``journal_mode=WAL``:读写并发更好(读不阻塞写);
         * ``busy_timeout``:遇锁时自动重试等待,减少报错;
-        * ``synchronous=NORMAL``:在 WAL 下兼顾安全与性能。
+        * ``synchronous=NORMAL``:在 WAL 下兼顾安全与性能;
+        * ``foreign_keys=ON``:强制外键约束。
         """
         cursor = dbapi_conn.cursor()
         cursor.execute("PRAGMA journal_mode=WAL")
         cursor.execute("PRAGMA busy_timeout=30000")
         cursor.execute("PRAGMA synchronous=NORMAL")
-        # V0.1.11-alpha:启用外键约束(SQLite 默认关闭)。
         cursor.execute("PRAGMA foreign_keys=ON")
         cursor.close()
 
 
-def _migrate_add_columns() -> None:
-    """为旧表追加新增列(缺失则添加,幂等安全)。"""
-    _migrations = [
-        # 格式: (表名, 列名, SQL 类型, 默认值)
-        ("live_rooms", "schedule_enabled", "INTEGER NOT NULL DEFAULT 0", None),
-        ("live_rooms", "auto_threshold_enabled", "INTEGER NOT NULL DEFAULT 0", None),
-        ("live_rooms", "danmaku_sentiment_enabled", "INTEGER NOT NULL DEFAULT 0", None),
-        ("recording_sessions", "last_reconnected_at", "TEXT", None),
-        # V0.1.6: 自动化开关拆分。
-        ("live_rooms", "auto_record", "INTEGER NOT NULL DEFAULT 0", None),
-        ("live_rooms", "auto_analyze", "INTEGER NOT NULL DEFAULT 0", None),
-        ("live_rooms", "auto_render", "INTEGER NOT NULL DEFAULT 0", None),
-        ("live_rooms", "auto_approve", "INTEGER NOT NULL DEFAULT 0", None),
-        ("live_rooms", "auto_upload", "INTEGER NOT NULL DEFAULT 0", None),
-        ("live_rooms", "auto_approve_threshold", "REAL NOT NULL DEFAULT 0.82", None),
-        ("live_rooms", "review_threshold", "REAL NOT NULL DEFAULT 0.50", None),
-        # V0.1.6 P2: 房间配置。
-        ("live_rooms", "room_config_json", "TEXT", None),
-        # V0.1.9: ML 高光模型开关。
-        ("live_rooms", "ml_highlight_enabled", "INTEGER NOT NULL DEFAULT 0", None),
-        # V0.1.8: 合集章节标题持久化。
-        ("highlight_topics", "chapter_title", "TEXT", None),
-        # V0.1.11-alpha: 任务并发控制与崩溃恢复。
-        ("segment_tasks", "event_id", "INTEGER", None),
-        ("segment_tasks", "failed_stage", "TEXT", None),
-        ("segment_tasks", "claimed_by", "TEXT", None),
-        ("segment_tasks", "claimed_at", "TEXT", None),
-        ("segment_tasks", "heartbeat_at", "TEXT", None),
-        # V0.1.11-alpha: 主题确认标记。
-        ("highlight_topics", "confirmed_by_user", "INTEGER NOT NULL DEFAULT 0", None),
-        # V0.1.12: ASR 多引擎流水线 — 辅助特征字段。
-        ("transcripts", "auxiliary_json", "TEXT", None),
-    ]
-    with engine.connect() as conn:
-        existing_lr = {r[1] for r in conn.exec_driver_sql(
-            "PRAGMA table_info(live_rooms)"
-        ).fetchall()}
-        existing_rs = {r[1] for r in conn.exec_driver_sql(
-            "PRAGMA table_info(recording_sessions)"
-        ).fetchall()}
-        existing_ht = {r[1] for r in conn.exec_driver_sql(
-            "PRAGMA table_info(highlight_topics)"
-        ).fetchall()} if conn.exec_driver_sql(
-            "SELECT name FROM sqlite_master WHERE type='table' AND name='highlight_topics'"
-        ).fetchone() else set()
-        existing_st = {r[1] for r in conn.exec_driver_sql(
-            "PRAGMA table_info(segment_tasks)"
-        ).fetchall()} if conn.exec_driver_sql(
-            "SELECT name FROM sqlite_master WHERE type='table' AND name='segment_tasks'"
-        ).fetchone() else set()
-        for table, col, sql_type, _ in _migrations:
-            if table == "live_rooms":
-                existing = existing_lr
-            elif table == "recording_sessions":
-                existing = existing_rs
-            elif table == "highlight_topics":
-                existing = existing_ht
-            elif table == "segment_tasks":
-                existing = existing_st
-            else:
-                existing = set()
-            if col not in existing:
-                try:
-                    conn.exec_driver_sql(f"ALTER TABLE {table} ADD COLUMN {col} {sql_type}")
-                    conn.commit()
-                except Exception as exc:
-                    logger.warning("迁移失败(可能列已存在或被并发修改): {}.{} {} ({})", table, col, sql_type, exc)
-
-    # V0.1.6: 迁移旧 mode → 新 auto_* 开关(仅对尚未设置过开关的行生效)。
-    _migrate_old_mode_to_switches()
-
-
-def _migrate_old_mode_to_switches() -> None:
-    """将旧的 ``manual/semi/auto`` 模式映射为新的独立自动化开关。
-
-    - manual: 全部关闭,仅人工。
-    - semi:   自动录制+分析+渲染;批准和上传人工。
-    - auto:   全自动。
-    """
-    from app.db.models import LiveRoom, RoomMode
-
-    with get_session() as db:
-        from sqlmodel import select
-
-        rooms = db.exec(select(LiveRoom)).all()
-        updated = 0
-        for room in rooms:
-            # 仅在 5 个开关全为 False 时才做迁移(即首次升级)。
-            any_auto_set = (
-                room.auto_record or room.auto_analyze or room.auto_render
-                or room.auto_approve or room.auto_upload
-            )
-            if any_auto_set:
-                continue
-            mode = room.mode
-            if mode == RoomMode.MANUAL:
-                room.auto_record = False
-                room.auto_analyze = False
-                room.auto_render = False
-                room.auto_approve = False
-                room.auto_upload = False
-                updated += 1
-                db.add(room)
-            elif mode == RoomMode.SEMI:
-                room.auto_record = True
-                room.auto_analyze = True
-                room.auto_render = True
-                room.auto_approve = False
-                room.auto_upload = False
-                updated += 1
-                db.add(room)
-            elif mode == RoomMode.AUTO:
-                room.auto_record = True
-                room.auto_analyze = True
-                room.auto_render = True
-                room.auto_approve = True
-                room.auto_upload = False  # 上传始终需人工确认
-                updated += 1
-                db.add(room)
-        if updated:
-            logger.info("已迁移 {} 个房间的旧 mode→新 auto_* 开关。", updated)
-
-
 def init_db() -> None:
-    """创建所有表(若不存在),并对旧表执行轻量迁移(追加缺失列)。
+    """初始化数据库 — 创建新数据库或校验已有数据库 (V0.1.12.9)。
 
-    导入模型模块以触发表注册,然后调用 ``SQLModel.metadata.create_all``。
-    可安全重复调用。
+    流程:
+    1. 数据库文件不存在 → app.db.schema.assure_schema() 创建全部表
+    2. 数据库文件存在   → 校验 schema_meta / version / fingerprint / 关键约束
+    3. 不兼容 → RuntimeError, 阻止启动
+    4. 不执行任何迁移、ALTER TABLE 或旧数据修复
+
+    :raises RuntimeError: Schema 不兼容或校验失败时。
     """
-    # 必须先导入 models,SQLModel.metadata 才知道有哪些表。
     from app.db import models  # noqa: F401
+    from app.db.schema import assure_schema
 
-    SQLModel.metadata.create_all(engine)
-
-    # 轻量迁移:为已存在的 live_rooms 表补充 V0.1.2 新增列(SQLite 的 ALTER 语义)。
-    _migrate_add_columns()
+    assure_schema()
+    logger.info("数据库初始化完成: {}", settings.database_url)
 
 
 @contextmanager

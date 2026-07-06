@@ -249,8 +249,9 @@ def _extract_ffmpeg_from_zip(zip_path: Path, bin_dir: Path, wanted: list[str]) -
     """
     with zipfile.ZipFile(zip_path) as zf:
         for member in zf.namelist():
-            # 安全防护: 禁止包含 .. 的路径名, 防止 ZipSlip 路径遍历
-            if ".." in member:
+            # 安全防护: 禁止绝对路径和 .. 的路径名, 防止 ZipSlip 路径遍历
+            if member.startswith("/") or ".." in member.split("/"):
+                print(f"跳过危险路径: {member}")
                 continue
             base = member.rsplit("/", 1)[-1]
             if base in wanted and member.endswith("bin/" + base):

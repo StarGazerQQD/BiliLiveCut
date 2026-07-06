@@ -14,7 +14,7 @@ from __future__ import annotations
 from functools import lru_cache
 from typing import Literal
 
-from pydantic import Field
+from pydantic import Field, model_validator
 from pydantic_settings import BaseSettings, SettingsConfigDict
 
 
@@ -31,10 +31,17 @@ class Settings(BaseSettings):
         case_sensitive=False,
     )
 
+    def __repr__(self) -> str:
+        """安全 repr — 对敏感字段值进行脱敏处理。"""
+        from app.core.sanitize import sanitize_text
+
+        raw = super().__repr__()
+        return sanitize_text(raw)
+
     # ---------- 通用 ----------
     app_env: Literal["dev", "prod"] = "dev"
     log_level: str = "INFO"
-    admin_password: str = ""  # V0.1.8.2: Web 管理后台认证密码(空则无认证)
+    admin_password: str = Field(default="", repr=False)  # V0.1.8.2: Web 管理后台认证密码(空则无认证)
 
     # ---------- 存储 ----------
     storage_root: str = "./storage"
@@ -54,12 +61,14 @@ class Settings(BaseSettings):
 
     # ---------- Bilibili 合规 ----------
     require_authorization: bool = True
-    bilibili_cookie: str = ""
+    bilibili_cookie: str = Field(default="", repr=False)
 
     # ---------- AI:语音转写(本地 Whisper,境内可用) ----------
     whisper_model: str = "small"
     whisper_device: str = "cpu"
     whisper_compute_type: str = "int8"
+    # V0.1.13: ASR 资源检查策略 — "strict"=资源不足抛异常, "warn"=仅警告
+    asr_resource_policy: Literal["strict", "warn"] = "warn"
 
     # ---------- AI:多引擎 ASR 流水线 (V0.1.12) ----------
     # 主引擎: paraformer / whisper, 默认 paraformer-zh
@@ -70,15 +79,36 @@ class Settings(BaseSettings):
     asr_funasr_review: bool = True
     # 最终兜底: Whisper (large-v3 / turbo), 保留切换
     asr_fallback_whisper: bool = True
-    # 低置信度阈值 (logprob < 此值触发复核)
+    # 低置信度阈值 (logprob < 此值触发复核, V0.1.12.2 改为 review_risk_threshold)
     asr_confidence_threshold: float = -0.6
-    # ASR 模型下载源
-    asr_model_revision: str = "master"
+    # V0.1.12.2: 统一复核风险阈值 (0-1, review_risk_score >= 此值触发复核)
+    asr_review_risk_threshold: float = 0.65
+    # V0.1.12.2: SenseVoice 使用开关 (独立于模型加载开关 asr_sensevoice)
+    asr_sensevoice_enabled: bool = True   # False=关闭辅助特征,不参与评分
+
+    # ---------- V0.1.12.2: 分后端设备与并发控制 ----------
+    asr_primary_device: str = "cpu"
+    asr_auxiliary_device: str = "cpu"
+    asr_review_device: str = "cpu"
+    asr_fallback_device: str = "cpu"
+    asr_primary_max_concurrency: int = 1
+    asr_auxiliary_max_concurrency: int = 1
+    asr_review_max_concurrency: int = 1
+    asr_fallback_max_concurrency: int = 1
+    # 模型生命周期
+    asr_primary_keep_loaded: bool = True
+    asr_auxiliary_keep_loaded: bool = False
+    asr_review_keep_loaded: bool = False
+    asr_fallback_keep_loaded: bool = False
+    asr_model_idle_unload_seconds: int = 900
+    asr_preload_on_start: bool = False
+    # V0.1.12.2: 固定模型 revision (不再默认 master)
+    asr_model_revision: str = "v2.0.4"
 
     # ---------- AI:大模型(OpenAI 兼容协议,境内推荐 DeepSeek/通义/Kimi/GLM) ----------
     # provider 仅作标识;真正决定连接的是 base_url + api_key + model。
     llm_provider: str = "deepseek"
-    llm_api_key: str = ""  # Deprecated: 已迁移至 LLMProvider 系统
+    llm_api_key: str = Field(default="", repr=False)  # Deprecated: 已迁移至 LLMProvider 系统
     # OpenAI 兼容 API 的 base_url(须含 /v1 等版本前缀,视服务商而定):
     #   DeepSeek: https://api.deepseek.com/v1
     #   通义千问 : https://dashscope.aliyuncs.com/compatible-mode/v1
@@ -95,7 +125,8 @@ class Settings(BaseSettings):
     llm_daily_budget: float = 0.0
 
     # 兼容旧配置:若未填 llm_* 而填了 anthropic_*,仍可回退读取(已废弃,仅为兼容保留)。
-    anthropic_api_key: str = ""           # Deprecated: 已迁移至多 LLM 供应商系统 (app/analysis/llm_providers.py)
+    anthropic_api_key: str = Field(default="", repr=False)
+    # Deprecated: 已迁移至多 LLM 供应商系统 (app/analysis/llm_providers.py)
     anthropic_model: str = ""            # Deprecated: 未使用,仅保留向后兼容
     llm_daily_budget_usd: float = 0.0
 
@@ -103,7 +134,7 @@ class Settings(BaseSettings):
     trend_enabled: bool = False           # 是否启用网感资料库(默认关闭,按需开启)
     # 趋势采集专用 API 配置(独立于通用 LLM,可指定不同的模型/服务商)。
     # 留空则回退到通用 LLM 配置(多模型列表或 .env LLM_* 单模型)。
-    trend_api_key: str = ""               # 趋势采集专用 API Key
+    trend_api_key: str = Field(default="", repr=False)               # 趋势采集专用 API Key
     trend_base_url: str = ""              # 趋势采集专用 base_url(OpenAI 兼容)
     trend_model: str = ""                 # 趋势采集专用模型名(留空则用 llm_model)
     trend_web_search: bool = True         # 是否启用联网搜索工具采集(关闭则仅靠模型知识)
@@ -166,7 +197,7 @@ class Settings(BaseSettings):
 
     # 钉钉机器人 Webhook。
     dingtalk_webhook: str = ""             # 钉钉机器人 Webhook 地址
-    dingtalk_secret: str = ""              # 钉钉机器人加签密钥(可选)
+    dingtalk_secret: str = Field(default="", repr=False)              # 钉钉机器人加签密钥(可选)
 
     # 企业微信机器人 Webhook。
     wecom_webhook: str = ""                # 企业微信机器人 Webhook 地址
@@ -175,7 +206,7 @@ class Settings(BaseSettings):
     smtp_host: str = ""                    # SMTP 服务器
     smtp_port: int = 465                   # SMTP 端口(默认 SSL 465)
     smtp_user: str = ""                    # SMTP 用户名
-    smtp_password: str = ""                # SMTP 密码 (repr=False 防止日志泄露)
+    smtp_password: str = Field(default="", repr=False)                # SMTP 密码 (repr=False 防止日志泄露)
     smtp_from: str = ""                    # 发件人地址
     smtp_to: str = ""                      # 收件人地址(多个用逗号分隔)
 
@@ -185,6 +216,61 @@ class Settings(BaseSettings):
     notify_on_disk_alert: bool = True      # 磁盘不足时通知
     notify_on_error: bool = True           # 任务永久失败时通知
     disk_alert_threshold_gb: int = 10      # 磁盘告警阈值(GB)
+
+    @model_validator(mode="after")
+    def validate_cross_fields(self) -> Settings:
+        """跨字段校验,在模型完成字段级别验证后执行。
+
+        检查逻辑约束(如磁盘告警阈值应小于最小保留空间)
+        以及格式约束(如上传命令模板须包含 ``{file}`` 占位符)。
+
+        :returns: 校验通过的 ``self``。
+        :raises ValueError: 校验失败时抛出含描述性信息的异常。
+        """
+        # asr_review_risk_threshold 必须在 [0, 1] 范围内
+        if not (0.0 <= self.asr_review_risk_threshold <= 1.0):
+            raise ValueError(
+                f"asr_review_risk_threshold 必须在 0.0 ~ 1.0 之间,"
+                f"当前值: {self.asr_review_risk_threshold}"
+            )
+
+        # clip_max_duration_s 必须大于 5 秒
+        if self.clip_max_duration_s <= 5:
+            raise ValueError(
+                f"clip_max_duration_s 必须大于 5 秒,"
+                f"当前值: {self.clip_max_duration_s}"
+            )
+
+        # upload_max_retries 必须 >= 0
+        if self.upload_max_retries < 0:
+            raise ValueError(
+                f"upload_max_retries 必须 >= 0,"
+                f"当前值: {self.upload_max_retries}"
+            )
+
+        # upload_max_per_hour 必须 >= 1
+        if self.upload_max_per_hour < 1:
+            raise ValueError(
+                f"upload_max_per_hour 必须 >= 1,"
+                f"当前值: {self.upload_max_per_hour}"
+            )
+
+        # 磁盘告警阈值应 <= 最小保留空间,确保告警在磁盘不足之前触发
+        if self.disk_alert_threshold_gb > self.min_free_disk_gb:
+            raise ValueError(
+                f"disk_alert_threshold_gb ({self.disk_alert_threshold_gb} GB)"
+                f" 必须 <= min_free_disk_gb ({self.min_free_disk_gb} GB),"
+                f" 确保磁盘告警在空间不足之前触发"
+            )
+
+        # biliup_upload_cmd 如果非空,必须包含 {file} 占位符
+        if self.biliup_upload_cmd and "{file}" not in self.biliup_upload_cmd:
+            raise ValueError(
+                "biliup_upload_cmd 必须包含 {file} 占位符,"
+                f"当前值: {self.biliup_upload_cmd}"
+            )
+
+        return self
 
 
 @lru_cache(maxsize=1)

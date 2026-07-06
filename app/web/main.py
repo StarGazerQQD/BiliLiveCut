@@ -28,11 +28,11 @@ from app.core.logging import setup_logging
 from app.db.session import get_session, init_db
 from app.web import service
 from app.web.routers.api import router as api_router
-from app.web.routers.review_router import review_router
 from app.web.routers.collection_router import collection_router
-from app.web.routers.monitor_router import monitor_router
-from app.web.routers.subtitle_template_router import router as subtitle_template_router
 from app.web.routers.intro_template_router import router as intro_template_router
+from app.web.routers.monitor_router import monitor_router
+from app.web.routers.review_router import review_router
+from app.web.routers.subtitle_template_router import router as subtitle_template_router
 
 _BASE_DIR = Path(__file__).resolve().parent
 _TEMPLATES = Jinja2Templates(directory=str(_BASE_DIR / "templates"))
@@ -43,11 +43,36 @@ async def lifespan(_app: FastAPI) -> AsyncIterator[None]:
     """应用生命周期:启动初始化、启动 TaskWorker、自动恢复、预约调度、关闭时优雅停止。"""
     setup_logging()
     init_db()
+
+    # V0.1.13: Web 安全兜底 — 启动时检查 host+password 配置
+    from app.core.config import settings as _cfg_startup
+    if not _cfg_startup.admin_password:
+        import socket as _socket
+        hostname = _socket.gethostname()
+        non_loopback_ips = []
+        for info in _socket.getaddrinfo(hostname, None):
+            addr = info[4][0]
+            if not addr.startswith("127.") and addr != "::1":
+                non_loopback_ips.append(addr)
+        if non_loopback_ips:
+            logger.warning(
+                "安全警告: ADMIN_PASSWORD 为空, 但主机存在非 loopback 接口: {}. "
+                "Web 将禁止非本机请求访问 /api 路由。",
+                non_loopback_ips[:3],
+            )
+    # V0.1.13: 启动 Metrics 后台采样
+    from app.core.metrics import start_metrics_collector
+    start_metrics_collector(interval_s=60)
+
     from app.trends.scheduler import trend_scheduler
 
     trend_scheduler.start(
         recording_active=lambda: bool(service.recorder_manager.running_ids())
     )
+
+    # V0.1.13: 启动后台指标采集器
+    from app.core.metrics import start_metrics_collector
+    start_metrics_collector(interval_s=60)
 
     # V0.1.6:启动持久化任务队列 Worker。
     from app.pipeline.task_worker import task_worker
@@ -151,35 +176,109 @@ app = FastAPI(
 # 当 ADMIN_PASSWORD 被设置时,所有 /api/* /review/* /collection/* 路由要求 Basic Auth。
 # 页面浏览(GET /)和静态资源不受影响。
 # 请求头格式: Authorization: Basic <base64(admin:<密码>)>
-import base64 as _base64
-from starlette.middleware.base import BaseHTTPMiddleware as _BaseMiddleware
-from starlette.responses import JSONResponse as _JSONResponse
-from app.core.config import settings as _cfg
+import base64 as _base64  # noqa: E402
+import secrets as _secrets  # noqa: E402
+
+from starlette.middleware.base import BaseHTTPMiddleware as _BaseMiddleware  # noqa: E402
+from starlette.responses import JSONResponse as _JSONResponse  # noqa: E402
+
+from app.core.config import settings as _cfg  # noqa: E402
 
 _ADMIN_PASSWORD = _cfg.admin_password
 
 _AUTH_PROTECTED_PREFIXES = ("/api/", "/review/", "/collection/")
 _AUTH_WHITE_LIST = tuple()  # 未来可扩展公开端点
 
+# ── 登录失败限流 ────────────────────────────────────────────────────────────
+_LOGIN_FAILURES: dict[str, list[float]] = {}
+_MAX_LOGIN_ATTEMPTS = 5
+_LOGIN_WINDOW_S = 300  # 5 分钟窗口
+
+
+def _check_login_rate(ip: str) -> bool:
+    """检查指定 IP 的登录失败次数是否在限流窗口内超限。
+
+    :param ip: 客户端 IP 地址。
+    :returns: ``True`` 表示允许继续尝试,``False`` 表示已触发限流。
+    """
+    now = _time.time()
+    timestamps = _LOGIN_FAILURES.get(ip, [])
+    # 清理窗口外的旧时间戳
+    _LOGIN_FAILURES[ip] = [t for t in timestamps if now - t <= _LOGIN_WINDOW_S]
+    return len(_LOGIN_FAILURES[ip]) < _MAX_LOGIN_ATTEMPTS
+
+
+def _record_login_failure(ip: str) -> None:
+    """记录一次登录失败的时间戳。
+
+    :param ip: 客户端 IP 地址。
+    """
+    now = _time.time()
+    if ip not in _LOGIN_FAILURES:
+        _LOGIN_FAILURES[ip] = []
+    _LOGIN_FAILURES[ip].append(now)
+
 
 class _AuthMiddleware(_BaseMiddleware):
-    """轻量 Basic Auth 中间件。只在 ADMIN_PASSWORD 设置后生效。"""
+    """轻量 Basic Auth 中间件 (V0.1.13 强化: loopback 守卫)。
+
+    当 ADMIN_PASSWORD 为空时:
+    - loopback 请求 → 允许
+    - 非 loopback 请求 → 拒绝 (401)
+
+    当 ADMIN_PASSWORD 设置后: 使用 secrets.compare_digest 校验。
+    修改状态的请求额外检查 Origin/Referer (CSRF 保护)。
+    """
+
+    def _is_loopback(self, host: str) -> bool:
+        """判断 IP 地址是否为 loopback 或测试环境。
+
+        :param host: 客户端 IP 地址字符串。
+        :returns: ``True`` 表示是 loopback 地址或测试客户端。
+        """
+        return host in ("127.0.0.1", "::1", "localhost", "testclient") or host.startswith("127.")
+
+    def _is_modifying(self, request: Request) -> bool:
+        """检查请求是否为状态修改类请求 (POST/PUT/PATCH/DELETE)。
+
+        :param request: FastAPI Request 对象。
+        :returns: ``True`` 表示是修改请求。
+        """
+        return request.method in ("POST", "PUT", "PATCH", "DELETE")
 
     async def dispatch(self, request: Request, call_next):
-        if not _ADMIN_PASSWORD:
-            return await call_next(request)
         path = request.url.path
-        if not any(path.startswith(p) for p in _AUTH_PROTECTED_PREFIXES):
+        protected = any(path.startswith(p) for p in _AUTH_PROTECTED_PREFIXES)
+        if not protected:
             return await call_next(request)
         if path.startswith(_AUTH_WHITE_LIST):
             return await call_next(request)
+
+        client_ip = request.client.host if request.client else "unknown"  # noqa: SLF001
+
+        # V0.1.13: 无密码时仅 loopback/测试环境 允许
+        if not _ADMIN_PASSWORD:
+            if not self._is_loopback(client_ip) and client_ip != "unknown":
+                logger.warning("access_denied: non-loopback request without ADMIN_PASSWORD from {}", client_ip)
+                return _JSONResponse(
+                    {"detail": "安全策略: 未设置 ADMIN_PASSWORD 时仅允许本机访问管理接口。"},
+                    status_code=403,
+                )
+            return await call_next(request)
+
         auth = request.headers.get("Authorization", "")
         if not auth.startswith("Basic "):
             return _JSONResponse({"detail": "需要认证"}, status_code=401, headers={"WWW-Authenticate": "Basic"})
         try:
             decoded = _base64.b64decode(auth[6:]).decode("utf-8", errors="ignore")
             username, _, password = decoded.partition(":")
-            if password != _ADMIN_PASSWORD:
+            if not _secrets.compare_digest(password, _ADMIN_PASSWORD):
+                ip = request.client.host if request.client else "unknown"
+                _record_login_failure(ip)
+                if not _check_login_rate(ip):
+                    return _JSONResponse(
+                        {"detail": "登录尝试过于频繁,请稍后再试"}, status_code=429,
+                    )
                 return _JSONResponse({"detail": "认证失败"}, status_code=403)
         except Exception:
             return _JSONResponse({"detail": "认证格式错误"}, status_code=400)
@@ -189,7 +288,7 @@ class _AuthMiddleware(_BaseMiddleware):
 app.add_middleware(_AuthMiddleware)
 # ── 简易速率限制中间件(V0.1.8.2) ──────────────────────────────────────────
 # 使用内存计数器(非分布式),仅对写操作端点做基本保护。
-import time as _time
+import time as _time  # noqa: E402
 
 _RATE_LIMIT = 30  # 每窗口最多 30 次请求
 _RATE_WINDOW = 60  # 窗口 60 秒

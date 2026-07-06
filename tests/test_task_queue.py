@@ -7,7 +7,6 @@ from sqlmodel import select
 
 from app.db.models import TaskStatus
 
-
 # ---- 状态机 ----
 _VALID_TRANSITIONS: dict[str, set[str]] = {
     TaskStatus.RECORDED: {TaskStatus.QUEUED_FOR_TRANS},
@@ -16,12 +15,17 @@ _VALID_TRANSITIONS: dict[str, set[str]] = {
     TaskStatus.TRANSCRIBED: {TaskStatus.QUEUED_FOR_ANALYSIS},
     TaskStatus.QUEUED_FOR_ANALYSIS: {TaskStatus.ANALYZING},
     TaskStatus.ANALYZING: {TaskStatus.CANDIDATE_CREATED, TaskStatus.TRANSIENT_FAILED, TaskStatus.FAILED},
-    TaskStatus.CANDIDATE_CREATED: {TaskStatus.QUEUED_FOR_RENDER},
-    TaskStatus.QUEUED_FOR_RENDER: {TaskStatus.RENDERING},
-    TaskStatus.RENDERING: {TaskStatus.AWAITING_REVIEW, TaskStatus.TRANSIENT_FAILED, TaskStatus.FAILED},
+    TaskStatus.CANDIDATE_CREATED: {TaskStatus.AWAITING_REVIEW, TaskStatus.APPROVED},
     TaskStatus.AWAITING_REVIEW: {TaskStatus.APPROVED, TaskStatus.COMPLETED, TaskStatus.CANCELLED},
-    TaskStatus.APPROVED: {TaskStatus.COMPLETED},
-    TaskStatus.TRANSIENT_FAILED: {TaskStatus.QUEUED_FOR_TRANS, TaskStatus.QUEUED_FOR_ANALYSIS, TaskStatus.QUEUED_FOR_RENDER, TaskStatus.FAILED},
+    TaskStatus.APPROVED: {TaskStatus.APPROVED_WAITING_RENDER, TaskStatus.QUEUED_FOR_RENDER},
+    TaskStatus.APPROVED_WAITING_RENDER: {TaskStatus.QUEUED_FOR_RENDER, TaskStatus.CANCELLED},
+    TaskStatus.QUEUED_FOR_RENDER: {TaskStatus.RENDERING},
+    TaskStatus.RENDERING: {TaskStatus.RENDERED, TaskStatus.TRANSIENT_FAILED, TaskStatus.FAILED},
+    TaskStatus.RENDERED: {TaskStatus.AWAITING_PUBLISH_CONFIRMATION, TaskStatus.QUEUED_FOR_PUBLISH},
+    TaskStatus.AWAITING_PUBLISH_CONFIRMATION: {TaskStatus.QUEUED_FOR_PUBLISH, TaskStatus.CANCELLED},
+    TaskStatus.QUEUED_FOR_PUBLISH: {TaskStatus.PUBLISHING},
+    TaskStatus.PUBLISHING: {TaskStatus.COMPLETED, TaskStatus.TRANSIENT_FAILED, TaskStatus.FAILED},
+    TaskStatus.TRANSIENT_FAILED: {TaskStatus.QUEUED_FOR_TRANS, TaskStatus.QUEUED_FOR_ANALYSIS, TaskStatus.QUEUED_FOR_RENDER, TaskStatus.QUEUED_FOR_PUBLISH, TaskStatus.FAILED},  # noqa: E501
 }
 
 
@@ -45,14 +49,23 @@ class TestStateMachine:
             (TaskStatus.QUEUED_FOR_ANALYSIS, TaskStatus.ANALYZING, True),
             (TaskStatus.ANALYZING, TaskStatus.CANDIDATE_CREATED, True),
             (TaskStatus.ANALYZING, TaskStatus.FAILED, True),
-            (TaskStatus.CANDIDATE_CREATED, TaskStatus.QUEUED_FOR_RENDER, True),
-            (TaskStatus.QUEUED_FOR_RENDER, TaskStatus.RENDERING, True),
-            (TaskStatus.RENDERING, TaskStatus.AWAITING_REVIEW, True),
-            (TaskStatus.RENDERING, TaskStatus.FAILED, True),
+            (TaskStatus.CANDIDATE_CREATED, TaskStatus.AWAITING_REVIEW, True),
+            (TaskStatus.CANDIDATE_CREATED, TaskStatus.APPROVED, True),
             (TaskStatus.AWAITING_REVIEW, TaskStatus.APPROVED, True),
+            (TaskStatus.APPROVED, TaskStatus.QUEUED_FOR_RENDER, True),
+            (TaskStatus.APPROVED, TaskStatus.APPROVED_WAITING_RENDER, True),
+            (TaskStatus.APPROVED_WAITING_RENDER, TaskStatus.QUEUED_FOR_RENDER, True),
+            (TaskStatus.QUEUED_FOR_RENDER, TaskStatus.RENDERING, True),
+            (TaskStatus.RENDERING, TaskStatus.RENDERED, True),
+            (TaskStatus.RENDERING, TaskStatus.TRANSIENT_FAILED, True),
+            (TaskStatus.RENDERED, TaskStatus.QUEUED_FOR_PUBLISH, True),
+            (TaskStatus.RENDERED, TaskStatus.AWAITING_PUBLISH_CONFIRMATION, True),
+            (TaskStatus.QUEUED_FOR_PUBLISH, TaskStatus.PUBLISHING, True),
+            (TaskStatus.PUBLISHING, TaskStatus.COMPLETED, True),
+            (TaskStatus.PUBLISHING, TaskStatus.TRANSIENT_FAILED, True),
             (TaskStatus.AWAITING_REVIEW, TaskStatus.COMPLETED, True),
             (TaskStatus.AWAITING_REVIEW, TaskStatus.CANCELLED, True),
-            (TaskStatus.APPROVED, TaskStatus.COMPLETED, True),
+            (TaskStatus.TRANSIENT_FAILED, TaskStatus.QUEUED_FOR_PUBLISH, True),
             (TaskStatus.TRANSIENT_FAILED, TaskStatus.QUEUED_FOR_TRANS, True),
             (TaskStatus.TRANSIENT_FAILED, TaskStatus.FAILED, True),
             # 非法转换。
@@ -60,8 +73,10 @@ class TestStateMachine:
             (TaskStatus.RECORDED, TaskStatus.COMPLETED, False),
             (TaskStatus.AWAITING_REVIEW, TaskStatus.RECORDED, False),
             (TaskStatus.COMPLETED, TaskStatus.QUEUED_FOR_TRANS, False),
-            (TaskStatus.FAILED, TaskStatus.RENDERING, False),
+            (TaskStatus.FAILED, TaskStatus.PUBLISHING, False),
             (TaskStatus.CANCELLED, TaskStatus.ANALYZING, False),
+            (TaskStatus.RENDERING, TaskStatus.AWAITING_REVIEW, False),
+            (TaskStatus.APPROVED, TaskStatus.COMPLETED, False),
         ],
     )
     def test_transition(self, src: str, dst: str, expected: bool) -> None:
@@ -238,9 +253,10 @@ class TestDataModelConsistency:
 
     def test_ensure_event_creates_once(self, temp_db: None) -> None:
         """_ensure_event 幂等:同一 candidate 只创建一次 Event。"""
+        import datetime
+
         from app.db.models import HighlightCandidate, HighlightEvent
         from app.db.session import get_session
-        import datetime
 
         with get_session() as db:
             cand = HighlightCandidate(
@@ -267,9 +283,10 @@ class TestDataModelConsistency:
 
     def test_event_id_not_equal_candidate_id(self, temp_db: None) -> None:
         """event_id 和 candidate_id 数值可以不同。"""
+        import datetime
+
         from app.db.models import HighlightCandidate
         from app.db.session import get_session
-        import datetime
 
         with get_session() as db:
             c1 = HighlightCandidate(
@@ -300,9 +317,10 @@ class TestDataModelConsistency:
 
 def test_resolve_event_id_backward_compat(temp_db: None) -> None:
     """_resolve_event_id:找到已有 Event 时返回其 ID (不创建新)。"""
+    import datetime
+
     from app.db.models import HighlightCandidate, HighlightEvent, ReviewStatus
     from app.db.session import get_session
-    import datetime
 
     with get_session() as db:
         cand = HighlightCandidate(

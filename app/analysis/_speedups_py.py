@@ -45,7 +45,7 @@ def _build_automaton(patterns: Sequence[str]) -> dict[str, Any]:
     fail = [-1] * len(trie)
     queue: deque[int] = deque()
 
-    for c, child in trie[0].items():
+    for _c, child in trie[0].items():
         fail[child] = 0
         queue.append(child)
 

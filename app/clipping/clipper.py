@@ -24,7 +24,9 @@ from pathlib import Path
 from loguru import logger
 from sqlmodel import select
 
+from app.analysis.speedups import group_srt_blocks
 from app.core.config import settings
+from app.core.ffmpeg_errors import classify_ffmpeg_error
 from app.core.paths import clips_dir
 from app.db.models import (
     CandidateStatus,
@@ -33,14 +35,12 @@ from app.db.models import (
     ClipVariantType,
     FinalClip,
     HighlightCandidate,
-    HighlightEvent,
     IntroTemplate,
     RawSegment,
-    SubtitleTemplate,
+    RenderStatus,
     Transcript,
 )
 from app.db.session import get_session
-from app.analysis.speedups import group_srt_blocks
 
 # 竖屏目标分辨率(适合手机端短视频)。
 _VERT_W, _VERT_H = 1080, 1920
@@ -134,8 +134,18 @@ def probe_media(path: str) -> tuple[float, int, int]:
     try:
         out = subprocess.run(cmd, capture_output=True, check=True, timeout=30).stdout
         data = json.loads(out)
-    except (subprocess.CalledProcessError, json.JSONDecodeError) as exc:
-        logger.warning("ffprobe 探测失败 {}: {}", path, exc)
+    except subprocess.TimeoutExpired as exc:
+        stderr = exc.stderr.decode("utf-8", errors="ignore") if exc.stderr else ""
+        error_type = classify_ffmpeg_error(-1, stderr)
+        logger.warning("ffprobe 探测超时 {}: [{}] {}", path, error_type.name, exc)
+        return 0.0, 0, 0
+    except subprocess.CalledProcessError as exc:
+        stderr = exc.stderr.decode("utf-8", errors="ignore") if exc.stderr else ""
+        error_type = classify_ffmpeg_error(exc.returncode, stderr)
+        logger.warning("ffprobe 探测失败 {}: [{}] {}", path, error_type.name, exc)
+        return 0.0, 0, 0
+    except json.JSONDecodeError as exc:
+        logger.warning("ffprobe 探测失败 {}: JSON 解析异常 {}", path, exc)
         return 0.0, 0, 0
     duration = float(data.get("format", {}).get("duration", 0.0) or 0.0)
     streams = data.get("streams") or [{}]
@@ -225,7 +235,7 @@ def _render_intro_outro_cards(
     """
     from datetime import date
 
-    from app.db.models import HighlightCandidate, IntroTemplate, LiveRoom, RecordingSession
+    from app.db.models import HighlightCandidate, LiveRoom, RecordingSession
 
     cards: list[Path] = []
 
@@ -328,7 +338,9 @@ def _render_text_card(
     except subprocess.TimeoutExpired:
         logger.error("标题卡渲染超时(60s): {}", out_path.name)
     except subprocess.CalledProcessError as exc:
-        logger.warning("标题卡渲染失败: {}", exc.stderr.decode("utf-8", errors="ignore"))
+        stderr = exc.stderr.decode("utf-8", errors="ignore") if exc.stderr else ""
+        error_type = classify_ffmpeg_error(exc.returncode, stderr)
+        logger.warning("标题卡渲染失败 [{}]: {}", error_type.name, stderr)
     finally:
         import os
         try:
@@ -571,20 +583,22 @@ def produce_clip(candidate_id: int, options: ClipOptions | None = None) -> Final
 
 
 def _resolve_event_id(db, candidate_id: int) -> int:
-    """V0.1.11-alpha:解析真实 HighlightEvent ID（向后兼容,优先已有 Event）。
-    
+    """解析真实 HighlightEvent ID (V0.1.12.5: 删除 candidate_id 回退)。
+
     :param db: SQLModel session。
     :param candidate_id: HighlightCandidate ID。
     :returns: HighlightEvent ID;若尚无 Event,自动创建并返回。
+    :raises ValueError: candidate 不存在时,不再回退 candidate_id。
     """
-    from app.db.models import HighlightEvent as HE, ReviewStatus
+    from app.db.models import HighlightEvent as HE
+    from app.db.models import ReviewStatus
     event = db.exec(select(HE).where(HE.candidate_id == candidate_id)).first()
     if event is not None:
         return event.id
     # 候选可能尚未创建 Event（非 TaskWorker 路径进入）。
     cand = db.get(HighlightCandidate, candidate_id)
     if cand is None:
-        return candidate_id  # 极端情况:候选不存在,回退 candidate_id
+        raise ValueError(f"candidate_id={candidate_id} 不存在, 无法解析 event_id")
     new_event = HE(
         candidate_id=candidate_id,
         session_id=cand.session_id,
@@ -636,7 +650,7 @@ def _create_clip_variants(
             duration_s=clip.duration_s,
             resolution=f"{clip.width}x{clip.height}" if clip.width and clip.height else None,
             has_subtitles=options.subtitle,
-            render_status="completed",
+            render_status=RenderStatus.DONE,
             version_number=1,
             created_at=clip.created_at,
         ))
@@ -648,7 +662,7 @@ def _create_clip_variants(
                 file_path=clip.file_path,
                 duration_s=clip.duration_s,
                 has_subtitles=True,
-                render_status="completed",
+                render_status=RenderStatus.DONE,
                 version_number=1,
                 created_at=clip.created_at,
             ))
@@ -659,7 +673,7 @@ def _create_clip_variants(
                 file_path=clip.file_path,
                 duration_s=clip.duration_s,
                 has_subtitles=False,
-                render_status="completed",
+                render_status=RenderStatus.DONE,
                 version_number=1,
                 created_at=clip.created_at,
             ))
@@ -668,14 +682,14 @@ def _create_clip_variants(
             event_id=event_id,
             variant_type=ClipVariantType.ARCHIVE,
             has_subtitles=options.subtitle,
-            render_status="queued",
+            render_status=RenderStatus.QUEUED,
             version_number=1,
         ))
         db.add(ClipVariant(
             event_id=event_id,
             variant_type=ClipVariantType.COMPRESSED,
             has_subtitles=options.subtitle,
-            render_status="queued",
+            render_status=RenderStatus.QUEUED,
             version_number=1,
         ))
         logger.info(
@@ -757,7 +771,8 @@ def _run_ffmpeg_clip(
     result = subprocess.run(cmd, capture_output=True, timeout=600)
     if result.returncode != 0:
         stderr = result.stderr.decode("utf-8", errors="ignore")
-        raise RuntimeError(f"FFmpeg 切片失败: {stderr}")
+        error_type = classify_ffmpeg_error(result.returncode, stderr)
+        raise RuntimeError(f"FFmpeg 切片失败 [{error_type.name}]: {stderr}")
 
 
 def _grab_cover(video_path: Path, cover_path: Path, at_s: float) -> None:
@@ -785,7 +800,9 @@ def _grab_cover(video_path: Path, cover_path: Path, at_s: float) -> None:
     ]
     result = subprocess.run(cmd, capture_output=True, timeout=30)
     if result.returncode != 0:
-        logger.warning("封面抽帧失败: {}", result.stderr.decode("utf-8", errors="ignore"))
+        stderr = result.stderr.decode("utf-8", errors="ignore")
+        error_type = classify_ffmpeg_error(result.returncode, stderr)
+        logger.warning("封面抽帧失败 [{}]: {}", error_type.name, stderr)
 
 
 def _render_variants(
@@ -950,12 +967,16 @@ def _render_single_variant(
                 variant.duration_s = real_dur or duration
                 variant.resolution = f"{w}x{h}" if w and h else None
                 variant.has_subtitles = subtitle
-                variant.render_status = "completed"
+                variant.render_status = RenderStatus.DONE
                 logger.success("变体 {} candidate={} 渲染完成 -> {}", variant_type, clip.candidate_id, out_path.name)
             else:
-                variant.render_status = "failed"
+                variant.render_status = RenderStatus.FAILED
                 stderr = result.stderr.decode("utf-8", errors="ignore")
-                logger.error("变体 {} candidate={} 渲染失败: {}", variant_type, clip.candidate_id, stderr)
+                error_type = classify_ffmpeg_error(result.returncode, stderr)
+                logger.error(
+                    "变体 {} candidate={} 渲染失败 [{}]: {}",
+                    variant_type, clip.candidate_id, error_type.name, stderr,
+                )
             db.add(variant)
             db.commit()
 

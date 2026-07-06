@@ -20,8 +20,6 @@ from fastapi.responses import HTMLResponse
 from fastapi.templating import Jinja2Templates
 from sqlmodel import select as _sql_select
 
-from app.web import service
-
 review_router = APIRouter(prefix="/review", tags=["review"])
 
 _TEMPLATES = Jinja2Templates(
@@ -32,8 +30,8 @@ _TEMPLATES = Jinja2Templates(
 @review_router.get("/{candidate_id}", response_class=HTMLResponse)
 async def review_page(request: Request, candidate_id: int) -> HTMLResponse:
     """审片工作台主页面。"""
-    from app.db.session import get_session
     from app.db.models import HighlightCandidate
+    from app.db.session import get_session
 
     with get_session() as db:
         c = db.get(HighlightCandidate, candidate_id)
@@ -52,7 +50,6 @@ async def review_page(request: Request, candidate_id: int) -> HTMLResponse:
 @review_router.get("/api/{candidate_id}")
 def get_review_data(candidate_id: int) -> dict:
     """获取审片所需的完整数据:候选详情+转写+弹幕解释+评分曲线+前后上下文。"""
-    from app.db.session import get_session
     from app.db.models import (
         Danmaku,
         FinalClip,
@@ -61,6 +58,7 @@ def get_review_data(candidate_id: int) -> dict:
         RecordingSession,
         Transcript,
     )
+    from app.db.session import get_session
 
     with get_session() as db:
         c = db.get(HighlightCandidate, candidate_id)
@@ -100,10 +98,12 @@ def get_review_data(candidate_id: int) -> dict:
         # 弹幕密度数据:按 5 秒分桶。
         start = c.start_ts
         end = c.end_ts
+        margin = 30  # 前后各 30 秒的上下文。
+
         if start is None or end is None:
             danmaku_buckets = []
+            danmaku_window = {"start": None, "end": None, "margin": margin}
         else:
-            margin = 30  # 前后各 30 秒的上下文。
             danmaku_window_start = start.replace(tzinfo=None) if hasattr(start, "replace") and start.tzinfo else start
             # Only import timedelta once.
             from datetime import timedelta
@@ -115,8 +115,8 @@ def get_review_data(candidate_id: int) -> dict:
                 danmaku_rows = db.exec(
                     _sql_select(Danmaku.ts).where(
                         Danmaku.session_id == c.session_id,
-                        Danmaku.ts >= ctx_start.replace(tzinfo=None) if hasattr(ctx_start, "tzinfo") and ctx_start.tzinfo else ctx_start,
-                        Danmaku.ts <= ctx_end.replace(tzinfo=None) if hasattr(ctx_end, "tzinfo") and ctx_end.tzinfo else ctx_end,
+                        Danmaku.ts >= ctx_start.replace(tzinfo=None) if hasattr(ctx_start, "tzinfo") and ctx_start.tzinfo else ctx_start,  # noqa: E501
+                        Danmaku.ts <= ctx_end.replace(tzinfo=None) if hasattr(ctx_end, "tzinfo") and ctx_end.tzinfo else ctx_end,  # noqa: E501
                         Danmaku.msg_type == "danmaku",
                     ).order_by(Danmaku.ts.asc())
                 ).all()
@@ -137,6 +137,12 @@ def get_review_data(candidate_id: int) -> dict:
                         "t": round(t0_ts + i * bucket_s, 1),
                         "count": cnt,
                     })
+
+            danmaku_window = {
+                "start": ctx_start.isoformat() if hasattr(ctx_start, "isoformat") else str(ctx_start),
+                "end": ctx_end.isoformat() if hasattr(ctx_end, "isoformat") else str(ctx_end),
+                "margin": margin,
+            }
 
         # 评分解释。
         import json as _json2
@@ -186,6 +192,7 @@ def get_review_data(candidate_id: int) -> dict:
         "danmaku": "弹幕突增",
         "danmaku_sentiment": "弹幕情绪",
         "trend": "网感关联",
+        "audio_events": "音频事件",
     }
     # 读取权重计算贡献。
     from app.analysis.scoring_config import get_scoring_config
@@ -223,11 +230,7 @@ def get_review_data(candidate_id: int) -> dict:
         },
         "transcript": transcript_data,
         "danmaku_buckets": danmaku_buckets,
-        "danmaku_window": {
-            "start": ctx_start.isoformat() if hasattr(ctx_start, "isoformat") else str(ctx_start),
-            "end": ctx_end.isoformat() if hasattr(ctx_end, "isoformat") else str(ctx_end),
-            "margin": margin,
-        },
+        "danmaku_window": danmaku_window,
         "features": features,
         "score_breakdown": score_breakdown,
         "danmaku_explain": danmaku_explain,
@@ -252,9 +255,11 @@ async def adjust_boundary(
     :param side: "start"(调起点)/"end"(调终点)/"both"(同时调)。
     :returns: 新的边界。
     """
-    from app.db.session import get_session
+    from datetime import UTC, timedelta
+    from datetime import datetime as _dt
+
     from app.db.models import HighlightCandidate, HighlightEvent
-    from datetime import datetime as _dt, timedelta, UTC
+    from app.db.session import get_session
 
     with get_session() as db:
         c = db.get(HighlightCandidate, candidate_id)
@@ -308,21 +313,28 @@ def submit_review(
     decision: str,
     reason: str | None = None,
 ) -> dict:
-    """提交审核决断(细粒度),更新候选状态并记录。
+    """提交审核决断(细粒度), V0.1.12.8: 消除双写, 统一走 approve_event_and_task。
+
+    正向决断时调用 approve_event_and_task 传入外层 db session,
+    在同一事务中更新 Task.stage + Event.review_status + Candidate.status。
+    非正向决断 (拒绝等) 仅更新 Event 和 Candidate。
 
     :param candidate_id: 候选 id。
-    :param decision: 审核决断(appproved_solo/rejected/insufficient_context 等)。
+    :param decision: 审核决断(approved_solo/rejected/insufficient_context 等)。
     :param reason: 审核原因/备注。
     :returns: 操作结果。
     """
-    from app.db.session import get_session
+    from datetime import UTC
+    from datetime import datetime as _dt
+
     from app.db.models import (
         CandidateStatus,
         HighlightCandidate,
         HighlightEvent,
         ReviewStatus,
+        SegmentTask,
     )
-    from datetime import datetime as _dt, UTC
+    from app.db.session import get_session
 
     valid = {
         ReviewStatus.APPROVED_SOLO,
@@ -343,19 +355,14 @@ def submit_review(
     if decision not in valid:
         raise HTTPException(status_code=400, detail=f"无效的审核决断: {decision}")
 
+    is_positive = decision in ReviewStatus.POSITIVE
+
     with get_session() as db:
         c = db.get(HighlightCandidate, candidate_id)
         if c is None:
             raise HTTPException(status_code=404, detail="候选不存在")
 
-        # 更新候选状态(向后兼容)。
-        if decision in ReviewStatus.POSITIVE:
-            c.status = CandidateStatus.APPROVED
-        elif decision in (ReviewStatus.REJECTED, ReviewStatus.NOT_EXCITING):
-            c.status = CandidateStatus.REJECTED
-        db.add(c)
-
-        # 更新 HighlightEvent。
+        # 查找或创建 HighlightEvent
         event = db.exec(
             _sql_select(HighlightEvent).where(
                 HighlightEvent.candidate_id == candidate_id,
@@ -378,11 +385,45 @@ def submit_review(
             )
             db.add(event)
             db.flush()
-        event.review_status = decision
-        event.review_reason = reason
-        event.review_by = "manual"
-        event.updated_at = _dt.now(UTC)
-        db.add(event)
+
+        if is_positive:
+            # V0.1.12.8: 正向决断统一走 approve_event_and_task, 传入外层 db
+            from app.pipeline.approval import approve_event_and_task
+
+            task = db.exec(
+                _sql_select(SegmentTask).where(
+                    SegmentTask.candidate_id == candidate_id,
+                ).order_by(SegmentTask.created_at.desc())
+            ).first()
+            if task is not None:
+                approve_event_and_task(
+                    task_id=task.id,
+                    event_id=event.id,
+                    approved_by="manual",
+                    reason=reason,
+                    source="human",
+                    review_decision=decision,
+                    db=db,
+                )
+            else:
+                # 无关联 task 时仅更新 Event + Candidate
+                event.review_status = decision
+                event.review_reason = reason
+                event.review_by = "manual"
+                event.updated_at = _dt.now(UTC)
+                db.add(event)
+                c.status = CandidateStatus.APPROVED
+                db.add(c)
+        else:
+            # 非正向决断: 仅更新 Event 和 Candidate
+            event.review_status = decision
+            event.review_reason = reason
+            event.review_by = "manual"
+            event.updated_at = _dt.now(UTC)
+            db.add(event)
+            if decision in (ReviewStatus.REJECTED, ReviewStatus.NOT_EXCITING):
+                c.status = CandidateStatus.REJECTED
+            db.add(c)
 
     return {"status": decision, "reason": reason}
 
@@ -394,10 +435,11 @@ async def rerender_clip(candidate_id: int) -> dict:
     :param candidate_id: 候选 id。
     :returns: 新的 clip 信息或状态。
     """
-    from app.db.session import get_session
-    from app.db.models import HighlightCandidate, HighlightEvent
-    from app.pipeline.orchestrator import produce_clip
     import asyncio
+
+    from app.db.models import HighlightCandidate, HighlightEvent
+    from app.db.session import get_session
+    from app.pipeline.orchestrator import produce_clip
 
     with get_session() as db:
         c = db.get(HighlightCandidate, candidate_id)
@@ -441,13 +483,13 @@ def get_waveform(candidate_id: int, resolution: int = 400) -> dict:
     :returns: ``{peaks, duration_s, sample_rate}``。
     """
     import json as _json
-    import subprocess as _sp
     import struct as _struct
+    import subprocess as _sp
     import tempfile as _tf
 
-    from app.db.session import get_session
-    from app.db.models import FinalClip, HighlightCandidate
     from app.core.paths import clips_dir
+    from app.db.models import FinalClip, HighlightCandidate
+    from app.db.session import get_session
 
     with get_session() as db:
         c = db.get(HighlightCandidate, candidate_id)
@@ -460,7 +502,7 @@ def get_waveform(candidate_id: int, resolution: int = 400) -> dict:
             ).limit(1)
         ).first()
         if clip is None or not clip.file_path or not Path(clip.file_path).exists():
-            return {"peaks": [], "duration_s": 0, "sample_rate": 0, "error": "尚未生成切片,请先「批准并出片」或「重新渲染」"}
+            return {"peaks": [], "duration_s": 0, "sample_rate": 0, "error": "尚未生成切片,请先「批准并出片」或「重新渲染」"}  # noqa: E501
 
         file_path = clip.file_path
         # 路径遍历保护:确保文件在 clips 目录内。
@@ -490,7 +532,7 @@ def get_waveform(candidate_id: int, resolution: int = 400) -> dict:
 
     # FFmpeg 提取单声道 16-bit PCM,并降采样到约 resolution*2 个样本。
     sample_rate = 8000  # 低频足以表示波形包络
-    total_samples = resolution * 2  # 每点 2 个样本取 max
+    _total_samples = resolution * 2  # 每点 2 个样本取 max
     with _tf.NamedTemporaryFile(suffix=".pcm", delete=False) as tmp:
         tmp_path = tmp.name
 
@@ -507,7 +549,7 @@ def get_waveform(candidate_id: int, resolution: int = 400) -> dict:
         with open(tmp_path, "rb") as f:
             raw = f.read()
     except Exception as exc:
-        return {"peaks": [], "duration_s": duration_s, "sample_rate": sample_rate, "error": f"FFmpeg 波形生成失败: {exc}"}
+        return {"peaks": [], "duration_s": duration_s, "sample_rate": sample_rate, "error": f"FFmpeg 波形生成失败: {exc}"}  # noqa: E501
     finally:
         try:
             Path(tmp_path).unlink()

@@ -16,6 +16,7 @@ from __future__ import annotations
 import hashlib
 import hmac
 import smtplib
+import ssl
 import time
 import urllib.parse
 from datetime import UTC, datetime
@@ -24,7 +25,6 @@ from email.mime.text import MIMEText
 from loguru import logger
 
 from app.core.config import settings
-
 
 # 允许的 webhook 域名白名单。
 _ALLOWED_WEBHOOK_DOMAINS = {"oapi.dingtalk.com", "qyapi.weixin.qq.com"}
@@ -175,7 +175,10 @@ def send_email(subject: str, body: str) -> bool:
 
     server = None
     try:
-        server = smtplib.SMTP_SSL(settings.smtp_host, settings.smtp_port, timeout=10)
+        context = ssl.create_default_context()
+        server = smtplib.SMTP_SSL(
+            settings.smtp_host, settings.smtp_port, timeout=10, context=context,
+        )
         try:
             server.login(settings.smtp_user, settings.smtp_password)
             server.send_message(msg)

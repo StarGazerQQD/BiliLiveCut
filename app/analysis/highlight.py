@@ -92,6 +92,77 @@ def laughter_score(text: str) -> float:
     return float(min(count / 5.0, 1.0))
 
 
+def _audio_events_score(auxiliary_json: str | None) -> tuple[float, list[str]]:
+    """V0.1.12.2: 从 SenseVoice 辅助特征计算音频事件评分。
+
+    解析 auxiliary_json 中的 emotions/events, 生成:
+    - laughter_density: 笑声密度
+    - surprise_intensity: 惊讶强度
+    - emotion_intensity: 情感突变强度
+    - music_ratio: 音乐占比 (暂时不进入评分, 仅记录)
+
+    :param auxiliary_json: Transcript.auxiliary_json 内容。
+    :returns: ``(score 0-1, contributions)``。
+    """
+    if not auxiliary_json:
+        return 0.0, []
+    try:
+        aux = json.loads(auxiliary_json)
+    except (json.JSONDecodeError, TypeError):
+        return 0.0, []
+
+    emotions = aux.get("emotions", [])
+    contributions: list[str] = []
+    if not emotions:
+        return 0.0, []
+
+    laughter_count = sum(
+        1 for e in emotions
+        if isinstance(e, dict) and e.get("type", "") in ("laughter", "Laughter")
+    )
+    applause_count = sum(
+        1 for e in emotions
+        if isinstance(e, dict) and "applause" in e.get("type", "").lower()
+    )
+    surprise_count = sum(
+        1 for e in emotions
+        if isinstance(e, dict) and "surprise" in e.get("type", "").lower()
+    )
+    happy_count = sum(
+        1 for e in emotions
+        if isinstance(e, dict) and (
+            "happy" in e.get("type", "").lower()
+            or "HAPPY" in e.get("type", "")
+        )
+    )
+    anger_count = sum(
+        1 for e in emotions
+        if isinstance(e, dict) and (
+            "angry" in e.get("type", "").lower()
+            or "anger" in e.get("type", "").lower()
+        )
+    )
+
+    score = 0.0
+    if laughter_count > 0:
+        score += min(laughter_count * 0.25, 0.5)
+        contributions.append(f"laughter({laughter_count})")
+    if applause_count > 0:
+        score += min(applause_count * 0.2, 0.3)
+        contributions.append(f"applause({applause_count})")
+    if surprise_count > 0:
+        score += min(surprise_count * 0.3, 0.5)
+        contributions.append(f"surprise({surprise_count})")
+    if happy_count > 0:
+        score += min(happy_count * 0.2, 0.4)
+        contributions.append(f"happy({happy_count})")
+    if anger_count > 0:
+        score += min(anger_count * 0.15, 0.3)
+        contributions.append(f"anger({anger_count})")
+
+    return min(score, 1.0), contributions
+
+
 def danmaku_sentiment_score(session_id: int, start_ts: object, end_ts: object) -> float:
     """基于弹幕文本的情绪分析(规则:重复率、感叹号密度、特定梗命中)。
 
@@ -106,11 +177,9 @@ def danmaku_sentiment_score(session_id: int, start_ts: object, end_ts: object) -
     :param end_ts: 窗口结束时间(datetime)。
     :returns: 0-1 的弹幕情绪分。
     """
-    from app.db.models import Danmaku
-
     import datetime as _dtmod
 
-    def _naive(dt: object) -> datetime:
+    def _naive(dt: object) -> _dtmod.datetime:
         if not isinstance(dt, _dtmod.datetime):
             return _dtmod.datetime.min.replace(tzinfo=None)
         return dt.replace(tzinfo=None) if dt.tzinfo else dt
@@ -186,7 +255,7 @@ def _fetch_window_danmaku_texts(session_id: int, start_n: object, end_n: object)
             )
         ).all()
     texts: list[str] = []
-    for content, ts in rows:
+    for content, _ts in rows:
         if content is not None:
             texts.append(content)
     return texts
@@ -309,6 +378,16 @@ def score_segment(segment_id: int) -> HighlightCandidate | None:
         text = transcript.text if transcript else ""
         words_json = transcript.words_json if transcript else None
 
+        # V0.1.12.8: 提前提取 room 级标量, 避免 session 关闭后 DetachedInstanceError
+        room_auto_approve = bool(room.auto_approve) if room else False
+        room_auto_approve_threshold = room.auto_approve_threshold if room else 0.82
+        room_review_threshold = room.review_threshold if room else 0.50
+        use_dm_sentiment = (
+            room is not None
+            and bool(room.danmaku_sentiment_enabled)
+            and settings.collect_danmaku
+        )
+
     if not has_transcript:
         raise ValueError(f"片段尚未转写: id={segment_id}")
 
@@ -374,15 +453,17 @@ def score_segment(segment_id: int) -> HighlightCandidate | None:
         "danmaku": _danmaku_score(session_id, seg_start_ts, seg_end_ts),
     }
     # 弹幕情绪(V0.1.2 新增):仅当房间级开关启用且弹幕采集开启时才计入。
-    use_dm_sentiment = (
-        room is not None
-        and bool(room.danmaku_sentiment_enabled)
-        and settings.collect_danmaku
-    )
     if use_dm_sentiment:
         features["danmaku_sentiment"] = danmaku_sentiment_score(
             session_id, seg_start_ts, seg_end_ts
         )
+    # V0.1.12.2: 音频事件特征 (SenseVoice 辅助特征)
+    audio_event_contribs: list[str] = []
+    if settings.asr_sensevoice and settings.asr_sensevoice_enabled:
+        aux_json = transcript.auxiliary_json if transcript else None
+        audio_evt_score, audio_event_contribs = _audio_events_score(aux_json)
+        if audio_evt_score > 0:
+            features["audio_events"] = audio_evt_score
     # 网感维度:片段题材与资料库近期热门内容的关联度(仅在启用时计入)。
     trend_hits: list[str] = []
     if settings.trend_enabled:
@@ -450,18 +531,17 @@ def score_segment(segment_id: int) -> HighlightCandidate | None:
 
     # ---- 5b) V0.1.6 审核状态:根据房间阈值自动决定初始状态 ----
     # P0 重构:取代旧 mode 逻辑。
-    auto_approve_threshold = room.auto_approve_threshold if room else 0.82
-    review_threshold = room.review_threshold if room else 0.50
-    room_auto_approve = bool(room.auto_approve) if room else False
+    # V0.1.12.8: 使用前提取的标量, 避免 DetachedInstanceError
 
-    if room_auto_approve and highlight_score >= auto_approve_threshold:
+    if room_auto_approve and highlight_score >= room_auto_approve_threshold:
         initial_status = CandidateStatus.APPROVED
-        logger.info("片段 {} 达自动批准阈值({}≥{}),自动批准。", segment_id, highlight_score, auto_approve_threshold)
-    elif highlight_score >= review_threshold:
+        logger.info("片段 {} 达自动批准阈值({}≥{}),自动批准。",
+                    segment_id, highlight_score, room_auto_approve_threshold)
+    elif highlight_score >= room_review_threshold:
         initial_status = CandidateStatus.PENDING
     else:
         initial_status = CandidateStatus.REJECTED
-        logger.info("片段 {} 低于审核阈值({}<{}),自动淘汰。", segment_id, highlight_score, review_threshold)
+        logger.info("片段 {} 低于审核阈值({}<{}),自动淘汰。", segment_id, highlight_score, room_review_threshold)
 
     # 自动淘汰的候选仍然入库(供后续调参参考),但标记为 REJECTED。
     dedup_hash = hashlib.sha1(
@@ -595,7 +675,9 @@ def _danmaku_baseline(
     :param window_end: 候选窗口终点(用于排除)。
     :returns: ``(baseline_rate, total_baseline_count)``。
     """
-    from datetime import datetime as _datetime, timedelta
+    from datetime import datetime as _datetime
+    from datetime import timedelta
+
     from app.db.models import Danmaku
 
     def _n(dt: _datetime) -> _datetime:
@@ -657,6 +739,7 @@ def _danmaku_score(session_id: int, start_ts: object, end_ts: object) -> float:
     :returns: 0-1 的弹幕热度分;无足够弹幕数据时返回 0。
     """
     from datetime import datetime as _datetime
+
     from app.db.models import Danmaku
 
     if start_ts is None or end_ts is None:
@@ -722,6 +805,7 @@ def danmaku_score_explain(session_id: int, start_ts: object, end_ts: object) -> 
         ``ratio``、``score`` 等字段的字典。
     """
     from datetime import datetime as _datetime
+
     from app.db.models import Danmaku
 
     if start_ts is None or end_ts is None:

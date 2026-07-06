@@ -1,4 +1,4 @@
-"""共享工具 (v0.1.12.1-HL-Alpha)。消除 builder.py / self_learn.py 重复代码。"""
+"""共享工具 (v0.1.13.1-HL-Alpha)。消除 builder.py / self_learn.py 重复代码。"""
 from __future__ import annotations
 
 
