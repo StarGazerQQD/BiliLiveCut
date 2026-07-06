@@ -176,3 +176,39 @@ def _get_recent_failures() -> list[dict]:
         }
         for t in failed
     ]
+
+
+# V0.1.12.2: ASR 指标
+@monitor_router.get("/asr-metrics")
+def get_asr_metrics() -> JSONResponse:
+    """返回 ASR 调用指标 (调用次数、耗时、复核、fallback、RTF)。"""
+    try:
+        from app.analysis.asr_metrics import get_snapshot
+        return JSONResponse(get_snapshot())
+    except Exception as exc:
+        return JSONResponse({"error": str(exc)}, status_code=500)
+
+
+# V0.1.12.2: ASR 模型状态
+@monitor_router.get("/asr-models")
+def get_asr_models() -> JSONResponse:
+    """返回当前已加载 ASR 模型状态。"""
+    try:
+        from app.analysis.asr_manager import get_asr_manager
+        mgr = get_asr_manager()
+        infos = []
+        for info in mgr.all_infos():
+            infos.append({
+                "key": info.key,
+                "model_id": info.model_id,
+                "device": info.device,
+                "is_loaded": info.is_loaded,
+                "loaded_at": info.loaded_at,
+                "last_used_at": info.last_used_at,
+                "load_duration": info.load_duration,
+                "keep_loaded": info.keep_loaded,
+                "revision": info.revision,
+            })
+        return JSONResponse({"models": infos})
+    except Exception as exc:
+        return JSONResponse({"error": str(exc)}, status_code=500)

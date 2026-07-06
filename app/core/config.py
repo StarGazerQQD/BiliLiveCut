@@ -70,8 +70,29 @@ class Settings(BaseSettings):
     asr_funasr_review: bool = True
     # 最终兜底: Whisper (large-v3 / turbo), 保留切换
     asr_fallback_whisper: bool = True
-    # 低置信度阈值 (logprob < 此值触发复核)
+    # 低置信度阈值 (logprob < 此值触发复核, V0.1.12.2 改为 review_risk_threshold)
     asr_confidence_threshold: float = -0.6
+    # V0.1.12.2: 统一复核风险阈值 (0-1, review_risk_score >= 此值触发复核)
+    asr_review_risk_threshold: float = 0.65
+    # V0.1.12.2: SenseVoice 使用开关 (独立于模型加载开关 asr_sensevoice)
+    asr_sensevoice_enabled: bool = True   # False=关闭辅助特征,不参与评分
+
+    # ---------- V0.1.12.2: 分后端设备与并发控制 ----------
+    asr_primary_device: str = "cpu"
+    asr_auxiliary_device: str = "cpu"
+    asr_review_device: str = "cpu"
+    asr_fallback_device: str = "cpu"
+    asr_primary_max_concurrency: int = 1
+    asr_auxiliary_max_concurrency: int = 1
+    asr_review_max_concurrency: int = 1
+    asr_fallback_max_concurrency: int = 1
+    # 模型生命周期
+    asr_primary_keep_loaded: bool = True
+    asr_auxiliary_keep_loaded: bool = False
+    asr_review_keep_loaded: bool = False
+    asr_fallback_keep_loaded: bool = False
+    asr_model_idle_unload_seconds: int = 900
+    asr_preload_on_start: bool = False
     # ASR 模型下载源
     asr_model_revision: str = "master"
 

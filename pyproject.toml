@@ -1,6 +1,6 @@
 [project]
 name = "bili-live-cut"
-version = "0.1.12.1-alpha"
+version = "0.1.12.2-alpha"
 description = "AI 直播实时切片系统:监听 Bilibili 直播,自动录制、转写、识别高光、生成切片与文案"
 readme = "README.md"
 requires-python = ">=3.11"
@@ -23,10 +23,23 @@ dependencies = [
 ]
 
 [project.optional-dependencies]
-# 阶段2+:语音转写。faster-whisper 依赖 ctranslate2,
+# 阶段2+: 语音转写。faster-whisper 依赖 ctranslate2,
 # 若当前 Python 版本无预编译 wheel,请改用 Python 3.11/3.12 虚拟环境。
-asr = [
+asr-whisper = [
     "faster-whisper>=1.0",
+]
+# V0.1.12.2: Paraformer-zh / SenseVoice-Small / Fun-ASR-Nano 所需依赖。
+asr-funasr = [
+    "funasr>=1.0",
+    "modelscope>=1.20",
+]
+# V0.1.12.2: 全部 ASR 后端 (Whisper + FunASR 多引擎)。
+asr-all = [
+    "bili-live-cut[asr-whisper,asr-funasr]",
+]
+# 向后兼容别名: 等效 asr-all。
+asr = [
+    "bili-live-cut[asr-all]",
 ]
 # 阶段3+:文案与高光 LLM 复核(OpenAI 兼容协议,境内对接 DeepSeek/通义/Kimi/GLM)。
 llm = [

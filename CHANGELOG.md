@@ -1,5 +1,74 @@
 # Changelog
 
+## V0.1.12.2 Alpha (2026-07-06)
+
+### 多模型 ASR 链路的正确性、稳定性、评测与资源治理
+
+本次迭代是对 V0.1.12 多引擎 ASR 流水线的深度重构, 修复了复核不触发、SenseVoice 无产出、热词未传入等关键问题。
+
+#### 统一 ASR 结果模型 (Phase 1)
+- 新增 `ASRSegmentResult` / `ASRTranscriptResult` 统一结果结构, 消除后端置信度歧义
+- Paraformer confidence (0-1) 映射 `normalized_confidence`, Whisper `avg_logprob` 映射 `raw_confidence`
+- 不再给无置信度字段伪造 0.0 (改为 `None`)
+- 保留 `TranscriptionResult` 向后兼容 (自动从统一结果转换)
+- `Transcript` 新增 14 个追踪字段: `base_text` / `final_text` / `primary_backend` / `primary_model_id` / `primary_model_revision` / `review_backend` / `fallback_backend` / `review_triggered` / `review_risk_score` / `review_reasons` / `final_text_source` / `inference_duration`
+
+#### 复核闭环修复 (Phase 2)
+- 重写 `_review_low_confidence` → `_review_loop` (基于 `review_risk_score`)
+- 新增 `_compute_review_risk_score`: 综合 6 项信号 (置信度/空文本/时长比/重复/乱码/热词冲突) 决策复核
+- 新增 `_extract_audio_segment`: FFmpeg 局部截取 (带上下文1.5s), 不再 fallback 全文识别
+- 新增 `_merge_review_text`: base/review/final 合并策略 (编辑距离/热词命中/人工标记)
+- 防火墙上线: 窗口不越界/临时文件专用 UUID + 清理/finally 清理
+
+#### 热词与 SenseVoice 修复 (Phase 3)
+- Paraformer 热词参数传入: `generate(hotword=...)` 并在不支持时降级
+- SenseVoice 时间范围解析: 按文本分段估算合理时间, 不再全置 0.0
+- 新增 `_audio_events_score`: 笑声/掌声/惊讶/情绪密度评分
+- 高光评分新增 `audio_events` 维度 (权重 0.10)
+- 新增 `ASR_SENSEVOICE_ENABLED` 独立开关 (模型加载 vs 使用分离)
+- 新配置 `ASR_REVIEW_RISK_THRESHOLD` (默认 0.65)
+
+#### 依赖拆分与模型治理 (Phase 4)
+- `pyproject.toml` 拆分: `asr-whisper` / `asr-funasr` / `asr-all` (向后兼容 `asr` → `asr-all`)
+- 分设备配置: 8 个环境变量 (`ASR_PRIMARY_DEVICE` / `ASR_AUXILIARY_DEVICE` / `ASR_REVIEW_DEVICE` / `ASR_FALLBACK_DEVICE` + 4 个并发 + 4 个 keep_loaded)
+- 生命周期配置: `ASR_MODEL_IDLE_UNLOAD_SECONDS` / `ASR_PRELOAD_ON_START`
+- 新增 `ASRModelManager` (并发加载锁/状态查询/空闲卸载/预热)
+
+#### 可观测性 (Phase 5)
+- 新增 `ASRMetrics`: 后端调用统计、RTF、复核率、fallback 率、OOM 计数
+- 运维 API: `GET /api/monitor/asr-metrics` / `GET /api/monitor/asr-models`
+
+#### Golden Set 评测与测试 (Phase 6)
+- 新增 `tests/golden_set/` Golden Set 评测体系 (manifest 规范 + CER/RTF/时间戳误差)
+- 新增 34 个 ASR 单元测试 (`test_asr_result.py` / `test_asr_review.py` / `test_asr_integration.py`)
+- DDL 自动迁移 (12 个 `transcripts` 新增列)
+
+#### 新增环境变量
+```env
+ASR_REVIEW_RISK_THRESHOLD=0.65
+ASR_SENSEVOICE_ENABLED=true
+ASR_PRIMARY_DEVICE=cpu
+ASR_AUXILIARY_DEVICE=cpu
+ASR_REVIEW_DEVICE=cpu
+ASR_FALLBACK_DEVICE=cpu
+ASR_PRIMARY_MAX_CONCURRENCY=1
+ASR_AUXILIARY_MAX_CONCURRENCY=1
+ASR_REVIEW_MAX_CONCURRENCY=1
+ASR_FALLBACK_MAX_CONCURRENCY=1
+ASR_PRIMARY_KEEP_LOADED=true
+ASR_AUXILIARY_KEEP_LOADED=false
+ASR_REVIEW_KEEP_LOADED=false
+ASR_FALLBACK_KEEP_LOADED=false
+ASR_MODEL_IDLE_UNLOAD_SECONDS=900
+ASR_PRELOAD_ON_START=false
+```
+
+### 原则遵守
+- v0.1.11 的任务队列/状态机/幂等设计未被破坏
+- Whisper fallback 机制正常
+- aliases 后处理正常
+- room_config 的 hotwords/aliases 结构合理
+
 ## V0.1.12.1 Alpha (2026-07-06)
 
 ### 安全加固 (CodeAuditTool 审计修复)

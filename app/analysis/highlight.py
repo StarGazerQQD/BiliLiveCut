@@ -89,6 +89,77 @@ def laughter_score(text: str) -> float:
     return float(min(count / 5.0, 1.0))
 
 
+def _audio_events_score(auxiliary_json: str | None) -> tuple[float, list[str]]:
+    """V0.1.12.2: 从 SenseVoice 辅助特征计算音频事件评分。
+
+    解析 auxiliary_json 中的 emotions/events, 生成:
+    - laughter_density: 笑声密度
+    - surprise_intensity: 惊讶强度
+    - emotion_intensity: 情感突变强度
+    - music_ratio: 音乐占比 (暂时不进入评分, 仅记录)
+
+    :param auxiliary_json: Transcript.auxiliary_json 内容。
+    :returns: ``(score 0-1, contributions)``。
+    """
+    if not auxiliary_json:
+        return 0.0, []
+    try:
+        aux = json.loads(auxiliary_json)
+    except (json.JSONDecodeError, TypeError):
+        return 0.0, []
+
+    emotions = aux.get("emotions", [])
+    contributions: list[str] = []
+    if not emotions:
+        return 0.0, []
+
+    laughter_count = sum(
+        1 for e in emotions
+        if isinstance(e, dict) and e.get("type", "") in ("laughter", "Laughter")
+    )
+    applause_count = sum(
+        1 for e in emotions
+        if isinstance(e, dict) and "applause" in e.get("type", "").lower()
+    )
+    surprise_count = sum(
+        1 for e in emotions
+        if isinstance(e, dict) and "surprise" in e.get("type", "").lower()
+    )
+    happy_count = sum(
+        1 for e in emotions
+        if isinstance(e, dict) and (
+            "happy" in e.get("type", "").lower()
+            or "HAPPY" in e.get("type", "")
+        )
+    )
+    anger_count = sum(
+        1 for e in emotions
+        if isinstance(e, dict) and (
+            "angry" in e.get("type", "").lower()
+            or "anger" in e.get("type", "").lower()
+        )
+    )
+
+    score = 0.0
+    if laughter_count > 0:
+        score += min(laughter_count * 0.25, 0.5)
+        contributions.append(f"laughter({laughter_count})")
+    if applause_count > 0:
+        score += min(applause_count * 0.2, 0.3)
+        contributions.append(f"applause({applause_count})")
+    if surprise_count > 0:
+        score += min(surprise_count * 0.3, 0.5)
+        contributions.append(f"surprise({surprise_count})")
+    if happy_count > 0:
+        score += min(happy_count * 0.2, 0.4)
+        contributions.append(f"happy({happy_count})")
+    if anger_count > 0:
+        score += min(anger_count * 0.15, 0.3)
+        contributions.append(f"anger({anger_count})")
+
+    return min(score, 1.0), contributions
+
+
 def danmaku_sentiment_score(session_id: int, start_ts: object, end_ts: object) -> float:
     """基于弹幕文本的情绪分析(规则:重复率、感叹号密度、特定梗命中)。
 
@@ -332,6 +403,13 @@ def score_segment(segment_id: int) -> HighlightCandidate | None:
         features["danmaku_sentiment"] = danmaku_sentiment_score(
             session_id, seg_start_ts, seg_end_ts
         )
+    # V0.1.12.2: 音频事件特征 (SenseVoice 辅助特征)
+    audio_event_contribs: list[str] = []
+    if settings.asr_sensevoice and settings.asr_sensevoice_enabled:
+        aux_json = transcript.auxiliary_json if transcript else None
+        audio_evt_score, audio_event_contribs = _audio_events_score(aux_json)
+        if audio_evt_score > 0:
+            features["audio_events"] = audio_evt_score
     # 网感维度:片段题材与资料库近期热门内容的关联度(仅在启用时计入)。
     trend_hits: list[str] = []
     if settings.trend_enabled:
