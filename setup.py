@@ -37,7 +37,7 @@ except ImportError:
 
 setup(
     name="bili-live-cut",
-    version="0.1.13.1-alpha",
+    version="0.1.13.2-alpha",
     description="AI 直播实时切片系统",
     packages=find_packages(include=["app", "app.*"]),
     ext_modules=_extensions,

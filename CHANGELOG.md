@@ -1,5 +1,23 @@
 # Changelog
 
+## V0.1.13.2 Alpha (2026-07-06)
+
+### CI 修复 + 代码格式校准
+
+- **修复** CI lint job 因 `ruff format --check` 失败 (66 文件格式不符) 导致 test/audit 全链路 skipped
+- **修复** `ruff format` 对全项目 66 个文件重格式化到一致风格
+- **修复** 2 个 ruff check 警告 (D210 docstring 首尾空格, B008 File() 默认参数)
+- **改进** audit job 移除 `if: PR/schedule` 约束, push 时也执行 pip-audit
+- **改进** coverage-summary job 处理空 artifact 目录 (不再报 exit code 2)
+- **杂项** README 测试数从 178 更新为 290; CI badge 已添加
+
+### 审计通过
+
+- Ruff check: All checks passed
+- Ruff format: 100 files formatted
+- Pytest: 290/290 passed
+- CI workflow: 4 job 依赖链 (lint → audit/test → coverage-summary)
+
 ## V0.1.13.1 Alpha (2026-07-06)
 
 ### CI Workflow 迭代升级

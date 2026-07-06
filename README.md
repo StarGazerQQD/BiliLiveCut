@@ -2,7 +2,7 @@
 
 [![CI](https://github.com/StarGazerQQD/BiliLiveCut/actions/workflows/ci.yml/badge.svg)](https://github.com/StarGazerQQD/BiliLiveCut/actions/workflows/ci.yml)
 
-**当前版本：V0.1.13.1 Alpha** (`0.1.13.1-alpha`)
+**当前版本：V0.1.13.2 Alpha** (`0.1.13.2-alpha`)
 
 针对 Bilibili 直播的全自动工作流：实时录制 → 转写 → 识别高光 → 生成切片 → 生成文案 → (可选)上传。
 阶段 1–5 全链路已可用；即插即用分发包见 [`Publish-PnP/`](Publish-PnP/README.md)。
@@ -225,7 +225,7 @@ pytest -q
 ```
 ├── app/                     # 后端主包 (sources / recording / analysis / clipping / publishing / pipeline / web)
 ├── config/                  # 权重与关键词 YAML
-├── tests/                   # 测试 (178 项)
+├── tests/                   # 测试 (290 项)
 ├── storage/                 # 运行产物 (.gitignore)
 ├── Publish-PnP/             # 即插即用分发版
 ├── pyproject.toml           # 项目配置
