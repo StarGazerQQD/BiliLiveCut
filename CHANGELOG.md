@@ -2,7 +2,50 @@
 
 ## V0.1.12.2 Alpha (2026-07-06)
 
-### 多模型 ASR 链路的正确性、稳定性、评测与资源治理
+### 稳定性修复迭代 (2026-07-06) — P0 修复
+
+本次迭代聚焦修复数据一致性、任务流水线和渲染失败等 P0 问题。不新增任何 Feature。
+
+#### 渲染失败误报成功 (CRITICAL FIX)
+- `_run_render()` 严格校验: `produce_clip()` 返回 None、文件不存在、文件过小(<1KB)、片长过短(<1s) 全部标记为失败
+- 无效 Clip 不再进入 `AWAITING_REVIEW`
+- 失败任务写入 `failed_stage` 并进入重试队列
+
+#### 原子任务领取 (CRITICAL FIX)
+- 改用 `UPDATE ... WHERE id=? AND stage=?` 条件更新 + `rowcount` 校验
+- SQLite 下双 Worker 并发争抢保证只有一个成功
+- 日志记录 task_id / worker_id / 领取结果
+
+#### 自动化开关独立生效
+- `auto_analyze=false` → 不进入转写队列和分析队列
+- `auto_render=false` → 不进入渲染队列
+- `auto_approve` / `auto_upload` 在阶段转换时重新读取房间配置
+- 新增 `_room_cfg_from_task()` 统一读取房间开关
+- 旧 `mode` 字段不再成为新流程判断依据
+
+#### Worker 心跳 + 优雅关闭
+- 新增 `_start_heartbeat_thread()` — 长任务期间周期性更新 `heartbeat_at`
+- `_execute_task()` finally 中自动清理心跳
+- `TaskWorker.stop()` 显式设置 `_shutting_down` 标志
+- 停止时等待进行中任务完成 (最多30s), 超时后取消
+- `_dispatch()` 检查 `_shutting_down` 标志停止领取新任务
+
+#### 版本化数据库迁移
+- 新增 `schema_version` / `migration_history` 表
+- 新增 `app/db/migrate.py` 版本化迁移系统
+- 迁移前自动备份数据库 (`.bak`)
+- 迁移失败时中止, 不允许半升级
+- V1 迁移: 修复旧数据中 Candidate ID 被错误写入 Event ID 的情况
+
+#### 唯一约束
+- `HighlightEvent.candidate_id` UNIQUE
+- `ClipVariant.candidate_id` 标记为 deprecated
+- `asr_model_revision` 默认值改为 `v2.0.4`
+
+#### 测试
+- 新增 `tests/test_stability_fixes.py` (16 个测试): 渲染失败/原子领取/自动化开关/心跳/优雅关闭/数据迁移/状态机/唯一约束
+
+### 多模型 ASR 链路的正确性、稳定性、评测与资源治理 (2026-07-06)
 
 本次迭代是对 V0.1.12 多引擎 ASR 流水线的深度重构, 修复了复核不触发、SenseVoice 无产出、热词未传入等关键问题。
 

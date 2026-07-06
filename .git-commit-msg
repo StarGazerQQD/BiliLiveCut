@@ -1,35 +1,17 @@
-v0.1.12.2-alpha: 多模型 ASR 链路的正确性、稳定性、评测与资源治理
+v0.1.12.2-alpha 稳定性修复: 渲染失败/原子领取/自动化开关/心跳/版本化迁移
 
-Phase 1 — 统一 ASR 结果模型:
-- 新增 ASRSegmentResult / ASRTranscriptResult 统一结果结构, 消除置信度歧义
-- Paraformer confidence 映射 normalized_confidence, Whisper avg_logprob 映射 raw_confidence
-- 不再给无置信度字段伪造 0.0 (改为 None)
-- 保留 TranscriptionResult 向后兼容
-- Transcript 新增 14 个追踪字段
+P0 关键修复:
+- 渲染失败不再误报成功 (produce_clip None/文件缺失/过小/过短 全部标记失败)
+- 原子任务领取: UPDATE WHERE id=? AND stage=? + rowcount 校验 (SQLite 安全)
+- 自动化五个开关独立生效: auto_analyze/auto_render/auto_approve/auto_upload
+- Worker 周期性心跳 + 优雅关闭 (_shutting_down 标志 + 任务等待)
+- 版本化数据库迁移 (schema_version + migration_history + 自动备份)
 
-Phase 2 — 修复复核闭环:
-- 重写 _review_low_confidence 为 _review_loop (基于 review_risk_score)
-- 新增 _compute_review_risk_score (6 项信号综合评分)
-- 新增 _extract_audio_segment (FFmpeg 局部截取, 不再 fallback 全文)
-- 新增 _merge_review_text (编辑距离/热词命中/人工标记决策)
+数据修复:
+- HighlightEvent.candidate_id UNIQUE
+- ClipVariant.candidate_id 标记 deprecated
+- V1 迁移: 修复旧数据 Candidate ID → Event ID 映射
+- asr_model_revision 固定为 v2.0.4
 
-Phase 3 — 热词 + SenseVoice:
-- Paraformer 热词参数传入 generate(hotword=...)
-- SenseVoice 按文本分段估算时间范围, 不再全置 0.0
-- 新增 _audio_events_score 接入高光评分 (权重 0.10)
-- 新增 ASR_SENSEVOICE_ENABLED / ASR_REVIEW_RISK_THRESHOLD 配置
-
-Phase 4 — 依赖拆分 + 模型治理:
-- pyproject.toml: asr-whisper / asr-funasr / asr-all 分离
-- 16 个分设备/并发/生命周期配置项
-- 新增 ASRModelManager (并发锁/状态查询/空闲卸载/预热)
-
-Phase 5 — 可观测性:
-- 新增 ASRMetrics (调用统计/RTF/复核率/OOM)
-- 运维 API: GET /api/monitor/asr-metrics / /api/monitor/asr-models
-
-Phase 6 — Golden Set + 测试 + 文档:
-- tests/golden_set/ 评测体系 (manifest 规范 + CER/RTF)
-- 新增 35 个 ASR 单元测试 (test_asr_result / test_asr_review / test_asr_integration)
-- DDL 自动迁移 (12 个 transcripts 新增列)
-- CHANGELOG / README / .env.example 更新
+测试: 16 个新增测试 (test_stability_fixes.py)
+全量: 229/229 通过

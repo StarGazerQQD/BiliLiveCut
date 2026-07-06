@@ -298,7 +298,7 @@ class HighlightEvent(SQLModel, table=True):
     __tablename__ = "highlight_events"
 
     id: int | None = Field(default=None, primary_key=True)
-    candidate_id: int | None = Field(default=None, index=True, description="关联 highlight_candidates.id(可空)")
+    candidate_id: int | None = Field(default=None, index=True, description="关联 highlight_candidates.id(可空)", sa_column_kwargs={"unique": True})
     session_id: int = Field(index=True, description="所属 recording_sessions.id")
     segment_id: int | None = Field(default=None, description="来源 raw_segments.id")
 
@@ -345,8 +345,8 @@ class ClipVariant(SQLModel, table=True):
     __tablename__ = "clip_variants"
 
     id: int | None = Field(default=None, primary_key=True)
-    event_id: int = Field(index=True, description="关联 highlight_events.id")
-    candidate_id: int | None = Field(default=None, index=True, description="关联 highlight_candidates.id(向后兼容)")
+    event_id: int = Field(index=True, description="关联 highlight_events.id", schema_extra={"unique_with": "variant_type"})
+    candidate_id: int | None = Field(default=None, index=True, description="[已废弃 V0.1.12.2]关联 highlight_candidates.id(仅向后兼容, 新代码通过 event_id 获取)")
 
     variant_type: str = Field(default=ClipVariantType.SINGLE, description="版本类型")
 
