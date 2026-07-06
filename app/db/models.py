@@ -262,10 +262,15 @@ class Transcript(SQLModel, table=True):
     review_triggered: bool = Field(default=False, description="是否触发复核")
     review_risk_score: float | None = Field(default=None, description="最高复核风险评分")
     review_reasons: str | None = Field(default=None, description="复核原因 JSON 列表")
-    final_text_source: str | None = Field(default=None, description="最终文本来源: primary/review/manual_review_needed")
+    final_text_source: str | None = Field(default=None, description="最终文本来源: primary/review/fallback/manual_review_needed")
     inference_duration: float | None = Field(default=None, description="总推理耗时 (秒)")
 
     created_at: datetime = Field(default_factory=utcnow)
+
+    # V0.1.12.4: 每个片段每种主引擎只有一个正式转录结果 (幂等)
+    __table_args__ = (
+        {"sqlite_autoincrement": True}
+    )
 
 
 class HighlightCandidate(SQLModel, table=True):
@@ -586,7 +591,7 @@ class SegmentTask(SQLModel, table=True):
     stage: str = Field(default=TaskStatus.RECORDED, index=True, description="当前处理阶段")
     failed_stage: str | None = Field(default=None, description="V0.1.11-alpha:失败时的阶段,用于精确恢复")
     priority: int = Field(default=100, description="优先级(数值越小越优先)")
-    idempotency_key: str | None = Field(default=None, index=True, description="幂等键:segment_id:stage,防重复")
+    idempotency_key: str | None = Field(default=None, index=True, description="幂等键:segment_id:stage,防重复", sa_column_kwargs={"unique": True})
     attempts: int = Field(default=0, description="当前阶段已尝试次数")
     max_retries: int = Field(default=5, description="V0.1.11-alpha:当前阶段最大重试次数(默认5)")
     next_retry_at: datetime | None = Field(default=None, description="下次重试时间(指数退避,含随机抖动)")

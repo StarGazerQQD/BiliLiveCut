@@ -1,6 +1,6 @@
 [project]
 name = "bili-live-cut"
-version = "0.1.12.3-alpha"
+version = "0.1.12.4-alpha"
 description = "AI 直播实时切片系统:监听 Bilibili 直播,自动录制、转写、识别高光、生成切片与文案"
 readme = "README.md"
 requires-python = ">=3.11"

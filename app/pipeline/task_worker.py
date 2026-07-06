@@ -21,6 +21,7 @@ from collections import Counter
 from datetime import UTC, datetime, timedelta
 
 from loguru import logger
+from sqlalchemy import text as sa_text
 from sqlmodel import select
 
 from app.core.config import settings
@@ -53,6 +54,9 @@ _logger = logger
 
 # V0.1.12.2: Worker 生命周期
 _shutting_down: bool = False
+# V0.1.12.4: 子进程跟踪 (用于优雅关闭时清理孤儿 FFmpeg 进程)
+_subprocesses: list = []
+_subprocesses_lock = None  # lazily initialized
 
 
 # ── 全局单例 Worker ─────────────────────────────────────────────────
@@ -69,6 +73,61 @@ def _make_idempotency_key(segment_id: int, stage: str) -> str:
 
 def _jitter(base: float, jitter_s: float = _RETRY_JITTER_S) -> float:
     return base + random.uniform(0, jitter_s)
+
+
+def track_subprocess(proc) -> None:
+    """注册子进程句柄, 供关闭时统一 terminate/kill。
+
+    :param proc: subprocess.Popen 实例。
+    """
+    global _subprocesses_lock
+    import threading
+    if _subprocesses_lock is None:
+        _subprocesses_lock = threading.Lock()
+    with _subprocesses_lock:
+        _subprocesses.append(proc)
+
+
+def untrack_subprocess(proc) -> None:
+    """从跟踪集中移除已正常结束的子进程。"""
+    global _subprocesses_lock
+    import threading
+    if _subprocesses_lock is None:
+        return
+    with _subprocesses_lock:
+        try:
+            _subprocesses.remove(proc)
+        except ValueError:
+            pass
+
+
+def _cleanup_subprocesses() -> None:
+    """关闭所有被跟踪的子进程: SIGTERM → 等待 → SIGKILL。"""
+    import signal as _signal
+    import time as _time
+    global _subprocesses_lock
+    if _subprocesses_lock is None:
+        return
+    with _subprocesses_lock:
+        procs = list(_subprocesses)
+        _subprocesses.clear()
+    if not procs:
+        return
+    _logger.warning("清理 {} 个子进程 (SIGTERM)", len(procs))
+    for p in procs:
+        try:
+            if p.poll() is None:
+                p.terminate()
+        except Exception:
+            pass
+    _time.sleep(5)
+    for p in procs:
+        try:
+            if p.poll() is None:
+                p.kill()
+                _logger.warning("子进程 {} 已被 SIGKILL", p.pid)
+        except Exception:
+            pass
 
 
 # ═══════════════════════════════════════════════════
@@ -102,7 +161,7 @@ def _active_stage(queued_stage: str) -> str:
         TaskStatus.QUEUED_FOR_TRANS: TaskStatus.TRANSCRIBING,
         TaskStatus.QUEUED_FOR_ANALYSIS: TaskStatus.ANALYZING,
         TaskStatus.QUEUED_FOR_RENDER: TaskStatus.RENDERING,
-        TaskStatus.QUEUED_FOR_PUBLISH: TaskStatus.COMPLETED,
+        TaskStatus.QUEUED_FOR_PUBLISH: TaskStatus.COMPLETED,  # 发布任务通过 _run_publish 执行后变 COMPLETED
     }.get(queued_stage, queued_stage)
 
 
@@ -213,8 +272,9 @@ def _pop_and_claim(queued_stage: str) -> SegmentTask | None:
     流程:
     1. SELECT 一个符合条件的 candidate task
     2. 条件 UPDATE WHERE id=? AND stage=queued_stage (防止竞态)
-    3. 只有 affected_rows==1 时才算领取成功
-    4. 再 SELECT 一次取回完整对象并更新 claimed_by/claimed_at
+    3. 只有 rowcount==1 时才算领取成功
+    4. 再 SELECT 取回完整对象
+    5. attempts 只在 SQL 中 increment 一次, 不再调用 mark_active()
     """
     now = _now()
     active_stage = _active_stage(queued_stage)
@@ -236,8 +296,10 @@ def _pop_and_claim(queued_stage: str) -> SegmentTask | None:
         task_id, segment_id = candidate
 
         # Step 2: 原子条件 UPDATE (只有 stage 仍为 queued_stage 时才更新)
+        # SQLAlchemy 2.x 裸 SQL 必须用 text() 包裹, params 为关键字参数
         result = db.exec(
-            """UPDATE segment_tasks
+            sa_text(
+                """UPDATE segment_tasks
                SET stage = :active,
                    claimed_by = :worker_id,
                    claimed_at = :now,
@@ -246,8 +308,9 @@ def _pop_and_claim(queued_stage: str) -> SegmentTask | None:
                    started_at = :now,
                    last_error = NULL
                WHERE id = :task_id
-                 AND stage = :queued_stage""",
-            {
+                 AND stage = :queued_stage"""
+            ),
+            params={
                 "active": active_stage,
                 "worker_id": _WORKER_ID,
                 "now": now.isoformat(),
@@ -260,7 +323,7 @@ def _pop_and_claim(queued_stage: str) -> SegmentTask | None:
             _logger.info("原子领取失败 task_id={} 已被其他 Worker 抢占", task_id)
             return None
 
-        # Step 3: 取回完整对象
+        # Step 3: 取回完整对象 (commit 后数据已落库)
         task = db.get(SegmentTask, task_id)
         if task is None:
             return None
@@ -334,13 +397,68 @@ def _advance_candidate() -> None:
             select(SegmentTask).where(SegmentTask.stage == TaskStatus.CANDIDATE_CREATED)
         ).all()
         for task in tasks:
-            # V0.1.12.2: auto_render=false 时不推进到渲染
+            # auto_render=false 时不推进到渲染
             cfg = _room_cfg_from_task(task)
             if not cfg.get("auto_render", False):
                 _logger.debug("auto_render=off, candidate {} 不自动进入渲染队列", task.candidate_id)
                 continue
             enqueue_next(task, TaskStatus.QUEUED_FOR_RENDER)
             db.add(task)
+
+
+def _advance_awaiting_review() -> None:
+    """auto_approve 开关: 达标自动批准, 否则留在 awaiting_review 等人工。"""
+    with get_session() as db:
+        tasks = db.exec(
+            select(SegmentTask).where(SegmentTask.stage == TaskStatus.AWAITING_REVIEW)
+        ).all()
+        for task in tasks:
+            cfg = _room_cfg_from_task(task)
+            auto_approve = bool(cfg.get("auto_approve", False))
+            threshold = float(cfg.get("auto_approve_threshold", 0.82))
+
+            if not auto_approve:
+                _logger.debug("auto_approve=off, task {} 留在 awaiting_review", task.id)
+                continue
+
+            # 检查候选分数是否达到自动批准阈值
+            from app.db.models import HighlightCandidate
+            candidate = db.get(HighlightCandidate, task.candidate_id) if task.candidate_id else None
+            score = candidate.highlight_score if candidate else 0.0
+            if score < threshold:
+                _logger.debug("候选 {} 分数 {:.2f} < 阈值 {:.2f}, 不自动批准",
+                              task.candidate_id, score, threshold)
+                continue
+
+            enqueue_next(task, TaskStatus.APPROVED)
+            db.add(task)
+            _logger.info("auto_approve: task={} candidate={} score={:.2f}", task.id, task.candidate_id, score)
+
+
+def _advance_approved() -> None:
+    """auto_render + auto_upload 串联: 已批准事件根据配置决定下一步。"""
+    with get_session() as db:
+        tasks = db.exec(
+            select(SegmentTask).where(SegmentTask.stage == TaskStatus.APPROVED)
+        ).all()
+        for task in tasks:
+            cfg = _room_cfg_from_task(task)
+            auto_upload = bool(cfg.get("auto_upload", False))
+
+            if auto_upload and task.clip_id is not None:
+                # 自动上传: 内联执行发布逻辑 (无需独立 dispatch)
+                try:
+                    from app.publishing.uploader import enqueue_and_upload
+                    enqueue_and_upload(task.clip_id)
+                    _logger.info("auto_upload: task={} clip={} 发布完成", task.id, task.clip_id)
+                except Exception as exc:
+                    _logger.error("auto_upload: task={} clip={} 发布失败: {}", task.id, task.clip_id, exc)
+                    # 发布失败不阻塞流水线, 标记为完成但记录错误
+                    task.last_error = f"UploadError: {exc}"[:1000]
+            # 无论是否上传, approved 后都走向 completed
+            enqueue_next(task, TaskStatus.COMPLETED)
+            db.add(task)
+            _logger.info("task={} 完成 (auto_upload={})", task.id, auto_upload)
 
 
 # ═══════════════════════════════════════════════════
@@ -610,7 +728,9 @@ def _run_render(task_id: int) -> None:
         mark_heartbeat(task)
         db.add(task)
     try:
-        clip = produce_clip(cid, auto_upload=False)
+        cfg = _room_cfg_from_task(task)
+        auto_upload = bool(cfg.get("auto_upload", False))
+        clip = produce_clip(cid, auto_upload=auto_upload)
     except Exception as exc:
         ms = int((time.time() - t0) * 1000)
         with get_session() as db:
@@ -762,6 +882,8 @@ class TaskWorker:
                     t.cancel()
 
         _logger.info("TaskWorker stopped.")
+        # V0.1.12.4: 清理孤儿子进程
+        _cleanup_subprocesses()
 
     async def _loop(self) -> None:
         while self._running and not _shutting_down:
@@ -771,6 +893,8 @@ class TaskWorker:
                 _advance_recorded()
                 _advance_transcribed()
                 _advance_candidate()
+                _advance_awaiting_review()
+                _advance_approved()
                 await self._dispatch(TaskStatus.QUEUED_FOR_TRANS, self._transcribing, MAX_TRANSCRIBING)
                 await self._dispatch(TaskStatus.QUEUED_FOR_ANALYSIS, self._analyzing, MAX_ANALYZING)
                 await self._dispatch(TaskStatus.QUEUED_FOR_RENDER, self._rendering, MAX_RENDERING)

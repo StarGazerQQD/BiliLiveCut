@@ -119,8 +119,16 @@ class ASRTranscriptResult:
     review_risk_score: float | None = None
     review_reasons: list[str] = field(default_factory=list)
     review_backend: str = ""
-    final_text_source: str = "primary"            # "primary" / "review" / "manual_review_needed"
+    final_text_source: str = "primary"            # "primary" / "review" / "fallback" / "manual_review_needed" / "none"
     reviewed_segments: list[dict] = field(default_factory=list)
+
+    # V0.1.12.4: fallback 追踪
+    primary_backend: str = ""
+    primary_status: str = ""                       # "" / "success" / "failed"
+    primary_error_type: str = ""
+    primary_error_message: str = ""
+    fallback_backend: str = ""
+    fallback_trigger_reason: str = ""              # "primary_empty_output" / "primary_exception"
 
     # 辅助特征
     emotions: list[EmotionEvent] = field(default_factory=list)
@@ -1020,6 +1028,9 @@ class ASRPipeline:
                     text="", language="zh", backend="paraformer",
                     model_id="paraformer-zh",
                     model_revision=settings.asr_model_revision,
+                    primary_status="failed",
+                    primary_error_type=type(exc).__name__,
+                    primary_error_message=str(exc)[:500],
                 )
 
             # V0.1.12.2: review_risk_score 复核决策
@@ -1035,7 +1046,19 @@ class ASRPipeline:
             # 主引擎空结果 → 兜底 Whisper
             if self._use_fallback:
                 logger.info("Paraformer 无有效输出, 切换 Whisper 兜底")
-                return self._get_whisper().transcribe(audio_path, initial_prompt)
+                fallback_result = self._get_whisper().transcribe(audio_path, initial_prompt)
+                # V0.1.12.4: 保留主模型失败信息
+                fallback_result.final_text_source = "fallback"
+                fallback_result.primary_backend = "paraformer"
+                fallback_result.primary_status = "failed"
+                fallback_result.fallback_backend = "whisper"
+                fallback_result.fallback_trigger_reason = "primary_empty_output"
+                fallback_result.review_text = fallback_result.text
+                fallback_result.final_text = fallback_result.text
+                return fallback_result
+            # V0.1.12.4: 即使无兜底, 也标记主模型失败
+            result.final_text_source = "none"
+            result.primary_status = "failed"
             return result
 
         # 直接使用 Whisper
@@ -1167,10 +1190,13 @@ class ASRPipeline:
             for r in seg.metadata.get("review_reasons", [])
         ))
 
-        if any(r.get("decision") == "use_review" for r in reviewed_segments):
-            result.final_text_source = "review"
-        elif any(r.get("decision") == "manual_review_needed" for r in reviewed_segments):
+        # V0.1.12.4: 优先级: manual_review_needed > review > fallback > primary
+        if any(r.get("decision") == "manual_review_needed" for r in reviewed_segments):
             result.final_text_source = "manual_review_needed"
+        elif any(r.get("decision") == "use_review" for r in reviewed_segments):
+            result.final_text_source = "review"
+        elif not result.final_text_source:
+            result.final_text_source = "primary"
 
         if reviewed_segments:
             logger.info(
@@ -1279,11 +1305,11 @@ def transcribe_segment(
         primary_model_id=result.model_id,
         primary_model_revision=result.model_revision,
         review_backend=result.review_backend or None,
-        fallback_backend=None,
+        fallback_backend=result.fallback_backend or None,
         review_triggered=result.review_triggered,
         review_risk_score=result.review_risk_score,
         review_reasons=review_reasons_json,
-        final_text_source=result.final_text_source,
+        final_text_source=result.final_text_source or "primary",
         inference_duration=result.inference_duration,
     )
     with get_session() as db:

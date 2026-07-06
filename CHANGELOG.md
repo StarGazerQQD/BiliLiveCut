@@ -1,5 +1,53 @@
 # Changelog
 
+## V0.1.12.4 Alpha (2026-07-06)
+
+### 稳定性修复: 流水线 / 自动化开关 / 原子领取 / Worker 生命周期 / 幂等 / ASR 追踪
+
+本质目标: 把现有代码修成真实可运行、可恢复、可验证的闭环。
+
+#### CI 修复
+- `ci.yml` concurrency 从无效 `matrix` 上下文改为 `github.workflow` + `github.ref`
+
+#### 原子任务领取
+- `_pop_and_claim` 裸 SQL 改为 `sa_text()` 包裹 (SQLAlchemy 2.x 规范)
+- `params` 改为关键字参数, 避免 `TypeError: exec() takes 2 positional arguments`
+- `attempts` 只在 SQL UPDATE 中 increment 一次, 杜绝 double-increment
+
+#### 五个自动化开关全部接入状态机
+- 新增 `_advance_awaiting_review()`: 检查 `auto_approve` + `auto_approve_threshold`
+- 新增 `_advance_approved()`: 检查 `auto_upload`, 自动发布时内联执行上传
+- `_run_render` 不再 hardcode `auto_upload=False`, 改为从房间配置读取
+- `auto_analyze` / `auto_render` / `auto_approve` / `auto_upload` 全部生效
+
+#### 发布队列
+- approved 后根据 `auto_upload` 决定是否执行上传
+- `auto_upload=true` → 内联执行 `enqueue_and_upload` → completed
+- `auto_upload=false` → 直接 completed
+
+#### Worker 生命周期
+- 新增 `track_subprocess()` / `untrack_subprocess()` / `_cleanup_subprocesses()`
+- `TaskWorker.stop()` 后统一 SIGTERM → SIGKILL 清理孤儿子进程
+
+#### 幂等与唯一约束
+- `SegmentTask.idempotency_key` 改为 UNIQUE 约束
+- `Transcript` 增加 `__table_args__` 声明幂等意图
+- 重复回调不会创建两个任务 (数据库级保证)
+
+#### ASR fallback 追踪
+- `ASRTranscriptResult` 新增: `primary_status`, `primary_error_type`, `primary_error_message`, `fallback_backend`, `fallback_trigger_reason`
+- Paraformer 空输出 → Whisper 兜底时保留完整链路信息
+- `_persist_transcript` 正确写入 `fallback_backend`
+
+#### final_text_source 优先级修正
+- manual_review_needed > review > fallback > primary
+- `manual_review_needed` 先于 `review` 检查, 不再被 `review` 覆盖
+
+#### 测试质量
+- `test_stability_fixes.py` 全部改为真实 SQLite 行为测试, 移除 `inspect.getsource()` 式检查
+- 23 项行为测试: 原子领取 (单Worker/双Worker并发), 自动化开关 × 6, 心跳/stale, 唯一约束, 重试恢复, ASR fallback
+- 全量: 236/236 通过
+
 ## V0.1.12.3 Alpha (2026-07-06)
 
 ### 接线补全 + 分设备配置生效
