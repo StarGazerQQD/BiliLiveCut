@@ -195,10 +195,13 @@ def _active_stage(queued_stage: str) -> str:
 # ═══════════════════════════════════════════════════
 
 def create_task(segment_id: int, session_id: int) -> SegmentTask | None:
-    """为已完成录制的片段创建任务(幂等, V0.1.12.5: pipeline_key + 迟到回调)。
+    """为已完成录制的片段创建任务(幂等, V0.1.12.7: IntegrityError 吸收)。
 
-    检查 pipeline_key 唯一性,已存在任务(任何阶段,包括 completed)时返回已有任务而非创建新任务。
+    检查 pipeline_key 唯一性,已存在任务(任何阶段,包括 completed)时返回 None。
+    并发冲突时返回 None (调用方可认为任务已存在)。
     """
+    from sqlalchemy.exc import IntegrityError
+
     pipeline_key = _make_pipeline_key(segment_id)
     stage_key = _make_stage_key(segment_id, "recorded")
     with get_session() as db:
@@ -229,9 +232,15 @@ def create_task(segment_id: int, session_id: int) -> SegmentTask | None:
             idempotency_key=old_key,
         )
         db.add(task)
-        db.flush()
-        db.refresh(task)
-        return task
+        try:
+            db.flush()
+            db.refresh(task)
+            return task
+        except IntegrityError:
+            # 并发: 同 pipeline_key 的任务已被另一个线程创建
+            db.rollback()
+            _logger.info("idempotency_conflict_resolved: segment={} 任务已被并发创建", segment_id)
+            return None
 
 
 def enqueue_next(
@@ -450,11 +459,13 @@ def _advance_transcribed() -> None:
 
 
 def _advance_candidate() -> None:
-    """CANDIDATE_CREATED → AWAITING_REVIEW 或 APPROVED (V0.1.12.5: 审核先于渲染)。
+    """CANDIDATE_CREATED → AWAITING_REVIEW 或 APPROVED (V0.1.12.7: 统一审批事务)。
 
-    auto_approve=true 且分数达标 → APPROVED
+    auto_approve=true 且分数达标 → 调用统一审批服务 (更新 Task+Event+Candidate)
     否则 → AWAITING_REVIEW
     """
+    from app.pipeline.approval import approve_event_and_task
+
     with get_session() as db:
         tasks = db.exec(
             select(SegmentTask).where(SegmentTask.stage == TaskStatus.CANDIDATE_CREATED)
@@ -468,18 +479,31 @@ def _advance_candidate() -> None:
                 from app.db.models import HighlightCandidate
                 candidate = db.get(HighlightCandidate, task.candidate_id) if task.candidate_id else None
                 score = candidate.highlight_score if candidate else 0.0
-                if score >= threshold:
-                    enqueue_next(task, TaskStatus.APPROVED)
-                    db.add(task)
-                    _logger.info("auto_approve: task={} candidate={} score={:.2f}", task.id, task.candidate_id, score)
-                    continue
+                if score >= threshold and task.event_id is not None:
+                    # V0.1.12.7: 使用统一审批服务, 同步更新 Task+Event+Candidate
+                    ok = approve_event_and_task(
+                        task_id=task.id,
+                        event_id=task.event_id,
+                        source="auto",
+                        review_decision="approved_solo",
+                    )
+                    if ok:
+                        db.refresh(task)
+                        _logger.info("auto_approve: task={} candidate={} event={} score={:.2f}",  # noqa: E501
+                                     task.id, task.candidate_id, task.event_id, score)
+                        continue
 
             enqueue_next(task, TaskStatus.AWAITING_REVIEW)
             db.add(task)
 
 
 def _advance_awaiting_review() -> None:
-    """auto_approve 开关: 达标自动批准, 否则留在 awaiting_review 等人工。"""
+    """V0.1.12.7: auto_approve 使用统一审批事务 (更新 Task+Event+Candidate)。
+    
+    auto_approve=off → 保留在 awaiting_review 等人工批准。
+    """
+    from app.pipeline.approval import approve_event_and_task
+
     with get_session() as db:
         tasks = db.exec(
             select(SegmentTask).where(SegmentTask.stage == TaskStatus.AWAITING_REVIEW)
@@ -493,7 +517,6 @@ def _advance_awaiting_review() -> None:
                 _logger.debug("auto_approve=off, task {} 留在 awaiting_review", task.id)
                 continue
 
-            # 检查候选分数是否达到自动批准阈值
             from app.db.models import HighlightCandidate
             candidate = db.get(HighlightCandidate, task.candidate_id) if task.candidate_id else None
             score = candidate.highlight_score if candidate else 0.0
@@ -502,17 +525,32 @@ def _advance_awaiting_review() -> None:
                               task.candidate_id, score, threshold)
                 continue
 
-            enqueue_next(task, TaskStatus.APPROVED)
-            db.add(task)
-            _logger.info("auto_approve: task={} candidate={} score={:.2f}", task.id, task.candidate_id, score)
+            if task.event_id is None:
+                _logger.warning("task {} 缺少 event_id, 无法自动批准", task.id)
+                continue
+
+            ok = approve_event_and_task(
+                task_id=task.id,
+                event_id=task.event_id,
+                source="auto",
+                review_decision="approved_solo",
+            )
+            if ok:
+                db.refresh(task)
+                _logger.info("auto_approve: task={} candidate={} event={} score={:.2f}",
+                             task.id, task.candidate_id, task.event_id, score)
 
 
 def _advance_approved() -> None:
-    """APPROVED → APPROVED_WAITING_RENDER 或 QUEUED_FOR_RENDER (V0.1.12.5)。
+    """APPROVED → APPROVED_WAITING_RENDER 或 QUEUED_FOR_RENDER (V0.1.12.7)。
 
     auto_render=true → QUEUED_FOR_RENDER
     auto_render=false → APPROVED_WAITING_RENDER (等待手动渲染)
+
+    V0.1.12.7: 进入渲染队列前检查 Event 真实 review_status。
     """
+    from app.pipeline.approval import assert_event_approved
+
     with get_session() as db:
         tasks = db.exec(
             select(SegmentTask).where(SegmentTask.stage == TaskStatus.APPROVED)
@@ -522,6 +560,16 @@ def _advance_approved() -> None:
             auto_render = bool(cfg.get("auto_render", False))
 
             if auto_render:
+                # V0.1.12.7: 检查 Event 真实批准状态
+                if task.event_id and not assert_event_approved(task.event_id):
+                    _logger.error(
+                        "consistency_error: task={} event={} review_status 非 APPROVED, "
+                        "阻止进入渲染队列。需人工修复。",
+                        task.id, task.event_id,
+                    )
+                    task.last_error = f"data_consistency_error: event {task.event_id} not approved, cannot render"
+                    db.add(task)
+                    continue
                 enqueue_next(task, TaskStatus.QUEUED_FOR_RENDER)
                 _logger.info("auto_render: task={} candidate={} → queued_for_render", task.id, task.candidate_id)
             else:
@@ -709,10 +757,14 @@ def _recover_orphans() -> None:
 # 执行 (V0.1.12.2: 周期性心跳 + 优雅关闭感知)
 # ═══════════════════════════════════════════════════
 
-def _start_heartbeat_thread(task_id: int) -> threading.Event:
-    """启动后台心跳线程, 周期性更新 heartbeat_at (V0.1.12.2 新增)。
+def _start_heartbeat_thread(task_id: int, lease_token: str | None = None) -> threading.Event:
+    """启动后台心跳线程, 使用租约条件更新 heartbeat_at (V0.1.12.7)。
+
+    每次心跳使用条件 SQL: WHERE id=? AND claimed_by=? AND lease_token=?
+    如果 rowcount==0 说明已失去租约, 停止心跳。
 
     :param task_id: SegmentTask ID。
+    :param lease_token: 租约令牌 (V0.1.12.7 — 条件校验)。
     :returns: stop_event — 设置后心跳线程退出。
     """
     stop = threading.Event()
@@ -721,10 +773,31 @@ def _start_heartbeat_thread(task_id: int) -> threading.Event:
         while not stop.is_set() and not _shutting_down:
             try:
                 with get_session() as db:
-                    t = db.get(SegmentTask, task_id)
-                    if t is not None:
-                        mark_heartbeat(t)
-                        db.add(t)
+                    if lease_token:
+                        # V0.1.12.7: 条件心跳 — 校验租约
+                        result = db.exec(
+                            sa_text(
+                                """UPDATE segment_tasks
+                                   SET heartbeat_at = :now
+                                   WHERE id = :task_id
+                                     AND claimed_by = :worker_id
+                                     AND lease_token = :lease_token"""
+                            ),
+                            params={
+                                "now": _now().isoformat(),
+                                "task_id": task_id,
+                                "worker_id": _WORKER_ID,
+                                "lease_token": lease_token,
+                            },
+                        )
+                        if result.rowcount == 0:
+                            _logger.warning("lease_lost: task={} 心跳更新失败, 租约已被接管", task_id)
+                            break
+                    else:
+                        t = db.get(SegmentTask, task_id)
+                        if t is not None:
+                            mark_heartbeat(t)
+                            db.add(t)
             except Exception:
                 pass
             stop.wait(_HEARTBEAT_POLL_S)
@@ -734,12 +807,66 @@ def _start_heartbeat_thread(task_id: int) -> threading.Event:
     return stop
 
 
-def _execute_task(task_id: int, active_stage: str) -> None:
+def _still_has_lease(task: SegmentTask, worker_id: str, lease_token: str | None, expected_stage: str) -> bool:
+    """校验 Worker 是否仍持有任务的租约 (V0.1.12.7)。
+
+    校验条件: task.id == task.id, claimed_by == worker_id, lease_token == lease_token, stage == expected_stage。
+    """
+    if lease_token is None:
+        return True  # 无租约 (旧数据兼容) 时不做校验
+    return (
+        task.claimed_by == worker_id
+        and task.lease_token == lease_token
+        and task.stage != TaskStatus.STALE
+    )
+
+
+def _clear_heartbeat_if_own(task_id: int, lease_token: str | None = None) -> None:
+    """条件清除 heartbeat, 必须携带租约 (V0.1.12.7)。
+
+    如果 rowcount==0 说明租约已被其他 Worker 接管 → 不做任何修改。
+    禁止在 finally 中无条件清除其他 Worker 的 heartbeat。
+    """
+    try:
+        with get_session() as db:
+            if lease_token:
+                result = db.exec(
+                    sa_text(
+                        """UPDATE segment_tasks
+                           SET heartbeat_at = NULL
+                           WHERE id = :task_id
+                             AND claimed_by = :worker_id
+                             AND lease_token = :lease_token"""
+                    ),
+                    params={
+                        "task_id": task_id,
+                        "worker_id": _WORKER_ID,
+                        "lease_token": lease_token,
+                    },
+                )
+                if result.rowcount == 0:
+                    _logger.debug("_clear_heartbeat_if_own: task={} 租约已转移, 跳过清除", task_id)
+                    return
+                _logger.debug("_clear_heartbeat_if_own: task={} heartbeat 已清除", task_id)
+            else:
+                t = db.get(SegmentTask, task_id)
+                if t is not None and t.stage not in (TaskStatus.COMPLETED, TaskStatus.FAILED):
+                    t.heartbeat_at = None
+                    db.add(t)
+    except Exception:
+        pass
+
+
+def _execute_task(task_id: int, active_stage: str, lease_token: str | None = None) -> None:
+    """执行耗时任务, 传递 lease_token 用于条件提交 (V0.1.12.7)。
+
+    所有耗时任务结果提交前必须校验租约。
+    """
     t0 = time.time()
     hb_stop: threading.Event | None = None
     try:
-        # V0.1.12.2: 启动周期性心跳 (长任务期间持续更新)
-        hb_stop = _start_heartbeat_thread(task_id)
+        # V0.1.12.7: 心跳现在传入 lease_token 用于条件校验
+        hb_stop = _start_heartbeat_thread(task_id, lease_token)
 
         if active_stage == TaskStatus.TRANSCRIBING:
             _run_transcribe(task_id)
@@ -751,21 +878,20 @@ def _execute_task(task_id: int, active_stage: str) -> None:
             _run_publish(task_id)
     except Exception as exc:
         _ms = int((time.time() - t0) * 1000)
+        _logger.error("任务 {} 阶段 {} 失败: {}", task_id, active_stage, exc)
+        # V0.1.12.7: 失败时也校验租约后再标记
         with get_session() as db:
             t = db.get(SegmentTask, task_id)
-            if t is not None:
-                _logger.error("任务 {} 阶段 {} 失败: {}", task_id, active_stage, exc)
+            if t is not None and _still_has_lease(t, _WORKER_ID, lease_token, active_stage):
                 mark_failed(t, f"{type(exc).__name__}: {exc}", permanent=False)
                 db.add(t)
+            elif t is not None:
+                _logger.warning("stale_result_discarded: task={} 已失去租约, 丢弃失败结果", task_id)
     finally:
         if hb_stop is not None:
             hb_stop.set()
-        # V0.1.12.2: 清除 heartbeat 标记
-        with get_session() as db:
-            t = db.get(SegmentTask, task_id)
-            if t is not None and t.stage not in (TaskStatus.COMPLETED, TaskStatus.FAILED):
-                t.heartbeat_at = None
-                db.add(t)
+        # V0.1.12.7: 条件清除 heartbeat —— 必须校验租约
+        _clear_heartbeat_if_own(task_id, lease_token)
 
 
 def _run_transcribe(task_id: int) -> None:
@@ -887,12 +1013,18 @@ def _run_render(task_id: int) -> None:
 
 
 def _run_publish(task_id: int) -> None:
-    """Execute the publish stage: validate + upload to platform (V0.1.12.5).
+    """Execute publish stage: validate + upload, then map UploadTask status (V0.1.12.7).
 
-    验证 Event 已批准、ClipVariant 存在、文件完整、平台配置有效后执行上传。
-    失败: failed_stage=publishing → TRANSIENT_FAILED
-    成功: COMPLETED
+    V0.1.12.7: 根据 UploadTask 真实状态推进主流水线:
+    - SUCCESS → COMPLETED
+    - SKIPPED → AWAITING_PUBLISH_CONFIRMATION
+    - FAILED → TRANSIENT_FAILED
+
+    验证 Event 已批准、ClipVariant 存在、文件完整后执行上传。
     """
+    from app.db.models import FinalClip, HighlightEvent, ReviewStatus
+    from app.pipeline.approval import apply_upload_result
+
     t0 = time.time()
     with get_session() as db:
         task = db.get(SegmentTask, task_id)
@@ -908,11 +1040,10 @@ def _run_publish(task_id: int) -> None:
         db.add(task)
 
     # 验证前置条件
-    from app.db.models import FinalClip, HighlightEvent, ReviewStatus
     with get_session() as db:
         event = db.get(HighlightEvent, event_id) if event_id else None
-        if event is None or event.review_status != ReviewStatus.APPROVED:
-            ms = int((time.time() - t0) * 1000)
+        if event is None or event.review_status not in ReviewStatus.POSITIVE:
+            _ms = int((time.time() - t0) * 1000)
             t = db.get(SegmentTask, task_id)
             if t:
                 mark_failed(t, "PublishError: Event 未批准或不存在", permanent=True)
@@ -921,7 +1052,7 @@ def _run_publish(task_id: int) -> None:
 
         clip = db.get(FinalClip, clip_id)
         if clip is None:
-            ms = int((time.time() - t0) * 1000)
+            _ms = int((time.time() - t0) * 1000)
             t = db.get(SegmentTask, task_id)
             if t:
                 mark_failed(t, f"PublishError: FinalClip {clip_id} 不存在", permanent=True)
@@ -930,19 +1061,20 @@ def _run_publish(task_id: int) -> None:
 
         from pathlib import Path as _Path
         if not clip.file_path or not _Path(clip.file_path).exists():
-            ms = int((time.time() - t0) * 1000)
+            _ms = int((time.time() - t0) * 1000)
             t = db.get(SegmentTask, task_id)
             if t:
                 mark_failed(t, "PublishError: 输出文件缺失", permanent=True)
                 db.add(t)
             return
 
+    # V0.1.12.7: 执行上传并根据结果推进
     try:
         from app.publishing.uploader import enqueue_and_upload
         upload_task = enqueue_and_upload(clip_id)
-        remote_id = upload_task.remote_id if upload_task else None
     except Exception as exc:
-        ms = int((time.time() - t0) * 1000)
+        _ms = int((time.time() - t0) * 1000)
+        _logger.debug("_run_publish 上传异常: task={} elapsed={}ms", task_id, _ms)
         with get_session() as db:
             t = db.get(SegmentTask, task_id)
             if t is not None:
@@ -950,14 +1082,32 @@ def _run_publish(task_id: int) -> None:
                 db.add(t)
         return
 
-    ms = int((time.time() - t0) * 1000)
-    with get_session() as db:
-        task = db.get(SegmentTask, task_id)
-        if task:
-            mark_completed(task, ms)
-            enqueue_next(task, TaskStatus.COMPLETED)
-            db.add(task)
-            _logger.info("_run_publish: task={} clip={} remote_id={} → completed", task_id, clip_id, remote_id)
+    if upload_task is None:
+        with get_session() as db:
+            t = db.get(SegmentTask, task_id)
+            if t is not None:
+                mark_failed(t, "PublishError: upload_task 为空", permanent=False)
+                db.add(t)
+        return
+
+    uid = upload_task.id or 0
+    ustatus = upload_task.status
+    uerror = upload_task.last_error
+    remote_id = upload_task.remote_id
+
+    _logger.info(
+        "_run_publish: task={} clip={} upload_task={} status={} remote_id={}",
+        task_id, clip_id, uid, ustatus, remote_id,
+    )
+
+    # V0.1.12.7: 根据 UploadTask 真实状态映射
+    apply_upload_result(
+        task_id=task_id,
+        upload_task_id=uid,
+        upload_status=ustatus,
+        upload_error=uerror,
+        remote_id=remote_id,
+    )
 
 
 # ═══════════════════════════════════════════════════
@@ -965,8 +1115,14 @@ def _run_publish(task_id: int) -> None:
 # ═══════════════════════════════════════════════════
 
 def _ensure_event(candidate_id: int) -> int | None:
-    """确保每个 HighlightCandidate 有唯一 HighlightEvent (幂等)。"""
+    """确保每个 HighlightCandidate 有唯一 HighlightEvent (幂等, V0.1.12.7: IntegrityError 吸收)。
+
+    V0.1.12.7: 使用 IntegrityError 处理并发冲突, 异常后重新查询已有 Event。
+    """
+    from sqlalchemy.exc import IntegrityError
+
     from app.db.models import HighlightCandidate, HighlightEvent, ReviewStatus
+
     with get_session() as db:
         existing = db.exec(
             select(HighlightEvent).where(HighlightEvent.candidate_id == candidate_id)
@@ -990,10 +1146,27 @@ def _ensure_event(candidate_id: int) -> int | None:
             review_by="auto",
         )
         db.add(event)
-        db.flush()
-        db.refresh(event)
-        _logger.info("auto event: eid={} cid={}", event.id, candidate_id)
-        return event.id
+        try:
+            db.flush()
+            db.refresh(event)
+            _logger.info("auto event: eid={} cid={}", event.id, candidate_id)
+            return event.id
+        except IntegrityError:
+            # 并发冲突: 另一个 Worker 已创建, 回滚后重新查询
+            db.rollback()
+            _logger.info("idempotency_conflict_resolved: event cid={} 已被并发创建, 查询已有记录", candidate_id)
+            # 在新 session 中查询 (当前 session 已回滚)
+            pass
+
+    # 重新查询
+    with get_session() as db:
+        existing = db.exec(
+            select(HighlightEvent).where(HighlightEvent.candidate_id == candidate_id)
+        ).first()
+        if existing is not None:
+            return existing.id
+        _logger.error("IntegrityError 后无法找到已有 Event: candidate_id={}", candidate_id)
+        return None
 
 
 # ═══════════════════════════════════════════════════
@@ -1104,7 +1277,8 @@ class TaskWorker:
             if task is None:
                 break
             active = _active_stage(queued_stage)
-            t = asyncio.create_task(asyncio.to_thread(_execute_task, task.id, active))
+            lease = task.lease_token
+            t = asyncio.create_task(asyncio.to_thread(_execute_task, task.id, active, lease))
             running.add(t)
 
     @property

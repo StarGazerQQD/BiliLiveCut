@@ -309,10 +309,13 @@ def submit_review(
     decision: str,
     reason: str | None = None,
 ) -> dict:
-    """提交审核决断(细粒度),更新候选状态并记录。
+    """提交审核决断(细粒度), 使用统一审批服务 (V0.1.12.7)。
+
+    正向决断时调用 approve_event_and_task 在同一事务中更新
+    Task.stage + Event.review_status + Candidate.status。
 
     :param candidate_id: 候选 id。
-    :param decision: 审核决断(appproved_solo/rejected/insufficient_context 等)。
+    :param decision: 审核决断(approved_solo/rejected/insufficient_context 等)。
     :param reason: 审核原因/备注。
     :returns: 操作结果。
     """
@@ -324,6 +327,7 @@ def submit_review(
         HighlightCandidate,
         HighlightEvent,
         ReviewStatus,
+        SegmentTask,
     )
     from app.db.session import get_session
 
@@ -346,19 +350,14 @@ def submit_review(
     if decision not in valid:
         raise HTTPException(status_code=400, detail=f"无效的审核决断: {decision}")
 
+    is_positive = decision in ReviewStatus.POSITIVE
+
     with get_session() as db:
         c = db.get(HighlightCandidate, candidate_id)
         if c is None:
             raise HTTPException(status_code=404, detail="候选不存在")
 
-        # 更新候选状态(向后兼容)。
-        if decision in ReviewStatus.POSITIVE:
-            c.status = CandidateStatus.APPROVED
-        elif decision in (ReviewStatus.REJECTED, ReviewStatus.NOT_EXCITING):
-            c.status = CandidateStatus.REJECTED
-        db.add(c)
-
-        # 更新 HighlightEvent。
+        # 查找或创建 HighlightEvent
         event = db.exec(
             _sql_select(HighlightEvent).where(
                 HighlightEvent.candidate_id == candidate_id,
@@ -381,11 +380,39 @@ def submit_review(
             )
             db.add(event)
             db.flush()
+
+        # 更新 Event 审核状态
         event.review_status = decision
         event.review_reason = reason
         event.review_by = "manual"
         event.updated_at = _dt.now(UTC)
         db.add(event)
+
+        # 更新 Candidate 状态
+        if is_positive:
+            c.status = CandidateStatus.APPROVED
+        elif decision in (ReviewStatus.REJECTED, ReviewStatus.NOT_EXCITING):
+            c.status = CandidateStatus.REJECTED
+        db.add(c)
+
+        # V0.1.12.7: 正向决断时同步 Task.stage (通过统一审批服务)
+        if is_positive and event.id is not None:
+            from app.pipeline.approval import approve_event_and_task
+
+            task = db.exec(
+                _sql_select(SegmentTask).where(
+                    SegmentTask.candidate_id == candidate_id,
+                ).order_by(SegmentTask.created_at.desc())
+            ).first()
+            if task is not None:
+                approve_event_and_task(
+                    task_id=task.id,
+                    event_id=event.id,
+                    approved_by="manual",
+                    reason=reason,
+                    source="human",
+                    review_decision=decision,
+                )
 
     return {"status": decision, "reason": reason}
 

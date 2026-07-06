@@ -28,10 +28,7 @@ RUN chown -R appuser:appuser /app
 # 切换到非 root 用户执行后续操作。
 USER appuser
 
-# 生成带哈希的锁定文件(先装 pip-tools)。
-# 注: 如需生产部署, 请提前在本机执行 `pip-compile --generate-hashes pyproject.toml -o requirements.lock`,
-# 然后将 requirements.lock COPY 进镜像, 替换下面两行为:
-#   RUN pip install --require-hashes -r requirements.lock
+# 安装 Python 依赖 (不启用哈希锁定, 请确保依赖来源可信)。
 RUN pip install --upgrade pip \
     && pip install ".[asr,web]"
 

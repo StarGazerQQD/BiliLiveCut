@@ -1,6 +1,44 @@
 # Changelog
 
-## V0.1.12.6 Alpha (2026-07-06)
+## V0.1.12.7 Alpha (2026-07-02)
+
+### 稳定性修复与数据一致性收口: 统一审批事务 / UploadTask 结果映射 / ManualUploader 状态 / Worker 租约贯穿 / 迁移修复 / 模型约束
+
+本质目标: 修复 14 项核心问题, 确保 Task 状态与业务对象状态一致, 失败不被伪装为成功, 租约校验贯穿任务生命周期, 迁移安全可靠。
+
+#### Phase 1: 审批和发布状态
+- **统一审批服务** (`app/pipeline/approval.py`): `approve_event_and_task()` 在同一事务中更新 Task.stage + Event.review_status + Candidate.status
+- **`_advance_candidate` / `_advance_awaiting_review`**: 不再只更新 Task.stage, 改用统一审批服务
+- **`_run_publish`**: 根据 UploadTask 真实状态映射主流水线 (SUCCESS→completed, FAILED→transient_failed, SKIPPED→awaiting_publish_confirmation)
+- **ManualUploader**: 不再标记 FinalClip 为 PUBLISHED, 区分"已导出"与"已发布"
+- **`_finish_task`**: 非 manual 上传器成功才标记 PUBLISHED
+- **发布前 Event 批准校验**: `_advance_approved` 进入渲染队列前检查 Event 真实 review_status
+
+#### Phase 2: Worker 租约贯穿
+- **`_execute_task`**: 传递 lease_token 到所有执行函数
+- **条件 heartbeat**: `_start_heartbeat_thread` 使用 `WHERE id=? AND claimed_by=? AND lease_token=?` 条件 SQL
+- **条件 finally**: `_clear_heartbeat_if_own()` 只在租约匹配时清除 heartbeat
+- **`_still_has_lease()`**: 统一租约校验函数
+
+#### Phase 3: 迁移执行器修复
+- **SQL 注释解析修复**: `_remove_sql_line_comments()` + `_split_sql_statements()`, 防止注释导致语句被跳过
+- **Candidate/Event ID 碰撞修复**: `_migrate_v1_old_data` 先判是否为真实 Event ID 再决定是否转换
+- **迁移失败阻止启动**: `init_db()` 检查 `run_migrations()` 返回值, `RuntimeError` 中止启动
+- **列迁移异常区分**: `_migrate_add_columns` 区分"列已存在"与真正的数据库错误
+- **迁移后 Schema 校验**: `check_schema()` 包含 `_verify_critical_indexes()` PRAGMA 校验
+
+#### Phase 4: 模型约束与幂等
+- **HighlightEvent**: `UniqueConstraint("candidate_id")`
+- **HighlightTopic**: `UniqueConstraint("event_id", "topic_id")`
+- **UploadTask**: `UniqueConstraint("clip_id", "uploader")`
+- **ClipVariant**: `UniqueConstraint("event_id", "variant_type", "render_config_hash")` 支持多渲染版本
+- **ReviewStatus.APPROVED**: 添加向后兼容别名
+
+#### Phase 5: 安全与一致性收口
+- **版本真源统一**: `version_label()` 动态生成, `__version_label__` 与 `__version__` 一致
+- **Dockerfile**: 修正哈希锁定相关注释, 反映实际行为
+
+## V0.1.12.6 Alpha (2026-07-02)
 
 ### 安全加固: Dockerfile 非 root / pip 哈希校验 / 路径穿越防御 / TOCTOU / SMTP 证书 / 迁移原子性
 
