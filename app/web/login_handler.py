@@ -8,17 +8,13 @@ Playwright 是可选依赖:首次调用时会提示安装。
 
 from __future__ import annotations
 
-import json
 import re
 import subprocess
 import sys
 import threading
 import time
-from pathlib import Path
 
 from loguru import logger
-
-from app.db.session import get_session
 
 _RUNNING_LOGINS: dict[int, dict] = {}  # task_id -> {status, cookie, error, room?}
 _next_task_id = 1
@@ -31,13 +27,13 @@ def _ensure_playwright() -> str:
     """确保 playwright 已安装,否则抛出可读错误。"""
     try:
         import playwright  # noqa: F401
-    except ImportError:
+    except ImportError as err:
         raise RuntimeError(
             "请先安装 Playwright: pip install playwright && playwright install chromium"
-        )
+        ) from err
     # 检查浏览器是否已安装
     try:
-        result = subprocess.run(
+        _result = subprocess.run(
             [sys.executable, "-m", "playwright", "install", "--dry-run", "chromium"],
             capture_output=True, text=True, timeout=30,
         )

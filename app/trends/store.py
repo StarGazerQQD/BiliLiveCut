@@ -14,10 +14,10 @@ from datetime import timedelta
 from loguru import logger
 from sqlmodel import select
 
+from app.analysis.speedups import fast_match_keywords
 from app.db.models import TrendItem, utcnow
 from app.db.session import get_session
 from app.trends.collector import TrendRecord, trend_to_dict
-from app.analysis.speedups import fast_match_keywords
 
 
 def _hash(source: str, title: str) -> str:

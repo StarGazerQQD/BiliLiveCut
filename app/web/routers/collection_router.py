@@ -44,8 +44,8 @@ async def collection_page(request: Request, topic_id: int) -> HTMLResponse:
 @collection_router.get("/api/{topic_id}")
 def get_collection_data(topic_id: int) -> dict:
     """获取合集编辑所需数据:主题+事件列表+重叠检测。"""
-    from app.pipeline.collection import detect_overlap, get_collection_events
     from app.analysis.topic_cluster import get_topic as _gt
+    from app.pipeline.collection import detect_overlap, get_collection_events
 
     topic = _gt(topic_id)
     if topic is None:
@@ -78,6 +78,7 @@ async def render_collection(
 ) -> dict:
     """渲染合集 MP4(异步)。"""
     import asyncio
+
     from app.pipeline.collection import render_collection as _rc
 
     result = await asyncio.to_thread(

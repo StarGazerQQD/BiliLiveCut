@@ -159,9 +159,10 @@ def generate_copywriter_for_topic(topic_id: int) -> dict | None:
     :param topic_id: 主题 id。
     :returns: 文案字典或 ``None``。
     """
-    from app.db.session import get_session
-    from app.db.models import HighlightCandidate, HighlightTopic, Topic
     from sqlmodel import select
+
+    from app.db.models import HighlightCandidate, HighlightTopic, Topic
+    from app.db.session import get_session
 
     with get_session() as db:
         topic = db.get(Topic, topic_id)

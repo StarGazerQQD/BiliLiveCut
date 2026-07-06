@@ -143,9 +143,10 @@ def cleanup_rejected_candidates() -> int:
 
     :returns: 清理的切片数。
     """
+    from sqlmodel import select
+
     from app.db.models import CandidateStatus, FinalClip, HighlightCandidate
     from app.db.session import get_session
-    from sqlmodel import select
 
     cleaned = 0
     with get_session() as db:

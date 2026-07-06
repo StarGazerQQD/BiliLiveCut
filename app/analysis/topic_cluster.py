@@ -26,17 +26,19 @@ from collections import Counter
 from loguru import logger
 from sqlmodel import select
 
+from app.analysis.speedups import (
+    cluster_similarity_matrix,
+    fast_char_bigrams,
+    fast_cosine_similarity,
+)
 from app.db.models import (
     HighlightCandidate,
-    HighlightEvent,
     HighlightTopic,
     Topic,
     TopicStatus,
     utcnow,
 )
 from app.db.session import get_session
-from app.analysis.speedups import fast_char_bigrams, fast_cosine_similarity, cluster_similarity_matrix
-
 
 # 可配置阈值(后续迁移到 settings)。
 TOPIC_CONFIDENCE_HIGH = 0.82
@@ -388,7 +390,7 @@ def list_topics(session_id: int | None = None) -> list[dict]:
             "status": t.status,
             "is_collection": t.is_collection,
             "event_count": len(links),
-            "event_ids": [l.event_id for l in links],
+            "event_ids": [link.event_id for link in links],
             "created_at": t.created_at.isoformat() if t.created_at else None,
         })
     return result
@@ -418,8 +420,8 @@ def get_topic(topic_id: int) -> dict | None:
         "status": t.status,
         "is_collection": t.is_collection,
         "event_count": len(links),
-        "event_ids": [l.event_id for l in links],
-        "events": [{"event_id": l.event_id, "confidence": l.confidence, "sort_order": l.sort_order, "is_manual": l.is_manual} for l in links],
+        "event_ids": [link.event_id for link in links],
+        "events": [{"event_id": link.event_id, "confidence": link.confidence, "sort_order": link.sort_order, "is_manual": link.is_manual} for link in links],  # noqa: E501
         "created_at": t.created_at.isoformat() if t.created_at else None,
     }
 
@@ -502,24 +504,24 @@ def merge_topics(source_id: int, target_id: int) -> bool:
         links = db.exec(
             select(HighlightTopic).where(HighlightTopic.topic_id == source_id)
         ).all()
-        for l in links:
+        for link in links:
             existing = db.exec(
                 select(HighlightTopic).where(
-                    HighlightTopic.event_id == l.event_id,
+                    HighlightTopic.event_id == link.event_id,
                     HighlightTopic.topic_id == target_id,
                 )
             ).first()
             if existing is None:
                 db.add(HighlightTopic(
-                    event_id=l.event_id,
+                    event_id=link.event_id,
                     topic_id=target_id,
-                    confidence=l.confidence,
+                    confidence=link.confidence,
                     is_manual=True,
-                    sort_order=l.sort_order,
+                    sort_order=link.sort_order,
                 ))
         # 删除源主题关联和新主题。
-        for l in links:
-            db.delete(l)
+        for link in links:
+            db.delete(link)
         db.delete(src)
     return True
 

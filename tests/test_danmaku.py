@@ -2,8 +2,6 @@
 
 from __future__ import annotations
 
-import pytest
-
 from app.analysis.highlight import (
     danmaku_rate_score,
     fuse_scores,

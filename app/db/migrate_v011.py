@@ -12,7 +12,7 @@ from __future__ import annotations
 from loguru import logger
 from sqlmodel import select
 
-from app.db.models import HighlightCandidate, HighlightEvent, ClipVariant, HighlightTopic
+from app.db.models import ClipVariant, HighlightCandidate, HighlightEvent, HighlightTopic
 from app.db.session import get_session
 
 

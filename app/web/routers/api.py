@@ -128,12 +128,14 @@ class LLMProvidersRequest(BaseModel):
 
 class MergeTopicsRequest(BaseModel):
     """合井主题请求。"""
+
     source_id: int
     target_id: int
 
 
 class TopicUpdateRequest(BaseModel):
     """更新主题请求(仅允许白名单字段)。"""
+
     title: str | None = None
     summary: str | None = None
     keywords_json: str | None = None
@@ -143,6 +145,7 @@ class TopicUpdateRequest(BaseModel):
 
 class SplitTopicRequest(BaseModel):
     """拆分主题请求。"""
+
     event_ids: list[int]
 
     @field_validator("event_ids")
@@ -155,6 +158,7 @@ class SplitTopicRequest(BaseModel):
 
 class ReorderTopicRequest(BaseModel):
     """重排主题事件请求。"""
+
     event_ids: list[int]
 
 
@@ -538,7 +542,8 @@ def login_clear() -> dict[str, str]:
 def get_tasks(limit: int = 50, stage: str | None = None) -> dict[str, Any]:
     """返回任务队列列表及各阶段统计。"""
     limit = _clamp(limit, 1, _MAX_QUERY_LIMIT)
-    from app.pipeline.task_worker import list_tasks as _list, task_worker
+    from app.pipeline.task_worker import list_tasks as _list
+    from app.pipeline.task_worker import task_worker
 
     tasks = _list(limit=limit, stage=stage)
     return {"tasks": tasks, "stats": task_worker.stats()}
@@ -697,10 +702,17 @@ def get_analytics() -> dict[str, Any]:
     """
     from datetime import UTC, datetime, timedelta
 
-    from sqlmodel import func, select as _sel
+    from sqlmodel import func
+    from sqlmodel import select as _sel
+
     from app.db.models import (
-        ClipStatus, FinalClip, HighlightCandidate,
-        LiveRoom, RawSegment, RecordingSession, TaskStatus,
+        ClipStatus,
+        FinalClip,
+        HighlightCandidate,
+        LiveRoom,
+        RawSegment,
+        RecordingSession,
+        TaskStatus,
     )
     from app.db.session import get_session
 
@@ -740,11 +752,16 @@ def get_analytics() -> dict[str, Any]:
         ).all()
         for s in all_scores:
             s = s or 0
-            if s < 0.3: score_buckets["0.0-0.3"] += 1
-            elif s < 0.5: score_buckets["0.3-0.5"] += 1
-            elif s < 0.7: score_buckets["0.5-0.7"] += 1
-            elif s < 0.85: score_buckets["0.7-0.85"] += 1
-            else: score_buckets["0.85-1.0"] += 1
+            if s < 0.3:
+                score_buckets["0.0-0.3"] += 1
+            elif s < 0.5:
+                score_buckets["0.3-0.5"] += 1
+            elif s < 0.7:
+                score_buckets["0.5-0.7"] += 1
+            elif s < 0.85:
+                score_buckets["0.7-0.85"] += 1
+            else:
+                score_buckets["0.85-1.0"] += 1
 
         # --- 录制统计 ---
         total_sessions = db.exec(

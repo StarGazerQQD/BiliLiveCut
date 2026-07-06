@@ -8,8 +8,6 @@ V0.1.11-alpha:
 
 from __future__ import annotations
 
-import asyncio
-
 from loguru import logger
 
 from app.analysis.highlight import score_segment
@@ -109,6 +107,7 @@ def produce_clip(candidate_id: int, auto_upload: bool = False) -> FinalClip | No
 
 
 def process_candidate(candidate_id: int) -> FinalClip | None:
+    """处理单个 Candidate,生成最终剪辑 (编排器入口)。"""
     return produce_clip(candidate_id)
 
 

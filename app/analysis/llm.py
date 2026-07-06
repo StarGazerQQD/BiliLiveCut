@@ -261,7 +261,8 @@ def call_trend_search(
     max_tokens: int = 2048,
     max_searches: int = 5,
 ) -> str | None:
-    """趋势采集专用:使用 ``TREND_API_KEY`` / ``TREND_BASE_URL`` / ``TREND_MODEL`` 的独立配置;
+    """趋势采集专用:使用 ``TREND_API_KEY`` / ``TREND_BASE_URL`` / ``TREND_MODEL`` 的独立配置。
+
     若未配置趋势专用 API 则回退到通用 LLM 的多模型列表。
 
     用于网感资料库的联网采集,可与通用 LLM 使用不同的模型/服务商。

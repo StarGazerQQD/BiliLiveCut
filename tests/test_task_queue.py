@@ -7,7 +7,6 @@ from sqlmodel import select
 
 from app.db.models import TaskStatus
 
-
 # ---- 状态机 ----
 _VALID_TRANSITIONS: dict[str, set[str]] = {
     TaskStatus.RECORDED: {TaskStatus.QUEUED_FOR_TRANS},
@@ -238,9 +237,10 @@ class TestDataModelConsistency:
 
     def test_ensure_event_creates_once(self, temp_db: None) -> None:
         """_ensure_event 幂等:同一 candidate 只创建一次 Event。"""
+        import datetime
+
         from app.db.models import HighlightCandidate, HighlightEvent
         from app.db.session import get_session
-        import datetime
 
         with get_session() as db:
             cand = HighlightCandidate(
@@ -267,9 +267,10 @@ class TestDataModelConsistency:
 
     def test_event_id_not_equal_candidate_id(self, temp_db: None) -> None:
         """event_id 和 candidate_id 数值可以不同。"""
+        import datetime
+
         from app.db.models import HighlightCandidate
         from app.db.session import get_session
-        import datetime
 
         with get_session() as db:
             c1 = HighlightCandidate(
@@ -300,9 +301,10 @@ class TestDataModelConsistency:
 
 def test_resolve_event_id_backward_compat(temp_db: None) -> None:
     """_resolve_event_id:找到已有 Event 时返回其 ID (不创建新)。"""
+    import datetime
+
     from app.db.models import HighlightCandidate, HighlightEvent, ReviewStatus
     from app.db.session import get_session
-    import datetime
 
     with get_session() as db:
         cand = HighlightCandidate(

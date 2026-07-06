@@ -12,7 +12,7 @@ from __future__ import annotations
 import asyncio
 import threading
 import time
-from dataclasses import dataclass, field
+from dataclasses import dataclass
 from typing import Any
 
 from loguru import logger
@@ -210,7 +210,7 @@ class ASRModelManager:
         try:
             # 生成静音白噪声音频做最小推理
             import tempfile
-            import subprocess
+
             import numpy as np
 
             tmp = tempfile.NamedTemporaryFile(suffix=".wav", delete=False)

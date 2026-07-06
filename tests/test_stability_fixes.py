@@ -6,11 +6,9 @@ V0.1.12.4: 全部改为真实数据库行为测试, 不再使用 inspect.getsour
 from __future__ import annotations
 
 import threading
-import time
 from datetime import UTC, datetime, timedelta
 
 import pytest
-from sqlmodel import Session, select
 
 
 @pytest.fixture()
@@ -186,7 +184,13 @@ class TestAutoSwitches:
 
     def test_auto_approve_off_stays_awaiting_review(self, test_db) -> None:
         """auto_approve=false → 留在 awaiting_review。"""
-        from app.db.models import HighlightCandidate, LiveRoom, RecordingSession, SegmentTask, TaskStatus
+        from app.db.models import (
+            HighlightCandidate,
+            LiveRoom,
+            RecordingSession,
+            SegmentTask,
+            TaskStatus,
+        )
         from app.db.session import get_session
         from app.pipeline.task_worker import _advance_awaiting_review
 
@@ -215,7 +219,13 @@ class TestAutoSwitches:
 
     def test_auto_approve_on_with_high_score_advances(self, test_db) -> None:
         """auto_approve=true + 高分 → 自动批准。"""
-        from app.db.models import HighlightCandidate, LiveRoom, RecordingSession, SegmentTask, TaskStatus
+        from app.db.models import (
+            HighlightCandidate,
+            LiveRoom,
+            RecordingSession,
+            SegmentTask,
+            TaskStatus,
+        )
         from app.db.session import get_session
         from app.pipeline.task_worker import _advance_awaiting_review
 
@@ -244,7 +254,13 @@ class TestAutoSwitches:
 
     def test_auto_approve_on_low_score_stays(self, test_db) -> None:
         """auto_approve=true 但分数 < 阈值 → 不批准。"""
-        from app.db.models import HighlightCandidate, LiveRoom, RecordingSession, SegmentTask, TaskStatus
+        from app.db.models import (
+            HighlightCandidate,
+            LiveRoom,
+            RecordingSession,
+            SegmentTask,
+            TaskStatus,
+        )
         from app.db.session import get_session
         from app.pipeline.task_worker import _advance_awaiting_review
 
@@ -309,7 +325,7 @@ class TestHeartbeat:
         """心跳超时 → 进入 stale 恢复。"""
         from app.db.models import SegmentTask, TaskStatus
         from app.db.session import get_session
-        from app.pipeline.task_worker import _recover_stale, _resume_stage
+        from app.pipeline.task_worker import _recover_stale
 
         with get_session() as db:
             task = SegmentTask(
@@ -340,7 +356,7 @@ class TestStatusMachine:
     """状态转换矩阵。"""
 
     def test_can_transition_rejects_illegal(self) -> None:
-        from app.pipeline.task_worker import _can_transition, TaskStatus
+        from app.pipeline.task_worker import TaskStatus, _can_transition
         assert not _can_transition(TaskStatus.COMPLETED, TaskStatus.TRANSCRIBING)
         assert not _can_transition(TaskStatus.AWAITING_REVIEW, TaskStatus.TRANSCRIBED)
         assert _can_transition(TaskStatus.RECORDED, TaskStatus.QUEUED_FOR_TRANS)
@@ -380,10 +396,10 @@ class TestUniqueConstraints:
 
     def test_duplicate_idempotency_key_rejected(self, test_db) -> None:
         """重复 idempotency_key 应被数据库拒绝。"""
+        from sqlalchemy.exc import IntegrityError
+
         from app.db.models import SegmentTask, TaskStatus
         from app.db.session import get_session
-        from sqlalchemy.exc import IntegrityError
-        from sqlmodel import Session
 
         with get_session() as db:
             t1 = SegmentTask(
@@ -434,7 +450,7 @@ class TestUniqueConstraints:
 
     def test_event_id_different_from_candidate_id(self, test_db) -> None:
         """Event.id != Candidate.id。"""
-        from app.db.models import HighlightCandidate, HighlightEvent
+        from app.db.models import HighlightCandidate
         from app.db.session import get_session
 
         with get_session() as db:

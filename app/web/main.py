@@ -28,11 +28,11 @@ from app.core.logging import setup_logging
 from app.db.session import get_session, init_db
 from app.web import service
 from app.web.routers.api import router as api_router
-from app.web.routers.review_router import review_router
 from app.web.routers.collection_router import collection_router
-from app.web.routers.monitor_router import monitor_router
-from app.web.routers.subtitle_template_router import router as subtitle_template_router
 from app.web.routers.intro_template_router import router as intro_template_router
+from app.web.routers.monitor_router import monitor_router
+from app.web.routers.review_router import review_router
+from app.web.routers.subtitle_template_router import router as subtitle_template_router
 
 _BASE_DIR = Path(__file__).resolve().parent
 _TEMPLATES = Jinja2Templates(directory=str(_BASE_DIR / "templates"))
@@ -151,10 +151,12 @@ app = FastAPI(
 # 当 ADMIN_PASSWORD 被设置时,所有 /api/* /review/* /collection/* 路由要求 Basic Auth。
 # 页面浏览(GET /)和静态资源不受影响。
 # 请求头格式: Authorization: Basic <base64(admin:<密码>)>
-import base64 as _base64
-from starlette.middleware.base import BaseHTTPMiddleware as _BaseMiddleware
-from starlette.responses import JSONResponse as _JSONResponse
-from app.core.config import settings as _cfg
+import base64 as _base64  # noqa: E402
+
+from starlette.middleware.base import BaseHTTPMiddleware as _BaseMiddleware  # noqa: E402
+from starlette.responses import JSONResponse as _JSONResponse  # noqa: E402
+
+from app.core.config import settings as _cfg  # noqa: E402
 
 _ADMIN_PASSWORD = _cfg.admin_password
 
@@ -189,7 +191,7 @@ class _AuthMiddleware(_BaseMiddleware):
 app.add_middleware(_AuthMiddleware)
 # ── 简易速率限制中间件(V0.1.8.2) ──────────────────────────────────────────
 # 使用内存计数器(非分布式),仅对写操作端点做基本保护。
-import time as _time
+import time as _time  # noqa: E402
 
 _RATE_LIMIT = 30  # 每窗口最多 30 次请求
 _RATE_WINDOW = 60  # 窗口 60 秒

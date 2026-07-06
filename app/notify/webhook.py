@@ -25,7 +25,6 @@ from loguru import logger
 
 from app.core.config import settings
 
-
 # 允许的 webhook 域名白名单。
 _ALLOWED_WEBHOOK_DOMAINS = {"oapi.dingtalk.com", "qyapi.weixin.qq.com"}
 
