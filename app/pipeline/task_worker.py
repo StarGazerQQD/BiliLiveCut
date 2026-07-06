@@ -531,7 +531,7 @@ def _advance_approved() -> None:
 
 
 def _advance_rendered() -> None:
-    """RENDERED → AWAITING_PUBLISH_CONFIRMATION 或 QUEUED_FOR_PUBLISH (V0.1.12.5)。
+    """Advance RENDERED tasks to publish queue or awaiting confirmation (V0.1.12.5).
 
     auto_upload=true → QUEUED_FOR_PUBLISH
     auto_upload=false → AWAITING_PUBLISH_CONFIRMATION (等待手动发布)
@@ -887,7 +887,7 @@ def _run_render(task_id: int) -> None:
 
 
 def _run_publish(task_id: int) -> None:
-    """发布阶段 (V0.1.12.5 新增)。
+    """Execute the publish stage: validate + upload to platform (V0.1.12.5).
 
     验证 Event 已批准、ClipVariant 存在、文件完整、平台配置有效后执行上传。
     失败: failed_stage=publishing → TRANSIENT_FAILED
@@ -908,7 +908,7 @@ def _run_publish(task_id: int) -> None:
         db.add(task)
 
     # 验证前置条件
-    from app.db.models import ClipVariant, FinalClip, HighlightEvent, ReviewStatus
+    from app.db.models import FinalClip, HighlightEvent, ReviewStatus
     with get_session() as db:
         event = db.get(HighlightEvent, event_id) if event_id else None
         if event is None or event.review_status != ReviewStatus.APPROVED:
