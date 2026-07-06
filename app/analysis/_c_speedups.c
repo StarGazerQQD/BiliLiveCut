@@ -24,6 +24,22 @@
 #include <math.h>
 #include <wchar.h>
 
+/* MSVC 兼容: strndup 是 POSIX 函数, MSVC 不提供 */
+#ifdef _MSC_VER
+#ifndef strndup
+static inline char *strndup(const char *s, size_t n) {
+    size_t len = 0;
+    while (len < n && s[len]) len++;
+    char *dup = (char *)malloc(len + 1);
+    if (dup) {
+        memcpy(dup, s, len);
+        dup[len] = '\0';
+    }
+    return dup;
+}
+#endif
+#endif
+
 /* ───────────────────────────────────────────────────────────────────────
  * Aho-Corasick 自动机数据结构
  * ─────────────────────────────────────────────────────────────────────── */
