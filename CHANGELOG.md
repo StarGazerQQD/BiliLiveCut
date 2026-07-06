@@ -1,5 +1,19 @@
 # Changelog
 
+## V0.1.12.5b Alpha (2026-07-06)
+
+### 安全加固: Dockerfile 非 root / pip 哈希校验 / 路径穿越防御 / TOCTOU / SMTP 证书 / 迁移原子性
+
+本质目标: 修复代码审计发现的 7 个安全与稳定问题 (5 HIGH + 2 MEDIUM)。
+
+#### 修复内容
+- **Dockerfile**: 容器改用非 root `appuser` 运行, pip install 去掉 `-e` 生产模式安装
+- **build_bundle.py**: zip 解压增加绝对路径 + 路径遍历 (`..`) 双重过滤, 防御 ZipSlip
+- **storage_lifecycle.py**: rmtree 增加 `os.lstat` + `S_ISLNK` TOCTOU 防御, 并校验 `realpath` 在预期目录内
+- **webhook.py**: SMTP_SSL 连接加入 `ssl.create_default_context()` 证书验证
+- **webhook.py** (已修复): 钉钉 URL query 拼接使用 `urlparse` + `parse_qs`, 避免双 `?` 问题
+- **migrate.py**: SQL DDL + Python 数据迁移合并到同一事务中执行, 失败时整体回滚, 避免半升级状态
+
 ## V0.1.12.5 Alpha (2026-07-06)
 
 ### 稳定性修复: 状态机重构 / 发布 Worker / 流水线幂等 / 数据一致性 / Worker 租约 / C 扩展

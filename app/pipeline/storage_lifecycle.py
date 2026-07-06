@@ -10,7 +10,9 @@
 
 from __future__ import annotations
 
+import os
 import shutil
+import stat
 from pathlib import Path
 
 from loguru import logger
@@ -124,9 +126,19 @@ def cleanup_old_raw_files(retention_days: int | None = None) -> int:
         try:
             mtime = session_path.stat().st_mtime
             if mtime < cutoff:
-                if session_path.is_symlink():
-                    logger.warning("跳过符号链接目录 (安全防护): {}", session_path)
-                    continue
+                # TOCTOU 防御: 检查符号链接 + 解析真实路径在预期目录下
+                try:
+                    st = os.lstat(session_path)
+                    if stat.S_ISLNK(st.st_mode):
+                        logger.warning("跳过符号链接目录 (安全防护): {}", session_path)
+                        continue
+                    real = os.path.realpath(session_path)
+                    resolved_root = os.path.realpath(str(raw_dir().resolve()))
+                    if not real.startswith(resolved_root):
+                        logger.warning("拒绝删除外部路径: {}", real)
+                        continue
+                except OSError:
+                    pass
                 shutil.rmtree(session_path)
                 cleaned += 1
                 logger.info("已清理过期原始文件: {}", session_path)

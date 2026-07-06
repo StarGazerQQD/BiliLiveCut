@@ -20,6 +20,7 @@ from datetime import UTC, datetime
 from pathlib import Path
 
 from loguru import logger
+from sqlalchemy import text
 from sqlmodel import Field, Session, SQLModel, select
 
 from app.core.config import settings
@@ -274,30 +275,21 @@ def run_migrations() -> bool:
         t0 = time.time()
 
         try:
-            with engine.connect() as conn:
-                # 在事务中执行 SQL
-                trans = conn.begin()
-                try:
-                    if migration.sql.strip():
-                        for stmt in migration.sql.split(";"):
-                            stmt = stmt.strip()
-                            if stmt and not stmt.startswith("--"):
-                                conn.exec_driver_sql(stmt)
-                    trans.commit()
-                except Exception:
-                    trans.rollback()
-                    raise
+            with get_session() as db:
+                # 1. SQL DDL 迁移 (在事务中执行)
+                if migration.sql.strip():
+                    for stmt in migration.sql.split(";"):
+                        stmt = stmt.strip()
+                        if stmt and not stmt.startswith("--"):
+                            db.exec(text(stmt))
 
-            # 执行数据迁移 (Python)
-            if migration.data_migration:
-                with get_session() as db:
+                # 2. Python 数据迁移 (仍在同一事务中)
+                if migration.data_migration:
                     fixed = migration.data_migration(db)
                     logger.info("数据迁移完成: 修复 {} 条记录", fixed)
 
-            # 记录迁移历史
-            elapsed = int((time.time() - t0) * 1000)
-            with get_session() as db:
-                # 更新版本
+                # 3. 更新版本号 + 记录历史 (DDL/数据全成功后一起提交)
+                elapsed = int((time.time() - t0) * 1000)
                 sv = db.get(SchemaVersion, 1)
                 if sv is None:
                     sv = SchemaVersion(id=1, version=migration.version)
@@ -307,13 +299,13 @@ def run_migrations() -> bool:
                     sv.applied_at = datetime.now(UTC)
                     db.add(sv)
 
-                # 记录历史
                 db.add(MigrationHistory(
                     version=migration.version,
                     name=migration.name,
                     duration_ms=elapsed,
                     success=True,
                 ))
+                # get_session 退出时自动 commit; 若任何步骤失败则回滚
 
             logger.info("迁移 v{} 完成, 耗时 {}ms", migration.version, elapsed)
 
