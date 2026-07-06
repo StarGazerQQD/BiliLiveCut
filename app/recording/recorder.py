@@ -24,6 +24,7 @@ from loguru import logger
 
 from app.core.config import settings
 from app.core.cookie import get_bilibili_cookie
+from app.core.ffmpeg_errors import FfmpegErrorType, classify_ffmpeg_error
 from app.core.paths import session_raw_dir
 from app.db.models import (
     RawSegment,
@@ -140,6 +141,13 @@ class Recorder:
 
         async with BilibiliLiveClient(cookie=get_bilibili_cookie()) as client:
             while not self._stop.is_set():
+                # V0.1.13: Disk protection — safely stop recording if disk critical
+                from app.pipeline.storage_lifecycle import should_stop_recording
+                if should_stop_recording():
+                    logger.warning("磁盘 CRITICAL, 安全停止录制")
+                    self.stop()
+                    break
+
                 stream = await self._fetch_stream(client)
                 if stream is None:
                     # 未开播或暂无流,按轮询间隔等待后重试(不计入重连退避)。
@@ -164,6 +172,7 @@ class Recorder:
                 # 记录录制前的 seq 用于判断是否产生过片段。
                 seq_before = self._seq
                 exit_code = await self._record_once(stream, out_dir)
+                self._classify_recording_exit(exit_code, getattr(self, "_stderr_tail", None))
 
                 if self._stop.is_set():
                     break
@@ -462,17 +471,21 @@ class Recorder:
     # 进程与会话辅助
     # ------------------------------------------------------------------ #
     async def _drain_stderr(self, proc: asyncio.subprocess.Process) -> None:
-        """持续读取并记录 FFmpeg 的 stderr,便于排错。
+        """持续读取并记录 FFmpeg 的 stderr, 缓存最近 N 行用于错误分类。
 
         :param proc: FFmpeg 子进程。
         """
         if proc.stderr is None:
             return
+        self._stderr_tail: list[str] = []
         try:
             async for raw in proc.stderr:
                 msg = raw.decode("utf-8", errors="ignore").strip()
                 if msg:
                     logger.debug("[ffmpeg] {}", msg)
+                    self._stderr_tail.append(msg)
+                    if len(self._stderr_tail) > 50:
+                        self._stderr_tail.pop(0)
         except asyncio.CancelledError:
             pass
 
@@ -568,3 +581,33 @@ class Recorder:
             if session is not None:
                 session.reconnect_count += 1
                 db.add(session)
+
+    def _classify_recording_exit(self, exit_code: int, stderr_lines: list[str] | None = None) -> FfmpegErrorType:
+        """对录制退出进行分类 (V0.1.13)。
+
+        根据退出码和 stderr 内容判断 FFmpeg 退出原因，
+        以便区分永久错误(不再重试)和临时错误(指数退避重连)。
+
+        :param exit_code: FFmpeg 进程退出码。
+        :param stderr_lines: 缓存的 stderr 行 (可选)。
+        :returns: 分类后的错误类型。
+        """
+        stderr_text = "\n".join(stderr_lines[-20:]) if stderr_lines else ""
+        if exit_code == -1:
+            return FfmpegErrorType.CANCELLED  # 主动停止
+        error_type = classify_ffmpeg_error(exit_code, stderr_text)
+        if error_type in (FfmpegErrorType.DISK_FULL,):
+            logger.critical("录制磁盘满, 触发 CRITICAL 保护")
+            try:
+                from app.notify.webhook import notify_disk_alert
+                notify_disk_alert(f"录制磁盘满: 房间 {self.room_id}")
+            except Exception:
+                pass
+        if error_type in (
+            FfmpegErrorType.PERMISSION_DENIED,
+            FfmpegErrorType.MISSING_BINARY,
+            FfmpegErrorType.INVALID_ARGUMENT,
+            FfmpegErrorType.UNSUPPORTED_CODEC,
+        ):
+            logger.error("录制永久错误: {} (exit={})", error_type.name, exit_code)
+        return error_type

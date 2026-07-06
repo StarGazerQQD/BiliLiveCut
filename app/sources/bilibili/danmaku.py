@@ -158,6 +158,8 @@ class DanmakuClient:
         self.cookie = cookie
         self.popularity = 0
         self._stop = asyncio.Event()
+        # V0.1.13: DanmakuSampler — lazy init per-room sampler
+        self._sampler = None  # type: ignore[var-annotated]
 
     def stop(self) -> None:
         """请求停止采集。"""
@@ -259,6 +261,11 @@ class DanmakuClient:
 
         :param frame: 收到的二进制帧。
         """
+        # V0.1.13: Lazy-init per-room DanmakuSampler
+        if self._sampler is None:
+            from app.analysis.danmaku_sampling import get_sampler
+            self._sampler = get_sampler(self.room_id)
+
         rows: list[Danmaku] = []
         for op, parsed in decode(frame):
             if op == OP_HEARTBEAT_REPLY and isinstance(parsed, int):
@@ -268,6 +275,12 @@ class DanmakuClient:
                 if result is None:
                     continue
                 msg_type, user, content, value = result
+
+                # V0.1.13: Sampling — always record for density, check if keep
+                self._sampler.record()
+                if not self._sampler.should_keep(msg_type):
+                    continue
+
                 rows.append(
                     Danmaku(
                         session_id=self.session_id,

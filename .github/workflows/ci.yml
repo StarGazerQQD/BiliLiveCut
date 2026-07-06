@@ -81,14 +81,40 @@ jobs:
         shell: bash
         run: ruff check app/ tests/
 
-      # 全量 pytest (Mock 后端, 无真实模型)
-      - name: Run pytest
+      # V0.1.13: 依赖安全审计
+      - name: pip-audit vulnerability scan
+        shell: bash
+        run: |
+          pip install pip-audit
+          pip-audit --strict 2>&1 || {
+            echo "::warning::pip-audit 发现漏洞 (评估风险后豁免)"
+          }
+        continue-on-error: true  # 高危漏洞由人工评估,不阻塞 CI
+
+      # 全量 pytest + 覆盖率 (Mock 后端, 无真实模型)
+      - name: Run pytest with coverage
         shell: bash
         env:
           ASR_NO_MODEL_DOWNLOAD: "1"
           WHISPER_MODEL: ""
-        run: python -m pytest tests/ -v --tb=short
+        run: |
+          pip install pytest-cov
+          python -m pytest tests/ \
+            -v --tb=short \
+            --cov=app \
+            --cov-report=term-missing \
+            --cov-report=xml \
+            --cov-fail-under=50
         timeout-minutes: 15
+
+      # 上传覆盖率报告
+      - name: Upload coverage report
+        uses: actions/upload-artifact@v4
+        with:
+          name: coverage-${{ matrix.os }}-py${{ matrix.python-version }}
+          path: coverage.xml
+          retention-days: 7
+          if-no-files-found: ignore
 
       # 上传失败日志 (仅在失败时)
       - name: Upload pytest output on failure

@@ -734,7 +734,22 @@ class FasterWhisperBackend:
 
 @lru_cache(maxsize=2)
 def _load_whisper_model(model_size: str, device: str, compute_type: str):  # noqa: ANN202
-    """加载并缓存 WhisperModel (进程级, 最多缓存 2 个)。"""
+    """加载并缓存 WhisperModel (进程级, 最多缓存 2 个)。
+
+    V0.1.13: 加载前检查系统资源, 不足时根据 asr_resource_policy 决定抛异常或仅警告。
+    """
+    # V0.1.13: ASR resource detection before model loading
+    from app.core.asr_detection import check_resources_sufficient
+    ok, msg = check_resources_sufficient(model_size, device)
+    policy = getattr(settings, "asr_resource_policy", "warn")
+    if not ok:
+        if policy == "strict":
+            raise RuntimeError(
+                f"ASR 模型加载被阻止: {msg} "
+                f"(asr_resource_policy={policy}). 请增大系统资源或降低模型预设。"
+            )
+        logger.warning("ASR 资源告警: {} (policy={})", msg, policy)
+
     try:
         from faster_whisper import WhisperModel
     except ImportError as exc:

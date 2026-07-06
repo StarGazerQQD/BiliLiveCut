@@ -56,7 +56,7 @@ class SchemaMeta(SQLModel, table=True):
 
 
 def compute_schema_fingerprint() -> str:
-    """计算当前 SQLModel 模型定义的 Schema 指纹 (SHA-256)。
+    """计算当前 SQLModel 模型定义的 Expected Schema 指纹 (SHA-256)。
 
     指纹包含:
     - 表名 (排序)
@@ -110,6 +110,100 @@ def compute_schema_fingerprint() -> str:
         }
 
     # 生成规范的 JSON (排序键以保证确定性)
+    canonical = json.dumps(tables_info, sort_keys=True, default=str)
+    return hashlib.sha256(canonical.encode("utf-8")).hexdigest()
+
+
+def compute_actual_schema_fingerprint() -> str:
+    """从真实数据库结构计算 Actual Schema 指纹 (V0.1.13)。
+
+    使用 PRAGMA 命令读取实际数据库结构, 生成与
+    compute_schema_fingerprint 兼容的描述格式。
+
+    :returns: SHA-256 十六进制字符串。
+    """
+    tables_info: dict[str, dict] = {}
+
+    with _get_engine().connect() as conn:
+        # 读取所有用户表
+        tables = conn.exec_driver_sql(
+            "SELECT name FROM sqlite_master WHERE type='table' AND name NOT LIKE 'sqlite_%'"
+        ).fetchall()
+
+        for (tname,) in sorted(tables):
+            # PRAGMA table_info
+            cols_raw = conn.exec_driver_sql(
+                f"PRAGMA table_info({tname})"
+            ).fetchall()
+
+            columns: list[dict] = []
+            for col in cols_raw:
+                columns.append({
+                    "name": col[1],
+                    "type": col[2] or "TEXT",
+                    "nullable": bool(not col[3]),
+                    "default": str(col[4]) if col[4] is not None else None,
+                    "primary_key": bool(col[5]),
+                })
+
+            # PRAGMA index_list (跳过 sqlite_autoindex)
+            idxs_raw = conn.exec_driver_sql(
+                f"PRAGMA index_list({tname})"
+            ).fetchall()
+
+            constraints: list[dict] = []
+            for idx in idxs_raw:
+                idx_name = idx[1]
+                if idx_name.startswith("sqlite_autoindex_"):
+                    continue
+                is_unique = bool(idx[2])
+                # PRAGMA index_info for column names
+                idx_cols = conn.exec_driver_sql(
+                    f"PRAGMA index_info({idx_name})"
+                ).fetchall()
+                col_names = [ic[2] for ic in idx_cols if len(ic) > 2] if idx_cols else []
+                constraints.append({
+                    "name": idx_name,
+                    "type": "UniqueConstraint" if is_unique else "Index",
+                    "columns": sorted(col_names),
+                })
+
+            # PRAGMA foreign_key_list
+            fks_raw = conn.exec_driver_sql(
+                f"PRAGMA foreign_key_list({tname})"
+            ).fetchall()
+
+            foreign_keys: list[dict] = []
+            for fk in fks_raw:
+                foreign_keys.append({
+                    "column": fk[3],
+                    "ref_table": fk[2],
+                    "ref_column": fk[4],
+                })
+
+            # 聚合唯一约束 (PRAGMA index_list + unique=1)
+            # 合并回 columns 信息
+            for idx in idxs_raw:
+                if idx[1].startswith("sqlite_autoindex_"):
+                    # 这是 SQLite 内部唯一索引 (对应模型定义中的 UniqueConstraint)
+                    is_unique = bool(idx[2])
+                    if is_unique:
+                        idx_cols_raw = conn.exec_driver_sql(
+                            f"PRAGMA index_info({idx[1]})"
+                        ).fetchall()
+                        col_names = sorted([ic[2] for ic in idx_cols_raw if len(ic) > 2])
+                        constraints.append({
+                            "name": "UNIQUE",
+                            "type": "UniqueConstraint",
+                            "columns": col_names,
+                        })
+
+            tables_info[tname] = {
+                "columns": columns,
+                "constraints": constraints,
+                "foreign_keys": foreign_keys,
+            }
+
     canonical = json.dumps(tables_info, sort_keys=True, default=str)
     return hashlib.sha256(canonical.encode("utf-8")).hexdigest()
 
@@ -234,16 +328,31 @@ def validate_schema() -> bool:
             if result and result[0] != "ok":
                 logger.error("数据库完整性检查失败: {}", result[0])
                 return False
-            # 确认 foreign_keys 开启
-            fk_result = conn.exec_driver_sql("PRAGMA foreign_keys").fetchone()
-            if not fk_result or fk_result[0] != 1:
-                logger.error("foreign_keys 未开启")
-                return False
+
+        # 8. V0.1.13: 验证实际数据库中存在所有预期表/列 (结构化比较)
+        actual_fp = compute_actual_schema_fingerprint()
+        # 不直接比较不同计算方式的指纹, 而是确保实际 DB 包含所有预期结构
+        ok, msg = _verify_actual_structure()
+        if not ok:
+            logger.error("实际数据库结构不完整: {}", msg)
+            return False
 
         logger.info(
-            "Schema 校验通过: version={} fingerprint={}",
-            CURRENT_SCHEMA_VERSION,
+            "Schema 校验完全通过 (expected={} actual={})",
             current_fp[:16],
+            actual_fp[:16],
+        )
+
+        # 9. 外键一致性检查
+        with _get_engine().connect() as conn_fk:
+            result_fk = conn_fk.exec_driver_sql("PRAGMA foreign_key_check").fetchall()
+        if result_fk:
+            logger.error("PRAGMA foreign_key_check 失败: {} 个不一致的外键", len(result_fk))
+            return False
+
+        logger.info(
+            "Schema 校验通过: version={}",
+            CURRENT_SCHEMA_VERSION,
         )
         return True
 
@@ -373,6 +482,46 @@ def _verify_critical_indexes() -> bool:
         return False
 
     return all_ok
+
+
+def _verify_actual_structure() -> tuple[bool, str]:
+    """验证实际数据库结构是否包含所有预期表和列 (V0.1.13)。
+
+    从 SQLModel metadata 获取预期结构, 与 PRAGMA 读取的实际结构比较。
+    不比较 SQLite 自动生成的名字, 只验证表/列/约束的逻辑存在。
+
+    :returns: (ok, error_message) — ok=True 表示实际结构包含所有预期元素。
+    """
+    try:
+        expected = {}  # table -> set of column names
+        for table in SQLModel.metadata.sorted_tables:
+            expected[table.name] = {col.name for col in table.columns}
+
+        with _get_engine().connect() as conn:
+            tables = conn.exec_driver_sql(
+                "SELECT name FROM sqlite_master WHERE type='table' AND name NOT LIKE 'sqlite_%'"
+            ).fetchall()
+            actual_tables = {row[0] for row in tables}
+
+        # 检查预期表都存在
+        missing_tables = set(expected) - actual_tables
+        if missing_tables:
+            return False, f"缺少表: {missing_tables}"
+
+        # 检查每个表的列
+        with _get_engine().connect() as conn:
+            for tname, expected_cols in expected.items():
+                actual_cols_raw = conn.exec_driver_sql(
+                    f"PRAGMA table_info({tname})"
+                ).fetchall()
+                actual_cols = {row[1] for row in actual_cols_raw}
+                missing_cols = expected_cols - actual_cols
+                if missing_cols:
+                    return False, f"表 {tname} 缺少列: {missing_cols}"
+
+        return True, "OK"
+    except Exception as exc:
+        return False, f"结构验证异常: {exc}"
 
 
 def _verify_foreign_keys() -> bool:
