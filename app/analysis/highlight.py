@@ -375,6 +375,16 @@ def score_segment(segment_id: int) -> HighlightCandidate | None:
         text = transcript.text if transcript else ""
         words_json = transcript.words_json if transcript else None
 
+        # V0.1.12.8: 提前提取 room 级标量, 避免 session 关闭后 DetachedInstanceError
+        room_auto_approve = bool(room.auto_approve) if room else False
+        room_auto_approve_threshold = room.auto_approve_threshold if room else 0.82
+        room_review_threshold = room.review_threshold if room else 0.50
+        use_dm_sentiment = (
+            room is not None
+            and bool(room.danmaku_sentiment_enabled)
+            and settings.collect_danmaku
+        )
+
     if not has_transcript:
         raise ValueError(f"片段尚未转写: id={segment_id}")
 
@@ -392,11 +402,6 @@ def score_segment(segment_id: int) -> HighlightCandidate | None:
         "danmaku": _danmaku_score(session_id, seg_start_ts, seg_end_ts),
     }
     # 弹幕情绪(V0.1.2 新增):仅当房间级开关启用且弹幕采集开启时才计入。
-    use_dm_sentiment = (
-        room is not None
-        and bool(room.danmaku_sentiment_enabled)
-        and settings.collect_danmaku
-    )
     if use_dm_sentiment:
         features["danmaku_sentiment"] = danmaku_sentiment_score(
             session_id, seg_start_ts, seg_end_ts
@@ -475,18 +480,17 @@ def score_segment(segment_id: int) -> HighlightCandidate | None:
 
     # ---- 5b) V0.1.6 审核状态:根据房间阈值自动决定初始状态 ----
     # P0 重构:取代旧 mode 逻辑。
-    auto_approve_threshold = room.auto_approve_threshold if room else 0.82
-    review_threshold = room.review_threshold if room else 0.50
-    room_auto_approve = bool(room.auto_approve) if room else False
+    # V0.1.12.8: 使用前提取的标量, 避免 DetachedInstanceError
 
-    if room_auto_approve and highlight_score >= auto_approve_threshold:
+    if room_auto_approve and highlight_score >= room_auto_approve_threshold:
         initial_status = CandidateStatus.APPROVED
-        logger.info("片段 {} 达自动批准阈值({}≥{}),自动批准。", segment_id, highlight_score, auto_approve_threshold)
-    elif highlight_score >= review_threshold:
+        logger.info("片段 {} 达自动批准阈值({}≥{}),自动批准。",
+                    segment_id, highlight_score, room_auto_approve_threshold)
+    elif highlight_score >= room_review_threshold:
         initial_status = CandidateStatus.PENDING
     else:
         initial_status = CandidateStatus.REJECTED
-        logger.info("片段 {} 低于审核阈值({}<{}),自动淘汰。", segment_id, highlight_score, review_threshold)
+        logger.info("片段 {} 低于审核阈值({}<{}),自动淘汰。", segment_id, highlight_score, room_review_threshold)
 
     # 自动淘汰的候选仍然入库(供后续调参参考),但标记为 REJECTED。
     dedup_hash = hashlib.sha1(

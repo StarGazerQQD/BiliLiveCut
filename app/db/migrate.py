@@ -27,7 +27,7 @@ from app.core.config import settings
 from app.db.session import engine, get_session
 
 # 当前目标 schema 版本
-TARGET_SCHEMA_VERSION = 2
+TARGET_SCHEMA_VERSION = 3
 
 
 # ── 迁移历史表 ───────────────────────────────────────────────
@@ -251,6 +251,24 @@ _MIGRATIONS: list[Migration] = [
         """,
         data_migration=_migrate_v2_pipeline_keys,
     ),
+    Migration(
+        version=3,
+        name="V0.1.12.8: ClipVariant 三列唯一约束 + Transcript segment_id 唯一索引",
+        sql="""
+        -- V0.1.12.8: ClipVariant(event_id, variant_type, render_config_hash) 三维唯一
+        -- 先删除旧的 2 列索引 (IF EXISTS via sqlite3)
+        -- 再创建新的 3 列索引
+        DROP INDEX IF EXISTS idx_clip_variants_event_variant;
+
+        CREATE UNIQUE INDEX IF NOT EXISTS idx_clip_variants_event_variant_config
+            ON clip_variants(event_id, variant_type, render_config_hash);
+
+        -- V0.1.12.8: Transcript segment_id 唯一索引 (一段一转写)
+        CREATE UNIQUE INDEX IF NOT EXISTS idx_transcripts_segment_id
+            ON transcripts(segment_id);
+        """,
+        data_migration=None,
+    ),
 ]
 
 
@@ -403,14 +421,15 @@ def check_schema() -> bool:
 
 
 def _verify_critical_indexes() -> bool:
-    """迁移后验证关键索引真实存在 (V0.1.12.7)。
+    """迁移后验证关键索引真实存在 (V0.1.12.8: 增加 Transcript 索引检查)。
 
     至少验证:
     - SegmentTask.segment_id 唯一
     - HighlightEvent.candidate_id 唯一
     - HighlightTopic(event_id, topic_id) 唯一
     - UploadTask(clip_id, uploader) 唯一
-    - ClipVariant(event_id, variant_type) 唯一
+    - ClipVariant(event_id, variant_type, render_config_hash) 唯一
+    - Transcript.pipeline_key 唯一
 
     :returns: True 表示全部关键索引存在。
     """
@@ -420,7 +439,8 @@ def _verify_critical_indexes() -> bool:
         ("highlight_events", "candidate_id", "HighlightEvent.candidate_id 唯一"),
         ("highlight_topics", "event_topic", "HighlightTopic(event_id, topic_id) 唯一"),
         ("upload_tasks", "clip_uploader", "UploadTask(clip_id, uploader) 唯一"),
-        ("clip_variants", "event_variant", "ClipVariant(event_id, variant_type) 唯一"),
+        ("clip_variants", "variant_config", "ClipVariant(event_id, variant_type, render_config_hash) 唯一"),
+        ("transcripts", "segment_id", "Transcript.segment_id 唯一"),
     ]
 
     all_ok = True

@@ -36,6 +36,7 @@ from app.db.models import (
     HighlightCandidate,
     IntroTemplate,
     RawSegment,
+    RenderStatus,
     Transcript,
 )
 from app.db.session import get_session
@@ -636,7 +637,7 @@ def _create_clip_variants(
             duration_s=clip.duration_s,
             resolution=f"{clip.width}x{clip.height}" if clip.width and clip.height else None,
             has_subtitles=options.subtitle,
-            render_status="completed",
+            render_status=RenderStatus.DONE,
             version_number=1,
             created_at=clip.created_at,
         ))
@@ -648,7 +649,7 @@ def _create_clip_variants(
                 file_path=clip.file_path,
                 duration_s=clip.duration_s,
                 has_subtitles=True,
-                render_status="completed",
+                render_status=RenderStatus.DONE,
                 version_number=1,
                 created_at=clip.created_at,
             ))
@@ -659,7 +660,7 @@ def _create_clip_variants(
                 file_path=clip.file_path,
                 duration_s=clip.duration_s,
                 has_subtitles=False,
-                render_status="completed",
+                render_status=RenderStatus.DONE,
                 version_number=1,
                 created_at=clip.created_at,
             ))
@@ -668,14 +669,14 @@ def _create_clip_variants(
             event_id=event_id,
             variant_type=ClipVariantType.ARCHIVE,
             has_subtitles=options.subtitle,
-            render_status="queued",
+            render_status=RenderStatus.QUEUED,
             version_number=1,
         ))
         db.add(ClipVariant(
             event_id=event_id,
             variant_type=ClipVariantType.COMPRESSED,
             has_subtitles=options.subtitle,
-            render_status="queued",
+            render_status=RenderStatus.QUEUED,
             version_number=1,
         ))
         logger.info(
@@ -950,10 +951,10 @@ def _render_single_variant(
                 variant.duration_s = real_dur or duration
                 variant.resolution = f"{w}x{h}" if w and h else None
                 variant.has_subtitles = subtitle
-                variant.render_status = "completed"
+                variant.render_status = RenderStatus.DONE
                 logger.success("变体 {} candidate={} 渲染完成 -> {}", variant_type, clip.candidate_id, out_path.name)
             else:
-                variant.render_status = "failed"
+                variant.render_status = RenderStatus.FAILED
                 stderr = result.stderr.decode("utf-8", errors="ignore")
                 logger.error("变体 {} candidate={} 渲染失败: {}", variant_type, clip.candidate_id, stderr)
             db.add(variant)

@@ -480,15 +480,15 @@ def _advance_candidate() -> None:
                 candidate = db.get(HighlightCandidate, task.candidate_id) if task.candidate_id else None
                 score = candidate.highlight_score if candidate else 0.0
                 if score >= threshold and task.event_id is not None:
-                    # V0.1.12.7: 使用统一审批服务, 同步更新 Task+Event+Candidate
+                    # V0.1.12.8: 传入外层 db session, 同一事务
                     ok = approve_event_and_task(
                         task_id=task.id,
                         event_id=task.event_id,
                         source="auto",
                         review_decision="approved_solo",
+                        db=db,
                     )
                     if ok:
-                        db.refresh(task)
                         _logger.info("auto_approve: task={} candidate={} event={} score={:.2f}",  # noqa: E501
                                      task.id, task.candidate_id, task.event_id, score)
                         continue
@@ -534,9 +534,9 @@ def _advance_awaiting_review() -> None:
                 event_id=task.event_id,
                 source="auto",
                 review_decision="approved_solo",
+                db=db,
             )
             if ok:
-                db.refresh(task)
                 _logger.info("auto_approve: task={} candidate={} event={} score={:.2f}",
                              task.id, task.candidate_id, task.event_id, score)
 

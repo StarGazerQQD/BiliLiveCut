@@ -33,6 +33,7 @@ from app.db.models import (
     FinalClip,
     HighlightCandidate,
     HighlightTopic,
+    RenderStatus,
     Topic,
 )
 from app.db.session import get_session
@@ -274,7 +275,7 @@ def render_collection(
             file_path=str(out_file),
             file_hash=file_hash,
             duration_s=round(duration_s, 2),
-            render_status="done",
+            render_status=RenderStatus.DONE,
             version_number=1,
         )
         db.add(variant)

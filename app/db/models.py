@@ -156,6 +156,15 @@ class TaskStatus:
     TRANSIENT_FAILED = "transient_failed"       # 临时失败,等待重试
 
 
+class RenderStatus:
+    """ClipVariant 渲染状态 (V0.1.12.8)。"""
+
+    QUEUED = "queued"
+    RENDERING = "rendering"
+    DONE = "done"
+    FAILED = "failed"
+
+
 class UploadStatus:
     """上传任务状态。"""
 
@@ -384,7 +393,7 @@ class ClipVariant(SQLModel, table=True):
     cover_path: str | None = Field(default=None, description="封面图路径")
     duration_s: float | None = Field(default=None, description="时长(秒)")
 
-    render_status: str = Field(default="queued", description="渲染状态:queued/rendering/done/failed")
+    render_status: str = Field(default=RenderStatus.QUEUED, description="渲染状态: queued/rendering/done/failed")
     version_number: int = Field(default=1, description="版本号(同 variant_type 同 event 递增)")
 
     created_at: datetime = Field(default_factory=utcnow)
