@@ -67,10 +67,7 @@ def add_room(
     :param authorize: 是否确认拥有录制授权。
     """
     if settings.require_authorization and not authorize:
-        console.print(
-            "[red]需要授权确认。[/red] 仅可录制你拥有授权的内容。"
-            "确认后请加 [bold]--authorize[/bold] 重试。"
-        )
+        console.print("[red]需要授权确认。[/red] 仅可录制你拥有授权的内容。确认后请加 [bold]--authorize[/bold] 重试。")
         raise typer.Exit(code=1)
 
     async def _resolve() -> LiveRoom:
@@ -96,10 +93,7 @@ def add_room(
         db.add(room)
         db.flush()
         db.refresh(room)
-        console.print(
-            f"[green]已登记直播间[/green] db_id={room.id} room_id={room.room_id} "
-            f"authorized={authorize}"
-        )
+        console.print(f"[green]已登记直播间[/green] db_id={room.id} room_id={room.room_id} authorized={authorize}")
 
 
 @app.command("list-rooms")
@@ -211,9 +205,7 @@ def record(
         console.print(f"[green]本场直播已结束。上传模块未开启,切片已保存到:[/green] {path}")
         open_path(path)
 
-    recorder = Recorder(
-        room_id=room_id, db_room_id=db_id, on_segment=on_segment, on_end=_on_end
-    )
+    recorder = Recorder(room_id=room_id, db_room_id=db_id, on_segment=on_segment, on_end=_on_end)
 
     async def _run() -> None:
         loop = asyncio.get_running_loop()
@@ -284,10 +276,7 @@ def process(
     if candidate is None:
         console.print("[yellow]处理完成,未生成候选。[/yellow]")
     else:
-        console.print(
-            f"[green]★ 处理完成并生成候选[/green] id={candidate.id} "
-            f"分数={candidate.highlight_score:.3f}"
-        )
+        console.print(f"[green]★ 处理完成并生成候选[/green] id={candidate.id} 分数={candidate.highlight_score:.3f}")
 
 
 @app.command("list-candidates")
@@ -335,9 +324,7 @@ def clip(
     from app.clipping.clipper import produce_clip as make_clip
 
     c = make_clip(candidate_id)
-    console.print(
-        f"[green]切片完成[/green] clip_id={c.id} 时长={c.duration_s:.1f}s -> {c.file_path}"
-    )
+    console.print(f"[green]切片完成[/green] clip_id={c.id} 时长={c.duration_s:.1f}s -> {c.file_path}")
 
 
 @app.command()
@@ -369,10 +356,7 @@ def produce(
     if c is None:
         console.print("[red]出片失败,详见日志。[/red]")
         raise typer.Exit(code=1)
-    console.print(
-        f"[green]★ 出片完成[/green] clip_id={c.id} 状态={c.status}\n"
-        f"标题: {c.title}\n文件: {c.file_path}"
-    )
+    console.print(f"[green]★ 出片完成[/green] clip_id={c.id} 状态={c.status}\n标题: {c.title}\n文件: {c.file_path}")
 
 
 @app.command("list-clips")
@@ -419,8 +403,7 @@ def upload(
 
     task = enqueue_and_upload(clip_id)
     console.print(
-        f"[green]上传任务[/green] id={task.id} 状态={task.status} "
-        f"上传器={task.uploader} {task.last_error or ''}"
+        f"[green]上传任务[/green] id={task.id} 状态={task.status} 上传器={task.uploader} {task.last_error or ''}"
     )
 
 
@@ -532,11 +515,9 @@ def db_reset(
     :param yes: 跳过确认提示。
     """
     if not yes:
-        console.print(
-            "[red]警告: 这将删除当前数据库并重新创建![/red]\n"
-            f"数据库路径: {settings.database_url}\n"
-        )
+        console.print(f"[red]警告: 这将删除当前数据库并重新创建![/red]\n数据库路径: {settings.database_url}\n")
         from app.db.schema import _db_path
+
         console.print(f"绝对路径: {_db_path()}\n")
         confirm = typer.confirm("确认重置数据库?")
         if not confirm:
@@ -544,6 +525,7 @@ def db_reset(
             raise typer.Exit()
 
     from app.db.migrate import reset_db
+
     ok = reset_db(yes=yes)
     if ok:
         console.print("[green]数据库已重置重建。[/green]")
@@ -581,7 +563,11 @@ def llm_list() -> None:
     for p in items:
         hint = f"****{p.api_key[-4:]}" if p.api_key else "(未配置)"
         table.add_row(
-            str(p.priority), p.name, p.model, p.base_url, hint,
+            str(p.priority),
+            p.name,
+            p.model,
+            p.base_url,
+            hint,
             "是" if p.enabled else "否",
         )
     console.print(table)
@@ -608,9 +594,7 @@ def llm_test() -> None:
 @app.command()
 def schedule(
     room_id: int = typer.Argument(..., help="live_rooms 主键(dbid)"),
-    at_time: str = typer.Option(
-        ..., "--at", help="计划启动时间,ISO 格式(如 2026-07-03T20:00:00)或 HH:MM(默认今天)"
-    ),
+    at_time: str = typer.Option(..., "--at", help="计划启动时间,ISO 格式(如 2026-07-03T20:00:00)或 HH:MM(默认今天)"),
     daily: bool = typer.Option(False, "--daily", help="设为每日重复"),
 ) -> None:
     """为直播间创建一个录制预约(V0.1.2 新增)。
@@ -643,6 +627,7 @@ def schedule(
             # 如果今天的时间已过,推至明天。
             if ts <= local_now:
                 from datetime import timedelta
+
                 ts += timedelta(days=1)
         except (ValueError, AttributeError) as err:
             console.print(f"[red]时间格式无效: {at_time}(支持 ISO 或 HH:MM)[/red]")
@@ -661,10 +646,7 @@ def schedule(
         db.refresh(sched)
 
     label = "每日" if daily else "单次"
-    console.print(
-        f"[green]预约已创建[/green] id={sched.id} "
-        f"房间=#{room_id} {label} @ {ts.isoformat()}"
-    )
+    console.print(f"[green]预约已创建[/green] id={sched.id} 房间=#{room_id} {label} @ {ts.isoformat()}")
     console.print(f"[dim]提示:预约在 Web 控制台运行时生效(后台每 {s.schedule_check_interval_s}s 检查一次)。[/dim]")
 
 
@@ -723,6 +705,7 @@ def doctor(
 
     # ── 数据库
     from app.core.config import settings as _cfg
+
     db_path = _Path(_cfg.database_url.replace("sqlite:///", "."))
     if db_path.exists():
         try:
@@ -730,6 +713,7 @@ def doctor(
                 CURRENT_SCHEMA_VERSION,
                 validate_schema,
             )
+
             ok = validate_schema()
             if ok:
                 report("PASS", "数据库 Schema", f"v{CURRENT_SCHEMA_VERSION}")
@@ -737,6 +721,7 @@ def doctor(
                 report("FAIL", "数据库 Schema", "不兼容, 需重建")
             # Integrity
             from app.db.session import engine
+
             with engine.connect() as conn:
                 r = conn.exec_driver_sql("PRAGMA integrity_check").fetchone()
                 if r and r[0] == "ok":
@@ -776,6 +761,7 @@ def doctor(
     # ── ADMIN_PASSWORD 安全
     if not _cfg.admin_password:
         import socket
+
         hostname = socket.gethostname()
         has_nonloop = False
         try:
@@ -794,6 +780,7 @@ def doctor(
     # ── Bilibili API 连通性 (可选)
     try:
         import httpx
+
         resp = httpx.get("https://api.live.bilibili.com/", timeout=5)
         if resp.status_code < 500:
             report("PASS", "Bilibili API", "连通正常")
@@ -812,6 +799,7 @@ def doctor(
     # ── GPU
     try:
         from app.core.asr_detection import detect_resources
+
         res = detect_resources()
         if res.get("gpu_available"):
             vram = res.get("total_vram_mb", 0) / 1024
@@ -871,10 +859,12 @@ def serve(
 
     # P0: non-loopback requires password
     from app.core.config import settings as _srv_cfg
+
     if not _srv_cfg.admin_password:
         from ipaddress import ip_address
+
         try:
-            addr = ip_address(host.replace('localhost', '127.0.0.1'))
+            addr = ip_address(host.replace("localhost", "127.0.0.1"))
             if not addr.is_loopback:
                 console.print(
                     "[red]拒绝启动 Web 管理后台：\n"

@@ -252,5 +252,3 @@ def get_history(limit: int = 60) -> list[dict]:
         }
         for s in items
     ]
-
-

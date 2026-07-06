@@ -15,6 +15,7 @@ from __future__ import annotations
 # FFmpeg 错误分类测试
 # ══════════════════════════════════════════════════════════════════════
 
+
 class TestFfmpegErrorClassification:
     """FFmpeg 错误分类器测试。"""
 
@@ -101,6 +102,7 @@ class TestFfmpegErrorClassification:
 # 弹幕分级采样测试
 # ══════════════════════════════════════════════════════════════════════
 
+
 class TestDanmakuSampling:
     """弹幕分级采样器测试。"""
 
@@ -159,6 +161,7 @@ class TestDanmakuSampling:
 # 敏感信息脱敏测试
 # ══════════════════════════════════════════════════════════════════════
 
+
 class TestSanitize:
     """敏感信息脱敏器测试。"""
 
@@ -202,7 +205,7 @@ class TestSanitize:
         """API Key 应被脱敏。"""
         from app.core.sanitize import sanitize_text
 
-        raw = 'api_key=sk-1234567890abcdefghij'
+        raw = "api_key=sk-1234567890abcdefghij"
         result = sanitize_text(raw)
         assert "sk-1234567890abcdefghij" not in result, "API Key 应被脱敏"
 
@@ -231,6 +234,7 @@ class TestSanitize:
 # 磁盘保护测试
 # ══════════════════════════════════════════════════════════════════════
 
+
 class TestDiskProtection:
     """两级磁盘保护测试。"""
 
@@ -257,6 +261,7 @@ class TestDiskProtection:
 # 弹幕采样器与 DanmakuType 集成测试
 # ══════════════════════════════════════════════════════════════════════
 
+
 class TestDanmakuSamplingIntegration:
     """弹幕采样集成测试。"""
 
@@ -282,6 +287,7 @@ class TestDanmakuSamplingIntegration:
 # ══════════════════════════════════════════════════════════════════════
 # 脱敏 Settings repr 测试
 # ══════════════════════════════════════════════════════════════════════
+
 
 class TestSettingsReprSanitize:
     """Settings repr 脱敏测试。"""

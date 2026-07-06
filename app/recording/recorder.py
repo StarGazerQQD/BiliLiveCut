@@ -143,6 +143,7 @@ class Recorder:
             while not self._stop.is_set():
                 # V0.1.13: Disk protection — safely stop recording if disk critical
                 from app.pipeline.storage_lifecycle import should_stop_recording
+
                 if should_stop_recording():
                     logger.warning("磁盘 CRITICAL, 安全停止录制")
                     self.stop()
@@ -461,9 +462,7 @@ class Recorder:
         from sqlmodel import select
 
         with get_session() as db:
-            rows = db.exec(
-                select(RawSegment.file_path).where(RawSegment.session_id == self._session_id)
-            ).all()
+            rows = db.exec(select(RawSegment.file_path).where(RawSegment.session_id == self._session_id)).all()
         self._paths = set(rows)
         return self._paths
 
@@ -600,6 +599,7 @@ class Recorder:
             logger.critical("录制磁盘满, 触发 CRITICAL 保护")
             try:
                 from app.notify.webhook import notify_disk_alert
+
                 notify_disk_alert(f"录制磁盘满: 房间 {self.room_id}")
             except Exception:
                 pass

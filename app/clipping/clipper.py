@@ -98,17 +98,12 @@ def select_covering_segments(
     """
     with get_session() as db:
         rows = db.exec(
-            select(RawSegment)
-            .where(RawSegment.session_id == session_id)
-            .order_by(RawSegment.seq)  # type: ignore[arg-type]
+            select(RawSegment).where(RawSegment.session_id == session_id).order_by(RawSegment.seq)  # type: ignore[arg-type]
         ).all()
     covering = [
         s
         for s in rows
-        if s.start_ts is not None
-        and s.end_ts is not None
-        and s.end_ts > start_ts
-        and s.start_ts < end_ts
+        if s.start_ts is not None and s.end_ts is not None and s.end_ts > start_ts and s.start_ts < end_ts
     ]
     return covering
 
@@ -273,10 +268,17 @@ def _render_intro_outro_cards(
     if tmpl.intro_enabled and tmpl.intro_text:
         text = _resolve_variables(tmpl.intro_text, vars_dict)
         card_path = work_dir / "intro_card.mp4"
-        _render_text_card(card_path, text, tmpl.intro_duration_s,
-                         tmpl.intro_font_name, tmpl.intro_font_size,
-                         tmpl.intro_font_color, tmpl.intro_bg_color,
-                         width, height)
+        _render_text_card(
+            card_path,
+            text,
+            tmpl.intro_duration_s,
+            tmpl.intro_font_name,
+            tmpl.intro_font_size,
+            tmpl.intro_font_color,
+            tmpl.intro_bg_color,
+            width,
+            height,
+        )
         cards.append(card_path)
 
     # 片尾稍后在主视频后添加(通过修改 concat pipeline 实现)。
@@ -319,18 +321,32 @@ def _render_text_card(
     tf.close()
 
     cmd = [
-        settings.ffmpeg_path, "-hide_banner", "-loglevel", "error",
-        "-f", "lavfi", "-i", f"color=c={safe_bg_color}:s={width}x{height}:d={duration_s}",
-        "-vf", (
+        settings.ffmpeg_path,
+        "-hide_banner",
+        "-loglevel",
+        "error",
+        "-f",
+        "lavfi",
+        "-i",
+        f"color=c={safe_bg_color}:s={width}x{height}:d={duration_s}",
+        "-vf",
+        (
             f"drawtext=textfile='{tf.name}':"
             f"font='{safe_font}':"
             f"fontcolor={safe_font_color}:fontsize={font_size}:"
             f"x=(w-text_w)/2:y=(h-text_h)/2:"
             f"box=1:boxcolor=black@0.4:boxborderw=20"
         ),
-        "-c:v", "libx264", "-crf", "18", "-preset", "ultrafast",
-        "-c:a", "an",
-        "-y", str(out_path),
+        "-c:v",
+        "libx264",
+        "-crf",
+        "18",
+        "-preset",
+        "ultrafast",
+        "-c:a",
+        "an",
+        "-y",
+        str(out_path),
     ]
     try:
         subprocess.run(cmd, capture_output=True, check=True, timeout=60)
@@ -343,6 +359,7 @@ def _render_text_card(
         logger.warning("标题卡渲染失败 [{}]: {}", error_type.name, stderr)
     finally:
         import os
+
         try:
             os.unlink(tf.name)
         except OSError:
@@ -357,8 +374,10 @@ def _resolve_variables(text: str, vars_dict: dict[str, str]) -> str:
     :returns: 替换后的文本。
     """
     import re
+
     def _repl(m: re.Match[str]) -> str:
         return vars_dict.get(m.group(1), m.group(0))
+
     return re.sub(r"\{(\w+)\}", _repl, text)
 
 
@@ -398,6 +417,7 @@ def _build_srt(segments: list[RawSegment], cut_offset: float, duration: float) -
     line_gap = 200
     with get_session() as db:
         from app.db.models import SubtitleTemplate
+
         tmpl = db.exec(
             select(SubtitleTemplate).where(SubtitleTemplate.is_default == True)  # noqa: E712
         ).first()
@@ -408,8 +428,9 @@ def _build_srt(segments: list[RawSegment], cut_offset: float, duration: float) -
             line_gap = tmpl.line_gap_ms
 
     # 把词聚合成短句字幕(每约 N 个字或遇到停顿断行)。 V0.1.10: 使用加速版 SRT 组装。
-    return group_srt_blocks(entries, max_chars=max_chars, min_display_ms=min_ms,
-                            max_display_ms=max_ms, line_gap_ms=line_gap)
+    return group_srt_blocks(
+        entries, max_chars=max_chars, min_display_ms=min_ms, max_display_ms=max_ms, line_gap_ms=line_gap
+    )
 
 
 def _group_srt(
@@ -577,6 +598,7 @@ def produce_clip(candidate_id: int, options: ClipOptions | None = None) -> Final
 
     # V0.1.8 P2:切片完成通知。
     from app.notify.webhook import notify_clip_complete
+
     notify_clip_complete(candidate_id, str(out_path), real_duration)
 
     return clip
@@ -592,6 +614,7 @@ def _resolve_event_id(db, candidate_id: int) -> int:
     """
     from app.db.models import HighlightEvent as HE
     from app.db.models import ReviewStatus
+
     event = db.exec(select(HE).where(HE.candidate_id == candidate_id)).first()
     if event is not None:
         return event.id
@@ -643,55 +666,65 @@ def _create_clip_variants(
         event_id = _resolve_event_id(db, clip.candidate_id)
 
         # SINGLE:主版本(总是生成,已渲染完成)。
-        db.add(ClipVariant(
-            event_id=event_id,
-            variant_type=ClipVariantType.SINGLE,
-            file_path=clip.file_path,
-            duration_s=clip.duration_s,
-            resolution=f"{clip.width}x{clip.height}" if clip.width and clip.height else None,
-            has_subtitles=options.subtitle,
-            render_status=RenderStatus.DONE,
-            version_number=1,
-            created_at=clip.created_at,
-        ))
+        db.add(
+            ClipVariant(
+                event_id=event_id,
+                variant_type=ClipVariantType.SINGLE,
+                file_path=clip.file_path,
+                duration_s=clip.duration_s,
+                resolution=f"{clip.width}x{clip.height}" if clip.width and clip.height else None,
+                has_subtitles=options.subtitle,
+                render_status=RenderStatus.DONE,
+                version_number=1,
+                created_at=clip.created_at,
+            )
+        )
         # 按字幕状态标记。
         if options.subtitle:
-            db.add(ClipVariant(
-            event_id=event_id,
-            variant_type=ClipVariantType.SUBTITLED,
-                file_path=clip.file_path,
-                duration_s=clip.duration_s,
-                has_subtitles=True,
-                render_status=RenderStatus.DONE,
-                version_number=1,
-                created_at=clip.created_at,
-            ))
+            db.add(
+                ClipVariant(
+                    event_id=event_id,
+                    variant_type=ClipVariantType.SUBTITLED,
+                    file_path=clip.file_path,
+                    duration_s=clip.duration_s,
+                    has_subtitles=True,
+                    render_status=RenderStatus.DONE,
+                    version_number=1,
+                    created_at=clip.created_at,
+                )
+            )
         else:
-            db.add(ClipVariant(
-            event_id=event_id,
-            variant_type=ClipVariantType.NO_SUBTITLES,
-                file_path=clip.file_path,
-                duration_s=clip.duration_s,
-                has_subtitles=False,
-                render_status=RenderStatus.DONE,
-                version_number=1,
-                created_at=clip.created_at,
-            ))
+            db.add(
+                ClipVariant(
+                    event_id=event_id,
+                    variant_type=ClipVariantType.NO_SUBTITLES,
+                    file_path=clip.file_path,
+                    duration_s=clip.duration_s,
+                    has_subtitles=False,
+                    render_status=RenderStatus.DONE,
+                    version_number=1,
+                    created_at=clip.created_at,
+                )
+            )
         # ARCHIVE + COMPRESSED:先标记 queued,由 _render_variants 完成后更新。
-        db.add(ClipVariant(
-            event_id=event_id,
-            variant_type=ClipVariantType.ARCHIVE,
-            has_subtitles=options.subtitle,
-            render_status=RenderStatus.QUEUED,
-            version_number=1,
-        ))
-        db.add(ClipVariant(
-            event_id=event_id,
-            variant_type=ClipVariantType.COMPRESSED,
-            has_subtitles=options.subtitle,
-            render_status=RenderStatus.QUEUED,
-            version_number=1,
-        ))
+        db.add(
+            ClipVariant(
+                event_id=event_id,
+                variant_type=ClipVariantType.ARCHIVE,
+                has_subtitles=options.subtitle,
+                render_status=RenderStatus.QUEUED,
+                version_number=1,
+            )
+        )
+        db.add(
+            ClipVariant(
+                event_id=event_id,
+                variant_type=ClipVariantType.COMPRESSED,
+                has_subtitles=options.subtitle,
+                render_status=RenderStatus.QUEUED,
+                version_number=1,
+            )
+        )
         logger.info(
             "ClipVariant 队列已创建 candidate={} variants={}",
             clip.candidate_id,
@@ -834,19 +867,33 @@ def _render_variants(
     # --- ARCHIVE:高码率归档 ---
     archive_path = variants_dir / f"clip_{clip.candidate_id}_archive.mp4"
     _render_single_variant(
-        concat_list, archive_path, cut_offset, duration,
-        crf=14, preset="medium", audio_bitrate="256k",
-        subtitle=options.subtitle, srt_path=srt_path,
-        variant_type=ClipVariantType.ARCHIVE, clip=clip,
+        concat_list,
+        archive_path,
+        cut_offset,
+        duration,
+        crf=14,
+        preset="medium",
+        audio_bitrate="256k",
+        subtitle=options.subtitle,
+        srt_path=srt_path,
+        variant_type=ClipVariantType.ARCHIVE,
+        clip=clip,
     )
 
     # --- COMPRESSED:投稿压制 ---
     compressed_path = variants_dir / f"clip_{clip.candidate_id}_compressed.mp4"
     _render_single_variant(
-        concat_list, compressed_path, cut_offset, duration,
-        crf=26, preset="veryfast", audio_bitrate="128k",
-        subtitle=options.subtitle, srt_path=srt_path,
-        variant_type=ClipVariantType.COMPRESSED, clip=clip,
+        concat_list,
+        compressed_path,
+        cut_offset,
+        duration,
+        crf=26,
+        preset="veryfast",
+        audio_bitrate="128k",
+        subtitle=options.subtitle,
+        srt_path=srt_path,
+        variant_type=ClipVariantType.COMPRESSED,
+        clip=clip,
     )
 
     # --- 互补字幕版 ---
@@ -855,13 +902,12 @@ def _render_variants(
         # 主干无字幕 → 渲染带字幕版:用候选关联的 session 查找 segments 构建 SRT。
         counterpart_srt: Path | None = None
         from app.db.models import HighlightCandidate as HC
+
         with get_session() as db:
             cand = db.get(HC, clip.candidate_id)
             if cand:
                 segs = db.exec(
-                    select(RawSegment)
-                    .where(RawSegment.session_id == cand.session_id)
-                    .order_by(RawSegment.seq)
+                    select(RawSegment).where(RawSegment.session_id == cand.session_id).order_by(RawSegment.seq)
                 ).all()
                 srt_text = _build_srt(list(segs), cut_offset, duration)
                 if srt_text:
@@ -869,10 +915,17 @@ def _render_variants(
                     counterpart_srt.write_text(srt_text, encoding="utf-8")
         sub_path = variants_dir / f"clip_{clip.candidate_id}_subtitled.mp4"
         _render_single_variant(
-            concat_list, sub_path, cut_offset, duration,
-            crf=options.crf, preset=options.preset, audio_bitrate="160k",
-            subtitle=True, srt_path=counterpart_srt,
-            variant_type=ClipVariantType.SUBTITLED, clip=clip,
+            concat_list,
+            sub_path,
+            cut_offset,
+            duration,
+            crf=options.crf,
+            preset=options.preset,
+            audio_bitrate="160k",
+            subtitle=True,
+            srt_path=counterpart_srt,
+            variant_type=ClipVariantType.SUBTITLED,
+            clip=clip,
         )
         # 清理临时字幕
         if counterpart_srt and counterpart_srt.exists():
@@ -884,10 +937,17 @@ def _render_variants(
         # 主干有字幕 → 渲染无字幕净版
         clean_path = variants_dir / f"clip_{clip.candidate_id}_clean.mp4"
         _render_single_variant(
-            concat_list, clean_path, cut_offset, duration,
-            crf=options.crf, preset=options.preset, audio_bitrate="160k",
-            subtitle=False, srt_path=None,
-            variant_type=ClipVariantType.NO_SUBTITLES, clip=clip,
+            concat_list,
+            clean_path,
+            cut_offset,
+            duration,
+            crf=options.crf,
+            preset=options.preset,
+            audio_bitrate="160k",
+            subtitle=False,
+            srt_path=None,
+            variant_type=ClipVariantType.NO_SUBTITLES,
+            clip=clip,
         )
 
 
@@ -934,19 +994,39 @@ def _render_single_variant(
 
     cmd = [
         settings.ffmpeg_path,
-        "-hide_banner", "-loglevel", "error",
-        "-f", "concat", "-safe", "0", "-i", str(concat_list),
-        "-ss", f"{cut_offset:.3f}",
-        "-t", f"{duration:.3f}",
+        "-hide_banner",
+        "-loglevel",
+        "error",
+        "-f",
+        "concat",
+        "-safe",
+        "0",
+        "-i",
+        str(concat_list),
+        "-ss",
+        f"{cut_offset:.3f}",
+        "-t",
+        f"{duration:.3f}",
     ]
     if af:
         cmd += ["-af", af]
     if vf:
         cmd += ["-vf", vf]
     cmd += [
-        "-c:v", "libx264", "-crf", str(crf), "-preset", preset,
-        "-c:a", "aac", "-b:a", audio_bitrate,
-        "-movflags", "+faststart", "-y", str(out_path),
+        "-c:v",
+        "libx264",
+        "-crf",
+        str(crf),
+        "-preset",
+        preset,
+        "-c:a",
+        "aac",
+        "-b:a",
+        audio_bitrate,
+        "-movflags",
+        "+faststart",
+        "-y",
+        str(out_path),
     ]
 
     logger.info("渲染变体 {} {} -> {} (CRF={} preset={})", variant_type, clip.candidate_id, out_path.name, crf, preset)
@@ -975,7 +1055,10 @@ def _render_single_variant(
                 error_type = classify_ffmpeg_error(result.returncode, stderr)
                 logger.error(
                     "变体 {} candidate={} 渲染失败 [{}]: {}",
-                    variant_type, clip.candidate_id, error_type.name, stderr,
+                    variant_type,
+                    clip.candidate_id,
+                    error_type.name,
+                    stderr,
                 )
             db.add(variant)
             db.commit()

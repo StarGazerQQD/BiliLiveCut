@@ -33,11 +33,13 @@ def _levenshtein(a: str, b: str) -> int:
     for i, ca in enumerate(a, 1):
         curr = [i]
         for j, cb in enumerate(b, 1):
-            curr.append(min(
-                curr[-1] + 1,
-                prev[j] + 1,
-                prev[j - 1] + (0 if ca == cb else 1),
-            ))
+            curr.append(
+                min(
+                    curr[-1] + 1,
+                    prev[j] + 1,
+                    prev[j - 1] + (0 if ca == cb else 1),
+                )
+            )
         prev = curr
     return prev[-1]
 
@@ -52,7 +54,9 @@ def compute_cer(reference: str, hypothesis: str) -> float:
 
 
 def compute_proper_noun_accuracy(
-    reference: str, hypothesis: str, hotwords: list[str],
+    reference: str,
+    hypothesis: str,
+    hotwords: list[str],
 ) -> float:
     """专有名词准确率。"""
     if not hotwords:
@@ -62,7 +66,8 @@ def compute_proper_noun_accuracy(
 
 
 def compute_segment_time_error(
-    ref_segments: list[dict], hyp_segments: list[dict],
+    ref_segments: list[dict],
+    hyp_segments: list[dict],
 ) -> float | None:
     """句子级时间戳平均误差 (秒)。"""
     if not ref_segments or not hyp_segments:
@@ -145,6 +150,7 @@ if __name__ == "__main__":
     print_report(report)
     out_path = _HERE / "golden_eval_report.json"
     out_path.write_text(
-        json.dumps(report, ensure_ascii=False, indent=2), encoding="utf-8",
+        json.dumps(report, ensure_ascii=False, indent=2),
+        encoding="utf-8",
     )
     print(f"\n评测报告已写入: {out_path}")

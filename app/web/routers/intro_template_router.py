@@ -14,11 +14,22 @@ from app.db.session import get_session
 router = APIRouter(prefix="/api/intro-templates", tags=["intro_templates"])
 
 ALLOWED_KEYS = {
-    "name", "is_default",
-    "intro_enabled", "intro_text", "intro_duration_s",
-    "intro_font_name", "intro_font_size", "intro_font_color", "intro_bg_color",
-    "outro_enabled", "outro_text", "outro_duration_s",
-    "outro_font_name", "outro_font_size", "outro_font_color", "outro_bg_color",
+    "name",
+    "is_default",
+    "intro_enabled",
+    "intro_text",
+    "intro_duration_s",
+    "intro_font_name",
+    "intro_font_size",
+    "intro_font_color",
+    "intro_bg_color",
+    "outro_enabled",
+    "outro_text",
+    "outro_duration_s",
+    "outro_font_name",
+    "outro_font_size",
+    "outro_font_color",
+    "outro_bg_color",
 }
 
 
@@ -29,14 +40,22 @@ def list_templates(request: Request) -> list[dict[str, object]]:
         templates = db.exec(_sql_select(IntroTemplate).order_by(IntroTemplate.id)).all()
         return [
             {
-                "id": t.id, "name": t.name, "is_default": t.is_default,
-                "intro_enabled": t.intro_enabled, "intro_text": t.intro_text,
-                "intro_duration_s": t.intro_duration_s, "intro_font_name": t.intro_font_name,
-                "intro_font_size": t.intro_font_size, "intro_font_color": t.intro_font_color,
+                "id": t.id,
+                "name": t.name,
+                "is_default": t.is_default,
+                "intro_enabled": t.intro_enabled,
+                "intro_text": t.intro_text,
+                "intro_duration_s": t.intro_duration_s,
+                "intro_font_name": t.intro_font_name,
+                "intro_font_size": t.intro_font_size,
+                "intro_font_color": t.intro_font_color,
                 "intro_bg_color": t.intro_bg_color,
-                "outro_enabled": t.outro_enabled, "outro_text": t.outro_text,
-                "outro_duration_s": t.outro_duration_s, "outro_font_name": t.outro_font_name,
-                "outro_font_size": t.outro_font_size, "outro_font_color": t.outro_font_color,
+                "outro_enabled": t.outro_enabled,
+                "outro_text": t.outro_text,
+                "outro_duration_s": t.outro_duration_s,
+                "outro_font_name": t.outro_font_name,
+                "outro_font_size": t.outro_font_size,
+                "outro_font_color": t.outro_font_color,
                 "outro_bg_color": t.outro_bg_color,
             }
             for t in templates

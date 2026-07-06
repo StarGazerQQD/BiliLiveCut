@@ -21,9 +21,13 @@ class TestASRSegmentResult:
 
     def test_basic_fields(self) -> None:
         seg = ASRSegmentResult(
-            start=1.0, end=3.5, text="今天天气真好",
-            raw_confidence=0.92, confidence_type="paraformer-sentence-confidence",
-            normalized_confidence=0.92, confidence_available=True,
+            start=1.0,
+            end=3.5,
+            text="今天天气真好",
+            raw_confidence=0.92,
+            confidence_type="paraformer-sentence-confidence",
+            normalized_confidence=0.92,
+            confidence_available=True,
             language="zh",
         )
         assert seg.start == 1.0
@@ -66,7 +70,7 @@ class TestNormalizeConfidence:
 
     def test_whisper_logprob_mapping(self) -> None:
         """Whisper avg_logprob 映射到 0-1。"""
-        assert _normalize_whisper_logprob(0.0) > 0.9   # 可信
+        assert _normalize_whisper_logprob(0.0) > 0.9  # 可信
         assert _normalize_whisper_logprob(-1.0) > 0.4
         assert _normalize_whisper_logprob(-2.0) < 0.2
 
@@ -101,8 +105,11 @@ class TestTranscriptionResultBackwardCompat:
 
     def test_from_unified(self) -> None:
         unified = ASRTranscriptResult(
-            text="全文测试", language="zh", backend="paraformer",
-            final_text="全文测试", base_text="全文测试",
+            text="全文测试",
+            language="zh",
+            backend="paraformer",
+            final_text="全文测试",
+            base_text="全文测试",
         )
         legacy = TranscriptionResult.from_unified(unified)
         assert legacy.text == "全文测试"

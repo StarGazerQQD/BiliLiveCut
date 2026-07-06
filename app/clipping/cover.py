@@ -61,14 +61,22 @@ def extract_cover_candidates(
             try:
                 subprocess.run(
                     [
-                        settings.ffmpeg_path, "-y", "-v", "quiet",
-                        "-ss", f"{ts:.3f}",
-                        "-i", str(vp),
-                        "-vframes", "1",
-                        "-q:v", "2",
+                        settings.ffmpeg_path,
+                        "-y",
+                        "-v",
+                        "quiet",
+                        "-ss",
+                        f"{ts:.3f}",
+                        "-i",
+                        str(vp),
+                        "-vframes",
+                        "1",
+                        "-q:v",
+                        "2",
                         str(cover_path),
                     ],
-                    check=True, timeout=10,
+                    check=True,
+                    timeout=10,
                 )
                 if cover_path.exists() and cover_path.stat().st_size > 1000:
                     blur = _detect_blur(cover_path)
@@ -77,13 +85,15 @@ def extract_cover_candidates(
                     blur_norm = max(0, min(1, blur / 500))
                     bright_dist = abs(brightness - 128) / 128
                     score = blur_norm * 0.5 + (1 - bright_dist) * 0.3 + face_score * 0.2
-                    candidates.append({
-                        "file_path": str(cover_path),
-                        "score": round(score, 3),
-                        "blur_score": round(blur, 1),
-                        "brightness": round(brightness, 1),
-                        "timestamp_s": round(ts, 1),
-                    })
+                    candidates.append(
+                        {
+                            "file_path": str(cover_path),
+                            "score": round(score, 3),
+                            "blur_score": round(blur, 1),
+                            "brightness": round(brightness, 1),
+                            "timestamp_s": round(ts, 1),
+                        }
+                    )
             except subprocess.CalledProcessError:
                 continue
 
@@ -94,12 +104,14 @@ def extract_cover_candidates(
         # 若是自动创建的临时目录,将 Top 候选复制到持久化位置并清理临时目录。
         if own_tmp and result:
             from app.core.paths import clips_dir
+
             persistent = clips_dir() / "covers"
             persistent.mkdir(parents=True, exist_ok=True)
             for c in result:
                 src = Path(c["file_path"])
                 dst = persistent / src.name
                 import shutil as _shutil
+
                 _shutil.copy2(src, dst)
                 c["file_path"] = str(dst)
 
@@ -107,6 +119,7 @@ def extract_cover_candidates(
     finally:
         if own_tmp:
             import shutil as _shutil2
+
             _shutil2.rmtree(out, ignore_errors=True)
 
 
@@ -117,7 +130,9 @@ def _probe_duration(video_path: Path) -> float:
     try:
         result = subprocess.run(
             [settings.ffprobe_path, "-v", "quiet", "-print_format", "json", "-show_format", str(video_path)],
-            capture_output=True, text=True, timeout=10,
+            capture_output=True,
+            text=True,
+            timeout=10,
         )
         info = json.loads(result.stdout)
         return float(info.get("format", {}).get("duration", 0))
@@ -180,9 +195,7 @@ def _detect_face_score(image_path: Path) -> float:
     try:
         import cv2
 
-        face_cascade = cv2.CascadeClassifier(
-            cv2.data.haarcascades + "haarcascade_frontalface_default.xml"
-        )
+        face_cascade = cv2.CascadeClassifier(cv2.data.haarcascades + "haarcascade_frontalface_default.xml")
         img = cv2.imread(str(image_path))
         if img is None:
             return 0

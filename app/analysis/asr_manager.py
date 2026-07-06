@@ -78,7 +78,10 @@ class ASRModelManager:
             sem.release()
 
     async def load(
-        self, key: str, loader_fn, *,
+        self,
+        key: str,
+        loader_fn,
+        *,
         model_id: str = "",
         device: str = "cpu",
         keep_loaded: bool = False,
@@ -164,10 +167,16 @@ class ASRModelManager:
     def all_infos(self) -> list[ModelInfo]:
         """获取所有模型状态。"""
         return [
-            (info if info.is_loaded else ModelInfo(
-                key=info.key, model_id=info.model_id,
-                device=info.device, is_loaded=False,
-            ))
+            (
+                info
+                if info.is_loaded
+                else ModelInfo(
+                    key=info.key,
+                    model_id=info.model_id,
+                    device=info.device,
+                    is_loaded=False,
+                )
+            )
             for info in self._infos.values()
         ]
 
@@ -219,6 +228,7 @@ class ASRModelManager:
             duration = 1.0
             samples = np.zeros(int(sample_rate * duration), dtype=np.int16)
             import wave
+
             with wave.open(tmp.name, "w") as wf:
                 wf.setnchannels(1)
                 wf.setsampwidth(2)
@@ -227,9 +237,11 @@ class ASRModelManager:
 
             logger.info("预热模型 key={} ...", key)
             await asyncio.get_event_loop().run_in_executor(
-                None, lambda: model.generate(input=tmp.name),
+                None,
+                lambda: model.generate(input=tmp.name),
             )
             import os
+
             os.unlink(tmp.name)
             logger.info("模型预热完成 key={}", key)
             return True

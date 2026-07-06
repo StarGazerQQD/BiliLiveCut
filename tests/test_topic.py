@@ -112,8 +112,16 @@ class TestEventSimilarity:
 
     def test_different_topics(self) -> None:
         """完全不同主题的事件→低于 LOW 阈值。"""
-        a = {"asr_text": "今天翻盘太刺激了残局一打三", "keywords": ["翻盘", "残局", "一打三"], "start_ts": "2026-07-01T12:00:00"}
-        b = {"asr_text": "给大家唱一首稻香放松一下心情", "keywords": ["唱歌", "稻香", "心情"], "start_ts": "2026-07-01T12:30:00"}
+        a = {
+            "asr_text": "今天翻盘太刺激了残局一打三",
+            "keywords": ["翻盘", "残局", "一打三"],
+            "start_ts": "2026-07-01T12:00:00",
+        }
+        b = {
+            "asr_text": "给大家唱一首稻香放松一下心情",
+            "keywords": ["唱歌", "稻香", "心情"],
+            "start_ts": "2026-07-01T12:30:00",
+        }
         s = event_similarity(a, b)
         assert s < TOPIC_CONFIDENCE_LOW
 

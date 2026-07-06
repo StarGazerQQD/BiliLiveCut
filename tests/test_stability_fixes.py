@@ -25,6 +25,7 @@ def _now() -> datetime:
 # 原子领取测试
 # ═══════════════════════════════════════════════════
 
+
 class TestAtomicClaim:
     """原子任务领取: 只有一个 Worker 能成功。"""
 
@@ -36,7 +37,8 @@ class TestAtomicClaim:
 
         with get_session() as db:
             task = SegmentTask(
-                segment_id=1, session_id=1,
+                segment_id=1,
+                session_id=1,
                 stage=TaskStatus.QUEUED_FOR_TRANS,
                 idempotency_key="1:queued_for_transcription",
             )
@@ -58,7 +60,8 @@ class TestAtomicClaim:
 
         with get_session() as db:
             task = SegmentTask(
-                segment_id=2, session_id=1,
+                segment_id=2,
+                session_id=1,
                 stage=TaskStatus.QUEUED_FOR_ANALYSIS,
                 idempotency_key="2:queued_for_analysis",
             )
@@ -89,7 +92,8 @@ class TestAtomicClaim:
 
         with get_session() as db:
             task = SegmentTask(
-                segment_id=3, session_id=1,
+                segment_id=3,
+                session_id=1,
                 stage=TaskStatus.QUEUED_FOR_TRANS,
                 idempotency_key="3:queued_for_transcription",
             )
@@ -107,6 +111,7 @@ class TestAtomicClaim:
 # 自动化开关测试
 # ═══════════════════════════════════════════════════
 
+
 class TestAutoSwitches:
     """五个自动化开关逐阶段生效。"""
 
@@ -121,7 +126,8 @@ class TestAutoSwitches:
             sess = RecordingSession(id=8001, room_id=9001)
             seg = RawSegment(id=7001, session_id=8001, seq=0, file_path="test.mp4")
             task = SegmentTask(
-                segment_id=7001, session_id=8001,
+                segment_id=7001,
+                session_id=8001,
                 stage=TaskStatus.RECORDED,
                 idempotency_key="7001:recorded",
             )
@@ -145,7 +151,8 @@ class TestAutoSwitches:
             sess = RecordingSession(id=8002, room_id=9002)
             seg = RawSegment(id=7002, session_id=8002, seq=0, file_path="test.mp4")
             task = SegmentTask(
-                segment_id=7002, session_id=8002,
+                segment_id=7002,
+                session_id=8002,
                 stage=TaskStatus.RECORDED,
                 idempotency_key="7002:recorded",
             )
@@ -168,7 +175,8 @@ class TestAutoSwitches:
             room = LiveRoom(id=9003, input_url="test", auto_render=False)
             sess = RecordingSession(id=8003, room_id=9003)
             task = SegmentTask(
-                segment_id=7003, session_id=8003,
+                segment_id=7003,
+                session_id=8003,
                 stage=TaskStatus.APPROVED,
                 candidate_id=5001,
                 idempotency_key="7003:approved",
@@ -199,12 +207,16 @@ class TestAutoSwitches:
             room = LiveRoom(id=9004, input_url="test", auto_approve=False)
             sess = RecordingSession(id=8004, room_id=9004)
             cand = HighlightCandidate(
-                id=5002, session_id=8004,
-                peak_ts=_now(), start_ts=_now(), end_ts=_now(),
+                id=5002,
+                session_id=8004,
+                peak_ts=_now(),
+                start_ts=_now(),
+                end_ts=_now(),
                 highlight_score=0.9,
             )
             task = SegmentTask(
-                segment_id=7004, session_id=8004,
+                segment_id=7004,
+                session_id=8004,
                 stage=TaskStatus.AWAITING_REVIEW,
                 candidate_id=5002,
                 idempotency_key="7004:awaiting_review",
@@ -236,17 +248,24 @@ class TestAutoSwitches:
             room = LiveRoom(id=9005, input_url="test", auto_approve=True, auto_approve_threshold=0.80)
             sess = RecordingSession(id=8005, room_id=9005)
             cand = HighlightCandidate(
-                id=5003, session_id=8005,
-                peak_ts=_now(), start_ts=_now(), end_ts=_now(),
+                id=5003,
+                session_id=8005,
+                peak_ts=_now(),
+                start_ts=_now(),
+                end_ts=_now(),
                 highlight_score=0.95,
             )
             event = HighlightEvent(
-                id=7705, candidate_id=5003, session_id=8005,
-                raw_start_ts=_now(), raw_end_ts=_now(),
+                id=7705,
+                candidate_id=5003,
+                session_id=8005,
+                raw_start_ts=_now(),
+                raw_end_ts=_now(),
                 review_status=ReviewStatus.PENDING,
             )
             task = SegmentTask(
-                segment_id=7005, session_id=8005,
+                segment_id=7005,
+                session_id=8005,
                 stage=TaskStatus.AWAITING_REVIEW,
                 candidate_id=5003,
                 event_id=7705,
@@ -277,12 +296,16 @@ class TestAutoSwitches:
             room = LiveRoom(id=9006, input_url="test", auto_approve=True, auto_approve_threshold=0.85)
             sess = RecordingSession(id=8006, room_id=9006)
             cand = HighlightCandidate(
-                id=5004, session_id=8006,
-                peak_ts=_now(), start_ts=_now(), end_ts=_now(),
+                id=5004,
+                session_id=8006,
+                peak_ts=_now(),
+                start_ts=_now(),
+                end_ts=_now(),
                 highlight_score=0.60,
             )
             task = SegmentTask(
-                segment_id=7006, session_id=8006,
+                segment_id=7006,
+                session_id=8006,
                 stage=TaskStatus.AWAITING_REVIEW,
                 candidate_id=5004,
                 idempotency_key="7006:awaiting_review",
@@ -301,6 +324,7 @@ class TestAutoSwitches:
 # 心跳 + stale 测试
 # ═══════════════════════════════════════════════════
 
+
 class TestHeartbeat:
     """心跳持续更新时不会被标记 stale。"""
 
@@ -312,7 +336,8 @@ class TestHeartbeat:
 
         with get_session() as db:
             task = SegmentTask(
-                segment_id=100, session_id=1,
+                segment_id=100,
+                session_id=1,
                 stage=TaskStatus.TRANSCRIBING,
                 heartbeat_at=_now() - timedelta(seconds=10),  # 10s 前, 但 stale timeout=120s
                 claimed_by="worker-1",
@@ -338,7 +363,8 @@ class TestHeartbeat:
 
         with get_session() as db:
             task = SegmentTask(
-                segment_id=101, session_id=1,
+                segment_id=101,
+                session_id=1,
                 stage=TaskStatus.RENDERING,
                 heartbeat_at=_now() - timedelta(seconds=200),  # 远超 120s
                 claimed_by="worker-old",
@@ -361,11 +387,13 @@ class TestHeartbeat:
 # 状态机测试
 # ═══════════════════════════════════════════════════
 
+
 class TestStatusMachine:
     """状态转换矩阵。"""
 
     def test_can_transition_rejects_illegal(self) -> None:
         from app.pipeline.task_worker import TaskStatus, _can_transition
+
         assert not _can_transition(TaskStatus.COMPLETED, TaskStatus.TRANSCRIBING)
         assert not _can_transition(TaskStatus.AWAITING_REVIEW, TaskStatus.TRANSCRIBED)
         assert _can_transition(TaskStatus.RECORDED, TaskStatus.QUEUED_FOR_TRANS)
@@ -383,9 +411,11 @@ class TestStatusMachine:
 
         with get_session() as db:
             task = SegmentTask(
-                segment_id=200, session_id=1,
+                segment_id=200,
+                session_id=1,
                 stage=TaskStatus.RECORDED,
-                attempts=3, last_error="old error",
+                attempts=3,
+                last_error="old error",
                 idempotency_key="200:recorded",
             )
             db.add(task)
@@ -403,6 +433,7 @@ class TestStatusMachine:
 # 唯一约束测试
 # ═══════════════════════════════════════════════════
 
+
 class TestUniqueConstraints:
     """幂等键和唯一约束。"""
 
@@ -415,7 +446,8 @@ class TestUniqueConstraints:
 
         with get_session() as db:
             t1 = SegmentTask(
-                segment_id=300, session_id=1,
+                segment_id=300,
+                session_id=1,
                 stage=TaskStatus.RECORDED,
                 pipeline_key="pipeline:300",
                 stage_key="stage:300:recorded",
@@ -425,7 +457,8 @@ class TestUniqueConstraints:
             db.flush()  # OK
 
             t2 = SegmentTask(
-                segment_id=301, session_id=1,
+                segment_id=301,
+                session_id=1,
                 stage=TaskStatus.RECORDED,
                 pipeline_key="pipeline:300",  # 与 t1 的 pipeline_key 重复
                 stage_key="stage:301:recorded",
@@ -445,7 +478,8 @@ class TestUniqueConstraints:
 
         with get_session() as db:
             t1 = SegmentTask(
-                segment_id=400, session_id=1,
+                segment_id=400,
+                session_id=1,
                 stage=TaskStatus.RECORDED,
                 pipeline_key="pipeline:400",
                 stage_key="stage:400:recorded",
@@ -470,6 +504,7 @@ class TestUniqueConstraints:
     def test_create_task_idempotent(self, test_db) -> None:
         """create_task 对同一 segment 只创建一次。"""
         from app.pipeline.task_worker import create_task
+
         first = create_task(400, 1)
         assert first is not None
         second = create_task(400, 1)
@@ -483,8 +518,11 @@ class TestUniqueConstraints:
 
         with get_session() as db:
             cand = HighlightCandidate(
-                id=600, session_id=1,
-                peak_ts=_now(), start_ts=_now(), end_ts=_now(),
+                id=600,
+                session_id=1,
+                peak_ts=_now(),
+                start_ts=_now(),
+                end_ts=_now(),
                 highlight_score=0.8,
             )
             db.add(cand)
@@ -501,14 +539,18 @@ class TestUniqueConstraints:
 
         with get_session() as db:
             cand = HighlightCandidate(
-                id=601, session_id=1,
-                peak_ts=_now(), start_ts=_now(), end_ts=_now(),
+                id=601,
+                session_id=1,
+                peak_ts=_now(),
+                start_ts=_now(),
+                end_ts=_now(),
                 highlight_score=0.7,
             )
             db.add(cand)
             db.flush()
 
         from app.pipeline.task_worker import _ensure_event
+
         eid = _ensure_event(601)
         assert eid is not None
         # 确认不是同一个 ID (虽然 SQLite 自增可能碰巧, 但不应该被设计成相同)
@@ -518,6 +560,7 @@ class TestUniqueConstraints:
 # ═══════════════════════════════════════════════════
 # 重试和失败阶段恢复
 # ═══════════════════════════════════════════════════
+
 
 class TestRetry:
     """失败任务从 failed_stage 恢复。"""
@@ -530,7 +573,8 @@ class TestRetry:
 
         with get_session() as db:
             task = SegmentTask(
-                segment_id=500, session_id=1,
+                segment_id=500,
+                session_id=1,
                 stage=TaskStatus.FAILED,
                 failed_stage=TaskStatus.RENDERING,
                 attempts=2,
@@ -556,7 +600,8 @@ class TestRetry:
 
         with get_session() as db:
             task = SegmentTask(
-                segment_id=501, session_id=1,
+                segment_id=501,
+                session_id=1,
                 stage=TaskStatus.RENDERING,
                 idempotency_key="501:rendering",
             )
@@ -573,14 +618,17 @@ class TestRetry:
 # ASR fallback 追踪
 # ═══════════════════════════════════════════════════
 
+
 class TestASRFallback:
     """fallback 信息不丢失。"""
 
     def test_asr_result_has_fallback_fields(self) -> None:
         """ASRTranscriptResult 支持新 fallback 字段。"""
         from app.analysis.transcribe import ASRTranscriptResult
+
         r = ASRTranscriptResult(
-            text="test", backend="paraformer",
+            text="test",
+            backend="paraformer",
             final_text_source="fallback",
             primary_status="failed",
             primary_error_type="ValueError",
@@ -595,6 +643,7 @@ class TestASRFallback:
     def test_final_text_source_priority(self) -> None:
         """manual_review_needed > review > fallback > primary。"""
         from app.analysis.transcribe import _compute_review_risk_score, _merge_review_text
+
         # 优先级由 _review_loop 代码保证: manual_review_needed 先检查
         # 此测试验证逻辑存在
         assert _compute_review_risk_score is not None
@@ -605,11 +654,13 @@ class TestASRFallback:
 # 数据迁移
 # ═══════════════════════════════════════════════════
 
+
 class TestDataMigration:
     """版本化迁移。"""
 
     def test_schema_module_loadable(self) -> None:
         """Schema 校验模块可正常导入。"""
         from app.db.schema import compute_schema_fingerprint, validate_schema
+
         assert callable(compute_schema_fingerprint)
         assert callable(validate_schema)

@@ -28,14 +28,14 @@ def _ensure_playwright() -> str:
     try:
         import playwright  # noqa: F401
     except ImportError as err:
-        raise RuntimeError(
-            "请先安装 Playwright: pip install playwright && playwright install chromium"
-        ) from err
+        raise RuntimeError("请先安装 Playwright: pip install playwright && playwright install chromium") from err
     # 检查浏览器是否已安装
     try:
         _result = subprocess.run(
             [sys.executable, "-m", "playwright", "install", "--dry-run", "chromium"],
-            capture_output=True, text=True, timeout=30,
+            capture_output=True,
+            text=True,
+            timeout=30,
         )
     except Exception:
         pass

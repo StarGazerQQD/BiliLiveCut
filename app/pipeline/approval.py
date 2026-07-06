@@ -66,7 +66,8 @@ def approve_event_and_task(
         if event.review_status == ReviewStatus.REJECTED and source == "auto":
             logger.warning(
                 "approve_event_and_task: event {} 已被拒绝, 自动流程不得重新批准 task={}",
-                event_id, task_id,
+                event_id,
+                task_id,
             )
             return False
 
@@ -74,7 +75,9 @@ def approve_event_and_task(
         if event.review_status in ReviewStatus.POSITIVE:
             logger.info(
                 "approve_event_and_task: event {} 已批准 ({}), 幂等跳过 task={}",
-                event_id, event.review_status, task_id,
+                event_id,
+                event.review_status,
+                task_id,
             )
             task = db.get(SegmentTask, task_id)
             if task and task.stage in (TaskStatus.AWAITING_REVIEW, TaskStatus.APPROVED):
@@ -114,7 +117,8 @@ def approve_event_and_task(
         else:
             logger.warning(
                 "approve_event_and_task: task {} 状态 {} 不在可批准状态, 跳过 task stage 更新",
-                task_id, task.stage if task else "None",
+                task_id,
+                task.stage if task else "None",
             )
 
         if _owns_session:
@@ -122,7 +126,10 @@ def approve_event_and_task(
 
         logger.info(
             "approve_event_and_task: task={} event={} by={} source={} → approved",
-            task_id, event_id, approved_by, source,
+            task_id,
+            event_id,
+            approved_by,
+            source,
         )
         return True
     finally:
@@ -170,27 +177,39 @@ def check_pipeline_consistency(
             return {"ok": False, "reason": f"task {task_id} 不存在", "task": None, "event": event}
 
         if task.stage != expected_stage:
-            return {"ok": False,
-                    "reason": f"task stage ({task.stage}) != expected ({expected_stage})",
-                    "task": task, "event": event}
+            return {
+                "ok": False,
+                "reason": f"task stage ({task.stage}) != expected ({expected_stage})",
+                "task": task,
+                "event": event,
+            }
 
         if event is None:
             return {"ok": False, "reason": f"event {event_id} 不存在", "task": task, "event": None}
 
         if event.review_status not in ReviewStatus.POSITIVE:
-            return {"ok": False,
-                    "reason": f"event {event_id} review_status={event.review_status}, 未批准",
-                    "task": task, "event": event}
+            return {
+                "ok": False,
+                "reason": f"event {event_id} review_status={event.review_status}, 未批准",
+                "task": task,
+                "event": event,
+            }
 
         if task.event_id != event_id:
-            return {"ok": False,
-                    "reason": f"task.event_id ({task.event_id}) != event_id ({event_id})",
-                    "task": task, "event": event}
+            return {
+                "ok": False,
+                "reason": f"task.event_id ({task.event_id}) != event_id ({event_id})",
+                "task": task,
+                "event": event,
+            }
 
         if task.candidate_id != event.candidate_id:
             logger.warning(
                 "consistency_warning: task={} candidate_id={} != event.candidate_id={} (event={})",
-                task_id, task.candidate_id, event.candidate_id, event_id,
+                task_id,
+                task.candidate_id,
+                event.candidate_id,
+                event_id,
             )
 
         return {"ok": True, "reason": "consistent", "task": task, "event": event}
@@ -246,7 +265,11 @@ def apply_upload_result(
         task.last_error = None  # 清除之前错误
         logger.info(
             "apply_upload_result: task={} upload={} status={} → pipeline={} remote_id={}",
-            task_id, upload_task_id, upload_status, target, remote_id,
+            task_id,
+            upload_task_id,
+            upload_status,
+            target,
+            remote_id,
         )
 
         if target == TaskStatus.COMPLETED and not remote_id:
@@ -256,16 +279,24 @@ def apply_upload_result(
             )
 
         task.stage = target
-        task.completed_at = datetime.now(UTC) if target in (
-            TaskStatus.COMPLETED, TaskStatus.FAILED,
-        ) else task.completed_at
+        task.completed_at = (
+            datetime.now(UTC)
+            if target
+            in (
+                TaskStatus.COMPLETED,
+                TaskStatus.FAILED,
+            )
+            else task.completed_at
+        )
         if upload_error:
             task.last_error = upload_error[:1000]
         if target == TaskStatus.TRANSIENT_FAILED:
             import random
+
             delay = min(10 * (2 ** max(task.attempts - 1, 0)), 600)
             delay += random.uniform(0, 5)
             from datetime import timedelta
+
             task.next_retry_at = datetime.now(UTC) + timedelta(seconds=delay)
             task.failed_stage = TaskStatus.PUBLISHING
 

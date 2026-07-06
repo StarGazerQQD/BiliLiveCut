@@ -243,7 +243,9 @@ def call_web_search(
             except Exception as exc:  # noqa: BLE001 — 不支持该参数则退化为普通调用
                 logger.warning(
                     "模型 {} 联网搜索参数({})不被支持,改普通调用: {}",
-                    provider.name, search_param, exc,
+                    provider.name,
+                    search_param,
+                    exc,
                 )
         # 2) 普通调用(无联网)。
         try:
@@ -299,7 +301,9 @@ def call_trend_search(
                     return text
             except Exception as exc:
                 logger.warning(
-                    "趋势采集专用 API 联网搜索失败({}),改普通调用: {}", trend_provider.model, exc,
+                    "趋势采集专用 API 联网搜索失败({}),改普通调用: {}",
+                    trend_provider.model,
+                    exc,
                 )
         # 2) 普通调用(无联网)。
         try:

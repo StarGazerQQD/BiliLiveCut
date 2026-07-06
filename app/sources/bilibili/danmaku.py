@@ -32,8 +32,8 @@ from app.sources.bilibili.client import (
 
 # 操作码(operation)
 OP_HEARTBEAT = 2
-OP_HEARTBEAT_REPLY = 3   # 回复:在线人气值
-OP_MESSAGE = 5           # 普通消息(弹幕/礼物等),可能压缩
+OP_HEARTBEAT_REPLY = 3  # 回复:在线人气值
+OP_MESSAGE = 5  # 普通消息(弹幕/礼物等),可能压缩
 OP_AUTH = 7
 OP_AUTH_REPLY = 8
 
@@ -264,6 +264,7 @@ class DanmakuClient:
         # V0.1.13: Lazy-init per-room DanmakuSampler
         if self._sampler is None:
             from app.analysis.danmaku_sampling import get_sampler
+
             self._sampler = get_sampler(self.room_id)
 
         rows: list[Danmaku] = []

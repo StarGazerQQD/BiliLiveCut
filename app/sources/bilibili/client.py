@@ -94,7 +94,7 @@ class CircuitBreaker:
         """记录一次失败并更新退避时间窗。"""
         self.fail_count += 1
         self.last_fail_time = time.monotonic()
-        self.backoff_until = self.last_fail_time + self.base_delay_s * (2 ** self.fail_count)
+        self.backoff_until = self.last_fail_time + self.base_delay_s * (2**self.fail_count)
 
     def is_open(self) -> bool:
         """熔断器是否打开(当前处于退避中)。"""
@@ -282,9 +282,7 @@ class BilibiliLiveClient:
                 f"请求被拒绝, code=-412 message={payload.get('message')!r}",
             )
         if code != 0:
-            raise BilibiliError(
-                f"接口返回错误 code={code} message={payload.get('message')!r}"
-            )
+            raise BilibiliError(f"接口返回错误 code={code} message={payload.get('message')!r}")
         return payload.get("data", {})
 
     async def get_room_info(self, input_url: str) -> RoomInfo:
@@ -326,9 +324,9 @@ class BilibiliLiveClient:
         """
         params = {
             "room_id": room_id,
-            "protocol": "0,1",   # 0=http_stream(flv), 1=http_hls
-            "format": "0,1,2",   # 0=flv, 1=ts, 2=fmp4
-            "codec": "0,1",      # 0=avc, 1=hevc
+            "protocol": "0,1",  # 0=http_stream(flv), 1=http_hls
+            "format": "0,1,2",  # 0=flv, 1=ts, 2=fmp4
+            "codec": "0,1",  # 0=avc, 1=hevc
             "qn": quality,
             "platform": "web",
             "ptype": 8,

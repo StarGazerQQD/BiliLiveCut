@@ -3,7 +3,7 @@
 #
 # Job 结构:
 #   lint       — ruff check + format (~15s, 快速失败)
-#   audit      — pip-audit (仅 PR/schedule, ~45s, 不阻塞)
+#   audit      — pip-audit (~45s, 不阻塞)
 #   test       — matrix 多平台多 Python → pytest + coverage (~3min)
 #   coverage   — 汇总多矩阵覆盖率报告
 
@@ -68,7 +68,6 @@ jobs:
     name: "audit"
     needs: lint
     runs-on: ubuntu-latest
-    if: github.event_name == 'pull_request' || github.event_name == 'schedule'
     continue-on-error: true
     steps:
       - uses: actions/checkout@v4
@@ -206,7 +205,11 @@ jobs:
       - name: Show coverage files
         run: |
           echo "Coverage files collected:"
-          ls -la coverage-artifacts/
+          if [ -d coverage-artifacts ]; then
+            ls -la coverage-artifacts/ || echo "(empty)"
+          else
+            echo "(no coverage directory — test jobs were skipped)"
+          fi
 
       - name: Summary
         run: |

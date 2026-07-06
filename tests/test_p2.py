@@ -12,6 +12,7 @@ from app.pipeline.collection import detect_overlap  # noqa: F811
 
 # ======================== 重合检测 ========================
 
+
 class TestDetectOverlap:
     """检测相邻事件是否重叠或时间接近。"""
 
@@ -87,6 +88,7 @@ class TestDetectOverlap:
 
 # ======================== 房间配置 ========================
 
+
 class TestRoomConfig:
     """房间配置加载和工具函数。"""
 
@@ -102,6 +104,7 @@ class TestRoomConfig:
     @staticmethod
     def test_load_defaults_when_empty_json() -> None:
         """空 JSON 时返回默认值。"""
+
         class FakeRoom:
             room_config_json = "{}"
 
@@ -111,6 +114,7 @@ class TestRoomConfig:
     @staticmethod
     def test_load_valid_json() -> None:
         """加载完整配置。"""
+
         class FakeRoom:
             room_config_json = '{"hotwords":["审判","翻盘"],"aliases":{"thp":"审判"},"highlight_keywords":["名场面"],"blocked_topics":["广告"]}'
 
@@ -123,6 +127,7 @@ class TestRoomConfig:
     @staticmethod
     def test_load_invalid_json_falls_back() -> None:
         """无效 JSON 回退默认。"""
+
         class FakeRoom:
             room_config_json = "{bad json"
 
@@ -199,6 +204,7 @@ class TestBlockedTopics:
 
 
 # ======================== 文案生成(回退) ========================
+
 
 class TestFallbackCopywriter:
     """规则回退文案生成。"""

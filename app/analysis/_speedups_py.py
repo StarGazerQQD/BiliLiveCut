@@ -23,8 +23,8 @@ def _build_automaton(patterns: Sequence[str]) -> dict[str, Any]:
     :param patterns: 模式字符串序列。
     :returns: 自动机 dict{trie, fail, outputs}。
     """
-    trie: list[dict[int, int]] = [{}]   # node index → {byte → child}
-    outputs: list[list[str]] = [[]]       # node index → pattern list
+    trie: list[dict[int, int]] = [{}]  # node index → {byte → child}
+    outputs: list[list[str]] = [[]]  # node index → pattern list
 
     for pat in patterns:
         node = 0

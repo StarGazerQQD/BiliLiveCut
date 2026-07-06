@@ -62,10 +62,10 @@ class ReviewStats:
     triggered: int = 0
     succeeded: int = 0
     failed: int = 0
-    text_modified: int = 0       # final != base
-    kept_base: int = 0           # 保留基础文本
-    adopted_review: int = 0      # 采用复核文本
-    manual_needed: int = 0       # 标记人工确认
+    text_modified: int = 0  # final != base
+    kept_base: int = 0  # 保留基础文本
+    adopted_review: int = 0  # 采用复核文本
+    manual_needed: int = 0  # 标记人工确认
 
     @property
     def trigger_rate(self) -> float:

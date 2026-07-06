@@ -25,7 +25,13 @@ _VALID_TRANSITIONS: dict[str, set[str]] = {
     TaskStatus.AWAITING_PUBLISH_CONFIRMATION: {TaskStatus.QUEUED_FOR_PUBLISH, TaskStatus.CANCELLED},
     TaskStatus.QUEUED_FOR_PUBLISH: {TaskStatus.PUBLISHING},
     TaskStatus.PUBLISHING: {TaskStatus.COMPLETED, TaskStatus.TRANSIENT_FAILED, TaskStatus.FAILED},
-    TaskStatus.TRANSIENT_FAILED: {TaskStatus.QUEUED_FOR_TRANS, TaskStatus.QUEUED_FOR_ANALYSIS, TaskStatus.QUEUED_FOR_RENDER, TaskStatus.QUEUED_FOR_PUBLISH, TaskStatus.FAILED},  # noqa: E501
+    TaskStatus.TRANSIENT_FAILED: {
+        TaskStatus.QUEUED_FOR_TRANS,
+        TaskStatus.QUEUED_FOR_ANALYSIS,
+        TaskStatus.QUEUED_FOR_RENDER,
+        TaskStatus.QUEUED_FOR_PUBLISH,
+        TaskStatus.FAILED,
+    },  # noqa: E501
 }
 
 
@@ -147,6 +153,7 @@ class TestEnqueueNext:
 # V0.1.11-alpha: 重试和 failed_stage
 # ════════════════════════════════════════════════════
 
+
 class TestAttempts:
     """attempts 只在开始执行时增加一次 (V0.1.11-alpha)。"""
 
@@ -176,21 +183,25 @@ class TestFailedStage:
     def test_resume_stage_from_transcribing(self) -> None:
         """TRANSCRIBING → QUEUED_FOR_TRANS。"""
         from app.pipeline.task_worker import _resume_stage
+
         assert _resume_stage(TaskStatus.TRANSCRIBING) == TaskStatus.QUEUED_FOR_TRANS
 
     def test_resume_stage_from_analyzing(self) -> None:
         """ANALYZING → QUEUED_FOR_ANALYSIS。"""
         from app.pipeline.task_worker import _resume_stage
+
         assert _resume_stage(TaskStatus.ANALYZING) == TaskStatus.QUEUED_FOR_ANALYSIS
 
     def test_resume_stage_from_rendering(self) -> None:
         """RENDERING → QUEUED_FOR_RENDER。"""
         from app.pipeline.task_worker import _resume_stage
+
         assert _resume_stage(TaskStatus.RENDERING) == TaskStatus.QUEUED_FOR_RENDER
 
     def test_resume_stage_none_defaults_trans(self) -> None:
         """None → QUEUED_FOR_TRANS (安全默认)。"""
         from app.pipeline.task_worker import _resume_stage
+
         assert _resume_stage(None) == TaskStatus.QUEUED_FOR_TRANS
 
     def test_mark_failed_records_failed_stage(self) -> None:
@@ -210,11 +221,13 @@ class TestRetry:
     def test_retry_from_failed_stage(self) -> None:
         """TRANSIENT_FAILED(TRANSCRIBING) → QUEUED_FOR_TRANS。"""
         from app.pipeline.task_worker import _resume_stage
+
         assert _resume_stage(TaskStatus.TRANSCRIBING) == TaskStatus.QUEUED_FOR_TRANS
 
     def test_retry_no_parse_idempotency_key(self) -> None:
         """V0.1.11-alpha: 不使用 idempotency_key 解析阶段。"""
         from app.pipeline.task_worker import _resume_stage
+
         # failed_stage=ANALYZING → QUEUED_FOR_ANALYSIS,不用检查 idempotency_key
         assert _resume_stage(TaskStatus.ANALYZING) == TaskStatus.QUEUED_FOR_ANALYSIS
 
@@ -223,32 +236,38 @@ class TestRetry:
 # V0.1.11-alpha: 模型一致性
 # ════════════════════════════════════════════════════
 
+
 class TestDataModelConsistency:
     """V0.1.11-alpha: 数据模型语义校验。"""
 
     def test_highlight_topic_has_confirmed_by_user(self) -> None:
         """HighlightTopic 有 confirmed_by_user 字段。"""
         from app.db.models import HighlightTopic
+
         assert hasattr(HighlightTopic, "confirmed_by_user")
 
     def test_segment_task_has_failed_stage(self) -> None:
         """SegmentTask 有 failed_stage 字段。"""
         from app.db.models import SegmentTask
+
         assert hasattr(SegmentTask, "failed_stage")
 
     def test_segment_task_has_heartbeat_at(self) -> None:
         """SegmentTask 有 heartbeat_at 字段。"""
         from app.db.models import SegmentTask
+
         assert hasattr(SegmentTask, "heartbeat_at")
 
     def test_segment_task_has_event_id(self) -> None:
         """SegmentTask 有 event_id 字段。"""
         from app.db.models import SegmentTask
+
         assert hasattr(SegmentTask, "event_id")
 
     def test_task_status_has_stale(self) -> None:
         """TaskStatus 有 STALE 状态。"""
         from app.db.models import TaskStatus
+
         assert hasattr(TaskStatus, "STALE")
 
     def test_ensure_event_creates_once(self, temp_db: None) -> None:
@@ -270,15 +289,14 @@ class TestDataModelConsistency:
             db.flush()
 
         from app.pipeline.task_worker import _ensure_event
+
         eid1 = _ensure_event(cand.id)
         eid2 = _ensure_event(cand.id)
         assert eid1 is not None
         assert eid1 == eid2  # 第二次调用返回相同 event_id
 
         with get_session() as db:
-            events = db.exec(
-                select(HighlightEvent).where(HighlightEvent.candidate_id == cand.id)
-            ).all()
+            events = db.exec(select(HighlightEvent).where(HighlightEvent.candidate_id == cand.id)).all()
             assert len(events) == 1
 
     def test_event_id_not_equal_candidate_id(self, temp_db: None) -> None:
@@ -307,6 +325,7 @@ class TestDataModelConsistency:
             db.flush()
 
         from app.pipeline.task_worker import _ensure_event
+
         eid1 = _ensure_event(c1.id)
         eid2 = _ensure_event(c2.id)
         assert eid1 is not None
@@ -343,6 +362,7 @@ def test_resolve_event_id_backward_compat(temp_db: None) -> None:
         db.refresh(event)
 
     from app.clipping.clipper import _resolve_event_id
+
     with get_session() as db:
         resolved = _resolve_event_id(db, cand.id)
     assert resolved == event.id

@@ -55,8 +55,7 @@ def _llm_copywriter(
         start = cumulative_s
         cumulative_s += dur
         events_text += (
-            f"- #{i+1} [{sec_to_hhmmss(start)} → {sec_to_hhmmss(cumulative_s)}] "
-            f"评分 {ev.get('score', 0):.2f}"
+            f"- #{i + 1} [{sec_to_hhmmss(start)} → {sec_to_hhmmss(cumulative_s)}] 评分 {ev.get('score', 0):.2f}"
         )
         reason = ev.get("reason", "")
         if reason:
@@ -121,10 +120,12 @@ def _fallback_copywriter(
     cumulative_s = 0.0
     for i, ev in enumerate(event_summaries):
         dur = ev.get("duration_s", 30)
-        chapters.append({
-            "ts": sec_to_hhmmss(cumulative_s),
-            "title": f"高光 #{i+1}",
-        })
+        chapters.append(
+            {
+                "ts": sec_to_hhmmss(cumulative_s),
+                "title": f"高光 #{i + 1}",
+            }
+        )
         cumulative_s += dur
 
     summary = f"「{topic_title}」合集,共{count}段高光,总时长约{sec_to_hhmmss(total_duration_s)}"
@@ -133,10 +134,7 @@ def _fallback_copywriter(
 
     return {
         "summary": summary,
-        "title": (
-            f"「{topic_title}」高光合集 · {count}段名场面一次看完"
-            if topic_title else f"{count}段高光合集"
-        ),
+        "title": (f"「{topic_title}」高光合集 · {count}段名场面一次看完" if topic_title else f"{count}段高光合集"),
         "description": summary,
         "chapters": chapters,
         "tags": tags,
@@ -170,9 +168,11 @@ def generate_copywriter_for_topic(topic_id: int) -> dict | None:
             return None
 
         links = db.exec(
-            select(HighlightTopic).where(
+            select(HighlightTopic)
+            .where(
                 HighlightTopic.topic_id == topic_id,
-            ).order_by(HighlightTopic.sort_order.asc())
+            )
+            .order_by(HighlightTopic.sort_order.asc())
         ).all()
 
         event_summaries = []
@@ -181,18 +181,17 @@ def generate_copywriter_for_topic(topic_id: int) -> dict | None:
             cand = db.get(HighlightCandidate, link.event_id)
             if cand is None:
                 continue
-            dur = (
-                (cand.end_ts - cand.start_ts).total_seconds()
-                if cand.start_ts and cand.end_ts else 30
-            )
+            dur = (cand.end_ts - cand.start_ts).total_seconds() if cand.start_ts and cand.end_ts else 30
             total_dur += dur
-            event_summaries.append({
-                "candidate_id": cand.id,
-                "score": cand.highlight_score,
-                "reason": cand.reason or "",
-                "asr_text": "",
-                "duration_s": round(dur, 1),
-            })
+            event_summaries.append(
+                {
+                    "candidate_id": cand.id,
+                    "score": cand.highlight_score,
+                    "reason": cand.reason or "",
+                    "asr_text": "",
+                    "duration_s": round(dur, 1),
+                }
+            )
 
     return generate_copywriter(
         topic_title=topic.title or f"主题 #{topic_id}",

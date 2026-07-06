@@ -25,13 +25,16 @@ from sqlmodel import Field, Session, SQLModel
 def _get_engine():
     """获取当前数据库引擎 (动态导入以支持测试中的模块重载)。"""
     from app.db.session import engine as _engine
+
     return _engine
 
 
 def _get_settings():
     """获取当前配置 (动态导入以支持测试中修改 env var)。"""
     from app.core.config import settings as _settings
+
     return _settings
+
 
 # ── 常量 ──────────────────────────────────────────────────
 
@@ -89,19 +92,23 @@ def compute_schema_fingerprint() -> str:
         constraints: list[dict] = []
         for c in sorted(table.constraints, key=lambda c: c.name or ""):
             if hasattr(c, "columns"):
-                constraints.append({
-                    "type": type(c).__name__,
-                    "columns": sorted([col.name for col in c.columns]),
-                })
+                constraints.append(
+                    {
+                        "type": type(c).__name__,
+                        "columns": sorted([col.name for col in c.columns]),
+                    }
+                )
 
         # 外键
         foreign_keys: list[dict] = []
         for fk in sorted(table.foreign_keys, key=lambda fk: fk.parent.name):
-            foreign_keys.append({
-                "column": fk.parent.name,
-                "ref_table": fk.column.table.name,
-                "ref_column": fk.column.name,
-            })
+            foreign_keys.append(
+                {
+                    "column": fk.parent.name,
+                    "ref_table": fk.column.table.name,
+                    "ref_column": fk.column.name,
+                }
+            )
 
         tables_info[tname] = {
             "columns": columns,
@@ -132,24 +139,22 @@ def compute_actual_schema_fingerprint() -> str:
 
         for (tname,) in sorted(tables):
             # PRAGMA table_info
-            cols_raw = conn.exec_driver_sql(
-                f"PRAGMA table_info({tname})"
-            ).fetchall()
+            cols_raw = conn.exec_driver_sql(f"PRAGMA table_info({tname})").fetchall()
 
             columns: list[dict] = []
             for col in cols_raw:
-                columns.append({
-                    "name": col[1],
-                    "type": col[2] or "TEXT",
-                    "nullable": bool(not col[3]),
-                    "default": str(col[4]) if col[4] is not None else None,
-                    "primary_key": bool(col[5]),
-                })
+                columns.append(
+                    {
+                        "name": col[1],
+                        "type": col[2] or "TEXT",
+                        "nullable": bool(not col[3]),
+                        "default": str(col[4]) if col[4] is not None else None,
+                        "primary_key": bool(col[5]),
+                    }
+                )
 
             # PRAGMA index_list (跳过 sqlite_autoindex)
-            idxs_raw = conn.exec_driver_sql(
-                f"PRAGMA index_list({tname})"
-            ).fetchall()
+            idxs_raw = conn.exec_driver_sql(f"PRAGMA index_list({tname})").fetchall()
 
             constraints: list[dict] = []
             for idx in idxs_raw:
@@ -158,28 +163,28 @@ def compute_actual_schema_fingerprint() -> str:
                     continue
                 is_unique = bool(idx[2])
                 # PRAGMA index_info for column names
-                idx_cols = conn.exec_driver_sql(
-                    f"PRAGMA index_info({idx_name})"
-                ).fetchall()
+                idx_cols = conn.exec_driver_sql(f"PRAGMA index_info({idx_name})").fetchall()
                 col_names = [ic[2] for ic in idx_cols if len(ic) > 2] if idx_cols else []
-                constraints.append({
-                    "name": idx_name,
-                    "type": "UniqueConstraint" if is_unique else "Index",
-                    "columns": sorted(col_names),
-                })
+                constraints.append(
+                    {
+                        "name": idx_name,
+                        "type": "UniqueConstraint" if is_unique else "Index",
+                        "columns": sorted(col_names),
+                    }
+                )
 
             # PRAGMA foreign_key_list
-            fks_raw = conn.exec_driver_sql(
-                f"PRAGMA foreign_key_list({tname})"
-            ).fetchall()
+            fks_raw = conn.exec_driver_sql(f"PRAGMA foreign_key_list({tname})").fetchall()
 
             foreign_keys: list[dict] = []
             for fk in fks_raw:
-                foreign_keys.append({
-                    "column": fk[3],
-                    "ref_table": fk[2],
-                    "ref_column": fk[4],
-                })
+                foreign_keys.append(
+                    {
+                        "column": fk[3],
+                        "ref_table": fk[2],
+                        "ref_column": fk[4],
+                    }
+                )
 
             # 聚合唯一约束 (PRAGMA index_list + unique=1)
             # 合并回 columns 信息
@@ -188,15 +193,15 @@ def compute_actual_schema_fingerprint() -> str:
                     # 这是 SQLite 内部唯一索引 (对应模型定义中的 UniqueConstraint)
                     is_unique = bool(idx[2])
                     if is_unique:
-                        idx_cols_raw = conn.exec_driver_sql(
-                            f"PRAGMA index_info({idx[1]})"
-                        ).fetchall()
+                        idx_cols_raw = conn.exec_driver_sql(f"PRAGMA index_info({idx[1]})").fetchall()
                         col_names = sorted([ic[2] for ic in idx_cols_raw if len(ic) > 2])
-                        constraints.append({
-                            "name": "UNIQUE",
-                            "type": "UniqueConstraint",
-                            "columns": col_names,
-                        })
+                        constraints.append(
+                            {
+                                "name": "UNIQUE",
+                                "type": "UniqueConstraint",
+                                "columns": col_names,
+                            }
+                        )
 
             tables_info[tname] = {
                 "columns": columns,
@@ -383,11 +388,7 @@ def assure_schema() -> None:
                 raise
         # 创建后立即校验
         if not validate_schema():
-            raise RuntimeError(
-                "新创建的数据库 Schema 校验失败。"
-                "请删除数据库后重试。"
-                f"\n数据库路径: {db_path}"
-            )
+            raise RuntimeError(f"新创建的数据库 Schema 校验失败。请删除数据库后重试。\n数据库路径: {db_path}")
         logger.info("数据库创建并校验成功: {}", db_path)
         return
 
@@ -418,6 +419,7 @@ def _app_version_str() -> str:
     """获取当前应用版本字符串。"""
     try:
         from app import __version__
+
         return __version__
     except ImportError:
         return "unknown"
@@ -456,9 +458,7 @@ def _verify_critical_indexes() -> bool:
     try:
         with _get_engine().connect() as conn:
             for table, suffix, desc in single_col:
-                rows = conn.exec_driver_sql(
-                    f"PRAGMA index_list('{table}')"
-                ).fetchall()
+                rows = conn.exec_driver_sql(f"PRAGMA index_list('{table}')").fetchall()
                 if not any(suffix in (row[1] or "") for row in rows):
                     logger.error("关键索引缺失: {} ({})", desc, table)
                     all_ok = False
@@ -466,13 +466,8 @@ def _verify_critical_indexes() -> bool:
                     logger.debug("索引存在: {} ({})", desc, table)
 
             for table, desc in composite:
-                rows = conn.exec_driver_sql(
-                    f"PRAGMA index_list('{table}')"
-                ).fetchall()
-                if not any(
-                    (row[1] or "").startswith("sqlite_autoindex_") and row[2] == 1
-                    for row in rows
-                ):
+                rows = conn.exec_driver_sql(f"PRAGMA index_list('{table}')").fetchall()
+                if not any((row[1] or "").startswith("sqlite_autoindex_") and row[2] == 1 for row in rows):
                     logger.error("关键唯一约束缺失: {} ({})", desc, table)
                     all_ok = False
                 else:
@@ -511,9 +506,7 @@ def _verify_actual_structure() -> tuple[bool, str]:
         # 检查每个表的列
         with _get_engine().connect() as conn:
             for tname, expected_cols in expected.items():
-                actual_cols_raw = conn.exec_driver_sql(
-                    f"PRAGMA table_info({tname})"
-                ).fetchall()
+                actual_cols_raw = conn.exec_driver_sql(f"PRAGMA table_info({tname})").fetchall()
                 actual_cols = {row[1] for row in actual_cols_raw}
                 missing_cols = expected_cols - actual_cols
                 if missing_cols:
@@ -537,9 +530,7 @@ def _verify_foreign_keys() -> bool:
     try:
         with _get_engine().connect() as conn:
             for table, ref_table, desc in fk_checks:
-                fk_rows = conn.exec_driver_sql(
-                    f"PRAGMA foreign_key_list('{table}')"
-                ).fetchall()
+                fk_rows = conn.exec_driver_sql(f"PRAGMA foreign_key_list('{table}')").fetchall()
                 found = any(row[2] == ref_table for row in fk_rows)
                 if not found:
                     logger.warning("外键缺失: {}", desc)
@@ -578,7 +569,8 @@ def reset_database(*, yes: bool = False, backup: bool = True) -> bool:
     except ValueError:
         logger.error(
             "拒绝删除非托管路径的数据库: {} (不在 {} 下)",
-            db_path, config_root,
+            db_path,
+            config_root,
         )
         return False
 
@@ -592,9 +584,8 @@ def reset_database(*, yes: bool = False, backup: bool = True) -> bool:
     # 备份
     if backup and db_path.exists():
         import shutil
-        backup_path = db_path.with_name(
-            f"{db_path.stem}_reset_{datetime.now(UTC).strftime('%Y%m%d_%H%M%S')}.bak"
-        )
+
+        backup_path = db_path.with_name(f"{db_path.stem}_reset_{datetime.now(UTC).strftime('%Y%m%d_%H%M%S')}.bak")
         try:
             shutil.copy2(db_path, backup_path)
             logger.info("数据库已备份至: {}", backup_path)

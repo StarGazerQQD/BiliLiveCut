@@ -197,10 +197,13 @@ class LiveMonitor:
 
             with get_session() as db:
                 session = db.exec(
-                    select(RecordingSession).where(
+                    select(RecordingSession)
+                    .where(
                         RecordingSession.room_id == db_id,
                         RecordingSession.status == "recording",
-                    ).order_by(RecordingSession.started_at.desc()).limit(1)
+                    )
+                    .order_by(RecordingSession.started_at.desc())
+                    .limit(1)
                 ).first()
                 if session:
                     self._reconnect_totals[db_id] = session.reconnect_count

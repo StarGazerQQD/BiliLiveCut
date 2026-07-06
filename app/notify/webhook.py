@@ -41,11 +41,14 @@ def _validate_webhook(url: str, name: str = "") -> bool:
 
 def _enabled() -> bool:
     """检查是否有任一通知通道已配置。"""
-    return bool(settings.notify_enabled and (
-        settings.dingtalk_webhook
-        or settings.wecom_webhook
-        or (settings.smtp_host and settings.smtp_user and settings.smtp_to)
-    ))
+    return bool(
+        settings.notify_enabled
+        and (
+            settings.dingtalk_webhook
+            or settings.wecom_webhook
+            or (settings.smtp_host and settings.smtp_user and settings.smtp_to)
+        )
+    )
 
 
 # --------------------------------------------------------------------------- #
@@ -67,6 +70,7 @@ def _dingtalk_sign(secret: str) -> tuple[str, str]:
         hashlib.sha256,
     ).digest()
     import base64
+
     sign_encoded = urllib.parse.quote_plus(base64.b64encode(sign).decode("utf-8"))
     return ts, sign_encoded
 
@@ -177,7 +181,10 @@ def send_email(subject: str, body: str) -> bool:
     try:
         context = ssl.create_default_context()
         server = smtplib.SMTP_SSL(
-            settings.smtp_host, settings.smtp_port, timeout=10, context=context,
+            settings.smtp_host,
+            settings.smtp_port,
+            timeout=10,
+            context=context,
         )
         try:
             server.login(settings.smtp_user, settings.smtp_password)
@@ -221,9 +228,7 @@ def notify_clip_complete(candidate_id: int, clip_path: str, duration_s: float) -
         return
     notify(
         f"切片完成 #cand{candidate_id}",
-        f"**候选 #{candidate_id}** 已生成成品切片。\n"
-        f"- 时长: {duration_s:.0f}s\n"
-        f"- 路径: `{clip_path}`",
+        f"**候选 #{candidate_id}** 已生成成品切片。\n- 时长: {duration_s:.0f}s\n- 路径: `{clip_path}`",
     )
 
 
@@ -257,8 +262,7 @@ def notify_task_failed(task_id: int, stage: str, error: str) -> None:
         return
     notify(
         f"任务失败 #{task_id}",
-        f"**任务 #{task_id}** 在阶段 `{stage}` 永久失败。\n"
-        f"- 错误: {error}",
+        f"**任务 #{task_id}** 在阶段 `{stage}` 永久失败。\n- 错误: {error}",
     )
 
 

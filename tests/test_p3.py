@@ -22,6 +22,7 @@ from app.pipeline.storage_lifecycle import (
 
 # ======================== 磁盘检测 ========================
 
+
 class TestDiskUsage:
     """磁盘使用检测。"""
 
@@ -67,6 +68,7 @@ class TestDiskSafe:
 
 # ======================== 封面评分 ========================
 
+
 class TestBlurDetection:
     """模糊检测。"""
 
@@ -80,6 +82,7 @@ class TestBlurDetection:
                 from PIL import Image  # noqa: F401
             except ImportError:
                 import pytest
+
                 pytest.skip("No image library available")
         # 创建一个简单的测试图片。
         try:
@@ -103,6 +106,7 @@ class TestBlurDetection:
             from PIL import Image as PILImage
         except ImportError:
             import pytest
+
             pytest.skip("No image library available")
 
         tmp_path = Path(__file__).parent / "_test_bright.jpg"
@@ -148,6 +152,7 @@ class TestProbeDuration:
 
 
 # ======================== 直播监控状态 ========================
+
 
 class TestLiveMonitor:
     """直播监控器基础状态。"""

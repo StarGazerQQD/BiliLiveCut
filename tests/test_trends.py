@@ -41,8 +41,11 @@ def test_save_and_recent_and_dedupe(temp_db: None) -> None:
     """
     recs = [
         TrendRecord(
-            source="bilibili", title="A话题", category="游戏",
-            tags=["吃鸡", "名场面"], heat=80,
+            source="bilibili",
+            title="A话题",
+            category="游戏",
+            tags=["吃鸡", "名场面"],
+            heat=80,
         ),
         TrendRecord(source="douyin", title="B话题", category="搞笑", tags=["整活"], heat=50),
     ]
@@ -52,9 +55,11 @@ def test_save_and_recent_and_dedupe(temp_db: None) -> None:
     assert items[0].title == "A话题"  # 按热度降序
 
     # 再次入库 A话题(更高热度、新增标签)。
-    store.save_trends([
-        TrendRecord(source="bilibili", title="A话题", tags=["逆风翻盘"], heat=95),
-    ])
+    store.save_trends(
+        [
+            TrendRecord(source="bilibili", title="A话题", tags=["逆风翻盘"], heat=95),
+        ]
+    )
     items = store.recent_trends(limit=10, days=7)
     assert len(items) == 2  # 未新增条目
     a = next(it for it in items if it.title == "A话题")
@@ -69,11 +74,13 @@ def test_keyword_heat_aggregation(temp_db: None) -> None:
 
     :param temp_db: 隔离数据库夹具。
     """
-    store.save_trends([
-        TrendRecord(source="b", title="t1", tags=["吃鸡"], category="游戏", heat=60),
-        TrendRecord(source="b", title="t2", tags=["吃鸡"], category="游戏", heat=40),
-        TrendRecord(source="b", title="t3", tags=["整活"], heat=30),
-    ])
+    store.save_trends(
+        [
+            TrendRecord(source="b", title="t1", tags=["吃鸡"], category="游戏", heat=60),
+            TrendRecord(source="b", title="t2", tags=["吃鸡"], category="游戏", heat=40),
+            TrendRecord(source="b", title="t3", tags=["整活"], heat=30),
+        ]
+    )
     kws = store.keyword_heat(days=7, top=10)
     top = {k["keyword"]: k for k in kws}
     assert top["吃鸡"]["count"] == 2
@@ -86,9 +93,11 @@ def test_match_text_db(temp_db: None) -> None:
 
     :param temp_db: 隔离数据库夹具。
     """
-    store.save_trends([
-        TrendRecord(source="b", title="t1", tags=["吃鸡", "名场面"], heat=90),
-    ])
+    store.save_trends(
+        [
+            TrendRecord(source="b", title="t1", tags=["吃鸡", "名场面"], heat=90),
+        ]
+    )
     score, matched = store.match_text("这把吃鸡操作太秀了", days=7)
     assert score > 0
     assert "吃鸡" in matched
@@ -127,12 +136,21 @@ def test_collect_trends_parses_mocked_llm(temp_db: None, monkeypatch: MonkeyPatc
     """
     monkeypatch.setattr(collector_mod.settings, "trend_enabled", True, raising=False)
     monkeypatch.setattr(collector_mod.settings, "trend_web_search", True, raising=False)
-    payload = json.dumps([
-        {"source": "bilibili", "category": "游戏", "title": "热门话题X",
-         "summary": "很火", "tags": ["吃鸡", "名场面"], "heat": 88, "url": ""},
-        {"title": ""},  # 无标题,应被丢弃
-        "非对象",          # 非 dict,应被丢弃
-    ])
+    payload = json.dumps(
+        [
+            {
+                "source": "bilibili",
+                "category": "游戏",
+                "title": "热门话题X",
+                "summary": "很火",
+                "tags": ["吃鸡", "名场面"],
+                "heat": 88,
+                "url": "",
+            },
+            {"title": ""},  # 无标题,应被丢弃
+            "非对象",  # 非 dict,应被丢弃
+        ]
+    )
     monkeypatch.setattr(llm_mod, "call_web_search", lambda *a, **k: payload)
 
     recs = collect_trends()

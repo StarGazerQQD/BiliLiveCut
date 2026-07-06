@@ -25,6 +25,7 @@ def _now() -> datetime:
 # 审批一致性测试
 # ═══════════════════════════════════════════════════
 
+
 class TestApprovalConsistency:
     """测试统一审批在同一事务中更新 Task + Event + Candidate."""
 
@@ -44,23 +45,31 @@ class TestApprovalConsistency:
         from app.pipeline.approval import approve_event_and_task
 
         with get_session() as db:
-            room = LiveRoom(id=9901, input_url="test", auto_approve=True,
-                            auto_approve_threshold=0.80)
+            room = LiveRoom(id=9901, input_url="test", auto_approve=True, auto_approve_threshold=0.80)
             sess = RecordingSession(id=8801, room_id=9901)
             cand = HighlightCandidate(
-                id=6601, session_id=8801,
-                peak_ts=_now(), start_ts=_now(), end_ts=_now(),
-                highlight_score=0.90, status=CandidateStatus.PENDING,
+                id=6601,
+                session_id=8801,
+                peak_ts=_now(),
+                start_ts=_now(),
+                end_ts=_now(),
+                highlight_score=0.90,
+                status=CandidateStatus.PENDING,
             )
             event = HighlightEvent(
-                id=7701, candidate_id=6601, session_id=8801,
-                raw_start_ts=_now(), raw_end_ts=_now(),
+                id=7701,
+                candidate_id=6601,
+                session_id=8801,
+                raw_start_ts=_now(),
+                raw_end_ts=_now(),
                 review_status=ReviewStatus.PENDING,
             )
             task = SegmentTask(
-                segment_id=5501, session_id=8801,
+                segment_id=5501,
+                session_id=8801,
                 stage=TaskStatus.AWAITING_REVIEW,
-                candidate_id=6601, event_id=7701,
+                candidate_id=6601,
+                event_id=7701,
                 idempotency_key="5501:awaiting_review",
             )
             db.add_all([room, sess, cand, event, task])
@@ -90,7 +99,8 @@ class TestApprovalConsistency:
 
         with get_session() as db:
             task = SegmentTask(
-                segment_id=5502, session_id=1,
+                segment_id=5502,
+                session_id=1,
                 stage=TaskStatus.AWAITING_REVIEW,
                 idempotency_key="5502:awaiting_review",
             )
@@ -107,12 +117,15 @@ class TestApprovalConsistency:
 
         with get_session() as db:
             event = HighlightEvent(
-                id=7703, session_id=1,
-                raw_start_ts=_now(), raw_end_ts=_now(),
+                id=7703,
+                session_id=1,
+                raw_start_ts=_now(),
+                raw_end_ts=_now(),
                 review_status=ReviewStatus.REJECTED,
             )
             task = SegmentTask(
-                segment_id=5503, session_id=1,
+                segment_id=5503,
+                session_id=1,
                 stage=TaskStatus.AWAITING_REVIEW,
                 event_id=7703,
                 idempotency_key="5503:awaiting_review",
@@ -130,12 +143,15 @@ class TestApprovalConsistency:
 
         with get_session() as db:
             event = HighlightEvent(
-                id=7704, session_id=1,
-                raw_start_ts=_now(), raw_end_ts=_now(),
+                id=7704,
+                session_id=1,
+                raw_start_ts=_now(),
+                raw_end_ts=_now(),
                 review_status=ReviewStatus.APPROVED_SOLO,
             )
             task = SegmentTask(
-                segment_id=5504, session_id=1,
+                segment_id=5504,
+                session_id=1,
                 stage=TaskStatus.APPROVED,
                 event_id=7704,
                 idempotency_key="5504:approved",
@@ -150,6 +166,7 @@ class TestApprovalConsistency:
 # UploadTask 映射测试
 # ═══════════════════════════════════════════════════
 
+
 class TestUploadResultMapping:
     """测试 apply_upload_result 按 UploadTask 状态推进主流水线。"""
 
@@ -161,7 +178,8 @@ class TestUploadResultMapping:
 
         with get_session() as db:
             task = SegmentTask(
-                segment_id=5505, session_id=1,
+                segment_id=5505,
+                session_id=1,
                 stage=TaskStatus.PUBLISHING,
                 idempotency_key="5505:publishing",
             )
@@ -187,7 +205,8 @@ class TestUploadResultMapping:
 
         with get_session() as db:
             task = SegmentTask(
-                segment_id=5506, session_id=1,
+                segment_id=5506,
+                session_id=1,
                 stage=TaskStatus.PUBLISHING,
                 idempotency_key="5506:publishing",
             )
@@ -214,7 +233,8 @@ class TestUploadResultMapping:
 
         with get_session() as db:
             task = SegmentTask(
-                segment_id=5507, session_id=1,
+                segment_id=5507,
+                session_id=1,
                 stage=TaskStatus.PUBLISHING,
                 idempotency_key="5507:publishing",
             )
@@ -235,6 +255,7 @@ class TestUploadResultMapping:
 # ═══════════════════════════════════════════════════
 # ManualUploader 测试
 # ═══════════════════════════════════════════════════
+
 
 class TestManualUploader:
     """ManualUploader 不标记 PUBLISHED。"""
@@ -265,15 +286,14 @@ class TestManualUploader:
 
         with get_session() as db:
             c = db.get(FinalClip, cid)
-            assert c.status != ClipStatus.PUBLISHED, (
-                "ManualUploader 不应标记 PUBLISHED"
-            )
+            assert c.status != ClipStatus.PUBLISHED, "ManualUploader 不应标记 PUBLISHED"
             assert task.status == "success"
 
 
 # ═══════════════════════════════════════════════════
 # IntegrityError 幂等测试
 # ═══════════════════════════════════════════════════
+
 
 class TestIntegrityErrorIdempotency:
     """并发唯一约束冲突被当作幂等命中。"""
@@ -287,7 +307,9 @@ class TestIntegrityErrorIdempotency:
         with get_session() as db:
             sess = RecordingSession(id=1, room_id=1, status="recorded")
             seg = RawSegment(
-                id=8001, session_id=1, seq=0,
+                id=8001,
+                session_id=1,
+                seq=0,
                 file_path="/tmp/test.mp4",
                 status=SegmentStatus.RECORDED,
             )
@@ -307,8 +329,11 @@ class TestIntegrityErrorIdempotency:
 
         with get_session() as db:
             cand = HighlightCandidate(
-                id=8002, session_id=1,
-                peak_ts=_now(), start_ts=_now(), end_ts=_now(),
+                id=8002,
+                session_id=1,
+                peak_ts=_now(),
+                start_ts=_now(),
+                end_ts=_now(),
                 highlight_score=0.85,
             )
             db.add(cand)
@@ -322,6 +347,7 @@ class TestIntegrityErrorIdempotency:
 # ═══════════════════════════════════════════════════
 # TOCTOU 安全清理测试
 # ═══════════════════════════════════════════════════
+
 
 class TestSafeUnlink:
     """测试 _safe_unlink 的路径安全保护。"""
@@ -383,6 +409,7 @@ class TestSafeUnlink:
         link_in_root = root / "link_to_outside"
         try:
             import _winapi
+
             _winapi.CreateJunction(str(outside), str(link_in_root))
         except (ImportError, AttributeError, OSError):
             # 非 Windows 或无权限

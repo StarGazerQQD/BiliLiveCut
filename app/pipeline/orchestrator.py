@@ -49,13 +49,18 @@ def _read_room_config(room_id: int | None) -> dict:
         }
     from app.db.models import LiveRoom
     from app.db.session import get_session as _gs
+
     with _gs() as _db:
         room = _db.get(LiveRoom, room_id)
         if room is None:
             return {
-                "auto_record": False, "auto_analyze": False,
-                "auto_render": False, "auto_approve": False, "auto_upload": False,
-                "auto_approve_threshold": 0.82, "review_threshold": 0.50,
+                "auto_record": False,
+                "auto_analyze": False,
+                "auto_render": False,
+                "auto_approve": False,
+                "auto_upload": False,
+                "auto_approve_threshold": 0.82,
+                "review_threshold": 0.50,
             }
         return {
             "auto_record": room.auto_record,
@@ -95,9 +100,11 @@ def produce_clip(candidate_id: int, auto_upload: bool = False) -> FinalClip | No
     if clip.status == "ready" and auto_upload and clip.id is not None:
         try:
             from app.publishing.uploader import enqueue_and_upload
+
             enqueue_and_upload(clip.id)
             try:
                 from app.notify.webhook import notify_upload_complete
+
                 notify_upload_complete(clip.id, clip.title)
             except Exception:
                 pass

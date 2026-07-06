@@ -34,7 +34,9 @@ class TestPipelineIntegration:
     def test_review_risk_computation(self) -> None:
         """复核风险评分计算。"""
         seg = ASRSegmentResult(
-            start=0.0, end=5.0, text="",
+            start=0.0,
+            end=5.0,
+            text="",
             confidence_available=False,
         )
         risk, reasons = _compute_review_risk_score(seg)
@@ -61,8 +63,11 @@ class TestASRTranscriptResultIntegration:
 
     def test_result_construction(self) -> None:
         result = ASRTranscriptResult(
-            text="完整文本测试", language="zh", backend="paraformer",
-            model_id="paraformer-zh", model_revision="v2.0.4",
+            text="完整文本测试",
+            language="zh",
+            backend="paraformer",
+            model_id="paraformer-zh",
+            model_revision="v2.0.4",
         )
         assert result.backend == "paraformer"
         assert result.final_text_source == "primary"
@@ -90,7 +95,9 @@ class TestSegments:
     def test_segment_confidence_chain(self) -> None:
         """句段置信度链。"""
         seg = ASRSegmentResult(
-            start=0.0, end=3.0, text="你好世界",
+            start=0.0,
+            end=3.0,
+            text="你好世界",
             raw_confidence=0.9,
             confidence_type="paraformer-sentence-confidence",
             normalized_confidence=0.9,
@@ -103,7 +110,9 @@ class TestSegments:
     def test_no_confidence_segment(self) -> None:
         """无置信度句段。"""
         seg = ASRSegmentResult(
-            start=0.0, end=3.0, text="无置信度文本",
+            start=0.0,
+            end=3.0,
+            text="无置信度文本",
         )
         assert seg.confidence_available is False
         assert seg.raw_confidence is None

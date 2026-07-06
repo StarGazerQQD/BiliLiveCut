@@ -92,6 +92,7 @@ def with_retry_on_lock(
                     max_retries + 1,
                 )
                 time.sleep(sleep_s)
+
     return wrapper  # type: ignore[return-value]
 
 

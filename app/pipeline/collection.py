@@ -49,9 +49,11 @@ def get_collection_events(topic_id: int) -> list[dict]:
         if db.get(Topic, topic_id) is None:
             return []
         links = db.exec(
-            select(HighlightTopic).where(
+            select(HighlightTopic)
+            .where(
                 HighlightTopic.topic_id == topic_id,
-            ).order_by(HighlightTopic.sort_order.asc(), HighlightTopic.created_at.asc())
+            )
+            .order_by(HighlightTopic.sort_order.asc(), HighlightTopic.created_at.asc())
         ).all()
         events = []
         for link in links:
@@ -60,32 +62,38 @@ def get_collection_events(topic_id: int) -> list[dict]:
                 continue
             # 查找已有成品。
             clips = db.exec(
-                select(FinalClip).where(
+                select(FinalClip)
+                .where(
                     FinalClip.candidate_id == cand.id,
                     FinalClip.status.in_([ClipStatus.GENERATED, ClipStatus.READY]),
-                ).order_by(FinalClip.created_at.desc())
+                )
+                .order_by(FinalClip.created_at.desc())
             ).all()
             clip_info = None
             if clips:
                 c = clips[0]
                 clip_info = {
-                    "id": c.id, "file_path": c.file_path,
-                    "duration_s": c.duration_s, "title": c.title,
+                    "id": c.id,
+                    "file_path": c.file_path,
+                    "duration_s": c.duration_s,
+                    "title": c.title,
                 }
             start = cand.start_ts
             end = cand.end_ts
             dur = (end - start).total_seconds() if start and end else 0
-            events.append({
-                "event_id": cand.id,
-                "candidate_id": cand.id,
-                "score": cand.highlight_score,
-                "reason": cand.reason,
-                "start_ts": start.isoformat() if start else None,
-                "end_ts": end.isoformat() if end else None,
-                "duration_s": round(dur, 1),
-                "clip": clip_info,
-                "sort_order": link.sort_order,
-            })
+            events.append(
+                {
+                    "event_id": cand.id,
+                    "candidate_id": cand.id,
+                    "score": cand.highlight_score,
+                    "reason": cand.reason,
+                    "start_ts": start.isoformat() if start else None,
+                    "end_ts": end.isoformat() if end else None,
+                    "duration_s": round(dur, 1),
+                    "clip": clip_info,
+                    "sort_order": link.sort_order,
+                }
+            )
         # 按 sort_order 排序。
         events.sort(key=lambda e: e["sort_order"])
         return events
@@ -158,19 +166,24 @@ def render_collection(
                 logger.warning("事件 {} 找不到候选。", eid)
                 continue
             clips = db.exec(
-                select(FinalClip).where(
+                select(FinalClip)
+                .where(
                     FinalClip.candidate_id == cand.id,
                     FinalClip.status.in_([ClipStatus.GENERATED, ClipStatus.READY]),
-                ).order_by(FinalClip.created_at.desc()).limit(1)
+                )
+                .order_by(FinalClip.created_at.desc())
+                .limit(1)
             ).first()
             if clips is None or not clips.file_path or not Path(clips.file_path).exists():
                 logger.warning("事件 {} 没有可用成品文件。", eid)
                 continue
-            clip_files.append({
-                "path": clips.file_path,
-                "candidate_id": cand.id,
-                "duration": clips.duration_s or 0,
-            })
+            clip_files.append(
+                {
+                    "path": clips.file_path,
+                    "candidate_id": cand.id,
+                    "duration": clips.duration_s or 0,
+                }
+            )
 
     if len(clip_files) < 2:
         logger.error("可用成品文件不足 2 个,无法生成合集。")
@@ -202,14 +215,24 @@ def render_collection(
             try:
                 subprocess.run(
                     [
-                        settings.ffmpeg_path, "-y", "-v", "quiet",
-                        "-i", cf["path"],
-                        "-af", "loudnorm=I=-16:TP=-1.5:LRA=11:linear=true",
-                        "-c:v", "copy",
-                        "-c:a", "aac", "-b:a", "192k",
+                        settings.ffmpeg_path,
+                        "-y",
+                        "-v",
+                        "quiet",
+                        "-i",
+                        cf["path"],
+                        "-af",
+                        "loudnorm=I=-16:TP=-1.5:LRA=11:linear=true",
+                        "-c:v",
+                        "copy",
+                        "-c:a",
+                        "aac",
+                        "-b:a",
+                        "192k",
                         str(norm_path),
                     ],
-                    check=True, timeout=120,
+                    check=True,
+                    timeout=120,
                 )
                 normalized_paths.append(str(norm_path))
             except subprocess.CalledProcessError:
@@ -231,16 +254,34 @@ def render_collection(
         try:
             subprocess.run(
                 [
-                    settings.ffmpeg_path, "-y", "-v", "warning",
-                    "-f", "concat", "-safe", "0",
-                    "-i", str(concat_list_path),
-                    "-c:v", "libx264", "-crf", "23", "-preset", "medium",
-                    "-c:a", "aac", "-b:a", "192k",
-                    "-pix_fmt", "yuv420p",
-                    "-movflags", "+faststart",
+                    settings.ffmpeg_path,
+                    "-y",
+                    "-v",
+                    "warning",
+                    "-f",
+                    "concat",
+                    "-safe",
+                    "0",
+                    "-i",
+                    str(concat_list_path),
+                    "-c:v",
+                    "libx264",
+                    "-crf",
+                    "23",
+                    "-preset",
+                    "medium",
+                    "-c:a",
+                    "aac",
+                    "-b:a",
+                    "192k",
+                    "-pix_fmt",
+                    "yuv420p",
+                    "-movflags",
+                    "+faststart",
                     str(out_file),
                 ],
-                check=True, timeout=300,
+                check=True,
+                timeout=300,
             )
         except subprocess.CalledProcessError as exc:
             logger.error("合集渲染失败: {}", exc)
@@ -258,7 +299,9 @@ def render_collection(
     try:
         result = subprocess.run(
             [settings.ffprobe_path, "-v", "quiet", "-print_format", "json", "-show_format", str(out_file)],
-            capture_output=True, text=True, timeout=10,
+            capture_output=True,
+            text=True,
+            timeout=10,
         )
         info = json.loads(result.stdout)
         duration_s = float(info.get("format", {}).get("duration", 0))
@@ -326,30 +369,42 @@ def _generate_chapter_card(title: str, out_dir: Path) -> str | None:
     # 使用 textfile 避免 drawtext 注入。
     import tempfile as _tf
 
-    with _tf.NamedTemporaryFile(
-        mode="w", suffix=".txt", encoding="utf-8", delete=False
-    ) as text_tmp:
+    with _tf.NamedTemporaryFile(mode="w", suffix=".txt", encoding="utf-8", delete=False) as text_tmp:
         text_tmp.write(title)
         text_file_path = text_tmp.name
 
     try:
         subprocess.run(
             [
-                settings.ffmpeg_path, "-y", "-v", "quiet",
-                "-f", "lavfi", "-i", "color=c=0x1a1a2e:s=1920x1080:d=2:r=30",
-                "-vf", (
+                settings.ffmpeg_path,
+                "-y",
+                "-v",
+                "quiet",
+                "-f",
+                "lavfi",
+                "-i",
+                "color=c=0x1a1a2e:s=1920x1080:d=2:r=30",
+                "-vf",
+                (
                     f"drawtext=textfile='{text_file_path}':"
                     "fontcolor=white:fontsize=48:"
                     "x=(w-text_w)/2:y=(h-text_h)/2:"
                     "fontfile=/Windows/Fonts/msyh.ttc:"
                     "box=1:boxcolor=black@0.3:boxborderw=20"
                 ),
-                "-c:v", "libx264", "-crf", "18", "-preset", "ultrafast",
-                "-pix_fmt", "yuv420p",
+                "-c:v",
+                "libx264",
+                "-crf",
+                "18",
+                "-preset",
+                "ultrafast",
+                "-pix_fmt",
+                "yuv420p",
                 "-an",
                 str(card_path),
             ],
-            check=True, timeout=30,
+            check=True,
+            timeout=30,
         )
     except Exception:
         logger.debug("章节标题卡生成失败,跳过。")

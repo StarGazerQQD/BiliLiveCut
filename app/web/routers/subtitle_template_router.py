@@ -47,7 +47,11 @@ def _parse_ass_styles(text: str) -> list[dict[str, str]]:
     in_styles = False
     for line in text.splitlines():
         stripped = line.strip()
-        if stripped.startswith("[V4+ Styles]") or stripped.startswith("[V4 Styles]") or stripped.startswith("[V4+ Styles]"):  # noqa: E501
+        if (
+            stripped.startswith("[V4+ Styles]")
+            or stripped.startswith("[V4 Styles]")
+            or stripped.startswith("[V4+ Styles]")
+        ):  # noqa: E501
             in_styles = True
             continue
         if in_styles and stripped.startswith("["):
@@ -206,13 +210,37 @@ async def update_template(template_id: int, request: Request) -> dict[str, str]:
     """
     body = await request.json()
     allowed = {
-        "name", "description", "font_name", "font_size", "primary_color",
-        "secondary_color", "outline_color", "back_color", "bold", "italic",
-        "underline", "strikeout", "scale_x", "scale_y", "spacing", "angle",
-        "border_style", "outline", "shadow", "alignment", "margin_l",
-        "margin_r", "margin_v", "encoding", "max_chars_per_line",
-        "min_display_ms", "max_display_ms", "line_gap_ms", "play_res_x",
-        "play_res_y", "is_default",
+        "name",
+        "description",
+        "font_name",
+        "font_size",
+        "primary_color",
+        "secondary_color",
+        "outline_color",
+        "back_color",
+        "bold",
+        "italic",
+        "underline",
+        "strikeout",
+        "scale_x",
+        "scale_y",
+        "spacing",
+        "angle",
+        "border_style",
+        "outline",
+        "shadow",
+        "alignment",
+        "margin_l",
+        "margin_r",
+        "margin_v",
+        "encoding",
+        "max_chars_per_line",
+        "min_display_ms",
+        "max_display_ms",
+        "line_gap_ms",
+        "play_res_x",
+        "play_res_y",
+        "is_default",
     }
     with get_session() as db:
         t = db.get(SubtitleTemplate, template_id)
@@ -265,7 +293,9 @@ def delete_template(template_id: int, request: Request) -> dict[str, str]:
 
 
 @router.post("/import/ass")
-async def import_ass_file(file: UploadFile = File(..., max_size=1_048_576)) -> dict[str, object]:  # 1MB  # noqa: B008 E501
+async def import_ass_file(
+    file: UploadFile = File(..., max_size=1_048_576),  # 1MB  # noqa: B008 E501
+) -> dict[str, object]:
     """导入 ASS 文件,提取其样式配置并创建模板。
 
     限制:最大 1MB,防止内存耗尽。
@@ -338,5 +368,5 @@ def export_template(template_id: int, request: Request) -> PlainTextResponse:
     return PlainTextResponse(
         content=text,
         media_type="text/plain; charset=utf-8",
-        headers={"Content-Disposition": f"attachment; filename={t.name.replace(chr(13),'').replace(chr(10),'')}.ass"},
+        headers={"Content-Disposition": f"attachment; filename={t.name.replace(chr(13), '').replace(chr(10), '')}.ass"},
     )

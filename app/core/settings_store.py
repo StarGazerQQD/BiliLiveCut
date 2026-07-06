@@ -12,16 +12,16 @@ from app.db.session import get_session
 
 # 运行时开关默认值(全部保守:不自动、不启用 biliup)。
 _DEFAULTS: dict[str, str] = {
-    "biliup_enabled": "false",   # 是否启用 biliup 上传(你要求的开关,默认关闭)
-    "auto_upload": "false",      # 成品 ready 后是否自动入队上传
+    "biliup_enabled": "false",  # 是否启用 biliup 上传(你要求的开关,默认关闭)
+    "auto_upload": "false",  # 成品 ready 后是否自动入队上传
     # 网感资料库定时采集(默认关闭;录制/分析进行时自动暂停)。
-    "trend_schedule_enabled": "false",   # 是否启用每日定时采集
-    "trend_schedule_start": "03:00",     # 每日采集窗口起(HH:MM,本地时间)
-    "trend_schedule_end": "05:00",       # 每日采集窗口止(HH:MM,本地时间)
-    "trend_schedule_interval_min": "30", # 窗口内每隔多少分钟迭代采集一次
+    "trend_schedule_enabled": "false",  # 是否启用每日定时采集
+    "trend_schedule_start": "03:00",  # 每日采集窗口起(HH:MM,本地时间)
+    "trend_schedule_end": "05:00",  # 每日采集窗口止(HH:MM,本地时间)
+    "trend_schedule_interval_min": "30",  # 窗口内每隔多少分钟迭代采集一次
     # V0.1.2 新增:全局功能开关
     "threshold_learning_enabled": "true",  # 阈值自学习全局总开关
-    "danmaku_sentiment_enabled": "true",   # 弹幕情绪分析全局总开关
+    "danmaku_sentiment_enabled": "true",  # 弹幕情绪分析全局总开关
 }
 
 _TRUE = {"1", "true", "yes", "on"}
@@ -96,7 +96,7 @@ def auto_upload_enabled() -> bool:
 
 
 def upload_active() -> bool:
-    """"上传模块"是否处于启用状态。
+    """上传模块"是否处于启用状态。
 
     定义:启用了 biliup 开关即视为上传模块开启;否则为关闭(走人工/弹目录)。
 

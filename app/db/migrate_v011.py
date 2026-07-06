@@ -24,13 +24,12 @@ def migrate_v011_1(db) -> dict[int, int]:
         if cand.id is None:
             continue
         # 已有 Event?
-        existing = db.exec(
-            select(HighlightEvent).where(HighlightEvent.candidate_id == cand.id)
-        ).first()
+        existing = db.exec(select(HighlightEvent).where(HighlightEvent.candidate_id == cand.id)).first()
         if existing is not None:
             mapping[cand.id] = existing.id
         else:
             from app.db.models import ReviewStatus
+
             event = HighlightEvent(
                 candidate_id=cand.id,
                 session_id=cand.session_id,
@@ -91,7 +90,8 @@ def run_migration() -> dict:
 
         logger.info(
             "迁移:修复 {} 个 ClipVariant.event_id,跳过 {} 个。",
-            stats["clipvariants_fixed"], stats["clipvariants_skipped"],
+            stats["clipvariants_fixed"],
+            stats["clipvariants_skipped"],
         )
 
         # 步骤3:修复 HighlightTopic.event_id。
@@ -111,7 +111,8 @@ def run_migration() -> dict:
 
         logger.info(
             "迁移:修复 {} 个 HighlightTopic.event_id,跳过 {} 个。",
-            stats["topic_fixed"], stats["topic_skipped"],
+            stats["topic_fixed"],
+            stats["topic_skipped"],
         )
 
     return stats

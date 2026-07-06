@@ -200,9 +200,7 @@ def save_providers(items: list[LLMProvider]) -> None:
 
     :param items: provider 列表。
     """
-    settings_store.set_setting(
-        _STORE_KEY, json.dumps([p.to_dict() for p in items], ensure_ascii=False)
-    )
+    settings_store.set_setting(_STORE_KEY, json.dumps([p.to_dict() for p in items], ensure_ascii=False))
     logger.info("已保存 {} 个大模型配置。", len(items))
 
 

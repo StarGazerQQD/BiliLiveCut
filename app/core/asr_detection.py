@@ -76,6 +76,7 @@ def detect_resources() -> ResourceInfo:
     # 系统内存检测
     try:
         import psutil
+
         mem = psutil.virtual_memory()
         info.ram_total_mb = round(mem.total / (1024**2), 1)
         info.ram_free_mb = round(mem.available / (1024**2), 1)
@@ -159,9 +160,7 @@ def check_resources_sufficient(model: str = "small", device: str = "cpu") -> tup
         "large-v3": (6000, 8000),
     }
 
-    vram_need, ram_need = model_requirements.get(
-        model.lower(), model_requirements["small"]
-    )
+    vram_need, ram_need = model_requirements.get(model.lower(), model_requirements["small"])
 
     if device == "cuda" and info.gpu_available:
         if info.vram_free_mb < vram_need * 0.8:  # 留 20% 余量

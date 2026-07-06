@@ -22,9 +22,7 @@ from sqlmodel import select as _sql_select
 
 review_router = APIRouter(prefix="/review", tags=["review"])
 
-_TEMPLATES = Jinja2Templates(
-    directory=str(Path(__file__).resolve().parent.parent / "templates")
-)
+_TEMPLATES = Jinja2Templates(directory=str(Path(__file__).resolve().parent.parent / "templates"))
 
 
 @review_router.get("/{candidate_id}", response_class=HTMLResponse)
@@ -113,12 +111,18 @@ def get_review_data(candidate_id: int) -> dict:
             danmaku_buckets: list[dict] = []
             if session:
                 danmaku_rows = db.exec(
-                    _sql_select(Danmaku.ts).where(
+                    _sql_select(Danmaku.ts)
+                    .where(
                         Danmaku.session_id == c.session_id,
-                        Danmaku.ts >= ctx_start.replace(tzinfo=None) if hasattr(ctx_start, "tzinfo") and ctx_start.tzinfo else ctx_start,  # noqa: E501
-                        Danmaku.ts <= ctx_end.replace(tzinfo=None) if hasattr(ctx_end, "tzinfo") and ctx_end.tzinfo else ctx_end,  # noqa: E501
+                        Danmaku.ts >= ctx_start.replace(tzinfo=None)
+                        if hasattr(ctx_start, "tzinfo") and ctx_start.tzinfo
+                        else ctx_start,  # noqa: E501
+                        Danmaku.ts <= ctx_end.replace(tzinfo=None)
+                        if hasattr(ctx_end, "tzinfo") and ctx_end.tzinfo
+                        else ctx_end,  # noqa: E501
                         Danmaku.msg_type == "danmaku",
-                    ).order_by(Danmaku.ts.asc())
+                    )
+                    .order_by(Danmaku.ts.asc())
                 ).all()
 
                 bucket_s = 5
@@ -133,10 +137,12 @@ def get_review_data(candidate_id: int) -> dict:
                     if 0 <= idx < num_buckets:
                         counts[idx] += 1
                 for i, cnt in enumerate(counts):
-                    danmaku_buckets.append({
-                        "t": round(t0_ts + i * bucket_s, 1),
-                        "count": cnt,
-                    })
+                    danmaku_buckets.append(
+                        {
+                            "t": round(t0_ts + i * bucket_s, 1),
+                            "count": cnt,
+                        }
+                    )
 
             danmaku_window = {
                 "start": ctx_start.isoformat() if hasattr(ctx_start, "isoformat") else str(ctx_start),
@@ -162,15 +168,17 @@ def get_review_data(candidate_id: int) -> dict:
         prev_candidates = []
         next_candidates = []
         all_cands = db.exec(
-            _sql_select(HighlightCandidate).where(
+            _sql_select(HighlightCandidate)
+            .where(
                 HighlightCandidate.session_id == c.session_id,
-            ).order_by(HighlightCandidate.start_ts.asc())
+            )
+            .order_by(HighlightCandidate.start_ts.asc())
         ).all()
         for i, cand in enumerate(all_cands):
             if cand.id == candidate_id:
-                for pc in all_cands[max(0, i - 2):i]:
+                for pc in all_cands[max(0, i - 2) : i]:
                     prev_candidates.append({"id": pc.id, "score": pc.highlight_score, "reason": pc.reason})
-                for nc in all_cands[i + 1:i + 3]:
+                for nc in all_cands[i + 1 : i + 3]:
                     next_candidates.append({"id": nc.id, "score": nc.highlight_score, "reason": nc.reason})
                 break
 
@@ -207,13 +215,15 @@ def get_review_data(candidate_id: int) -> dict:
         val = features.get(dim, 0.0) if isinstance(features, dict) else 0.0
         w = weights.get(dim, 0.0) if isinstance(weights, dict) else 0.0
         contrib = val * w if isinstance(val, (int, float)) else 0.0
-        score_breakdown.append({
-            "dim": dim,
-            "label": label,
-            "value": val,
-            "weight": w,
-            "contribution": round(contrib, 4),
-        })
+        score_breakdown.append(
+            {
+                "dim": dim,
+                "label": label,
+                "value": val,
+                "weight": w,
+                "contribution": round(contrib, 4),
+            }
+        )
 
     return {
         "candidate": {
@@ -241,6 +251,7 @@ def get_review_data(candidate_id: int) -> dict:
 
 
 # ---- 边界调整与重新渲染 ---- #
+
 
 @review_router.post("/api/{candidate_id}/adjust")
 async def adjust_boundary(
@@ -391,9 +402,11 @@ def submit_review(
             from app.pipeline.approval import approve_event_and_task
 
             task = db.exec(
-                _sql_select(SegmentTask).where(
+                _sql_select(SegmentTask)
+                .where(
                     SegmentTask.candidate_id == candidate_id,
-                ).order_by(SegmentTask.created_at.desc())
+                )
+                .order_by(SegmentTask.created_at.desc())
             ).first()
             if task is not None:
                 approve_event_and_task(
@@ -497,20 +510,25 @@ def get_waveform(candidate_id: int, resolution: int = 400) -> dict:
             raise HTTPException(status_code=404, detail="候选不存在")
         # 找已有成品。
         clip = db.exec(
-            _sql_select(FinalClip).where(
+            _sql_select(FinalClip)
+            .where(
                 FinalClip.candidate_id == candidate_id,
-            ).limit(1)
+            )
+            .limit(1)
         ).first()
         if clip is None or not clip.file_path or not Path(clip.file_path).exists():
-            return {"peaks": [], "duration_s": 0, "sample_rate": 0, "error": "尚未生成切片,请先「批准并出片」或「重新渲染」"}  # noqa: E501
+            return {
+                "peaks": [],
+                "duration_s": 0,
+                "sample_rate": 0,
+                "error": "尚未生成切片,请先「批准并出片」或「重新渲染」",
+            }  # noqa: E501
 
         file_path = clip.file_path
         # 路径遍历保护:确保文件在 clips 目录内。
         resolved = Path(file_path).resolve()
         clips_root = Path(clips_dir()).resolve()
-        if resolved.parent != clips_root and not any(
-            p == clips_root for p in resolved.parents
-        ):
+        if resolved.parent != clips_root and not any(p == clips_root for p in resolved.parents):
             return {"peaks": [], "duration_s": 0, "sample_rate": 0, "error": "文件路径不可访问"}
         file_path = str(resolved)
         duration_s = clip.duration_s or 0
@@ -520,7 +538,9 @@ def get_waveform(candidate_id: int, resolution: int = 400) -> dict:
         try:
             result = _sp.run(
                 ["ffprobe", "-v", "quiet", "-print_format", "json", "-show_format", file_path],
-                capture_output=True, text=True, timeout=10,
+                capture_output=True,
+                text=True,
+                timeout=10,
             )
             info = _json.loads(result.stdout)
             duration_s = float(info.get("format", {}).get("duration", 0))
@@ -539,17 +559,32 @@ def get_waveform(candidate_id: int, resolution: int = 400) -> dict:
     try:
         _sp.run(
             [
-                "ffmpeg", "-y", "-v", "quiet",
-                "-i", file_path,
-                "-ac", "1", "-ar", str(sample_rate),
-                "-f", "s16le", tmp_path,
+                "ffmpeg",
+                "-y",
+                "-v",
+                "quiet",
+                "-i",
+                file_path,
+                "-ac",
+                "1",
+                "-ar",
+                str(sample_rate),
+                "-f",
+                "s16le",
+                tmp_path,
             ],
-            check=True, timeout=30,
+            check=True,
+            timeout=30,
         )
         with open(tmp_path, "rb") as f:
             raw = f.read()
     except Exception as exc:
-        return {"peaks": [], "duration_s": duration_s, "sample_rate": sample_rate, "error": f"FFmpeg 波形生成失败: {exc}"}  # noqa: E501
+        return {
+            "peaks": [],
+            "duration_s": duration_s,
+            "sample_rate": sample_rate,
+            "error": f"FFmpeg 波形生成失败: {exc}",
+        }  # noqa: E501
     finally:
         try:
             Path(tmp_path).unlink()
@@ -566,7 +601,7 @@ def get_waveform(candidate_id: int, resolution: int = 400) -> dict:
     for i in range(resolution):
         start = i * samples_per_bucket
         end = min(sample_count, start + samples_per_bucket * 2)
-        chunk = raw[start * 2:end * 2]
+        chunk = raw[start * 2 : end * 2]
         max_val = 0
         for j in range(0, len(chunk), 2):
             val = abs(_struct.unpack_from("<h", chunk, j)[0])

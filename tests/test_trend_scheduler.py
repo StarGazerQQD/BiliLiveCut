@@ -84,9 +84,7 @@ def test_status_structure(temp_db: None) -> None:
 
 
 @pytest.mark.asyncio
-async def test_run_once_collects_when_not_paused(
-    temp_db: None, monkeypatch: MonkeyPatch
-) -> None:
+async def test_run_once_collects_when_not_paused(temp_db: None, monkeypatch: MonkeyPatch) -> None:
     """未暂停时 _run_once 应调用采集并记录结果;暂停时跳过。
 
     :param temp_db: 隔离数据库夹具。

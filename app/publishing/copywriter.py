@@ -216,8 +216,7 @@ def generate_copy(clip_id: int) -> FinalClip:
         clip.description = copy.description
         clip.tags_json = json.dumps(copy.tags, ensure_ascii=False)
         clip.publish_suggestion = (
-            f"{copy.publish_suggestion} | 封面:{copy.cover_suggestion} | "
-            f"值得发布:{copy.worth_publishing}"
+            f"{copy.publish_suggestion} | 封面:{copy.cover_suggestion} | 值得发布:{copy.worth_publishing}"
         )
         clip.status = status
         db.add(clip)

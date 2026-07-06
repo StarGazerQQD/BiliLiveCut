@@ -33,6 +33,7 @@ def get_monitor_data() -> dict:
     # V0.1.8 P2:磁盘不足告警通知(带冷却:每30分钟最多发一次)。
     if not safe:
         from app.notify.webhook import notify_disk_alert
+
         global _last_disk_alert
         free_gb = disk.get("free_gb", 0) if isinstance(disk, dict) else getattr(disk, "free_gb", 0)
         if time.time() - _last_disk_alert > 1800:  # 30 分钟冷却
@@ -132,7 +133,9 @@ def _get_task_stats() -> dict:
         stage = t.stage.value if hasattr(t.stage, "value") else str(t.stage)
         by_stage[stage] = by_stage.get(stage, 0) + 1
         if t.created_at and t.stage not in (
-            TaskStatus.COMPLETED, TaskStatus.CANCELLED, TaskStatus.FAILED,
+            TaskStatus.COMPLETED,
+            TaskStatus.CANCELLED,
+            TaskStatus.FAILED,
         ):
             age = now - t.created_at.timestamp()
             if age > oldest_wait_s:
@@ -162,9 +165,12 @@ def _get_recent_failures() -> list[dict]:
 
     with get_session() as db:
         failed = db.exec(
-            select(SegmentTask).where(
+            select(SegmentTask)
+            .where(
                 SegmentTask.last_error.is_not(None),
-            ).order_by(SegmentTask.updated_at.desc()).limit(20)
+            )
+            .order_by(SegmentTask.updated_at.desc())
+            .limit(20)
         ).all()
 
     return [
@@ -186,6 +192,7 @@ def get_asr_metrics() -> JSONResponse:
     """返回 ASR 调用指标 (调用次数、耗时、复核、fallback、RTF)。"""
     try:
         from app.analysis.asr_metrics import get_snapshot
+
         return JSONResponse(get_snapshot())
     except Exception as exc:
         return JSONResponse({"error": str(exc)}, status_code=500)
@@ -197,20 +204,23 @@ def get_asr_models() -> JSONResponse:
     """返回当前已加载 ASR 模型状态。"""
     try:
         from app.analysis.asr_manager import get_asr_manager
+
         mgr = get_asr_manager()
         infos = []
         for info in mgr.all_infos():
-            infos.append({
-                "key": info.key,
-                "model_id": info.model_id,
-                "device": info.device,
-                "is_loaded": info.is_loaded,
-                "loaded_at": info.loaded_at,
-                "last_used_at": info.last_used_at,
-                "load_duration": info.load_duration,
-                "keep_loaded": info.keep_loaded,
-                "revision": info.revision,
-            })
+            infos.append(
+                {
+                    "key": info.key,
+                    "model_id": info.model_id,
+                    "device": info.device,
+                    "is_loaded": info.is_loaded,
+                    "loaded_at": info.loaded_at,
+                    "last_used_at": info.last_used_at,
+                    "load_duration": info.load_duration,
+                    "keep_loaded": info.keep_loaded,
+                    "revision": info.revision,
+                }
+            )
         return JSONResponse({"models": infos})
     except Exception as exc:
         return JSONResponse({"error": str(exc)}, status_code=500)

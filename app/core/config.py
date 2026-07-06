@@ -57,7 +57,7 @@ class Settings(BaseSettings):
     stream_quality: int = 10000
     reconnect_max_backoff_s: int = Field(default=30, ge=1)
     live_poll_interval_s: int = Field(default=15, ge=5)
-    collect_danmaku: bool = True   # 录制期间是否同时采集弹幕
+    collect_danmaku: bool = True  # 录制期间是否同时采集弹幕
 
     # ---------- Bilibili 合规 ----------
     require_authorization: bool = True
@@ -84,7 +84,7 @@ class Settings(BaseSettings):
     # V0.1.12.2: 统一复核风险阈值 (0-1, review_risk_score >= 此值触发复核)
     asr_review_risk_threshold: float = 0.65
     # V0.1.12.2: SenseVoice 使用开关 (独立于模型加载开关 asr_sensevoice)
-    asr_sensevoice_enabled: bool = True   # False=关闭辅助特征,不参与评分
+    asr_sensevoice_enabled: bool = True  # False=关闭辅助特征,不参与评分
 
     # ---------- V0.1.12.2: 分后端设备与并发控制 ----------
     asr_primary_device: str = "cpu"
@@ -127,21 +127,21 @@ class Settings(BaseSettings):
     # 兼容旧配置:若未填 llm_* 而填了 anthropic_*,仍可回退读取(已废弃,仅为兼容保留)。
     anthropic_api_key: str = Field(default="", repr=False)
     # Deprecated: 已迁移至多 LLM 供应商系统 (app/analysis/llm_providers.py)
-    anthropic_model: str = ""            # Deprecated: 未使用,仅保留向后兼容
+    anthropic_model: str = ""  # Deprecated: 未使用,仅保留向后兼容
     llm_daily_budget_usd: float = 0.0
 
     # ---------- 网感资料库(联网采集热门内容,供评分/文案参考) ----------
-    trend_enabled: bool = False           # 是否启用网感资料库(默认关闭,按需开启)
+    trend_enabled: bool = False  # 是否启用网感资料库(默认关闭,按需开启)
     # 趋势采集专用 API 配置(独立于通用 LLM,可指定不同的模型/服务商)。
     # 留空则回退到通用 LLM 配置(多模型列表或 .env LLM_* 单模型)。
-    trend_api_key: str = Field(default="", repr=False)               # 趋势采集专用 API Key
-    trend_base_url: str = ""              # 趋势采集专用 base_url(OpenAI 兼容)
-    trend_model: str = ""                 # 趋势采集专用模型名(留空则用 llm_model)
-    trend_web_search: bool = True         # 是否启用联网搜索工具采集(关闭则仅靠模型知识)
+    trend_api_key: str = Field(default="", repr=False)  # 趋势采集专用 API Key
+    trend_base_url: str = ""  # 趋势采集专用 base_url(OpenAI 兼容)
+    trend_model: str = ""  # 趋势采集专用模型名(留空则用 llm_model)
+    trend_web_search: bool = True  # 是否启用联网搜索工具采集(关闭则仅靠模型知识)
     trend_max_searches: int = Field(default=5, ge=1, le=20)  # 单次采集最多联网搜索次数
-    trend_max_items: int = Field(default=40, ge=1, le=200)   # 单次采集解析条目上限
-    trend_retention_days: int = Field(default=14, ge=1)      # 资料库保留天数
-    trend_match_days: int = Field(default=7, ge=1)           # 高光/文案参考的"近期"窗口(天)
+    trend_max_items: int = Field(default=40, ge=1, le=200)  # 单次采集解析条目上限
+    trend_retention_days: int = Field(default=14, ge=1)  # 资料库保留天数
+    trend_match_days: int = Field(default=7, ge=1)  # 高光/文案参考的"近期"窗口(天)
 
     # ---------- 高光阈值 ----------
     highlight_init_threshold: float = Field(default=0.5, ge=0.0, le=1.0)
@@ -149,13 +149,13 @@ class Settings(BaseSettings):
     auto_publish_threshold: float = Field(default=0.85, ge=0.0, le=1.0)
 
     # ---------- 切片后处理 ----------
-    clip_loudnorm: bool = True            # 响度标准化(EBU R128)
-    clip_remove_silence: bool = False     # 去除首尾静默
-    clip_vertical: bool = False           # 竖屏重构(1080x1920,居中+黑边)
-    clip_subtitle: bool = False           # 烧录字幕(从转写生成)
+    clip_loudnorm: bool = True  # 响度标准化(EBU R128)
+    clip_remove_silence: bool = False  # 去除首尾静默
+    clip_vertical: bool = False  # 竖屏重构(1080x1920,居中+黑边)
+    clip_subtitle: bool = False  # 烧录字幕(从转写生成)
     clip_max_duration_s: int = Field(default=180, ge=5, le=900)
-    clip_video_crf: int = Field(default=20, ge=0, le=51)   # x264 质量,越小越好
-    clip_preset: str = "veryfast"         # x264 编码速度档
+    clip_video_crf: int = Field(default=20, ge=0, le=51)  # x264 质量,越小越好
+    clip_preset: str = "veryfast"  # x264 编码速度档
 
     # ---------- V0.1.2 新增:高级功能 ----------
     # 阈值自学习:收集 N 条审批反馈后自动调整房间级阈值。
@@ -172,9 +172,9 @@ class Settings(BaseSettings):
     clip_cleanup_delay_hours: int = Field(default=24, ge=1, le=720, description="成片成功后原始分段延迟清理(小时)")
 
     # ---------- 上传 ----------
-    uploader: str = "manual"                  # 默认上传器(manual 时不触碰平台接口)
+    uploader: str = "manual"  # 默认上传器(manual 时不触碰平台接口)
     upload_max_retries: int = Field(default=3, ge=0, le=10)
-    upload_max_per_hour: int = Field(default=5, ge=1)   # 投稿频率上限(每小时)
+    upload_max_per_hour: int = Field(default=5, ge=1)  # 投稿频率上限(每小时)
     title_max_len: int = Field(default=80, ge=10, le=200)
     desc_max_len: int = Field(default=2000, ge=10)
     # biliup(社区方案,自担风险):凭据/配置路径与自定义上传命令模板。
@@ -185,29 +185,29 @@ class Settings(BaseSettings):
     biliup_upload_cmd: str = ""
 
     # ---------- 通知/Webhook (V0.1.8 P2) ----------
-    notify_enabled: bool = False           # 是否启用通知
+    notify_enabled: bool = False  # 是否启用通知
 
     # 钉钉机器人 Webhook。
-    dingtalk_webhook: str = ""             # 钉钉机器人 Webhook 地址
-    dingtalk_secret: str = Field(default="", repr=False)              # 钉钉机器人加签密钥(可选)
+    dingtalk_webhook: str = ""  # 钉钉机器人 Webhook 地址
+    dingtalk_secret: str = Field(default="", repr=False)  # 钉钉机器人加签密钥(可选)
 
     # 企业微信机器人 Webhook。
-    wecom_webhook: str = ""                # 企业微信机器人 Webhook 地址
+    wecom_webhook: str = ""  # 企业微信机器人 Webhook 地址
 
     # 邮件通知(SMTP)。
-    smtp_host: str = ""                    # SMTP 服务器
-    smtp_port: int = 465                   # SMTP 端口(默认 SSL 465)
-    smtp_user: str = ""                    # SMTP 用户名
-    smtp_password: str = Field(default="", repr=False)                # SMTP 密码 (repr=False 防止日志泄露)
-    smtp_from: str = ""                    # 发件人地址
-    smtp_to: str = ""                      # 收件人地址(多个用逗号分隔)
+    smtp_host: str = ""  # SMTP 服务器
+    smtp_port: int = 465  # SMTP 端口(默认 SSL 465)
+    smtp_user: str = ""  # SMTP 用户名
+    smtp_password: str = Field(default="", repr=False)  # SMTP 密码 (repr=False 防止日志泄露)
+    smtp_from: str = ""  # 发件人地址
+    smtp_to: str = ""  # 收件人地址(多个用逗号分隔)
 
     # 通知规则。
-    notify_on_clip: bool = True            # 切片完成时通知
-    notify_on_upload: bool = False         # 投稿完成时通知
-    notify_on_disk_alert: bool = True      # 磁盘不足时通知
-    notify_on_error: bool = True           # 任务永久失败时通知
-    disk_alert_threshold_gb: int = 10      # 磁盘告警阈值(GB)
+    notify_on_clip: bool = True  # 切片完成时通知
+    notify_on_upload: bool = False  # 投稿完成时通知
+    notify_on_disk_alert: bool = True  # 磁盘不足时通知
+    notify_on_error: bool = True  # 任务永久失败时通知
+    disk_alert_threshold_gb: int = 10  # 磁盘告警阈值(GB)
 
     @model_validator(mode="after")
     def validate_cross_fields(self) -> Settings:
@@ -222,30 +222,20 @@ class Settings(BaseSettings):
         # asr_review_risk_threshold 必须在 [0, 1] 范围内
         if not (0.0 <= self.asr_review_risk_threshold <= 1.0):
             raise ValueError(
-                f"asr_review_risk_threshold 必须在 0.0 ~ 1.0 之间,"
-                f"当前值: {self.asr_review_risk_threshold}"
+                f"asr_review_risk_threshold 必须在 0.0 ~ 1.0 之间,当前值: {self.asr_review_risk_threshold}"
             )
 
         # clip_max_duration_s 必须大于 5 秒
         if self.clip_max_duration_s <= 5:
-            raise ValueError(
-                f"clip_max_duration_s 必须大于 5 秒,"
-                f"当前值: {self.clip_max_duration_s}"
-            )
+            raise ValueError(f"clip_max_duration_s 必须大于 5 秒,当前值: {self.clip_max_duration_s}")
 
         # upload_max_retries 必须 >= 0
         if self.upload_max_retries < 0:
-            raise ValueError(
-                f"upload_max_retries 必须 >= 0,"
-                f"当前值: {self.upload_max_retries}"
-            )
+            raise ValueError(f"upload_max_retries 必须 >= 0,当前值: {self.upload_max_retries}")
 
         # upload_max_per_hour 必须 >= 1
         if self.upload_max_per_hour < 1:
-            raise ValueError(
-                f"upload_max_per_hour 必须 >= 1,"
-                f"当前值: {self.upload_max_per_hour}"
-            )
+            raise ValueError(f"upload_max_per_hour 必须 >= 1,当前值: {self.upload_max_per_hour}")
 
         # 磁盘告警阈值应 <= 最小保留空间,确保告警在磁盘不足之前触发
         if self.disk_alert_threshold_gb > self.min_free_disk_gb:
@@ -257,10 +247,7 @@ class Settings(BaseSettings):
 
         # biliup_upload_cmd 如果非空,必须包含 {file} 占位符
         if self.biliup_upload_cmd and "{file}" not in self.biliup_upload_cmd:
-            raise ValueError(
-                "biliup_upload_cmd 必须包含 {file} 占位符,"
-                f"当前值: {self.biliup_upload_cmd}"
-            )
+            raise ValueError(f"biliup_upload_cmd 必须包含 {{file}} 占位符,当前值: {self.biliup_upload_cmd}")
 
         return self
 

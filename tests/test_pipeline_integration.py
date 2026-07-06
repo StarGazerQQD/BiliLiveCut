@@ -74,9 +74,7 @@ def test_score_segment_creates_candidate(
 
     now = datetime.now(UTC)
     with get_session() as db:
-        room = LiveRoom(
-            input_url="x", room_id=999, authorized=True, highlight_threshold=0.1
-        )
+        room = LiveRoom(input_url="x", room_id=999, authorized=True, highlight_threshold=0.1)
         db.add(room)
         db.flush()
         session = RecordingSession(room_id=room.id)

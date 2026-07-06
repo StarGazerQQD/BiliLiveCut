@@ -17,6 +17,7 @@ V0.1.12.2 变更:
     - 不再给无置信度字段伪造 0.0, 改为 None。
     - 保留 TranscriptionResult 作为向后兼容层。
 """
+
 from __future__ import annotations
 
 import json
@@ -43,6 +44,7 @@ if TYPE_CHECKING:
 # 统一 ASR 结果模型 (V0.1.12.2)
 # ═══════════════════════════════════════════════════════════
 
+
 @dataclass(slots=True)
 class Word:
     """一个词及其时间戳(秒, 相对片段起点)。"""
@@ -56,8 +58,8 @@ class Word:
 class EmotionEvent:
     """SenseVoice 检测到的辅助事件 (V0.1.12.2: 必须有真实时间范围)。"""
 
-    event_type: str   # "laughter" / "music" / "applause" / "emotion:HAPPY" / ...
-    start: float      # 秒, 不得为 0.0 除非整个音频为此事件 (需明确标记)
+    event_type: str  # "laughter" / "music" / "applause" / "emotion:HAPPY" / ...
+    start: float  # 秒, 不得为 0.0 除非整个音频为此事件 (需明确标记)
     end: float
     confidence: float = 1.0
 
@@ -81,7 +83,7 @@ class ASRSegmentResult:
 
     raw_confidence: float | None = None
     confidence_type: str | None = None
-    normalized_confidence: float | None = None    # 统一 0-1, 越高越可信
+    normalized_confidence: float | None = None  # 统一 0-1, 越高越可信
     confidence_available: bool = False
 
     language: str | None = None
@@ -96,7 +98,7 @@ class ASRTranscriptResult:
     后续高光、复核和运维代码只读取此统一结构。
     """
 
-    text: str                                     # 全文
+    text: str  # 全文
     segments: list[ASRSegmentResult] = field(default_factory=list)
 
     backend: str = ""
@@ -111,23 +113,23 @@ class ASRTranscriptResult:
     metadata: dict = field(default_factory=dict)
 
     # 复核相关 (Phase 2 填充)
-    base_text: str = ""                           # 主引擎原始文本
-    review_text: str = ""                         # 复核文本
-    final_text: str = ""                          # 合并后最终文本
+    base_text: str = ""  # 主引擎原始文本
+    review_text: str = ""  # 复核文本
+    final_text: str = ""  # 合并后最终文本
     review_triggered: bool = False
     review_risk_score: float | None = None
     review_reasons: list[str] = field(default_factory=list)
     review_backend: str = ""
-    final_text_source: str = "primary"            # "primary" / "review" / "fallback" / "manual_review_needed" / "none"
+    final_text_source: str = "primary"  # "primary" / "review" / "fallback" / "manual_review_needed" / "none"
     reviewed_segments: list[dict] = field(default_factory=list)
 
     # V0.1.12.4: fallback 追踪
     primary_backend: str = ""
-    primary_status: str = ""                       # "" / "success" / "failed"
+    primary_status: str = ""  # "" / "success" / "failed"
     primary_error_type: str = ""
     primary_error_message: str = ""
     fallback_backend: str = ""
-    fallback_trigger_reason: str = ""              # "primary_empty_output" / "primary_exception"
+    fallback_trigger_reason: str = ""  # "primary_empty_output" / "primary_exception"
 
     # 辅助特征
     emotions: list[EmotionEvent] = field(default_factory=list)
@@ -143,6 +145,7 @@ def _segment_to_confidence(seg: ASRSegmentResult) -> float | None:
 # ═══════════════════════════════════════════════════════════
 # 向后兼容: 保留旧 TranscriptionResult
 # ═══════════════════════════════════════════════════════════
+
 
 @dataclass(slots=True)
 class TranscriptionResult:
@@ -186,17 +189,23 @@ def _unified_to_legacy(unified: ASRTranscriptResult) -> TranscriptionResult:
 # 后端协议
 # ═══════════════════════════════════════════════════════════
 
+
 class TranscriberBackend(Protocol):
     """转写后端协议 (V0.1.12.2: 主接口返回 ASRTranscriptResult)。"""
 
     def transcribe(
-        self, audio_path: str, initial_prompt: str | None = None,
+        self,
+        audio_path: str,
+        initial_prompt: str | None = None,
     ) -> ASRTranscriptResult:
         """转写音频文件。"""
         ...
 
     def transcribe_segment(
-        self, audio_path: str, start: float, end: float,
+        self,
+        audio_path: str,
+        start: float,
+        end: float,
     ) -> ASRTranscriptResult:
         """转写音频片段 (用于复核)。"""
         ...
@@ -205,6 +214,7 @@ class TranscriberBackend(Protocol):
 # ═══════════════════════════════════════════════════════════
 # 工具函数
 # ═══════════════════════════════════════════════════════════
+
 
 def _compute_real_time_factor(inference_s: float, audio_s: float) -> float | None:
     """计算实时因子 RTF。"""
@@ -236,12 +246,22 @@ def _normalize_whisper_logprob(avg_logprob: float) -> float:
 def _probe_audio_duration(audio_path: str) -> float:
     """用 ffprobe 探测音频时长。"""
     import subprocess as _sp
+
     try:
         result = _sp.run(
-            [settings.ffprobe_path, "-v", "quiet", "-show_entries",
-             "format=duration", "-of", "default=noprint_wrappers=1:nokey=1",
-             audio_path],
-            capture_output=True, text=True, timeout=15,
+            [
+                settings.ffprobe_path,
+                "-v",
+                "quiet",
+                "-show_entries",
+                "format=duration",
+                "-of",
+                "default=noprint_wrappers=1:nokey=1",
+                audio_path,
+            ],
+            capture_output=True,
+            text=True,
+            timeout=15,
         )
         return float(result.stdout.strip())
     except Exception:
@@ -251,6 +271,7 @@ def _probe_audio_duration(audio_path: str) -> float:
 # ═══════════════════════════════════════════════════════════
 # FunASR 多引擎后端 (Paraformer + SenseVoice + FunASR-Nano)
 # ═══════════════════════════════════════════════════════════
+
 
 class FunASRBackend:
     """Paraformer-zh 主引擎 + SenseVoice 辅助 + Fun-ASR-Nano 复核。
@@ -293,12 +314,14 @@ class FunASRBackend:
         try:
             from funasr import AutoModel
         except ImportError:
-            raise RuntimeError(
-                "需要安装 funasr。请执行: pip install funasr modelscope"
-            ) from None
+            raise RuntimeError("需要安装 funasr。请执行: pip install funasr modelscope") from None
         device = settings.asr_primary_device or settings.whisper_device
-        logger.info("加载 Paraformer-zh 主引擎 model={} device={} revision={}",
-                     self._primary_model_name, device, self.model_revision)
+        logger.info(
+            "加载 Paraformer-zh 主引擎 model={} device={} revision={}",
+            self._primary_model_name,
+            device,
+            self.model_revision,
+        )
         self._primary = AutoModel(
             model=self._primary_model_name,
             vad_model="fsmn-vad",
@@ -319,9 +342,7 @@ class FunASRBackend:
         try:
             from funasr import AutoModel
         except ImportError:
-            raise RuntimeError(
-                "需要安装 funasr。请执行: pip install funasr modelscope"
-            ) from None
+            raise RuntimeError("需要安装 funasr。请执行: pip install funasr modelscope") from None
         logger.info("加载 SenseVoice-Small 辅助特征引擎 revision={}", self.model_revision)
         self._sensevoice = AutoModel(
             model=self.MODEL_ID_SENSEVOICE,
@@ -338,9 +359,7 @@ class FunASRBackend:
         try:
             from funasr import AutoModel
         except ImportError:
-            raise RuntimeError(
-                "需要安装 funasr。请执行: pip install funasr modelscope"
-            ) from None
+            raise RuntimeError("需要安装 funasr。请执行: pip install funasr modelscope") from None
         logger.info("加载 Fun-ASR-Nano 复核引擎 revision={}", self.model_revision)
         self._funasr = AutoModel(
             model=self.MODEL_ID_NANO,
@@ -353,7 +372,9 @@ class FunASRBackend:
     # ---- 转写 (V0.1.12.2: 返回 ASRTranscriptResult) ----
 
     def transcribe(
-        self, audio_path: str, initial_prompt: str | None = None,
+        self,
+        audio_path: str,
+        initial_prompt: str | None = None,
     ) -> ASRTranscriptResult:
         """Paraformer 主引擎转写 (V0.1.12.2: 返回统一结果)。
 
@@ -384,9 +405,13 @@ class FunASRBackend:
         if not result or len(result) == 0:
             asr_metrics.record_backend_call("paraformer", elapsed, success=False)
             return ASRTranscriptResult(
-                text="", language="zh", backend="paraformer",
-                model_id=self._primary_model_name, model_revision=self.model_revision,
-                inference_duration=elapsed, audio_duration=audio_duration,
+                text="",
+                language="zh",
+                backend="paraformer",
+                model_id=self._primary_model_name,
+                model_revision=self.model_revision,
+                inference_duration=elapsed,
+                audio_duration=audio_duration,
                 real_time_factor=_compute_real_time_factor(elapsed, audio_duration),
             )
 
@@ -407,20 +432,22 @@ class FunASRBackend:
                 continue
             sent_text = sent.get("text", "")
             sent_start = sent.get("start", 0.0)  # ms
-            sent_end = sent.get("end", 0.0)      # ms
+            sent_end = sent.get("end", 0.0)  # ms
             raw_conf = sent.get("confidence")
             norm_conf = _normalize_confidence_sentence(sent) if raw_conf is not None else None
 
-            segments.append(ASRSegmentResult(
-                start=float(sent_start) / 1000.0 if sent_start else 0.0,
-                end=float(sent_end) / 1000.0 if sent_end else 0.0,
-                text=sent_text,
-                raw_confidence=raw_conf,
-                confidence_type="paraformer-sentence-confidence" if raw_conf is not None else None,
-                normalized_confidence=norm_conf,
-                confidence_available=norm_conf is not None,
-                language="zh",
-            ))
+            segments.append(
+                ASRSegmentResult(
+                    start=float(sent_start) / 1000.0 if sent_start else 0.0,
+                    end=float(sent_end) / 1000.0 if sent_end else 0.0,
+                    text=sent_text,
+                    raw_confidence=raw_conf,
+                    confidence_type="paraformer-sentence-confidence" if raw_conf is not None else None,
+                    normalized_confidence=norm_conf,
+                    confidence_available=norm_conf is not None,
+                    language="zh",
+                )
+            )
 
         # 如果 sentence_info 为空, 从 timestamp 和 text 构建单段
         if not segments and text:
@@ -430,32 +457,38 @@ class FunASRBackend:
             words_out: list[Word] = []
             for ts_item in timestamps:
                 if len(ts_item) >= 3:
-                    words_out.append(Word(
-                        word=str(ts_item[0]),
-                        start=float(ts_item[1]) / 1000.0,
-                        end=float(ts_item[2]) / 1000.0,
-                    ))
-            segments.append(ASRSegmentResult(
-                start=0.0,
-                end=audio_duration,
-                text=text,
-                raw_confidence=raw_conf,
-                confidence_type=None,
-                normalized_confidence=norm_conf,
-                confidence_available=False,
-                language="zh",
-                words=words_out,
-            ))
+                    words_out.append(
+                        Word(
+                            word=str(ts_item[0]),
+                            start=float(ts_item[1]) / 1000.0,
+                            end=float(ts_item[2]) / 1000.0,
+                        )
+                    )
+            segments.append(
+                ASRSegmentResult(
+                    start=0.0,
+                    end=audio_duration,
+                    text=text,
+                    raw_confidence=raw_conf,
+                    confidence_type=None,
+                    normalized_confidence=norm_conf,
+                    confidence_available=False,
+                    language="zh",
+                    words=words_out,
+                )
+            )
 
         # 构建词级时间戳 (从原始 timestamp)
         all_words: list[Word] = []
         for ts_item in timestamps:
             if len(ts_item) >= 3:
-                all_words.append(Word(
-                    word=str(ts_item[0]),
-                    start=float(ts_item[1]) / 1000.0,
-                    end=float(ts_item[2]) / 1000.0,
-                ))
+                all_words.append(
+                    Word(
+                        word=str(ts_item[0]),
+                        start=float(ts_item[1]) / 1000.0,
+                        end=float(ts_item[2]) / 1000.0,
+                    )
+                )
         if all_words and segments:
             segments[0].words = all_words
 
@@ -522,20 +555,21 @@ class FunASRBackend:
                             conf = float(tag_val[1])
                         except ValueError:
                             conf = 1.0
-                        events.append(EmotionEvent(
-                            event_type=f"emotion:{emo_name}",
-                            start=event_start,
-                            end=event_end,
-                            confidence=conf,
-                        ))
+                        events.append(
+                            EmotionEvent(
+                                event_type=f"emotion:{emo_name}",
+                                start=event_start,
+                                end=event_end,
+                                confidence=conf,
+                            )
+                        )
 
         # 提取事件标签 (笑声/音乐/鼓掌等)
         event_label = res.get("event_label", "")
         if event_label:
             for part_idx, part_text in enumerate(parts):
                 if event_label.lower() in part_text.lower() or any(
-                    t.lower() in part_text.lower()
-                    for t in event_label.split("|") if t.strip()
+                    t.lower() in part_text.lower() for t in event_label.split("|") if t.strip()
                 ):
                     event_start = part_idx * part_dur
                     event_end = min(event_start + part_dur, audio_dur) if audio_dur > 0 else 60.0
@@ -550,12 +584,14 @@ class FunASRBackend:
                                 conf = float(tag_val[1])
                             except ValueError:
                                 conf = 1.0
-                            events.append(EmotionEvent(
-                                event_type=evt_name.lower(),
-                                start=event_start,
-                                end=event_end,
-                                confidence=conf,
-                            ))
+                            events.append(
+                                EmotionEvent(
+                                    event_type=evt_name.lower(),
+                                    start=event_start,
+                                    end=event_end,
+                                    confidence=conf,
+                                )
+                            )
 
         # 回退: 如果按分段后仍为空, 给事件分配合理时间范围
         if not events and (emo_label or event_label):
@@ -570,17 +606,22 @@ class FunASRBackend:
                         conf = float(tag_val[1])
                     except ValueError:
                         conf = 1.0
-                    events.append(EmotionEvent(
-                        event_type=evt_name if not evt_name.startswith("emotion:") else evt_name,
-                        start=0.0,
-                        end=audio_dur if audio_dur > 0 else 60.0,
-                        confidence=conf,
-                    ))
+                    events.append(
+                        EmotionEvent(
+                            event_type=evt_name if not evt_name.startswith("emotion:") else evt_name,
+                            start=0.0,
+                            end=audio_dur if audio_dur > 0 else 60.0,
+                            confidence=conf,
+                        )
+                    )
 
         return events
 
     def transcribe_segment(
-        self, audio_path: str, start: float, end: float,
+        self,
+        audio_path: str,
+        start: float,
+        end: float,
     ) -> ASRTranscriptResult:
         """Fun-ASR-Nano: 对指定音频文件做复核 (V0.1.12.2: 必须传入已截取的局部 WAV)。
 
@@ -591,8 +632,11 @@ class FunASRBackend:
         """
         if not self._use_funasr:
             return ASRTranscriptResult(
-                text="", language="zh", backend="funasr-nano",
-                model_id=self.MODEL_ID_NANO, model_revision=self.model_revision,
+                text="",
+                language="zh",
+                backend="funasr-nano",
+                model_id=self.MODEL_ID_NANO,
+                model_revision=self.model_revision,
             )
         model = self._load_funasr()
         audio_duration = _probe_audio_duration(audio_path)
@@ -604,9 +648,13 @@ class FunASRBackend:
 
         if not result or len(result) == 0:
             return ASRTranscriptResult(
-                text="", language="zh", backend="funasr-nano",
-                model_id=self.MODEL_ID_NANO, model_revision=self.model_revision,
-                inference_duration=elapsed, audio_duration=audio_duration,
+                text="",
+                language="zh",
+                backend="funasr-nano",
+                model_id=self.MODEL_ID_NANO,
+                model_revision=self.model_revision,
+                inference_duration=elapsed,
+                audio_duration=audio_duration,
                 real_time_factor=_compute_real_time_factor(elapsed, audio_duration),
             )
 
@@ -624,16 +672,18 @@ class FunASRBackend:
 
         segments: list[ASRSegmentResult] = []
         if text:
-            segments.append(ASRSegmentResult(
-                start=start,
-                end=end,
-                text=text.strip(),
-                raw_confidence=char_conf,
-                confidence_type="nano-char-confidence" if char_conf is not None else None,
-                normalized_confidence=norm_conf,
-                confidence_available=norm_conf is not None,
-                language="zh",
-            ))
+            segments.append(
+                ASRSegmentResult(
+                    start=start,
+                    end=end,
+                    text=text.strip(),
+                    raw_confidence=char_conf,
+                    confidence_type="nano-char-confidence" if char_conf is not None else None,
+                    normalized_confidence=norm_conf,
+                    confidence_available=norm_conf is not None,
+                    language="zh",
+                )
+            )
 
         return ASRTranscriptResult(
             text=text.strip(),
@@ -652,6 +702,7 @@ class FunASRBackend:
 # FasterWhisper 兜底后端 (保留, V0.1.12 作为 fallback)
 # ═══════════════════════════════════════════════════════════
 
+
 class FasterWhisperBackend:
     """基于 faster-whisper 的本地转写后端 (兜底引擎)。"""
 
@@ -669,7 +720,9 @@ class FasterWhisperBackend:
         return _load_whisper_model(self.model_size, self.device, self.compute_type)
 
     def transcribe(
-        self, audio_path: str, initial_prompt: str | None = None,
+        self,
+        audio_path: str,
+        initial_prompt: str | None = None,
     ) -> ASRTranscriptResult:
         """Whisper 转写 (兜底) — V0.1.12.2: 返回统一结果。
 
@@ -693,17 +746,19 @@ class FasterWhisperBackend:
             for w in seg.words or []:
                 seg_words.append(Word(word=w.word, start=float(w.start), end=float(w.end)))
 
-            segments.append(ASRSegmentResult(
-                start=float(seg.start),
-                end=float(seg.end),
-                text=seg.text.strip(),
-                raw_confidence=seg.avg_logprob,
-                confidence_type="avg_logprob",
-                normalized_confidence=_normalize_whisper_logprob(seg.avg_logprob),
-                confidence_available=True,
-                language=info.language,
-                words=seg_words,
-            ))
+            segments.append(
+                ASRSegmentResult(
+                    start=float(seg.start),
+                    end=float(seg.end),
+                    text=seg.text.strip(),
+                    raw_confidence=seg.avg_logprob,
+                    confidence_type="avg_logprob",
+                    normalized_confidence=_normalize_whisper_logprob(seg.avg_logprob),
+                    confidence_available=True,
+                    language=info.language,
+                    words=seg_words,
+                )
+            )
             all_text.append(seg.text)
 
         full_text = "".join(all_text).strip()
@@ -726,7 +781,10 @@ class FasterWhisperBackend:
         )
 
     def transcribe_segment(
-        self, audio_path: str, start: float, end: float,
+        self,
+        audio_path: str,
+        start: float,
+        end: float,
     ) -> ASRTranscriptResult:
         """Whisper 不支持片段转写, 直接全文转写。"""
         return self.transcribe(audio_path)
@@ -740,13 +798,13 @@ def _load_whisper_model(model_size: str, device: str, compute_type: str):  # noq
     """
     # V0.1.13: ASR resource detection before model loading
     from app.core.asr_detection import check_resources_sufficient
+
     ok, msg = check_resources_sufficient(model_size, device)
     policy = getattr(settings, "asr_resource_policy", "warn")
     if not ok:
         if policy == "strict":
             raise RuntimeError(
-                f"ASR 模型加载被阻止: {msg} "
-                f"(asr_resource_policy={policy}). 请增大系统资源或降低模型预设。"
+                f"ASR 模型加载被阻止: {msg} (asr_resource_policy={policy}). 请增大系统资源或降低模型预设。"
             )
         logger.warning("ASR 资源告警: {} (policy={})", msg, policy)
 
@@ -754,12 +812,14 @@ def _load_whisper_model(model_size: str, device: str, compute_type: str):  # noq
         from faster_whisper import WhisperModel
     except ImportError as exc:
         raise RuntimeError(
-            "未安装 faster-whisper。请执行: pip install -e \".[asr]\"。"
+            '未安装 faster-whisper。请执行: pip install -e ".[asr]"。'
             "若当前 Python 版本无 ctranslate2 预编译包, 请改用 3.11/3.12 虚拟环境。"
         ) from exc
     logger.info(
         "加载 Whisper 兜底模型 model={} device={} compute={}",
-        model_size, device, compute_type,
+        model_size,
+        device,
+        compute_type,
     )
     return WhisperModel(model_size, device=device, compute_type=compute_type)
 
@@ -768,8 +828,12 @@ def _load_whisper_model(model_size: str, device: str, compute_type: str):  # noq
 # 辅助函数: 局部音频截取 + 风险评分 (V0.1.12.2 新增)
 # ═══════════════════════════════════════════════════════════
 
+
 def _extract_audio_segment(
-    audio_path: str, start: float, end: float, context_s: float = 1.5,
+    audio_path: str,
+    start: float,
+    end: float,
+    context_s: float = 1.5,
 ) -> str | None:
     """用 FFmpeg 从原始音频中截取局部 WAV 用于复核。
 
@@ -799,13 +863,22 @@ def _extract_audio_segment(
     tmp_path = tmp_dir / f"blc_review_{uuid.uuid4().hex[:12]}.wav"
 
     cmd = [
-        settings.ffmpeg_path, "-y", "-v", "quiet",
-        "-ss", f"{clip_start:.3f}",
-        "-t", f"{duration:.3f}",
-        "-i", str(audio_path),
-        "-ac", "1",
-        "-ar", "16000",
-        "-sample_fmt", "s16",
+        settings.ffmpeg_path,
+        "-y",
+        "-v",
+        "quiet",
+        "-ss",
+        f"{clip_start:.3f}",
+        "-t",
+        f"{duration:.3f}",
+        "-i",
+        str(audio_path),
+        "-ac",
+        "1",
+        "-ar",
+        "16000",
+        "-sample_fmt",
+        "s16",
         str(tmp_path),
     ]
     try:
@@ -832,7 +905,8 @@ def _cleanup_review_temp(temp_path: str | None) -> None:
 
 
 def _compute_review_risk_score(
-    segment: ASRSegmentResult, hotwords: list[str] | None = None,
+    segment: ASRSegmentResult,
+    hotwords: list[str] | None = None,
 ) -> tuple[float, list[str]]:
     """计算句子的复核风险评分 (0-1), 越高越需要复核。
 
@@ -913,7 +987,9 @@ def _compute_review_risk_score(
 
 
 def _merge_review_text(
-    base_text: str, review_text: str, risk_score: float,
+    base_text: str,
+    review_text: str,
+    risk_score: float,
     hotwords: list[str] | None = None,
 ) -> tuple[str, str, list[str]]:
     """合并基础文本和复核文本, 返回 (final_text, decision, reasons)。
@@ -977,11 +1053,13 @@ def _levenshtein_distance(a: str, b: str) -> int:
     for i, ca in enumerate(a, 1):
         curr = [i]
         for j, cb in enumerate(b, 1):
-            curr.append(min(
-                curr[-1] + 1,
-                prev[j] + 1,
-                prev[j - 1] + (0 if ca == cb else 1),
-            ))
+            curr.append(
+                min(
+                    curr[-1] + 1,
+                    prev[j] + 1,
+                    prev[j - 1] + (0 if ca == cb else 1),
+                )
+            )
         prev = curr
     return prev[-1]
 
@@ -989,6 +1067,7 @@ def _levenshtein_distance(a: str, b: str) -> int:
 # ═══════════════════════════════════════════════════════════
 # ASR 流水线 (Paraformer → SenseVoice → FunASR → Whisper)
 # ═══════════════════════════════════════════════════════════
+
 
 class ASRPipeline:
     """多引擎 ASR 流水线 (V0.1.12.2 重构)。
@@ -1010,7 +1089,9 @@ class ASRPipeline:
         self._whisper = whisper_backend
         self._use_fallback = settings.asr_fallback_whisper
         self._review_risk_threshold = getattr(
-            settings, "asr_review_risk_threshold", 0.65,
+            settings,
+            "asr_review_risk_threshold",
+            0.65,
         )
 
     def _get_primary(self) -> FunASRBackend:
@@ -1024,7 +1105,9 @@ class ASRPipeline:
         return self._whisper
 
     def transcribe(
-        self, audio_path: str, initial_prompt: str | None = None,
+        self,
+        audio_path: str,
+        initial_prompt: str | None = None,
     ) -> ASRTranscriptResult:
         """执行完整多引擎 ASR 流水线 (V0.1.12.2: 返回统一结果)。
 
@@ -1040,7 +1123,9 @@ class ASRPipeline:
             except Exception as exc:
                 logger.error("Paraformer 主引擎转写失败: {}", exc)
                 result = ASRTranscriptResult(
-                    text="", language="zh", backend="paraformer",
+                    text="",
+                    language="zh",
+                    backend="paraformer",
                     model_id="paraformer-zh",
                     model_revision=settings.asr_model_revision,
                     primary_status="failed",
@@ -1084,7 +1169,9 @@ class ASRPipeline:
         return ASRTranscriptResult(text="", language="zh", backend="none")
 
     def _review_loop(
-        self, result: ASRTranscriptResult, audio_path: str,
+        self,
+        result: ASRTranscriptResult,
+        audio_path: str,
         initial_prompt: str | None = None,
     ) -> ASRTranscriptResult:
         """V0.1.12.2: 基于 review_risk_score 的复核闭环。
@@ -1095,9 +1182,7 @@ class ASRPipeline:
         4. 合并 base/review → final_text
         """
         primary = self._get_primary()
-        hotwords: list[str] = (
-            initial_prompt.split(", ") if initial_prompt else []
-        )
+        hotwords: list[str] = initial_prompt.split(", ") if initial_prompt else []
 
         # 初始化
         result.base_text = result.text
@@ -1117,32 +1202,41 @@ class ASRPipeline:
             result.review_triggered = True
             logger.info(
                 "触发复核: risk={:.2f} reasons={} text={:.30s}",
-                risk_score, risk_reasons, seg.text,
+                risk_score,
+                risk_reasons,
+                seg.text,
             )
 
             # 截取局部音频
             temp_audio = _extract_audio_segment(
-                audio_path, seg.start, seg.end, context_s=1.5,
+                audio_path,
+                seg.start,
+                seg.end,
+                context_s=1.5,
             )
             if temp_audio is None:
                 # 截取失败 → 保持原文本, 标记
                 final_segments.append(seg.text)
-                reviewed_segments.append({
-                    "original": seg.text,
-                    "original_risk": risk_score,
-                    "reviewed": None,
-                    "reviewed_score": None,
-                    "start": seg.start,
-                    "end": seg.end,
-                    "decision": "keep_base",
-                    "reason": "extract_failed",
-                    "review_backend": "funasr-nano",
-                })
+                reviewed_segments.append(
+                    {
+                        "original": seg.text,
+                        "original_risk": risk_score,
+                        "reviewed": None,
+                        "reviewed_score": None,
+                        "start": seg.start,
+                        "end": seg.end,
+                        "decision": "keep_base",
+                        "reason": "extract_failed",
+                        "review_backend": "funasr-nano",
+                    }
+                )
                 continue
 
             try:
                 review_result = primary.transcribe_segment(
-                    temp_audio, seg.start, seg.end,
+                    temp_audio,
+                    seg.start,
+                    seg.end,
                 )
                 review_text = review_result.text
             except Exception as exc:
@@ -1155,55 +1249,57 @@ class ASRPipeline:
 
             if not review_text:
                 final_segments.append(seg.text)
-                reviewed_segments.append({
-                    "original": seg.text,
-                    "original_risk": risk_score,
-                    "reviewed": None,
-                    "reviewed_score": None,
-                    "start": seg.start,
-                    "end": seg.end,
-                    "decision": "keep_base",
-                    "reason": "review_empty",
-                    "review_backend": "funasr-nano",
-                })
+                reviewed_segments.append(
+                    {
+                        "original": seg.text,
+                        "original_risk": risk_score,
+                        "reviewed": None,
+                        "reviewed_score": None,
+                        "start": seg.start,
+                        "end": seg.end,
+                        "decision": "keep_base",
+                        "reason": "review_empty",
+                        "review_backend": "funasr-nano",
+                    }
+                )
                 continue
 
             # 合并
             final_txt, decision, merge_reasons = _merge_review_text(
-                seg.text, review_text, risk_score, hotwords,
+                seg.text,
+                review_text,
+                risk_score,
+                hotwords,
             )
             final_segments.append(final_txt)
 
-            reviewed_segments.append({
-                "original": seg.text,
-                "original_risk": risk_score,
-                "original_reasons": risk_reasons,
-                "reviewed": review_text,
-                "reviewed_score": (
-                    review_result.segments[0].normalized_confidence
-                    if review_result.segments else None
-                ),
-                "start": seg.start,
-                "end": seg.end,
-                "decision": decision,
-                "reason": merge_reasons,
-                "review_backend": "funasr-nano",
-            })
+            reviewed_segments.append(
+                {
+                    "original": seg.text,
+                    "original_risk": risk_score,
+                    "original_reasons": risk_reasons,
+                    "reviewed": review_text,
+                    "reviewed_score": (
+                        review_result.segments[0].normalized_confidence if review_result.segments else None
+                    ),
+                    "start": seg.start,
+                    "end": seg.end,
+                    "decision": decision,
+                    "reason": merge_reasons,
+                    "review_backend": "funasr-nano",
+                }
+            )
 
         # 组装最终文本
         final_text = "。".join(final_segments) if final_segments else result.text
-        result.final_text = (final_text + "。" if final_text and not final_text.endswith("。") else final_text)
+        result.final_text = final_text + "。" if final_text and not final_text.endswith("。") else final_text
         result.review_text = result.final_text
         result.reviewed_segments = reviewed_segments
         result.review_backend = "funasr-nano"
         result.review_risk_score = (
-            max(seg.metadata.get("review_risk_score", 0.0) for seg in result.segments)
-            if result.segments else None
+            max(seg.metadata.get("review_risk_score", 0.0) for seg in result.segments) if result.segments else None
         )
-        result.review_reasons = list(set(
-            r for seg in result.segments
-            for r in seg.metadata.get("review_reasons", [])
-        ))
+        result.review_reasons = list(set(r for seg in result.segments for r in seg.metadata.get("review_reasons", [])))
 
         # V0.1.12.4: 优先级: manual_review_needed > review > fallback > primary
         if any(r.get("decision") == "manual_review_needed" for r in reviewed_segments):
@@ -1236,6 +1332,7 @@ class ASRPipeline:
 # ═══════════════════════════════════════════════════════════
 # 全局 pipeline + transcribe_segment
 # ═══════════════════════════════════════════════════════════
+
 
 @lru_cache(maxsize=1)
 def get_default_pipeline() -> ASRPipeline:
@@ -1275,28 +1372,34 @@ def transcribe_segment(
     result.final_text = final_text
 
     words_json = json.dumps(
-        [{"w": w.word, "start": w.start, "end": w.end}
-         for seg in result.segments for w in seg.words],
+        [{"w": w.word, "start": w.start, "end": w.end} for seg in result.segments for w in seg.words],
         ensure_ascii=False,
     )
 
     # V0.1.12.2: 序列化辅助特征 + reviewed_segments
     auxiliary_json: str | None = None
     if result.emotions or result.reviewed_segments:
-        auxiliary_json = json.dumps({
-            "emotions": [
-                {"type": e.event_type, "start": e.start, "end": e.end,
-                 "confidence": e.confidence}
-                for e in result.emotions
-            ],
-            "reviewed_segments": result.reviewed_segments,
-            "engine": result.backend,
-        }, ensure_ascii=False)
+        auxiliary_json = json.dumps(
+            {
+                "emotions": [
+                    {"type": e.event_type, "start": e.start, "end": e.end, "confidence": e.confidence}
+                    for e in result.emotions
+                ],
+                "reviewed_segments": result.reviewed_segments,
+                "engine": result.backend,
+            },
+            ensure_ascii=False,
+        )
 
     # V0.1.12.2: 记录完整 ASR 追踪
-    review_reasons_json = json.dumps(
-        result.review_reasons, ensure_ascii=False,
-    ) if result.review_reasons else None
+    review_reasons_json = (
+        json.dumps(
+            result.review_reasons,
+            ensure_ascii=False,
+        )
+        if result.review_reasons
+        else None
+    )
 
     avg_logprob_val: float | None = None
     if result.segments:
@@ -1339,8 +1442,12 @@ def transcribe_segment(
 
     logger.info(
         "转写完成 segment={} transcript={} 字数={} 语言={} 引擎={} review={}",
-        segment_id, tid, len(final_text or text),
-        result.language, result.backend, result.review_triggered,
+        segment_id,
+        tid,
+        len(final_text or text),
+        result.language,
+        result.backend,
+        result.review_triggered,
     )
     return transcript
 

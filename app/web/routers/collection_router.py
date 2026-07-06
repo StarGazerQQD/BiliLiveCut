@@ -27,9 +27,7 @@ class RenderCollectionRequest(BaseModel):
     include_chapter_cards: bool = True
 
 
-_TEMPLATES = Jinja2Templates(
-    directory=str(Path(__file__).resolve().parent.parent / "templates")
-)
+_TEMPLATES = Jinja2Templates(directory=str(Path(__file__).resolve().parent.parent / "templates"))
 
 
 @collection_router.get("/{topic_id}", response_class=HTMLResponse)
@@ -82,7 +80,11 @@ async def render_collection(
     from app.pipeline.collection import render_collection as _rc
 
     result = await asyncio.to_thread(
-        _rc, topic_id, req.event_ids, req.chapter_titles, req.include_chapter_cards,
+        _rc,
+        topic_id,
+        req.event_ids,
+        req.chapter_titles,
+        req.include_chapter_cards,
     )
     if result is None:
         raise HTTPException(status_code=500, detail="合集渲染失败(需至少2个可用成品)")

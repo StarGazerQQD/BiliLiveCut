@@ -21,8 +21,13 @@ def _p(name: str, priority: int, key: str = "k", enabled: bool = True) -> provs.
     :returns: provider。
     """
     return provs.LLMProvider(
-        id=name, name=name, base_url="https://x/v1", api_key=key,
-        model="m", priority=priority, enabled=enabled,
+        id=name,
+        name=name,
+        base_url="https://x/v1",
+        api_key=key,
+        model="m",
+        priority=priority,
+        enabled=enabled,
     )
 
 
@@ -41,11 +46,13 @@ def test_active_filters_disabled_and_keyless(temp_db: None) -> None:
 
     :param temp_db: 隔离数据库夹具。
     """
-    provs.save_providers([
-        _p("ok", 1),
-        _p("off", 2, enabled=False),
-        _p("nokey", 3, key=""),
-    ])
+    provs.save_providers(
+        [
+            _p("ok", 1),
+            _p("off", 2, enabled=False),
+            _p("nokey", 3, key=""),
+        ]
+    )
     assert [p.name for p in provs.active_providers()] == ["ok"]
 
 
@@ -58,26 +65,53 @@ def test_merge_and_save_preserves_key(temp_db: None) -> None:
     pid = provs.load_providers()[0].id
 
     # 提交时 key 留空 -> 保留旧 key;另改名。
-    provs.merge_and_save([
-        {"id": pid, "name": "A2", "base_url": "https://x/v1", "model": "m",
-         "api_key": "", "priority": 1, "enabled": True},
-    ])
+    provs.merge_and_save(
+        [
+            {
+                "id": pid,
+                "name": "A2",
+                "base_url": "https://x/v1",
+                "model": "m",
+                "api_key": "",
+                "priority": 1,
+                "enabled": True,
+            },
+        ]
+    )
     p = provs.load_providers()[0]
     assert p.name == "A2"
     assert p.api_key == "secret-key"
 
     # 掩码占位也视为不修改。
-    provs.merge_and_save([
-        {"id": pid, "name": "A2", "base_url": "https://x/v1", "model": "m",
-         "api_key": "****key", "priority": 1, "enabled": True},
-    ])
+    provs.merge_and_save(
+        [
+            {
+                "id": pid,
+                "name": "A2",
+                "base_url": "https://x/v1",
+                "model": "m",
+                "api_key": "****key",
+                "priority": 1,
+                "enabled": True,
+            },
+        ]
+    )
     assert provs.load_providers()[0].api_key == "secret-key"
 
     # 提供新 key -> 更新。
-    provs.merge_and_save([
-        {"id": pid, "name": "A2", "base_url": "https://x/v1", "model": "m",
-         "api_key": "brand-new", "priority": 1, "enabled": True},
-    ])
+    provs.merge_and_save(
+        [
+            {
+                "id": pid,
+                "name": "A2",
+                "base_url": "https://x/v1",
+                "model": "m",
+                "api_key": "brand-new",
+                "priority": 1,
+                "enabled": True,
+            },
+        ]
+    )
     assert provs.load_providers()[0].api_key == "brand-new"
 
 

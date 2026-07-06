@@ -84,9 +84,7 @@ def classify_ffmpeg_error(return_code: int, stderr: str) -> FfmpegErrorType:
     stderr_lower = stderr.lower()
 
     # MISSING_BINARY: return_code 255 + 文件不存在模式
-    if return_code == 255 and (
-        "no such file" in stderr_lower or "not found" in stderr_lower
-    ):
+    if return_code == 255 and ("no such file" in stderr_lower or "not found" in stderr_lower):
         return FfmpegErrorType.MISSING_BINARY
 
     # DISK_FULL: 磁盘空间不足
@@ -106,15 +104,18 @@ def classify_ffmpeg_error(return_code: int, stderr: str) -> FfmpegErrorType:
         return FfmpegErrorType.INVALID_ARGUMENT
 
     # TRANSIENT_NETWORK: 瞬时网络错误
-    if any(keyword in stderr_lower for keyword in (
-        "connection refused",
-        "connection reset",
-        "network is unreachable",
-        "name or service not known",
-        "failed to resolve",
-        "timed out",
-        "timeout",
-    )):
+    if any(
+        keyword in stderr_lower
+        for keyword in (
+            "connection refused",
+            "connection reset",
+            "network is unreachable",
+            "name or service not known",
+            "failed to resolve",
+            "timed out",
+            "timeout",
+        )
+    ):
         return FfmpegErrorType.TRANSIENT_NETWORK
 
     # UPSTREAM_UNAVAILABLE: HTTP 4xx/5xx
@@ -160,10 +161,9 @@ def classify_ffmpeg_error(return_code: int, stderr: str) -> FfmpegErrorType:
     ):
         return FfmpegErrorType.CANCELLED
     # SIGTERM (128 + 15) 也视为取消
-    if (
-        "terminated" in stderr_lower
-        and ("signal" in stderr_lower or "sigterm" in stderr_lower)
-    ) or (return_code == -15 or return_code == 128 + 15):  # noqa: PLR2004
+    if ("terminated" in stderr_lower and ("signal" in stderr_lower or "sigterm" in stderr_lower)) or (
+        return_code == -15 or return_code == 128 + 15
+    ):  # noqa: PLR2004
         return FfmpegErrorType.CANCELLED
 
     return FfmpegErrorType.UNKNOWN

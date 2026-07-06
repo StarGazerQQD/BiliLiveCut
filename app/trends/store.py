@@ -58,9 +58,7 @@ def save_trends(records: list[TrendRecord]) -> int:
     with get_session() as db:
         for rec in records:
             h = _hash(rec.source, rec.title)
-            existing = db.exec(
-                select(TrendItem).where(TrendItem.content_hash == h)
-            ).first()
+            existing = db.exec(select(TrendItem).where(TrendItem.content_hash == h)).first()
             keywords = _keywords_from(rec)
             if existing is not None:
                 existing.heat = rec.heat
@@ -127,10 +125,7 @@ def keyword_heat(days: int = 7, top: int = 30) -> list[dict]:
             agg[kw]["heat"] += it.heat
             agg[kw]["count"] += 1
     ranked = sorted(agg.items(), key=lambda kv: kv[1]["heat"], reverse=True)
-    return [
-        {"keyword": k, "heat": round(v["heat"], 1), "count": int(v["count"])}
-        for k, v in ranked[:top]
-    ]
+    return [{"keyword": k, "heat": round(v["heat"], 1), "count": int(v["count"])} for k, v in ranked[:top]]
 
 
 def relevance_score(text: str, term_weights: list[tuple[str, float]]) -> tuple[float, list[str]]:
@@ -203,9 +198,7 @@ def purge_old(days: int) -> int:
     """
     cutoff = utcnow() - timedelta(days=days)
     with get_session() as db:
-        rows = db.exec(
-            select(TrendItem).where(TrendItem.collected_at < cutoff)
-        ).all()
+        rows = db.exec(select(TrendItem).where(TrendItem.collected_at < cutoff)).all()
         for r in rows:
             db.delete(r)
         n = len(rows)

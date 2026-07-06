@@ -99,12 +99,14 @@ def text_similarity(text_a: str, text_b: str) -> float:
     freq_b = Counter(_char_bigrams(text_b))
     # 小的 IDF 惩罚:对极高频 bigram 打折扣。
     total_docs = max(len(freq_a), len(freq_b), 2)
+
     def idf_weight(freq: Counter[str]) -> dict[str, float]:
         result = {}
         for k, v in freq.items():
             df = 1 if k in freq_a and k in freq_b else 0.5
             result[k] = v * math.log(1 + total_docs / (df + 1))
         return result
+
     wa = idf_weight(freq_a)
     wb = idf_weight(freq_b)
     return fast_cosine_similarity(wa, wb)
@@ -242,13 +244,15 @@ def cluster_candidates(session_id: int) -> list[dict]:
                 asr_text = seg.text or ""
                 break
 
-        items.append({
-            "id": c.id,
-            "asr_text": asr_text,
-            "keywords": features.get("keyword_hits", []),
-            "score": c.highlight_score,
-            "start_ts": c.start_ts.isoformat() if c.start_ts else None,
-        })
+        items.append(
+            {
+                "id": c.id,
+                "asr_text": asr_text,
+                "keywords": features.get("keyword_hits", []),
+                "score": c.highlight_score,
+                "start_ts": c.start_ts.isoformat() if c.start_ts else None,
+            }
+        )
 
     # 两两相似度 — V0.1.10: 使用预提取 bigram/kw 加速 O(N**2) 矩阵构建 (5-15x)。
     n = len(items)
@@ -300,7 +304,7 @@ def cluster_candidates(session_id: int) -> list[dict]:
             all_text = ""
             for idx in indices:
                 all_text += (items[idx].get("asr_text") or "") + " "
-                for kw in (items[idx].get("keywords") or []):
+                for kw in items[idx].get("keywords") or []:
                     kw_pool.add(str(kw))
             topic_kw = list(kw_pool)[:10]
             topic_title = ", ".join(topic_kw[:3]) if topic_kw else f"主题簇 #{root}"
@@ -340,17 +344,21 @@ def cluster_candidates(session_id: int) -> list[dict]:
                     )
                 ).first()
                 if existing_link is None:
-                    db.add(HighlightTopic(
-                        event_id=cid,
-                        topic_id=topic_id,
-                        confidence=round(sim, 4),
-                    ))
-            topics_created.append({
-                "id": topic_id,
-                "title": topic_title,
-                "confidence": round(avg_sim, 4),
-                "event_count": len(indices),
-            })
+                    db.add(
+                        HighlightTopic(
+                            event_id=cid,
+                            topic_id=topic_id,
+                            confidence=round(sim, 4),
+                        )
+                    )
+            topics_created.append(
+                {
+                    "id": topic_id,
+                    "title": topic_title,
+                    "confidence": round(avg_sim, 4),
+                    "event_count": len(indices),
+                }
+            )
 
         logger.info(
             "会话 {} 主题聚类完成:创建 {} 个主题,覆盖 {} 个候选。",
@@ -376,23 +384,23 @@ def list_topics(session_id: int | None = None) -> list[dict]:
     result = []
     for t in topics:
         with get_session() as db:
-            links = db.exec(
-                select(HighlightTopic).where(HighlightTopic.topic_id == t.id)
-            ).all()
-        result.append({
-            "id": t.id,
-            "session_id": t.session_id,
-            "title": t.title,
-            "summary": t.summary,
-            "keywords": json.loads(t.keywords_json) if t.keywords_json else [],
-            "entities": json.loads(t.entities_json) if t.entities_json else [],
-            "confidence": t.confidence,
-            "status": t.status,
-            "is_collection": t.is_collection,
-            "event_count": len(links),
-            "event_ids": [link.event_id for link in links],
-            "created_at": t.created_at.isoformat() if t.created_at else None,
-        })
+            links = db.exec(select(HighlightTopic).where(HighlightTopic.topic_id == t.id)).all()
+        result.append(
+            {
+                "id": t.id,
+                "session_id": t.session_id,
+                "title": t.title,
+                "summary": t.summary,
+                "keywords": json.loads(t.keywords_json) if t.keywords_json else [],
+                "entities": json.loads(t.entities_json) if t.entities_json else [],
+                "confidence": t.confidence,
+                "status": t.status,
+                "is_collection": t.is_collection,
+                "event_count": len(links),
+                "event_ids": [link.event_id for link in links],
+                "created_at": t.created_at.isoformat() if t.created_at else None,
+            }
+        )
     return result
 
 
@@ -406,9 +414,7 @@ def get_topic(topic_id: int) -> dict | None:
         t = db.get(Topic, topic_id)
         if t is None:
             return None
-        links = db.exec(
-            select(HighlightTopic).where(HighlightTopic.topic_id == t.id)
-        ).all()
+        links = db.exec(select(HighlightTopic).where(HighlightTopic.topic_id == t.id)).all()
     return {
         "id": t.id,
         "session_id": t.session_id,
@@ -421,7 +427,15 @@ def get_topic(topic_id: int) -> dict | None:
         "is_collection": t.is_collection,
         "event_count": len(links),
         "event_ids": [link.event_id for link in links],
-        "events": [{"event_id": link.event_id, "confidence": link.confidence, "sort_order": link.sort_order, "is_manual": link.is_manual} for link in links],  # noqa: E501
+        "events": [
+            {
+                "event_id": link.event_id,
+                "confidence": link.confidence,
+                "sort_order": link.sort_order,
+                "is_manual": link.is_manual,
+            }
+            for link in links
+        ],  # noqa: E501
         "created_at": t.created_at.isoformat() if t.created_at else None,
     }
 
@@ -501,9 +515,7 @@ def merge_topics(source_id: int, target_id: int) -> bool:
         tgt = db.get(Topic, target_id)
         if src is None or tgt is None or source_id == target_id:
             return False
-        links = db.exec(
-            select(HighlightTopic).where(HighlightTopic.topic_id == source_id)
-        ).all()
+        links = db.exec(select(HighlightTopic).where(HighlightTopic.topic_id == source_id)).all()
         for link in links:
             existing = db.exec(
                 select(HighlightTopic).where(
@@ -512,13 +524,15 @@ def merge_topics(source_id: int, target_id: int) -> bool:
                 )
             ).first()
             if existing is None:
-                db.add(HighlightTopic(
-                    event_id=link.event_id,
-                    topic_id=target_id,
-                    confidence=link.confidence,
-                    is_manual=True,
-                    sort_order=link.sort_order,
-                ))
+                db.add(
+                    HighlightTopic(
+                        event_id=link.event_id,
+                        topic_id=target_id,
+                        confidence=link.confidence,
+                        is_manual=True,
+                        sort_order=link.sort_order,
+                    )
+                )
         # 删除源主题关联和新主题。
         for link in links:
             db.delete(link)
@@ -556,12 +570,14 @@ def split_topic(topic_id: int, event_ids: list[int]) -> int | None:
             ).first()
             if link:
                 db.delete(link)
-            db.add(HighlightTopic(
-                event_id=eid,
-                topic_id=new_id,
-                confidence=0.0,
-                is_manual=True,
-            ))
+            db.add(
+                HighlightTopic(
+                    event_id=eid,
+                    topic_id=new_id,
+                    confidence=0.0,
+                    is_manual=True,
+                )
+            )
         # 标记原主题为已拆分。
         t.status = TopicStatus.SPLIT
         db.add(t)

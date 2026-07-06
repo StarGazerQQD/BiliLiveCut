@@ -52,8 +52,14 @@ def cluster_similarity_matrix(items: list[dict]) -> list[list[float]]:
         matrix[i][i] = 1.0
         for j in range(i + 1, n):
             sim = _pairwise_sim(
-                texts[i], bigram_vecs[i], kw_sets[i], tss[i],
-                texts[j], bigram_vecs[j], kw_sets[j], tss[j],
+                texts[i],
+                bigram_vecs[i],
+                kw_sets[i],
+                tss[i],
+                texts[j],
+                bigram_vecs[j],
+                kw_sets[j],
+                tss[j],
             )
             matrix[i][j] = sim
             matrix[j][i] = sim
@@ -62,8 +68,14 @@ def cluster_similarity_matrix(items: list[dict]) -> list[list[float]]:
 
 
 def _pairwise_sim(
-    ta: str, va: Counter[str], ka: set[str], tsa,
-    tb: str, vb: Counter[str], kb: set[str], tsb,
+    ta: str,
+    va: Counter[str],
+    ka: set[str],
+    tsa,
+    tb: str,
+    vb: Counter[str],
+    kb: set[str],
+    tsb,
 ) -> float:
     """快速两两事件相似度 — 使用预计算的 bigram Counter 和 kw set。"""
     from app.analysis.speedups import fast_cosine_similarity
@@ -91,6 +103,7 @@ def _pairwise_sim(
     time_sim = 0.0
     if tsa is not None and tsb is not None:
         from datetime import datetime as _dt
+
         if isinstance(tsa, _dt) and isinstance(tsb, _dt):
             diff_s = abs((tsa - tsb).total_seconds())
             if diff_s < 3600:
@@ -138,7 +151,7 @@ def group_srt_blocks(
 
     bs: list[float] = []  # blocks_start
     be: list[float] = []  # blocks_end
-    bt: list[str] = []    # blocks_text
+    bt: list[str] = []  # blocks_text
 
     cur_start = words[0][0]
     cur_end = words[0][1]

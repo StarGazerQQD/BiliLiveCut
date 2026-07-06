@@ -33,9 +33,7 @@ if _db_url.startswith("sqlite:///"):
 
 # echo=False 避免污染日志;connect_args 仅对 SQLite 生效。
 # timeout:遇到锁时等待秒数,缓解多任务(录制+分析+Web)并发写的 "database is locked"。
-_connect_args = (
-    {"check_same_thread": False, "timeout": 30} if _db_url.startswith("sqlite") else {}
-)
+_connect_args = {"check_same_thread": False, "timeout": 30} if _db_url.startswith("sqlite") else {}
 engine = create_engine(_db_url, echo=False, connect_args=_connect_args)
 
 

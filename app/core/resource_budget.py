@@ -74,10 +74,7 @@ def get_task_cost(stage: str, device: str = "cpu") -> dict[str, int | float]:
         raise ValueError(f"未知任务阶段: {stage},有效值: {list(_TASK_COST)}")
     device_costs = stage_costs.get(device)
     if device_costs is None:
-        raise ValueError(
-            f"任务阶段 {stage!r} 不支持设备模式 {device!r},"
-            f"有效值: {list(stage_costs)}"
-        )
+        raise ValueError(f"任务阶段 {stage!r} 不支持设备模式 {device!r},有效值: {list(stage_costs)}")
     return dict(device_costs)
 
 

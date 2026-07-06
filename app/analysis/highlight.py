@@ -113,31 +113,18 @@ def _audio_events_score(auxiliary_json: str | None) -> tuple[float, list[str]]:
     if not emotions:
         return 0.0, []
 
-    laughter_count = sum(
-        1 for e in emotions
-        if isinstance(e, dict) and e.get("type", "") in ("laughter", "Laughter")
-    )
-    applause_count = sum(
-        1 for e in emotions
-        if isinstance(e, dict) and "applause" in e.get("type", "").lower()
-    )
-    surprise_count = sum(
-        1 for e in emotions
-        if isinstance(e, dict) and "surprise" in e.get("type", "").lower()
-    )
+    laughter_count = sum(1 for e in emotions if isinstance(e, dict) and e.get("type", "") in ("laughter", "Laughter"))
+    applause_count = sum(1 for e in emotions if isinstance(e, dict) and "applause" in e.get("type", "").lower())
+    surprise_count = sum(1 for e in emotions if isinstance(e, dict) and "surprise" in e.get("type", "").lower())
     happy_count = sum(
-        1 for e in emotions
-        if isinstance(e, dict) and (
-            "happy" in e.get("type", "").lower()
-            or "HAPPY" in e.get("type", "")
-        )
+        1
+        for e in emotions
+        if isinstance(e, dict) and ("happy" in e.get("type", "").lower() or "HAPPY" in e.get("type", ""))
     )
     anger_count = sum(
-        1 for e in emotions
-        if isinstance(e, dict) and (
-            "angry" in e.get("type", "").lower()
-            or "anger" in e.get("type", "").lower()
-        )
+        1
+        for e in emotions
+        if isinstance(e, dict) and ("angry" in e.get("type", "").lower() or "anger" in e.get("type", "").lower())
     )
 
     score = 0.0
@@ -209,8 +196,25 @@ def danmaku_sentiment_score(session_id: int, start_ts: object, end_ts: object) -
     exclaim_score = max(0.0, min((exclaim_rate - 0.1) / 0.4, 1.0))
 
     # 3) 高情绪梗:特定关键词的出现密度(V0.1.9 AC 加速)。
-    hot_memes = ("卧槽", "绝了", "离谱", "破防", "高能", "泪目", "笑死", "什么?!", "无敌",
-                 "666", "??", "牛", "神", "厉害了", "这能忍?", "天秀", "牛逼")
+    hot_memes = (
+        "卧槽",
+        "绝了",
+        "离谱",
+        "破防",
+        "高能",
+        "泪目",
+        "笑死",
+        "什么?!",
+        "无敌",
+        "666",
+        "??",
+        "牛",
+        "神",
+        "厉害了",
+        "这能忍?",
+        "天秀",
+        "牛逼",
+    )
     meme_hits = _fast_meme_hit_count(window_texts, hot_memes)
     meme_rate = meme_hits / len(window_texts)
     # >= 5% 开始给分, >= 30% 满分。
@@ -356,9 +360,7 @@ def score_segment(segment_id: int) -> HighlightCandidate | None:
         segment = db.get(RawSegment, segment_id)
         if segment is None:
             raise ValueError(f"片段不存在: id={segment_id}")
-        transcript = db.exec(
-            select(Transcript).where(Transcript.segment_id == segment_id)
-        ).first()
+        transcript = db.exec(select(Transcript).where(Transcript.segment_id == segment_id)).first()
         session = db.get(RecordingSession, segment.session_id)
         room = db.get(LiveRoom, session.room_id) if session else None
         # 取出需要的标量,避免会话关闭后再访问 ORM 对象(DetachedInstanceError)。
@@ -379,11 +381,7 @@ def score_segment(segment_id: int) -> HighlightCandidate | None:
         room_auto_approve = bool(room.auto_approve) if room else False
         room_auto_approve_threshold = room.auto_approve_threshold if room else 0.82
         room_review_threshold = room.review_threshold if room else 0.50
-        use_dm_sentiment = (
-            room is not None
-            and bool(room.danmaku_sentiment_enabled)
-            and settings.collect_danmaku
-        )
+        use_dm_sentiment = room is not None and bool(room.danmaku_sentiment_enabled) and settings.collect_danmaku
 
     if not has_transcript:
         raise ValueError(f"片段尚未转写: id={segment_id}")
@@ -403,9 +401,7 @@ def score_segment(segment_id: int) -> HighlightCandidate | None:
     }
     # 弹幕情绪(V0.1.2 新增):仅当房间级开关启用且弹幕采集开启时才计入。
     if use_dm_sentiment:
-        features["danmaku_sentiment"] = danmaku_sentiment_score(
-            session_id, seg_start_ts, seg_end_ts
-        )
+        features["danmaku_sentiment"] = danmaku_sentiment_score(session_id, seg_start_ts, seg_end_ts)
     # V0.1.12.2: 音频事件特征 (SenseVoice 辅助特征)
     audio_event_contribs: list[str] = []
     if settings.asr_sensevoice and settings.asr_sensevoice_enabled:
@@ -484,8 +480,9 @@ def score_segment(segment_id: int) -> HighlightCandidate | None:
 
     if room_auto_approve and highlight_score >= room_auto_approve_threshold:
         initial_status = CandidateStatus.APPROVED
-        logger.info("片段 {} 达自动批准阈值({}≥{}),自动批准。",
-                    segment_id, highlight_score, room_auto_approve_threshold)
+        logger.info(
+            "片段 {} 达自动批准阈值({}≥{}),自动批准。", segment_id, highlight_score, room_auto_approve_threshold
+        )
     elif highlight_score >= room_review_threshold:
         initial_status = CandidateStatus.PENDING
     else:
@@ -571,9 +568,7 @@ def _is_duplicate(
     :returns: 重复返回 ``True``。
     """
     with get_session() as db:
-        rows = db.exec(
-            select(HighlightCandidate).where(HighlightCandidate.session_id == session_id)
-        ).all()
+        rows = db.exec(select(HighlightCandidate).where(HighlightCandidate.session_id == session_id)).all()
     for c in rows:
         existing = (c.start_ts.timestamp(), c.end_ts.timestamp())
         if temporal_iou(interval, existing) >= iou_threshold:
@@ -599,12 +594,12 @@ def _trend_score(text: str) -> tuple[float, list[str]]:
 
 
 # ---- 弹幕热度评分(P0 重构) ----
-_DANMAKU_BUCKET_S = 10          # 基线计算的分桶粒度(秒)
+_DANMAKU_BUCKET_S = 10  # 基线计算的分桶粒度(秒)
 _DANMAKU_BASELINE_MINUTES = 20  # 基线窗口:候选前 N 分钟(不足则用全场历史)
-_DANMAKU_MIN_SAMPLES = 10       # 最低弹幕样本量,低于此值视为噪声(0 分)
+_DANMAKU_MIN_SAMPLES = 10  # 最低弹幕样本量,低于此值视为噪声(0 分)
 # 中心加权窗口:越靠近候选中心时刻的弹幕权重越高(分段线性)。
 _DANMAKU_CENTER_WEIGHT_WINDOW = 30.0  # 中心加权半径(秒)
-_DANMAKU_CENTER_WEIGHT_PEAK = 3.0     # 中心权重峰值倍数
+_DANMAKU_CENTER_WEIGHT_PEAK = 3.0  # 中心权重峰值倍数
 
 
 def _danmaku_baseline(
@@ -734,7 +729,10 @@ def _danmaku_score(session_id: int, start_ts: object, end_ts: object) -> float:
 
     # 2) 基线速率(排除当前窗口)。
     baseline_rate, baseline_count = _danmaku_baseline(
-        session_id, start_ts, start_ts, end_ts,
+        session_id,
+        start_ts,
+        start_ts,
+        end_ts,
     )
 
     # 3) 最终评分。
@@ -781,7 +779,10 @@ def danmaku_score_explain(session_id: int, start_ts: object, end_ts: object) -> 
     window_rate = window_count / max(window_seconds, 1)
 
     baseline_rate, baseline_count = _danmaku_baseline(
-        session_id, start_ts, start_ts, end_ts,
+        session_id,
+        start_ts,
+        start_ts,
+        end_ts,
     )
 
     score = _danmaku_score(session_id, start_ts, end_ts)

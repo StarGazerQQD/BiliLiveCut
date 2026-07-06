@@ -342,9 +342,11 @@ async def approve_candidate(candidate_id: int) -> int | None:
     with get_session() as db:
         # 查找关联 task 和 event
         task = db.exec(
-            select(SegmentTask).where(
+            select(SegmentTask)
+            .where(
                 SegmentTask.candidate_id == candidate_id,
-            ).order_by(SegmentTask.created_at.desc())
+            )
+            .order_by(SegmentTask.created_at.desc())
         ).first()
         event = db.exec(
             select(HighlightEvent).where(
@@ -439,9 +441,7 @@ def update_settings(fields: dict[str, Any]) -> dict[str, Any]:
     """
     if "biliup_enabled" in fields and fields["biliup_enabled"] is not None:
         settings_store.set_bool("biliup_enabled", bool(fields["biliup_enabled"]))
-        logger.warning(
-            "biliup 上传开关被设置为 {}(合规风险自负)。", bool(fields["biliup_enabled"])
-        )
+        logger.warning("biliup 上传开关被设置为 {}(合规风险自负)。", bool(fields["biliup_enabled"]))
     if "auto_upload" in fields and fields["auto_upload"] is not None:
         settings_store.set_bool("auto_upload", bool(fields["auto_upload"]))
     _update_trend_schedule(fields)
@@ -569,7 +569,12 @@ def dashboard_state() -> dict[str, Any]:
         sessions = db.exec(
             select(RecordingSession).where(
                 RecordingSession.status.in_(  # type: ignore[attr-defined]
-                    [SessionStatus.RECORDING, SessionStatus.RECONNECTING, SessionStatus.STARTING, SessionStatus.RECONNECTED]  # noqa: E501
+                    [
+                        SessionStatus.RECORDING,
+                        SessionStatus.RECONNECTING,
+                        SessionStatus.STARTING,
+                        SessionStatus.RECONNECTED,
+                    ]  # noqa: E501
                 )
             )
         ).all()
@@ -863,22 +868,22 @@ def list_schedules() -> list[dict[str, Any]]:
     :returns: 预约列表(按计划时间升序)。
     """
     with get_session() as db:
-        rows = db.exec(
-            select(RecordingSchedule).order_by(RecordingSchedule.scheduled_at)
-        ).all()
+        rows = db.exec(select(RecordingSchedule).order_by(RecordingSchedule.scheduled_at)).all()
         result = []
         for s in rows:
             room = db.get(LiveRoom, s.room_id)
-            result.append({
-                "id": s.id,
-                "room_id": s.room_id,
-                "scheduled_at": s.scheduled_at.isoformat() if s.scheduled_at else None,
-                "enabled": s.enabled,
-                "recurrent": s.recurrent,
-                "triggered": s.triggered,
-                "room_title": room.title if room else "",
-                "uploader_name": room.uploader_name if room else "",
-            })
+            result.append(
+                {
+                    "id": s.id,
+                    "room_id": s.room_id,
+                    "scheduled_at": s.scheduled_at.isoformat() if s.scheduled_at else None,
+                    "enabled": s.enabled,
+                    "recurrent": s.recurrent,
+                    "triggered": s.triggered,
+                    "room_title": room.title if room else "",
+                    "uploader_name": room.uploader_name if room else "",
+                }
+            )
     return result
 
 
@@ -964,8 +969,7 @@ def get_due_schedules() -> list[dict[str, Any]]:
             )
         ).all()
     return [
-        {"id": r.id, "room_id": r.room_id, "scheduled_at": r.scheduled_at.isoformat(),
-         "recurrent": r.recurrent}
+        {"id": r.id, "room_id": r.room_id, "scheduled_at": r.scheduled_at.isoformat(), "recurrent": r.recurrent}
         for r in rows
     ]
 
@@ -1073,9 +1077,7 @@ async def auto_recover_interrupted_sessions() -> list[int]:
             )
         except Exception as exc:  # noqa: BLE001
             logger.warning("自动恢复房间 #{} 失败: {}", room_id, exc)
-            push_notification(
-                f"自动恢复房间 #{room_id} 失败:{exc}", kind="warning"
-            )
+            push_notification(f"自动恢复房间 #{room_id} 失败:{exc}", kind="warning")
 
     if recovered:
         logger.info("自动恢复完成:共恢复 {} 个房间。", len(recovered))
@@ -1107,9 +1109,7 @@ def recording_status() -> list[dict[str, Any]]:
         ).all()[:20]
         result = []
         for s in sessions:
-            n_seg = len(
-                db.exec(select(RawSegment).where(RawSegment.session_id == s.id)).all()
-            )
+            n_seg = len(db.exec(select(RawSegment).where(RawSegment.session_id == s.id)).all())
             result.append(
                 {
                     "id": s.id,

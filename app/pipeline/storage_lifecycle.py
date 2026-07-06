@@ -46,6 +46,7 @@ def _safe_unlink(disk_path: str, allowed_root: Path) -> bool:
         logger.debug("删除文件失败 {}: {}", resolved, exc)
         return False
 
+
 # 可配置的默认值(可通过 settings 覆盖)。
 _MIN_FREE_GB = 10
 _RAW_RETENTION_DAYS = 7
@@ -55,6 +56,8 @@ LOW_DISK_THRESHOLD_GB: float = 20.0
 """低于此阈值:暂停新分析/转写/渲染任务,暂停模型下载。"""
 CRITICAL_DISK_THRESHOLD_GB: float = 5.0
 """低于此阈值:安全停止当前录制,优雅终止 ffmpeg,暂停重度日志/弹幕写入。"""
+
+
 def get_disk_usage(path: str | Path | None = None) -> dict:
     """获取磁盘使用情况。
 
@@ -281,8 +284,7 @@ def run_disk_maintenance() -> dict:
             logger.exception("磁盘 critical 通知发送失败")
 
     logger.info(
-        "磁盘维护完成: raw={:.2f}GB clips={:.2f}GB free={:.1f}GB "
-        "cleaned_raw={} cleaned_rej={} safe={} level={}",
+        "磁盘维护完成: raw={:.2f}GB clips={:.2f}GB free={:.1f}GB cleaned_raw={} cleaned_rej={} safe={} level={}",
         result["raw_size_gb"],
         result["clips_size_gb"],
         result["disk"].get("free_gb", 0),

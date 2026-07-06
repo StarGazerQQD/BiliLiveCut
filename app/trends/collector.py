@@ -18,10 +18,7 @@ from app.analysis import llm as llm_mod
 from app.core.config import settings
 
 # 默认采集主题(可由调用方覆盖)。
-_DEFAULT_TOPIC = (
-    "B 站、抖音、微博热搜等平台近期(最近几天)适合做直播切片/短视频的高热度"
-    "话题、热梗、热门内容、热门标签"
-)
+_DEFAULT_TOPIC = "B 站、抖音、微博热搜等平台近期(最近几天)适合做直播切片/短视频的高热度话题、热梗、热门内容、热门标签"
 
 _COLLECT_PROMPT = """你是一名资深的短视频/直播内容运营,擅长把握"网感"与热点。\
 请联网检索并整理:{topic}。

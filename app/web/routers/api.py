@@ -355,37 +355,48 @@ def confirm_manual_upload(
 
         # 如果有关联的 SegmentTask, 推进到 COMPLETED
         from sqlmodel import select as _sel
+
         task = db.exec(
-            _sel(SegmentTask).where(
+            _sel(SegmentTask)
+            .where(
                 SegmentTask.clip_id == clip_id,
-            ).order_by(SegmentTask.created_at.desc())
+            )
+            .order_by(SegmentTask.created_at.desc())
         ).first()
         if task and task.stage in (
-            _Ts.AWAITING_PUBLISH_CONFIRMATION, _Ts.PUBLISHING,
-            _Ts.QUEUED_FOR_PUBLISH, _Ts.RENDERED,
+            _Ts.AWAITING_PUBLISH_CONFIRMATION,
+            _Ts.PUBLISHING,
+            _Ts.QUEUED_FOR_PUBLISH,
+            _Ts.RENDERED,
         ):
             task.stage = _Ts.COMPLETED
             from datetime import UTC
             from datetime import datetime as _dt_now
+
             task.completed_at = _dt_now(UTC)
             db.add(task)
 
         # 日志记录
-        db.add(SystemLog(
-            level="INFO",
-            module="web",
-            event="manual_upload_confirmed",
-            message=f"clip={clip_id} 手动上传已确认",
-            context_json=_json.dumps({
-                "clip_id": clip_id,
-                "platform": platform,
-                "submission_id": submission_id,
-                "published_url": published_url,
-            }) if (platform or submission_id or published_url) else None,
-        ))
+        db.add(
+            SystemLog(
+                level="INFO",
+                module="web",
+                event="manual_upload_confirmed",
+                message=f"clip={clip_id} 手动上传已确认",
+                context_json=_json.dumps(
+                    {
+                        "clip_id": clip_id,
+                        "platform": platform,
+                        "submission_id": submission_id,
+                        "published_url": published_url,
+                    }
+                )
+                if (platform or submission_id or published_url)
+                else None,
+            )
+        )
 
-    _log.info("manual_upload_confirmed: clip={} platform={} submission_id={}",
-              clip_id, platform, submission_id)
+    _log.info("manual_upload_confirmed: clip={} platform={} submission_id={}", clip_id, platform, submission_id)
     return {"status": "published", "clip_id": clip_id}
 
 
@@ -611,9 +622,7 @@ def login_start(request: Request) -> dict[str, Any]:
     """启动一次浏览器登录流程（Playwright）,返回任务 ID 供前端轮询。"""
     ip = request.client.host if request.client else "unknown"
     if not _check_login_rate(ip):
-        raise HTTPException(
-            status_code=429, detail="登录尝试过于频繁,请稍后再试"
-        )
+        raise HTTPException(status_code=429, detail="登录尝试过于频繁,请稍后再试")
     try:
         return start_login()
     except Exception as exc:
@@ -778,17 +787,20 @@ def list_variants(event_id: int) -> list[dict[str, Any]]:
         from sqlmodel import select as _sel
 
         variants = db.exec(
-            _sel(ClipVariant).where(ClipVariant.event_id == event_id).order_by(
-                ClipVariant.created_at.desc()
-            )
+            _sel(ClipVariant).where(ClipVariant.event_id == event_id).order_by(ClipVariant.created_at.desc())
         ).all()
     return [
         {
-            "id": v.id, "variant_type": v.variant_type,
-            "has_subtitles": v.has_subtitles, "resolution": v.resolution,
-            "file_path": v.file_path, "file_hash": v.file_hash,
-            "render_status": v.render_status, "version_number": v.version_number,
-            "duration_s": v.duration_s, "created_at": v.created_at.isoformat() if v.created_at else None,
+            "id": v.id,
+            "variant_type": v.variant_type,
+            "has_subtitles": v.has_subtitles,
+            "resolution": v.resolution,
+            "file_path": v.file_path,
+            "file_hash": v.file_hash,
+            "render_status": v.render_status,
+            "version_number": v.version_number,
+            "duration_s": v.duration_s,
+            "created_at": v.created_at.isoformat() if v.created_at else None,
         }
         for v in variants
     ]
@@ -828,33 +840,27 @@ def get_analytics() -> dict[str, Any]:
         # --- 切片统计 ---
         total_clips = db.exec(_sel(func.count()).select_from(FinalClip)).one()
         published_clips = db.exec(
-            _sel(func.count()).select_from(FinalClip).where(
-                FinalClip.status == ClipStatus.PUBLISHED
-            )
+            _sel(func.count()).select_from(FinalClip).where(FinalClip.status == ClipStatus.PUBLISHED)
         ).one()
-        total_duration = db.exec(
-            _sel(func.coalesce(func.sum(FinalClip.duration_s), 0)).select_from(FinalClip)
-        ).one() or 0.0
+        total_duration = (
+            db.exec(_sel(func.coalesce(func.sum(FinalClip.duration_s), 0)).select_from(FinalClip)).one() or 0.0
+        )
 
         # --- 候选统计 ---
-        total_candidates = db.exec(
-            _sel(func.count()).select_from(HighlightCandidate)
-        ).one()
+        total_candidates = db.exec(_sel(func.count()).select_from(HighlightCandidate)).one()
         approved_candidates = db.exec(
-            _sel(func.count()).select_from(HighlightCandidate).where(
-                HighlightCandidate.status == "approved"
-            )
+            _sel(func.count()).select_from(HighlightCandidate).where(HighlightCandidate.status == "approved")
         ).one()
-        avg_score = db.exec(
-            _sel(func.coalesce(func.avg(HighlightCandidate.highlight_score), 0.0))
-            .select_from(HighlightCandidate)
-        ).one() or 0.0
+        avg_score = (
+            db.exec(
+                _sel(func.coalesce(func.avg(HighlightCandidate.highlight_score), 0.0)).select_from(HighlightCandidate)
+            ).one()
+            or 0.0
+        )
 
         # 分数区间分布
         score_buckets = {"0.0-0.3": 0, "0.3-0.5": 0, "0.5-0.7": 0, "0.7-0.85": 0, "0.85-1.0": 0}
-        all_scores = db.exec(
-            _sel(HighlightCandidate.highlight_score).select_from(HighlightCandidate)
-        ).all()
+        all_scores = db.exec(_sel(HighlightCandidate.highlight_score).select_from(HighlightCandidate)).all()
         for s in all_scores:
             s = s or 0
             if s < 0.3:
@@ -869,32 +875,28 @@ def get_analytics() -> dict[str, Any]:
                 score_buckets["0.85-1.0"] += 1
 
         # --- 录制统计 ---
-        total_sessions = db.exec(
-            _sel(func.count()).select_from(RecordingSession)
-        ).one()
+        total_sessions = db.exec(_sel(func.count()).select_from(RecordingSession)).one()
         finished_sessions = db.exec(
-            _sel(func.count()).select_from(RecordingSession).where(
-                RecordingSession.ended_at is not None
-            )
+            _sel(func.count()).select_from(RecordingSession).where(RecordingSession.ended_at is not None)
         ).one()
-        total_reconnects = db.exec(
-            _sel(func.coalesce(func.sum(RecordingSession.reconnect_count), 0))
-            .select_from(RecordingSession)
-        ).one() or 0
+        total_reconnects = (
+            db.exec(
+                _sel(func.coalesce(func.sum(RecordingSession.reconnect_count), 0)).select_from(RecordingSession)
+            ).one()
+            or 0
+        )
 
         # 原始数据量
-        total_raw_gb = db.exec(
-            _sel(func.coalesce(func.sum(RawSegment.size_bytes), 0.0))
-            .select_from(RawSegment)
-        ).one() or 0.0
+        total_raw_gb = (
+            db.exec(_sel(func.coalesce(func.sum(RawSegment.size_bytes), 0.0)).select_from(RawSegment)).one() or 0.0
+        )
         total_raw_gb = round(total_raw_gb / (1024**3), 2)  # size_bytes → GB
 
         # --- 任务统计 ---
         from app.db.models import SegmentTask
+
         task_failed = db.exec(
-            _sel(func.count()).select_from(SegmentTask).where(
-                SegmentTask.stage == TaskStatus.FAILED
-            )
+            _sel(func.count()).select_from(SegmentTask).where(SegmentTask.stage == TaskStatus.FAILED)
         ).one()
 
         # --- 每日趋势(近 30 天) ---
@@ -903,35 +905,44 @@ def get_analytics() -> dict[str, Any]:
             day = days_30 + timedelta(days=i)
             day_end = day + timedelta(days=1)
             sessions_count = db.exec(
-                _sel(func.count()).select_from(RecordingSession).where(
+                _sel(func.count())
+                .select_from(RecordingSession)
+                .where(
                     RecordingSession.started_at >= day,
                     RecordingSession.started_at < day_end,
                 )
             ).one()
             clips_count = db.exec(
-                _sel(func.count()).select_from(FinalClip).where(
+                _sel(func.count())
+                .select_from(FinalClip)
+                .where(
                     FinalClip.created_at >= day,
                     FinalClip.created_at < day_end,
                 )
             ).one()
             candidates_count = db.exec(
-                _sel(func.count()).select_from(HighlightCandidate).where(
+                _sel(func.count())
+                .select_from(HighlightCandidate)
+                .where(
                     HighlightCandidate.created_at >= day,
                     HighlightCandidate.created_at < day_end,
                 )
             ).one()
-            daily_record.append({
-                "date": day.strftime("%m-%d"),
-                "sessions": sessions_count,
-                "clips": clips_count,
-                "candidates": candidates_count,
-            })
+            daily_record.append(
+                {
+                    "date": day.strftime("%m-%d"),
+                    "sessions": sessions_count,
+                    "clips": clips_count,
+                    "candidates": candidates_count,
+                }
+            )
 
         # --- 直播间排行(按切片数 TOP 10) ---
         room_ranks: list[dict[str, Any]] = []
         rows = db.exec(
             _sel(
-                LiveRoom.room_id, LiveRoom.uploader_name,
+                LiveRoom.room_id,
+                LiveRoom.uploader_name,
                 func.count(FinalClip.id).label("cnt"),
                 func.coalesce(func.sum(FinalClip.duration_s), 0.0).label("dur"),
             )
@@ -945,11 +956,13 @@ def get_analytics() -> dict[str, Any]:
             .limit(10)
         ).all()
         for r in rows:
-            room_ranks.append({
-                "name": r.uploader_name or f"房间{r.room_id}",
-                "clips": r.cnt,
-                "duration_h": round((r.dur or 0) / 3600, 1),
-            })
+            room_ranks.append(
+                {
+                    "name": r.uploader_name or f"房间{r.room_id}",
+                    "clips": r.cnt,
+                    "duration_h": round((r.dur or 0) / 3600, 1),
+                }
+            )
 
     return {
         "overview": {

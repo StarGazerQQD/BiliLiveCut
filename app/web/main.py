@@ -46,8 +46,10 @@ async def lifespan(_app: FastAPI) -> AsyncIterator[None]:
 
     # V0.1.13: Web 安全兜底 — 启动时检查 host+password 配置
     from app.core.config import settings as _cfg_startup
+
     if not _cfg_startup.admin_password:
         import socket as _socket
+
         hostname = _socket.gethostname()
         non_loopback_ips = []
         for info in _socket.getaddrinfo(hostname, None):
@@ -56,22 +58,21 @@ async def lifespan(_app: FastAPI) -> AsyncIterator[None]:
                 non_loopback_ips.append(addr)
         if non_loopback_ips:
             logger.warning(
-                "安全警告: ADMIN_PASSWORD 为空, 但主机存在非 loopback 接口: {}. "
-                "Web 将禁止非本机请求访问 /api 路由。",
+                "安全警告: ADMIN_PASSWORD 为空, 但主机存在非 loopback 接口: {}. Web 将禁止非本机请求访问 /api 路由。",
                 non_loopback_ips[:3],
             )
     # V0.1.13: 启动 Metrics 后台采样
     from app.core.metrics import start_metrics_collector
+
     start_metrics_collector(interval_s=60)
 
     from app.trends.scheduler import trend_scheduler
 
-    trend_scheduler.start(
-        recording_active=lambda: bool(service.recorder_manager.running_ids())
-    )
+    trend_scheduler.start(recording_active=lambda: bool(service.recorder_manager.running_ids()))
 
     # V0.1.13: 启动后台指标采集器
     from app.core.metrics import start_metrics_collector
+
     start_metrics_collector(interval_s=60)
 
     # V0.1.6:启动持久化任务队列 Worker。
@@ -151,6 +152,7 @@ def _reschedule_daily(item: dict) -> None:
     try:
         # 取原预约的时间(hour+minute),放到下一天。
         from datetime import datetime, timedelta
+
         old_dt = datetime.fromisoformat(item.get("scheduled_at", "")) if item.get("scheduled_at") else utcnow()
         new_ts = utcnow().replace(hour=old_dt.hour, minute=old_dt.minute) + timedelta(days=1)
         with get_session() as db:
@@ -277,7 +279,8 @@ class _AuthMiddleware(_BaseMiddleware):
                 _record_login_failure(ip)
                 if not _check_login_rate(ip):
                     return _JSONResponse(
-                        {"detail": "登录尝试过于频繁,请稍后再试"}, status_code=429,
+                        {"detail": "登录尝试过于频繁,请稍后再试"},
+                        status_code=429,
                     )
                 return _JSONResponse({"detail": "认证失败"}, status_code=403)
         except Exception:
@@ -310,7 +313,8 @@ class _RateLimitMiddleware(_BaseMiddleware):
             count = entry[1] + 1
             if count > _RATE_LIMIT:
                 return _JSONResponse(
-                    {"detail": "请求过于频繁,请稍后重试。"}, status_code=429,
+                    {"detail": "请求过于频繁,请稍后重试。"},
+                    status_code=429,
                 )
             _rate_buckets[key] = (entry[0], count)
         # 定期清理过期桶(每 100 次触发一次)。

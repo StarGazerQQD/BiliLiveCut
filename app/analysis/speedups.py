@@ -33,6 +33,7 @@ try:
         fast_match_keywords,
         fast_meme_count,
     )
+
     _BACKEND = "C"
     _logger.info("加速模块(C): 已加载 app.analysis._c_speedups")
 except ImportError:
@@ -45,6 +46,7 @@ except ImportError:
         fast_match_keywords,
         fast_meme_count,
     )
+
     _BACKEND = "python"
     _logger.info("加速模块(Python): 使用 _speedups_py")
 
@@ -60,12 +62,14 @@ try:
         danmaku_baseline_rate,
         group_srt_blocks,
     )
+
     _logger.info("加速模块(第二轮): Cython 扩展已加载")
 except ImportError:
     from app.analysis._speedups_round2_py import (  # type: ignore[no-redef]
         danmaku_baseline_rate,
         group_srt_blocks,
     )
+
     _logger.info("加速模块(第二轮): 使用 _speedups_round2_py")
 
 # -- cluster_similarity_matrix: Rust → Cython → Python 三级回退 --
@@ -74,6 +78,7 @@ _cluster_sim_raw = False  # True = needs raw args (Rust), False = takes dicts (C
 
 try:
     from app.analysis._rust_cluster import cluster_similarity_matrix_rust  # type: ignore[import]
+
     _cluster_sim_func = cluster_similarity_matrix_rust
     _cluster_sim_raw = True
     _CLUSTER_BACKEND = "Rust+rayon"
@@ -86,6 +91,7 @@ if _cluster_sim_func is None:
         from app.analysis._speedups_round2 import (
             cluster_similarity_matrix as _csim,  # type: ignore[import]
         )
+
         _cluster_sim_func = _csim
         _cluster_sim_raw = False
         _CLUSTER_BACKEND = "Cython"
@@ -94,6 +100,7 @@ if _cluster_sim_func is None:
         from app.analysis._speedups_round2_py import (
             cluster_similarity_matrix as _csim,  # type: ignore[no-redef]
         )
+
         _cluster_sim_func = _csim
         _cluster_sim_raw = False
         _CLUSTER_BACKEND = "python"

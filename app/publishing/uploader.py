@@ -117,9 +117,7 @@ def _hash_already_uploaded(content_hash: str, exclude_clip_id: int) -> bool:
     with get_session() as db:
         clip_ids = [
             c.id
-            for c in db.exec(
-                select(FinalClip).where(FinalClip.content_hash == content_hash)
-            ).all()
+            for c in db.exec(select(FinalClip).where(FinalClip.content_hash == content_hash)).all()
             if c.id != exclude_clip_id
         ]
         if not clip_ids:
@@ -224,6 +222,7 @@ class BiliupUploader(Uploader):
 
         # V0.1.8.2:使用 shlex.quote 包裹参数,防止命令注入。
         import shlex as _shlex
+
         cmd_str = template.format(
             file=_shlex.quote(str(clip["file_path"])),
             title=_sanitize_biliup(clip.get("title") or ""),
@@ -250,6 +249,7 @@ class BiliupUploader(Uploader):
 def _sanitize_biliup(value: str) -> str:
     """对 biliup 命令行参数做安全清洗:仅保留安全字符。"""
     import re as _re
+
     return _re.sub(r"[^\w\u4e00-\u9fff\u3000-\u303f\uff00-\uffef .,!?()（）《》\[\]【】\-+#&;:/@]", "", value)
 
 
@@ -372,9 +372,7 @@ def process_upload_task(task_id: int) -> UploadTask:
         except Exception as exc:  # noqa: BLE001
             result = UploadResult(success=False, message=str(exc))
         if result.success:
-            return _finish_task(
-                task_id, UploadStatus.SUCCESS, remote_id=result.remote_id, error=None
-            )
+            return _finish_task(task_id, UploadStatus.SUCCESS, remote_id=result.remote_id, error=None)
         last_error = result.message
         logger.warning("上传失败 task={} 第{}次: {}", task_id, attempt, last_error)
 
