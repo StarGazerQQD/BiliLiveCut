@@ -521,6 +521,37 @@ def trends_keywords(
     console.print(table)
 
 
+@app.command("db-reset")
+def db_reset(
+    yes: bool = typer.Option(False, "--yes", "-y", help="跳过确认提示"),
+) -> None:
+    """重置数据库 (仅供开发使用)。
+
+    删除当前数据库并重新创建。默认会先生成备份。
+
+    :param yes: 跳过确认提示。
+    """
+    if not yes:
+        console.print(
+            "[red]警告: 这将删除当前数据库并重新创建![/red]\n"
+            f"数据库路径: {settings.database_url}\n"
+        )
+        from app.db.schema import _db_path
+        console.print(f"绝对路径: {_db_path()}\n")
+        confirm = typer.confirm("确认重置数据库?")
+        if not confirm:
+            console.print("[yellow]已取消。[/yellow]")
+            raise typer.Exit()
+
+    from app.db.migrate import reset_db
+    ok = reset_db(yes=yes)
+    if ok:
+        console.print("[green]数据库已重置重建。[/green]")
+    else:
+        console.print("[red]数据库重置失败, 请检查日志。[/red]")
+        raise typer.Exit(code=1)
+
+
 @app.command("trends-purge")
 def trends_purge(
     days: int = typer.Option(None, help="保留天数(留空用配置 TREND_RETENTION_DAYS)"),
@@ -654,6 +685,28 @@ def serve(
     except ImportError as exc:
         console.print('[red]未安装 Web 依赖。请执行: pip install -e ".[web]"[/red]')
         raise typer.Exit(code=1) from exc
+
+    # P0: non-loopback requires password
+    from app.core.config import settings as _srv_cfg
+    if not _srv_cfg.admin_password:
+        from ipaddress import ip_address
+        try:
+            addr = ip_address(host.replace('localhost', '127.0.0.1'))
+            if not addr.is_loopback:
+                console.print(
+                    "[red]拒绝启动 Web 管理后台：\n"
+                    "当前监听地址不是本地地址，但 ADMIN_PASSWORD 为空。\n"
+                    "请设置管理员密码或改为 127.0.0.1。[/red]"
+                )
+                raise typer.Exit(code=1)
+        except ValueError:
+            # non-IP hostname (like docker), also require password
+            console.print(
+                "[red]拒绝启动 Web 管理后台：\n"
+                "当前监听地址不是本地地址，但 ADMIN_PASSWORD 为空。\n"
+                "请设置管理员密码或改为 127.0.0.1。[/red]"
+            )
+            raise typer.Exit(code=1) from None
 
     console.print(f"[green]控制台启动中[/green] -> http://{host}:{port}")
     uvicorn.run("app.web.main:app", host=host, port=port, reload=reload)

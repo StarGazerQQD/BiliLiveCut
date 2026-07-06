@@ -26,6 +26,7 @@ from sqlmodel import select
 
 from app.analysis.speedups import group_srt_blocks
 from app.core.config import settings
+from app.core.ffmpeg_errors import classify_ffmpeg_error
 from app.core.paths import clips_dir
 from app.db.models import (
     CandidateStatus,
@@ -133,8 +134,18 @@ def probe_media(path: str) -> tuple[float, int, int]:
     try:
         out = subprocess.run(cmd, capture_output=True, check=True, timeout=30).stdout
         data = json.loads(out)
-    except (subprocess.CalledProcessError, json.JSONDecodeError) as exc:
-        logger.warning("ffprobe 探测失败 {}: {}", path, exc)
+    except subprocess.TimeoutExpired as exc:
+        stderr = exc.stderr.decode("utf-8", errors="ignore") if exc.stderr else ""
+        error_type = classify_ffmpeg_error(-1, stderr)
+        logger.warning("ffprobe 探测超时 {}: [{}] {}", path, error_type.name, exc)
+        return 0.0, 0, 0
+    except subprocess.CalledProcessError as exc:
+        stderr = exc.stderr.decode("utf-8", errors="ignore") if exc.stderr else ""
+        error_type = classify_ffmpeg_error(exc.returncode, stderr)
+        logger.warning("ffprobe 探测失败 {}: [{}] {}", path, error_type.name, exc)
+        return 0.0, 0, 0
+    except json.JSONDecodeError as exc:
+        logger.warning("ffprobe 探测失败 {}: JSON 解析异常 {}", path, exc)
         return 0.0, 0, 0
     duration = float(data.get("format", {}).get("duration", 0.0) or 0.0)
     streams = data.get("streams") or [{}]
@@ -327,7 +338,9 @@ def _render_text_card(
     except subprocess.TimeoutExpired:
         logger.error("标题卡渲染超时(60s): {}", out_path.name)
     except subprocess.CalledProcessError as exc:
-        logger.warning("标题卡渲染失败: {}", exc.stderr.decode("utf-8", errors="ignore"))
+        stderr = exc.stderr.decode("utf-8", errors="ignore") if exc.stderr else ""
+        error_type = classify_ffmpeg_error(exc.returncode, stderr)
+        logger.warning("标题卡渲染失败 [{}]: {}", error_type.name, stderr)
     finally:
         import os
         try:
@@ -758,7 +771,8 @@ def _run_ffmpeg_clip(
     result = subprocess.run(cmd, capture_output=True, timeout=600)
     if result.returncode != 0:
         stderr = result.stderr.decode("utf-8", errors="ignore")
-        raise RuntimeError(f"FFmpeg 切片失败: {stderr}")
+        error_type = classify_ffmpeg_error(result.returncode, stderr)
+        raise RuntimeError(f"FFmpeg 切片失败 [{error_type.name}]: {stderr}")
 
 
 def _grab_cover(video_path: Path, cover_path: Path, at_s: float) -> None:
@@ -786,7 +800,9 @@ def _grab_cover(video_path: Path, cover_path: Path, at_s: float) -> None:
     ]
     result = subprocess.run(cmd, capture_output=True, timeout=30)
     if result.returncode != 0:
-        logger.warning("封面抽帧失败: {}", result.stderr.decode("utf-8", errors="ignore"))
+        stderr = result.stderr.decode("utf-8", errors="ignore")
+        error_type = classify_ffmpeg_error(result.returncode, stderr)
+        logger.warning("封面抽帧失败 [{}]: {}", error_type.name, stderr)
 
 
 def _render_variants(
@@ -956,7 +972,11 @@ def _render_single_variant(
             else:
                 variant.render_status = RenderStatus.FAILED
                 stderr = result.stderr.decode("utf-8", errors="ignore")
-                logger.error("变体 {} candidate={} 渲染失败: {}", variant_type, clip.candidate_id, stderr)
+                error_type = classify_ffmpeg_error(result.returncode, stderr)
+                logger.error(
+                    "变体 {} candidate={} 渲染失败 [{}]: {}",
+                    variant_type, clip.candidate_id, error_type.name, stderr,
+                )
             db.add(variant)
             db.commit()
 

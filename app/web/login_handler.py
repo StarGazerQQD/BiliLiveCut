@@ -57,9 +57,11 @@ def _extract_cookie_string(page) -> str:
 def _save_cookie(cookie_string: str) -> None:
     """将 Cookie 持久化到运行时设置,供录制/弹幕模块使用。"""
     from app.core import settings_store
+    from app.core.sanitize import sanitize_text
 
     settings_store.set_setting("bilibili_cookie", cookie_string)
     logger.info("Bilibili Cookie 已保存（{} 个 kv）", cookie_string.count(";") + 1)
+    logger.debug("Cookie 摘要: {}", sanitize_text(cookie_string))
 
 
 def _login_task(result_store: dict) -> None:
@@ -190,7 +192,10 @@ def get_cookie_info() -> dict:
     if not raw:
         return {"has_cookie": False}
 
-    # 解析 UID
+    # 解析 UID (脱敏后处理, 防止原始值泄漏到日志)
+    from app.core.sanitize import sanitize_text
+
+    logger.debug("Cookie 摘要: {}", sanitize_text(raw))
     match = re.search(r"DedeUserID=(\d+)", raw)
     uid = match.group(1) if match else None
 

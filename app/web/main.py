@@ -152,6 +152,7 @@ app = FastAPI(
 # 页面浏览(GET /)和静态资源不受影响。
 # 请求头格式: Authorization: Basic <base64(admin:<密码>)>
 import base64 as _base64  # noqa: E402
+import secrets as _secrets  # noqa: E402
 
 from starlette.middleware.base import BaseHTTPMiddleware as _BaseMiddleware  # noqa: E402
 from starlette.responses import JSONResponse as _JSONResponse  # noqa: E402
@@ -162,6 +163,35 @@ _ADMIN_PASSWORD = _cfg.admin_password
 
 _AUTH_PROTECTED_PREFIXES = ("/api/", "/review/", "/collection/")
 _AUTH_WHITE_LIST = tuple()  # 未来可扩展公开端点
+
+# ── 登录失败限流 ────────────────────────────────────────────────────────────
+_LOGIN_FAILURES: dict[str, list[float]] = {}
+_MAX_LOGIN_ATTEMPTS = 5
+_LOGIN_WINDOW_S = 300  # 5 分钟窗口
+
+
+def _check_login_rate(ip: str) -> bool:
+    """检查指定 IP 的登录失败次数是否在限流窗口内超限。
+
+    :param ip: 客户端 IP 地址。
+    :returns: ``True`` 表示允许继续尝试,``False`` 表示已触发限流。
+    """
+    now = _time.time()
+    timestamps = _LOGIN_FAILURES.get(ip, [])
+    # 清理窗口外的旧时间戳
+    _LOGIN_FAILURES[ip] = [t for t in timestamps if now - t <= _LOGIN_WINDOW_S]
+    return len(_LOGIN_FAILURES[ip]) < _MAX_LOGIN_ATTEMPTS
+
+
+def _record_login_failure(ip: str) -> None:
+    """记录一次登录失败的时间戳。
+
+    :param ip: 客户端 IP 地址。
+    """
+    now = _time.time()
+    if ip not in _LOGIN_FAILURES:
+        _LOGIN_FAILURES[ip] = []
+    _LOGIN_FAILURES[ip].append(now)
 
 
 class _AuthMiddleware(_BaseMiddleware):
@@ -181,7 +211,13 @@ class _AuthMiddleware(_BaseMiddleware):
         try:
             decoded = _base64.b64decode(auth[6:]).decode("utf-8", errors="ignore")
             username, _, password = decoded.partition(":")
-            if password != _ADMIN_PASSWORD:
+            if not _secrets.compare_digest(password, _ADMIN_PASSWORD):
+                ip = request.client.host if request.client else "unknown"
+                _record_login_failure(ip)
+                if not _check_login_rate(ip):
+                    return _JSONResponse(
+                        {"detail": "登录尝试过于频繁,请稍后再试"}, status_code=429,
+                    )
                 return _JSONResponse({"detail": "认证失败"}, status_code=403)
         except Exception:
             return _JSONResponse({"detail": "认证格式错误"}, status_code=400)

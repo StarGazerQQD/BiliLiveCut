@@ -15,6 +15,7 @@ from __future__ import annotations
 import asyncio
 import os
 import random
+import re
 import threading
 import time
 import uuid
@@ -24,6 +25,7 @@ from loguru import logger
 from sqlalchemy import text as sa_text
 from sqlmodel import select
 
+from app.core.ffmpeg_errors import FfmpegErrorType, classify_ffmpeg_error, is_retryable
 from app.db.models import (
     RawSegment,
     SegmentTask,
@@ -757,14 +759,19 @@ def _recover_orphans() -> None:
 # 执行 (V0.1.12.2: 周期性心跳 + 优雅关闭感知)
 # ═══════════════════════════════════════════════════
 
-def _start_heartbeat_thread(task_id: int, lease_token: str | None = None) -> threading.Event:
-    """启动后台心跳线程, 使用租约条件更新 heartbeat_at (V0.1.12.7)。
+def _start_heartbeat_thread(
+    task_id: int,
+    lease_token: str | None = None,
+    expected_stage: str | None = None,
+) -> threading.Event:
+    """启动后台心跳线程, 使用租约条件更新 heartbeat_at (V0.1.12.9 强化)。
 
-    每次心跳使用条件 SQL: WHERE id=? AND claimed_by=? AND lease_token=?
+    每次心跳使用条件 SQL: WHERE id=? AND claimed_by=? AND lease_token=? AND stage=?
     如果 rowcount==0 说明已失去租约, 停止心跳。
 
     :param task_id: SegmentTask ID。
     :param lease_token: 租约令牌 (V0.1.12.7 — 条件校验)。
+    :param expected_stage: 期望的阶段状态 (V0.1.12.9 — 阶段校验)。
     :returns: stop_event — 设置后心跳线程退出。
     """
     stop = threading.Event()
@@ -773,8 +780,30 @@ def _start_heartbeat_thread(task_id: int, lease_token: str | None = None) -> thr
         while not stop.is_set() and not _shutting_down:
             try:
                 with get_session() as db:
-                    if lease_token:
-                        # V0.1.12.7: 条件心跳 — 校验租约
+                    if lease_token and expected_stage:
+                        # V0.1.12.9: 条件心跳 — 校验租约 + 阶段
+                        result = db.exec(
+                            sa_text(
+                                """UPDATE segment_tasks
+                                   SET heartbeat_at = :now
+                                   WHERE id = :task_id
+                                     AND claimed_by = :worker_id
+                                     AND lease_token = :lease_token
+                                     AND stage = :expected_stage"""
+                            ),
+                            params={
+                                "now": _now().isoformat(),
+                                "task_id": task_id,
+                                "worker_id": _WORKER_ID,
+                                "lease_token": lease_token,
+                                "expected_stage": expected_stage,
+                            },
+                        )
+                        if result.rowcount == 0:
+                            _logger.warning("lease_lost: task={} 心跳更新失败, 租约已被接管", task_id)
+                            break
+                    elif lease_token:
+                        # V0.1.12.7: 条件心跳 — 校验租约 (向后兼容旧调用方)
                         result = db.exec(
                             sa_text(
                                 """UPDATE segment_tasks
@@ -808,15 +837,16 @@ def _start_heartbeat_thread(task_id: int, lease_token: str | None = None) -> thr
 
 
 def _still_has_lease(task: SegmentTask, worker_id: str, lease_token: str | None, expected_stage: str) -> bool:
-    """校验 Worker 是否仍持有任务的租约 (V0.1.12.7)。
+    """校验 Worker 是否仍持有任务的租约 (V0.1.12.9 强化)。
 
-    校验条件: task.id == task.id, claimed_by == worker_id, lease_token == lease_token, stage == expected_stage。
+    必须同时验证: claimed_by, lease_token, stage, 且不是 stale。
     """
     if lease_token is None:
-        return True  # 无租约 (旧数据兼容) 时不做校验
+        return True
     return (
         task.claimed_by == worker_id
         and task.lease_token == lease_token
+        and task.stage == expected_stage
         and task.stage != TaskStatus.STALE
     )
 
@@ -865,17 +895,17 @@ def _execute_task(task_id: int, active_stage: str, lease_token: str | None = Non
     t0 = time.time()
     hb_stop: threading.Event | None = None
     try:
-        # V0.1.12.7: 心跳现在传入 lease_token 用于条件校验
-        hb_stop = _start_heartbeat_thread(task_id, lease_token)
+        # V0.1.12.9: 心跳现在传入 lease_token + expected_stage 用于条件校验
+        hb_stop = _start_heartbeat_thread(task_id, lease_token, active_stage)
 
         if active_stage == TaskStatus.TRANSCRIBING:
-            _run_transcribe(task_id)
+            _run_transcribe(task_id, lease_token)
         elif active_stage == TaskStatus.ANALYZING:
-            _run_analyze(task_id)
+            _run_analyze(task_id, lease_token)
         elif active_stage == TaskStatus.RENDERING:
-            _run_render(task_id)
+            _run_render(task_id, lease_token)
         elif active_stage == TaskStatus.PUBLISHING:
-            _run_publish(task_id)
+            _run_publish(task_id, lease_token)
     except Exception as exc:
         _ms = int((time.time() - t0) * 1000)
         _logger.error("任务 {} 阶段 {} 失败: {}", task_id, active_stage, exc)
@@ -894,7 +924,7 @@ def _execute_task(task_id: int, active_stage: str, lease_token: str | None = Non
         _clear_heartbeat_if_own(task_id, lease_token)
 
 
-def _run_transcribe(task_id: int) -> None:
+def _run_transcribe(task_id: int, lease_token: str | None = None) -> None:
     t0 = time.time()
     from app.analysis.transcribe import transcribe_segment
     with get_session() as db:
@@ -907,13 +937,15 @@ def _run_transcribe(task_id: int) -> None:
     ms = int((time.time() - t0) * 1000)
     with get_session() as db:
         task = db.get(SegmentTask, task_id)
-        if task:
+        if task and _still_has_lease(task, _WORKER_ID, lease_token, TaskStatus.TRANSCRIBING):
             mark_completed(task, ms)
             enqueue_next(task, TaskStatus.TRANSCRIBED)
             db.add(task)
+        elif task:
+            _logger.warning("stale_result_discarded: task={} 已失去租约, 丢弃转写结果", task_id)
 
 
-def _run_analyze(task_id: int) -> None:
+def _run_analyze(task_id: int, lease_token: str | None = None) -> None:
     t0 = time.time()
     from app.analysis.highlight import score_segment
     with get_session() as db:
@@ -931,19 +963,56 @@ def _run_analyze(task_id: int) -> None:
     cid = candidate.id if candidate else None
     with get_session() as db:
         task = db.get(SegmentTask, task_id)
-        if task:
+        if task and _still_has_lease(task, _WORKER_ID, lease_token, TaskStatus.ANALYZING):
             mark_completed(task, ms)
             if cid is not None:
                 enqueue_next(task, TaskStatus.CANDIDATE_CREATED, candidate_id=cid, event_id=event_id)
             else:
                 enqueue_next(task, TaskStatus.COMPLETED)
             db.add(task)
+        elif task:
+            _logger.warning("stale_result_discarded: task={} 已失去租约, 丢弃分析结果", task_id)
 
 
-def _run_render(task_id: int) -> None:
+def _is_render_error_permanent(exc: Exception) -> bool:
+    """从渲染异常中提取 FFmpeg 错误类型, 判断是否永久失败。
+
+    优先从 RuntimeError 消息中解析错误类型名称,
+    否则回退到使用 stderr 重新分类。
+
+    :param exc: 渲染过程中捕获的异常。
+    :returns: True 表示永久失败(不可重试, 如 DISK_FULL/PERMISSION_DENIED)。
+    """
+    msg = str(exc)
+    # 尝试从 RuntimeError 消息中提取错误类型, 格式: "...[ERROR_TYPE]: ..."
+    m = re.search(r"\[([A-Z_]+)\]", msg)
+    if m:
+        type_name = m.group(1)
+        try:
+            error_type = FfmpegErrorType[type_name]
+            return not is_retryable(error_type)
+        except KeyError:
+            pass
+    # 回退: 尝试从 stderr 部分重新分类
+    if isinstance(exc, RuntimeError):
+        stderr_marker = "]: "
+        idx = msg.find(stderr_marker)
+        if idx != -1:
+            extracted_stderr = msg[idx + len(stderr_marker):]
+        else:
+            extracted_stderr = msg
+        error_type = classify_ffmpeg_error(-1, extracted_stderr)
+        if error_type != FfmpegErrorType.UNKNOWN:
+            return not is_retryable(error_type)
+    # 无法归类, 默认为瞬时错误(可重试)
+    return False
+
+
+def _run_render(task_id: int, lease_token: str | None = None) -> None:
     """渲染阶段 (V0.1.12.5: produce_clip 始终 auto_upload=False)。
 
     成功后将 clip.id 写入 task.clip_id, 状态推进到 RENDERED。
+    使用 ffmpeg_errors.is_retryable 判断失败是瞬时(可重试)还是永久。
     """
     t0 = time.time()
     from app.pipeline.orchestrator import produce_clip
@@ -963,11 +1032,16 @@ def _run_render(task_id: int) -> None:
         clip = produce_clip(cid, auto_upload=False)
     except Exception as exc:
         ms = int((time.time() - t0) * 1000)
+        # 尝试从异常中分类 FFmpeg 错误, 决定是否永久失败
+        permanent = _is_render_error_permanent(exc)
         with get_session() as db:
             t = db.get(SegmentTask, task_id)
             if t is not None:
-                mark_failed(t, f"RenderError: {exc}", permanent=False)
-                db.add(t)
+                if _still_has_lease(t, _WORKER_ID, lease_token, TaskStatus.RENDERING):
+                    mark_failed(t, f"RenderError: {exc}", permanent=permanent)
+                    db.add(t)
+                else:
+                    _logger.warning("stale_result_discarded: task={} 已失去租约, 丢弃渲染错误结果", task_id)
         return
 
     # 严格校验渲染结果 — None / 文件不存在 / 片长过短 全视为失败
@@ -976,8 +1050,11 @@ def _run_render(task_id: int) -> None:
         with get_session() as db:
             t = db.get(SegmentTask, task_id)
             if t is not None:
-                mark_failed(t, "RenderFailedError: clip rendering returned no result", permanent=False)
-                db.add(t)
+                if _still_has_lease(t, _WORKER_ID, lease_token, TaskStatus.RENDERING):
+                    mark_failed(t, "RenderFailedError: clip rendering returned no result", permanent=False)
+                    db.add(t)
+                else:
+                    _logger.warning("stale_result_discarded: task={} 已失去租约, 丢弃渲染结果", task_id)
         return
 
     from pathlib import Path as _Path
@@ -989,8 +1066,11 @@ def _run_render(task_id: int) -> None:
             t = db.get(SegmentTask, task_id)
             if t is not None:
                 detail = "output file missing" if not out_exists else f"output too small ({_Path(clip.file_path).stat().st_size} bytes)" if clip.file_path else "no output path"  # noqa: E501
-                mark_failed(t, f"RenderFailedError: {detail}", permanent=False)
-                db.add(t)
+                if _still_has_lease(t, _WORKER_ID, lease_token, TaskStatus.RENDERING):
+                    mark_failed(t, f"RenderFailedError: {detail}", permanent=False)
+                    db.add(t)
+                else:
+                    _logger.warning("stale_result_discarded: task={} 已失去租约, 丢弃渲染错误结果", task_id)
         return
 
     if clip.duration_s is not None and clip.duration_s < 1.0:
@@ -998,21 +1078,26 @@ def _run_render(task_id: int) -> None:
         with get_session() as db:
             t = db.get(SegmentTask, task_id)
             if t is not None:
-                mark_failed(t, f"RenderFailedError: output duration too short ({clip.duration_s:.1f}s)", permanent=False)  # noqa: E501
-                db.add(t)
+                if _still_has_lease(t, _WORKER_ID, lease_token, TaskStatus.RENDERING):
+                    mark_failed(t, f"RenderFailedError: output duration too short ({clip.duration_s:.1f}s)", permanent=False)  # noqa: E501
+                    db.add(t)
+                else:
+                    _logger.warning("stale_result_discarded: task={} 已失去租约, 丢弃渲染错误结果", task_id)
         return
 
     ms = int((time.time() - t0) * 1000)
     with get_session() as db:
         task = db.get(SegmentTask, task_id)
-        if task:
+        if task and _still_has_lease(task, _WORKER_ID, lease_token, TaskStatus.RENDERING):
             mark_completed(task, ms)
             # V0.1.12.5: 保存 clip_id + 进入 RENDERED (非 AWAITING_REVIEW)
             enqueue_next(task, TaskStatus.RENDERED, clip_id=clip.id)
             db.add(task)
+        elif task:
+            _logger.warning("stale_result_discarded: task={} 已失去租约, 丢弃渲染结果", task_id)
 
 
-def _run_publish(task_id: int) -> None:
+def _run_publish(task_id: int, lease_token: str | None = None) -> None:
     """Execute publish stage: validate + upload, then map UploadTask status (V0.1.12.7).
 
     V0.1.12.7: 根据 UploadTask 真实状态推进主流水线:
@@ -1078,16 +1163,22 @@ def _run_publish(task_id: int) -> None:
         with get_session() as db:
             t = db.get(SegmentTask, task_id)
             if t is not None:
-                mark_failed(t, f"PublishError: {exc}", permanent=False)
-                db.add(t)
+                if _still_has_lease(t, _WORKER_ID, lease_token, TaskStatus.PUBLISHING):
+                    mark_failed(t, f"PublishError: {exc}", permanent=False)
+                    db.add(t)
+                else:
+                    _logger.warning("stale_result_discarded: task={} 已失去租约, 丢弃发布错误结果", task_id)
         return
 
     if upload_task is None:
         with get_session() as db:
             t = db.get(SegmentTask, task_id)
             if t is not None:
-                mark_failed(t, "PublishError: upload_task 为空", permanent=False)
-                db.add(t)
+                if _still_has_lease(t, _WORKER_ID, lease_token, TaskStatus.PUBLISHING):
+                    mark_failed(t, "PublishError: upload_task 为空", permanent=False)
+                    db.add(t)
+                else:
+                    _logger.warning("stale_result_discarded: task={} 已失去租约, 丢弃发布结果", task_id)
         return
 
     uid = upload_task.id or 0
@@ -1100,14 +1191,19 @@ def _run_publish(task_id: int) -> None:
         task_id, clip_id, uid, ustatus, remote_id,
     )
 
-    # V0.1.12.7: 根据 UploadTask 真实状态映射
-    apply_upload_result(
-        task_id=task_id,
-        upload_task_id=uid,
-        upload_status=ustatus,
-        upload_error=uerror,
-        remote_id=remote_id,
-    )
+    # V0.1.12.7: 根据 UploadTask 真实状态映射 — 先校验租约
+    with get_session() as db:
+        t = db.get(SegmentTask, task_id)
+        if t and _still_has_lease(t, _WORKER_ID, lease_token, TaskStatus.PUBLISHING):
+            apply_upload_result(
+                task_id=task_id,
+                upload_task_id=uid,
+                upload_status=ustatus,
+                upload_error=uerror,
+                remote_id=remote_id,
+            )
+        elif t:
+            _logger.warning("stale_result_discarded: task={} 已失去租约, 丢弃发布结果", task_id)
 
 
 # ═══════════════════════════════════════════════════

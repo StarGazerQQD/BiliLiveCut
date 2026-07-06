@@ -608,11 +608,8 @@ class TestASRFallback:
 class TestDataMigration:
     """版本化迁移。"""
 
-    def test_migrate_module_loadable(self) -> None:
-        from app.db.migrate import check_schema, run_migrations
-        assert callable(check_schema)
-        assert callable(run_migrations)
-
-    def test_migrations_list_not_empty(self) -> None:
-        from app.db.migrate import _MIGRATIONS
-        assert len(_MIGRATIONS) > 0
+    def test_schema_module_loadable(self) -> None:
+        """Schema 校验模块可正常导入。"""
+        from app.db.schema import compute_schema_fingerprint, validate_schema
+        assert callable(compute_schema_fingerprint)
+        assert callable(validate_schema)

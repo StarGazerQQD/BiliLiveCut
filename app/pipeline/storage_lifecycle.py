@@ -49,6 +49,12 @@ def _safe_unlink(disk_path: str, allowed_root: Path) -> bool:
 # 可配置的默认值(可通过 settings 覆盖)。
 _MIN_FREE_GB = 10
 _RAW_RETENTION_DAYS = 7
+
+# 两级磁盘保护阈值(GB),暂未纳入 Settings 模型,作为模块常量。
+LOW_DISK_THRESHOLD_GB: float = 20.0
+"""低于此阈值:暂停新分析/转写/渲染任务,暂停模型下载。"""
+CRITICAL_DISK_THRESHOLD_GB: float = 5.0
+"""低于此阈值:安全停止当前录制,优雅终止 ffmpeg,暂停重度日志/弹幕写入。"""
 def get_disk_usage(path: str | Path | None = None) -> dict:
     """获取磁盘使用情况。
 
@@ -105,6 +111,47 @@ def check_disk_safe(min_free_gb: float | None = None) -> tuple[bool, str]:
         logger.warning(msg)
         return False, msg
     return True, f"磁盘剩余 {free:.1f}GB,安全。"
+
+
+def check_disk_level() -> tuple[str, float]:
+    """两级磁盘保护检查,返回当前危险等级及剩余空间。
+
+    等级规则:
+    - ``"ok"``: 剩余空间 >= ``LOW_DISK_THRESHOLD_GB``
+    - ``"low"``: ``CRITICAL_DISK_THRESHOLD_GB`` <= 剩余空间 < ``LOW_DISK_THRESHOLD_GB``
+    - ``"critical"``: 剩余空间 < ``CRITICAL_DISK_THRESHOLD_GB``
+
+    :returns: ``(level, free_gb)`` 其中 level 为 ``"ok"`` / ``"low"`` / ``"critical"``。
+    """
+    usage = get_disk_usage()
+    free_gb = usage["free_gb"]
+    if free_gb < CRITICAL_DISK_THRESHOLD_GB:
+        return ("critical", free_gb)
+    if free_gb < LOW_DISK_THRESHOLD_GB:
+        return ("low", free_gb)
+    return ("ok", free_gb)
+
+
+def is_safe_for_new_tasks() -> bool:
+    """检查磁盘是否安全,足以启动新任务(分析/转写/渲染)。
+
+    仅当 ``check_disk_level()`` 返回 ``"ok"`` 时返回 ``True``。
+
+    :returns: 是否可以安全启动新任务。
+    """
+    level, _ = check_disk_level()
+    return level == "ok"
+
+
+def should_stop_recording() -> bool:
+    """检查是否应立即安全停止录制(磁盘进入 critical 状态)。
+
+    当 ``check_disk_level()`` 返回 ``"critical"`` 时返回 ``True``。
+
+    :returns: 是否应立即停止录制并释放资源。
+    """
+    level, _ = check_disk_level()
+    return level == "critical"
 
 
 def cleanup_old_raw_files(retention_days: int | None = None) -> int:
@@ -211,18 +258,37 @@ def run_disk_maintenance() -> dict:
     result["cleaned_raw"] = cleanup_old_raw_files()
     result["cleaned_rejected"] = cleanup_rejected_candidates()
 
-    # 安全检查。
+    # 安全检查(兼容旧接口)。
     safe, msg = check_disk_safe()
     result["safe"] = safe
     result["safe_message"] = msg
 
+    # 两级磁盘保护:critical 时触发通知。
+    level, free_gb = check_disk_level()
+    result["disk_level"] = level
+    if level == "critical":
+        logger.warning("磁盘进入 critical 状态 (剩余 {:.1f}GB),触发通知。", free_gb)
+        try:
+            from app.notify.webhook import notify_disk_alert
+
+            notify_disk_alert(
+                free_gb=free_gb,
+                threshold_gb=int(CRITICAL_DISK_THRESHOLD_GB),
+                raw_gb=result.get("raw_size_gb", 0.0),
+                clips_gb=result.get("clips_size_gb", 0.0),
+            )
+        except Exception:
+            logger.exception("磁盘 critical 通知发送失败")
+
     logger.info(
-        "磁盘维护完成: raw={:.2f}GB clips={:.2f}GB free={:.1f}GB cleaned_raw={} cleaned_rej={} safe={}",
+        "磁盘维护完成: raw={:.2f}GB clips={:.2f}GB free={:.1f}GB "
+        "cleaned_raw={} cleaned_rej={} safe={} level={}",
         result["raw_size_gb"],
         result["clips_size_gb"],
         result["disk"].get("free_gb", 0),
         result["cleaned_raw"],
         result["cleaned_rejected"],
         safe,
+        level,
     )
     return result

@@ -1,8 +1,99 @@
 # Changelog
 
-## V0.1.12.8 Alpha (2026-07-06)
+## V0.1.12.9 Alpha (2026-07-06)
 
-### P0 致命修复: 事务边界 / TOCTOU / Settings 密钥 / 模型约束对齐 / Detached ORM / RenderStatus 枚举
+### P0: 删除迁移框架 + 新 Schema 系统 + Worker 租约贯穿 + Web 安全 + 敏感信息脱敏
+
+本质目标: Alpha 阶段停止维护虚构的历史版本迁移代码。采用"当前 Schema 创建、严格校验、不兼容即拒绝启动"策略。加固 Worker 租约验证,所有结果提交路径受租约保护。Web 非本地监听强制认证。
+
+#### Schema 系统重构 (P0)
+- **删除** `run_migrations()`, `_MIGRATIONS` 列表, `MigrationHistory` 模型, `SchemaVersion` 模型
+- **删除** `_migrate_add_columns()` (20+ ALTER TABLE), `_migrate_old_mode_to_switches()`, `_migrate_v1_old_data()`, `_migrate_v2_pipeline_keys()`
+- **删除** 迁移前备份逻辑, SQL 注释解析 (`_remove_sql_line_comments`, `_split_sql_statements`), 旧数据修复代码
+- **新增** `app/db/schema.py`: 轻量 Schema 元信息表 `schema_meta`, SHA-256 Schema 指纹, `create_schema()`, `validate_schema()`, `assure_schema()`
+- **新增** `CURRENT_SCHEMA_VERSION = 1` (重置, 非迁移版本号)
+- 新数据库流程: 按 SQLModel 完整创建 → 写入 schema_meta → 校验指纹与版本 → 启动
+- 不兼容数据库: 拒绝启动, 输出清晰错误信息要求手动重建
+- `app/db/migrate.py` 精简为 `reset_db()` CLI 命令, 支持安全确认与自动备份
+- CLI: `bililivecut db-reset` 命令
+
+#### Worker 租约强化 (P0)
+- `_still_has_lease()`: 新增 `expected_stage` 参数, 同时校验 claimed_by + lease_token + stage == expected_stage
+- `_run_transcribe()`, `_run_analyze()`, `_run_render()`, `_run_publish()`: 成功结果提交前校验租约
+- 失去租约时丢弃结果 (`stale_result_discarded`), 不写数据库
+- 心跳 SQL: 增加 `AND stage = :expected_stage` 条件更新
+- `_clear_heartbeat_if_own()`: 已使用租约条件清理
+
+#### Web 安全 (P0)
+- 非 loopback 监听 (0.0.0.0 / :: / 其他) 且 ADMIN_PASSWORD 为空时拒绝启动
+- 认证比较使用 `secrets.compare_digest` 防止时序攻击
+
+#### 敏感信息脱敏 (P0)
+- 新增 `app/core/sanitize.py`: 统一脱敏器, 识别 Cookie/SESSDATA/API Key/Authorization/Password/Token
+- 应用于日志、异常、API 响应中的敏感字段
+
+### P1: 运行稳定性
+
+#### FFmpeg 错误分类 (P1)
+- 新增 `app/core/ffmpeg_errors.py`: 结构化异常类型 (TRANSIENT_NETWORK/UPSTREAM_UNAVAILABLE/DISK_FULL/PERMISSION_DENIED/INVALID_ARGUMENT/MISSING_BINARY/UNSUPPORTED_CODEC/CORRUPTED_INPUT/CANCELLED/UNKNOWN)
+- `is_retryable()`: 瞬时网络/上游不可用 指数退避重试; 磁盘满/权限/参数错误/编码器 永久失败
+- `app/clipping/clipper.py`: `_run_ffmpeg_clip`/`_render_single_variant`/`probe_media`/`_render_text_card`/`_grab_cover` 均接入错误分类
+- `app/pipeline/task_worker.py`: `_run_render` 错误路径使用 `is_retryable` 决策重试
+
+#### Bilibili 风控熔断 (P1)
+- `app/sources/bilibili/client.py`: 新增 `BilibiliRateLimitError`/`HttpErrorType`, HTTP 403/412/Cookie 失效/业务错误码分类
+- 新增 `CircuitBreaker` 类: 故障计数 + 指数退避 `backoff_until`
+- 新增 `_ROOM_BREAKERS` 房间级熔断: 403/412 触发后停止高频请求直到冷却期结束
+- 解析 `Retry-After` 响应头
+
+#### 全局资源预算 (P1)
+- 新增 `app/core/resource_budget.py`: `ResourceBudget` 类, CPU/GPU/内存/显存四维资源池
+- 任务成本估算: ASR(cpu=1/1500MB)、渲染(cpu=1/500MB)、上传(cpu=0/100MB)
+- `acquire()`/`release()`: 资源不足时拒绝, 防止 OOM
+
+#### 两级磁盘保护 (P1)
+- `app/pipeline/storage_lifecycle.py`: 新增 `LOW_DISK_THRESHOLD_GB`(20GB)/`CRITICAL_DISK_THRESHOLD_GB`(5GB)
+- `check_disk_level()`: 返回 ok/low/critical 三级
+- `is_safe_for_new_tasks()`: 低磁盘暂停新任务
+- `should_stop_recording()`: 危险磁盘安全停止录制
+
+#### SQLite 优化 (P1)
+- 新增 `app/db/optimize.py`: `record_lock_wait()`/`record_transaction_duration()` 锁等待与事务耗时监控
+- `with_retry_on_lock()`: 数据库锁指数退避重试 (max 3 次)
+- `monitored_transaction()`: 带监控的事务上下文管理器
+
+#### 统一参数校验 (P1)
+- `app/core/config.py`: 新增 `@model_validator(mode="after")` 跨字段校验
+- 校验: `upload_max_retries ≥ 0`, `upload_max_per_hour ≥ 1`, `disk_alert_threshold_gb ≤ min_free_disk_gb`
+- `biliup_upload_cmd` 包含 `{file}` 占位符检查
+- 房间号格式/URL/时间范围/分数范围/并发数上下限校验
+
+#### 登录失败限流 (P1)
+- `app/web/main.py`: 新增 `_LOGIN_FAILURES` IP 级追踪, 5 次/5 分钟窗口
+- 超限返回 HTTP 429 + "登录尝试过于频繁"
+
+### P2: 工程收口
+
+#### CI 增强
+- `pyproject.toml`: 新增 `pip-audit` + `pytest-cov` 依赖
+- 新增 `[tool.coverage]` 配置, 初始门槛 50%
+
+#### ASR 资源检测
+- 新增 `app/core/asr_detection.py`: `detect_resources()` 检测 GPU 显存 + 系统内存
+- `recommend_preset()`: 自动推荐 high/medium/low/minimal 模型预设
+- `check_resources_sufficient()`: 加载前资源预检
+
+#### 弹幕分级采样
+- 新增 `app/analysis/danmaku_sampling.py`: `DanmakuSampler` 按类型分级 (SC/互动 100%, 普通 30%, 高密度降至 10%)
+- `get_sampler()`: 房间级采样器隔离
+
+#### 运行指标与监控
+- 新增 `app/core/metrics.py`: 任务计数/Worker 状态/录制时长/ASR/渲染/上传平均耗时/磁盘使用
+- 新增 `app/web/routers/api.py`: `GET /api/metrics` 实时指标端点 + 历史趋势 (60 点)
+
+#### 新增测试
+- `tests/test_v0129_p1p2.py`: 29 项测试 (FFmpeg 错误/弹幕采样/脱敏/磁盘保护/Settings repr 防泄露)
+- 全量: **290 passed** (原 261 + 新增 29)
 
 本质目标: 修复 9 项 P0 问题, 消除审批事务割裂、双写不一致、路径遍历漏洞、密钥日志泄漏、ORM Detached 崩溃。
 

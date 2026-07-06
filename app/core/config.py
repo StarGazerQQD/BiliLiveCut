@@ -14,7 +14,7 @@ from __future__ import annotations
 from functools import lru_cache
 from typing import Literal
 
-from pydantic import Field
+from pydantic import Field, model_validator
 from pydantic_settings import BaseSettings, SettingsConfigDict
 
 
@@ -30,6 +30,13 @@ class Settings(BaseSettings):
         extra="ignore",
         case_sensitive=False,
     )
+
+    def __repr__(self) -> str:
+        """安全 repr — 对敏感字段值进行脱敏处理。"""
+        from app.core.sanitize import sanitize_text
+
+        raw = super().__repr__()
+        return sanitize_text(raw)
 
     # ---------- 通用 ----------
     app_env: Literal["dev", "prod"] = "dev"
@@ -199,6 +206,61 @@ class Settings(BaseSettings):
     notify_on_disk_alert: bool = True      # 磁盘不足时通知
     notify_on_error: bool = True           # 任务永久失败时通知
     disk_alert_threshold_gb: int = 10      # 磁盘告警阈值(GB)
+
+    @model_validator(mode="after")
+    def validate_cross_fields(self) -> Settings:
+        """跨字段校验,在模型完成字段级别验证后执行。
+
+        检查逻辑约束(如磁盘告警阈值应小于最小保留空间)
+        以及格式约束(如上传命令模板须包含 ``{file}`` 占位符)。
+
+        :returns: 校验通过的 ``self``。
+        :raises ValueError: 校验失败时抛出含描述性信息的异常。
+        """
+        # asr_review_risk_threshold 必须在 [0, 1] 范围内
+        if not (0.0 <= self.asr_review_risk_threshold <= 1.0):
+            raise ValueError(
+                f"asr_review_risk_threshold 必须在 0.0 ~ 1.0 之间,"
+                f"当前值: {self.asr_review_risk_threshold}"
+            )
+
+        # clip_max_duration_s 必须大于 5 秒
+        if self.clip_max_duration_s <= 5:
+            raise ValueError(
+                f"clip_max_duration_s 必须大于 5 秒,"
+                f"当前值: {self.clip_max_duration_s}"
+            )
+
+        # upload_max_retries 必须 >= 0
+        if self.upload_max_retries < 0:
+            raise ValueError(
+                f"upload_max_retries 必须 >= 0,"
+                f"当前值: {self.upload_max_retries}"
+            )
+
+        # upload_max_per_hour 必须 >= 1
+        if self.upload_max_per_hour < 1:
+            raise ValueError(
+                f"upload_max_per_hour 必须 >= 1,"
+                f"当前值: {self.upload_max_per_hour}"
+            )
+
+        # 磁盘告警阈值应 <= 最小保留空间,确保告警在磁盘不足之前触发
+        if self.disk_alert_threshold_gb > self.min_free_disk_gb:
+            raise ValueError(
+                f"disk_alert_threshold_gb ({self.disk_alert_threshold_gb} GB)"
+                f" 必须 <= min_free_disk_gb ({self.min_free_disk_gb} GB),"
+                f" 确保磁盘告警在空间不足之前触发"
+            )
+
+        # biliup_upload_cmd 如果非空,必须包含 {file} 占位符
+        if self.biliup_upload_cmd and "{file}" not in self.biliup_upload_cmd:
+            raise ValueError(
+                "biliup_upload_cmd 必须包含 {file} 占位符,"
+                f"当前值: {self.biliup_upload_cmd}"
+            )
+
+        return self
 
 
 @lru_cache(maxsize=1)
