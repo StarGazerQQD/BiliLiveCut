@@ -93,8 +93,8 @@ class Settings(BaseSettings):
     asr_fallback_keep_loaded: bool = False
     asr_model_idle_unload_seconds: int = 900
     asr_preload_on_start: bool = False
-    # ASR 模型下载源
-    asr_model_revision: str = "master"
+    # V0.1.12.2: 固定模型 revision (不再默认 master)
+    asr_model_revision: str = "v2.0.4"
 
     # ---------- AI:大模型(OpenAI 兼容协议,境内推荐 DeepSeek/通义/Kimi/GLM) ----------
     # provider 仅作标识;真正决定连接的是 base_url + api_key + model。

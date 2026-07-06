@@ -195,18 +195,22 @@ def _migrate_old_mode_to_switches() -> None:
 
 
 def init_db() -> None:
-    """创建所有表(若不存在),并对旧表执行轻量迁移(追加缺失列)。
+    """创建所有表(若不存在),执行迁移。
 
-    导入模型模块以触发表注册,然后调用 ``SQLModel.metadata.create_all``。
-    可安全重复调用。
+    1. SQLModel.metadata.create_all — 新建表
+    2. _migrate_add_columns — 为旧表追加缺失列 (V0.1.2 ~ V0.1.12.2 历史迁移, 幂等)
+    3. run_migrations — V0.1.12.2 起版本化迁移 (含备份 + 数据修复)
     """
-    # 必须先导入 models,SQLModel.metadata 才知道有哪些表。
     from app.db import models  # noqa: F401
 
     SQLModel.metadata.create_all(engine)
 
-    # 轻量迁移:为已存在的 live_rooms 表补充 V0.1.2 新增列(SQLite 的 ALTER 语义)。
+    # 历史列迁移 (幂等安全)
     _migrate_add_columns()
+
+    # V0.1.12.2: 版本化迁移
+    from app.db.migrate import run_migrations
+    run_migrations()
 
 
 @contextmanager

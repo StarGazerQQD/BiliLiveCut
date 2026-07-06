@@ -46,9 +46,13 @@ _RETRY_MAX_COUNT = 5
 
 _HEARTBEAT_INTERVAL_S = 30
 _STALE_TIMEOUT_S = 120
+_HEARTBEAT_POLL_S = 5  # V0.1.12.2: 心跳线程轮询间隔
 
 _WORKER_ID = f"worker-{uuid.uuid4().hex[:8]}"
 _logger = logger
+
+# V0.1.12.2: Worker 生命周期
+_shutting_down: bool = False
 
 
 # ── 全局单例 Worker ─────────────────────────────────────────────────
@@ -204,14 +208,20 @@ def mark_failed(task: SegmentTask, error: str, permanent: bool = False) -> None:
 # ═══════════════════════════════════════════════════
 
 def _pop_and_claim(queued_stage: str) -> SegmentTask | None:
-    """原子领取:SELECT + 条件赋值,确保多 Worker 不抢同一任务。
+    """原子领取: 条件 UPDATE + 行数校验, SQLite 下也可靠。
 
-    唯一的 attempts++ 点。
+    流程:
+    1. SELECT 一个符合条件的 candidate task
+    2. 条件 UPDATE WHERE id=? AND stage=queued_stage (防止竞态)
+    3. 只有 affected_rows==1 时才算领取成功
+    4. 再 SELECT 一次取回完整对象并更新 claimed_by/claimed_at
     """
     now = _now()
+    active_stage = _active_stage(queued_stage)
     with get_session() as db:
-        task = db.exec(
-            select(SegmentTask)
+        # Step 1: SELECT candidate
+        candidate = db.exec(
+            select(SegmentTask.id, SegmentTask.segment_id)
             .where(
                 SegmentTask.stage == queued_stage,
                 (SegmentTask.next_retry_at.is_(None)) | (SegmentTask.next_retry_at <= now),
@@ -220,20 +230,72 @@ def _pop_and_claim(queued_stage: str) -> SegmentTask | None:
             .limit(1)
         ).first()
 
+        if candidate is None:
+            return None
+
+        task_id, segment_id = candidate
+
+        # Step 2: 原子条件 UPDATE (只有 stage 仍为 queued_stage 时才更新)
+        result = db.exec(
+            """UPDATE segment_tasks
+               SET stage = :active,
+                   claimed_by = :worker_id,
+                   claimed_at = :now,
+                   heartbeat_at = :now,
+                   attempts = attempts + 1,
+                   started_at = :now,
+                   last_error = NULL
+               WHERE id = :task_id
+                 AND stage = :queued_stage""",
+            {
+                "active": active_stage,
+                "worker_id": _WORKER_ID,
+                "now": now.isoformat(),
+                "task_id": task_id,
+                "queued_stage": queued_stage,
+            },
+        )
+
+        if result.rowcount != 1:
+            _logger.info("原子领取失败 task_id={} 已被其他 Worker 抢占", task_id)
+            return None
+
+        # Step 3: 取回完整对象
+        task = db.get(SegmentTask, task_id)
         if task is None:
             return None
 
-        task.stage = _active_stage(queued_stage)
-        task.claimed_by = _WORKER_ID
-        task.claimed_at = now
-        mark_active(task)  # 唯一 attempts++ 点
-        db.add(task)
+        _logger.info("原子领取成功 task_id={} stage={} segment={} worker={}",
+                     task_id, active_stage, segment_id, _WORKER_ID)
         return task
 
 
 # ═══════════════════════════════════════════════════
 # 阶段推进
 # ═══════════════════════════════════════════════════
+
+def _room_cfg_from_task(task: SegmentTask) -> dict:
+    """从任务读取房间级自动化开关 (V0.1.12.2 新增)。
+
+    :returns: auto_analyze/auto_render/auto_approve/auto_upload 开关。
+    """
+    from app.db.models import LiveRoom, RecordingSession
+    with get_session() as db:
+        session = db.get(RecordingSession, task.session_id)
+        if session is None:
+            return {"auto_analyze": False, "auto_render": False, "auto_approve": False, "auto_upload": False}
+        room = db.get(LiveRoom, session.room_id) if session.room_id else None
+        if room is None:
+            return {"auto_analyze": False, "auto_render": False, "auto_approve": False, "auto_upload": False}
+        return {
+            "auto_analyze": bool(room.auto_analyze),
+            "auto_render": bool(room.auto_render),
+            "auto_approve": bool(room.auto_approve),
+            "auto_upload": bool(room.auto_upload),
+            "auto_approve_threshold": float(room.auto_approve_threshold),
+            "review_threshold": float(room.review_threshold),
+        }
+
 
 def _advance_recorded() -> None:
     with get_session() as db:
@@ -243,6 +305,11 @@ def _advance_recorded() -> None:
         for task in tasks:
             seg = db.get(RawSegment, task.segment_id)
             if seg is not None and seg.status == OldStatus.RECORDED:
+                # V0.1.12.2: auto_analyze=false 时不推进到转写
+                cfg = _room_cfg_from_task(task)
+                if not cfg.get("auto_analyze", False):
+                    _logger.debug("auto_analyze=off, 片段 {} 不自动进入转写队列", task.segment_id)
+                    continue
                 enqueue_next(task, TaskStatus.QUEUED_FOR_TRANS)
                 db.add(task)
 
@@ -253,6 +320,10 @@ def _advance_transcribed() -> None:
             select(SegmentTask).where(SegmentTask.stage == TaskStatus.TRANSCRIBED)
         ).all()
         for task in tasks:
+            cfg = _room_cfg_from_task(task)
+            if not cfg.get("auto_analyze", False):
+                _logger.debug("auto_analyze=off, 片段 {} 不自动创建分析任务", task.segment_id)
+                continue
             enqueue_next(task, TaskStatus.QUEUED_FOR_ANALYSIS)
             db.add(task)
 
@@ -263,6 +334,11 @@ def _advance_candidate() -> None:
             select(SegmentTask).where(SegmentTask.stage == TaskStatus.CANDIDATE_CREATED)
         ).all()
         for task in tasks:
+            # V0.1.12.2: auto_render=false 时不推进到渲染
+            cfg = _room_cfg_from_task(task)
+            if not cfg.get("auto_render", False):
+                _logger.debug("auto_render=off, candidate {} 不自动进入渲染队列", task.candidate_id)
+                continue
             enqueue_next(task, TaskStatus.QUEUED_FOR_RENDER)
             db.add(task)
 
@@ -412,12 +488,42 @@ def _recover_orphans() -> None:
 
 
 # ═══════════════════════════════════════════════════
-# 执行 (V0.1.11-alpha: heartbeat + no double attempts)
+# 执行 (V0.1.12.2: 周期性心跳 + 优雅关闭感知)
 # ═══════════════════════════════════════════════════
+
+def _start_heartbeat_thread(task_id: int) -> threading.Event:
+    """启动后台心跳线程, 周期性更新 heartbeat_at (V0.1.12.2 新增)。
+
+    :param task_id: SegmentTask ID。
+    :returns: stop_event — 设置后心跳线程退出。
+    """
+    import threading
+    stop = threading.Event()
+
+    def _beat() -> None:
+        while not stop.is_set() and not _shutting_down:
+            try:
+                with get_session() as db:
+                    t = db.get(SegmentTask, task_id)
+                    if t is not None:
+                        mark_heartbeat(t)
+                        db.add(t)
+            except Exception:
+                pass
+            stop.wait(_HEARTBEAT_POLL_S)
+
+    t = threading.Thread(target=_beat, daemon=True, name=f"hb-{task_id}")
+    t.start()
+    return stop
+
 
 def _execute_task(task_id: int, active_stage: str) -> None:
     t0 = time.time()
+    hb_stop: threading.Event | None = None
     try:
+        # V0.1.12.2: 启动周期性心跳 (长任务期间持续更新)
+        hb_stop = _start_heartbeat_thread(task_id)
+
         if active_stage == TaskStatus.TRANSCRIBING:
             _run_transcribe(task_id)
         elif active_stage == TaskStatus.ANALYZING:
@@ -431,6 +537,15 @@ def _execute_task(task_id: int, active_stage: str) -> None:
             if t is not None:
                 _logger.error("任务 {} 阶段 {} 失败: {}", task_id, active_stage, exc)
                 mark_failed(t, f"{type(exc).__name__}: {exc}", permanent=False)
+                db.add(t)
+    finally:
+        if hb_stop is not None:
+            hb_stop.set()
+        # V0.1.12.2: 清除 heartbeat 标记
+        with get_session() as db:
+            t = db.get(SegmentTask, task_id)
+            if t is not None and t.stage not in (TaskStatus.COMPLETED, TaskStatus.FAILED):
+                t.heartbeat_at = None
                 db.add(t)
 
 
@@ -494,7 +609,50 @@ def _run_render(task_id: int) -> None:
             return
         mark_heartbeat(task)
         db.add(task)
-    produce_clip(cid, auto_upload=False)
+    try:
+        clip = produce_clip(cid, auto_upload=False)
+    except Exception as exc:
+        ms = int((time.time() - t0) * 1000)
+        with get_session() as db:
+            t = db.get(SegmentTask, task_id)
+            if t is not None:
+                mark_failed(t, f"RenderError: {exc}", permanent=False)
+                db.add(t)
+        return
+
+    # V0.1.12.2: 严格校验渲染结果 — None 或 文件不存在 全视为失败
+    if clip is None:
+        ms = int((time.time() - t0) * 1000)
+        with get_session() as db:
+            t = db.get(SegmentTask, task_id)
+            if t is not None:
+                mark_failed(t, "RenderFailedError: clip rendering returned no result", permanent=False)
+                db.add(t)
+        return
+
+    from pathlib import Path as _Path
+    out_exists = clip.file_path and _Path(clip.file_path).exists()
+    out_size_ok = out_exists and _Path(clip.file_path).stat().st_size > 1024
+    if not out_exists or not out_size_ok:
+        ms = int((time.time() - t0) * 1000)
+        with get_session() as db:
+            t = db.get(SegmentTask, task_id)
+            if t is not None:
+                detail = "output file missing" if not out_exists else f"output too small ({_Path(clip.file_path).stat().st_size} bytes)" if clip.file_path else "no output path"
+                mark_failed(t, f"RenderFailedError: {detail}", permanent=False)
+                db.add(t)
+        return
+
+    # 校验片长
+    if clip.duration_s is not None and clip.duration_s < 1.0:
+        ms = int((time.time() - t0) * 1000)
+        with get_session() as db:
+            t = db.get(SegmentTask, task_id)
+            if t is not None:
+                mark_failed(t, f"RenderFailedError: output duration too short ({clip.duration_s:.1f}s)", permanent=False)
+                db.add(t)
+        return
+
     ms = int((time.time() - t0) * 1000)
     with get_session() as db:
         task = db.get(SegmentTask, task_id)
@@ -556,26 +714,57 @@ class TaskWorker:
     async def start(self) -> None:
         if self._running:
             return
+        global _shutting_down
+        _shutting_down = False
         self._running = True
         _recover_orphans()
         self._main_task = asyncio.create_task(self._loop())
         _logger.info("TaskWorker started T{}/A{}/R{}", MAX_TRANSCRIBING, MAX_ANALYZING, MAX_RENDERING)
 
     async def stop(self) -> None:
+        """V0.1.12.2: 优雅关闭 — 停止领取新任务, 等待当前任务完成或取消。
+
+        1. 停止领取新任务 (shutting_down=True)
+        2. 取消所有 pending 的 dispatch task
+        3. 等待主循环退出
+        4. 清理未完成任务的状态
+        """
+        global _shutting_down
+        _shutting_down = True
         self._running = False
-        for coll in (self._transcribing, self._analyzing, self._rendering):
-            for t in coll:
-                t.cancel()
+
+        # 取消主循环
         if self._main_task is not None:
             self._main_task.cancel()
             try:
                 await self._main_task
             except asyncio.CancelledError:
                 pass
+
+        # V0.1.12.2: 等待已启动的任务安全完成 (带超时)
+        grace_period = 30  # 最多等待 30 秒
+        for coll_name, coll in [("transcribing", self._transcribing),
+                                 ("analyzing", self._analyzing),
+                                 ("rendering", self._rendering)]:
+            pending = {t for t in coll if not t.done()}
+            if pending:
+                _logger.info("优雅关闭: 等待 {} 个 {} 任务完成 (最多 {}s)",
+                            len(pending), coll_name, grace_period)
+                try:
+                    done, _ = await asyncio.wait(pending, timeout=grace_period)
+                    _logger.info("优雅关闭: {} 任务正常完成", len(done))
+                except asyncio.TimeoutError:
+                    pass
+                # 取消仍未完成的任务
+                still_running = {t for t in coll if not t.done()}
+                for t in still_running:
+                    _logger.warning("优雅关闭: 强制取消 {} 任务", coll_name)
+                    t.cancel()
+
         _logger.info("TaskWorker stopped.")
 
     async def _loop(self) -> None:
-        while self._running:
+        while self._running and not _shutting_down:
             try:
                 _retry_expired()
                 _advance_recorded()
@@ -599,7 +788,7 @@ class TaskWorker:
         running: set[asyncio.Task[None]],
         max_concurrent: int,
     ) -> None:
-        while self._running and len(running) < max_concurrent:
+        while self._running and not _shutting_down and len(running) < max_concurrent:
             task = _pop_and_claim(queued_stage)
             if task is None:
                 break
