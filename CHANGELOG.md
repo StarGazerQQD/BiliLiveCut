@@ -1,6 +1,6 @@
 # Changelog
 
-## V0.1.12.5b Alpha (2026-07-06)
+## V0.1.12.6 Alpha (2026-07-06)
 
 ### 安全加固: Dockerfile 非 root / pip 哈希校验 / 路径穿越防御 / TOCTOU / SMTP 证书 / 迁移原子性
 
