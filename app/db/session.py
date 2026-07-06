@@ -85,6 +85,19 @@ def _migrate_add_columns() -> None:
         ("highlight_topics", "confirmed_by_user", "INTEGER NOT NULL DEFAULT 0", None),
         # V0.1.12: ASR 多引擎流水线 — 辅助特征字段。
         ("transcripts", "auxiliary_json", "TEXT", None),
+        # V0.1.12.2: ASR 追踪、复核与引擎信息。
+        ("transcripts", "base_text", "TEXT", None),
+        ("transcripts", "final_text", "TEXT", None),
+        ("transcripts", "primary_backend", "TEXT", None),
+        ("transcripts", "primary_model_id", "TEXT", None),
+        ("transcripts", "primary_model_revision", "TEXT", None),
+        ("transcripts", "review_backend", "TEXT", None),
+        ("transcripts", "fallback_backend", "TEXT", None),
+        ("transcripts", "review_triggered", "INTEGER NOT NULL DEFAULT 0", None),
+        ("transcripts", "review_risk_score", "REAL", None),
+        ("transcripts", "review_reasons", "TEXT", None),
+        ("transcripts", "final_text_source", "TEXT", None),
+        ("transcripts", "inference_duration", "REAL", None),
     ]
     with engine.connect() as conn:
         existing_lr = {r[1] for r in conn.exec_driver_sql(
@@ -103,6 +116,9 @@ def _migrate_add_columns() -> None:
         ).fetchall()} if conn.exec_driver_sql(
             "SELECT name FROM sqlite_master WHERE type='table' AND name='segment_tasks'"
         ).fetchone() else set()
+        existing_tr = {r[1] for r in conn.exec_driver_sql(
+            "PRAGMA table_info(transcripts)"
+        ).fetchall()}
         for table, col, sql_type, _ in _migrations:
             if table == "live_rooms":
                 existing = existing_lr
@@ -112,6 +128,8 @@ def _migrate_add_columns() -> None:
                 existing = existing_ht
             elif table == "segment_tasks":
                 existing = existing_st
+            elif table == "transcripts":
+                existing = existing_tr
             else:
                 existing = set()
             if col not in existing:

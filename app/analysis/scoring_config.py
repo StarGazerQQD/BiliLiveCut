@@ -26,6 +26,7 @@ _DEFAULT_WEIGHTS: dict[str, float] = {
     "laughter": 0.10,
     "trend": 0.15,  # 网感资料库:片段题材与近期热门内容的关联度
     "danmaku_sentiment": 0.15,  # 弹幕情绪:重复率/感叹号密度/特定梗
+    "audio_events": 0.10,          # V0.1.12.2: 音频事件(笑声/掌声/惊讶) SenseVoice 辅助
 }
 
 

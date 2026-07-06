@@ -186,6 +186,7 @@ def get_review_data(candidate_id: int) -> dict:
         "danmaku": "弹幕突增",
         "danmaku_sentiment": "弹幕情绪",
         "trend": "网感关联",
+        "audio_events": "音频事件",
     }
     # 读取权重计算贡献。
     from app.analysis.scoring_config import get_scoring_config
