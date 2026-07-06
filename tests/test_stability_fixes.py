@@ -158,29 +158,30 @@ class TestAutoSwitches:
             assert t is not None
             assert t.stage == TaskStatus.QUEUED_FOR_TRANS
 
-    def test_auto_render_off_stays_candidate_created(self, test_db) -> None:
-        """auto_render=false → 不进入渲染队列。"""
+    def test_auto_render_off_stays_approved_waiting_render(self, test_db) -> None:
+        """auto_render=false → APPROVED → APPROVED_WAITING_RENDER。"""
         from app.db.models import LiveRoom, RecordingSession, SegmentTask, TaskStatus
         from app.db.session import get_session
-        from app.pipeline.task_worker import _advance_candidate
+        from app.pipeline.task_worker import _advance_approved
 
         with get_session() as db:
             room = LiveRoom(id=9003, input_url="test", auto_render=False)
             sess = RecordingSession(id=8003, room_id=9003)
             task = SegmentTask(
                 segment_id=7003, session_id=8003,
-                stage=TaskStatus.CANDIDATE_CREATED,
+                stage=TaskStatus.APPROVED,
                 candidate_id=5001,
-                idempotency_key="7003:candidate_created",
+                idempotency_key="7003:approved",
             )
             db.add_all([room, sess, task])
 
-        _advance_candidate()
+        _advance_approved()
 
         with get_session() as db:
             t = db.get(SegmentTask, task.id)
             assert t is not None
-            assert t.stage == TaskStatus.CANDIDATE_CREATED
+            # auto_render=false → APPROVED_WAITING_RENDER
+            assert t.stage == TaskStatus.APPROVED_WAITING_RENDER
 
     def test_auto_approve_off_stays_awaiting_review(self, test_db) -> None:
         """auto_approve=false → 留在 awaiting_review。"""
@@ -361,7 +362,10 @@ class TestStatusMachine:
         assert not _can_transition(TaskStatus.AWAITING_REVIEW, TaskStatus.TRANSCRIBED)
         assert _can_transition(TaskStatus.RECORDED, TaskStatus.QUEUED_FOR_TRANS)
         assert _can_transition(TaskStatus.AWAITING_REVIEW, TaskStatus.APPROVED)
-        assert _can_transition(TaskStatus.APPROVED, TaskStatus.COMPLETED)
+        assert not _can_transition(TaskStatus.APPROVED, TaskStatus.COMPLETED)  # V0.1.12.5: 不再直接跳转
+        assert _can_transition(TaskStatus.APPROVED, TaskStatus.QUEUED_FOR_RENDER)
+        assert _can_transition(TaskStatus.RENDERING, TaskStatus.RENDERED)
+        assert _can_transition(TaskStatus.RENDERED, TaskStatus.QUEUED_FOR_PUBLISH)
 
     def test_enqueue_next_resets_attempts(self, test_db) -> None:
         """enqueue_next 重置 attempts=0。"""
@@ -394,8 +398,8 @@ class TestStatusMachine:
 class TestUniqueConstraints:
     """幂等键和唯一约束。"""
 
-    def test_duplicate_idempotency_key_rejected(self, test_db) -> None:
-        """重复 idempotency_key 应被数据库拒绝。"""
+    def test_duplicate_pipeline_key_rejected(self, test_db) -> None:
+        """重复 pipeline_key 应被数据库拒绝 (V0.1.12.5)。"""
         from sqlalchemy.exc import IntegrityError
 
         from app.db.models import SegmentTask, TaskStatus
@@ -405,6 +409,8 @@ class TestUniqueConstraints:
             t1 = SegmentTask(
                 segment_id=300, session_id=1,
                 stage=TaskStatus.RECORDED,
+                pipeline_key="pipeline:300",
+                stage_key="stage:300:recorded",
                 idempotency_key="300:recorded",
             )
             db.add(t1)
@@ -413,12 +419,44 @@ class TestUniqueConstraints:
             t2 = SegmentTask(
                 segment_id=301, session_id=1,
                 stage=TaskStatus.RECORDED,
-                idempotency_key="300:recorded",  # 重复
+                pipeline_key="pipeline:300",  # 与 t1 的 pipeline_key 重复
+                stage_key="stage:301:recorded",
+                idempotency_key="301:recorded",
             )
             db.add(t2)
             with pytest.raises(IntegrityError):
                 db.flush()
-            # 回滚以便 context manager 可以 clean commit
+            db.rollback()
+
+    def test_duplicate_segment_id_rejected(self, test_db) -> None:
+        """重复 segment_id 应被数据库拒绝 (V0.1.12.5)。"""
+        from sqlalchemy.exc import IntegrityError
+
+        from app.db.models import SegmentTask, TaskStatus
+        from app.db.session import get_session
+
+        with get_session() as db:
+            t1 = SegmentTask(
+                segment_id=400, session_id=1,
+                stage=TaskStatus.RECORDED,
+                pipeline_key="pipeline:400",
+                stage_key="stage:400:recorded",
+                idempotency_key="400:recorded",
+            )
+            db.add(t1)
+            db.flush()  # OK
+
+            t2 = SegmentTask(
+                segment_id=400,  # 与 t1 的 segment_id 重复
+                session_id=1,
+                stage=TaskStatus.RECORDED,
+                pipeline_key="pipeline:401",
+                stage_key="stage:401:recorded",
+                idempotency_key="401:recorded",
+            )
+            db.add(t2)
+            with pytest.raises(IntegrityError):
+                db.flush()
             db.rollback()
 
     def test_create_task_idempotent(self, test_db) -> None:

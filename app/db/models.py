@@ -125,27 +125,31 @@ class TopicStatus:
 
 
 class TaskStatus:
-    """分段处理任务状态(V0.1.11-alpha 重构)。"""
+    """分段处理任务状态(V0.1.12.5 重构审核→渲染→发布顺序)。"""
 
-    RECORDED = "recorded"                    # 片段已录制,待入队
+    RECORDED = "recorded"                       # 片段已录制,待入队
     QUEUED_FOR_TRANS = "queued_for_transcription"  # 等待转写
-    TRANSCRIBING = "transcribing"            # 正在转写(Whisper GPU)
-    TRANSCRIBED = "transcribed"              # 转写完成,待评分
-    QUEUED_FOR_ANALYSIS = "queued_for_analysis"    # 等待分析
-    ANALYZING = "analyzing"                  # 正在分析(规则+LLM)
-    CANDIDATE_CREATED = "candidate_created"  # 已生成候选
-    QUEUED_FOR_RENDER = "queued_for_render"  # 等待渲染
-    RENDERING = "rendering"                  # 正在渲染(FFmpeg)
-    AWAITING_REVIEW = "awaiting_review"      # 候选待审核
-    APPROVED = "approved"                    # 人工/自动批准
-    COMPLETED = "completed"                  # 最终完成
-    FAILED = "failed"                        # 永久失败(不可重试)
-    CANCELLED = "cancelled"                  # 已取消
-    STALE = "stale"                          # V0.1.11-alpha: 心跳超时,待恢复
-    QUEUED_FOR_PUBLISH = "queued_for_publish"  # V0.1.11-alpha: 等待发布
+    TRANSCRIBING = "transcribing"               # 正在转写
+    TRANSCRIBED = "transcribed"                 # 转写完成
+    QUEUED_FOR_ANALYSIS = "queued_for_analysis" # 等待分析
+    ANALYZING = "analyzing"                     # 正在分析(规则+LLM)
+    CANDIDATE_CREATED = "candidate_created"     # 已生成候选
+    AWAITING_REVIEW = "awaiting_review"         # 候选待审核/自动批准
+    APPROVED = "approved"                       # 已批准
+    APPROVED_WAITING_RENDER = "approved_waiting_render"  # 已批准,等待手动渲染
+    QUEUED_FOR_RENDER = "queued_for_render"     # 等待渲染
+    RENDERING = "rendering"                     # 正在渲染(FFmpeg)
+    RENDERED = "rendered"                       # 渲染完成,待发布决策
+    AWAITING_PUBLISH_CONFIRMATION = "awaiting_publish_confirmation"  # 渲染完成,等待手动发布
+    QUEUED_FOR_PUBLISH = "queued_for_publish"   # 等待发布
+    PUBLISHING = "publishing"                   # 正在发布
+    COMPLETED = "completed"                     # 最终完成
+    FAILED = "failed"                           # 永久失败(不可重试)
+    CANCELLED = "cancelled"                     # 已取消
+    STALE = "stale"                             # 心跳超时,待恢复
 
     # 临时失败子状态
-    TRANSIENT_FAILED = "transient_failed"    # 临时失败,等待重试
+    TRANSIENT_FAILED = "transient_failed"       # 临时失败,等待重试
 
 
 class UploadStatus:
@@ -303,7 +307,8 @@ class HighlightEvent(SQLModel, table=True):
     __tablename__ = "highlight_events"
 
     id: int | None = Field(default=None, primary_key=True)
-    candidate_id: int | None = Field(default=None, index=True, description="关联 highlight_candidates.id(可空)", sa_column_kwargs={"unique": True})  # noqa: E501
+    candidate_id: int | None = Field(default=None, index=True, foreign_key="highlight_candidates.id",
+                                     description="关联 highlight_candidates.id(可空)", sa_column_kwargs={"unique": True})  # noqa: E501
     session_id: int = Field(index=True, description="所属 recording_sessions.id")
     segment_id: int | None = Field(default=None, description="来源 raw_segments.id")
 
@@ -350,10 +355,11 @@ class ClipVariant(SQLModel, table=True):
     __tablename__ = "clip_variants"
 
     id: int | None = Field(default=None, primary_key=True)
-    event_id: int = Field(index=True, description="关联 highlight_events.id", schema_extra={"unique_with": "variant_type"})  # noqa: E501
-    candidate_id: int | None = Field(default=None, index=True, description="[已废弃 V0.1.12.2]关联 highlight_candidates.id(仅向后兼容, 新代码通过 event_id 获取)")  # noqa: E501
+    event_id: int = Field(index=True, foreign_key="highlight_events.id", description="关联 highlight_events.id")
+    candidate_id: int | None = Field(default=None, index=True, description="[已废弃 V0.1.12.2]关联 highlight_candidates.id(仅向后兼容)")  # noqa: E501
 
     variant_type: str = Field(default=ClipVariantType.SINGLE, description="版本类型")
+    render_config_hash: str | None = Field(default=None, description="V0.1.12.5:渲染配置哈希,与 event_id+variant_type 组成唯一约束")
 
     # 渲染参数。
     start_ts: datetime | None = Field(default=None, description="实际渲染起点")
@@ -372,6 +378,12 @@ class ClipVariant(SQLModel, table=True):
     version_number: int = Field(default=1, description="版本号(同 variant_type 同 event 递增)")
 
     created_at: datetime = Field(default_factory=utcnow)
+
+    __table_args__ = (
+        # V0.1.12.5: 同 event+同类型+同配置 只允许一个版本
+        # SQLite 不支持 ALTER TABLE 加 constraint, 通过迁移处理
+        None,
+    )
 
 
 class Topic(SQLModel, table=True):
@@ -404,8 +416,8 @@ class HighlightTopic(SQLModel, table=True):
     __tablename__ = "highlight_topics"
 
     id: int | None = Field(default=None, primary_key=True)
-    event_id: int = Field(index=True, description="关联 highlight_events.id")
-    topic_id: int = Field(index=True, description="关联 topics.id")
+    event_id: int = Field(index=True, foreign_key="highlight_events.id", description="关联 highlight_events.id")
+    topic_id: int = Field(index=True, foreign_key="topics.id", description="关联 topics.id")
     confidence: float = Field(default=0.0, description="该事件属于本主题的相似度")
     is_manual: bool = Field(default=False, description="是否人工手动归类")
     sort_order: int = Field(default=0, description="在合集中的顺序")
@@ -568,10 +580,15 @@ class SystemLog(SQLModel, table=True):
 
 
 class SegmentTask(SQLModel, table=True):
-    """分段处理任务(``segment_tasks``):持久化的异步任务队列 (V0.1.11-alpha 重构)。
+    """分段处理任务(``segment_tasks``):持久化的异步任务队列 (V0.1.12.5 幂等重构)。
 
     每个 RawSegment 录制完成后创建一条任务,按流水线阶段独立推进:
-    recorded → transcribing → analyzing → rendering → approved/completed/failed。
+    recorded → transcribing → analyzing → awaiting_review → approved → rendering → rendered → publishing → completed。
+
+    V0.1.12.5 新增:
+    - pipeline_key: 流程级幂等键 (UNIQUE), 创建后永不修改
+    - stage_key: 阶段级幂等键, enqueue_next 时更新
+    - segment_id UNIQUE 约束: 一个 segment 只能有一个流水线任务
 
     V0.1.11-alpha 新增:
     - failed_stage / claimed_by / claimed_at / heartbeat_at 字段
@@ -582,18 +599,27 @@ class SegmentTask(SQLModel, table=True):
     __tablename__ = "segment_tasks"
 
     id: int | None = Field(default=None, primary_key=True)
-    segment_id: int = Field(index=True, description="关联 raw_segments.id")
+    segment_id: int = Field(index=True, description="关联 raw_segments.id", sa_column_kwargs={"unique": True})
     session_id: int = Field(index=True, description="关联 recording_sessions.id")
     candidate_id: int | None = Field(default=None, index=True, description="关联 highlight_candidates.id(若有)")
-    event_id: int | None = Field(default=None, index=True, description="V0.1.11-alpha:关联 highlight_events.id(若有)")
+    event_id: int | None = Field(default=None, index=True, description="关联 highlight_events.id(若有)")
     clip_id: int | None = Field(default=None, index=True, description="关联 final_clips.id(若有)")
 
     stage: str = Field(default=TaskStatus.RECORDED, index=True, description="当前处理阶段")
-    failed_stage: str | None = Field(default=None, description="V0.1.11-alpha:失败时的阶段,用于精确恢复")
+    failed_stage: str | None = Field(default=None, description="失败时的阶段,用于精确恢复")
     priority: int = Field(default=100, description="优先级(数值越小越优先)")
-    idempotency_key: str | None = Field(default=None, index=True, description="幂等键:segment_id:stage,防重复", sa_column_kwargs={"unique": True})  # noqa: E501
+
+    # V0.1.12.5: 双键幂等 — pipeline_key 创建后永不修改, stage_key 随阶段变化
+    pipeline_key: str | None = Field(default=None, index=True, sa_column_kwargs={"unique": True},
+                                     description="流程级幂等键(pipeline:{segment_id}),创建后永不修改")  # noqa: E501
+    stage_key: str | None = Field(default=None, index=True,
+                                  description="阶段级幂等键(stage:{segment_id}:{stage}:{config_hash}),防阶段内重复")
+
+    # 后向兼容: 保留旧 idempotency_key 直到迁移完成
+    idempotency_key: str | None = Field(default=None, index=True, description="[已废弃]旧幂等键,迁移到 pipeline_key + stage_key")
+
     attempts: int = Field(default=0, description="当前阶段已尝试次数")
-    max_retries: int = Field(default=5, description="V0.1.11-alpha:当前阶段最大重试次数(默认5)")
+    max_retries: int = Field(default=5, description="当前阶段最大重试次数(默认5)")
     next_retry_at: datetime | None = Field(default=None, description="下次重试时间(指数退避,含随机抖动)")
     last_error: str | None = Field(default=None, description="最近一次错误信息")
     error_is_permanent: bool = Field(default=False, description="是否为不可恢复的永久错误")
@@ -602,6 +628,7 @@ class SegmentTask(SQLModel, table=True):
     claimed_by: str | None = Field(default=None, description="领取该任务的 Worker ID(防重复领取)")
     claimed_at: datetime | None = Field(default=None, description="任务被领取的时间")
     heartbeat_at: datetime | None = Field(default=None, description="最后心跳时间(超时判定 stale)")
+    lease_token: str | None = Field(default=None, description="V0.1.12.5: 租约令牌(UUID), 条件提交时校验所有权")
 
     created_at: datetime = Field(default_factory=utcnow)
     started_at: datetime | None = Field(default=None, description="当前阶段开始处理时间")

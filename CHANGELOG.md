@@ -1,5 +1,49 @@
 # Changelog
 
+## V0.1.12.5 Alpha (2026-07-06)
+
+### 稳定性修复: 状态机重构 / 发布 Worker / 流水线幂等 / 数据一致性 / Worker 租约 / C 扩展
+
+本质目标: 修正审核→渲染→发布的流水线顺序, 建立独立 Publish Worker, 强化数据库约束与幂等, 修复 C 扩展空白处理和异常规范。
+
+#### Phase 1: 状态机重构 (P0)
+- **修正流水线顺序**: CANDIDATE_CREATED → AWAITING_REVIEW/APPROVED → APPROVED_WAITING_RENDER/QUEUED_FOR_RENDER → RENDERING → RENDERED → AWAITING_PUBLISH_CONFIRMATION/QUEUED_FOR_PUBLISH → PUBLISHING → COMPLETED
+- **新增 TaskStatus**: `APPROVED_WAITING_RENDER`, `RENDERED`, `AWAITING_PUBLISH_CONFIRMATION`, `PUBLISHING`
+- `_run_render`: 固定 `auto_upload=False`, 完成后保存 `clip_id` 并进入 RENDERED
+- **新增 `_run_publish`**: 独立发布执行器, 验证 Event 批准、ClipVariant 存在、文件完整后执行上传, 失败记录 `failed_stage=publishing`
+- **新增 `_advance_rendered`**: RENDERED → auto_upload 决定 QUEUED_FOR_PUBLISH 或 AWAITING_PUBLISH_CONFIRMATION
+- `_advance_candidate`: 改为审核优先 (auto_approve + 阈值 → APPROVED, 否则 AWAITING_REVIEW)
+- `_advance_approved`: 改为渲染决策 (auto_render → QUEUED_FOR_RENDER, 否则 APPROVED_WAITING_RENDER)
+- `_loop`: 新增 `_advance_rendered` + `_dispatch(QUEUED_FOR_PUBLISH)` + `_publishing` 并发池
+- 废弃旧路径: `RENDERING → AWAITING_REVIEW`, `APPROVED → COMPLETED` 直接跳转
+
+#### Phase 2: 流水线幂等
+- **新增 `pipeline_key`**: 流程级幂等键 (`pipeline:{segment_id}`), 创建后永不修改, UNIQUE 约束
+- **新增 `stage_key`**: 阶段级幂等键 (`stage:{segment_id}:{stage}`), 阶段推进时更新
+- `create_task`: 先查 `pipeline_key` 实现迟到回调幂等, 后向兼容旧 `idempotency_key`
+- `SegmentTask.segment_id` 新增 UNIQUE 约束: 一个 segment 一个流水线任务
+
+#### Phase 3: Event 数据一致性 + 数据库约束
+- **删除 `_resolve_event_id` 危险回退**: `return candidate_id` → `raise ValueError`
+- **ForeignKey 声明**: `HighlightEvent.candidate_id → HighlightCandidate.id`, `ClipVariant.event_id → HighlightEvent.id`, `HighlightTopic.event_id → HighlightEvent.id`, `HighlightTopic.topic_id → Topic.id`
+- **ClipVariant 新增 `render_config_hash`** 字段, 用于渲染版本唯一性
+- **迁移 v2**: `ClipVariant` UNIQUE(event_id, variant_type) / `HighlightTopic` UNIQUE(event_id, topic_id) / `UploadTask` UNIQUE(clip_id, uploader) / `SegmentTask` pipeline_key 数据填充
+
+#### Phase 4: Worker 租约与优雅关闭
+- **`lease_token`**: 原子领取时生成 UUID, stale 恢复时清除
+- `enqueue_next` 清除 `lease_token`
+- 优雅关闭超时从硬编码改为 `WORKER_SHUTDOWN_TIMEOUT_SECONDS` (默认30s) / `SUBPROCESS_TERMINATE_TIMEOUT_SECONDS` (默认10s)
+
+#### Phase 5: C 扩展修复
+- **C/Python bigram 空白一致性**: C 版本改为跳过空白后仅拼接字符 (不含空格), 与 Python 回退行为一致
+- **异常处理**: 6 处 `PyList_Append` / 5 处 `PyList_New` 返回值检查, 补充 `error_cleanup` 标签
+- **UTF-8 校验**: bytes 输入先验证合法 UTF-8, 非法返回 `UnicodeDecodeError`
+
+#### 测试
+- 状态机测试更新: 83 个状态转换 + 非法转换全覆盖
+- pipeline_key/segment_id 唯一约束测试
+- 旧测试适配新状态流后全部通过
+
 ## V0.1.12.4b Alpha (2026-07-06)
 
 ### CI 修复: 代码质量清理 + C 扩展正确性修复

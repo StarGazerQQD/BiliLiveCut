@@ -40,6 +40,9 @@ MAX_ANALYZING = int(os.environ.get("MAX_ANALYZING", "2"))
 MAX_RENDERING = int(os.environ.get("MAX_RENDERING", "2"))
 MAX_PUBLISHING = int(os.environ.get("MAX_PUBLISHING", "1"))
 
+_WORKER_SHUTDOWN_TIMEOUT_S = int(os.environ.get("WORKER_SHUTDOWN_TIMEOUT_SECONDS", "30"))
+_SUBPROCESS_TERMINATE_TIMEOUT_S = int(os.environ.get("SUBPROCESS_TERMINATE_TIMEOUT_SECONDS", "10"))
+
 _RETRY_BASE_S = 10
 _RETRY_MAX_S = 600
 _RETRY_JITTER_S = 5
@@ -67,7 +70,18 @@ def _now() -> datetime:
     return datetime.now(UTC)
 
 
+def _make_pipeline_key(segment_id: int) -> str:
+    """流程级幂等键: 创建后永不修改。"""
+    return f"pipeline:{segment_id}"
+
+
+def _make_stage_key(segment_id: int, stage: str) -> str:
+    """阶段级幂等键: enqueue_next 时更新。"""
+    return f"stage:{segment_id}:{stage}"
+
+
 def _make_idempotency_key(segment_id: int, stage: str) -> str:
+    """[后向兼容] 旧幂等键。"""
     return f"{segment_id}:{stage}"
 
 
@@ -139,14 +153,27 @@ _VALID_TRANSITIONS: dict[str, set[str]] = {
     TaskStatus.TRANSCRIBED: {TaskStatus.QUEUED_FOR_ANALYSIS},
     TaskStatus.QUEUED_FOR_ANALYSIS: {TaskStatus.ANALYZING},
     TaskStatus.ANALYZING: {TaskStatus.CANDIDATE_CREATED, TaskStatus.TRANSIENT_FAILED, TaskStatus.FAILED},
-    TaskStatus.CANDIDATE_CREATED: {TaskStatus.QUEUED_FOR_RENDER},
-    TaskStatus.QUEUED_FOR_RENDER: {TaskStatus.RENDERING},
-    TaskStatus.RENDERING: {TaskStatus.AWAITING_REVIEW, TaskStatus.TRANSIENT_FAILED, TaskStatus.FAILED},
+    # V0.1.12.5: 审核先于渲染
+    TaskStatus.CANDIDATE_CREATED: {TaskStatus.AWAITING_REVIEW, TaskStatus.APPROVED},
     TaskStatus.AWAITING_REVIEW: {TaskStatus.APPROVED, TaskStatus.COMPLETED, TaskStatus.CANCELLED},
-    TaskStatus.APPROVED: {TaskStatus.COMPLETED, TaskStatus.QUEUED_FOR_PUBLISH},
-    TaskStatus.QUEUED_FOR_PUBLISH: {TaskStatus.COMPLETED, TaskStatus.FAILED},
-    TaskStatus.TRANSIENT_FAILED: {TaskStatus.QUEUED_FOR_TRANS, TaskStatus.QUEUED_FOR_ANALYSIS, TaskStatus.QUEUED_FOR_RENDER, TaskStatus.FAILED},  # noqa: E501
-    TaskStatus.STALE: {TaskStatus.QUEUED_FOR_TRANS, TaskStatus.QUEUED_FOR_ANALYSIS, TaskStatus.QUEUED_FOR_RENDER},
+    TaskStatus.APPROVED: {TaskStatus.APPROVED_WAITING_RENDER, TaskStatus.QUEUED_FOR_RENDER},
+    TaskStatus.APPROVED_WAITING_RENDER: {TaskStatus.QUEUED_FOR_RENDER, TaskStatus.CANCELLED},
+    TaskStatus.QUEUED_FOR_RENDER: {TaskStatus.RENDERING},
+    TaskStatus.RENDERING: {TaskStatus.RENDERED, TaskStatus.TRANSIENT_FAILED, TaskStatus.FAILED},
+    # V0.1.12.5: 发布阶段独立
+    TaskStatus.RENDERED: {TaskStatus.AWAITING_PUBLISH_CONFIRMATION, TaskStatus.QUEUED_FOR_PUBLISH},
+    TaskStatus.AWAITING_PUBLISH_CONFIRMATION: {TaskStatus.QUEUED_FOR_PUBLISH, TaskStatus.CANCELLED},
+    TaskStatus.QUEUED_FOR_PUBLISH: {TaskStatus.PUBLISHING},
+    TaskStatus.PUBLISHING: {TaskStatus.COMPLETED, TaskStatus.TRANSIENT_FAILED, TaskStatus.FAILED},
+    # 重试/恢复
+    TaskStatus.TRANSIENT_FAILED: {
+        TaskStatus.QUEUED_FOR_TRANS, TaskStatus.QUEUED_FOR_ANALYSIS,
+        TaskStatus.QUEUED_FOR_RENDER, TaskStatus.QUEUED_FOR_PUBLISH, TaskStatus.FAILED,
+    },  # noqa: E501
+    TaskStatus.STALE: {
+        TaskStatus.QUEUED_FOR_TRANS, TaskStatus.QUEUED_FOR_ANALYSIS,
+        TaskStatus.QUEUED_FOR_RENDER, TaskStatus.QUEUED_FOR_PUBLISH,
+    },  # noqa: E501
 }
 
 
@@ -159,7 +186,7 @@ def _active_stage(queued_stage: str) -> str:
         TaskStatus.QUEUED_FOR_TRANS: TaskStatus.TRANSCRIBING,
         TaskStatus.QUEUED_FOR_ANALYSIS: TaskStatus.ANALYZING,
         TaskStatus.QUEUED_FOR_RENDER: TaskStatus.RENDERING,
-        TaskStatus.QUEUED_FOR_PUBLISH: TaskStatus.COMPLETED,  # 发布任务通过 _run_publish 执行后变 COMPLETED
+        TaskStatus.QUEUED_FOR_PUBLISH: TaskStatus.PUBLISHING,
     }.get(queued_stage, queued_stage)
 
 
@@ -168,19 +195,38 @@ def _active_stage(queued_stage: str) -> str:
 # ═══════════════════════════════════════════════════
 
 def create_task(segment_id: int, session_id: int) -> SegmentTask | None:
-    """为已完成录制的片段创建任务(幂等)。"""
-    key = _make_idempotency_key(segment_id, "recorded")
+    """为已完成录制的片段创建任务(幂等, V0.1.12.5: pipeline_key + 迟到回调)。
+
+    检查 pipeline_key 唯一性,已存在任务(任何阶段,包括 completed)时返回已有任务而非创建新任务。
+    """
+    pipeline_key = _make_pipeline_key(segment_id)
+    stage_key = _make_stage_key(segment_id, "recorded")
     with get_session() as db:
+        # V0.1.12.5: 先查 pipeline_key (流程级幂等)
         existing = db.exec(
-            select(SegmentTask).where(SegmentTask.idempotency_key == key)
+            select(SegmentTask).where(SegmentTask.pipeline_key == pipeline_key)
         ).first()
         if existing is not None:
+            _logger.debug("pipeline_key 已存在: segment={} task={} stage={}", segment_id, existing.id, existing.stage)
             return None
+        # 后向兼容: 检查旧 idempotency_key
+        old_key = _make_idempotency_key(segment_id, "recorded")
+        existing_old = db.exec(
+            select(SegmentTask).where(SegmentTask.idempotency_key == old_key)
+        ).first()
+        if existing_old is not None:
+            existing_old.pipeline_key = pipeline_key
+            db.add(existing_old)
+            _logger.info("后向兼容: 为旧任务 {} 补充 pipeline_key", existing_old.id)
+            return None
+
         task = SegmentTask(
             segment_id=segment_id,
             session_id=session_id,
             stage=TaskStatus.RECORDED,
-            idempotency_key=key,
+            pipeline_key=pipeline_key,
+            stage_key=stage_key,
+            idempotency_key=old_key,
         )
         db.add(task)
         db.flush()
@@ -195,11 +241,18 @@ def enqueue_next(
     event_id: int | None = None,
     clip_id: int | None = None,
 ) -> None:
-    """将任务推进到下一阶段,重置 attempts 并计算完成时间。"""
+    """将任务推进到下一阶段,重置 attempts 并计算完成时间 (V0.1.12.5: pipeline_key + stage_key)。
+
+    pipeline_key 仅在首次创建时设置,此后永不修改。
+    stage_key 随阶段更新,用于阶段级幂等。
+    """
     current = task.stage
     if not _can_transition(current, next_stage):
         raise ValueError(f"非法转换: {current} -> {next_stage}")
     task.stage = next_stage
+    # V0.1.12.5: stage_key 随阶段变化, pipeline_key 不变
+    task.stage_key = _make_stage_key(task.segment_id, next_stage)
+    # 后向兼容: 同时更新旧 idempotency_key
     task.idempotency_key = _make_idempotency_key(task.segment_id, next_stage)
     task.attempts = 0
     task.last_error = None
@@ -208,6 +261,7 @@ def enqueue_next(
     task.claimed_by = None
     task.claimed_at = None
     task.heartbeat_at = None
+    task.lease_token = None
     if next_stage in (TaskStatus.COMPLETED, TaskStatus.CANCELLED, TaskStatus.FAILED):
         task.completed_at = _now()
         if task.created_at:
@@ -269,17 +323,18 @@ def mark_failed(task: SegmentTask, error: str, permanent: bool = False) -> None:
 # ═══════════════════════════════════════════════════
 
 def _pop_and_claim(queued_stage: str) -> SegmentTask | None:
-    """原子领取: 条件 UPDATE + 行数校验, SQLite 下也可靠。
+    """原子领取: 条件 UPDATE + 行数校验 + lease_token (V0.1.12.5)。
 
     流程:
     1. SELECT 一个符合条件的 candidate task
     2. 条件 UPDATE WHERE id=? AND stage=queued_stage (防止竞态)
     3. 只有 rowcount==1 时才算领取成功
-    4. 再 SELECT 取回完整对象
-    5. attempts 只在 SQL 中 increment 一次, 不再调用 mark_active()
+    4. lease_token (UUIDv4) 用于后续条件提交时校验所有权
+    5. 再 SELECT 取回完整对象
     """
     now = _now()
     active_stage = _active_stage(queued_stage)
+    lease_token = uuid.uuid4().hex
     with get_session() as db:
         # Step 1: SELECT candidate
         candidate = db.exec(
@@ -298,7 +353,6 @@ def _pop_and_claim(queued_stage: str) -> SegmentTask | None:
         task_id, segment_id = candidate
 
         # Step 2: 原子条件 UPDATE (只有 stage 仍为 queued_stage 时才更新)
-        # SQLAlchemy 2.x 裸 SQL 必须用 text() 包裹, params 为关键字参数
         result = db.exec(
             sa_text(
                 """UPDATE segment_tasks
@@ -306,6 +360,7 @@ def _pop_and_claim(queued_stage: str) -> SegmentTask | None:
                    claimed_by = :worker_id,
                    claimed_at = :now,
                    heartbeat_at = :now,
+                   lease_token = :lease_token,
                    attempts = attempts + 1,
                    started_at = :now,
                    last_error = NULL
@@ -316,6 +371,7 @@ def _pop_and_claim(queued_stage: str) -> SegmentTask | None:
                 "active": active_stage,
                 "worker_id": _WORKER_ID,
                 "now": now.isoformat(),
+                "lease_token": lease_token,
                 "task_id": task_id,
                 "queued_stage": queued_stage,
             },
@@ -330,8 +386,8 @@ def _pop_and_claim(queued_stage: str) -> SegmentTask | None:
         if task is None:
             return None
 
-        _logger.info("原子领取成功 task_id={} stage={} segment={} worker={}",
-                     task_id, active_stage, segment_id, _WORKER_ID)
+        _logger.info("原子领取成功 task_id={} stage={} segment={} worker={} lease={}",
+                     task_id, active_stage, segment_id, _WORKER_ID, lease_token[:12])
         return task
 
 
@@ -394,17 +450,31 @@ def _advance_transcribed() -> None:
 
 
 def _advance_candidate() -> None:
+    """CANDIDATE_CREATED → AWAITING_REVIEW 或 APPROVED (V0.1.12.5: 审核先于渲染)。
+
+    auto_approve=true 且分数达标 → APPROVED
+    否则 → AWAITING_REVIEW
+    """
     with get_session() as db:
         tasks = db.exec(
             select(SegmentTask).where(SegmentTask.stage == TaskStatus.CANDIDATE_CREATED)
         ).all()
         for task in tasks:
-            # auto_render=false 时不推进到渲染
             cfg = _room_cfg_from_task(task)
-            if not cfg.get("auto_render", False):
-                _logger.debug("auto_render=off, candidate {} 不自动进入渲染队列", task.candidate_id)
-                continue
-            enqueue_next(task, TaskStatus.QUEUED_FOR_RENDER)
+            auto_approve = bool(cfg.get("auto_approve", False))
+            threshold = float(cfg.get("auto_approve_threshold", 0.82))
+
+            if auto_approve:
+                from app.db.models import HighlightCandidate
+                candidate = db.get(HighlightCandidate, task.candidate_id) if task.candidate_id else None
+                score = candidate.highlight_score if candidate else 0.0
+                if score >= threshold:
+                    enqueue_next(task, TaskStatus.APPROVED)
+                    db.add(task)
+                    _logger.info("auto_approve: task={} candidate={} score={:.2f}", task.id, task.candidate_id, score)
+                    continue
+
+            enqueue_next(task, TaskStatus.AWAITING_REVIEW)
             db.add(task)
 
 
@@ -438,29 +508,49 @@ def _advance_awaiting_review() -> None:
 
 
 def _advance_approved() -> None:
-    """auto_render + auto_upload 串联: 已批准事件根据配置决定下一步。"""
+    """APPROVED → APPROVED_WAITING_RENDER 或 QUEUED_FOR_RENDER (V0.1.12.5)。
+
+    auto_render=true → QUEUED_FOR_RENDER
+    auto_render=false → APPROVED_WAITING_RENDER (等待手动渲染)
+    """
     with get_session() as db:
         tasks = db.exec(
             select(SegmentTask).where(SegmentTask.stage == TaskStatus.APPROVED)
         ).all()
         for task in tasks:
             cfg = _room_cfg_from_task(task)
+            auto_render = bool(cfg.get("auto_render", False))
+
+            if auto_render:
+                enqueue_next(task, TaskStatus.QUEUED_FOR_RENDER)
+                _logger.info("auto_render: task={} candidate={} → queued_for_render", task.id, task.candidate_id)
+            else:
+                enqueue_next(task, TaskStatus.APPROVED_WAITING_RENDER)
+                _logger.info("auto_render=off: task={} → approved_waiting_render", task.id)
+            db.add(task)
+
+
+def _advance_rendered() -> None:
+    """RENDERED → AWAITING_PUBLISH_CONFIRMATION 或 QUEUED_FOR_PUBLISH (V0.1.12.5)。
+
+    auto_upload=true → QUEUED_FOR_PUBLISH
+    auto_upload=false → AWAITING_PUBLISH_CONFIRMATION (等待手动发布)
+    """
+    with get_session() as db:
+        tasks = db.exec(
+            select(SegmentTask).where(SegmentTask.stage == TaskStatus.RENDERED)
+        ).all()
+        for task in tasks:
+            cfg = _room_cfg_from_task(task)
             auto_upload = bool(cfg.get("auto_upload", False))
 
-            if auto_upload and task.clip_id is not None:
-                # 自动上传: 内联执行发布逻辑 (无需独立 dispatch)
-                try:
-                    from app.publishing.uploader import enqueue_and_upload
-                    enqueue_and_upload(task.clip_id)
-                    _logger.info("auto_upload: task={} clip={} 发布完成", task.id, task.clip_id)
-                except Exception as exc:
-                    _logger.error("auto_upload: task={} clip={} 发布失败: {}", task.id, task.clip_id, exc)
-                    # 发布失败不阻塞流水线, 标记为完成但记录错误
-                    task.last_error = f"UploadError: {exc}"[:1000]
-            # 无论是否上传, approved 后都走向 completed
-            enqueue_next(task, TaskStatus.COMPLETED)
+            if auto_upload:
+                enqueue_next(task, TaskStatus.QUEUED_FOR_PUBLISH)
+                _logger.info("auto_upload: task={} clip={} → queued_for_publish", task.id, task.clip_id)
+            else:
+                enqueue_next(task, TaskStatus.AWAITING_PUBLISH_CONFIRMATION)
+                _logger.info("auto_upload=off: task={} → awaiting_publish_confirmation", task.id)
             db.add(task)
-            _logger.info("task={} 完成 (auto_upload={})", task.id, auto_upload)
 
 
 # ═══════════════════════════════════════════════════
@@ -474,6 +564,7 @@ def _resume_stage(failed_stage: str | None) -> str:
         TaskStatus.TRANSCRIBING: TaskStatus.QUEUED_FOR_TRANS,
         TaskStatus.ANALYZING: TaskStatus.QUEUED_FOR_ANALYSIS,
         TaskStatus.RENDERING: TaskStatus.QUEUED_FOR_RENDER,
+        TaskStatus.PUBLISHING: TaskStatus.QUEUED_FOR_PUBLISH,
         TaskStatus.TRANSCRIBED: TaskStatus.QUEUED_FOR_ANALYSIS,
         TaskStatus.CANDIDATE_CREATED: TaskStatus.QUEUED_FOR_RENDER,
     }
@@ -547,7 +638,8 @@ def _recover_stale() -> None:
         stale = db.exec(
             select(SegmentTask).where(
                 SegmentTask.stage.in_([
-                    TaskStatus.TRANSCRIBING, TaskStatus.ANALYZING, TaskStatus.RENDERING,
+                    TaskStatus.TRANSCRIBING, TaskStatus.ANALYZING,
+                    TaskStatus.RENDERING, TaskStatus.PUBLISHING,
                 ]),
                 SegmentTask.heartbeat_at.is_not(None),
                 SegmentTask.heartbeat_at < stale_threshold,
@@ -559,6 +651,7 @@ def _recover_stale() -> None:
             task.claimed_by = None
             task.claimed_at = None
             task.heartbeat_at = None
+            task.lease_token = None
             task.next_retry_at = None
             db.add(task)
         if stale:
@@ -571,7 +664,8 @@ def _recover_orphans() -> None:
         stuck = db.exec(
             select(SegmentTask).where(
                 SegmentTask.stage.in_([
-                    TaskStatus.TRANSCRIBING, TaskStatus.ANALYZING, TaskStatus.RENDERING,
+                    TaskStatus.TRANSCRIBING, TaskStatus.ANALYZING,
+                    TaskStatus.RENDERING, TaskStatus.PUBLISHING,
                 ]),
                 SegmentTask.heartbeat_at.is_(None),
             )
@@ -596,12 +690,15 @@ def _recover_orphans() -> None:
             )
         ).all()
         for seg in orphan_segs:
-            key = _make_idempotency_key(seg.id, "recorded")
+            pipeline_key = _make_pipeline_key(seg.id)
+            stage_key = _make_stage_key(seg.id, "recorded")
             t = SegmentTask(
                 segment_id=seg.id,
                 session_id=seg.session_id,
                 stage=TaskStatus.RECORDED,
-                idempotency_key=key,
+                pipeline_key=pipeline_key,
+                stage_key=stage_key,
+                idempotency_key=_make_idempotency_key(seg.id, "recorded"),
             )
             db.add(t)
         if orphan_segs:
@@ -650,6 +747,8 @@ def _execute_task(task_id: int, active_stage: str) -> None:
             _run_analyze(task_id)
         elif active_stage == TaskStatus.RENDERING:
             _run_render(task_id)
+        elif active_stage == TaskStatus.PUBLISHING:
+            _run_publish(task_id)
     except Exception as exc:
         _ms = int((time.time() - t0) * 1000)
         with get_session() as db:
@@ -716,6 +815,10 @@ def _run_analyze(task_id: int) -> None:
 
 
 def _run_render(task_id: int) -> None:
+    """渲染阶段 (V0.1.12.5: produce_clip 始终 auto_upload=False)。
+
+    成功后将 clip.id 写入 task.clip_id, 状态推进到 RENDERED。
+    """
     t0 = time.time()
     from app.pipeline.orchestrator import produce_clip
     with get_session() as db:
@@ -730,9 +833,8 @@ def _run_render(task_id: int) -> None:
         mark_heartbeat(task)
         db.add(task)
     try:
-        cfg = _room_cfg_from_task(task)
-        auto_upload = bool(cfg.get("auto_upload", False))
-        clip = produce_clip(cid, auto_upload=auto_upload)
+        # V0.1.12.5: 渲染阶段永远不直接上传
+        clip = produce_clip(cid, auto_upload=False)
     except Exception as exc:
         ms = int((time.time() - t0) * 1000)
         with get_session() as db:
@@ -742,7 +844,7 @@ def _run_render(task_id: int) -> None:
                 db.add(t)
         return
 
-    # V0.1.12.2: 严格校验渲染结果 — None 或 文件不存在 全视为失败
+    # 严格校验渲染结果 — None / 文件不存在 / 片长过短 全视为失败
     if clip is None:
         ms = int((time.time() - t0) * 1000)
         with get_session() as db:
@@ -765,7 +867,6 @@ def _run_render(task_id: int) -> None:
                 db.add(t)
         return
 
-    # 校验片长
     if clip.duration_s is not None and clip.duration_s < 1.0:
         ms = int((time.time() - t0) * 1000)
         with get_session() as db:
@@ -780,8 +881,83 @@ def _run_render(task_id: int) -> None:
         task = db.get(SegmentTask, task_id)
         if task:
             mark_completed(task, ms)
-            enqueue_next(task, TaskStatus.AWAITING_REVIEW)
+            # V0.1.12.5: 保存 clip_id + 进入 RENDERED (非 AWAITING_REVIEW)
+            enqueue_next(task, TaskStatus.RENDERED, clip_id=clip.id)
             db.add(task)
+
+
+def _run_publish(task_id: int) -> None:
+    """发布阶段 (V0.1.12.5 新增)。
+
+    验证 Event 已批准、ClipVariant 存在、文件完整、平台配置有效后执行上传。
+    失败: failed_stage=publishing → TRANSIENT_FAILED
+    成功: COMPLETED
+    """
+    t0 = time.time()
+    with get_session() as db:
+        task = db.get(SegmentTask, task_id)
+        if task is None:
+            return
+        clip_id = task.clip_id
+        event_id = task.event_id
+        if clip_id is None:
+            mark_failed(task, "PublishError: 任务缺少 clip_id", permanent=True)
+            db.add(task)
+            return
+        mark_heartbeat(task)
+        db.add(task)
+
+    # 验证前置条件
+    from app.db.models import ClipVariant, FinalClip, HighlightEvent, ReviewStatus
+    with get_session() as db:
+        event = db.get(HighlightEvent, event_id) if event_id else None
+        if event is None or event.review_status != ReviewStatus.APPROVED:
+            ms = int((time.time() - t0) * 1000)
+            t = db.get(SegmentTask, task_id)
+            if t:
+                mark_failed(t, "PublishError: Event 未批准或不存在", permanent=True)
+                db.add(t)
+            return
+
+        clip = db.get(FinalClip, clip_id)
+        if clip is None:
+            ms = int((time.time() - t0) * 1000)
+            t = db.get(SegmentTask, task_id)
+            if t:
+                mark_failed(t, f"PublishError: FinalClip {clip_id} 不存在", permanent=True)
+                db.add(t)
+            return
+
+        from pathlib import Path as _Path
+        if not clip.file_path or not _Path(clip.file_path).exists():
+            ms = int((time.time() - t0) * 1000)
+            t = db.get(SegmentTask, task_id)
+            if t:
+                mark_failed(t, "PublishError: 输出文件缺失", permanent=True)
+                db.add(t)
+            return
+
+    try:
+        from app.publishing.uploader import enqueue_and_upload
+        upload_task = enqueue_and_upload(clip_id)
+        remote_id = upload_task.remote_id if upload_task else None
+    except Exception as exc:
+        ms = int((time.time() - t0) * 1000)
+        with get_session() as db:
+            t = db.get(SegmentTask, task_id)
+            if t is not None:
+                mark_failed(t, f"PublishError: {exc}", permanent=False)
+                db.add(t)
+        return
+
+    ms = int((time.time() - t0) * 1000)
+    with get_session() as db:
+        task = db.get(SegmentTask, task_id)
+        if task:
+            mark_completed(task, ms)
+            enqueue_next(task, TaskStatus.COMPLETED)
+            db.add(task)
+            _logger.info("_run_publish: task={} clip={} remote_id={} → completed", task_id, clip_id, remote_id)
 
 
 # ═══════════════════════════════════════════════════
@@ -831,6 +1007,7 @@ class TaskWorker:
         self._transcribing: set[asyncio.Task[None]] = set()
         self._analyzing: set[asyncio.Task[None]] = set()
         self._rendering: set[asyncio.Task[None]] = set()
+        self._publishing: set[asyncio.Task[None]] = set()
         self._main_task: asyncio.Task[None] | None = None
         self._running = False
         _logger.info("TaskWorker init worker_id={}", _WORKER_ID)
@@ -866,11 +1043,12 @@ class TaskWorker:
             except asyncio.CancelledError:
                 pass
 
-        # V0.1.12.2: 等待已启动的任务安全完成 (带超时)
-        grace_period = 30  # 最多等待 30 秒
+        # V0.1.12.5: 等待已启动的任务安全完成 (可配置超时)
+        grace_period = _WORKER_SHUTDOWN_TIMEOUT_S
         for coll_name, coll in [("transcribing", self._transcribing),
                                  ("analyzing", self._analyzing),
-                                 ("rendering", self._rendering)]:
+                                 ("rendering", self._rendering),
+                                 ("publishing", self._publishing)]:
             pending = {t for t in coll if not t.done()}
             if pending:
                 _logger.info("优雅关闭: 等待 {} 个 {} 任务完成 (最多 {}s)",
@@ -900,12 +1078,15 @@ class TaskWorker:
                 _advance_candidate()
                 _advance_awaiting_review()
                 _advance_approved()
+                _advance_rendered()
                 await self._dispatch(TaskStatus.QUEUED_FOR_TRANS, self._transcribing, MAX_TRANSCRIBING)
                 await self._dispatch(TaskStatus.QUEUED_FOR_ANALYSIS, self._analyzing, MAX_ANALYZING)
                 await self._dispatch(TaskStatus.QUEUED_FOR_RENDER, self._rendering, MAX_RENDERING)
+                await self._dispatch(TaskStatus.QUEUED_FOR_PUBLISH, self._publishing, MAX_PUBLISHING)
                 self._transcribing = {t for t in self._transcribing if not t.done()}
                 self._analyzing = {t for t in self._analyzing if not t.done()}
                 self._rendering = {t for t in self._rendering if not t.done()}
+                self._publishing = {t for t in self._publishing if not t.done()}
             except asyncio.CancelledError:
                 break
             except Exception as exc:
@@ -935,9 +1116,11 @@ class TaskWorker:
             "transcribing": len(self._transcribing),
             "analyzing": len(self._analyzing),
             "rendering": len(self._rendering),
+            "publishing": len(self._publishing),
             "max_transcribing": MAX_TRANSCRIBING,
             "max_analyzing": MAX_ANALYZING,
             "max_rendering": MAX_RENDERING,
+            "max_publishing": MAX_PUBLISHING,
         }
         return counts
 
@@ -953,8 +1136,11 @@ def _task_counts() -> dict:
     for stage in (
         TaskStatus.RECORDED, TaskStatus.QUEUED_FOR_TRANS, TaskStatus.TRANSCRIBING,
         TaskStatus.QUEUED_FOR_ANALYSIS, TaskStatus.ANALYZING,
-        TaskStatus.QUEUED_FOR_RENDER, TaskStatus.RENDERING,
-        TaskStatus.AWAITING_REVIEW, TaskStatus.APPROVED,
+        TaskStatus.CANDIDATE_CREATED, TaskStatus.AWAITING_REVIEW,
+        TaskStatus.APPROVED, TaskStatus.APPROVED_WAITING_RENDER,
+        TaskStatus.QUEUED_FOR_RENDER, TaskStatus.RENDERING, TaskStatus.RENDERED,
+        TaskStatus.AWAITING_PUBLISH_CONFIRMATION,
+        TaskStatus.QUEUED_FOR_PUBLISH, TaskStatus.PUBLISHING,
         TaskStatus.COMPLETED, TaskStatus.FAILED, TaskStatus.CANCELLED, TaskStatus.STALE,
     ):
         result[stage] = sum(1 for r in rows if r.stage == stage)

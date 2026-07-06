@@ -26,7 +26,7 @@ from app.core.config import settings
 from app.db.session import engine, get_session
 
 # 当前目标 schema 版本
-TARGET_SCHEMA_VERSION = 1
+TARGET_SCHEMA_VERSION = 2
 
 
 # ── 迁移历史表 ───────────────────────────────────────────────
@@ -139,6 +139,26 @@ def _migrate_v1_old_data(db: Session) -> int:
     return fixed
 
 
+def _migrate_v2_pipeline_keys(db: Session) -> int:
+    """V2 数据迁移: 为现有 SegmentTask 填充 pipeline_key 和 stage_key。
+
+    Returns: 修复的记录总数。
+    """
+    from app.db.models import SegmentTask
+
+    tasks = db.exec(select(SegmentTask)).all()
+    fixed = 0
+    for task in tasks:
+        if task.pipeline_key is None:
+            task.pipeline_key = f"pipeline:{task.segment_id}"
+            fixed += 1
+        if task.stage_key is None:
+            task.stage_key = f"stage:{task.segment_id}:{task.stage}"
+            fixed += 1
+        db.add(task)
+    return fixed
+
+
 # ── 迁移列表 (按版本顺序) ────────────────────────────────────
 
 _MIGRATIONS: list[Migration] = [
@@ -155,6 +175,30 @@ _MIGRATIONS: list[Migration] = [
         -- 旧数据迁移在 Python 函数中执行
         """,
         data_migration=_migrate_v1_old_data,
+    ),
+    Migration(
+        version=2,
+        name="V0.1.12.5: 状态机重构 + 幂等键 + 数据一致性约束",
+        sql="""
+        -- ClipVariant UNIQUE(event_id, variant_type) — 通过唯一索引模拟
+        CREATE UNIQUE INDEX IF NOT EXISTS idx_clip_variants_event_variant
+            ON clip_variants(event_id, variant_type);
+
+        -- HighlightTopic UNIQUE(event_id, topic_id)
+        CREATE UNIQUE INDEX IF NOT EXISTS idx_highlight_topics_event_topic
+            ON highlight_topics(event_id, topic_id);
+
+        -- UploadTask UNIQUE(clip_id, uploader)
+        CREATE UNIQUE INDEX IF NOT EXISTS idx_upload_tasks_clip_uploader
+            ON upload_tasks(clip_id, uploader);
+
+        -- SegmentTask UNIQUE(segment_id) — 已通过模型声明; 额外创建索引
+        CREATE UNIQUE INDEX IF NOT EXISTS idx_segment_tasks_segment_id
+            ON segment_tasks(segment_id);
+
+        -- pipeline_key / stage_key 由 Python 数据迁移填充
+        """,
+        data_migration=_migrate_v2_pipeline_keys,
     ),
 ]
 

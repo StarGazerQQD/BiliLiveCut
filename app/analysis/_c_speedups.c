@@ -40,6 +40,35 @@ static inline char *strndup(const char *s, size_t n) {
 #endif
 #endif
 
+/* ── UTF-8 校验 (V0.1.12.5) ────────────────────────────────────────── */
+
+/* 检查 bytes 是否为合法 UTF-8 */
+static int _is_valid_utf8(const char *s, Py_ssize_t len) {
+    const unsigned char *p = (const unsigned char *)s;
+    const unsigned char *end = p + len;
+    while (p < end) {
+        if (*p < 0x80) { p++; continue; }
+        int clen;
+        if ((*p & 0xE0) == 0xC0) {        /* 2 字节 */
+            clen = 2;
+            if (p + 2 > end) return 0;
+        } else if ((*p & 0xF0) == 0xE0) { /* 3 字节 */
+            clen = 3;
+            if (p + 3 > end) return 0;
+        } else if ((*p & 0xF8) == 0xF0) { /* 4 字节 */
+            clen = 4;
+            if (p + 4 > end) return 0;
+        } else {
+            return 0;  /* 非法起始字节 */
+        }
+        for (int i = 1; i < clen; i++) {
+            if ((p[i] & 0xC0) != 0x80) return 0;  /* 非法续字节 */
+        }
+        p += clen;
+    }
+    return 1;
+}
+
 /* ───────────────────────────────────────────────────────────────────────
  * Aho-Corasick 自动机数据结构
  * ─────────────────────────────────────────────────────────────────────── */
@@ -263,7 +292,14 @@ static PyObject *fast_ahocorasick_search(PyObject *self, PyObject *args) {
         for (int j = 0; j < am->nodes[node].output_len; j++) {
             PyObject *s = PyUnicode_FromStringAndSize(
                 am->nodes[node].outputs[j], am->nodes[node].output_lens[j]);
-            if (s) PyList_Append(result, s);
+            if (s) {
+                if (PyList_Append(result, s) < 0) {
+                    Py_DECREF(s);
+                    Py_DECREF(result);
+                    return NULL;
+                }
+                Py_DECREF(s);
+            }
         }
     }
     return result;
@@ -278,12 +314,18 @@ static PyObject *fast_char_bigrams(PyObject *self, PyObject *arg) {
         text = PyUnicode_AsUTF8AndSize(arg, &tlen);
     } else if (PyBytes_Check(arg)) {
         PyBytes_AsStringAndSize(arg, (char **)&text, &tlen);
+        /* V0.1.12.5: 验证 bytes 为合法 UTF-8 */
+        if (text && tlen > 0 && !_is_valid_utf8(text, tlen)) {
+            PyErr_SetString(PyExc_UnicodeDecodeError, "bytes is not valid UTF-8");
+            return NULL;
+        }
     } else {
         PyErr_SetString(PyExc_TypeError, "expected str or bytes");
         return NULL;
     }
     if (!text || tlen < 2) {
         PyObject *list = PyList_New(0);
+        if (!list) return NULL;
         if (tlen == 1 && text) {
             int clen = 1;
             if ((unsigned char)text[0] >= 0xC0) {
@@ -291,8 +333,14 @@ static PyObject *fast_char_bigrams(PyObject *self, PyObject *arg) {
                     clen++;
             }
             PyObject *bg = PyUnicode_FromStringAndSize(text, clen);
-            if (bg) PyList_Append(list, bg);
-            Py_XDECREF(bg);
+            if (bg) {
+                if (PyList_Append(list, bg) < 0) {
+                    Py_DECREF(bg);
+                    Py_DECREF(list);
+                    return NULL;
+                }
+                Py_DECREF(bg);
+            }
         }
         return list;
     }
@@ -326,14 +374,20 @@ static PyObject *fast_char_bigrams(PyObject *self, PyObject *arg) {
             if (second_len > (int)(end - q)) second_len = 1;
         }
 
-        /* p 到 q+second_len 组成一个有效 bigram */
-        int total_len = (int)(q - p) + second_len;
-        PyObject *bg = PyUnicode_FromStringAndSize(p, total_len);
+        /* p 到 q+second_len 组成一个有效 bigram (不含空白, V0.1.12.5) */
+        char bigram_buf[16];  /* 最坏情况: 2 个 4 字节 UTF-8 字符 = 8 字节 */
+        memcpy(bigram_buf, p, first_len);
+        memcpy(bigram_buf + first_len, q, second_len);
+        PyObject *bg = PyUnicode_FromStringAndSize(bigram_buf, first_len + second_len);
         if (!bg) {
             Py_DECREF(result);
             return NULL;
         }
-        PyList_Append(result, bg);
+        if (PyList_Append(result, bg) < 0) {
+            Py_DECREF(bg);
+            Py_DECREF(result);
+            return NULL;
+        }
         Py_DECREF(bg);
 
         p += first_len;
@@ -493,7 +547,14 @@ static PyObject *fast_match_keywords(PyObject *self, PyObject *args) {
         for (int j = 0; j < am_local.nodes[node].output_len; j++) {
             PyObject *s = PyUnicode_FromStringAndSize(
                 am_local.nodes[node].outputs[j], am_local.nodes[node].output_lens[j]);
-            if (s) PyList_Append(result, s);
+            if (s) {
+                if (PyList_Append(result, s) < 0) {
+                    Py_DECREF(s);
+                    Py_DECREF(result);
+                    goto error_cleanup;
+                }
+                Py_DECREF(s);
+            }
         }
     }
 
@@ -505,6 +566,15 @@ static PyObject *fast_match_keywords(PyObject *self, PyObject *args) {
     }
     free(am_local.nodes);
     return result;
+
+error_cleanup:
+    for (int i = 0; i < am_local.node_count; i++) {
+        for (int j = 0; j < am_local.nodes[i].output_len; j++) {
+            free(am_local.nodes[i].outputs[j]);
+        }
+    }
+    free(am_local.nodes);
+    return NULL;
 }
 
 /* ───────────────────────────────────────────────────────────────────────
