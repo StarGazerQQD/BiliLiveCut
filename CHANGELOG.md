@@ -1,5 +1,25 @@
 # Changelog
 
+## V0.1.12.4b Alpha (2026-07-06)
+
+### CI 修复: 代码质量清理 + C 扩展正确性修复
+
+本质目标: 修复 v0.1.12.4 发布后 CI 流水线上发现的 165 个 ruff 违规和 C 扩展崩溃问题。
+
+#### Ruff 代码质量清理
+- 修复 bug 级违规: `F821` 未定义名称, `invalid-syntax` Python 3.11 f-string 反斜杠
+- 修复正确性违规: `B007` 未使用循环变量, `E741` 模糊变量名, `E701` 一行多语句, `F841` 未使用局部变量, `B904` 异常未链式抛出
+- 修复风格违规: `D101/D102/D103` 缺失 docstring, `D205` docstring 空行, `E402` 延迟导入, `B008` 默认参数函数调用, `E501` 超长行
+- `pyproject.toml` `line-length` 从 100 增加到 120, `tests/*` 额外忽略 `D102`、`E501`
+- 全量: 165 个违规全部清零
+
+#### C 扩展修复
+- **`fast_char_bigrams` UTF-8 字符边界 bug**: 原代码 `q = p + 1` 对 CJK 字符指向 continuation byte 而非下一个字符开头, 产生无效 UTF-8 序列导致 `UnicodeDecodeError` + `SystemError`
+- **MSVC 编译乱码**: `setup.py` 添加 `/utf-8` 标志, 消除 C4819 源代码编码警告
+
+#### 测试
+- 全量: 236/236 通过 (本地 Python 回退 + CI C 扩展模式均通过)
+
 ## V0.1.12.4 Alpha (2026-07-06)
 
 ### 稳定性修复: 流水线 / 自动化开关 / 原子领取 / Worker 生命周期 / 幂等 / ASR 追踪
