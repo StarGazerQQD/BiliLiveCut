@@ -125,12 +125,12 @@ class TopicStatus:
 
 
 class TaskStatus:
-    """分段处理任务状态(V0.1.6 持久化任务队列)。"""
+    """分段处理任务状态(V0.1.11-alpha 重构)。"""
 
     RECORDED = "recorded"                    # 片段已录制,待入队
     QUEUED_FOR_TRANS = "queued_for_transcription"  # 等待转写
     TRANSCRIBING = "transcribing"            # 正在转写(Whisper GPU)
-    TRANSCRIBED = "transcribed"              # 转写完成,待评分(与旧 SegmentStatus 互操作性)
+    TRANSCRIBED = "transcribed"              # 转写完成,待评分
     QUEUED_FOR_ANALYSIS = "queued_for_analysis"    # 等待分析
     ANALYZING = "analyzing"                  # 正在分析(规则+LLM)
     CANDIDATE_CREATED = "candidate_created"  # 已生成候选
@@ -141,6 +141,8 @@ class TaskStatus:
     COMPLETED = "completed"                  # 最终完成
     FAILED = "failed"                        # 永久失败(不可重试)
     CANCELLED = "cancelled"                  # 已取消
+    STALE = "stale"                          # V0.1.11-alpha: 心跳超时,待恢复
+    QUEUED_FOR_PUBLISH = "queued_for_publish"  # V0.1.11-alpha: 等待发布
 
     # 临时失败子状态
     TRANSIENT_FAILED = "transient_failed"    # 临时失败,等待重试
@@ -369,7 +371,10 @@ class Topic(SQLModel, table=True):
 
 
 class HighlightTopic(SQLModel, table=True):
-    """事件-主题关联(``highlight_topics``):多对多映射。"""
+    """事件-主题关联(``highlight_topics``):多对多映射。
+
+    V0.1.11-alpha: event_id 永远指向 HighlightEvent.id; confirmed_by_user 标记人工确认。
+    """
 
     __tablename__ = "highlight_topics"
 
@@ -379,7 +384,8 @@ class HighlightTopic(SQLModel, table=True):
     confidence: float = Field(default=0.0, description="该事件属于本主题的相似度")
     is_manual: bool = Field(default=False, description="是否人工手动归类")
     sort_order: int = Field(default=0, description="在合集中的顺序")
-    chapter_title: str | None = Field(default=None, description="V0.1.8:合集内章节标题")
+    chapter_title: str | None = Field(default=None, description="合集内章节标题")
+    confirmed_by_user: bool = Field(default=False, description="V0.1.11-alpha:已人工确认,后续自动聚类不覆盖")
     created_at: datetime = Field(default_factory=utcnow)
 
 
@@ -537,16 +543,15 @@ class SystemLog(SQLModel, table=True):
 
 
 class SegmentTask(SQLModel, table=True):
-    """分段处理任务(``segment_tasks``):持久化的异步任务队列。
+    """分段处理任务(``segment_tasks``):持久化的异步任务队列 (V0.1.11-alpha 重构)。
 
     每个 RawSegment 录制完成后创建一条任务,按流水线阶段独立推进:
     recorded → transcribing → analyzing → rendering → approved/completed/failed。
 
-    支持:
-    - 幂等键(segment_id+stage)避免重复处理
-    - 重试次数与指数退避
-    - 临时失败(transient_failed)与永久失败(failed)区分
-    - 处理耗时统计
+    V0.1.11-alpha 新增:
+    - failed_stage / claimed_by / claimed_at / heartbeat_at 字段
+    - max_retries 默认值从 3 提升至 5
+    - attempts 只在实际开始执行时增加一次
     """
 
     __tablename__ = "segment_tasks"
@@ -555,16 +560,23 @@ class SegmentTask(SQLModel, table=True):
     segment_id: int = Field(index=True, description="关联 raw_segments.id")
     session_id: int = Field(index=True, description="关联 recording_sessions.id")
     candidate_id: int | None = Field(default=None, index=True, description="关联 highlight_candidates.id(若有)")
+    event_id: int | None = Field(default=None, index=True, description="V0.1.11-alpha:关联 highlight_events.id(若有)")
     clip_id: int | None = Field(default=None, index=True, description="关联 final_clips.id(若有)")
 
     stage: str = Field(default=TaskStatus.RECORDED, index=True, description="当前处理阶段")
+    failed_stage: str | None = Field(default=None, description="V0.1.11-alpha:失败时的阶段,用于精确恢复")
     priority: int = Field(default=100, description="优先级(数值越小越优先)")
     idempotency_key: str | None = Field(default=None, index=True, description="幂等键:segment_id:stage,防重复")
     attempts: int = Field(default=0, description="当前阶段已尝试次数")
-    max_retries: int = Field(default=3, description="当前阶段最大重试次数")
-    next_retry_at: datetime | None = Field(default=None, description="下次重试时间(指数退避)")
+    max_retries: int = Field(default=5, description="V0.1.11-alpha:当前阶段最大重试次数(默认5)")
+    next_retry_at: datetime | None = Field(default=None, description="下次重试时间(指数退避,含随机抖动)")
     last_error: str | None = Field(default=None, description="最近一次错误信息")
     error_is_permanent: bool = Field(default=False, description="是否为不可恢复的永久错误")
+
+    # V0.1.11-alpha: 并发控制与崩溃恢复
+    claimed_by: str | None = Field(default=None, description="领取该任务的 Worker ID(防重复领取)")
+    claimed_at: datetime | None = Field(default=None, description="任务被领取的时间")
+    heartbeat_at: datetime | None = Field(default=None, description="最后心跳时间(超时判定 stale)")
 
     created_at: datetime = Field(default_factory=utcnow)
     started_at: datetime | None = Field(default=None, description="当前阶段开始处理时间")

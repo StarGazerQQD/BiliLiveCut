@@ -33,7 +33,10 @@ from app.db.models import (
     ClipVariantType,
     FinalClip,
     HighlightCandidate,
+    HighlightEvent,
+    IntroTemplate,
     RawSegment,
+    SubtitleTemplate,
     Transcript,
 )
 from app.db.session import get_session
@@ -567,6 +570,41 @@ def produce_clip(candidate_id: int, options: ClipOptions | None = None) -> Final
     return clip
 
 
+def _resolve_event_id(db, candidate_id: int) -> int:
+    """V0.1.11-alpha:解析真实 HighlightEvent ID（向后兼容,优先已有 Event）。
+    
+    :param db: SQLModel session。
+    :param candidate_id: HighlightCandidate ID。
+    :returns: HighlightEvent ID;若尚无 Event,自动创建并返回。
+    """
+    from app.db.models import HighlightEvent as HE, ReviewStatus
+    event = db.exec(select(HE).where(HE.candidate_id == candidate_id)).first()
+    if event is not None:
+        return event.id
+    # 候选可能尚未创建 Event（非 TaskWorker 路径进入）。
+    cand = db.get(HighlightCandidate, candidate_id)
+    if cand is None:
+        return candidate_id  # 极端情况:候选不存在,回退 candidate_id
+    new_event = HE(
+        candidate_id=candidate_id,
+        session_id=cand.session_id,
+        raw_start_ts=cand.start_ts,
+        raw_end_ts=cand.end_ts,
+        rule_score=cand.rule_score,
+        llm_score=cand.llm_score,
+        highlight_score=cand.highlight_score,
+        features_json=cand.features_json,
+        reason=cand.reason,
+        review_status=ReviewStatus.PENDING,
+        review_by="auto",
+    )
+    db.add(new_event)
+    db.flush()
+    db.refresh(new_event)
+    logger.info("_resolve_event_id:auto-created event_id={} for candidate_id={}", new_event.id, candidate_id)
+    return new_event.id
+
+
 def _create_clip_variants(
     clip: FinalClip,
     options: ClipOptions,
@@ -587,9 +625,12 @@ def _create_clip_variants(
     :param cut_offset: 裁剪偏移。
     """
     with get_session() as db:
+        # V0.1.11-alpha:用真实 HighlightEvent.id 作为 event_id。
+        event_id = _resolve_event_id(db, clip.candidate_id)
+
         # SINGLE:主版本(总是生成,已渲染完成)。
         db.add(ClipVariant(
-            event_id=clip.candidate_id,
+            event_id=event_id,
             variant_type=ClipVariantType.SINGLE,
             file_path=clip.file_path,
             duration_s=clip.duration_s,
@@ -602,8 +643,8 @@ def _create_clip_variants(
         # 按字幕状态标记。
         if options.subtitle:
             db.add(ClipVariant(
-                event_id=clip.candidate_id,
-                variant_type=ClipVariantType.SUBTITLED,
+            event_id=event_id,
+            variant_type=ClipVariantType.SUBTITLED,
                 file_path=clip.file_path,
                 duration_s=clip.duration_s,
                 has_subtitles=True,
@@ -613,8 +654,8 @@ def _create_clip_variants(
             ))
         else:
             db.add(ClipVariant(
-                event_id=clip.candidate_id,
-                variant_type=ClipVariantType.NO_SUBTITLES,
+            event_id=event_id,
+            variant_type=ClipVariantType.NO_SUBTITLES,
                 file_path=clip.file_path,
                 duration_s=clip.duration_s,
                 has_subtitles=False,
@@ -624,14 +665,14 @@ def _create_clip_variants(
             ))
         # ARCHIVE + COMPRESSED:先标记 queued,由 _render_variants 完成后更新。
         db.add(ClipVariant(
-            event_id=clip.candidate_id,
+            event_id=event_id,
             variant_type=ClipVariantType.ARCHIVE,
             has_subtitles=options.subtitle,
             render_status="queued",
             version_number=1,
         ))
         db.add(ClipVariant(
-            event_id=clip.candidate_id,
+            event_id=event_id,
             variant_type=ClipVariantType.COMPRESSED,
             has_subtitles=options.subtitle,
             render_status="queued",
@@ -895,9 +936,10 @@ def _render_single_variant(
     result = subprocess.run(cmd, capture_output=True, timeout=1800)
 
     with get_session() as db:
+        event_id = _resolve_event_id(db, clip.candidate_id)
         variant = db.exec(
             select(ClipVariant).where(
-                ClipVariant.event_id == clip.candidate_id,
+                ClipVariant.event_id == event_id,
                 ClipVariant.variant_type == variant_type,
             )
         ).first()
