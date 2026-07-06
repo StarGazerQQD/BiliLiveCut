@@ -24,23 +24,26 @@ from app.core.paths import clips_dir, raw_dir
 def _safe_unlink(disk_path: str, allowed_root: Path) -> bool:
     """安全删除文件: resolve() 路径必须在 allowed_root 前缀下,防止路径遍历攻击。
 
+    V0.1.12.8: 修复 TOCTOU — resolve() 后使用已解析路径删除,
+    而非原始路径, 防止验证-删除窗口内的符号链接替换攻击。
+
     :param disk_path: 数据库中记录的文件路径。
     :param allowed_root: 允许的根目录 (如 clips_dir)。
     :returns: 是否成功删除。
     """
     try:
         resolved = Path(disk_path).resolve()
-        allowed_root.resolve()
+        resolved_root = allowed_root.resolve()
         # resolved 必须在 allowed_root 子树内
-        resolved.relative_to(allowed_root.resolve())
+        resolved.relative_to(resolved_root)
     except (ValueError, OSError):
         logger.warning("拒绝删除非托管路径 (不在 {} 下): {}", allowed_root, disk_path)
         return False
     try:
-        Path(disk_path).unlink(missing_ok=True)
+        resolved.unlink(missing_ok=True)
         return True
     except OSError as exc:
-        logger.debug("删除文件失败 {}: {}", disk_path, exc)
+        logger.debug("删除文件失败 {}: {}", resolved, exc)
         return False
 
 # 可配置的默认值(可通过 settings 覆盖)。

@@ -327,15 +327,16 @@ def set_candidate_status(candidate_id: int, status: str) -> None:
 
 
 async def approve_candidate(candidate_id: int) -> int | None:
-    """批准候选并出片(切片+文案); 使用统一审批服务 (V0.1.12.7)。
+    """批准候选并出片(切片+文案); V0.1.12.8: 传入外层 db 消除事务割裂。
 
-    先通过 approve_event_and_task 同步 Task/Event/Candidate 状态，
-    再在线程池中执行 produce_clip。
+    在同一个 session 中完成审批 + produce_clip,
+    fallback 路径也同步更新 Task 状态。
 
     :param candidate_id: 候选 id。
     :returns: 生成的 clip_id;失败返回 ``None``。
     """
     from app.db.models import HighlightEvent, SegmentTask
+    from app.db.models import TaskStatus as _Ts
     from app.pipeline.approval import approve_event_and_task
 
     with get_session() as db:
@@ -351,7 +352,7 @@ async def approve_candidate(candidate_id: int) -> int | None:
             )
         ).first()
 
-        # 统一审批
+        # V0.1.12.8: 统一审批, 传入外层 db session
         if task is not None and event is not None:
             approve_event_and_task(
                 task_id=task.id,
@@ -360,10 +361,14 @@ async def approve_candidate(candidate_id: int) -> int | None:
                 reason=None,
                 source="human",
                 review_decision="approved_solo",
+                db=db,
             )
         else:
-            # fallback: 只更新 Candidate 状态
+            # fallback: 更新 Candidate + Task 状态
             set_candidate_status(candidate_id, CandidateStatus.APPROVED)
+            if task is not None:
+                task.stage = _Ts.APPROVED
+                db.add(task)
 
     from app.pipeline.orchestrator import produce_clip
 

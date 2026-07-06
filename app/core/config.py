@@ -34,7 +34,7 @@ class Settings(BaseSettings):
     # ---------- 通用 ----------
     app_env: Literal["dev", "prod"] = "dev"
     log_level: str = "INFO"
-    admin_password: str = ""  # V0.1.8.2: Web 管理后台认证密码(空则无认证)
+    admin_password: str = Field(default="", repr=False)  # V0.1.8.2: Web 管理后台认证密码(空则无认证)
 
     # ---------- 存储 ----------
     storage_root: str = "./storage"
@@ -54,7 +54,7 @@ class Settings(BaseSettings):
 
     # ---------- Bilibili 合规 ----------
     require_authorization: bool = True
-    bilibili_cookie: str = ""
+    bilibili_cookie: str = Field(default="", repr=False)
 
     # ---------- AI:语音转写(本地 Whisper,境内可用) ----------
     whisper_model: str = "small"
@@ -99,7 +99,7 @@ class Settings(BaseSettings):
     # ---------- AI:大模型(OpenAI 兼容协议,境内推荐 DeepSeek/通义/Kimi/GLM) ----------
     # provider 仅作标识;真正决定连接的是 base_url + api_key + model。
     llm_provider: str = "deepseek"
-    llm_api_key: str = ""  # Deprecated: 已迁移至 LLMProvider 系统
+    llm_api_key: str = Field(default="", repr=False)  # Deprecated: 已迁移至 LLMProvider 系统
     # OpenAI 兼容 API 的 base_url(须含 /v1 等版本前缀,视服务商而定):
     #   DeepSeek: https://api.deepseek.com/v1
     #   通义千问 : https://dashscope.aliyuncs.com/compatible-mode/v1
@@ -116,7 +116,8 @@ class Settings(BaseSettings):
     llm_daily_budget: float = 0.0
 
     # 兼容旧配置:若未填 llm_* 而填了 anthropic_*,仍可回退读取(已废弃,仅为兼容保留)。
-    anthropic_api_key: str = ""           # Deprecated: 已迁移至多 LLM 供应商系统 (app/analysis/llm_providers.py)
+    anthropic_api_key: str = Field(default="", repr=False)
+    # Deprecated: 已迁移至多 LLM 供应商系统 (app/analysis/llm_providers.py)
     anthropic_model: str = ""            # Deprecated: 未使用,仅保留向后兼容
     llm_daily_budget_usd: float = 0.0
 
@@ -124,7 +125,7 @@ class Settings(BaseSettings):
     trend_enabled: bool = False           # 是否启用网感资料库(默认关闭,按需开启)
     # 趋势采集专用 API 配置(独立于通用 LLM,可指定不同的模型/服务商)。
     # 留空则回退到通用 LLM 配置(多模型列表或 .env LLM_* 单模型)。
-    trend_api_key: str = ""               # 趋势采集专用 API Key
+    trend_api_key: str = Field(default="", repr=False)               # 趋势采集专用 API Key
     trend_base_url: str = ""              # 趋势采集专用 base_url(OpenAI 兼容)
     trend_model: str = ""                 # 趋势采集专用模型名(留空则用 llm_model)
     trend_web_search: bool = True         # 是否启用联网搜索工具采集(关闭则仅靠模型知识)
@@ -179,7 +180,7 @@ class Settings(BaseSettings):
 
     # 钉钉机器人 Webhook。
     dingtalk_webhook: str = ""             # 钉钉机器人 Webhook 地址
-    dingtalk_secret: str = ""              # 钉钉机器人加签密钥(可选)
+    dingtalk_secret: str = Field(default="", repr=False)              # 钉钉机器人加签密钥(可选)
 
     # 企业微信机器人 Webhook。
     wecom_webhook: str = ""                # 企业微信机器人 Webhook 地址
@@ -188,7 +189,7 @@ class Settings(BaseSettings):
     smtp_host: str = ""                    # SMTP 服务器
     smtp_port: int = 465                   # SMTP 端口(默认 SSL 465)
     smtp_user: str = ""                    # SMTP 用户名
-    smtp_password: str = ""                # SMTP 密码 (repr=False 防止日志泄露)
+    smtp_password: str = Field(default="", repr=False)                # SMTP 密码 (repr=False 防止日志泄露)
     smtp_from: str = ""                    # 发件人地址
     smtp_to: str = ""                      # 收件人地址(多个用逗号分隔)
 

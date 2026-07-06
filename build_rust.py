@@ -70,7 +70,7 @@ def build() -> bool:
         return False
 
     if not (RUST_SRC / "Cargo.toml").exists():
-        print(f"  [build_rust] 错误: 缺少 Cargo.toml")
+        print("  [build_rust] 错误: 缺少 Cargo.toml")
         return False
 
     print(f"  [build_rust] 编译 Rust 扩展 ({RUST_SRC})…")

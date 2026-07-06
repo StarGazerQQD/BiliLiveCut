@@ -1,7 +1,10 @@
-"""统一审批服务 (V0.1.12.7)。
+"""统一审批服务 (V0.1.12.8)。
 
 在同一个数据库事务中更新 Task、Candidate 和 Event 状态，
 确保三套状态机制始终保持一致。
+
+V0.1.12.8: approve_event_and_task 接受可选 db session 参数，
+调用方可传入外层 session 以确保与外层操作在同一事务中提交。
 
 禁止只更新 Task.stage 而不更新 Event.review_status / Candidate.status。
 """
@@ -11,6 +14,7 @@ from __future__ import annotations
 from datetime import UTC, datetime
 
 from loguru import logger
+from sqlmodel import Session
 
 from app.db.models import (
     CandidateStatus,
@@ -31,8 +35,12 @@ def approve_event_and_task(
     reason: str | None = None,
     source: str = "auto",
     review_decision: str = ReviewStatus.APPROVED_SOLO,
+    db: Session | None = None,
 ) -> bool:
     """在同一事务中批准 Task、更新 Candidate 和 HighlightEvent。
+
+    V0.1.12.8: 接受可选 db session。若调用方已持有 session,
+    传入后所有更新在同一事务中完成, 消除双写风险。
 
     :param task_id: SegmentTask.id。
     :param event_id: HighlightEvent.id。
@@ -40,9 +48,15 @@ def approve_event_and_task(
     :param reason: 审批原因/备注。
     :param source: 批准来源: auto / human。
     :param review_decision: 审核决断 (默认 approved_solo)。
+    :param db: 可选的外部 session (V0.1.12.8)。
     :returns: True 表示成功; False 表示 event 不存在或已被拒绝。
     """
-    with get_session() as db:
+    _owns_session = db is None
+
+    if db is None:
+        db = get_session().__enter__()
+
+    try:
         event = db.get(HighlightEvent, event_id)
         if event is None:
             logger.warning("approve_event_and_task: event {} 不存在, 拒绝批准 task={}", event_id, task_id)
@@ -62,7 +76,6 @@ def approve_event_and_task(
                 "approve_event_and_task: event {} 已批准 ({}), 幂等跳过 task={}",
                 event_id, event.review_status, task_id,
             )
-            # 仍同步 Task stage
             task = db.get(SegmentTask, task_id)
             if task and task.stage in (TaskStatus.AWAITING_REVIEW, TaskStatus.APPROVED):
                 task.stage = TaskStatus.APPROVED
@@ -93,7 +106,6 @@ def approve_event_and_task(
             task.event_id = event_id
             if event.candidate_id:
                 task.candidate_id = event.candidate_id
-            # 不修改 claimed_by/lease_token — approve 不是 Worker 操作
             task.claimed_by = None
             task.claimed_at = None
             task.heartbeat_at = None
@@ -105,11 +117,17 @@ def approve_event_and_task(
                 task_id, task.stage if task else "None",
             )
 
+        if _owns_session:
+            db.commit()
+
         logger.info(
             "approve_event_and_task: task={} event={} by={} source={} → approved",
             task_id, event_id, approved_by, source,
         )
         return True
+    finally:
+        if _owns_session:
+            db.close()
 
 
 def assert_event_approved(event_id: int) -> bool:

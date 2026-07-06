@@ -98,10 +98,12 @@ def get_review_data(candidate_id: int) -> dict:
         # 弹幕密度数据:按 5 秒分桶。
         start = c.start_ts
         end = c.end_ts
+        margin = 30  # 前后各 30 秒的上下文。
+
         if start is None or end is None:
             danmaku_buckets = []
+            danmaku_window = {"start": None, "end": None, "margin": margin}
         else:
-            margin = 30  # 前后各 30 秒的上下文。
             danmaku_window_start = start.replace(tzinfo=None) if hasattr(start, "replace") and start.tzinfo else start
             # Only import timedelta once.
             from datetime import timedelta
@@ -135,6 +137,12 @@ def get_review_data(candidate_id: int) -> dict:
                         "t": round(t0_ts + i * bucket_s, 1),
                         "count": cnt,
                     })
+
+            danmaku_window = {
+                "start": ctx_start.isoformat() if hasattr(ctx_start, "isoformat") else str(ctx_start),
+                "end": ctx_end.isoformat() if hasattr(ctx_end, "isoformat") else str(ctx_end),
+                "margin": margin,
+            }
 
         # 评分解释。
         import json as _json2
@@ -222,11 +230,7 @@ def get_review_data(candidate_id: int) -> dict:
         },
         "transcript": transcript_data,
         "danmaku_buckets": danmaku_buckets,
-        "danmaku_window": {
-            "start": ctx_start.isoformat() if hasattr(ctx_start, "isoformat") else str(ctx_start),
-            "end": ctx_end.isoformat() if hasattr(ctx_end, "isoformat") else str(ctx_end),
-            "margin": margin,
-        },
+        "danmaku_window": danmaku_window,
         "features": features,
         "score_breakdown": score_breakdown,
         "danmaku_explain": danmaku_explain,
@@ -309,10 +313,11 @@ def submit_review(
     decision: str,
     reason: str | None = None,
 ) -> dict:
-    """提交审核决断(细粒度), 使用统一审批服务 (V0.1.12.7)。
+    """提交审核决断(细粒度), V0.1.12.8: 消除双写, 统一走 approve_event_and_task。
 
-    正向决断时调用 approve_event_and_task 在同一事务中更新
-    Task.stage + Event.review_status + Candidate.status。
+    正向决断时调用 approve_event_and_task 传入外层 db session,
+    在同一事务中更新 Task.stage + Event.review_status + Candidate.status。
+    非正向决断 (拒绝等) 仅更新 Event 和 Candidate。
 
     :param candidate_id: 候选 id。
     :param decision: 审核决断(approved_solo/rejected/insufficient_context 等)。
@@ -381,22 +386,8 @@ def submit_review(
             db.add(event)
             db.flush()
 
-        # 更新 Event 审核状态
-        event.review_status = decision
-        event.review_reason = reason
-        event.review_by = "manual"
-        event.updated_at = _dt.now(UTC)
-        db.add(event)
-
-        # 更新 Candidate 状态
         if is_positive:
-            c.status = CandidateStatus.APPROVED
-        elif decision in (ReviewStatus.REJECTED, ReviewStatus.NOT_EXCITING):
-            c.status = CandidateStatus.REJECTED
-        db.add(c)
-
-        # V0.1.12.7: 正向决断时同步 Task.stage (通过统一审批服务)
-        if is_positive and event.id is not None:
+            # V0.1.12.8: 正向决断统一走 approve_event_and_task, 传入外层 db
             from app.pipeline.approval import approve_event_and_task
 
             task = db.exec(
@@ -412,7 +403,27 @@ def submit_review(
                     reason=reason,
                     source="human",
                     review_decision=decision,
+                    db=db,
                 )
+            else:
+                # 无关联 task 时仅更新 Event + Candidate
+                event.review_status = decision
+                event.review_reason = reason
+                event.review_by = "manual"
+                event.updated_at = _dt.now(UTC)
+                db.add(event)
+                c.status = CandidateStatus.APPROVED
+                db.add(c)
+        else:
+            # 非正向决断: 仅更新 Event 和 Candidate
+            event.review_status = decision
+            event.review_reason = reason
+            event.review_by = "manual"
+            event.updated_at = _dt.now(UTC)
+            db.add(event)
+            if decision in (ReviewStatus.REJECTED, ReviewStatus.NOT_EXCITING):
+                c.status = CandidateStatus.REJECTED
+            db.add(c)
 
     return {"status": decision, "reason": reason}
 

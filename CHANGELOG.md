@@ -1,5 +1,46 @@
 # Changelog
 
+## V0.1.12.8 Alpha (2026-07-06)
+
+### P0 致命修复: 事务边界 / TOCTOU / Settings 密钥 / 模型约束对齐 / Detached ORM / RenderStatus 枚举
+
+本质目标: 修复 9 项 P0 问题, 消除审批事务割裂、双写不一致、路径遍历漏洞、密钥日志泄漏、ORM Detached 崩溃。
+
+#### Fix 1-2: 事务边界割裂 + submit_review 双写
+- `approve_event_and_task()` 接受可选 `db: Session | None` 参数 (V0.1.12.8)
+- 调用方传入外层 session 后所有更新在同一事务中提交, 消除双写风险
+- `_advance_candidate()` / `_advance_awaiting_review()` / `submit_review()` / `approve_candidate()` 均传入 `db=db`
+- `submit_review()` 正向决断不再单独写 Event/Candidate, 统一走 `approve_event_and_task`
+
+#### Fix 3: get_review_data NameError
+- `ctx_start` / `ctx_end` / `margin` 移入 `else` 分支前已定义 `danmaku_window` 字典
+- `start is None or end is None` 时 `danmaku_window` 设为 `{start: None, end: None, margin: 30}`
+
+#### Fix 4: _safe_unlink TOCTOU
+- `Path(disk_path).unlink()` → `resolved.unlink()`, 使用已解析的绝对路径删除
+- 防止验证-删除窗口内的符号链接替换攻击
+
+#### Fix 5: Settings 密钥 repr 泄漏
+- `admin_password`, `bilibili_cookie`, `llm_api_key`, `anthropic_api_key`, `trend_api_key`, `dingtalk_secret`, `smtp_password` 均添加 `repr=False`
+- 防止 `print(settings)` 或日志中泄露密钥明文
+
+#### Fix 6: ClipVariant 模型/迁移约束不一致
+- 添加 Migration V3: 删除旧 2 列索引, 创建 3 列索引 `(event_id, variant_type, render_config_hash)`
+- `_verify_critical_indexes()` 更新为检查 3 列索引名 `variant_config`
+
+#### Fix 7: Transcript 缺少唯一约束
+- 添加唯一索引 `idx_transcripts_pipeline_key` 到 Migration V3
+- `_verify_critical_indexes()` 增加 Transcript.pipeline_key 检查
+
+#### Fix 8: render_status 裸字符串
+- 添加 `RenderStatus` 类 (`QUEUED`/`RENDERING`/`DONE`/`FAILED`)
+- `ClipVariant.render_status` 默认值改用 `RenderStatus.QUEUED`
+- `clipper.py` / `collection.py` 所有裸字符串替换为枚举值
+
+#### Fix 9: highlight.py Detached ORM
+- `room.auto_approve` / `room.auto_approve_threshold` / `room.review_threshold` / `use_dm_sentiment` 提取到局部变量
+- 避免 `with get_session() as db:` 退出后访问 ORM 导致 `DetachedInstanceError`
+
 ## V0.1.12.7 Alpha (2026-07-02)
 
 ### 稳定性修复与数据一致性收口: 统一审批事务 / UploadTask 结果映射 / ManualUploader 状态 / Worker 租约贯穿 / 迁移修复 / 模型约束
