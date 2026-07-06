@@ -61,6 +61,20 @@ class Settings(BaseSettings):
     whisper_device: str = "cpu"
     whisper_compute_type: str = "int8"
 
+    # ---------- AI:多引擎 ASR 流水线 (V0.1.12) ----------
+    # 主引擎: paraformer / whisper, 默认 paraformer-zh
+    asr_primary: str = "paraformer"
+    # 辅助特征提取: SenseVoice-Small (情感/笑声/音乐/事件)
+    asr_sensevoice: bool = True
+    # 低置信度复核: Fun-ASR-Nano
+    asr_funasr_review: bool = True
+    # 最终兜底: Whisper (large-v3 / turbo), 保留切换
+    asr_fallback_whisper: bool = True
+    # 低置信度阈值 (logprob < 此值触发复核)
+    asr_confidence_threshold: float = -0.6
+    # ASR 模型下载源
+    asr_model_revision: str = "master"
+
     # ---------- AI:大模型(OpenAI 兼容协议,境内推荐 DeepSeek/通义/Kimi/GLM) ----------
     # provider 仅作标识;真正决定连接的是 base_url + api_key + model。
     llm_provider: str = "deepseek"
