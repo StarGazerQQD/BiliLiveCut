@@ -7,6 +7,9 @@ RUN apt-get update \
     && apt-get install -y --no-install-recommends ffmpeg \
     && rm -rf /var/lib/apt/lists/*
 
+# 创建非 root 用户, 限制容器权限 (在 COPY 前建用户, 在 COPY 后转交所有权)。
+RUN useradd -m appuser && mkdir -p /data /app && chown -R appuser:appuser /data /app
+
 ENV PYTHONUNBUFFERED=1 \
     PIP_NO_CACHE_DIR=1 \
     STORAGE_ROOT=/data \
@@ -19,20 +22,22 @@ COPY pyproject.toml README.md ./
 COPY app ./app
 COPY config ./config
 
+# 为 appuser 赋予文件所有权 (此时仍为 root, 可执行 chown)。
+RUN chown -R appuser:appuser /app
+
+# 切换到非 root 用户执行后续操作。
+USER appuser
+
 # 生成带哈希的锁定文件(先装 pip-tools)。
 # 注: 如需生产部署, 请提前在本机执行 `pip-compile --generate-hashes pyproject.toml -o requirements.lock`,
 # 然后将 requirements.lock COPY 进镜像, 替换下面两行为:
 #   RUN pip install --require-hashes -r requirements.lock
 RUN pip install --upgrade pip \
-    && pip install -e ".[asr,web]"
+    && pip install ".[asr,web]"
 
 # 运行产物挂载到 /data(见 docker-compose)。
 VOLUME ["/data"]
 EXPOSE 8000
-
-# 创建非 root 用户, 限制容器权限。
-RUN useradd -m appuser && chown -R appuser:appuser /data /app
-USER appuser
 
 # 默认启动 Web 控制台;监听 0.0.0.0 以便容器外访问。
 CMD ["python", "-m", "app.cli", "serve", "--host", "0.0.0.0", "--port", "8000"]
