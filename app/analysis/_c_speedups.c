@@ -284,57 +284,59 @@ static PyObject *fast_char_bigrams(PyObject *self, PyObject *arg) {
     }
     if (!text || tlen < 2) {
         PyObject *list = PyList_New(0);
-        if (tlen == 1) {
-            char buf[2] = {text[0], 0};
-            PyList_Append(list, PyUnicode_FromStringAndSize(buf, 1));
+        if (tlen == 1 && text) {
+            int clen = 1;
+            if ((unsigned char)text[0] >= 0xC0) {
+                while (clen < 4 && (unsigned char)text[clen] >= 0x80 && (unsigned char)text[clen] < 0xC0)
+                    clen++;
+            }
+            PyObject *bg = PyUnicode_FromStringAndSize(text, clen);
+            if (bg) PyList_Append(list, bg);
+            Py_XDECREF(bg);
         }
         return list;
     }
 
-    /* 跳过空白字符,统计有效 bigram 数量 */
-    int bigram_count = 0;
-    const char *p = text, *end = text + tlen;
-    while (p < end) {
-        if ((unsigned char)*p <= ' ') { p++; continue; }
-        const char *q = p + 1;
-        if (p + 1 >= end) break;  /* 单字符残片, bigram 不可用 */
-        while (q < end && (unsigned char)*q <= ' ') q++;
-        if (q < end) bigram_count++;
-        p++;
-    }
-
-    PyObject *result = PyList_New(bigram_count);
+    PyObject *result = PyList_New(0);
     if (!result) return NULL;
 
-    int idx = 0;
-    p = text;
+    const char *p = text, *end = text + tlen;
     while (p < end) {
+        /* 跳过空白 */
         if ((unsigned char)*p <= ' ') { p++; continue; }
-        const char *q = p + 1;
-        while (q < end && (unsigned char)*q <= ' ') q++;
-        if (q >= end) break;
-        /* 2 个 UTF-8 字符的 bigram */
+
+        /* 第一个字符的字节长度 */
         int first_len = 1;
         if ((unsigned char)*p >= 0xC0) {
             while (first_len < 4 && (unsigned char)p[first_len] >= 0x80 && (unsigned char)p[first_len] < 0xC0)
                 first_len++;
-            if (first_len > (int)(end - p) || first_len < 1) first_len = 1;
+            if (first_len > (int)(end - p)) first_len = 1;
         }
-        int second_start = (int)(q - p);
+
+        /* 跳过第一个字符,找到下一个非空白字符开头 */
+        const char *q = p + first_len;
+        while (q < end && (unsigned char)*q <= ' ') q++;
+        if (q >= end) { p += first_len; continue; }
+
+        /* 第二个字符的字节长度 */
         int second_len = 1;
         if ((unsigned char)*q >= 0xC0) {
             while (second_len < 4 && (unsigned char)q[second_len] >= 0x80 && (unsigned char)q[second_len] < 0xC0)
                 second_len++;
-            if (second_len > (int)(end - q) || second_len < 1) second_len = 1;
+            if (second_len > (int)(end - q)) second_len = 1;
         }
-        PyObject *bg = PyUnicode_FromStringAndSize(p, second_start + second_len);
-        if (bg) PyList_SET_ITEM(result, idx++, bg);
-        p += first_len;  /* 跳到下一个字符(而非字节级 p++) */
-    }
 
-    /* 如果实际 bigram 少于预估,调整大小 — 实际上我们可能高估了 */
-    if (idx < bigram_count) {
-        Py_SET_SIZE(result, idx);
+        /* p 到 q+second_len 组成一个有效 bigram */
+        int total_len = (int)(q - p) + second_len;
+        PyObject *bg = PyUnicode_FromStringAndSize(p, total_len);
+        if (!bg) {
+            Py_DECREF(result);
+            return NULL;
+        }
+        PyList_Append(result, bg);
+        Py_DECREF(bg);
+
+        p += first_len;
     }
     return result;
 }
