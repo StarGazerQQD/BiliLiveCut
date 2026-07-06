@@ -1,4 +1,4 @@
-"""训练数据集构建器 (v0.1.10.1-HL-Alpha)。
+"""训练数据集构建器 (v0.1.12.1-HL-Alpha)。
 
 从 ThresholdFeedback 表获取人工审批 (approved/rejected) 标签，
 调用 FeatureExtractor 提取完整 98 维特征，组装训练集。

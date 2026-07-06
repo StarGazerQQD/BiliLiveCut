@@ -281,6 +281,7 @@ static PyObject *fast_char_bigrams(PyObject *self, PyObject *arg) {
     while (p < end) {
         if ((unsigned char)*p <= ' ') { p++; continue; }
         const char *q = p + 1;
+        if (p + 1 >= end) break;  /* 单字符残片, bigram 不可用 */
         while (q < end && (unsigned char)*q <= ' ') q++;
         if (q < end) bigram_count++;
         p++;

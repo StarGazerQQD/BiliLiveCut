@@ -50,6 +50,8 @@ if _db_url.startswith("sqlite"):
         cursor.execute("PRAGMA journal_mode=WAL")
         cursor.execute("PRAGMA busy_timeout=30000")
         cursor.execute("PRAGMA synchronous=NORMAL")
+        # V0.1.11-alpha:启用外键约束(SQLite 默认关闭)。
+        cursor.execute("PRAGMA foreign_keys=ON")
         cursor.close()
 
 
@@ -75,6 +77,16 @@ def _migrate_add_columns() -> None:
         ("live_rooms", "ml_highlight_enabled", "INTEGER NOT NULL DEFAULT 0", None),
         # V0.1.8: 合集章节标题持久化。
         ("highlight_topics", "chapter_title", "TEXT", None),
+        # V0.1.11-alpha: 任务并发控制与崩溃恢复。
+        ("segment_tasks", "event_id", "INTEGER", None),
+        ("segment_tasks", "failed_stage", "TEXT", None),
+        ("segment_tasks", "claimed_by", "TEXT", None),
+        ("segment_tasks", "claimed_at", "TEXT", None),
+        ("segment_tasks", "heartbeat_at", "TEXT", None),
+        # V0.1.11-alpha: 主题确认标记。
+        ("highlight_topics", "confirmed_by_user", "INTEGER NOT NULL DEFAULT 0", None),
+        # V0.1.12: ASR 多引擎流水线 — 辅助特征字段。
+        ("transcripts", "auxiliary_json", "TEXT", None),
     ]
     with engine.connect() as conn:
         existing_lr = {r[1] for r in conn.exec_driver_sql(
@@ -88,6 +100,11 @@ def _migrate_add_columns() -> None:
         ).fetchall()} if conn.exec_driver_sql(
             "SELECT name FROM sqlite_master WHERE type='table' AND name='highlight_topics'"
         ).fetchone() else set()
+        existing_st = {r[1] for r in conn.exec_driver_sql(
+            "PRAGMA table_info(segment_tasks)"
+        ).fetchall()} if conn.exec_driver_sql(
+            "SELECT name FROM sqlite_master WHERE type='table' AND name='segment_tasks'"
+        ).fetchone() else set()
         for table, col, sql_type, _ in _migrations:
             if table == "live_rooms":
                 existing = existing_lr
@@ -95,6 +112,8 @@ def _migrate_add_columns() -> None:
                 existing = existing_rs
             elif table == "highlight_topics":
                 existing = existing_ht
+            elif table == "segment_tasks":
+                existing = existing_st
             else:
                 existing = set()
             if col not in existing:

@@ -167,7 +167,7 @@ def get_login_status(task_id: int) -> dict:
     status = result.get("status", "unknown")
     resp: dict = {"status": status}
     if "cookie" in result:
-        resp["cookie"] = result["cookie"]
+        resp["cookie_available"] = True  # 仅告知前端 cookie 已就绪,不暴露完整值
     if "error" in result:
         resp["error"] = result["error"]
     # 清理已完成/失败的任务
