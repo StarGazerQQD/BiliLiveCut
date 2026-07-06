@@ -235,7 +235,10 @@ class RawSegment(SQLModel, table=True):
 
 
 class Transcript(SQLModel, table=True):
-    """转写结果(``transcripts``):某片段的语音转文字。"""
+    """转写结果(``transcripts``):某片段的语音转文字 + 辅助特征。
+
+    V0.1.12: 新增 auxiliary_json 存储 SenseVoice 辅助特征(情感/笑声/音乐/事件)。
+    """
 
     __tablename__ = "transcripts"
 
@@ -245,6 +248,7 @@ class Transcript(SQLModel, table=True):
     text: str = Field(default="", description="转写全文")
     words_json: str | None = Field(default=None, description="词级时间戳 JSON: [{w,start,end}]")
     avg_logprob: float | None = Field(default=None, description="平均置信度")
+    auxiliary_json: str | None = Field(default=None, description="V0.1.12:SenseVoice 辅助特征 JSON(emotions/events/laughter/music)")
     created_at: datetime = Field(default_factory=utcnow)
 
 

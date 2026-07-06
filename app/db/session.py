@@ -83,6 +83,8 @@ def _migrate_add_columns() -> None:
         ("segment_tasks", "heartbeat_at", "TEXT", None),
         # V0.1.11-alpha: 主题确认标记。
         ("highlight_topics", "confirmed_by_user", "INTEGER NOT NULL DEFAULT 0", None),
+        # V0.1.12: ASR 多引擎流水线 — 辅助特征字段。
+        ("transcripts", "auxiliary_json", "TEXT", None),
     ]
     with engine.connect() as conn:
         existing_lr = {r[1] for r in conn.exec_driver_sql(

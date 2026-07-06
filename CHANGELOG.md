@@ -1,5 +1,49 @@
 # Changelog
 
+## V0.1.12 Alpha (2026-07-06)
+
+### 多引擎 ASR 流水线重构
+
+默认引擎从 Whisper 单引擎升级为四层流水线:
+
+| 层级 | 引擎 | 功能 |
+|------|------|------|
+| **主引擎** | Paraformer-zh | 中文文本、词级时间戳、标点 |
+| **辅助特征** | SenseVoice-Small | 情感、笑声、音乐、事件检测 |
+| **低置信复核** | Fun-ASR-Nano | 低分 / 非中文片段复核 |
+| **最终兜底** | Whisper large-v3 / turbo | 保留切换, 主引擎失败时自动回退 |
+
+关键特性:
+- 全部模型懒加载, 进程级缓存
+- `ASRPipeline` 统一编排: Paraformer → SenseVoice → FunASR-Nano → Whisper
+- 通过 `ASR_PRIMARY=whisper` 可随时切回纯 Whisper 模式
+- 新环境变量: `ASR_PRIMARY` / `ASR_SENSEVOICE` / `ASR_FUNASR_REVIEW` / `ASR_FALLBACK_WHISPER` / `ASR_CONFIDENCE_THRESHOLD` / `ASR_MODEL_REVISION`
+- `Transcript` 新增 `auxiliary_json` 字段存储辅助特征 (情感/事件/复核结果)
+- `TranscriptionResult` 扩展: `emotions` / `reviewed_segments` / `engine`
+
+#### 新增环境变量 (`.env.example`)
+
+```env
+ASR_PRIMARY=paraformer          # paraformer / whisper
+ASR_SENSEVOICE=true             # SenseVoice-Small
+ASR_FUNASR_REVIEW=true          # Fun-ASR-Nano 低置信复核
+ASR_FALLBACK_WHISPER=true       # Whisper 兜底
+ASR_CONFIDENCE_THRESHOLD=-0.6   # 低置信阈值
+ASR_MODEL_REVISION=master       # 模型版本
+```
+
+#### 依赖
+
+- `funasr` (Paraformer / SenseVoice / Fun-ASR-Nano)
+- `modelscope` (模型下载)
+- `faster-whisper` (保持, 兜底引擎)
+
+#### 测试
+
+178 项全部通过, 零回归。
+
+---
+
 ## V0.1.11 Alpha (2026-07-06)
 
 ### 数据一致性与流水线稳定性
