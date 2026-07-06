@@ -34,6 +34,8 @@ from app.core.config import settings
 from app.db.models import RawSegment, SegmentStatus, Transcript
 from app.db.session import get_session
 
+from app.analysis import asr_metrics
+
 if TYPE_CHECKING:
     pass
 
@@ -286,17 +288,20 @@ class FunASRBackend:
             raise RuntimeError(
                 "需要安装 funasr。请执行: pip install funasr modelscope"
             ) from None
-        logger.info("加载 Paraformer-zh 主引擎 model={} revision={}",
-                     self._primary_model_name, self.model_revision)
+        device = settings.asr_primary_device or settings.whisper_device
+        logger.info("加载 Paraformer-zh 主引擎 model={} device={} revision={}",
+                     self._primary_model_name, device, self.model_revision)
         self._primary = AutoModel(
             model=self._primary_model_name,
             vad_model="fsmn-vad",
             punc_model="ct-punc",
             spk_model="cam++",
-            device=settings.whisper_device,
+            device=device,
             hub="ms",
             revision=self.model_revision,
         )
+        asr_metrics.record_backend_call("paraformer", 0, success=True)
+        logger.info("Paraformer 模型加载完成: loaded=True device={}", device)
         return self._primary
 
     def _load_sensevoice(self) -> object:
@@ -312,7 +317,7 @@ class FunASRBackend:
         logger.info("加载 SenseVoice-Small 辅助特征引擎 revision={}", self.model_revision)
         self._sensevoice = AutoModel(
             model=self.MODEL_ID_SENSEVOICE,
-            device=settings.whisper_device,
+            device=settings.asr_auxiliary_device or settings.whisper_device,
             hub="ms",
             revision=self.model_revision,
         )
@@ -331,7 +336,7 @@ class FunASRBackend:
         logger.info("加载 Fun-ASR-Nano 复核引擎 revision={}", self.model_revision)
         self._funasr = AutoModel(
             model=self.MODEL_ID_NANO,
-            device=settings.whisper_device,
+            device=settings.asr_review_device or settings.whisper_device,
             hub="ms",
             revision=self.model_revision,
         )
@@ -369,12 +374,17 @@ class FunASRBackend:
         logger.info("Paraformer 主引擎转写完成, 耗时 {:.1f}s", elapsed)
 
         if not result or len(result) == 0:
+            asr_metrics.record_backend_call("paraformer", elapsed, success=False)
             return ASRTranscriptResult(
                 text="", language="zh", backend="paraformer",
                 model_id=self._primary_model_name, model_revision=self.model_revision,
                 inference_duration=elapsed, audio_duration=audio_duration,
                 real_time_factor=_compute_real_time_factor(elapsed, audio_duration),
             )
+
+        asr_metrics.record_backend_call("paraformer", elapsed, success=True)
+        if audio_duration > 0:
+            asr_metrics.record_rtf(elapsed / audio_duration)
 
         res = result[0]
         text = res.get("text", "")
@@ -581,6 +591,8 @@ class FunASRBackend:
         t0 = time.time()
         result = model.generate(input=audio_path)
         elapsed = time.time() - t0
+        logger.debug("Fun-ASR-Nano 片段复核完成, 耗时 {:.1f}s", elapsed)
+        asr_metrics.record_backend_call("funasr-nano", elapsed, success=bool(result))
 
         if not result or len(result) == 0:
             return ASRTranscriptResult(
@@ -642,7 +654,7 @@ class FasterWhisperBackend:
         compute_type: str | None = None,
     ) -> None:
         self.model_size = model_size or settings.whisper_model
-        self.device = device or settings.whisper_device
+        self.device = device or settings.asr_fallback_device or settings.whisper_device
         self.compute_type = compute_type or settings.whisper_compute_type
 
     def _load_model(self):  # noqa: ANN202
@@ -688,6 +700,10 @@ class FasterWhisperBackend:
 
         full_text = "".join(all_text).strip()
         logger.info("Whisper 兜底转写完成, 耗时 {:.1f}s, 语言={}", elapsed, info.language)
+        asr_metrics.record_backend_call("whisper", elapsed, success=True)
+        asr_metrics.record_fallback()
+        if audio_duration > 0:
+            asr_metrics.record_rtf(elapsed / audio_duration)
 
         return ASRTranscriptResult(
             text=full_text,
@@ -1163,6 +1179,15 @@ class ASRPipeline:
                 result.review_risk_score or 0.0,
                 result.final_text_source,
             )
+            # V0.1.12.3: 记录复核统计
+            adopted = result.final_text_source == "review"
+            kept_base = result.final_text_source == "primary"
+            manual = result.final_text_source == "manual_review_needed"
+            asr_metrics.record_review(adopted=adopted, kept_base=kept_base, manual_needed=manual)
+            if adopted:
+                asr_metrics.record_review_success()
+            elif manual:
+                asr_metrics.record_review_failure()
 
         return result
 
