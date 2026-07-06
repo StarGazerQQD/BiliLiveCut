@@ -30,11 +30,10 @@ from typing import TYPE_CHECKING, Protocol
 
 from loguru import logger
 
+from app.analysis import asr_metrics
 from app.core.config import settings
 from app.db.models import RawSegment, SegmentStatus, Transcript
 from app.db.session import get_session
-
-from app.analysis import asr_metrics
 
 if TYPE_CHECKING:
     pass
@@ -282,6 +281,7 @@ class FunASRBackend:
 
     @property
     def model_revision(self) -> str:
+        """当前加载模型的 revision/hash。"""
         return settings.asr_model_revision or "master"
 
     # ---- 懒加载 ----
@@ -497,7 +497,7 @@ class FunASRBackend:
 
         # V0.1.12.2: SenseVoice 时间戳解析 — 若返回 timestamps 则使用,
         # 否则按文本分段估算时间 (比 start=0.0/end=0.0 更合理)。
-        sv_timestamps = res.get("timestamp", []) or []
+        _sv_timestamps = res.get("timestamp", []) or []
         sv_text = res.get("text", "")
 
         # 尝试按文本分段估算事件时间
@@ -508,7 +508,7 @@ class FunASRBackend:
         # 提取情感标签
         emo_label = res.get("emo_label", "")
         if emo_label:
-            for part_idx, part_text in enumerate(parts):
+            for part_idx, _part_text in enumerate(parts):
                 event_start = part_idx * part_dur
                 event_end = min(event_start + part_dur, audio_dur) if audio_dur > 0 else 60.0
                 for token in emo_label.split("|"):

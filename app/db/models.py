@@ -172,7 +172,7 @@ class LiveRoom(SQLModel, table=True):
     room_id: int | None = Field(default=None, index=True, description="归一化后的真实房间号")
     uploader_name: str | None = Field(default=None, description="主播名")
     title: str | None = Field(default=None, description="直播间标题")
-    mode: str = Field(default=RoomMode.MANUAL, description="[已废弃 V0.1.6]审核模式:manual/semi/auto;请改用 auto_* 开关")
+    mode: str = Field(default=RoomMode.MANUAL, description="[已废弃 V0.1.6]审核模式:manual/semi/auto;请改用 auto_* 开关")  # noqa: E501
     highlight_threshold: float = Field(default=0.65, description="进入候选池的综合评分阈值")
     auto_publish_threshold: float = Field(default=0.85, description="自动发布阈值")
     enabled: bool = Field(default=False, description="是否启用监控/录制")
@@ -195,7 +195,7 @@ class LiveRoom(SQLModel, table=True):
     danmaku_sentiment_enabled: bool = Field(default=False, description="是否启用弹幕情绪分析")
 
     # V0.1.6 P2:房间级配置(热词/别名/高光关键词/屏蔽主题,存储为 JSON)。
-    room_config_json: str | None = Field(default=None, description="房间配置 JSON(hotwords/aliases/highlight_keywords/blocked_topics)")
+    room_config_json: str | None = Field(default=None, description="房间配置 JSON(hotwords/aliases/highlight_keywords/blocked_topics)")  # noqa: E501
     created_at: datetime = Field(default_factory=utcnow)
     updated_at: datetime = Field(default_factory=utcnow)
 
@@ -262,7 +262,7 @@ class Transcript(SQLModel, table=True):
     review_triggered: bool = Field(default=False, description="是否触发复核")
     review_risk_score: float | None = Field(default=None, description="最高复核风险评分")
     review_reasons: str | None = Field(default=None, description="复核原因 JSON 列表")
-    final_text_source: str | None = Field(default=None, description="最终文本来源: primary/review/fallback/manual_review_needed")
+    final_text_source: str | None = Field(default=None, description="最终文本来源: primary/review/fallback/manual_review_needed")  # noqa: E501
     inference_duration: float | None = Field(default=None, description="总推理耗时 (秒)")
 
     created_at: datetime = Field(default_factory=utcnow)
@@ -303,7 +303,7 @@ class HighlightEvent(SQLModel, table=True):
     __tablename__ = "highlight_events"
 
     id: int | None = Field(default=None, primary_key=True)
-    candidate_id: int | None = Field(default=None, index=True, description="关联 highlight_candidates.id(可空)", sa_column_kwargs={"unique": True})
+    candidate_id: int | None = Field(default=None, index=True, description="关联 highlight_candidates.id(可空)", sa_column_kwargs={"unique": True})  # noqa: E501
     session_id: int = Field(index=True, description="所属 recording_sessions.id")
     segment_id: int | None = Field(default=None, description="来源 raw_segments.id")
 
@@ -350,8 +350,8 @@ class ClipVariant(SQLModel, table=True):
     __tablename__ = "clip_variants"
 
     id: int | None = Field(default=None, primary_key=True)
-    event_id: int = Field(index=True, description="关联 highlight_events.id", schema_extra={"unique_with": "variant_type"})
-    candidate_id: int | None = Field(default=None, index=True, description="[已废弃 V0.1.12.2]关联 highlight_candidates.id(仅向后兼容, 新代码通过 event_id 获取)")
+    event_id: int = Field(index=True, description="关联 highlight_events.id", schema_extra={"unique_with": "variant_type"})  # noqa: E501
+    candidate_id: int | None = Field(default=None, index=True, description="[已废弃 V0.1.12.2]关联 highlight_candidates.id(仅向后兼容, 新代码通过 event_id 获取)")  # noqa: E501
 
     variant_type: str = Field(default=ClipVariantType.SINGLE, description="版本类型")
 
@@ -591,7 +591,7 @@ class SegmentTask(SQLModel, table=True):
     stage: str = Field(default=TaskStatus.RECORDED, index=True, description="当前处理阶段")
     failed_stage: str | None = Field(default=None, description="V0.1.11-alpha:失败时的阶段,用于精确恢复")
     priority: int = Field(default=100, description="优先级(数值越小越优先)")
-    idempotency_key: str | None = Field(default=None, index=True, description="幂等键:segment_id:stage,防重复", sa_column_kwargs={"unique": True})
+    idempotency_key: str | None = Field(default=None, index=True, description="幂等键:segment_id:stage,防重复", sa_column_kwargs={"unique": True})  # noqa: E501
     attempts: int = Field(default=0, description="当前阶段已尝试次数")
     max_retries: int = Field(default=5, description="V0.1.11-alpha:当前阶段最大重试次数(默认5)")
     next_retry_at: datetime | None = Field(default=None, description="下次重试时间(指数退避,含随机抖动)")
@@ -625,7 +625,7 @@ class SubtitleTemplate(SQLModel, table=True):
     name: str = Field(index=True, description="模板名称(用户自定义)")
     description: str | None = Field(default=None, description="模板描述")
 
-    # ASS [V4+ Styles] 字段:Fontname Fontsize PrimaryColour SecondaryColour OutlineColour BackColour Bold Italic Underline StrikeOut ScaleX ScaleY Spacing Angle BorderStyle Outline Shadow Alignment MarginL MarginR MarginV Encoding
+    # ASS [V4+ Styles] 字段:Fontname Fontsize PrimaryColour SecondaryColour OutlineColour BackColour Bold Italic Underline StrikeOut ScaleX ScaleY Spacing Angle BorderStyle Outline Shadow Alignment MarginL MarginR MarginV Encoding  # noqa: E501
     font_name: str = Field(default="Noto Sans SC", description="字体名称")
     font_size: int = Field(default=36, description="字体大小")
     primary_color: str = Field(default="&H00FFFFFF", description="主要颜色(ABGR)")

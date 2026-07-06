@@ -13,13 +13,13 @@ from __future__ import annotations
 import asyncio
 
 from loguru import logger
+from sqlmodel import select
 
 from app.core.config import settings
 from app.core.cookie import get_bilibili_cookie
-from app.db.models import LiveRoom, utcnow
+from app.db.models import LiveRoom
 from app.db.session import get_session
 from app.sources.bilibili.client import BilibiliLiveClient
-from sqlmodel import select
 
 # 连续 N 次检测到未开播才认为真正下播(防止短暂断流误判)。
 _OFFLINE_CONFIRM_COUNT = 3
@@ -34,7 +34,8 @@ _MAX_RECORD_DURATION_S = 12 * 3600  # 12 小时
 class LiveMonitor:
     """直播状态监控器。
 
-    在 FastAPI lifespan 中启动/停止。"""
+    在 FastAPI lifespan 中启动/停止。
+    """
 
     def __init__(self) -> None:
         self._task: asyncio.Task[None] | None = None
@@ -212,7 +213,7 @@ class LiveMonitor:
         """休眠或提前中断。"""
         try:
             await asyncio.wait_for(self._stop.wait(), timeout=seconds)
-        except asyncio.TimeoutError:
+        except TimeoutError:
             pass
 
 

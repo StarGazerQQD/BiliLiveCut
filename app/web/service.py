@@ -532,7 +532,7 @@ def dashboard_state() -> dict[str, Any]:
         sessions = db.exec(
             select(RecordingSession).where(
                 RecordingSession.status.in_(  # type: ignore[attr-defined]
-                    [SessionStatus.RECORDING, SessionStatus.RECONNECTING, SessionStatus.STARTING, SessionStatus.RECONNECTED]
+                    [SessionStatus.RECORDING, SessionStatus.RECONNECTING, SessionStatus.STARTING, SessionStatus.RECONNECTED]  # noqa: E501
                 )
             )
         ).all()

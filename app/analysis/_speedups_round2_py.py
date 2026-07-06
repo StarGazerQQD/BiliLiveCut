@@ -18,8 +18,9 @@ def cluster_similarity_matrix(items: list[dict]) -> list[list[float]]:
     预提取 bigram/kw,每对仅需一次 fast_cosine_similarity 调用,
     比原始 cluster_session_candidates 避免 O(N**2) 次事件重建。
     """
-    from app.analysis.speedups import fast_char_bigrams
     from datetime import datetime as _dt
+
+    from app.analysis.speedups import fast_char_bigrams
 
     n = len(items)
     if n < 2:

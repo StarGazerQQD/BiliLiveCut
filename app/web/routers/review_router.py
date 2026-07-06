@@ -20,8 +20,6 @@ from fastapi.responses import HTMLResponse
 from fastapi.templating import Jinja2Templates
 from sqlmodel import select as _sql_select
 
-from app.web import service
-
 review_router = APIRouter(prefix="/review", tags=["review"])
 
 _TEMPLATES = Jinja2Templates(
@@ -32,8 +30,8 @@ _TEMPLATES = Jinja2Templates(
 @review_router.get("/{candidate_id}", response_class=HTMLResponse)
 async def review_page(request: Request, candidate_id: int) -> HTMLResponse:
     """审片工作台主页面。"""
-    from app.db.session import get_session
     from app.db.models import HighlightCandidate
+    from app.db.session import get_session
 
     with get_session() as db:
         c = db.get(HighlightCandidate, candidate_id)
@@ -52,7 +50,6 @@ async def review_page(request: Request, candidate_id: int) -> HTMLResponse:
 @review_router.get("/api/{candidate_id}")
 def get_review_data(candidate_id: int) -> dict:
     """获取审片所需的完整数据:候选详情+转写+弹幕解释+评分曲线+前后上下文。"""
-    from app.db.session import get_session
     from app.db.models import (
         Danmaku,
         FinalClip,
@@ -61,6 +58,7 @@ def get_review_data(candidate_id: int) -> dict:
         RecordingSession,
         Transcript,
     )
+    from app.db.session import get_session
 
     with get_session() as db:
         c = db.get(HighlightCandidate, candidate_id)
@@ -115,8 +113,8 @@ def get_review_data(candidate_id: int) -> dict:
                 danmaku_rows = db.exec(
                     _sql_select(Danmaku.ts).where(
                         Danmaku.session_id == c.session_id,
-                        Danmaku.ts >= ctx_start.replace(tzinfo=None) if hasattr(ctx_start, "tzinfo") and ctx_start.tzinfo else ctx_start,
-                        Danmaku.ts <= ctx_end.replace(tzinfo=None) if hasattr(ctx_end, "tzinfo") and ctx_end.tzinfo else ctx_end,
+                        Danmaku.ts >= ctx_start.replace(tzinfo=None) if hasattr(ctx_start, "tzinfo") and ctx_start.tzinfo else ctx_start,  # noqa: E501
+                        Danmaku.ts <= ctx_end.replace(tzinfo=None) if hasattr(ctx_end, "tzinfo") and ctx_end.tzinfo else ctx_end,  # noqa: E501
                         Danmaku.msg_type == "danmaku",
                     ).order_by(Danmaku.ts.asc())
                 ).all()
@@ -253,9 +251,11 @@ async def adjust_boundary(
     :param side: "start"(调起点)/"end"(调终点)/"both"(同时调)。
     :returns: 新的边界。
     """
-    from app.db.session import get_session
+    from datetime import UTC, timedelta
+    from datetime import datetime as _dt
+
     from app.db.models import HighlightCandidate, HighlightEvent
-    from datetime import datetime as _dt, timedelta, UTC
+    from app.db.session import get_session
 
     with get_session() as db:
         c = db.get(HighlightCandidate, candidate_id)
@@ -316,14 +316,16 @@ def submit_review(
     :param reason: 审核原因/备注。
     :returns: 操作结果。
     """
-    from app.db.session import get_session
+    from datetime import UTC
+    from datetime import datetime as _dt
+
     from app.db.models import (
         CandidateStatus,
         HighlightCandidate,
         HighlightEvent,
         ReviewStatus,
     )
-    from datetime import datetime as _dt, UTC
+    from app.db.session import get_session
 
     valid = {
         ReviewStatus.APPROVED_SOLO,
@@ -395,10 +397,11 @@ async def rerender_clip(candidate_id: int) -> dict:
     :param candidate_id: 候选 id。
     :returns: 新的 clip 信息或状态。
     """
-    from app.db.session import get_session
-    from app.db.models import HighlightCandidate, HighlightEvent
-    from app.pipeline.orchestrator import produce_clip
     import asyncio
+
+    from app.db.models import HighlightCandidate, HighlightEvent
+    from app.db.session import get_session
+    from app.pipeline.orchestrator import produce_clip
 
     with get_session() as db:
         c = db.get(HighlightCandidate, candidate_id)
@@ -442,13 +445,13 @@ def get_waveform(candidate_id: int, resolution: int = 400) -> dict:
     :returns: ``{peaks, duration_s, sample_rate}``。
     """
     import json as _json
-    import subprocess as _sp
     import struct as _struct
+    import subprocess as _sp
     import tempfile as _tf
 
-    from app.db.session import get_session
-    from app.db.models import FinalClip, HighlightCandidate
     from app.core.paths import clips_dir
+    from app.db.models import FinalClip, HighlightCandidate
+    from app.db.session import get_session
 
     with get_session() as db:
         c = db.get(HighlightCandidate, candidate_id)
@@ -461,7 +464,7 @@ def get_waveform(candidate_id: int, resolution: int = 400) -> dict:
             ).limit(1)
         ).first()
         if clip is None or not clip.file_path or not Path(clip.file_path).exists():
-            return {"peaks": [], "duration_s": 0, "sample_rate": 0, "error": "尚未生成切片,请先「批准并出片」或「重新渲染」"}
+            return {"peaks": [], "duration_s": 0, "sample_rate": 0, "error": "尚未生成切片,请先「批准并出片」或「重新渲染」"}  # noqa: E501
 
         file_path = clip.file_path
         # 路径遍历保护:确保文件在 clips 目录内。
@@ -491,7 +494,7 @@ def get_waveform(candidate_id: int, resolution: int = 400) -> dict:
 
     # FFmpeg 提取单声道 16-bit PCM,并降采样到约 resolution*2 个样本。
     sample_rate = 8000  # 低频足以表示波形包络
-    total_samples = resolution * 2  # 每点 2 个样本取 max
+    _total_samples = resolution * 2  # 每点 2 个样本取 max
     with _tf.NamedTemporaryFile(suffix=".pcm", delete=False) as tmp:
         tmp_path = tmp.name
 
@@ -508,7 +511,7 @@ def get_waveform(candidate_id: int, resolution: int = 400) -> dict:
         with open(tmp_path, "rb") as f:
             raw = f.read()
     except Exception as exc:
-        return {"peaks": [], "duration_s": duration_s, "sample_rate": sample_rate, "error": f"FFmpeg 波形生成失败: {exc}"}
+        return {"peaks": [], "duration_s": duration_s, "sample_rate": sample_rate, "error": f"FFmpeg 波形生成失败: {exc}"}  # noqa: E501
     finally:
         try:
             Path(tmp_path).unlink()

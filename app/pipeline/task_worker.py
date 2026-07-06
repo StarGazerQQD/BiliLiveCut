@@ -15,22 +15,22 @@ from __future__ import annotations
 import asyncio
 import os
 import random
+import threading
 import time
 import uuid
-from collections import Counter
 from datetime import UTC, datetime, timedelta
 
 from loguru import logger
 from sqlalchemy import text as sa_text
 from sqlmodel import select
 
-from app.core.config import settings
 from app.db.models import (
     RawSegment,
-    SegmentStatus as OldStatus,
     SegmentTask,
     TaskStatus,
-    utcnow,
+)
+from app.db.models import (
+    SegmentStatus as OldStatus,
 )
 from app.db.session import get_session
 
@@ -91,7 +91,6 @@ def track_subprocess(proc) -> None:
 def untrack_subprocess(proc) -> None:
     """从跟踪集中移除已正常结束的子进程。"""
     global _subprocesses_lock
-    import threading
     if _subprocesses_lock is None:
         return
     with _subprocesses_lock:
@@ -103,7 +102,6 @@ def untrack_subprocess(proc) -> None:
 
 def _cleanup_subprocesses() -> None:
     """关闭所有被跟踪的子进程: SIGTERM → 等待 → SIGKILL。"""
-    import signal as _signal
     import time as _time
     global _subprocesses_lock
     if _subprocesses_lock is None:
@@ -147,7 +145,7 @@ _VALID_TRANSITIONS: dict[str, set[str]] = {
     TaskStatus.AWAITING_REVIEW: {TaskStatus.APPROVED, TaskStatus.COMPLETED, TaskStatus.CANCELLED},
     TaskStatus.APPROVED: {TaskStatus.COMPLETED, TaskStatus.QUEUED_FOR_PUBLISH},
     TaskStatus.QUEUED_FOR_PUBLISH: {TaskStatus.COMPLETED, TaskStatus.FAILED},
-    TaskStatus.TRANSIENT_FAILED: {TaskStatus.QUEUED_FOR_TRANS, TaskStatus.QUEUED_FOR_ANALYSIS, TaskStatus.QUEUED_FOR_RENDER, TaskStatus.FAILED},
+    TaskStatus.TRANSIENT_FAILED: {TaskStatus.QUEUED_FOR_TRANS, TaskStatus.QUEUED_FOR_ANALYSIS, TaskStatus.QUEUED_FOR_RENDER, TaskStatus.FAILED},  # noqa: E501
     TaskStatus.STALE: {TaskStatus.QUEUED_FOR_TRANS, TaskStatus.QUEUED_FOR_ANALYSIS, TaskStatus.QUEUED_FOR_RENDER},
 }
 
@@ -197,6 +195,7 @@ def enqueue_next(
     event_id: int | None = None,
     clip_id: int | None = None,
 ) -> None:
+    """将任务推进到下一阶段,重置 attempts 并计算完成时间。"""
     current = task.stage
     if not _can_transition(current, next_stage):
         raise ValueError(f"非法转换: {current} -> {next_stage}")
@@ -230,10 +229,12 @@ def mark_active(task: SegmentTask) -> None:
 
 
 def mark_heartbeat(task: SegmentTask) -> None:
+    """更新任务心跳时间,防止被 stale recovery 误判。"""
     task.heartbeat_at = _now()
 
 
 def mark_completed(task: SegmentTask, processing_ms: int | None = None) -> None:
+    """标记任务完成,记录总耗时。"""
     if processing_ms is None and task.started_at is not None:
         processing_ms = int((_now() - task.started_at).total_seconds() * 1000)
     task.processing_time_ms = processing_ms
@@ -242,6 +243,7 @@ def mark_completed(task: SegmentTask, processing_ms: int | None = None) -> None:
 
 
 def mark_failed(task: SegmentTask, error: str, permanent: bool = False) -> None:
+    """标记任务失败,记录失败阶段和错误信息。"""
     task.last_error = error[:1000]
     task.error_is_permanent = permanent
     task.failed_stage = task.stage  # V0.1.11-alpha:记录失败阶段
@@ -525,6 +527,7 @@ def retry_task(task_id: int) -> bool:
 
 
 def cancel_task(task_id: int) -> bool:
+    """取消指定任务。"""
     with get_session() as db:
         task = db.get(SegmentTask, task_id)
         if task is None:
@@ -615,7 +618,6 @@ def _start_heartbeat_thread(task_id: int) -> threading.Event:
     :param task_id: SegmentTask ID。
     :returns: stop_event — 设置后心跳线程退出。
     """
-    import threading
     stop = threading.Event()
 
     def _beat() -> None:
@@ -649,7 +651,7 @@ def _execute_task(task_id: int, active_stage: str) -> None:
         elif active_stage == TaskStatus.RENDERING:
             _run_render(task_id)
     except Exception as exc:
-        ms = int((time.time() - t0) * 1000)
+        _ms = int((time.time() - t0) * 1000)
         with get_session() as db:
             t = db.get(SegmentTask, task_id)
             if t is not None:
@@ -758,7 +760,7 @@ def _run_render(task_id: int) -> None:
         with get_session() as db:
             t = db.get(SegmentTask, task_id)
             if t is not None:
-                detail = "output file missing" if not out_exists else f"output too small ({_Path(clip.file_path).stat().st_size} bytes)" if clip.file_path else "no output path"
+                detail = "output file missing" if not out_exists else f"output too small ({_Path(clip.file_path).stat().st_size} bytes)" if clip.file_path else "no output path"  # noqa: E501
                 mark_failed(t, f"RenderFailedError: {detail}", permanent=False)
                 db.add(t)
         return
@@ -769,7 +771,7 @@ def _run_render(task_id: int) -> None:
         with get_session() as db:
             t = db.get(SegmentTask, task_id)
             if t is not None:
-                mark_failed(t, f"RenderFailedError: output duration too short ({clip.duration_s:.1f}s)", permanent=False)
+                mark_failed(t, f"RenderFailedError: output duration too short ({clip.duration_s:.1f}s)", permanent=False)  # noqa: E501
                 db.add(t)
         return
 
@@ -823,6 +825,8 @@ def _ensure_event(candidate_id: int) -> int | None:
 # ═══════════════════════════════════════════════════
 
 class TaskWorker:
+    """持久化任务队列 Worker,支持各阶段真正并发 (V0.1.11-alpha)。"""
+
     def __init__(self) -> None:
         self._transcribing: set[asyncio.Task[None]] = set()
         self._analyzing: set[asyncio.Task[None]] = set()
@@ -832,6 +836,7 @@ class TaskWorker:
         _logger.info("TaskWorker init worker_id={}", _WORKER_ID)
 
     async def start(self) -> None:
+        """启动 Worker 主循环。"""
         if self._running:
             return
         global _shutting_down
@@ -873,7 +878,7 @@ class TaskWorker:
                 try:
                     done, _ = await asyncio.wait(pending, timeout=grace_period)
                     _logger.info("优雅关闭: {} 任务正常完成", len(done))
-                except asyncio.TimeoutError:
+                except TimeoutError:
                     pass
                 # 取消仍未完成的任务
                 still_running = {t for t in coll if not t.done()}
@@ -923,6 +928,7 @@ class TaskWorker:
 
     @property
     def stats(self) -> dict:
+        """当前 Worker 和任务队列统计。"""
         counts = _task_counts()
         counts["worker"] = {
             "worker_id": _WORKER_ID,
@@ -956,6 +962,7 @@ def _task_counts() -> dict:
 
 
 def list_tasks(limit: int = 50, stage: str | None = None) -> list[dict]:
+    """列出任务队列中的任务。"""
     with get_session() as db:
         stmt = select(SegmentTask)
         if stage:

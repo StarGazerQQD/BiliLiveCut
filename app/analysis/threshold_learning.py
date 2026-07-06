@@ -181,8 +181,6 @@ def feedback_summary(room_id: int) -> dict:
 
 def _current_threshold(room_id: int) -> float:
     """读取房间当前阈值。"""
-    from sqlmodel import select
-
     with get_session() as db:
         room = db.get(LiveRoom, room_id)
         return room.highlight_threshold if room else 0.65

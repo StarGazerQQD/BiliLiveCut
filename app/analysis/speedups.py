@@ -25,9 +25,9 @@ _logger = logging.getLogger(__name__)
 
 try:
     from app.analysis._c_speedups import (  # type: ignore[import]
+        fast_aho_has_match,
         fast_ahocorasick_build,
         fast_ahocorasick_search,
-        fast_aho_has_match,
         fast_char_bigrams,
         fast_cosine_similarity,
         fast_match_keywords,
@@ -37,9 +37,9 @@ try:
     _logger.info("加速模块(C): 已加载 app.analysis._c_speedups")
 except ImportError:
     from app.analysis._speedups_py import (  # type: ignore[no-redef]
+        fast_aho_has_match,
         fast_ahocorasick_build,
         fast_ahocorasick_search,
-        fast_aho_has_match,
         fast_char_bigrams,
         fast_cosine_similarity,
         fast_match_keywords,
@@ -83,13 +83,17 @@ except ImportError:
 
 if _cluster_sim_func is None:
     try:
-        from app.analysis._speedups_round2 import cluster_similarity_matrix as _csim  # type: ignore[import]
+        from app.analysis._speedups_round2 import (
+            cluster_similarity_matrix as _csim,  # type: ignore[import]
+        )
         _cluster_sim_func = _csim
         _cluster_sim_raw = False
         _CLUSTER_BACKEND = "Cython"
         _logger.info("加速模块(cluster): Cython 已加载")
     except ImportError:
-        from app.analysis._speedups_round2_py import cluster_similarity_matrix as _csim  # type: ignore[no-redef]
+        from app.analysis._speedups_round2_py import (
+            cluster_similarity_matrix as _csim,  # type: ignore[no-redef]
+        )
         _cluster_sim_func = _csim
         _cluster_sim_raw = False
         _CLUSTER_BACKEND = "python"

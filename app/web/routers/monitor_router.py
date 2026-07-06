@@ -16,13 +16,13 @@ def get_monitor_data() -> dict:
     """运维面板数据:磁盘/CPU/任务统计/录制状态。"""
     import time
 
+    from app.core.config import settings
+    from app.core.paths import clips_dir, raw_dir
     from app.pipeline.storage_lifecycle import (
         check_disk_safe,
         get_directory_size,
         get_disk_usage,
     )
-    from app.core.paths import clips_dir, raw_dir
-    from app.core.config import settings
 
     # 磁盘。
     disk = get_disk_usage()
@@ -52,8 +52,8 @@ def get_monitor_data() -> dict:
     tasks = _get_task_stats()
 
     # 录制状态。
-    from app.web.service import recorder_manager
     from app.pipeline.live_monitor import live_monitor
+    from app.web.service import recorder_manager
 
     running_rooms = recorder_manager.running_ids()
     monitor_status = live_monitor.status()
@@ -116,9 +116,10 @@ def _get_task_stats() -> dict:
     """获取任务队列统计(各阶段数量/最老任务等待时间)。"""
     import time
 
-    from app.db.session import get_session
+    from sqlmodel import select
+
     from app.db.models import SegmentTask, TaskStatus
-    from sqlmodel import select, func
+    from app.db.session import get_session
 
     with get_session() as db:
         all_tasks = db.exec(select(SegmentTask).order_by(SegmentTask.created_at.asc())).all()
@@ -154,9 +155,10 @@ def _get_task_stats() -> dict:
 
 def _get_recent_failures() -> list[dict]:
     """获取最近 20 个失败任务。"""
+    from sqlmodel import select
+
     from app.db.models import SegmentTask
     from app.db.session import get_session
-    from sqlmodel import select
 
     with get_session() as db:
         failed = db.exec(

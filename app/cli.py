@@ -590,7 +590,7 @@ def schedule(
     :param at_time: 计划时间。
     :param daily: 是否为每日重复。
     """
-    from datetime import datetime, timezone
+    from datetime import datetime
 
     from app.core.config import settings as s
     from app.db.models import RecordingSchedule
@@ -613,9 +613,9 @@ def schedule(
             if ts <= local_now:
                 from datetime import timedelta
                 ts += timedelta(days=1)
-        except (ValueError, AttributeError):
+        except (ValueError, AttributeError) as err:
             console.print(f"[red]时间格式无效: {at_time}(支持 ISO 或 HH:MM)[/red]")
-            raise typer.Exit(code=1)
+            raise typer.Exit(code=1) from err
 
     recurrent = "daily" if daily else ""
     with get_session() as db:

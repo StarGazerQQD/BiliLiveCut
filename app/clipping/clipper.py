@@ -24,6 +24,7 @@ from pathlib import Path
 from loguru import logger
 from sqlmodel import select
 
+from app.analysis.speedups import group_srt_blocks
 from app.core.config import settings
 from app.core.paths import clips_dir
 from app.db.models import (
@@ -33,14 +34,11 @@ from app.db.models import (
     ClipVariantType,
     FinalClip,
     HighlightCandidate,
-    HighlightEvent,
     IntroTemplate,
     RawSegment,
-    SubtitleTemplate,
     Transcript,
 )
 from app.db.session import get_session
-from app.analysis.speedups import group_srt_blocks
 
 # 竖屏目标分辨率(适合手机端短视频)。
 _VERT_W, _VERT_H = 1080, 1920
@@ -225,7 +223,7 @@ def _render_intro_outro_cards(
     """
     from datetime import date
 
-    from app.db.models import HighlightCandidate, IntroTemplate, LiveRoom, RecordingSession
+    from app.db.models import HighlightCandidate, LiveRoom, RecordingSession
 
     cards: list[Path] = []
 
@@ -577,7 +575,8 @@ def _resolve_event_id(db, candidate_id: int) -> int:
     :param candidate_id: HighlightCandidate ID。
     :returns: HighlightEvent ID;若尚无 Event,自动创建并返回。
     """
-    from app.db.models import HighlightEvent as HE, ReviewStatus
+    from app.db.models import HighlightEvent as HE
+    from app.db.models import ReviewStatus
     event = db.exec(select(HE).where(HE.candidate_id == candidate_id)).first()
     if event is not None:
         return event.id

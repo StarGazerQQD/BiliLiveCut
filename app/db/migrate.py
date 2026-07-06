@@ -15,7 +15,7 @@ from __future__ import annotations
 
 import shutil
 import time
-from dataclasses import dataclass, field
+from dataclasses import dataclass
 from datetime import UTC, datetime
 from pathlib import Path
 
@@ -75,7 +75,6 @@ def _migrate_v1_old_data(db: Session) -> int:
     """
     from app.db.models import (
         ClipVariant,
-        HighlightCandidate,
         HighlightEvent,
         HighlightTopic,
     )

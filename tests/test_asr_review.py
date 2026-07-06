@@ -5,8 +5,6 @@
 
 from __future__ import annotations
 
-import pytest
-
 from app.analysis.transcribe import (
     ASRSegmentResult,
     _compute_review_risk_score,

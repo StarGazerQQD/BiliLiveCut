@@ -18,7 +18,7 @@ import json
 import subprocess
 import tempfile
 from collections.abc import Sequence
-from datetime import datetime, UTC
+from datetime import UTC, datetime
 from pathlib import Path
 
 from loguru import logger
@@ -211,7 +211,7 @@ def render_collection(
                     check=True, timeout=120,
                 )
                 normalized_paths.append(str(norm_path))
-            except subprocess.CalledProcessError as exc:
+            except subprocess.CalledProcessError:
                 logger.warning("响度标准化失败 clip={},使用原始文件。", cf["path"])
                 normalized_paths.append(cf["path"])
 

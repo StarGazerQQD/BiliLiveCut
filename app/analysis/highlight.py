@@ -174,11 +174,9 @@ def danmaku_sentiment_score(session_id: int, start_ts: object, end_ts: object) -
     :param end_ts: 窗口结束时间(datetime)。
     :returns: 0-1 的弹幕情绪分。
     """
-    from app.db.models import Danmaku
-
     import datetime as _dtmod
 
-    def _naive(dt: object) -> datetime:
+    def _naive(dt: object) -> _dtmod.datetime:
         if not isinstance(dt, _dtmod.datetime):
             return _dtmod.datetime.min.replace(tzinfo=None)
         return dt.replace(tzinfo=None) if dt.tzinfo else dt
@@ -254,7 +252,7 @@ def _fetch_window_danmaku_texts(session_id: int, start_n: object, end_n: object)
             )
         ).all()
     texts: list[str] = []
-    for content, ts in rows:
+    for content, _ts in rows:
         if content is not None:
             texts.append(content)
     return texts
@@ -622,7 +620,9 @@ def _danmaku_baseline(
     :param window_end: 候选窗口终点(用于排除)。
     :returns: ``(baseline_rate, total_baseline_count)``。
     """
-    from datetime import datetime as _datetime, timedelta
+    from datetime import datetime as _datetime
+    from datetime import timedelta
+
     from app.db.models import Danmaku
 
     def _n(dt: _datetime) -> _datetime:
@@ -684,6 +684,7 @@ def _danmaku_score(session_id: int, start_ts: object, end_ts: object) -> float:
     :returns: 0-1 的弹幕热度分;无足够弹幕数据时返回 0。
     """
     from datetime import datetime as _datetime
+
     from app.db.models import Danmaku
 
     if start_ts is None or end_ts is None:
@@ -749,6 +750,7 @@ def danmaku_score_explain(session_id: int, start_ts: object, end_ts: object) -> 
         ``ratio``、``score`` 等字段的字典。
     """
     from datetime import datetime as _datetime
+
     from app.db.models import Danmaku
 
     if start_ts is None or end_ts is None:
