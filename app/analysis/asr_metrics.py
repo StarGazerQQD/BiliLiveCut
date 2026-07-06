@@ -7,7 +7,6 @@
 from __future__ import annotations
 
 import threading
-import time
 from collections import defaultdict
 from dataclasses import dataclass, field
 
@@ -26,13 +25,16 @@ class BackendStats:
 
     @property
     def avg_duration(self) -> float:
+        """平均耗时 (秒)。"""
         return self.total_duration / self.calls if self.calls > 0 else 0.0
 
     @property
     def failure_rate(self) -> float:
+        """调用失败率。"""
         return self.failures / self.calls if self.calls > 0 else 0.0
 
     def record(self, duration: float, success: bool = True) -> None:
+        """记录一次调用,更新计数、总耗时和百分位样本。"""
         self.calls += 1
         if success:
             self.successes += 1
@@ -44,6 +46,7 @@ class BackendStats:
             self._durations = self._durations[-500:]
 
     def recompute_percentiles(self) -> None:
+        """从已收集的耗时样本重新计算 P50/P95 百分位数。"""
         if not self._durations:
             return
         sorted_d = sorted(self._durations)
@@ -66,12 +69,14 @@ class ReviewStats:
 
     @property
     def trigger_rate(self) -> float:
-        from .asr_metrics import _backend_stats
-        total = _backend_stats.get("paraformer", BackendStats()).calls
+        """复核触发率 (复核数 / Paraformer 调用数)。"""
+        stats = _backend_stats.get("paraformer")
+        total = stats.calls if stats else 0
         return self.triggered / total if total > 0 else 0.0
 
     @property
     def adoption_rate(self) -> float:
+        """复核文本采纳率 (采纳复核 / 触发复核)。"""
         return self.adopted_review / self.triggered if self.triggered > 0 else 0.0
 
 
@@ -107,11 +112,13 @@ def record_review(adopted: bool, kept_base: bool, manual_needed: bool) -> None:
 
 
 def record_review_success() -> None:
+    """记录一次复核成功。"""
     with _lock:
         _review_stats.succeeded += 1
 
 
 def record_review_failure() -> None:
+    """记录一次复核失败。"""
     with _lock:
         _review_stats.failed += 1
 
