@@ -1,6 +1,6 @@
 # BiliLiveCut · 即插即用版（Publish-PnP）
 
-**版本：V0.1.12.2 Alpha** (`0.1.12.2-alpha`)
+**版本：V0.1.12.3 Alpha** (`0.1.12.3-alpha`)
 
 BiliLiveCut 是一个**全自动 AI 直播切片系统**：监听 Bilibili 直播间 → 实时录制 + 转写 → 识别高光爆点 → 生成剪辑成品 + 文案。
 

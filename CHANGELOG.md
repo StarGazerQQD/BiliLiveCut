@@ -1,5 +1,31 @@
 # Changelog
 
+## V0.1.12.3 Alpha (2026-07-06)
+
+### 接线补全 + 分设备配置生效
+
+本次迭代定位: 将 V0.1.12.2 中已定义但未传导到运行时的配置与指标真正接通。
+
+#### 分设备配置接线 (Phase 4 补全)
+- `FunASRBackend._load_primary()` → `settings.asr_primary_device` (原走 `whisper_device`)
+- `FunASRBackend._load_sensevoice()` → `settings.asr_auxiliary_device`
+- `FunASRBackend._load_funasr()` → `settings.asr_review_device`
+- `FasterWhisperBackend.__init__()` → `settings.asr_fallback_device` 兜底
+- 所有设备配置均保持 `or whisper_device` 二级兜底
+
+#### ASR 可观测性指标接线 (Phase 4 补全)
+- `transcribe.py` 引入 `from app.analysis import asr_metrics`
+- `FunASRBackend.transcribe()` → `record_backend_call("paraformer", ...)` + `record_rtf()`
+- `FunASRBackend.transcribe_segment()` → `record_backend_call("funasr-nano", ...)`
+- `FasterWhisperBackend.transcribe()` → `record_backend_call("whisper", ...)` + `record_fallback()` + `record_rtf()`
+- `ASRPipeline._review_loop()` → `record_review()` / `record_review_success()` / `record_review_failure()`
+- `/asr-metrics` 和 `/asr-models` API 现在返回实时数据
+
+#### Phase 3 接线验证通过
+- `_review_loop` → `_merge_review_text` → `final_text` 链路已验证完整
+- Hotwords `initial_prompt` → `Paraformer generate(hotword=...)` 链路已验证完整
+- `final_text` → `Transcript` 持久化链路已验证完整
+
 ## V0.1.12.2 Alpha (2026-07-06)
 
 ### 稳定性修复迭代 (2026-07-06) — P0 修复
