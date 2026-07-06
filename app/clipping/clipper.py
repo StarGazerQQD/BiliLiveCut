@@ -569,11 +569,12 @@ def produce_clip(candidate_id: int, options: ClipOptions | None = None) -> Final
 
 
 def _resolve_event_id(db, candidate_id: int) -> int:
-    """V0.1.11-alpha:解析真实 HighlightEvent ID（向后兼容,优先已有 Event）。
-    
+    """解析真实 HighlightEvent ID (V0.1.12.5: 删除 candidate_id 回退)。
+
     :param db: SQLModel session。
     :param candidate_id: HighlightCandidate ID。
     :returns: HighlightEvent ID;若尚无 Event,自动创建并返回。
+    :raises ValueError: candidate 不存在时,不再回退 candidate_id。
     """
     from app.db.models import HighlightEvent as HE
     from app.db.models import ReviewStatus
@@ -583,7 +584,7 @@ def _resolve_event_id(db, candidate_id: int) -> int:
     # 候选可能尚未创建 Event（非 TaskWorker 路径进入）。
     cand = db.get(HighlightCandidate, candidate_id)
     if cand is None:
-        return candidate_id  # 极端情况:候选不存在,回退 candidate_id
+        raise ValueError(f"candidate_id={candidate_id} 不存在, 无法解析 event_id")
     new_event = HE(
         candidate_id=candidate_id,
         session_id=cand.session_id,
