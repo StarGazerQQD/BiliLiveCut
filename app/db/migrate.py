@@ -70,7 +70,11 @@ class Migration:
 # ── 迁移注册表 ───────────────────────────────────────────────
 
 def _migrate_v1_old_data(db: Session) -> int:
-    """V1 数据迁移: 修复旧版本中 Candidate ID 被错误写入 Event ID 字段。
+    """V1 数据迁移: 修复旧版本中 Candidate ID 被错误写入 Event ID 字段 (V0.1.12.7 修复碰撞)。
+
+    V0.1.12.7 修复: 不再盲目按 cid_to_eid 映射替换。
+    先判断是否属于真实 Event ID, 只有不属于 Event ID 时才尝试作为 Candidate ID 转换。
+    存在歧义时中止迁移 (不猜测)。
 
     Returns: 修复的记录总数。
     """
@@ -83,54 +87,73 @@ def _migrate_v1_old_data(db: Session) -> int:
     fixed = 0
     unmappable = 0
 
-    # 1. 建立 Candidate ID → Event ID 映射
+    # 1. 收集全部 Event ID
     events = db.exec(select(HighlightEvent)).all()
+    all_event_ids: set[int] = {e.id for e in events}
+
+    # 2. 建立 Candidate ID → Event ID 映射
     cid_to_eid: dict[int, int] = {}
     for e in events:
         if e.candidate_id is not None:
             cid_to_eid[e.candidate_id] = e.id
 
-    # 2. 修复 ClipVariant 中 event_id 实际保存 Candidate ID 的情况
+    # 3. 修复 ClipVariant 中 event_id 实际保存 Candidate ID 的情况
     clips = db.exec(select(ClipVariant)).all()
     for cv in clips:
         eid = cv.event_id
-        # 如果 event_id 数字恰好在 candidate_id 映射中存在, 说明是旧数据
-        if eid in cid_to_eid and cid_to_eid[eid] != eid:
+
+        # V0.1.12.7: 已经是合法 Event ID — 绝对不能修改
+        if eid in all_event_ids:
+            continue
+
+        # 不属于任何 Event ID — 尝试作为 Candidate ID 转换
+        real_eid = cid_to_eid.get(eid)
+        if real_eid is not None:
             logger.info(
-                "修复 ClipVariant id={}: event_id {} → {} (真实 Event ID)",
-                cv.id, eid, cid_to_eid[eid],
+                "修复 ClipVariant id={}: event_id {} (旧 Candidate ID) → {} (真实 Event ID)",
+                cv.id, eid, real_eid,
             )
-            cv.event_id = cid_to_eid[eid]
+            cv.event_id = real_eid
             db.add(cv)
             fixed += 1
-        # 如果 event_id 不在任何 Event 中, 尝试通过 candidate_id 映射
-        elif eid not in {e.id for e in events} and cv.candidate_id is not None:
+        elif cv.candidate_id is not None:
+            # 尝试通过 candidate_id 字段间接映射
             real_eid = cid_to_eid.get(cv.candidate_id)
             if real_eid is not None:
                 logger.info(
-                    "修复 ClipVariant id={}: event_id {} (疑似 Candidate ID) → {}",
-                    cv.id, eid, real_eid,
+                    "修复 ClipVariant id={}: event_id {} → {} (通过 candidate_id={} 映射)",
+                    cv.id, eid, real_eid, cv.candidate_id,
                 )
                 cv.event_id = real_eid
                 db.add(cv)
                 fixed += 1
             else:
                 logger.warning(
-                    "无法映射 ClipVariant id={} candidate_id={} event_id={}, 保留原值",
+                    "无法映射 ClipVariant id={} candidate_id={} event_id={} (不属于任何 Event, 也无映射), 保留原值",
                     cv.id, cv.candidate_id, eid,
                 )
                 unmappable += 1
+        else:
+            logger.warning(
+                "无法映射 ClipVariant id={} event_id={} (不属于任何 Event ID, 无 candidate_id), 保留原值",
+                cv.id, eid,
+            )
+            unmappable += 1
 
-    # 3. 修复 HighlightTopic (TopicMembership) 中的 event_id
+    # 4. 修复 HighlightTopic (TopicMembership) 中的 event_id — 同样先判 Event
     topics = db.exec(select(HighlightTopic)).all()
     for ht in topics:
         eid = ht.event_id
-        if eid in cid_to_eid and cid_to_eid[eid] != eid:
+        if eid in all_event_ids:
+            continue
+
+        real_eid = cid_to_eid.get(eid)
+        if real_eid is not None:
             logger.info(
                 "修复 HighlightTopic id={}: event_id {} → {}",
-                ht.id, eid, cid_to_eid[eid],
+                ht.id, eid, real_eid,
             )
-            ht.event_id = cid_to_eid[eid]
+            ht.event_id = real_eid
             db.add(ht)
             fixed += 1
 
@@ -160,7 +183,34 @@ def _migrate_v2_pipeline_keys(db: Session) -> int:
     return fixed
 
 
-# ── 迁移列表 (按版本顺序) ────────────────────────────────────
+def _remove_sql_line_comments(sql: str) -> str:
+    """移除 SQL 字符串中的纯注释行 (V0.1.12.7)。
+
+    不会移除字符串字面量中的 '--' (使用简单的行级别过滤)。
+    注释行定义: 去除前后空白后以 -- 开头的行为注释行。
+
+    :param sql: 原始 SQL 字符串。
+    :returns: 移除纯注释行后的 SQL。
+    """
+    lines = []
+    for line in sql.splitlines():
+        stripped = line.lstrip()
+        if stripped.startswith("--"):
+            continue
+        lines.append(line)
+    return "\n".join(lines)
+
+
+def _split_sql_statements(sql: str) -> list[str]:
+    """安全解析 SQL 语句, 防止注释导致后续语句被跳过 (V0.1.12.7)。
+
+    先移除纯注释行, 再按分号分割语句。
+
+    :param sql: 原始 SQL 字符串。
+    :returns: 非空 SQL 语句列表。
+    """
+    cleaned = _remove_sql_line_comments(sql)
+    return [stmt.strip() for stmt in cleaned.split(";") if stmt.strip()]
 
 _MIGRATIONS: list[Migration] = [
     Migration(
@@ -276,11 +326,10 @@ def run_migrations() -> bool:
 
         try:
             with get_session() as db:
-                # 1. SQL DDL 迁移 (在事务中执行)
+                # 1. SQL DDL 迁移 (在事务中执行, 先移除注释行再解析语句)
                 if migration.sql.strip():
-                    for stmt in migration.sql.split(";"):
-                        stmt = stmt.strip()
-                        if stmt and not stmt.startswith("--"):
+                    for stmt in _split_sql_statements(migration.sql):
+                        if stmt:
                             db.exec(text(stmt))
 
                 # 2. Python 数据迁移 (仍在同一事务中)
@@ -335,7 +384,7 @@ def run_migrations() -> bool:
 
 
 def check_schema() -> bool:
-    """启动时校验 schema 版本。
+    """启动时校验 schema 版本 (V0.1.12.7: 增强版 — 含索引校验)。
 
     :returns: True 表示版本匹配, 应用可安全启动。
     """
@@ -346,4 +395,59 @@ def check_schema() -> bool:
             current, TARGET_SCHEMA_VERSION,
         )
         return False
+    # V0.1.12.7: 迁移后验证真实数据库约束
+    if not _verify_critical_indexes():
+        logger.error("关键索引校验失败: 数据库约束不完整")
+        return False
     return True
+
+
+def _verify_critical_indexes() -> bool:
+    """迁移后验证关键索引真实存在 (V0.1.12.7)。
+
+    至少验证:
+    - SegmentTask.segment_id 唯一
+    - HighlightEvent.candidate_id 唯一
+    - HighlightTopic(event_id, topic_id) 唯一
+    - UploadTask(clip_id, uploader) 唯一
+    - ClipVariant(event_id, variant_type) 唯一
+
+    :returns: True 表示全部关键索引存在。
+    """
+    critical_checks = [
+        # (表名, 索引名后缀, 描述)
+        ("segment_tasks", "segment_id", "SegmentTask.segment_id 唯一"),
+        ("highlight_events", "candidate_id", "HighlightEvent.candidate_id 唯一"),
+        ("highlight_topics", "event_topic", "HighlightTopic(event_id, topic_id) 唯一"),
+        ("upload_tasks", "clip_uploader", "UploadTask(clip_id, uploader) 唯一"),
+        ("clip_variants", "event_variant", "ClipVariant(event_id, variant_type) 唯一"),
+    ]
+
+    all_ok = True
+    try:
+        with engine.connect() as conn:
+            for table, suffix, desc in critical_checks:
+                rows = conn.exec_driver_sql(
+                    f"PRAGMA index_list('{table}')"
+                ).fetchall()
+                found = any(suffix in (row[1] or "") for row in rows)
+                if not found:
+                    logger.error("关键索引缺失: {} ({})", desc, table)
+                    all_ok = False
+                else:
+                    logger.debug("关键索引存在: {} ({})", desc, table)
+
+            # 校验外键
+            for table in ("clip_variants", "highlight_topics"):
+                fk_rows = conn.exec_driver_sql(
+                    f"PRAGMA foreign_key_list('{table}')"
+                ).fetchall()
+                if not fk_rows:
+                    logger.warning("表 {} 缺少外键约束", table)
+                else:
+                    logger.debug("表 {} 外键: {}", table, len(fk_rows))
+    except Exception as exc:
+        logger.error("索引验证异常: {}", exc)
+        return False
+
+    return all_ok

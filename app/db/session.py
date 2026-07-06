@@ -56,7 +56,12 @@ if _db_url.startswith("sqlite"):
 
 
 def _migrate_add_columns() -> None:
-    """为旧表追加新增列(缺失则添加,幂等安全)。"""
+    """为旧表追加新增列(缺失则添加,幂等安全) (V0.1.12.7: 不吞掉真异常)。
+
+    区分:
+    - 列已存在 → 正常跳过
+    - 数据库锁定 / SQL 错误 / 类型不兼容 / 磁盘错误 → 迁移失败并中止
+    """
     _migrations = [
         # 格式: (表名, 列名, SQL 类型, 默认值)
         ("live_rooms", "schedule_enabled", "INTEGER NOT NULL DEFAULT 0", None),
@@ -98,6 +103,12 @@ def _migrate_add_columns() -> None:
         ("transcripts", "review_reasons", "TEXT", None),
         ("transcripts", "final_text_source", "TEXT", None),
         ("transcripts", "inference_duration", "REAL", None),
+        # V0.1.12.5: 幂等键与租约字段。
+        ("segment_tasks", "pipeline_key", "TEXT", None),
+        ("segment_tasks", "stage_key", "TEXT", None),
+        ("segment_tasks", "lease_token", "TEXT", None),
+        # V0.1.12.5: render_config_hash for ClipVariant.
+        ("clip_variants", "render_config_hash", "TEXT", None),
     ]
     with engine.connect() as conn:
         existing_lr = {r[1] for r in conn.exec_driver_sql(
@@ -119,6 +130,11 @@ def _migrate_add_columns() -> None:
         existing_tr = {r[1] for r in conn.exec_driver_sql(
             "PRAGMA table_info(transcripts)"
         ).fetchall()}
+        existing_cv = {r[1] for r in conn.exec_driver_sql(
+            "PRAGMA table_info(clip_variants)"
+        ).fetchall()} if conn.exec_driver_sql(
+            "SELECT name FROM sqlite_master WHERE type='table' AND name='clip_variants'"
+        ).fetchone() else set()
         for table, col, sql_type, _ in _migrations:
             if table == "live_rooms":
                 existing = existing_lr
@@ -130,6 +146,8 @@ def _migrate_add_columns() -> None:
                 existing = existing_st
             elif table == "transcripts":
                 existing = existing_tr
+            elif table == "clip_variants":
+                existing = existing_cv
             else:
                 existing = set()
             if col not in existing:
@@ -137,7 +155,13 @@ def _migrate_add_columns() -> None:
                     conn.exec_driver_sql(f"ALTER TABLE {table} ADD COLUMN {col} {sql_type}")
                     conn.commit()
                 except Exception as exc:
-                    logger.warning("迁移失败(可能列已存在或被并发修改): {}.{} {} ({})", table, col, sql_type, exc)
+                    # V0.1.12.7: 只吞 duplicate column 错误, 其他异常必须暴露
+                    err_msg = str(exc).lower()
+                    if "duplicate column" in err_msg or "already exists" in err_msg or "has column" in err_msg:
+                        logger.debug("列已存在 (幂等): {}.{}", table, col)
+                        continue
+                    logger.error("迁移致命错误: {}.{} {} ({})", table, col, sql_type, exc)
+                    raise
 
     # V0.1.6: 迁移旧 mode → 新 auto_* 开关(仅对尚未设置过开关的行生效)。
     _migrate_old_mode_to_switches()
@@ -195,11 +219,14 @@ def _migrate_old_mode_to_switches() -> None:
 
 
 def init_db() -> None:
-    """创建所有表(若不存在),执行迁移。
+    """创建所有表(若不存在),执行迁移 (V0.1.12.7: 迁移失败阻止启动)。
 
     1. SQLModel.metadata.create_all — 新建表
     2. _migrate_add_columns — 为旧表追加缺失列 (V0.1.2 ~ V0.1.12.2 历史迁移, 幂等)
     3. run_migrations — V0.1.12.2 起版本化迁移 (含备份 + 数据修复)
+    4. check_schema — 迁移后校验
+
+    :raises RuntimeError: 迁移或校验失败时抛出, 阻止应用启动。
     """
     from app.db import models  # noqa: F401
 
@@ -209,8 +236,30 @@ def init_db() -> None:
     _migrate_add_columns()
 
     # V0.1.12.2: 版本化迁移
-    from app.db.migrate import run_migrations
-    run_migrations()
+    from app.db.migrate import check_schema, run_migrations
+    success = run_migrations()
+    if not success:
+        raise RuntimeError(
+            "数据库迁移失败, 阻止应用启动。"
+            "请检查日志并手动修复数据库, 或从备份恢复。"
+            f"备份路径: {_get_db_path_for_backup()}"
+        )
+
+    # V0.1.12.7: 迁移后校验 Schema
+    if not check_schema():
+        raise RuntimeError(
+            "数据库 Schema 校验失败, 阻止应用启动。"
+            "关键索引缺失或版本不匹配。请检查日志。"
+        )
+
+
+def _get_db_path_for_backup() -> str:
+    """获取数据库备份路径提示。"""
+    from app.core.config import settings
+    db_url = settings.database_url
+    if db_url.startswith("sqlite:///"):
+        return db_url.replace("sqlite:///", "", 1) + ".bak"
+    return "unknown"
 
 
 @contextmanager

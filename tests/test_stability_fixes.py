@@ -219,11 +219,13 @@ class TestAutoSwitches:
             assert t.stage == TaskStatus.AWAITING_REVIEW
 
     def test_auto_approve_on_with_high_score_advances(self, test_db) -> None:
-        """auto_approve=true + 高分 → 自动批准。"""
+        """auto_approve=true + 高分 → 自动批准 (V0.1.12.7: 需 event_id+Event)。"""
         from app.db.models import (
             HighlightCandidate,
+            HighlightEvent,
             LiveRoom,
             RecordingSession,
+            ReviewStatus,
             SegmentTask,
             TaskStatus,
         )
@@ -238,13 +240,19 @@ class TestAutoSwitches:
                 peak_ts=_now(), start_ts=_now(), end_ts=_now(),
                 highlight_score=0.95,
             )
+            event = HighlightEvent(
+                id=7705, candidate_id=5003, session_id=8005,
+                raw_start_ts=_now(), raw_end_ts=_now(),
+                review_status=ReviewStatus.PENDING,
+            )
             task = SegmentTask(
                 segment_id=7005, session_id=8005,
                 stage=TaskStatus.AWAITING_REVIEW,
                 candidate_id=5003,
+                event_id=7705,
                 idempotency_key="7005:awaiting_review",
             )
-            db.add_all([room, sess, cand, task])
+            db.add_all([room, sess, cand, event, task])
 
         _advance_awaiting_review()
 

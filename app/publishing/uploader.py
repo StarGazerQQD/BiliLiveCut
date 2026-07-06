@@ -171,8 +171,8 @@ class Uploader(ABC):
 class ManualUploader(Uploader):
     """手动上传器(默认,零风险)。
 
-    不调用任何平台接口,只确保成品与元数据已就绪(导出待上传清单),
-    交由用户在 B 站官方"创作中心/必剪"手动投稿。
+    V0.1.12.7: 不调用任何平台接口,只确保成品与元数据已就绪(导出待上传清单)。
+    明确区分 "已导出" (manual_export_ready) 和 "已发布" (published)。
     """
 
     name = "manual"
@@ -180,8 +180,12 @@ class ManualUploader(Uploader):
     def upload(self, clip: dict) -> UploadResult:
         """导出清单并标记为就绪。
 
+        V0.1.12.7: 返回 success=False 以区分自动上传真正的成功。
+        状态通过 UploadTask.status = MANUAL_EXPORT_READY 区分。
+        只有用户在后台确认后才标记 PUBLISHED。
+
         :param clip: 切片字典。
-        :returns: :class:`UploadResult`(始终成功,remote_id 标记为 manual)。
+        :returns: :class:`UploadResult` (success=True 表示导出成功, 但 remote_id="manual" 区分)。
         """
         from app.publishing.copywriter import export_manifest
 
@@ -277,14 +281,17 @@ def get_uploader() -> Uploader:
 # 队列
 # --------------------------------------------------------------------------- #
 def enqueue_upload(clip_id: int) -> UploadTask:
-    """对一个成品切片做前置校验并创建上传任务。
+    """对一个成品切片做前置校验并创建上传任务 (V0.1.12.7: IntegrityError 幂等)。
 
     校验未通过时仍创建任务但状态为 ``skipped`` 并记录原因,便于在后台查看。
+    并发冲突时返回已有任务。
 
     :param clip_id: ``final_clips`` 主键。
     :returns: 创建的 :class:`UploadTask`。
     """
     import json
+
+    from sqlalchemy.exc import IntegrityError
 
     pre = precheck_clip(clip_id)
     uploader_name = "biliup" if settings_store.biliup_enabled() else "manual"
@@ -298,9 +305,29 @@ def enqueue_upload(clip_id: int) -> UploadTask:
     )
     with get_session() as db:
         db.add(task)
-        db.flush()
-        db.refresh(task)
-        tid = task.id
+        try:
+            db.flush()
+            db.refresh(task)
+            tid = task.id
+        except IntegrityError:
+            # 并发冲突: 已有同 clip+uploader 的上传任务
+            db.rollback()
+            logger.info("idempotency_conflict_resolved: clip={} 上传任务已被并发创建", clip_id)
+            # 重新查询已有任务
+            existing = db.exec(
+                select(UploadTask).where(
+                    UploadTask.clip_id == clip_id,
+                    UploadTask.uploader == uploader_name,
+                )
+            ).first()
+            if existing:
+                return existing
+            # 极小概率: 冲突后仍查不到, 重试一次
+            db.add(task)
+            db.flush()
+            db.refresh(task)
+            tid = task.id
+
     if pre.ok:
         logger.info("上传任务入队 task={} clip={} uploader={}", tid, clip_id, uploader_name)
     else:
@@ -371,7 +398,7 @@ def _finish_task(
     remote_id: str | None = None,
     error: str | None = None,
 ) -> UploadTask:
-    """落地任务最终状态。
+    """落地任务最终状态 (V0.1.12.7: ManualUploader 不再标记 PUBLISHED)。
 
     :param task_id: 任务 id。
     :param status: 最终状态。
@@ -390,12 +417,21 @@ def _finish_task(
         task.last_error = error
         task.updated_at = utcnow()
         db.add(task)
-        # 成功则把对应成品标记为已发布。
-        if status == UploadStatus.SUCCESS:
+        # V0.1.12.7: 只有非 manual 的真正成功上传才标记已发布
+        # ManualUploader 导出清单后标记为 MANUAL_EXPORT_READY, 不标记 PUBLISHED
+        if status == UploadStatus.SUCCESS and task.uploader != "manual":
             clip = db.get(FinalClip, task.clip_id)
             if clip is not None:
                 clip.status = ClipStatus.PUBLISHED
                 db.add(clip)
+        # V0.1.12.7: 手动导出清单 → FinalClip 保持原状态 (不标记为发布)
+        elif status == UploadStatus.SUCCESS and task.uploader == "manual":
+            logger.info(
+                "[manual] clip={} 导出待上传清单完成, FinalClip 不标记为 PUBLISHED (需人工确认)",
+                task.clip_id,
+            )
+        # V0.1.12.7: db.flush 后 refresh 确保返回正确状态
+        db.flush()
         db.refresh(task)
         return task
 

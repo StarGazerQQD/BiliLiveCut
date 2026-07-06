@@ -14,6 +14,7 @@ from __future__ import annotations
 
 from datetime import UTC, datetime
 
+from sqlalchemy import UniqueConstraint
 from sqlmodel import Field, SQLModel
 
 
@@ -97,6 +98,9 @@ class ReviewStatus:
     REJECTED = "rejected"                     # 拒绝
     PENDING = "pending"                       # 待审
 
+    # V0.1.12.7: 向后兼容别名
+    APPROVED = "approved_solo"               # 兼容旧代码中的 ReviewStatus.APPROVED
+
     # 正面状态集合(可用于统计)。
     POSITIVE = {APPROVED_SOLO, APPROVED_COLLECTION, IN_COLLECTION}
     # 需要持久化边界和数据的状态。
@@ -160,6 +164,7 @@ class UploadStatus:
     SUCCESS = "success"
     FAILED = "failed"
     SKIPPED = "skipped"
+    MANUAL_EXPORT_READY = "manual_export_ready"  # V0.1.12.7: 手动上传清单已导出, 尚未发布
 
 
 # --------------------------------------------------------------------------- #
@@ -338,6 +343,11 @@ class HighlightEvent(SQLModel, table=True):
     created_at: datetime = Field(default_factory=utcnow)
     updated_at: datetime = Field(default_factory=utcnow)
 
+    # V0.1.12.7: 真实唯一约束
+    __table_args__ = (
+        UniqueConstraint("candidate_id", name="uq_highlight_event_candidate"),
+    )
+
 
 class ClipVariant(SQLModel, table=True):
     """成品版本(``clip_variants``):同一事件的不同渲染版本。
@@ -379,10 +389,12 @@ class ClipVariant(SQLModel, table=True):
 
     created_at: datetime = Field(default_factory=utcnow)
 
+    # V0.1.12.7: event_id + variant_type + render_config_hash 三维唯一, 支持同类型多版本
     __table_args__ = (
-        # V0.1.12.5: 同 event+同类型+同配置 只允许一个版本
-        # SQLite 不支持 ALTER TABLE 加 constraint, 通过迁移处理
-        None,
+        UniqueConstraint(
+            "event_id", "variant_type", "render_config_hash",
+            name="uq_clip_event_variant_config",
+        ),
     )
 
 
@@ -425,6 +437,11 @@ class HighlightTopic(SQLModel, table=True):
     confirmed_by_user: bool = Field(default=False, description="V0.1.11-alpha:已人工确认,后续自动聚类不覆盖")
     created_at: datetime = Field(default_factory=utcnow)
 
+    # V0.1.12.7: 真实复合唯一约束
+    __table_args__ = (
+        UniqueConstraint("event_id", "topic_id", name="uq_topic_event_membership"),
+    )
+
 
 class FinalClip(SQLModel, table=True):
     """成品切片(``final_clips``):后处理完成、可投稿的 MP4 及其元数据。"""
@@ -463,6 +480,11 @@ class UploadTask(SQLModel, table=True):
     scheduled_at: datetime | None = Field(default=None, description="计划上传时间")
     created_at: datetime = Field(default_factory=utcnow)
     updated_at: datetime = Field(default_factory=utcnow)
+
+    # V0.1.12.7: 真实复合唯一约束
+    __table_args__ = (
+        UniqueConstraint("clip_id", "uploader", name="uq_upload_target"),
+    )
 
 
 class DanmakuType:

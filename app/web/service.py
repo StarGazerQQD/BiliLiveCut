@@ -327,12 +327,44 @@ def set_candidate_status(candidate_id: int, status: str) -> None:
 
 
 async def approve_candidate(candidate_id: int) -> int | None:
-    """批准候选并出片(切片+文案);在线程池执行 CPU 密集流程。
+    """批准候选并出片(切片+文案); 使用统一审批服务 (V0.1.12.7)。
+
+    先通过 approve_event_and_task 同步 Task/Event/Candidate 状态，
+    再在线程池中执行 produce_clip。
 
     :param candidate_id: 候选 id。
     :returns: 生成的 clip_id;失败返回 ``None``。
     """
-    set_candidate_status(candidate_id, CandidateStatus.APPROVED)
+    from app.db.models import HighlightEvent, SegmentTask
+    from app.pipeline.approval import approve_event_and_task
+
+    with get_session() as db:
+        # 查找关联 task 和 event
+        task = db.exec(
+            select(SegmentTask).where(
+                SegmentTask.candidate_id == candidate_id,
+            ).order_by(SegmentTask.created_at.desc())
+        ).first()
+        event = db.exec(
+            select(HighlightEvent).where(
+                HighlightEvent.candidate_id == candidate_id,
+            )
+        ).first()
+
+        # 统一审批
+        if task is not None and event is not None:
+            approve_event_and_task(
+                task_id=task.id,
+                event_id=event.id,
+                approved_by="web_admin",
+                reason=None,
+                source="human",
+                review_decision="approved_solo",
+            )
+        else:
+            # fallback: 只更新 Candidate 状态
+            set_candidate_status(candidate_id, CandidateStatus.APPROVED)
+
     from app.pipeline.orchestrator import produce_clip
 
     clip = await asyncio.to_thread(produce_clip, candidate_id)
