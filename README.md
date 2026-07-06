@@ -1,6 +1,8 @@
 # BiliLiveCut — AI 直播实时切片系统
 
-**当前版本：V0.1.12.9 Alpha** (`0.1.12.9-alpha`)
+[![CI](https://github.com/StarGazerQQD/BiliLiveCut/actions/workflows/ci.yml/badge.svg)](https://github.com/StarGazerQQD/BiliLiveCut/actions/workflows/ci.yml)
+
+**当前版本：V0.1.13.1 Alpha** (`0.1.13.1-alpha`)
 
 针对 Bilibili 直播的全自动工作流：实时录制 → 转写 → 识别高光 → 生成切片 → 生成文案 → (可选)上传。
 阶段 1–5 全链路已可用；即插即用分发包见 [`Publish-PnP/`](Publish-PnP/README.md)。

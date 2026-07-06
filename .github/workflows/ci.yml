@@ -1,5 +1,12 @@
-# BiliLiveCut CI
-# 触发: push/PR 到 main → matrix 多平台多 Python 版本 → lint → test
+# BiliLiveCut CI (V0.1.13.1)
+# 触发: push/PR 到 main → lint → audit + test → coverage summary
+#
+# Job 结构:
+#   lint       — ruff check + format (~15s, 快速失败)
+#   audit      — pip-audit (仅 PR/schedule, ~45s, 不阻塞)
+#   test       — matrix 多平台多 Python → pytest + coverage (~3min)
+#   coverage   — 汇总多矩阵覆盖率报告
+
 name: CI
 
 on:
@@ -10,6 +17,7 @@ on:
       - "docs/**"
       - ".vscode/**"
       - ".gitignore"
+      - "KNOWN_ISSUES.md"
   pull_request:
     branches: [main]
     paths-ignore:
@@ -17,6 +25,10 @@ on:
       - "docs/**"
       - ".vscode/**"
       - ".gitignore"
+      - "KNOWN_ISSUES.md"
+  schedule:
+    # 每周一 08:00 UTC 跑一次依赖审计
+    - cron: "0 8 * * 1"
   workflow_dispatch:
 
 concurrency:
@@ -26,15 +38,74 @@ concurrency:
 permissions:
   contents: read
 
+# ═══════════════════════════════════════════════════════════════════
+# Job 1: Lint — 极速失败, 不通过则不跑后续任何 job
+# ═══════════════════════════════════════════════════════════════════
 jobs:
-  lint-and-test:
-    name: "${{ matrix.os }} / py${{ matrix.python-version }} / lint & test"
+  lint:
+    name: "lint"
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+
+      - name: Install ruff
+        run: pip install ruff
+
+      - name: Ruff check
+        run: ruff check app/ tests/
+
+      - name: Ruff format check
+        run: ruff format --check app/ tests/
+
+# ═══════════════════════════════════════════════════════════════════
+# Job 2: Audit — 仅 PR/schedule 触发, 不阻塞 CI
+# ═══════════════════════════════════════════════════════════════════
+  audit:
+    name: "audit"
+    needs: lint
+    runs-on: ubuntu-latest
+    if: github.event_name == 'pull_request' || github.event_name == 'schedule'
+    continue-on-error: true
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+
+      - name: Install project + pip-audit
+        run: |
+          pip install --upgrade pip
+          pip install -e ".[dev,web]"
+          pip install pip-audit
+
+      - name: pip-audit vulnerability scan
+        run: |
+          pip-audit --strict --skip-editable 2>&1 || {
+            echo "::warning::pip-audit 发现漏洞 (评估风险后手工豁免)"
+          }
+
+# ═══════════════════════════════════════════════════════════════════
+# Job 3: Test — 全矩阵 (需要 lint 通过)
+# ═══════════════════════════════════════════════════════════════════
+  test:
+    name: "${{ matrix.os }} / py${{ matrix.python-version }}"
+    needs: lint
     runs-on: ${{ matrix.os }}
     strategy:
       fail-fast: false
       matrix:
         os: [ubuntu-latest, windows-latest]
-        python-version: ["3.11", "3.12"]
+        python-version: ["3.11", "3.12", "3.13"]
+        include:
+          # macOS: 仅 main 分支 push 时触发, 节省 Actions 额度
+          - os: macos-latest
+            python-version: "3.12"
+            if: github.event_name == 'push' && github.ref == 'refs/heads/main'
 
     steps:
       - uses: actions/checkout@v4
@@ -43,21 +114,28 @@ jobs:
         uses: actions/setup-python@v5
         with:
           python-version: ${{ matrix.python-version }}
+          cache: pip
+          cache-dependency-path: pyproject.toml
 
-      # 安装 Ubuntu 系统依赖 (FFmpeg 用于音频相关测试)
-      - name: Install system deps (Ubuntu)
+      # Ubuntu — FFmpeg via apt
+      - name: Install FFmpeg (Ubuntu)
         if: runner.os == 'Linux'
         run: |
           sudo apt-get update -qq
           sudo apt-get install -y -qq ffmpeg
 
-      # 安装 Windows 系统依赖 (FFmpeg via chocolatey)
-      - name: Install system deps (Windows)
+      # Windows — FFmpeg via chocolatey
+      - name: Install FFmpeg (Windows)
         if: runner.os == 'Windows'
         run: choco install ffmpeg --no-progress -y
 
-      # pip 镜像: 阿里云优先、清华备用, 不修改全局配置
-      - name: Install Python dev dependencies
+      # macOS — FFmpeg via homebrew
+      - name: Install FFmpeg (macOS)
+        if: runner.os == 'macOS'
+        run: brew install ffmpeg
+
+      # pip 镜像: 国内加速 (仅 Ubuntu/Windows; macOS 走 PyPI 直连)
+      - name: Install Python dev deps
         shell: bash
         run: |
           python -m pip install --upgrade pip
@@ -67,7 +145,6 @@ jobs:
             --trusted-host mirrors.aliyun.com \
             --trusted-host pypi.tuna.tsinghua.edu.cn
 
-      # python-multipart 为 web 测试所需, web extras 可能不含它
       - name: Install test extras
         shell: bash
         run: pip install python-multipart
@@ -76,22 +153,7 @@ jobs:
         shell: bash
         run: pip list
 
-      # 不下载真实 ASR 模型; 所有 ASR 测试使用 Mock 后端
-      - name: Ruff lint (no fix)
-        shell: bash
-        run: ruff check app/ tests/
-
-      # V0.1.13: 依赖安全审计 (跳过项目自身, 不在 PyPI 上)
-      - name: pip-audit vulnerability scan
-        shell: bash
-        run: |
-          pip install pip-audit
-          pip-audit --strict --skip-editable 2>&1 || {
-            echo "::warning::pip-audit 发现漏洞 (评估风险后豁免)"
-          }
-        continue-on-error: true
-
-      # 全量 pytest + 覆盖率 (Mock 后端, 无真实模型)
+      # 全量 pytest + 覆盖率 (Mock 后端, 不下载真实模型)
       - name: Run pytest with coverage
         shell: bash
         env:
@@ -107,7 +169,6 @@ jobs:
             --cov-fail-under=45
         timeout-minutes: 15
 
-      # 上传覆盖率报告
       - name: Upload coverage report
         uses: actions/upload-artifact@v4
         with:
@@ -116,7 +177,6 @@ jobs:
           retention-days: 7
           if-no-files-found: ignore
 
-      # 上传失败日志 (仅在失败时)
       - name: Upload pytest output on failure
         if: failure()
         uses: actions/upload-artifact@v4
@@ -126,3 +186,28 @@ jobs:
             .pytest_cache/**/*.log
           retention-days: 7
           if-no-files-found: ignore
+
+# ═══════════════════════════════════════════════════════════════════
+# Job 4: 汇总覆盖率 (可选, 展示总覆盖率; 需要 test 全部完成)
+# ═══════════════════════════════════════════════════════════════════
+  coverage-summary:
+    name: "coverage summary"
+    needs: test
+    runs-on: ubuntu-latest
+    if: always() && !cancelled()
+    steps:
+      - name: Download all coverage artifacts
+        uses: actions/download-artifact@v4
+        with:
+          pattern: coverage-*
+          path: coverage-artifacts
+          merge-multiple: true
+
+      - name: Show coverage files
+        run: |
+          echo "Coverage files collected:"
+          ls -la coverage-artifacts/
+
+      - name: Summary
+        run: |
+          echo "全矩阵测试完成。覆盖率报告已归档。"
