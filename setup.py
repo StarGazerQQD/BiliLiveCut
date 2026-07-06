@@ -11,7 +11,7 @@ _c_speedups = Extension(
     "app.analysis._c_speedups",
     sources=["app/analysis/_c_speedups.c"],
     extra_compile_args=(
-        ["/O2", "/arch:AVX2", "/fp:fast"]
+        ["/O2", "/arch:AVX2", "/fp:fast", "/utf-8"]
         if "win" in sys.platform
         else ["-O3", "-march=native", "-ffast-math"]
     ),
@@ -25,7 +25,7 @@ try:
         "app.analysis._speedups_round2",
         sources=["app/analysis/_speedups_round2.pyx"],
         extra_compile_args=(
-            ["/O2", "/arch:AVX2"]
+            ["/O2", "/arch:AVX2", "/utf-8"]
             if "win" in sys.platform
             else ["-O3", "-march=native"]
         ),
