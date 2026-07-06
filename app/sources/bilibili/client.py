@@ -17,7 +17,9 @@
 from __future__ import annotations
 
 import re
+import time
 from dataclasses import dataclass
+from enum import Enum
 
 import httpx
 from loguru import logger
@@ -42,6 +44,82 @@ _ROOM_ID_RE = re.compile(r"live\.bilibili\.com/(?:h5/)?(\d+)")
 
 class BilibiliError(Exception):
     """Bilibili 接口调用相关错误。"""
+
+
+class HttpErrorType(Enum):
+    """Bilibili 接口 HTTP 及业务错误分类。"""
+
+    RATE_LIMITED = "rate_limited"
+    PRECONDITION_FAILED = "precondition_failed"
+    COOKIE_EXPIRED = "cookie_expired"
+    ACCOUNT_BANNED = "account_banned"
+
+
+class BilibiliRateLimitError(BilibiliError):
+    """Bilibili 风控/限流异常,携带错误类型与重试等待建议。
+
+    :param error_type: 错误类型枚举。
+    :param message: 人类可读的错误描述。
+    :param retry_after_seconds: 建议的等待秒数,默认 60。
+    """
+
+    def __init__(
+        self,
+        error_type: HttpErrorType,
+        message: str,
+        retry_after_seconds: float = 60.0,
+    ) -> None:
+        self.error_type = error_type
+        self.retry_after_seconds = retry_after_seconds
+        super().__init__(f"[{error_type.name}] {message}")
+
+
+class CircuitBreaker:
+    """简单的熔断器,基于连续失败次数做指数退避。
+
+    每次调用 :meth:`record_failure` 增加失败计数,并将恢复时间窗口
+    设为 ``base_delay_s * 2^fail_count``。在窗口内 :meth:`is_open`
+    返回 ``True``,表示应暂停对该房间的访问。
+
+    :param base_delay_s: 基础退避秒数。
+    """
+
+    def __init__(self, base_delay_s: float = 2.0) -> None:
+        self.fail_count: int = 0
+        self.last_fail_time: float = 0.0
+        self.backoff_until: float = 0.0
+        self.base_delay_s = base_delay_s
+
+    def record_failure(self) -> None:
+        """记录一次失败并更新退避时间窗。"""
+        self.fail_count += 1
+        self.last_fail_time = time.monotonic()
+        self.backoff_until = self.last_fail_time + self.base_delay_s * (2 ** self.fail_count)
+
+    def is_open(self) -> bool:
+        """熔断器是否打开(当前处于退避中)。"""
+        return time.monotonic() < self.backoff_until
+
+    def reset(self) -> None:
+        """清除失败状态,关闭熔断器。"""
+        self.fail_count = 0
+        self.last_fail_time = 0.0
+        self.backoff_until = 0.0
+
+
+# 按房间维度的熔断器字典。
+_ROOM_BREAKERS: dict[int, CircuitBreaker] = {}
+
+
+def get_room_breaker(room_id: int) -> CircuitBreaker:
+    """获取或创建指定房间的熔断器实例。
+
+    :param room_id: 目标房间号。
+    :returns: 该房间对应的 :class:`CircuitBreaker`。
+    """
+    if room_id not in _ROOM_BREAKERS:
+        _ROOM_BREAKERS[room_id] = CircuitBreaker()
+    return _ROOM_BREAKERS[room_id]
 
 
 @dataclass(slots=True)
@@ -159,17 +237,53 @@ class BilibiliLiveClient:
         :param params: 查询参数。
         :returns: ``data`` 字段(dict)。
         :raises BilibiliError: HTTP 错误或业务 ``code != 0`` 时。
+        :raises BilibiliRateLimitError: 触发风控/限流/登录态失效时。
         """
         try:
             resp = await self._client.get(url, params=params)
+
+            # 解析 Retry-After 头(若存在)。
+            retry_after_val = resp.headers.get("Retry-After", "")
+            try:
+                retry_after = float(retry_after_val) if retry_after_val else 60.0
+            except ValueError:
+                retry_after = 60.0
+
+            # HTTP 状态码级别的风控处理。
+            if resp.status_code == 403:
+                raise BilibiliRateLimitError(
+                    HttpErrorType.RATE_LIMITED,
+                    f"HTTP 403 请求被拒绝 {url}",
+                    retry_after,
+                )
+            if resp.status_code == 412:
+                raise BilibiliRateLimitError(
+                    HttpErrorType.PRECONDITION_FAILED,
+                    f"HTTP 412 前置条件失败 {url}",
+                    retry_after,
+                )
+
             resp.raise_for_status()
         except httpx.HTTPError as exc:
             raise BilibiliError(f"请求失败 {url}: {exc}") from exc
 
         payload = resp.json()
-        if payload.get("code") != 0:
+        code = payload.get("code")
+
+        # 业务级错误码分类处理。
+        if code == -101:
+            raise BilibiliRateLimitError(
+                HttpErrorType.COOKIE_EXPIRED,
+                f"未登录或 cookie 已过期, code=-101 message={payload.get('message')!r}",
+            )
+        if code == -412:
+            raise BilibiliRateLimitError(
+                HttpErrorType.ACCOUNT_BANNED,
+                f"请求被拒绝, code=-412 message={payload.get('message')!r}",
+            )
+        if code != 0:
             raise BilibiliError(
-                f"接口返回错误 code={payload.get('code')} message={payload.get('message')!r}"
+                f"接口返回错误 code={code} message={payload.get('message')!r}"
             )
         return payload.get("data", {})
 

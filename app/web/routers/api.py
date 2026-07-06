@@ -9,10 +9,11 @@
 
 from __future__ import annotations
 
+import time as _login_time
 from pathlib import Path
 from typing import Any, Literal
 
-from fastapi import APIRouter, HTTPException
+from fastapi import APIRouter, HTTPException, Request
 from fastapi.responses import FileResponse
 from pydantic import BaseModel, field_validator
 
@@ -569,6 +570,35 @@ def clip_cover(clip_id: int) -> FileResponse:
     return FileResponse(str(file_path), media_type="image/jpeg")
 
 
+# ── 登录失败限流 ────────────────────────────────────────────────────────────
+_LOGIN_FAILURES: dict[str, list[float]] = {}
+_MAX_LOGIN_ATTEMPTS = 5
+_LOGIN_WINDOW_S = 300  # 5 分钟窗口
+
+
+def _check_login_rate(ip: str) -> bool:
+    """检查指定 IP 的登录失败次数是否在限流窗口内超限。
+
+    :param ip: 客户端 IP 地址。
+    :returns: ``True`` 表示允许继续尝试,``False`` 表示已触发限流。
+    """
+    now = _login_time.time()
+    timestamps = _LOGIN_FAILURES.get(ip, [])
+    _LOGIN_FAILURES[ip] = [t for t in timestamps if now - t <= _LOGIN_WINDOW_S]
+    return len(_LOGIN_FAILURES[ip]) < _MAX_LOGIN_ATTEMPTS
+
+
+def _record_login_failure(ip: str) -> None:
+    """记录一次登录失败的时间戳。
+
+    :param ip: 客户端 IP 地址。
+    """
+    now = _login_time.time()
+    if ip not in _LOGIN_FAILURES:
+        _LOGIN_FAILURES[ip] = []
+    _LOGIN_FAILURES[ip].append(now)
+
+
 # ----------------------------- 账号登录 / Cookie 管理 ----------------------------- #
 @router.get("/cookie-status")
 def cookie_status() -> dict[str, Any]:
@@ -577,11 +607,17 @@ def cookie_status() -> dict[str, Any]:
 
 
 @router.post("/login")
-def login_start() -> dict[str, Any]:
+def login_start(request: Request) -> dict[str, Any]:
     """启动一次浏览器登录流程（Playwright）,返回任务 ID 供前端轮询。"""
+    ip = request.client.host if request.client else "unknown"
+    if not _check_login_rate(ip):
+        raise HTTPException(
+            status_code=429, detail="登录尝试过于频繁,请稍后再试"
+        )
     try:
         return start_login()
     except Exception as exc:
+        _record_login_failure(ip)
         raise HTTPException(status_code=500, detail=str(exc)) from exc
 
 
@@ -932,4 +968,47 @@ def get_analytics() -> dict[str, Any]:
         "score_distribution": score_buckets,
         "daily_trend": daily_record,
         "room_ranking": room_ranks,
+    }
+
+
+@router.get("/metrics")
+def get_metrics() -> dict[str, Any]:
+    """返回实时运行指标 (V0.1.12.9)。
+
+    轻量级监控端点, 包含:
+    - 任务计数
+    - Worker/录制状态
+    - 平均性能耗时
+    - 磁盘使用
+    - 历史趋势 (最近 60 点)
+    """
+    from app.core.metrics import get_history, snapshot
+
+    snap = snapshot()
+    history = get_history(limit=60)
+
+    return {
+        "current": {
+            "tasks": {
+                "queued": snap.tasks_queued,
+                "processing": snap.tasks_processing,
+                "completed": snap.tasks_completed,
+                "failed": snap.tasks_failed,
+            },
+            "workers": snap.active_workers,
+            "recordings": snap.active_recordings,
+            "recording_hours": snap.total_recording_hours,
+            "avg_times": {
+                "asr_ms": snap.asr_avg_ms,
+                "render_ms": snap.render_avg_ms,
+                "upload_ms": snap.upload_avg_ms,
+            },
+            "disk": {
+                "free_gb": snap.disk_free_gb,
+                "raw_gb": snap.disk_raw_gb,
+                "clips_gb": snap.disk_clips_gb,
+            },
+            "db_lock_wait_avg_ms": snap.db_lock_wait_avg_ms,
+        },
+        "history": history,
     }

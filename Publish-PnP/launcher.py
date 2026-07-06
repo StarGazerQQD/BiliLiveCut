@@ -33,7 +33,7 @@ VENV_DIR = ".venv"
 WHEELS_DIR = "vendor" + os.sep + "wheels"
 REQUIREMENTS = "requirements-bundle.txt"
 APP_NAME = "BiliLiveCut"
-VERSION = "V0.1.12.8 Alpha"
+VERSION = "V0.1.12.9 Alpha"
 
 # GitHub 源码归档（公共仓库无需 token）
 GITHUB_REPO = "StarGazerQQD/BiliLiveCut"
