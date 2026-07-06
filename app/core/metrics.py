@@ -17,6 +17,8 @@ import time
 from collections import deque
 from dataclasses import dataclass, field
 
+from loguru import logger
+
 
 @dataclass
 class MetricsSnapshot:
@@ -196,6 +198,28 @@ def snapshot() -> MetricsSnapshot:
     return snap
 
 
+def start_metrics_collector(interval_s: float = 60.0) -> None:
+    """启动后台指标采集线程,周期性调用 ``snapshot()`` 填充历史记录。
+
+    在应用启动时调用一次即可。守护线程随进程退出自动终止。
+
+    :param interval_s: 采集间隔 (秒),默认 60 秒。
+    """
+    import threading
+
+    def _collect_loop() -> None:
+        while True:
+            try:
+                snapshot()
+            except Exception:
+                pass
+            time.sleep(interval_s)
+
+    t = threading.Thread(target=_collect_loop, daemon=True, name="metrics-collector")
+    t.start()
+    logger.info("metrics collector started, interval={}s", interval_s)
+
+
 def get_history(limit: int = 60) -> list[dict]:
     """获取历史指标列表。
 
@@ -228,3 +252,5 @@ def get_history(limit: int = 60) -> list[dict]:
         }
         for s in items
     ]
+
+

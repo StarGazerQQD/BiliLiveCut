@@ -67,6 +67,8 @@ class Settings(BaseSettings):
     whisper_model: str = "small"
     whisper_device: str = "cpu"
     whisper_compute_type: str = "int8"
+    # V0.1.13: ASR 资源检查策略 — "strict"=资源不足抛异常, "warn"=仅警告
+    asr_resource_policy: Literal["strict", "warn"] = "warn"
 
     # ---------- AI:多引擎 ASR 流水线 (V0.1.12) ----------
     # 主引擎: paraformer / whisper, 默认 paraformer-zh

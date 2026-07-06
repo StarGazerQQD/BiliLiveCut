@@ -35,6 +35,7 @@ from app.db.models import (
     SegmentStatus as OldStatus,
 )
 from app.db.session import get_session
+from app.pipeline.lease import LeaseLostError, TaskLease, still_owns_lease
 
 # ── 并发配置 ──────────────────────────────────────────────────────
 MAX_TRANSCRIBING = int(os.environ.get("MAX_TRANSCRIBING", "1"))
@@ -56,6 +57,10 @@ _HEARTBEAT_POLL_S = 5  # V0.1.12.2: 心跳线程轮询间隔
 
 _WORKER_ID = f"worker-{uuid.uuid4().hex[:8]}"
 _logger = logger
+
+# V0.1.13: Task-level resource tracking (ResourceBudget integration)
+_task_resources: dict[int, dict[str, int | float]] = {}
+_task_resources_lock = None  # lazily initialized
 
 # V0.1.12.2: Worker 生命周期
 _shutting_down: bool = False
@@ -148,6 +153,19 @@ def _cleanup_subprocesses() -> None:
 # 状态转换矩阵
 # ═══════════════════════════════════════════════════
 
+# V0.1.12.10: 尝试添加远程结果未知状态到 PUBLISHING 的合法转换
+try:
+    _PUBLISHING_EXTRA: set[str] = {
+        TaskStatus.REMOTE_RESULT_UNKNOWN,
+        TaskStatus.RECONCILIATION_REQUIRED,
+    }
+except AttributeError:
+    _logger.warning(
+        "TaskStatus 缺少 REMOTE_RESULT_UNKNOWN/RECONCILIATION_REQUIRED, "
+        "PUBLISHING 将保持现有转换"
+    )
+    _PUBLISHING_EXTRA = set()
+
 _VALID_TRANSITIONS: dict[str, set[str]] = {
     TaskStatus.RECORDED: {TaskStatus.QUEUED_FOR_TRANS},
     TaskStatus.QUEUED_FOR_TRANS: {TaskStatus.TRANSCRIBING},
@@ -166,7 +184,7 @@ _VALID_TRANSITIONS: dict[str, set[str]] = {
     TaskStatus.RENDERED: {TaskStatus.AWAITING_PUBLISH_CONFIRMATION, TaskStatus.QUEUED_FOR_PUBLISH},
     TaskStatus.AWAITING_PUBLISH_CONFIRMATION: {TaskStatus.QUEUED_FOR_PUBLISH, TaskStatus.CANCELLED},
     TaskStatus.QUEUED_FOR_PUBLISH: {TaskStatus.PUBLISHING},
-    TaskStatus.PUBLISHING: {TaskStatus.COMPLETED, TaskStatus.TRANSIENT_FAILED, TaskStatus.FAILED},
+    TaskStatus.PUBLISHING: {TaskStatus.COMPLETED, TaskStatus.TRANSIENT_FAILED, TaskStatus.FAILED} | _PUBLISHING_EXTRA,
     # 重试/恢复
     TaskStatus.TRANSIENT_FAILED: {
         TaskStatus.QUEUED_FOR_TRANS, TaskStatus.QUEUED_FOR_ANALYSIS,
@@ -851,6 +869,108 @@ def _still_has_lease(task: SegmentTask, worker_id: str, lease_token: str | None,
     )
 
 
+# ═══════════════════════════════════════════════════
+# 分离 compute / commit 阶段 (V0.1.13-alpha)
+# ═══════════════════════════════════════════════════
+
+def _transcribe_compute(task_id: int) -> dict:
+    """仅执行转写计算, 不写入 Task 状态。
+
+    调用 transcribe_segment 进行语音识别, 收集计算结果。
+    DB 写入 (Transcript, RawSegment) 由 transcribe_segment 内部完成,
+    本函数只负责编排, 不直接操作 Task 状态。
+
+    :param task_id: SegmentTask ID。
+    :returns: {"segment_id": int}
+    """
+    from app.analysis.transcribe import transcribe_segment
+    with get_session() as db:
+        task = db.get(SegmentTask, task_id)
+        if task is None:
+            return {"segment_id": -1}
+        segment_id = task.segment_id
+    transcribe_segment(segment_id)
+    return {"segment_id": segment_id}
+
+
+def _commit_transcript(lease: TaskLease, compute_result: dict, ms: int) -> None:
+    """单事务提交转写结果, 先校验租约。
+
+    在单个短事务内:
+    1. 验证租约有效性
+    2. 标记任务完成并推进到 TRANSCRIBED
+
+    :param lease: 任务租约。
+    :param compute_result: _transcribe_compute 的输出。
+    :param ms: 处理耗时 (毫秒)。
+    """
+    try:
+        with get_session() as db:
+            if not still_owns_lease(db, lease):
+                raise LeaseLostError()
+            task = db.get(SegmentTask, lease.task_id)
+            if task is None:
+                return
+            mark_completed(task, ms)
+            enqueue_next(task, TaskStatus.TRANSCRIBED)
+            db.add(task)
+    except LeaseLostError:
+        _logger.warning("stale_result_discarded: transcript task={} 已失去租约", lease.task_id)
+
+
+def _analyze_compute(task_id: int) -> dict:
+    """仅执行分析计算, 不创建 Event 和写入 Task 状态。
+
+    调用 score_segment 进行精彩片段评分, 收集候选 ID。
+    HighlightEvent 的创建移至 _commit_highlight 阶段。
+
+    :param task_id: SegmentTask ID。
+    :returns: {"candidate_id": int | None}
+    """
+    from app.analysis.highlight import score_segment
+    with get_session() as db:
+        task = db.get(SegmentTask, task_id)
+        if task is None:
+            return {"candidate_id": None}
+        segment_id = task.segment_id
+    candidate = score_segment(segment_id)
+    cid = candidate.id if candidate else None
+    return {"candidate_id": cid}
+
+
+def _commit_highlight(lease: TaskLease, compute_result: dict, ms: int) -> None:
+    """单事务提交分析结果, 先校验租约, 再创建 Event (幂等)。
+
+    在单个短事务内:
+    1. 验证租约有效性
+    2. 如有 candidate_id, 幂等创建/获取 HighlightEvent
+    3. 标记任务完成并推进到 CANDIDATE_CREATED 或 COMPLETED
+
+    :param lease: 任务租约。
+    :param compute_result: _analyze_compute 的输出。
+    :param ms: 处理耗时 (毫秒)。
+    """
+    try:
+        with get_session() as db:
+            if not still_owns_lease(db, lease):
+                raise LeaseLostError()
+            task = db.get(SegmentTask, lease.task_id)
+            if task is None:
+                return
+            cid = compute_result.get("candidate_id")
+            event_id: int | None = None
+            if cid is not None:
+                event_id = _ensure_event(cid)
+            mark_completed(task, ms)
+            if cid is not None:
+                enqueue_next(task, TaskStatus.CANDIDATE_CREATED, candidate_id=cid, event_id=event_id)
+            else:
+                enqueue_next(task, TaskStatus.COMPLETED)
+            db.add(task)
+    except LeaseLostError:
+        _logger.warning("stale_result_discarded: highlight task={} 已失去租约", lease.task_id)
+
+
 def _clear_heartbeat_if_own(task_id: int, lease_token: str | None = None) -> None:
     """条件清除 heartbeat, 必须携带租约 (V0.1.12.7)。
 
@@ -888,31 +1008,36 @@ def _clear_heartbeat_if_own(task_id: int, lease_token: str | None = None) -> Non
 
 
 def _execute_task(task_id: int, active_stage: str, lease_token: str | None = None) -> None:
-    """执行耗时任务, 传递 lease_token 用于条件提交 (V0.1.12.7)。
+    """执行耗时任务, 传递 lease_token 用于条件提交 (V0.1.13-alpha: TaskLease)。
 
     所有耗时任务结果提交前必须校验租约。
+    V0.1.13-alpha: TRANSCRIBING/ANALYZING 阶段采用 compute/commit 分离模式。
     """
     t0 = time.time()
     hb_stop: threading.Event | None = None
+    lease: TaskLease | None = None
     try:
         # V0.1.12.9: 心跳现在传入 lease_token + expected_stage 用于条件校验
         hb_stop = _start_heartbeat_thread(task_id, lease_token, active_stage)
+        lease = TaskLease(task_id=task_id, worker_id=_WORKER_ID, lease_token=lease_token, expected_stage=active_stage)
 
         if active_stage == TaskStatus.TRANSCRIBING:
-            _run_transcribe(task_id, lease_token)
+            _run_transcribe(lease)
         elif active_stage == TaskStatus.ANALYZING:
-            _run_analyze(task_id, lease_token)
+            _run_analyze(lease)
         elif active_stage == TaskStatus.RENDERING:
             _run_render(task_id, lease_token)
         elif active_stage == TaskStatus.PUBLISHING:
             _run_publish(task_id, lease_token)
+    except LeaseLostError:
+        _logger.warning("lease_lost_during_execution: task={}", task_id)
     except Exception as exc:
         _ms = int((time.time() - t0) * 1000)
         _logger.error("任务 {} 阶段 {} 失败: {}", task_id, active_stage, exc)
         # V0.1.12.7: 失败时也校验租约后再标记
         with get_session() as db:
             t = db.get(SegmentTask, task_id)
-            if t is not None and _still_has_lease(t, _WORKER_ID, lease_token, active_stage):
+            if t is not None and lease is not None and still_owns_lease(db, lease):
                 mark_failed(t, f"{type(exc).__name__}: {exc}", permanent=False)
                 db.add(t)
             elif t is not None:
@@ -922,56 +1047,54 @@ def _execute_task(task_id: int, active_stage: str, lease_token: str | None = Non
             hb_stop.set()
         # V0.1.12.7: 条件清除 heartbeat —— 必须校验租约
         _clear_heartbeat_if_own(task_id, lease_token)
+        # V0.1.13: Release tracked resources for this task
+        global _task_resources_lock, _task_resources
+        import threading
+        if _task_resources_lock is None:
+            _task_resources_lock = threading.Lock()
+        with _task_resources_lock:
+            task_cost = _task_resources.pop(task_id, None)
+        if task_cost:
+            from app.core.resource_budget import release_resources
+            release_resources(**task_cost)
 
 
-def _run_transcribe(task_id: int, lease_token: str | None = None) -> None:
+def _run_transcribe(lease: TaskLease) -> None:
+    """执行转写阶段: 计算与提交分离 (V0.1.13-alpha)。
+
+    先执行计算 (transcribe_segment), 再校验租约后提交 Task 状态。
+
+    :param lease: 任务租约。
+    """
     t0 = time.time()
-    from app.analysis.transcribe import transcribe_segment
     with get_session() as db:
-        task = db.get(SegmentTask, task_id)
+        task = db.get(SegmentTask, lease.task_id)
         if task is None:
             return
         mark_heartbeat(task)
         db.add(task)
-    transcribe_segment(task.segment_id)
+    compute_result = _transcribe_compute(lease.task_id)
     ms = int((time.time() - t0) * 1000)
-    with get_session() as db:
-        task = db.get(SegmentTask, task_id)
-        if task and _still_has_lease(task, _WORKER_ID, lease_token, TaskStatus.TRANSCRIBING):
-            mark_completed(task, ms)
-            enqueue_next(task, TaskStatus.TRANSCRIBED)
-            db.add(task)
-        elif task:
-            _logger.warning("stale_result_discarded: task={} 已失去租约, 丢弃转写结果", task_id)
+    _commit_transcript(lease, compute_result, ms)
 
 
-def _run_analyze(task_id: int, lease_token: str | None = None) -> None:
+def _run_analyze(lease: TaskLease) -> None:
+    """执行分析阶段: 计算与提交分离 (V0.1.13-alpha)。
+
+    先执行计算 (score_segment), 再在单事务内校验租约、创建 Event、提交 Task 状态。
+
+    :param lease: 任务租约。
+    """
     t0 = time.time()
-    from app.analysis.highlight import score_segment
     with get_session() as db:
-        task = db.get(SegmentTask, task_id)
+        task = db.get(SegmentTask, lease.task_id)
         if task is None:
             return
         mark_heartbeat(task)
         db.add(task)
-    candidate = score_segment(task.segment_id)
-    # V0.1.11-alpha: 自动创建 HighlightEvent
-    event_id: int | None = None
-    if candidate is not None and candidate.id is not None:
-        event_id = _ensure_event(candidate.id)
+    compute_result = _analyze_compute(lease.task_id)
     ms = int((time.time() - t0) * 1000)
-    cid = candidate.id if candidate else None
-    with get_session() as db:
-        task = db.get(SegmentTask, task_id)
-        if task and _still_has_lease(task, _WORKER_ID, lease_token, TaskStatus.ANALYZING):
-            mark_completed(task, ms)
-            if cid is not None:
-                enqueue_next(task, TaskStatus.CANDIDATE_CREATED, candidate_id=cid, event_id=event_id)
-            else:
-                enqueue_next(task, TaskStatus.COMPLETED)
-            db.add(task)
-        elif task:
-            _logger.warning("stale_result_discarded: task={} 已失去租约, 丢弃分析结果", task_id)
+    _commit_highlight(lease, compute_result, ms)
 
 
 def _is_render_error_permanent(exc: Exception) -> bool:
@@ -1008,202 +1131,208 @@ def _is_render_error_permanent(exc: Exception) -> bool:
     return False
 
 
-def _run_render(task_id: int, lease_token: str | None = None) -> None:
-    """渲染阶段 (V0.1.12.5: produce_clip 始终 auto_upload=False)。
+def _render_compute(task_id: int) -> dict:
+    """纯渲染计算 — 无数据库写入 (V0.1.12.10: compute/commit 分离)。
 
-    成功后将 clip.id 写入 task.clip_id, 状态推进到 RENDERED。
-    使用 ffmpeg_errors.is_retryable 判断失败是瞬时(可重试)还是永久。
+    从 DB 读取 candidate_id, 调用 produce_clip 生成剪辑,
+    返回结果 dict。所有 DB 写入在 _commit_render 中完成。
+
+    :returns: {"clip_id", "file_path", "duration_s"} 或 {"error", "permanent"}。
     """
-    t0 = time.time()
     from app.pipeline.orchestrator import produce_clip
+
     with get_session() as db:
         task = db.get(SegmentTask, task_id)
-        if task is None:
-            return
+        if task is None or task.candidate_id is None:
+            return {"error": "task or candidate_id missing", "permanent": True}
         cid = task.candidate_id
-        if cid is None:
-            mark_failed(task, "渲染任务缺少 candidate_id", permanent=True)
-            db.add(task)
-            return
-        mark_heartbeat(task)
-        db.add(task)
+
     try:
-        # V0.1.12.5: 渲染阶段永远不直接上传
         clip = produce_clip(cid, auto_upload=False)
     except Exception as exc:
-        ms = int((time.time() - t0) * 1000)
-        # 尝试从异常中分类 FFmpeg 错误, 决定是否永久失败
         permanent = _is_render_error_permanent(exc)
-        with get_session() as db:
-            t = db.get(SegmentTask, task_id)
-            if t is not None:
-                if _still_has_lease(t, _WORKER_ID, lease_token, TaskStatus.RENDERING):
-                    mark_failed(t, f"RenderError: {exc}", permanent=permanent)
-                    db.add(t)
-                else:
-                    _logger.warning("stale_result_discarded: task={} 已失去租约, 丢弃渲染错误结果", task_id)
-        return
+        return {"error": f"RenderError: {exc}", "permanent": permanent}
 
-    # 严格校验渲染结果 — None / 文件不存在 / 片长过短 全视为失败
     if clip is None:
-        ms = int((time.time() - t0) * 1000)
-        with get_session() as db:
-            t = db.get(SegmentTask, task_id)
-            if t is not None:
-                if _still_has_lease(t, _WORKER_ID, lease_token, TaskStatus.RENDERING):
-                    mark_failed(t, "RenderFailedError: clip rendering returned no result", permanent=False)
-                    db.add(t)
-                else:
-                    _logger.warning("stale_result_discarded: task={} 已失去租约, 丢弃渲染结果", task_id)
-        return
+        return {"error": "clip rendering returned no result", "permanent": False}
 
     from pathlib import Path as _Path
     out_exists = clip.file_path and _Path(clip.file_path).exists()
     out_size_ok = out_exists and _Path(clip.file_path).stat().st_size > 1024
-    if not out_exists or not out_size_ok:
-        ms = int((time.time() - t0) * 1000)
-        with get_session() as db:
-            t = db.get(SegmentTask, task_id)
-            if t is not None:
-                detail = "output file missing" if not out_exists else f"output too small ({_Path(clip.file_path).stat().st_size} bytes)" if clip.file_path else "no output path"  # noqa: E501
-                if _still_has_lease(t, _WORKER_ID, lease_token, TaskStatus.RENDERING):
-                    mark_failed(t, f"RenderFailedError: {detail}", permanent=False)
-                    db.add(t)
-                else:
-                    _logger.warning("stale_result_discarded: task={} 已失去租约, 丢弃渲染错误结果", task_id)
-        return
+    if not out_exists:
+        return {"error": "output file missing", "permanent": False}
+    if not out_size_ok:
+        detail = (
+            f"output too small ({_Path(clip.file_path).stat().st_size} bytes)"
+            if clip.file_path
+            else "no output path"
+        )
+        return {"error": f"RenderFailedError: {detail}", "permanent": False}
 
     if clip.duration_s is not None and clip.duration_s < 1.0:
-        ms = int((time.time() - t0) * 1000)
-        with get_session() as db:
-            t = db.get(SegmentTask, task_id)
-            if t is not None:
-                if _still_has_lease(t, _WORKER_ID, lease_token, TaskStatus.RENDERING):
-                    mark_failed(t, f"RenderFailedError: output duration too short ({clip.duration_s:.1f}s)", permanent=False)  # noqa: E501
-                    db.add(t)
-                else:
-                    _logger.warning("stale_result_discarded: task={} 已失去租约, 丢弃渲染错误结果", task_id)
-        return
+        return {"error": f"output duration too short ({clip.duration_s:.1f}s)", "permanent": False}
 
-    ms = int((time.time() - t0) * 1000)
-    with get_session() as db:
-        task = db.get(SegmentTask, task_id)
-        if task and _still_has_lease(task, _WORKER_ID, lease_token, TaskStatus.RENDERING):
-            mark_completed(task, ms)
-            # V0.1.12.5: 保存 clip_id + 进入 RENDERED (非 AWAITING_REVIEW)
-            enqueue_next(task, TaskStatus.RENDERED, clip_id=clip.id)
-            db.add(task)
-        elif task:
-            _logger.warning("stale_result_discarded: task={} 已失去租约, 丢弃渲染结果", task_id)
+    return {
+        "clip_id": clip.id,
+        "file_path": clip.file_path,
+        "duration_s": clip.duration_s,
+    }
 
 
-def _run_publish(task_id: int, lease_token: str | None = None) -> None:
-    """Execute publish stage: validate + upload, then map UploadTask status (V0.1.12.7).
+def _commit_render(lease: TaskLease, compute_result: dict, ms: int) -> None:
+    """提交渲染结果 — 单一事务 + 租约校验 (V0.1.12.10)。
 
-    V0.1.12.7: 根据 UploadTask 真实状态推进主流水线:
-    - SUCCESS → COMPLETED
-    - SKIPPED → AWAITING_PUBLISH_CONFIRMATION
-    - FAILED → TRANSIENT_FAILED
-
-    验证 Event 已批准、ClipVariant 存在、文件完整后执行上传。
+    在单个 DB 事务中: 校验租约 → 根据结果标记失败或完成。
     """
-    from app.db.models import FinalClip, HighlightEvent, ReviewStatus
-    from app.pipeline.approval import apply_upload_result
+    with get_session() as db:
+        if not still_owns_lease(db, lease):
+            _logger.warning("stale_result_discarded: task={} 已失去租约, 丢弃渲染结果", lease.task_id)
+            return
 
+        task = db.get(SegmentTask, lease.task_id)
+        if task is None:
+            return
+
+        if "error" in compute_result:
+            mark_failed(
+                task,
+                compute_result["error"],
+                permanent=compute_result.get("permanent", False),
+            )
+            db.add(task)
+            return
+
+        mark_completed(task, ms)
+        enqueue_next(task, TaskStatus.RENDERED, clip_id=compute_result.get("clip_id"))
+        db.add(task)
+
+
+def _run_render(lease: TaskLease) -> None:
+    """渲染阶段入口 — heartbeat → compute → commit (V0.1.12.10 重构)。"""
     t0 = time.time()
+    with get_session() as db:
+        task = db.get(SegmentTask, lease.task_id)
+        if task is None or task.candidate_id is None:
+            return
+        mark_heartbeat(task)
+        db.add(task)
+    compute_result = _render_compute(lease.task_id)
+    ms = int((time.time() - t0) * 1000)
+    _commit_render(lease, compute_result, ms)
+
+
+def _publish_compute(task_id: int) -> dict:
+    """纯发布计算 — 无数据库状态写入 (V0.1.12.10: compute/commit 分离)。
+
+    验证前置条件 (Event 已批准、FinalClip 存在、文件完整),
+    然后调用 enqueue_and_upload 执行上传。
+    超时或状态不确定时返回 {"remote_result_unknown": True}。
+
+    :returns: upload task info dict, error dict, 或 remote_result_unknown dict。
+    """
+    from pathlib import Path as _Path
+
+    from app.db.models import FinalClip, HighlightEvent, ReviewStatus
+
     with get_session() as db:
         task = db.get(SegmentTask, task_id)
         if task is None:
-            return
+            return {"error": "task not found", "permanent": True}
         clip_id = task.clip_id
         event_id = task.event_id
         if clip_id is None:
+            return {"error": "任务缺少 clip_id", "permanent": True}
+
+        # 只读校验前置条件
+        event = db.get(HighlightEvent, event_id) if event_id else None
+        if event is None or event.review_status not in ReviewStatus.POSITIVE:
+            return {"error": "Event 未批准或不存在", "permanent": True}
+
+        clip = db.get(FinalClip, clip_id)
+        if clip is None:
+            return {"error": f"FinalClip {clip_id} 不存在", "permanent": True}
+
+        if not clip.file_path or not _Path(clip.file_path).exists():
+            return {"error": "输出文件缺失", "permanent": True}
+
+    try:
+        from app.publishing.uploader import enqueue_and_upload
+        upload_task = enqueue_and_upload(clip_id)
+    except Exception as exc:
+        error_msg = str(exc).lower()
+        if "timeout" in error_msg or "timed out" in error_msg:
+            return {"remote_result_unknown": True}
+        return {"error": f"PublishError: {exc}", "permanent": False}
+
+    if upload_task is None:
+        return {"error": "upload_task 为空", "permanent": False}
+
+    ustatus = upload_task.status
+    if ustatus is None or ustatus == "":
+        return {"remote_result_unknown": True}
+
+    return {
+        "upload_task_id": upload_task.id or 0,
+        "upload_status": ustatus,
+        "upload_error": upload_task.last_error,
+        "remote_id": upload_task.remote_id,
+    }
+
+
+def _commit_publish(lease: TaskLease, compute_result: dict) -> None:
+    """提交发布结果 — 单一事务 + 租约校验 (V0.1.12.10)。
+
+    在单个 DB 事务中: 校验租约 → 根据结果标记失败、完成或记录远程结果未知。
+    """
+    with get_session() as db:
+        if not still_owns_lease(db, lease):
+            _logger.warning("stale_result_discarded: task={} 已失去租约, 丢弃发布结果", lease.task_id)
+            return
+
+        task = db.get(SegmentTask, lease.task_id)
+        if task is None:
+            return
+
+        if compute_result.get("remote_result_unknown"):
+            _logger.warning(
+                "remote_result_unknown: task={} 上传结果未知, 保持 PUBLISHING 状态",
+                lease.task_id,
+            )
+            return
+
+        if "error" in compute_result:
+            mark_failed(
+                task,
+                compute_result["error"],
+                permanent=compute_result.get("permanent", False),
+            )
+            db.add(task)
+            return
+
+        from app.pipeline.approval import apply_upload_result
+        apply_upload_result(
+            task_id=lease.task_id,
+            upload_task_id=compute_result.get("upload_task_id", 0),
+            upload_status=compute_result.get("upload_status", ""),
+            upload_error=compute_result.get("upload_error"),
+            remote_id=compute_result.get("remote_id"),
+        )
+
+
+def _run_publish(lease: TaskLease) -> None:
+    """发布阶段入口 — heartbeat → compute → commit (V0.1.12.10 重构)。"""
+    with get_session() as db:
+        task = db.get(SegmentTask, lease.task_id)
+        if task is None:
+            return
+        if task.clip_id is None:
             mark_failed(task, "PublishError: 任务缺少 clip_id", permanent=True)
             db.add(task)
             return
         mark_heartbeat(task)
         db.add(task)
-
-    # 验证前置条件
-    with get_session() as db:
-        event = db.get(HighlightEvent, event_id) if event_id else None
-        if event is None or event.review_status not in ReviewStatus.POSITIVE:
-            _ms = int((time.time() - t0) * 1000)
-            t = db.get(SegmentTask, task_id)
-            if t:
-                mark_failed(t, "PublishError: Event 未批准或不存在", permanent=True)
-                db.add(t)
-            return
-
-        clip = db.get(FinalClip, clip_id)
-        if clip is None:
-            _ms = int((time.time() - t0) * 1000)
-            t = db.get(SegmentTask, task_id)
-            if t:
-                mark_failed(t, f"PublishError: FinalClip {clip_id} 不存在", permanent=True)
-                db.add(t)
-            return
-
-        from pathlib import Path as _Path
-        if not clip.file_path or not _Path(clip.file_path).exists():
-            _ms = int((time.time() - t0) * 1000)
-            t = db.get(SegmentTask, task_id)
-            if t:
-                mark_failed(t, "PublishError: 输出文件缺失", permanent=True)
-                db.add(t)
-            return
-
-    # V0.1.12.7: 执行上传并根据结果推进
-    try:
-        from app.publishing.uploader import enqueue_and_upload
-        upload_task = enqueue_and_upload(clip_id)
-    except Exception as exc:
-        _ms = int((time.time() - t0) * 1000)
-        _logger.debug("_run_publish 上传异常: task={} elapsed={}ms", task_id, _ms)
-        with get_session() as db:
-            t = db.get(SegmentTask, task_id)
-            if t is not None:
-                if _still_has_lease(t, _WORKER_ID, lease_token, TaskStatus.PUBLISHING):
-                    mark_failed(t, f"PublishError: {exc}", permanent=False)
-                    db.add(t)
-                else:
-                    _logger.warning("stale_result_discarded: task={} 已失去租约, 丢弃发布错误结果", task_id)
-        return
-
-    if upload_task is None:
-        with get_session() as db:
-            t = db.get(SegmentTask, task_id)
-            if t is not None:
-                if _still_has_lease(t, _WORKER_ID, lease_token, TaskStatus.PUBLISHING):
-                    mark_failed(t, "PublishError: upload_task 为空", permanent=False)
-                    db.add(t)
-                else:
-                    _logger.warning("stale_result_discarded: task={} 已失去租约, 丢弃发布结果", task_id)
-        return
-
-    uid = upload_task.id or 0
-    ustatus = upload_task.status
-    uerror = upload_task.last_error
-    remote_id = upload_task.remote_id
-
-    _logger.info(
-        "_run_publish: task={} clip={} upload_task={} status={} remote_id={}",
-        task_id, clip_id, uid, ustatus, remote_id,
-    )
-
-    # V0.1.12.7: 根据 UploadTask 真实状态映射 — 先校验租约
-    with get_session() as db:
-        t = db.get(SegmentTask, task_id)
-        if t and _still_has_lease(t, _WORKER_ID, lease_token, TaskStatus.PUBLISHING):
-            apply_upload_result(
-                task_id=task_id,
-                upload_task_id=uid,
-                upload_status=ustatus,
-                upload_error=uerror,
-                remote_id=remote_id,
-            )
-        elif t:
-            _logger.warning("stale_result_discarded: task={} 已失去租约, 丢弃发布结果", task_id)
+    compute_result = _publish_compute(lease.task_id)
+    _commit_publish(lease, compute_result)
 
 
 # ═══════════════════════════════════════════════════
@@ -1348,9 +1477,15 @@ class TaskWorker:
                 _advance_awaiting_review()
                 _advance_approved()
                 _advance_rendered()
-                await self._dispatch(TaskStatus.QUEUED_FOR_TRANS, self._transcribing, MAX_TRANSCRIBING)
-                await self._dispatch(TaskStatus.QUEUED_FOR_ANALYSIS, self._analyzing, MAX_ANALYZING)
-                await self._dispatch(TaskStatus.QUEUED_FOR_RENDER, self._rendering, MAX_RENDERING)
+                # V0.1.13: Disk protection — skip heavy tasks when disk is low
+                from app.pipeline.storage_lifecycle import is_safe_for_new_tasks
+                disk_safe = is_safe_for_new_tasks()
+                if disk_safe:
+                    await self._dispatch(TaskStatus.QUEUED_FOR_TRANS, self._transcribing, MAX_TRANSCRIBING)
+                    await self._dispatch(TaskStatus.QUEUED_FOR_ANALYSIS, self._analyzing, MAX_ANALYZING)
+                    await self._dispatch(TaskStatus.QUEUED_FOR_RENDER, self._rendering, MAX_RENDERING)
+                else:
+                    _logger.warning("磁盘空间不足, 跳过 transcribe/analyze/render 调度")
                 await self._dispatch(TaskStatus.QUEUED_FOR_PUBLISH, self._publishing, MAX_PUBLISHING)
                 self._transcribing = {t for t in self._transcribing if not t.done()}
                 self._analyzing = {t for t in self._analyzing if not t.done()}
@@ -1368,10 +1503,45 @@ class TaskWorker:
         running: set[asyncio.Task[None]],
         max_concurrent: int,
     ) -> None:
+        # V0.1.13: ResourceBudget integration — map stages to resource keys
+        _STAGE_TO_RESOURCE: dict[str, str] = {
+            TaskStatus.QUEUED_FOR_TRANS: "asr",
+            TaskStatus.QUEUED_FOR_ANALYSIS: "analysis",
+            TaskStatus.QUEUED_FOR_RENDER: "render",
+            TaskStatus.QUEUED_FOR_PUBLISH: "publish",
+        }
+        resource_key = _STAGE_TO_RESOURCE.get(queued_stage)
         while self._running and not _shutting_down and len(running) < max_concurrent:
+            # V0.1.13: Check resource budget before claiming a task
+            if resource_key:
+                from app.core.resource_budget import acquire_resources, get_task_cost
+                cost = get_task_cost(resource_key)
+                if not acquire_resources(**cost):
+                    _logger.debug(
+                        "资源不足, 跳过阶段 {} (resource_key={})",
+                        queued_stage, resource_key,
+                    )
+                    break
+            else:
+                cost = {}
+
             task = _pop_and_claim(queued_stage)
             if task is None:
+                # Release resources if pop failed
+                if cost:
+                    from app.core.resource_budget import release_resources
+                    release_resources(**cost)
                 break
+
+            # V0.1.13: Track resources per task for later release
+            if cost:
+                global _task_resources_lock
+                import threading
+                if _task_resources_lock is None:
+                    _task_resources_lock = threading.Lock()
+                with _task_resources_lock:
+                    _task_resources[task.id] = cost
+
             active = _active_stage(queued_stage)
             lease = task.lease_token
             t = asyncio.create_task(asyncio.to_thread(_execute_task, task.id, active, lease))

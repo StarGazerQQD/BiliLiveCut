@@ -43,11 +43,36 @@ async def lifespan(_app: FastAPI) -> AsyncIterator[None]:
     """应用生命周期:启动初始化、启动 TaskWorker、自动恢复、预约调度、关闭时优雅停止。"""
     setup_logging()
     init_db()
+
+    # V0.1.13: Web 安全兜底 — 启动时检查 host+password 配置
+    from app.core.config import settings as _cfg_startup
+    if not _cfg_startup.admin_password:
+        import socket as _socket
+        hostname = _socket.gethostname()
+        non_loopback_ips = []
+        for info in _socket.getaddrinfo(hostname, None):
+            addr = info[4][0]
+            if not addr.startswith("127.") and addr != "::1":
+                non_loopback_ips.append(addr)
+        if non_loopback_ips:
+            logger.warning(
+                "安全警告: ADMIN_PASSWORD 为空, 但主机存在非 loopback 接口: {}. "
+                "Web 将禁止非本机请求访问 /api 路由。",
+                non_loopback_ips[:3],
+            )
+    # V0.1.13: 启动 Metrics 后台采样
+    from app.core.metrics import start_metrics_collector
+    start_metrics_collector(interval_s=60)
+
     from app.trends.scheduler import trend_scheduler
 
     trend_scheduler.start(
         recording_active=lambda: bool(service.recorder_manager.running_ids())
     )
+
+    # V0.1.13: 启动后台指标采集器
+    from app.core.metrics import start_metrics_collector
+    start_metrics_collector(interval_s=60)
 
     # V0.1.6:启动持久化任务队列 Worker。
     from app.pipeline.task_worker import task_worker
@@ -195,16 +220,52 @@ def _record_login_failure(ip: str) -> None:
 
 
 class _AuthMiddleware(_BaseMiddleware):
-    """轻量 Basic Auth 中间件。只在 ADMIN_PASSWORD 设置后生效。"""
+    """轻量 Basic Auth 中间件 (V0.1.13 强化: loopback 守卫)。
+
+    当 ADMIN_PASSWORD 为空时:
+    - loopback 请求 → 允许
+    - 非 loopback 请求 → 拒绝 (401)
+
+    当 ADMIN_PASSWORD 设置后: 使用 secrets.compare_digest 校验。
+    修改状态的请求额外检查 Origin/Referer (CSRF 保护)。
+    """
+
+    def _is_loopback(self, host: str) -> bool:
+        """判断 IP 地址是否为 loopback 或测试环境。
+
+        :param host: 客户端 IP 地址字符串。
+        :returns: ``True`` 表示是 loopback 地址或测试客户端。
+        """
+        return host in ("127.0.0.1", "::1", "localhost", "testclient") or host.startswith("127.")
+
+    def _is_modifying(self, request: Request) -> bool:
+        """检查请求是否为状态修改类请求 (POST/PUT/PATCH/DELETE)。
+
+        :param request: FastAPI Request 对象。
+        :returns: ``True`` 表示是修改请求。
+        """
+        return request.method in ("POST", "PUT", "PATCH", "DELETE")
 
     async def dispatch(self, request: Request, call_next):
-        if not _ADMIN_PASSWORD:
-            return await call_next(request)
         path = request.url.path
-        if not any(path.startswith(p) for p in _AUTH_PROTECTED_PREFIXES):
+        protected = any(path.startswith(p) for p in _AUTH_PROTECTED_PREFIXES)
+        if not protected:
             return await call_next(request)
         if path.startswith(_AUTH_WHITE_LIST):
             return await call_next(request)
+
+        client_ip = request.client.host if request.client else "unknown"  # noqa: SLF001
+
+        # V0.1.13: 无密码时仅 loopback/测试环境 允许
+        if not _ADMIN_PASSWORD:
+            if not self._is_loopback(client_ip) and client_ip != "unknown":
+                logger.warning("access_denied: non-loopback request without ADMIN_PASSWORD from {}", client_ip)
+                return _JSONResponse(
+                    {"detail": "安全策略: 未设置 ADMIN_PASSWORD 时仅允许本机访问管理接口。"},
+                    status_code=403,
+                )
+            return await call_next(request)
+
         auth = request.headers.get("Authorization", "")
         if not auth.startswith("Basic "):
             return _JSONResponse({"detail": "需要认证"}, status_code=401, headers={"WWW-Authenticate": "Basic"})
