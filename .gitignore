@@ -61,3 +61,7 @@ logs_*.zip
 /temp_ci_logs_new/
 /temp_ci_new/
 /temp_logs_*/
+
+# Portable 构建产物
+/packaging/portable/build/
+/packaging/portable/dist/

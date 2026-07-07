@@ -5,7 +5,7 @@
 **当前版本：V0.1.14.4 Alpha** (`0.1.14.4-alpha`)
 
 针对 Bilibili 直播的全自动工作流：实时录制 → 转写 → 识别高光 → 生成切片 → 生成文案 → (可选)上传。
-阶段 1–5 全链路已可用；即插即用分发包见 [`Publish-PnP/`](Publish-PnP/README.md)。
+阶段 1–5 全链路已可用；即插即用分发包见 [`packaging/portable/`](packaging/portable/README.md)。
 
 > ⚠️ **合规声明**：本项目仅调用 Bilibili 网页播放器自身使用的公开接口，不做任何逆向、破解或绕过平台安全策略的行为。请**仅录制你拥有授权的内容**，遵守平台服务条款与合理访问频率。自动上传默认采用 `manual` 模式（只产出成品与元数据，不调用任何平台接口），零封号风险。
 
@@ -227,7 +227,7 @@ pytest -q
 ├── config/                  # 权重与关键词 YAML
 ├── tests/                   # 测试 (290 项)
 ├── storage/                 # 运行产物 (.gitignore)
-├── Publish-PnP/             # 即插即用分发版
+├── packaging/portable/       # 即插即用分发版 (原 Publish-PnP)
 ├── pyproject.toml           # 项目配置
 ├── .env.example             # 配置模板
 └── README.md                # 本文件

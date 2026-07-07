@@ -1,0 +1,25 @@
+# 即插即用版：仅脚本 + 配置入库。
+# build/ 和 dist/ 为构建产物（已在根 .gitignore 中忽略）。
+
+# 运行时生成
+models/
+vendor/
+bin/
+.venv/
+storage/
+*.log
+__pycache__/
+.ruff_cache/
+manifest.json
+
+# 从 Payload 释放的源码副本（运行时产生，不入库）
+app/
+config/
+pyproject.toml
+setup.py
+setup_c.py
+build_rust.py
+requirements-bundle.txt
+CHANGELOG.md
+README_MAIN.md
+tests/

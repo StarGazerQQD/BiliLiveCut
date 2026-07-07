@@ -1,10 +1,10 @@
-# BiliLiveCut · 即插即用版（Publish-PnP）
+# BiliLiveCut · 即插即用版（`packaging/portable/`，原 Publish-PnP）
 
-**版本：V0.1.12.9 Alpha** (`0.1.12.9-alpha`)
+**版本：V0.1.14.5 Alpha** (`0.1.14.5-alpha`)
 
 BiliLiveCut 是一个**全自动 AI 直播切片系统**：监听 Bilibili 直播间 → 实时录制 + 转写 → 识别高光爆点 → 生成剪辑成品 + 文案。
 
-这个 `Publish-PnP/` 目录是**即插即用分发版**。目录内容经过极致精简——只保留 `launcher.exe` 和几个辅助脚本，**所有业务代码（`app/`、`config/`、`pyproject.toml` 等）均在首次运行时由 launcher.exe 自动从 GitHub 主仓库拉取**。目标电脑只需装好 Python 3.11+，双击 `launcher.exe` 即可。
+这个 `packaging/portable/` 目录是**即插即用分发版**。目录内容经过极致精简——只保留 `launcher.exe` 和几个辅助脚本，**所有业务代码（`app/`、`config/`、`pyproject.toml` 等）均在首次运行时由 launcher.exe 自动从 GitHub 主仓库拉取**。目标电脑只需装好 Python 3.11+，双击 `launcher.exe` 即可。
 
 ---
 
@@ -83,19 +83,19 @@ V0.1.10 新增剩余 3 个热点（聚类矩阵 O(N²)、弹幕基线分桶、SR
 在一台**能联网**的机器上执行一次打包：
 
 ```powershell
-cd Publish-PnP
+cd packaging\portable
 pip install huggingface_hub
 python build_bundle.py
 ```
 
-打包完成后把整个 `Publish-PnP/` 目录拷到目标机，双击 `launcher.exe` 即可**离线启动**。
+打包完成后把整个 `packaging/portable/` 目录拷到目标机，双击 `launcher.exe` 即可**离线启动**。
 
 ---
 
 ## 目录结构（精简后）
 
 ```
-Publish-PnP/                         # ★ 即插即用分发版根目录
+packaging/portable/                     # ★ 即插即用分发版根目录 (原 Publish-PnP)
 │
 ├── launcher.exe                     # ★★ 核心入口：双击即用，自动拉取源码 + 部署全部组件
 ├── launcher.py                      # launcher.exe 的 Python 源码（可选，便于审查）
@@ -330,4 +330,4 @@ BILIUP_UPLOAD_CMD=                          # 自定义上传命令模板
 
 ## 回主工程
 
-此 `Publish-PnP/` 目录是**发布给最终用户的即插即用版本**，源码均自动从 GitHub 主仓库拉取。如果你需要参与开发或定制，请访问主仓库 `README.md` 及 `CHANGELOG.md`。
+此 `packaging/portable/` 目录是**发布给最终用户的即插即用版本**，源码均自动从 GitHub 主仓库拉取。如果你需要参与开发或定制，请访问主仓库 `README.md` 及 `CHANGELOG.md`。

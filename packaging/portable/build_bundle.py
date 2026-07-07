@@ -1,14 +1,14 @@
 """即插即用版打包脚本。
 
-在一台**能联网**的机器上运行一次,把「模型 + 依赖 + 源码」全部封装进 ``Publish-PnP/``:
+在一台**能联网**的机器上运行一次,把「模型 + 依赖 + 源码」全部封装进 ``packaging/portable/``:
 
 1. **模型**:下载 faster-whisper 的 ``large-v3-turbo``(Systran 转换版)到
-   ``Publish-PnP/models/whisper-large-v3-turbo``(境内默认走 hf-mirror.com 镜像);
-2. **依赖**:按 ``requirements-bundle.txt`` 把全部 wheel 下载到 ``Publish-PnP/vendor/wheels``
+   ``packaging/portable/models/whisper-large-v3-turbo``(境内默认走 hf-mirror.com 镜像);
+2. **依赖**:按 ``requirements-bundle.txt`` 把全部 wheel 下载到 ``packaging/portable/vendor/wheels``
    (供离线 ``install`` 使用,封装所有外部库);
-3. **源码**:把主工程的 ``app/`` ``config/`` 等复制进 ``Publish-PnP/``,使其自包含。
+3. **源码**:把主工程的 ``app/`` ``config/`` 等复制进 ``packaging/portable/``,使其自包含。
 
-打包完成后,把整个 ``Publish-PnP/`` 目录拷到目标机器,依次运行 ``install`` 与 ``run`` 即可
+打包完成后,把整个 ``packaging/portable/`` 目录拷到目标机器,依次运行 ``install`` 与 ``run`` 即可
 离线启动;其所用 Whisper 固定为包内的 ``large-v3-turbo``。
 
 用法::
@@ -63,7 +63,7 @@ PIP_TRUSTED_HOSTS = ["mirrors.aliyun.com", "pypi.tuna.tsinghua.edu.cn"]
 DIST_DIR = Path(__file__).resolve().parent
 PROJECT_ROOT = DIST_DIR.parent
 # 需要复制进即插即用包的源码/资源(相对主工程根)。
-# 注意:主工程 README.md 会被复制为 README_MAIN.md,避免覆盖 Publish-PnP 自己的说明。
+# 注意:主工程 README.md 会被复制为 README_MAIN.md,避免覆盖 packaging/portable 自己的说明。
 SOURCE_ITEMS = ["app", "config", "pyproject.toml"]
 
 MANIFEST_PATH = DIST_DIR / "manifest.json"
@@ -90,7 +90,7 @@ def log(msg: str) -> None:
 
 
 def copy_source() -> None:
-    """把主工程源码复制进 Publish-PnP(使其自包含)。"""
+    """把主工程源码复制进 packaging/portable(使其自包含)。"""
     for name in SOURCE_ITEMS:
         src = PROJECT_ROOT / name
         dst = DIST_DIR / name
@@ -107,7 +107,7 @@ def copy_source() -> None:
         else:
             shutil.copy2(src, dst)
         log(f"已复制源码:{name}")
-    # 主工程 README 另存为 README_MAIN.md,避免覆盖 Publish-PnP 说明。
+    # 主工程 README 另存为 README_MAIN.md,避免覆盖 packaging/portable 自己的说明。
     main_readme = PROJECT_ROOT / "README.md"
     if main_readme.exists():
         shutil.copy2(main_readme, DIST_DIR / "README_MAIN.md")
@@ -115,7 +115,7 @@ def copy_source() -> None:
 
 
 def download_model(hf_mirror: str) -> None:
-    """下载 large-v3-turbo 模型到 Publish-PnP/models。
+    """下载 large-v3-turbo 模型到 packaging/portable/models。
 
     :param hf_mirror: HuggingFace 镜像地址(境内建议 https://hf-mirror.com)。
     """
@@ -433,7 +433,7 @@ def _platform_check(build_pf: dict | None, current: dict) -> dict:
 
 
 def collect_status(build_platform: dict | None = None) -> dict:
-    """采集当前 Publish-PnP 包的完整状态(供写清单与体检共用)。
+    """采集当前 packaging/portable 包的完整状态(供写清单与体检共用)。
 
     :param build_platform: 打包平台;打包时传当前平台,体检时传 manifest 记录的平台。
     :returns: 状态字典(含各部分 ``ok`` 与总 ``ok``)。

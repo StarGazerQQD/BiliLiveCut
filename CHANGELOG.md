@@ -664,7 +664,7 @@ ASR_PRELOAD_ON_START=false
 - `app/clipping/cover.py`: `out` 变量提至 try 前初始化，避免 `mktemp` 异常时 finally 块访问未定义变量
 
 **确认已有防护 (无需操作)**:
-- `Publish-PnP/build_bundle.py`: zip-slip 已防护 (L252 `".." in member`)
+- `packaging/portable/build_bundle.py`: zip-slip 已防护 (L252 `".." in member`) (原 Publish-PnP)
 - `app/pipeline/storage_lifecycle.py`: 符号链接检测 (L127) + 路径前缀验证 (`_safe_unlink`) 均已就位
 
 ## V0.1.12 Alpha (2026-07-06)
