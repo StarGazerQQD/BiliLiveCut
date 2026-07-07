@@ -15,7 +15,7 @@ from app.core.config import settings
 from app.db.models import RawSegment, SegmentStatus, SegmentTask, TaskStatus, Transcript
 from app.db.session import get_session
 from app.pipeline.lease import LeaseLostError, TaskLease, still_owns_lease
-from app.pipeline.stage_result import enqueue_next, mark_completed, mark_heartbeat
+from app.pipeline.stage_result import enqueue_next, mark_completed
 
 _logger = logging.getLogger(__name__)
 
@@ -152,10 +152,11 @@ def commit_transcript(lease: TaskLease, compute_result: dict[str, Any], ms: int)
 
     事务顺序:
     1. 验证租约
-    2. 幂等查询 Transcript
-    3. 不存在则创建
-    4. 更新 RawSegment 状态
-    5. 推进 Task
+    2. 检查 compute 错误 (不创建非法记录)
+    3. 幂等查询 Transcript
+    4. 不存在则创建
+    5. 更新 RawSegment 状态为 TRANSCRIBED
+    6. 推进 Task
 
     :param lease: 任务租约。
     :param compute_result: transcribe_compute 的输出 (必须含 "segment_id" 和 "text")。
@@ -170,7 +171,27 @@ def commit_transcript(lease: TaskLease, compute_result: dict[str, Any], ms: int)
             if task is None:
                 return
 
-            segment_id = compute_result.get("segment_id", -1)
+            # 检查 compute 错误 — 不创建非法记录
+            if "error" in compute_result:
+                _logger.error("commit_transcript_error: task=%s error=%s", lease.task_id, compute_result["error"])
+                from app.pipeline.stage_result import mark_failed
+                mark_failed(
+                    task,
+                    compute_result["error"],
+                    permanent="task not found" in str(compute_result.get("error", "")),
+                )
+                db.add(task)
+                db.commit()
+                return
+
+            segment_id = compute_result.get("segment_id")
+            if segment_id is None or segment_id < 0:
+                _logger.error("commit_transcript: invalid segment_id=%s", segment_id)
+                from app.pipeline.stage_result import mark_failed
+                mark_failed(task, "invalid segment_id in compute result", permanent=True)
+                db.add(task)
+                db.commit()
+                return
 
             # 幂等: 查询已有 Transcript
             from sqlmodel import select as _sel  # noqa: PLC0415
@@ -178,8 +199,15 @@ def commit_transcript(lease: TaskLease, compute_result: dict[str, Any], ms: int)
             existing = db.exec(_sel(Transcript).where(Transcript.segment_id == segment_id)).first()
             if existing is not None:
                 _logger.info("idempotent_skip: segment=%s 已有 Transcript id=%s", segment_id, existing.id)
+                # 修复 RawSegment 状态
+                seg = db.get(RawSegment, segment_id)
+                if seg is not None and seg.status != SegmentStatus.TRANSCRIBED:
+                    seg.status = SegmentStatus.TRANSCRIBED
+                    db.add(seg)
+                # 修复 task.transcript_id
+                task.transcript_id = existing.id
                 mark_completed(task, ms)
-                enqueue_next(task, TaskStatus.TRANSCRIBED)
+                enqueue_next(task, TaskStatus.TRANSCRIBED, transcript_id=existing.id)
                 db.add(task)
                 db.commit()
                 return
@@ -216,8 +244,9 @@ def commit_transcript(lease: TaskLease, compute_result: dict[str, Any], ms: int)
                 db.add(seg)
 
             # 推进任务
+            task.transcript_id = transcript.id
             mark_completed(task, ms)
-            enqueue_next(task, TaskStatus.TRANSCRIBED)
+            enqueue_next(task, TaskStatus.TRANSCRIBED, transcript_id=transcript.id)
             db.add(task)
 
             db.commit()
@@ -236,16 +265,11 @@ def commit_transcript(lease: TaskLease, compute_result: dict[str, Any], ms: int)
 def run_transcribe(lease: TaskLease) -> None:
     """执行转写阶段: 计算与提交分离。
 
+    心跳由 scheduler 的 heartbeat thread 管理, 不在 run_* 中重复写入。
+
     :param lease: 任务租约。
     """
     t0 = time.time()
-    with get_session() as db:
-        task = db.get(SegmentTask, lease.task_id)
-        if task is None:
-            return
-        mark_heartbeat(task)
-        db.add(task)
-        db.commit()
     compute_result = transcribe_compute(lease.task_id)
     ms_val = int((time.time() - t0) * 1000)
     commit_transcript(lease, compute_result, ms_val)

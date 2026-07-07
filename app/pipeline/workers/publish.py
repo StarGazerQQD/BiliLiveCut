@@ -28,7 +28,9 @@ from app.db.models import (
 )
 from app.db.session import get_session
 from app.pipeline.lease import TaskLease, still_owns_lease
-from app.pipeline.stage_result import mark_failed, mark_heartbeat
+from app.pipeline.stage_result import mark_failed
+
+# mark_heartbeat 由 scheduler heartbeat thread 管理, 不在 run_* 中重复写入
 
 _logger = logging.getLogger(__name__)
 
@@ -359,7 +361,10 @@ def commit_publish_result(lease: TaskLease, attempt_token: str, compute_result: 
 
 
 def run_publish(lease: TaskLease) -> None:
-    """发布阶段入口 — prepare → execute → commit。"""
+    """发布阶段入口 — prepare → execute → commit。
+
+    心跳由 scheduler 的 heartbeat thread 管理, 不在 run_* 中重复写入。
+    """
     with get_session() as db:
         task = db.get(SegmentTask, lease.task_id)
         if task is None:
@@ -369,9 +374,6 @@ def run_publish(lease: TaskLease) -> None:
             db.add(task)
             db.commit()
             return
-        mark_heartbeat(task)
-        db.add(task)
-        db.commit()
 
     # prepare
     prepared = prepare_publish_attempt(lease)

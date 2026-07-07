@@ -35,7 +35,7 @@ from app.db.models import (
 )
 from app.db.session import get_session
 from app.pipeline.lease import LeaseLostError, TaskLease, still_owns_lease
-from app.pipeline.stage_result import enqueue_next, mark_completed, mark_heartbeat
+from app.pipeline.stage_result import enqueue_next, mark_completed
 
 _logger = logging.getLogger(__name__)
 
@@ -237,16 +237,11 @@ def _mark_scored_in_db(db, segment_id: int) -> None:
 def run_analyze(lease: TaskLease) -> None:
     """执行分析阶段: 计算与提交分离。
 
+    心跳由 scheduler 的 heartbeat thread 管理, 不在 run_* 中重复写入。
+
     :param lease: 任务租约。
     """
     t0 = time.time()
-    with get_session() as db:
-        task = db.get(SegmentTask, lease.task_id)
-        if task is None:
-            return
-        mark_heartbeat(task)
-        db.add(task)
-        db.commit()
     compute_result = analyze_compute(lease.task_id)
     ms_val = int((time.time() - t0) * 1000)
     commit_highlight(lease, compute_result, ms_val)

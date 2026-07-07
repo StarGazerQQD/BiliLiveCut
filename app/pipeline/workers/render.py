@@ -24,7 +24,7 @@ from app.db.models import (
 )
 from app.db.session import get_session
 from app.pipeline.lease import LeaseLostError, TaskLease, still_owns_lease
-from app.pipeline.stage_result import enqueue_next, mark_completed, mark_failed, mark_heartbeat
+from app.pipeline.stage_result import enqueue_next, mark_completed, mark_failed
 
 _logger = logging.getLogger(__name__)
 
@@ -309,15 +309,11 @@ def _safe_delete_temp(temp_path: str) -> None:
 
 
 def run_render(lease: TaskLease) -> None:
-    """渲染阶段入口 — heartbeat → compute → commit。"""
+    """渲染阶段入口 — compute → commit。
+
+    心跳由 scheduler 的 heartbeat thread 管理, 不在 run_* 中重复写入。
+    """
     t0 = time.time()
-    with get_session() as db:
-        task = db.get(SegmentTask, lease.task_id)
-        if task is None or task.candidate_id is None:
-            return
-        mark_heartbeat(task)
-        db.add(task)
-        db.commit()
     compute_result = render_compute(lease)
     ms_val = int((time.time() - t0) * 1000)
     commit_render(lease, compute_result, ms_val)
