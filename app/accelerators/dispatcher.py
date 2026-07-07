@@ -1,4 +1,4 @@
-"""BiliLiveCut 加速模块 — 统一分派层 (V0.1.14).
+"""BiliLiveCut 加速模块 — 统一分派层 (V0.1.14.2).
 
 优先加载编译扩展，若不可用则回退到纯 Python 实现。
 业务代码应通过 app.analysis.speedups 导入，该模块将此分派器完整重导出。

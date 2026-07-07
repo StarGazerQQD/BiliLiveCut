@@ -1,4 +1,4 @@
-"""Web service facade (V0.1.14.1)."""
+"""Web service facade (V0.1.14.2)."""
 
 from app.web.services.candidates import *  # noqa: F401, F403
 from app.web.services.clips import *  # noqa: F401, F403

@@ -1,4 +1,4 @@
-"""大模型配置 (V0.1.14.1)."""
+"""大模型配置 (V0.1.14.2)."""
 
 from __future__ import annotations
 

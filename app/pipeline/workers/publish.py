@@ -1,4 +1,4 @@
-"""发布阶段 Worker — compute/commit 分离 (V0.1.14)."""
+"""发布阶段 Worker — compute/commit 分离 (V0.1.14.2)."""
 
 from __future__ import annotations
 

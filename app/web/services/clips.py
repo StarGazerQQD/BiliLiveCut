@@ -1,4 +1,4 @@
-"""Clips (V0.1.14.1)."""
+"""Clips (V0.1.14.2)."""
 
 from __future__ import annotations
 

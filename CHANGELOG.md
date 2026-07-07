@@ -1,5 +1,25 @@
 # Changelog
 
+## V0.1.14.2 Alpha (2026-07-07)
+
+### CI 修复 + 全量代码规范审计
+
+**CI Lint 修复**
+- 修复 C4 拆分后 13 个 Pydantic 请求模型缺少 docstring (D101) 导致 `ruff check` 失败
+- CI lint job 失败阻断了所有下游 test/audit/coverage-summary job
+- 补全 `candidates.py`、`container.py`、`llm.py`、`rooms.py`、`schedules.py`、`topics.py`、`trends.py` 中所有 BaseModel 子类的 docstring
+
+**全量代码格式化**
+- `ruff format` 格式化 51 个 Python 文件，确保 CI format 检查通过
+- `ruff check app/ tests/` 零错误通过
+
+**版本升级**
+- 版本号 `0.1.14.1-alpha` → `0.1.14.2-alpha`
+- 同步 `app/__init__.py`、`pyproject.toml`、`setup.py`、`setup_c.py` 及 48 个模块文档字符串中的版本标签
+- 全量 290/290 测试通过
+
+---
+
 ## V0.1.14.1 Alpha (2026-07-07)
 
 ### 阶段 C2-C8 深层拆分 + 缓存清理

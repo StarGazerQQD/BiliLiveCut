@@ -1,4 +1,4 @@
-"""录制预约 (V0.1.14.1)."""
+"""录制预约 (V0.1.14.2)."""
 
 from __future__ import annotations
 
