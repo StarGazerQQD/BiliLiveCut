@@ -19,6 +19,7 @@ from abc import ABC, abstractmethod
 from dataclasses import dataclass, field
 from datetime import timedelta
 from pathlib import Path
+from typing import Any
 
 from loguru import logger
 from sqlmodel import select
@@ -48,7 +49,7 @@ class PrecheckResult:
 
 @dataclass(slots=True)
 class UploadResult:
-    """一次上传执行的结果。
+    """一次上传执行的结果 (兼容上传器的 upload() 接口)。
 
     :param success: 是否成功。
     :param remote_id: 平台返回的稿件号(若有)。
@@ -58,6 +59,27 @@ class UploadResult:
     success: bool
     remote_id: str | None = None
     message: str = ""
+
+
+@dataclass(frozen=True)
+class RemoteUploadResult:
+    """远端上传的结构化结果 (不可变)。
+
+    明确区分:
+    - 请求确定未发出
+    - 请求可能已经发出 (timeout/reset/broken pipe)
+    - 平台明确失败
+    - 平台明确成功
+    - 结果无法确认
+    """
+
+    outcome: str  # success / failed_permanent / failed_retryable / remote_result_unknown
+    remote_id: str | None
+    remote_url: str | None
+    error_type: str | None
+    error_message: str | None
+    raw_metadata: dict[str, Any] = field(default_factory=dict)
+    request_may_have_been_sent: bool = False
 
 
 # --------------------------------------------------------------------------- #
@@ -444,3 +466,94 @@ def enqueue_and_upload(clip_id: int) -> UploadTask:
     if task.status == UploadStatus.QUEUED and task.id is not None:
         return process_upload_task(task.id)
     return task
+
+
+# ── 远程异常分类 ────────────────────────────────────────
+
+
+def classify_upload_error(exc: Exception) -> RemoteUploadResult:
+    """将上传过程中的异常分类为结构化结果。
+
+    安全原则: 只有能明确证明请求未到达平台时, 才允许自动重试。
+
+    以下情况视为"可能已经发出"或结果不确定:
+    - timeout
+    - connection reset
+    - broken pipe
+    - EOF
+    - TLS 中断
+    - 响应解析失败
+    - 平台响应语义不明确
+
+    禁止只检查错误字符串是否包含 "timeout"。
+
+    :param exc: 上传过程中捕获的异常。
+    :returns: RemoteUploadResult, outcome 可能为 remote_result_unknown。
+    """
+    import re
+
+    msg = str(exc).lower()
+
+    # 确定请求未发出的情况 (安全重试)
+    safe_retry_patterns = [
+        r"dns.*fail",
+        r"name or service not known",
+        r"nodename nor servname",
+        r"connection refused",
+        r"errno 111",
+    ]
+    for pat in safe_retry_patterns:
+        if re.search(pat, msg):
+            return RemoteUploadResult(
+                outcome="failed_retryable",
+                remote_id=None,
+                remote_url=None,
+                error_type="connection_before_request",
+                error_message=str(exc),
+                request_may_have_been_sent=False,
+            )
+
+    # 结果不确定的情况 (禁止自动重试)
+    uncertain_patterns = [
+        r"time.?out",
+        r"timed out",
+        r"connection reset",
+        r"broken pipe",
+        r"eof",
+        r"tls",
+        r"ssl",
+        r"unexpected eof",
+        r"incomplete",
+        r"parse.*fail",
+        r"json.*decode",
+    ]
+    for pat in uncertain_patterns:
+        if re.search(pat, msg):
+            return RemoteUploadResult(
+                outcome="remote_result_unknown",
+                remote_id=None,
+                remote_url=None,
+                error_type="request_may_have_been_sent",
+                error_message=str(exc),
+                request_may_have_been_sent=True,
+            )
+
+    # 其他 — 检查是否是明确的权限/配置错误
+    if any(kw in msg for kw in ("permission", "unauthorized", "forbidden", "config")):
+        return RemoteUploadResult(
+            outcome="failed_permanent",
+            remote_id=None,
+            remote_url=None,
+            error_type="auth_or_config",
+            error_message=str(exc),
+        )
+
+    # 默认保守: 不确定
+    return RemoteUploadResult(
+        outcome="remote_result_unknown",
+        remote_id=None,
+        remote_url=None,
+        error_type="unclassified",
+        error_message=str(exc),
+        request_may_have_been_sent=True,
+    )

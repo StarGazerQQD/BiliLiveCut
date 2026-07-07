@@ -264,33 +264,20 @@ def execute_remote_upload(attempt_token: str) -> dict[str, Any]:
         clip_id = attempt.clip_id
         generation = attempt.publish_generation
 
-    # 执行远程上传
-    request_may_have_been_sent = False
+    # 执行远程上传 — 使用独立异常分类
     try:
-        from app.publishing.uploader import enqueue_and_upload
+        from app.publishing.uploader import classify_upload_error, enqueue_and_upload
 
         upload_task = enqueue_and_upload(clip_id)
     except Exception as exc:
-        error_msg = str(exc).lower()
-        request_may_have_been_sent = any(
-            kw in error_msg for kw in ("timeout", "timed out", "reset", "broken pipe", "eof", "tls")
-        )
-        if request_may_have_been_sent:
-            return {
-                "attempt_token": attempt_token,
-                "publish_generation": generation,
-                "outcome": "remote_result_unknown",
-                "error_type": "network_error",
-                "error_message": str(exc),
-                "request_may_have_been_sent": True,
-            }
+        classified = classify_upload_error(exc)
         return {
             "attempt_token": attempt_token,
             "publish_generation": generation,
-            "outcome": "failed_permanent" if "permission" in error_msg else "failed_retryable",
-            "error_type": "exception",
-            "error_message": str(exc),
-            "request_may_have_been_sent": False,
+            "outcome": classified.outcome,
+            "error_type": classified.error_type,
+            "error_message": classified.error_message,
+            "request_may_have_been_sent": classified.request_may_have_been_sent,
         }
 
     if upload_task is None:
@@ -376,9 +363,30 @@ def commit_publish_result(
                 upload_task.remote_id = remote_id
                 db.add(upload_task)
 
-            _logger.info(
-                "publish_commit_success: attempt=%s clip=%s remote=%s", attempt_token, attempt.clip_id, remote_id
-            )
+            # 尝试提交; 若 DB 不可用, 写入 Durable Journal
+            try:
+                db.commit()
+                _logger.info(
+                    "publish_commit_success: attempt=%s clip=%s remote=%s",
+                    attempt_token,
+                    attempt.clip_id,
+                    remote_id,
+                )
+            except Exception:
+                _logger.error("publish_db_commit_failed: attempt=%s → journal fallback", attempt_token)
+                db.rollback()
+                from app.publishing.journal import write_remote_success
+
+                write_remote_success(
+                    attempt_token=attempt_token,
+                    publish_generation=gen,
+                    upload_task_id=attempt.upload_task_id,
+                    clip_id=attempt.clip_id,
+                    remote_id=remote_id or "",
+                    remote_url=compute_result.get("remote_url"),
+                )
+                # 不要 re-raise — 结果已持久化到 Journal, 后续由 publish_recovery 回填
+                return
 
         elif outcome == "remote_result_unknown":
             if not _validate_transition(attempt.status, "remote_result_unknown"):
@@ -480,16 +488,14 @@ def run_publish(lease: TaskLease) -> None:
     # prepare
     prepared = prepare_publish_attempt(lease)
     if "error" in prepared:
-        # prepare 失败 — 不走空 token 路径
+        # prepare 失败 — 不走空 token 路径; 直接标记 task failed
         _logger.warning("publish_prepare_failed: %s", prepared["error"])
-        commit_publish_result(
-            "prepare-failed-" + uuid.uuid4().hex[:8],
-            -1,
-            {
-                "outcome": "failed_permanent",
-                "error_message": prepared["error"],
-            },
-        )
+        with get_session() as db:
+            task = db.get(SegmentTask, lease.task_id)
+            if task is not None:
+                mark_failed(task, prepared["error"], permanent=prepared.get("permanent", True))
+                db.add(task)
+                db.commit()
         return
     if prepared.get("already_success"):
         token = prepared.get("attempt_token", "")
