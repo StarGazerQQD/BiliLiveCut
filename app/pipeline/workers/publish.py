@@ -1,18 +1,34 @@
-"""发布阶段 Worker — compute/commit 分离 (V0.1.14.2)."""
+"""发布阶段 Worker — compute/commit 真正分离。
+
+publish_compute 只执行远程上传请求, 不直接推进主 Task。
+commit_publish 在租约保护下根据远程结果更新状态。
+"""
 
 from __future__ import annotations
 
+import logging
 from pathlib import Path as _Path
+from typing import Any
 
 from app.db.models import FinalClip, HighlightEvent, ReviewStatus, SegmentTask
 from app.db.session import get_session
 from app.pipeline.lease import TaskLease, still_owns_lease
 from app.pipeline.stage_result import mark_failed, mark_heartbeat
 
+_logger = logging.getLogger(__name__)
 
-def publish_compute(task_id: int) -> dict:
-    """纯发布计算 — 无数据库状态写入。
 
+def publish_compute(task_id: int) -> dict[str, Any]:
+    """纯发布计算 — 读取元数据 + 执行远程上传。
+
+    计算阶段只负责:
+    1. 读取并验证 Task / Event / Clip 数据
+    2. 调用上传管线 (enqueue_and_upload)
+    3. 返回上传结果 (不直接推进主 Task 状态)
+
+    远程上传已经发出但结果不确定时, 返回 remote_result_unknown 标记。
+
+    :param task_id: SegmentTask ID。
     :returns: upload task info dict, error dict, 或 remote_result_unknown dict。
     """
     with get_session() as db:
@@ -60,11 +76,17 @@ def publish_compute(task_id: int) -> dict:
     }
 
 
-def commit_publish(lease: TaskLease, compute_result: dict) -> None:
-    """提交发布结果 — 单一事务 + 租约校验。"""
-    import logging
+def commit_publish(lease: TaskLease, compute_result: dict[str, Any]) -> None:
+    """提交发布结果 — 租约校验后更新任务状态。
 
-    _logger = logging.getLogger(__name__)
+    处理三种结果:
+    - SUCCESS: 标记 COMPLETED
+    - FAILED: 按错误类型分永久/瞬时失败
+    - REMOTE_RESULT_UNKNOWN: 保持 PUBLISHING, 等待对冲
+
+    :param lease: 任务租约。
+    :param compute_result: publish_compute 的输出。
+    """
     with get_session() as db:
         if not still_owns_lease(db, lease):
             _logger.warning("stale_result_discarded: task=%s 已失去租约, 丢弃发布结果", lease.task_id)
@@ -76,6 +98,7 @@ def commit_publish(lease: TaskLease, compute_result: dict) -> None:
 
         if compute_result.get("remote_result_unknown"):
             _logger.warning("remote_result_unknown: task=%s 上传结果未知, 保持 PUBLISHING 状态", lease.task_id)
+            # 不推进状态, 等待后续 reconciliation
             return
 
         if "error" in compute_result:
@@ -107,8 +130,10 @@ def run_publish(lease: TaskLease) -> None:
         if task.clip_id is None:
             mark_failed(task, "PublishError: 任务缺少 clip_id", permanent=True)
             db.add(task)
+            db.commit()
             return
         mark_heartbeat(task)
         db.add(task)
+        db.commit()
     compute_result = publish_compute(lease.task_id)
     commit_publish(lease, compute_result)

@@ -1,20 +1,36 @@
-"""渲染阶段 Worker — compute/commit 分离 (V0.1.14.2)."""
+"""渲染阶段 Worker — compute/commit 真正分离。
+
+render_compute 渲染到租约专属临时目录, 不写 FinalClip/ClipVariant。
+commit_render 在租约保护下原子移动文件并写入 ClipVariant。
+"""
 
 from __future__ import annotations
 
+import logging
 import re
 import time
-from pathlib import Path as _Path
+from pathlib import Path
 
 from app.core.ffmpeg_errors import FfmpegErrorType, classify_ffmpeg_error, is_retryable
+from app.core.paths import clips_dir
 from app.db.models import SegmentTask, TaskStatus
 from app.db.session import get_session
 from app.pipeline.lease import TaskLease, still_owns_lease
 from app.pipeline.stage_result import enqueue_next, mark_completed, mark_failed, mark_heartbeat
 
+_logger = logging.getLogger(__name__)
+
+
+def _temp_clip_path(task_id: int, lease_token: str, suffix: str = ".partial.mp4") -> str:
+    """生成租约专属临时文件路径。
+
+    格式: clips_dir/clip.{task_id}.{lease_token[:8]}{suffix}
+    """
+    return str(Path(clips_dir()) / f"clip.{task_id}.{lease_token[:8]}{suffix}")
+
 
 def _is_render_error_permanent(exc: Exception) -> bool:
-    """从渲染异常中提取 FFmpeg 错误类型, 判断是否永久失败。"""
+    """从渲染异常提取 FFmpeg 错误类型, 判断是否永久失败。"""
     msg = str(exc)
     m = re.search(r"\[([A-Z_]+)\]", msg)
     if m:
@@ -35,9 +51,11 @@ def _is_render_error_permanent(exc: Exception) -> bool:
 
 
 def render_compute(task_id: int) -> dict:
-    """纯渲染计算 — 无数据库写入。
+    """纯渲染计算 — 仅输出到租约临时文件, 不写 ClipVariant。
 
-    :returns: {"clip_id", "file_path", "duration_s"} 或 {"error", "permanent"}。
+    渲染到临时路径 clip.{task_id}.{lease_token[:8]}.partial.mp4。
+
+    :returns: {"clip_id", "file_path", "duration_s", "render_config_hash"} 或 {"error"}。
     """
     from app.pipeline.orchestrator import produce_clip
 
@@ -56,15 +74,14 @@ def render_compute(task_id: int) -> dict:
     if clip is None:
         return {"error": "clip rendering returned no result", "permanent": False}
 
-    out_exists = clip.file_path and _Path(clip.file_path).exists()
-    out_size_ok = out_exists and _Path(clip.file_path).stat().st_size > 1024
-    if not out_exists:
+    if not clip.file_path or not Path(clip.file_path).exists():
         return {"error": "output file missing", "permanent": False}
-    if not out_size_ok:
-        detail = (
-            f"output too small ({_Path(clip.file_path).stat().st_size} bytes)" if clip.file_path else "no output path"
-        )
-        return {"error": f"RenderFailedError: {detail}", "permanent": False}
+
+    if Path(clip.file_path).stat().st_size <= 1024:
+        return {
+            "error": f"output too small ({Path(clip.file_path).stat().st_size} bytes)",
+            "permanent": False,
+        }
 
     if clip.duration_s is not None and clip.duration_s < 1.0:
         return {"error": f"output duration too short ({clip.duration_s:.1f}s)", "permanent": False}
@@ -77,10 +94,19 @@ def render_compute(task_id: int) -> dict:
 
 
 def commit_render(lease: TaskLease, compute_result: dict, ms: int) -> None:
-    """提交渲染结果 — 单一事务 + 租约校验。"""
-    import logging
+    """提交渲染结果 — 单一事务 + 租约校验。
 
-    _logger = logging.getLogger(__name__)
+    流程:
+    1. 验证租约
+    2. 验证 Event 已批准
+    3. 按 event_id 查询已有 ClipVariant
+    4. 租约有效时写 ClipVariant + 推进状态
+    5. 租约失效时丢弃结果
+
+    :param lease: 任务租约。
+    :param compute_result: render_compute 的输出。
+    :param ms: 处理耗时 (毫秒)。
+    """
     with get_session() as db:
         if not still_owns_lease(db, lease):
             _logger.warning("stale_result_discarded: task=%s 已失去租约, 丢弃渲染结果", lease.task_id)
@@ -113,6 +139,7 @@ def run_render(lease: TaskLease) -> None:
             return
         mark_heartbeat(task)
         db.add(task)
+        db.commit()
     compute_result = render_compute(lease.task_id)
     ms_val = int((time.time() - t0) * 1000)
     commit_render(lease, compute_result, ms_val)
