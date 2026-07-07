@@ -1,4 +1,4 @@
-"""BiliLiveCut 第二轮加速 — 纯 Python 参考实现 (V0.1.10).
+"""BiliLiveCut 第二轮加速 — 纯 Python 参考实现.
 
 当 Cython 扩展不可用时使用本模块。即使纯 Python,也比原始代码快 3-10x:
 - cluster_similarity_matrix: 预提取 bigram/kw,避免 O(N**2) 内部重复构造

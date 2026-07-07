@@ -1,4 +1,4 @@
-"""P2 合集编辑器路由(V0.1.6)。"""
+"""P2 合集编辑器路由。"""
 
 from __future__ import annotations
 

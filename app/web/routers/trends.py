@@ -1,4 +1,4 @@
-"""网感资料库 (V0.1.14.2)."""
+"""网感资料库."""
 
 from __future__ import annotations
 

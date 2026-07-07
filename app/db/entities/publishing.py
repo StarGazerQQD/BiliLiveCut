@@ -1,4 +1,4 @@
-"""数据库实体 — Publishing (V0.1.14.3)."""
+"""数据库实体 — Publishing."""
 
 from __future__ import annotations
 

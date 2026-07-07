@@ -1,4 +1,4 @@
-"""媒体预览 (V0.1.14.2)."""
+"""媒体预览."""
 
 from __future__ import annotations
 

@@ -1,4 +1,4 @@
-"""任务阶段结果操作 (V0.1.14.2)。
+"""任务阶段结果操作。
 
 Worker 和阶段 worker 共享的任务状态变更函数。
 拆分自 task_worker.py, 避免阶段 workers 与 task_worker 循环引用。

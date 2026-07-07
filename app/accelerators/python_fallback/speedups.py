@@ -1,4 +1,4 @@
-"""BiliLiveCut 高性能加速后端 (Python 参考版, V0.1.9).
+"""BiliLiveCut 高性能加速后端 (Python 参考版,.
 
 当 C 扩展不可用时使用本模块作为纯 Python 参考实现。
 接口与 ``_c_speedups`` 保持一致,性能优于原有业务代码。

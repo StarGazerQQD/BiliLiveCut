@@ -1,4 +1,4 @@
-"""P3 运维面板路由(V0.1.7)。"""
+"""P3 运维面板路由。"""
 
 from __future__ import annotations
 

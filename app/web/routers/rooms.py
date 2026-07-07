@@ -1,4 +1,4 @@
-"""直播间管理 (V0.1.14.2)."""
+"""直播间管理."""
 
 from __future__ import annotations
 

@@ -1,4 +1,4 @@
-"""API routers (V0.1.14.2)."""
+"""API routers."""
 
 from app.web.routers.analytics import router as analytics_router  # noqa: F401
 from app.web.routers.auth import router as auth_router  # noqa: F401

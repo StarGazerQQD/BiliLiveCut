@@ -1,4 +1,4 @@
-"""成品剪辑 (V0.1.14.2)."""
+"""成品剪辑."""
 
 from __future__ import annotations
 

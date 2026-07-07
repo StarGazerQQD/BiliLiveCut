@@ -1,4 +1,4 @@
-"""Schedules (V0.1.14.2)."""
+"""Schedules."""
 
 from __future__ import annotations
 

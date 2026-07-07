@@ -1,4 +1,4 @@
-"""进度学习 (V0.1.14.2)."""
+"""进度学习."""
 
 from __future__ import annotations
 

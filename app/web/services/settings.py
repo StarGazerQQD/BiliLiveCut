@@ -1,4 +1,4 @@
-"""Settings (V0.1.14.2)."""
+"""Settings."""
 
 from __future__ import annotations
 

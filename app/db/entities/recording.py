@@ -1,4 +1,4 @@
-"""数据库实体 — Recording (V0.1.14.3)."""
+"""数据库实体 — Recording."""
 
 from __future__ import annotations
 

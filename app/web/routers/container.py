@@ -1,4 +1,4 @@
-"""设置上传 (V0.1.14.2)."""
+"""设置上传."""
 
 from __future__ import annotations
 

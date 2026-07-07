@@ -1,4 +1,4 @@
-"""Publishing (V0.1.14.2)."""
+"""Publishing."""
 
 from __future__ import annotations
 

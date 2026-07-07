@@ -1,4 +1,4 @@
-"""持久化任务队列 Worker (v0.1.14.3 模块拆分)。
+"""持久化任务队列 Worker (v模块拆分)。
 
 核心职责已按模块拆分:
   - claiming.py      — 原子任务领取
@@ -74,7 +74,6 @@ _HEARTBEAT_INTERVAL_S: int = 30
 _STALE_TIMEOUT_S: int = 120
 
 _logger = logger
-
 
 # ═══════════════════════════════════════════════════
 # 任务生命周期 API

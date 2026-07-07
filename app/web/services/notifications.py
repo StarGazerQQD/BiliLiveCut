@@ -1,4 +1,4 @@
-"""n (V0.1.14.2)."""
+"""n."""
 
 from __future__ import annotations
 

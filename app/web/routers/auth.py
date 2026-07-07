@@ -1,4 +1,4 @@
-"""登录管理 (V0.1.14.2)."""
+"""登录管理."""
 
 from __future__ import annotations
 

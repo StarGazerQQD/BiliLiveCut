@@ -1,4 +1,4 @@
-"""统计分析 (V0.1.14.2)."""
+"""统计分析."""
 
 from __future__ import annotations
 

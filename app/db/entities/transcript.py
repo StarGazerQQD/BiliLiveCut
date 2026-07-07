@@ -1,4 +1,4 @@
-"""数据库实体 — Transcript (V0.1.14.3)."""
+"""数据库实体 — Transcript."""
 
 from __future__ import annotations
 

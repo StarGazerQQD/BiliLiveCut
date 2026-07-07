@@ -1,4 +1,4 @@
-"""录制转写 (V0.1.14.2)."""
+"""录制转写."""
 
 from __future__ import annotations
 

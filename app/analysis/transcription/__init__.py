@@ -1,4 +1,4 @@
-"""ASR transcription subsystem (V0.1.14.2)."""
+"""ASR transcription subsystem."""
 
 from app.analysis.transcription.backends import (  # noqa: F401
     FasterWhisperBackend,

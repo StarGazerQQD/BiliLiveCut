@@ -1,4 +1,4 @@
-"""Clipping facade (V0.1.14.2)."""
+"""Clipping facade."""
 
 from app.clipping.core import (  # noqa: F401
     ClipOptions,

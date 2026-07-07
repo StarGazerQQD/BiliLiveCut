@@ -1,4 +1,4 @@
-"""任务队列 (V0.1.14.2)."""
+"""任务队列."""
 
 from __future__ import annotations
 

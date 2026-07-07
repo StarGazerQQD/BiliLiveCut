@@ -1,4 +1,4 @@
-"""Dashboard (V0.1.14.2)."""
+"""Dashboard."""
 
 from __future__ import annotations
 

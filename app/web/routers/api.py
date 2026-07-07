@@ -1,4 +1,4 @@
-"""API route facade (V0.1.14.2)."""
+"""API route facade."""
 
 from __future__ import annotations
 

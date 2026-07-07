@@ -1,4 +1,4 @@
-"""主题管理 (V0.1.14.2)."""
+"""主题管理."""
 
 from __future__ import annotations
 

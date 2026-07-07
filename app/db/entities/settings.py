@@ -1,4 +1,4 @@
-"""数据库实体 — Settings (V0.1.14.3)."""
+"""数据库实体 — Settings."""
 
 from __future__ import annotations
 

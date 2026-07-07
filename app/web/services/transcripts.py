@@ -1,4 +1,4 @@
-"""Transcripts (V0.1.14.2)."""
+"""Transcripts."""
 
 from __future__ import annotations
 

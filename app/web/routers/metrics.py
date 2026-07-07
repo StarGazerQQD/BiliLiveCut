@@ -1,4 +1,4 @@
-"""运行指标 (V0.1.14.2)."""
+"""运行指标."""
 
 from __future__ import annotations
 

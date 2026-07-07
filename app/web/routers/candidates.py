@@ -1,4 +1,4 @@
-"""候选审核 (V0.1.14.2)."""
+"""候选审核."""
 
 from __future__ import annotations
 
