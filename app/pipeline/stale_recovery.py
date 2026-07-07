@@ -11,6 +11,8 @@ from app.db.models import (
     RawSegment,
     SegmentTask,
     TaskStatus,
+    UploadAttempt,
+    UploadStatus,
 )
 from app.db.models import SegmentStatus as OldStatus
 from app.db.session import get_session
@@ -39,11 +41,17 @@ def resume_stage(failed_stage: str | None) -> str:
 
 
 def recover_stale() -> None:
-    """心跳超时的活跃任务回退到排队状态。"""
+    """心跳超时的活跃任务回退到排队状态。
+
+    发布任务特殊处理:
+    - 已有 UploadAttempt 且状态为 in_progress/reconciliation_required → 不重新排队
+    - 仅 PREPARED 或无限 attempt → 允许重新排队
+    """
     import logging
 
     _logger = logging.getLogger(__name__)
     stale_threshold = now_utc() - timedelta(seconds=_STALE_TIMEOUT_S)
+
     with get_session() as db:
         stale = db.exec(
             select(SegmentTask).where(
@@ -59,7 +67,39 @@ def recover_stale() -> None:
                 SegmentTask.heartbeat_at < stale_threshold,
             )
         ).all()
+
+        published_skipped = 0
         for task in stale:
+            # 发布任务特殊处理: 检查 UploadAttempt
+            if task.stage == TaskStatus.PUBLISHING and task.clip_id is not None:
+                last_attempt = db.exec(
+                    select(UploadAttempt)
+                    .where(
+                        UploadAttempt.clip_id == task.clip_id,
+                    )
+                    .order_by(UploadAttempt.id.desc())
+                ).first()
+
+                if last_attempt is not None and last_attempt.status in (
+                    "in_progress",
+                    UploadStatus.RECONCILIATION_REQUIRED,
+                ):
+                    _logger.warning(
+                        "stale_publish_skipped: task=%s clip=%s attempt=%s status=%s",
+                        task.id,
+                        task.clip_id,
+                        last_attempt.attempt_token,
+                        last_attempt.status,
+                    )
+                    # 不重新排队 — 等待人工处理
+                    published_skipped += 1
+                    continue
+
+                # RECONCILIATION_REQUIRED 的 attempt 不重排队
+                if last_attempt is not None and last_attempt.status == UploadStatus.RECONCILIATION_REQUIRED:
+                    published_skipped += 1
+                    continue
+
             res = resume_stage(task.failed_stage or task.stage)
             task.stage = res
             task.claimed_by = None
@@ -68,8 +108,11 @@ def recover_stale() -> None:
             task.lease_token = None
             task.next_retry_at = None
             db.add(task)
+
         if stale:
-            _logger.warning("Stale 恢复: 回退 %d 个心跳超时任务。", len(stale))
+            skipped_msg = f" (跳过 {published_skipped} 个发布任务)" if published_skipped else ""
+            _logger.warning("Stale 恢复: 回退 %d 个心跳超时任务。%s", len(stale) - published_skipped, skipped_msg)
+        db.commit()
 
 
 def recover_orphans() -> None:

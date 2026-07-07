@@ -25,7 +25,7 @@ from app.db.entities.base import (
 )
 from app.db.entities.clip import ClipVariant, FinalClip
 from app.db.entities.highlight import HighlightCandidate, HighlightEvent, HighlightTopic
-from app.db.entities.publishing import UploadTask
+from app.db.entities.publishing import UploadAttempt, UploadTask
 from app.db.entities.recording import Danmaku, RawSegment, RecordingSchedule
 from app.db.entities.room import LiveRoom, RecordingSession
 from app.db.entities.settings import (
@@ -59,6 +59,7 @@ __all__ = [
     "HighlightEvent",
     "HighlightTopic",
     "UploadTask",
+    "UploadAttempt",
     "RawSegment",
     "Danmaku",
     "RecordingSchedule",

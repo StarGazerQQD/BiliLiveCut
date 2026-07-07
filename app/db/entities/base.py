@@ -158,6 +158,7 @@ class UploadStatus:
     FAILED = "failed"
     SKIPPED = "skipped"
     MANUAL_EXPORT_READY = "manual_export_ready"  # V0.1.12.7: 手动上传清单已导出, 尚未发布
+    RECONCILIATION_REQUIRED = "reconciliation_required"  # v0.1.14.3: 远程结果不确定, 需要人工对冲
 
 
 class DanmakuType:
