@@ -72,6 +72,8 @@ class ClipVariant(SQLModel, table=True):
 
     render_status: str = Field(default=RenderStatus.QUEUED, description="渲染状态: queued/rendering/done/failed")
     version_number: int = Field(default=1, description="版本号(同 variant_type 同 event 递增)")
+    generation: int = Field(default=1, description="文件替换代数 (每次重渲染递增, 崩溃恢复用)")
+    backup_path: str | None = Field(default=None, description="替换前的旧正式文件备份路径")
 
     created_at: datetime = Field(default_factory=utcnow)
 
