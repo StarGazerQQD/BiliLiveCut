@@ -1,5 +1,25 @@
 # Changelog
 
+## V0.1.14.4 Alpha (2026-07-07)
+
+### 稳定性收口 — 全链路崩溃安全
+
+本轮为质量迭代，焦点是"远端结果不丢失"和"进程崩溃后状态可恢复"。
+
+**Phase 4：上传崩溃窗口与 reconciliation**
+- 新增 `RemoteUploadResult` 与 `classify_upload_error` — 安全异常分类：无法证明请求未到达平台时标为 `remote_result_unknown`，禁止自动重试
+- 新增持久化日志 `app/publishing/journal.py` — DB 不可用时将远程成功写入 JSONL
+- 新增 `app/pipeline/publish_recovery.py` — 重启后从 Journal 回填远程成功到 DB
+
+**Phase 5：stale recovery 与恢复器**
+- `recover_stale_upload_attempts` — 超时 `IN_PROGRESS` Attempt → `RECONCILIATION_REQUIRED`
+- `sync_segment_task_from_attempt` — Attempt 状态 → `SegmentTask` 同步
+- `full_recovery()` — 全量恢复统一入口
+
+**Phase 7：故障注入与 Golden Path**
+- 14 个单元测试：Journal 写入/回填/损坏恢复、stale attempt 恢复、异常分类 (DNS/拒绝连接/超时/断管/权限/兜底)
+- 全量 pytest 304 通过
+
 ## V0.1.14.3 Alpha (2026-07-07)
 
 ### P0/P1 稳定性修复
