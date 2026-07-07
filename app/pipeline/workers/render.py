@@ -27,7 +27,7 @@ def _is_render_error_permanent(exc: Exception) -> bool:
     if isinstance(exc, RuntimeError):
         stderr_marker = "]: "
         idx = msg.find(stderr_marker)
-        extracted_stderr = msg[idx + len(stderr_marker):] if idx != -1 else msg
+        extracted_stderr = msg[idx + len(stderr_marker) :] if idx != -1 else msg
         error_type = classify_ffmpeg_error(-1, extracted_stderr)
         if error_type != FfmpegErrorType.UNKNOWN:
             return not is_retryable(error_type)
