@@ -1,10 +1,12 @@
 """候选审核 (V0.1.14.1)."""
 from __future__ import annotations
 
-from typing import Any
+from typing import Any, Literal
 
 from fastapi import APIRouter, HTTPException
+from pydantic import BaseModel, field_validator
 
+from app.db.models import CandidateStatus
 from app.web import service
 
 _MAX_QUERY_LIMIT = 500
@@ -12,10 +14,6 @@ _MAX_QUERY_DAYS = 365
 
 def _clamp(v, lo, hi):
     return max(lo, min(v, hi))
-
-from typing import Literal
-
-from pydantic import BaseModel, field_validator
 
 
 class BatchRequest(BaseModel):
@@ -30,8 +28,6 @@ class BatchRequest(BaseModel):
         if len(v) > 200:
             raise ValueError("too many")
         return v
-
-from app.db.models import CandidateStatus
 
 router = APIRouter()
 

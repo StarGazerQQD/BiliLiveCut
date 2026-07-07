@@ -4,6 +4,7 @@ from __future__ import annotations
 from typing import Any
 
 from fastapi import APIRouter, HTTPException
+from pydantic import BaseModel
 
 from app.web import service
 
@@ -12,8 +13,6 @@ _MAX_QUERY_DAYS = 365
 
 def _clamp(v, lo, hi):
     return max(lo, min(v, hi))
-
-from pydantic import BaseModel
 
 
 class SettingsRequest(BaseModel):

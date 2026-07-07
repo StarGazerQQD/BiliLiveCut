@@ -24,6 +24,7 @@ from loguru import logger
 from sqlmodel import select
 
 from app.analysis.speedups import group_srt_blocks
+from app.clipping.models import ClipOptions
 from app.core.config import settings
 from app.core.ffmpeg_errors import classify_ffmpeg_error
 from app.core.paths import clips_dir
@@ -43,9 +44,6 @@ from app.db.session import get_session
 
 # 竖屏目标分辨率(适合手机端短视频)。
 _VERT_W, _VERT_H = 1080, 1920
-
-
-from app.clipping.models import ClipOptions
 
 
 def select_covering_segments(
