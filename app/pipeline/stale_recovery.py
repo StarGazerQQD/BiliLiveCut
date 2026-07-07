@@ -227,3 +227,105 @@ def recover_pending_clips() -> int:
             _logger.info("clip_recovery: 恢复 %d 个 PENDING ClipVariant", recovered)
 
     return recovered
+
+
+_UPLOAD_ATTEMPT_STALE_SECONDS: int = int(os.environ.get("UPLOAD_ATTEMPT_STALE_S", "600"))
+
+
+def recover_stale_upload_attempts() -> int:
+    """恢复超时的 UploadAttempt — IN_PROGRESS → RECONCILIATION_REQUIRED。
+
+    当 Attempt 超过阈值仍处于 IN_PROGRESS, 不得直接重试。
+    必须转为 RECONCILIATION_REQUIRED (不能证明平台未成功)。
+
+    Returns: 恢复的 Attempt 数量。
+    """
+    from datetime import UTC, datetime
+
+    threshold = datetime.now(UTC) - timedelta(seconds=_UPLOAD_ATTEMPT_STALE_SECONDS)
+
+    with get_session() as db:
+        stale_attempts = db.exec(
+            select(UploadAttempt).where(
+                UploadAttempt.status == "in_progress",
+                UploadAttempt.started_at < threshold,
+            )
+        ).all()
+
+        recovered = 0
+        for attempt in stale_attempts:
+            attempt.status = UploadStatus.RECONCILIATION_REQUIRED
+            attempt.finished_at = datetime.now(UTC)
+            attempt.error_type = "stale_timeout"
+            attempt.error_message = f"Attempt stale after {_UPLOAD_ATTEMPT_STALE_SECONDS}s"
+            db.add(attempt)
+            recovered += 1
+            _logger.warning(
+                "upload_attempt_stale_recovery: attempt=%s clip=%s → RECONCILIATION_REQUIRED",
+                attempt.attempt_token,
+                attempt.clip_id,
+            )
+
+        if recovered:
+            db.commit()
+            _logger.info("upload_attempt_recovery: %d stale IN_PROGRESS → RECONCILIATION_REQUIRED", recovered)
+
+    return recovered
+
+
+def sync_segment_task_from_attempt() -> int:
+    """根据 UploadAttempt 状态同步 SegmentTask (非活跃任务的状态推进)。
+
+    SUCCESS → COMPLETED
+    RECONCILIATION_REQUIRED → RECONCILIATION_REQUIRED
+    FAILED_PERMANENT → FAILED
+
+    Returns: 同步的 Task 数量。
+    """
+    synced = 0
+    with get_session() as db:
+        attempts = db.exec(
+            select(UploadAttempt).where(
+                UploadAttempt.status.in_(["success", "reconciliation_required", "failed_permanent"])
+            )
+        ).all()
+
+        for attempt in attempts:
+            task = db.exec(
+                select(SegmentTask).where(
+                    SegmentTask.clip_id == attempt.clip_id,
+                    SegmentTask.stage.in_([TaskStatus.PUBLISHING, TaskStatus.QUEUED_FOR_PUBLISH, TaskStatus.RENDERED]),
+                )
+            ).first()
+            if task is None:
+                continue
+
+            if attempt.status == UploadStatus.SUCCESS:
+                if task.stage != TaskStatus.COMPLETED:
+                    task.stage = TaskStatus.COMPLETED
+                    db.add(task)
+                    synced += 1
+            elif attempt.status == UploadStatus.RECONCILIATION_REQUIRED:
+                # Task 不推进, 等待人工
+                pass
+            elif attempt.status == "failed_permanent":
+                if task.stage not in (TaskStatus.FAILED, TaskStatus.COMPLETED):
+                    task.stage = TaskStatus.FAILED
+                    db.add(task)
+                    synced += 1
+
+        if synced:
+            db.commit()
+            _logger.info("attempt_task_sync: %d tasks synced", synced)
+
+    return synced
+
+
+def full_recovery() -> dict[str, int]:
+    """执行全量恢复: stale task + upload attempt + clip + sync。"""
+    return {
+        "stale_tasks": recover_stale() or 0,
+        "upload_attempts": recover_stale_upload_attempts(),
+        "pending_clips": recover_pending_clips(),
+        "task_sync": sync_segment_task_from_attempt(),
+    }
