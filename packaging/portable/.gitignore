@@ -22,4 +22,4 @@ build_rust.py
 requirements-bundle.txt
 CHANGELOG.md
 README_MAIN.md
-tests/
+!.gitignore

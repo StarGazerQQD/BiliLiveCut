@@ -30,6 +30,10 @@ storage/
 .coverage
 htmlcov/
 .git_msg.txt
+/tests/
+
+# 允许 packaging/portable/tests/
+!packaging/portable/tests/
 
 # Rust 编译产物 (V0.1.14)
 app/accelerators/rust/target/
