@@ -1,5 +1,51 @@
 # Changelog
 
+## V0.1.14 Alpha (2026-07-07)
+
+### 仓库清理、职责分层与可维护性重构
+
+**阶段 A — 零风险仓库清理**
+- 删除临时 CI 日志目录 (`temp_ci_logs/` 等) 和日志压缩包
+- `.gitignore` 使用精确规则，避免误伤正式文件
+- 确认 `.env` 未被 Git 跟踪
+
+**阶段 A5 — CHANGELOG 归档**
+- 主 `CHANGELOG.md` 只保留最近 3 个三级版本系列 (0.1.13/0.1.12/0.1.11)
+- 更早版本归档到 `docs/changelog/CHANGELOG_PRE_0.1.X.md`
+- 创建 `docs/changelog/CHANGELOG_INDEX.md` 导航全部归档
+
+**阶段 D — 测试目录分层**
+- `tests/` 按 `unit/` / `integration/` / `fault_injection/` / `golden/` 分类
+- 测试收集数保持 290 不变
+- `pyproject.toml` ruff 规则更新为 `tests/**/*.py`
+
+**阶段 B — 加速模块归拢**
+- C/Cython/Rust/Python fallback 统一归入 `app/accelerators/`
+- `app.analysis.speedups` 保留为兼容门面
+- 旧导入路径全部保持有效
+- 更新 `setup.py`、`setup_c.py`、`build_rust.py` 的源路径
+- Extension 模块名保持 `app.analysis._c_speedups` 不变
+
+**阶段 C1 — 拆分 task_worker.py (1667行)**
+- 提取 `app/pipeline/stage_result.py` — 状态转换矩阵、幂等键、任务标记
+- 提取 `app/pipeline/workers/` — 各阶段 compute/commit/run 实现
+- `task_worker.py` 保留 Worker 主循环、调度、并发管理
+- 全部兼容重导出 (`_can_transition`, `_ensure_event`, `mark_active` 等)
+
+**阶段 C2-C8 — 子包入口创建**
+- `app/analysis/transcription/` — ASR 子系统模块化入口
+- `app/web/services/` — Web 服务层模块化入口
+- `app/commands/` — CLI 命令模块化入口
+- `app/db/entities/` — 数据库模型模块化入口
+- `app/web/static/js/` — 前端 JS 模块化入口
+
+**版本升级**
+- 版本号 `0.1.13.2-alpha` → `0.1.14-alpha`
+- 全量 290/290 测试通过
+- Ruff 全部通过
+
+---
+
 ## V0.1.13.2 Alpha (2026-07-06)
 
 ### CI 修复 + 代码格式校准
