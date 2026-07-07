@@ -1,8 +1,8 @@
-# BiliLiveCut CI (V0.1.14.2)
+# BiliLiveCut CI (V0.1.14.3)
 # 触发: push/PR 到 main → lint → audit + test → coverage summary
 #
 # Job 结构:
-#   lint       — ruff check + format (~15s, 快速失败)
+#   lint       — ruff check + format + version + JS syntax (~20s, 快速失败)
 #   audit      — pip-audit (~45s, 不阻塞)
 #   test       — matrix 多平台多 Python → pytest + coverage (~3min)
 #   coverage   — 汇总多矩阵覆盖率报告
@@ -60,6 +60,16 @@ jobs:
 
       - name: Ruff format check
         run: ruff format --check app/ tests/
+
+      - name: Check version consistency
+        run: python scripts/check_version_consistency.py
+
+      - name: JavaScript syntax check
+        run: |
+          for file in app/web/static/js/*.js; do
+            node --check "$file"
+          done
+          node --check app/web/static/app.js
 
 # ═══════════════════════════════════════════════════════════════════
 # Job 2: Audit — 仅 PR/schedule 触发, 不阻塞 CI
