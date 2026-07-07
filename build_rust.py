@@ -20,7 +20,7 @@ import sys
 from pathlib import Path
 
 HERE = Path(__file__).resolve().parent
-RUST_SRC = HERE / "app" / "analysis" / "_rust_src"
+RUST_SRC = HERE / "app" / "accelerators" / "rust"
 TARGET_DIR = HERE / "app" / "analysis"
 
 
