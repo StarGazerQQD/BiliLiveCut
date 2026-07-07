@@ -444,6 +444,99 @@ def _group_srt(
     return "\n".join(lines)
 
 
+def render_clip_to_file(
+    candidate_id: int,
+    output_path: str | Path,
+    options: ClipOptions | None = None,
+) -> dict:
+    """纯渲染: 将候选切片生成到指定临时文件, 不写 DB, 不创建 FinalClip。
+
+    此函数供 render_compute 使用, 确保 compute 阶段不产生 DB 写操作。
+
+    :param candidate_id: HighlightCandidate ID。
+    :param output_path: 目标文件路径 (通常是 lease 专属临时路径)。
+    :param options: 切片选项; 默认取自配置。
+    :returns: 文件元数据 dict:
+        {"file_path", "duration_s", "width", "height", "size_bytes", "content_hash"}
+    :raises ValueError: 候选不存在或找不到覆盖片段时。
+    :raises RuntimeError: FFmpeg 执行失败时。
+    """
+    from pathlib import Path as _P
+
+    output_path = _P(output_path)
+    output_path.parent.mkdir(parents=True, exist_ok=True)
+
+    options = options or ClipOptions.from_settings()
+
+    with get_session() as db:
+        cand = db.get(HighlightCandidate, candidate_id)
+        if cand is None:
+            raise ValueError(f"候选不存在: id={candidate_id}")
+        session_id = cand.session_id
+        start_ts = cand.start_ts
+        end_ts = cand.end_ts
+        peak_ts = cand.peak_ts
+
+    segments = select_covering_segments(session_id, start_ts, end_ts)
+    if not segments:
+        raise ValueError(f"候选 {candidate_id} 找不到覆盖的原始片段。")
+
+    base_ts = segments[0].start_ts
+    if base_ts is None:
+        raise ValueError(f"原始片段 {segments[0].id} 缺少 start_ts,无法计算裁剪偏移。")
+    cut_offset = max(0.0, (start_ts - base_ts).total_seconds())
+    raw_duration = (end_ts - start_ts).total_seconds()
+    duration = max(2.0, min(raw_duration, float(options.max_duration_s)))
+    peak_rel = max(0.0, (peak_ts - start_ts).total_seconds())
+
+    with tempfile.TemporaryDirectory(prefix="blc_clip_") as tmp:
+        work_dir = _P(tmp)
+        concat_list = _write_concat_list(segments, work_dir)
+
+        intro_cards = _render_intro_outro_cards(candidate_id, work_dir, options)
+        if intro_cards:
+            card_lines = [f"file '{card.as_posix()}'" for card in intro_cards]
+            existing = concat_list.read_text(encoding="utf-8")
+            new_concat = work_dir / "concat_with_intro.txt"
+            new_concat.write_text("\n".join(card_lines) + "\n" + existing, encoding="utf-8")
+            concat_list = new_concat
+            logger.info("片头卡片已注入 concat,共 {} 段", len(intro_cards))
+
+        srt_path: _P | None = None
+        if options.subtitle:
+            srt_text = _build_srt(segments, cut_offset, duration)
+            if srt_text:
+                srt_path = work_dir / "sub.srt"
+                srt_path.write_text(srt_text, encoding="utf-8")
+
+        _run_ffmpeg_clip(concat_list, output_path, cut_offset, duration, options, srt_path)
+
+    real_duration, width, height = probe_media(str(output_path))
+
+    # 封面 (best-effort)
+    cover_path = output_path.parent / f"{output_path.stem}.jpg"
+    try:
+        _grab_cover(output_path, cover_path, min(peak_rel, max(0.5, real_duration / 2)))
+    except Exception as exc:  # noqa: BLE001
+        logger.warning("封面抽帧异常(不影响切片): {}", exc)
+
+    content_hash = _file_sha1(output_path)
+    size_bytes = output_path.stat().st_size
+
+    return {
+        "file_path": str(output_path),
+        "cover_path": str(cover_path) if cover_path.exists() else None,
+        "duration_s": real_duration,
+        "width": width,
+        "height": height,
+        "size_bytes": size_bytes,
+        "content_hash": content_hash,
+        "peak_rel": peak_rel,
+        "candidate_id": candidate_id,
+        "session_id": session_id,
+    }
+
+
 def produce_clip(candidate_id: int, options: ClipOptions | None = None) -> FinalClip:
     """把一个高光候选生成为成品 MP4 并入库。
 
