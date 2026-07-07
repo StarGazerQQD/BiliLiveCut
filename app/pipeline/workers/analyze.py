@@ -1,7 +1,7 @@
 """分析阶段 Worker — compute/commit 真正分离。
 
-analyze_compute 只做评分计算, 不创建 Candidate/Event。
-commit_highlight 在租约保护下创建 Candidate + Event。
+analyze_compute 只做评分计算, 不创建 Candidate/Event, 不写 DB。
+commit_highlight 在租约保护下创建 Candidate + Event, 并执行所有 DB 写操作。
 """
 
 from __future__ import annotations
@@ -10,7 +10,9 @@ import hashlib
 import json
 import logging
 import time
+from dataclasses import dataclass
 from datetime import timedelta
+from enum import StrEnum
 from typing import Any
 
 from sqlmodel import select
@@ -26,6 +28,7 @@ from app.db.models import (
     RawSegment,
     RecordingSession,
     ReviewStatus,
+    SegmentStatus,
     SegmentTask,
     TaskStatus,
     Transcript,
@@ -37,38 +40,78 @@ from app.pipeline.stage_result import enqueue_next, mark_completed, mark_heartbe
 _logger = logging.getLogger(__name__)
 
 
-def analyze_compute(task_id: int) -> dict[str, Any]:
-    """仅执行分析计算, 不创建 Candidate/Event, 不写 SegmentTask。
+class HighlightDecision(StrEnum):
+    """分析结果决策类型。"""
 
-    调用 score_segment_draft 获取评分草稿。
+    CANDIDATE = "candidate"
+    BELOW_THRESHOLD = "below_threshold"
+    DUPLICATE = "duplicate"
+    SKIPPED = "skipped"
+
+
+@dataclass(frozen=True)
+class HighlightDraft:
+    """纯计算产物 — 不包含任何 ORM 对象, 不可变。"""
+
+    segment_id: int
+    session_id: int
+    decision: HighlightDecision
+    score: float | None
+    rule_score: float
+    llm_score: float
+    highlight_score: float
+    start_ts: str | None
+    end_ts: str | None
+    peak_ts: str | None
+    reason: str | None
+    dedup_hash: str | None
+    features_json: str
+    initial_status: str
+    config_hash: str
+
+
+def analyze_compute(task_id: int) -> dict[str, Any]:
+    """仅执行分析计算, 不写 DB, 不创建 Candidate/Event。
+
+    返回结构化决策: HighlightDecision + 必要上下文数据。
 
     :param task_id: SegmentTask ID。
-    :returns: 纯计算产物 dict, 包含 "draft_ready" 或 "below_threshold"/"error" 标记。
+    :returns: 纯计算产物 dict, decision 字段明确表示决策类型。
     """
     with get_session() as db:
         task = db.get(SegmentTask, task_id)
         if task is None:
-            return {"error": "task not found"}
+            return {"error": "task not found", "decision": HighlightDecision.SKIPPED}
         segment_id = task.segment_id
 
     try:
         draft = _score_segment_draft(segment_id)
     except ValueError as exc:
-        return {"error": str(exc)}
+        return {"error": str(exc), "decision": HighlightDecision.SKIPPED, "segment_id": segment_id}
 
     if draft is None:
-        return {"below_threshold": True, "segment_id": segment_id}
+        return {"decision": HighlightDecision.BELOW_THRESHOLD, "segment_id": segment_id}
 
-    return {"draft_ready": True, "segment_id": segment_id, **draft}
+    # draft 包含 decision 字段 (CANDIDATE / DUPLICATE)
+    return draft
 
 
 def commit_highlight(lease: TaskLease, compute_result: dict[str, Any], ms: int) -> None:
-    """单事务提交分析结果: 先校验租约, 再创建 Candidate + Event (幂等)。
+    """单事务提交分析结果: 先校验租约, 按决策类型执行 DB 写操作。
+
+    决策分支:
+    - BELOW_THRESHOLD: _mark_scored + 推进 Task 到 COMPLETED
+    - DUPLICATE: _mark_scored + 推进 Task 到 COMPLETED
+    - CANDIDATE: 幂等创建 Candidate + Event + 推进 Task
+    - SKIPPED: 推进 Task 到 COMPLETED (记录原因)
 
     :param lease: 任务租约。
     :param compute_result: analyze_compute 的输出。
     :param ms: 处理耗时 (毫秒)。
     """
+    segment_id = compute_result.get("segment_id", 0)
+    decision = compute_result.get("decision", HighlightDecision.SKIPPED)
+
     try:
         with get_session() as db:
             if not still_owns_lease(db, lease):
@@ -78,24 +121,46 @@ def commit_highlight(lease: TaskLease, compute_result: dict[str, Any], ms: int) 
             if task is None:
                 return
 
-            segment_id = compute_result.get("segment_id", -1)
-            below_threshold = compute_result.get("below_threshold", False)
-            draft_ready = compute_result.get("draft_ready", False)
-
-            if below_threshold or not draft_ready:
-                if "error" in compute_result:
-                    _logger.info("analyze_no_candidate: segment=%s reason=%s", segment_id, compute_result["error"])
-                else:
-                    _logger.info("analyze_below_threshold: segment=%s", segment_id)
+            # ── BELOW_THRESHOLD ──────────────────────────
+            if decision == HighlightDecision.BELOW_THRESHOLD:
+                _logger.info("analyze_below_threshold: segment=%s", segment_id)
+                _mark_scored_in_db(db, segment_id)
                 mark_completed(task, ms)
                 enqueue_next(task, TaskStatus.COMPLETED)
                 db.add(task)
                 db.commit()
                 return
 
-            # 从 draft 数据创建 Candidate
-            dedup_hash = hashlib.sha1(
-                f"{compute_result['session_id']}:{round(compute_result['start_ts'])}:{round(compute_result['end_ts'])}".encode()
+            # ── DUPLICATE ────────────────────────────────
+            if decision == HighlightDecision.DUPLICATE:
+                _logger.info(
+                    "analyze_duplicate: segment=%s dedup_hash=%s",
+                    segment_id,
+                    compute_result.get("dedup_hash"),
+                )
+                _mark_scored_in_db(db, segment_id)
+                mark_completed(task, ms)
+                enqueue_next(task, TaskStatus.COMPLETED)
+                db.add(task)
+                db.commit()
+                return
+
+            # ── SKIPPED ──────────────────────────────────
+            if decision == HighlightDecision.SKIPPED:
+                reason = compute_result.get("error", compute_result.get("reason", "skipped"))
+                _logger.info("analyze_skipped: segment=%s reason=%s", segment_id, reason)
+                _mark_scored_in_db(db, segment_id)
+                mark_completed(task, ms)
+                enqueue_next(task, TaskStatus.COMPLETED)
+                db.add(task)
+                db.commit()
+                return
+
+            # ── CANDIDATE: 从 draft 数据创建 Candidate ───
+            dedup_hash = compute_result.get("dedup_hash") or hashlib.sha1(
+                f"{compute_result.get('session_id', '')}:"
+                f"{round(compute_result.get('start_ts', ''))}:"
+                f"{round(compute_result.get('end_ts', ''))}".encode()
             ).hexdigest()
 
             candidate = HighlightCandidate(
@@ -157,6 +222,18 @@ def commit_highlight(lease: TaskLease, compute_result: dict[str, Any], ms: int) 
         _logger.warning("stale_result_discarded: highlight task=%s 已失去租约", lease.task_id)
 
 
+def _mark_scored_in_db(db, segment_id: int) -> None:
+    """在已有 DB session 中标记片段为已评分 (仅 commit 阶段使用)。
+
+    :param db: SQLModel session。
+    :param segment_id: RawSegment ID。
+    """
+    seg = db.get(RawSegment, segment_id)
+    if seg is not None and seg.status != SegmentStatus.SCORED:
+        seg.status = SegmentStatus.SCORED
+        db.add(seg)
+
+
 def run_analyze(lease: TaskLease) -> None:
     """执行分析阶段: 计算与提交分离。
 
@@ -181,22 +258,21 @@ def run_analyze(lease: TaskLease) -> None:
 
 
 def _score_segment_draft(segment_id: int) -> dict[str, Any] | None:
-    """纯评分计算, 不创建 Candidate, 不写 DB。
+    """纯评分计算, 不写 DB, 不创建 Candidate。
 
-    返回 HighlightDraft 字典或 None (低于阈值/重复)。
+    返回 dict 包含 decision 字段:
+    - CANDIDATE: 通过评分, 应创建候选
+    - DUPLICATE: 去重命中
+    返回 None: 初筛未过或终分不足 (由调用方转为 BELOW_THRESHOLD)
 
-    HighlightDraft 至少包含:
-    - session_id, peak_ts, start_ts, end_ts
-    - rule_score, llm_score, highlight_score
-    - features_json, reason
-    - initial_status (APPROVED/PENDING/REJECTED)
+    :param segment_id: RawSegment ID。
+    :returns: draft dict 含 decision 字段, 或 None (分数不足)。
     """
     from app.analysis import llm as llm_mod
     from app.analysis.highlight import (  # noqa: PLC0415
         _audio_events_score,
         _audio_meta,
         _is_duplicate,
-        _mark_scored,
         _trend_score,
         danmaku_score_explain,
         danmaku_sentiment_score,
@@ -273,9 +349,8 @@ def _score_segment_draft(segment_id: int) -> dict[str, Any] | None:
         trend_hits,
     )
 
-    # 2) 初筛
+    # 2) 初筛 — 不写 DB, 直接返回 None
     if rule_score < settings.highlight_init_threshold:
-        _mark_scored(segment_id)
         return None
 
     # 3) LLM 复核
@@ -284,8 +359,8 @@ def _score_segment_draft(segment_id: int) -> dict[str, Any] | None:
     reason = judgement.reason if judgement else "规则命中(未启用/未触发 LLM)"
     highlight_score = fuse_scores(rule_score, llm_score, cfg.alpha, cfg.beta)
 
+    # 终分不足 — 不写 DB, 直接返回 None
     if highlight_score < threshold:
-        _mark_scored(segment_id)
         return None
 
     # 4) 边界吸附
@@ -306,10 +381,28 @@ def _score_segment_draft(segment_id: int) -> dict[str, Any] | None:
     start_ts = seg_start_ts + timedelta(seconds=start_off)
     end_ts = seg_start_ts + timedelta(seconds=end_off)
 
-    # 5) 去重
+    # 5) 去重 — 不写 DB, 返回 DUPLICATE 决策
     if _is_duplicate(session_id, (start_ts.timestamp(), end_ts.timestamp()), cfg.iou_threshold):
-        _mark_scored(segment_id)
-        return None
+        dedup_hash_val = hashlib.sha1(
+            f"{session_id}:{start_ts.timestamp():.1f}:{end_ts.timestamp():.1f}".encode()
+        ).hexdigest()
+        return {
+            "decision": HighlightDecision.DUPLICATE,
+            "segment_id": segment_id,
+            "session_id": session_id,
+            "dedup_hash": dedup_hash_val,
+            "score": highlight_score,
+            "rule_score": rule_score,
+            "llm_score": llm_score or 0.0,
+            "highlight_score": highlight_score,
+            "start_ts": start_ts.isoformat(),
+            "end_ts": end_ts.isoformat(),
+            "peak_ts": peak_ts.isoformat(),
+            "reason": "去重: IoU over threshold",
+            "features_json": "{}",
+            "initial_status": CandidateStatus.REJECTED,
+            "config_hash": cfg.model_dump_json() if hasattr(cfg, "model_dump_json") else "",
+        }
 
     # 6) 审核状态
     if room_auto_approve and highlight_score >= room_auto_approve_threshold:
@@ -331,7 +424,13 @@ def _score_segment_draft(segment_id: int) -> dict[str, Any] | None:
         ensure_ascii=False,
     )
 
+    dedup_hash_val = hashlib.sha1(
+        f"{session_id}:{start_ts.timestamp():.1f}:{end_ts.timestamp():.1f}".encode()
+    ).hexdigest()
+
     return {
+        "decision": HighlightDecision.CANDIDATE,
+        "segment_id": segment_id,
         "session_id": session_id,
         "peak_ts": peak_ts,
         "start_ts": start_ts,
@@ -342,6 +441,9 @@ def _score_segment_draft(segment_id: int) -> dict[str, Any] | None:
         "features_json": features_json,
         "reason": reason,
         "initial_status": initial_status,
+        "dedup_hash": dedup_hash_val,
+        "score": highlight_score,
+        "config_hash": cfg.model_dump_json() if hasattr(cfg, "model_dump_json") else "",
     }
 
 
