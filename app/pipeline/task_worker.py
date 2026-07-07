@@ -36,9 +36,7 @@ from app.pipeline.lifecycle import (
     _WORKER_ID,
     cleanup_subprocesses,
     now_utc,
-)
-from app.pipeline.lifecycle import (
-    _shutting_down as _shutting_down,
+    shutdown_event,
 )
 from app.pipeline.scheduler import (
     advance_approved,
@@ -240,8 +238,7 @@ class TaskWorker:
         """启动 Worker 主循环。"""
         if self._running:
             return
-        global _shutting_down
-        _shutting_down = False
+        shutdown_event.clear()
         self._running = True
         recover_orphans()
         self._main_task = asyncio.create_task(self._loop())
@@ -249,8 +246,7 @@ class TaskWorker:
 
     async def stop(self) -> None:
         """优雅关闭 — 停止领取新任务, 等待当前任务完成或取消。"""
-        global _shutting_down
-        _shutting_down = True
+        shutdown_event.set()
         self._running = False
 
         if self._main_task is not None:
@@ -285,7 +281,7 @@ class TaskWorker:
 
     async def _loop(self) -> None:
         """主调度循环 — 每个 tick 执行阶段推进、stale 恢复、任务分发。"""
-        while self._running and not _shutting_down:
+        while self._running and not shutdown_event.is_set():
             try:
                 retry_expired()
                 recover_stale()
@@ -329,7 +325,7 @@ class TaskWorker:
             TaskStatus.QUEUED_FOR_PUBLISH: "publish",
         }
         resource_key = _STAGE_TO_RESOURCE.get(queued_stage)
-        while self._running and not _shutting_down and len(running) < max_concurrent:
+        while self._running and not shutdown_event.is_set() and len(running) < max_concurrent:
             if resource_key:
                 from app.core.resource_budget import acquire_resources, get_task_cost
 

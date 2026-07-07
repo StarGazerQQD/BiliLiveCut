@@ -8,7 +8,7 @@ from sqlalchemy import text as sa_text
 
 from app.db.models import SegmentTask
 from app.db.session import get_session
-from app.pipeline.lifecycle import _WORKER_ID, _shutting_down, now_utc
+from app.pipeline.lifecycle import _WORKER_ID, now_utc, shutdown_event
 from app.pipeline.stage_result import mark_heartbeat
 
 _HEARTBEAT_POLL_S: int = 5
@@ -35,7 +35,7 @@ def start_heartbeat_thread(
     stop = threading.Event()
 
     def _beat() -> None:
-        while not stop.is_set() and not _shutting_down:
+        while not stop.is_set() and not shutdown_event.is_set():
             try:
                 with get_session() as db:
                     if lease_token and expected_stage:
