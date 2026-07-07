@@ -2,7 +2,7 @@
 
 [![CI](https://github.com/StarGazerQQD/BiliLiveCut/actions/workflows/ci.yml/badge.svg)](https://github.com/StarGazerQQD/BiliLiveCut/actions/workflows/ci.yml)
 
-**当前版本：V0.1.14.2 Alpha** (`0.1.14.2-alpha`)
+**当前版本：V0.1.14.3 Alpha** (`0.1.14.3-alpha`)
 
 针对 Bilibili 直播的全自动工作流：实时录制 → 转写 → 识别高光 → 生成切片 → 生成文案 → (可选)上传。
 阶段 1–5 全链路已可用；即插即用分发包见 [`Publish-PnP/`](Publish-PnP/README.md)。

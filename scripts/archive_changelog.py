@@ -106,7 +106,7 @@ def main() -> None:
 
         with open(filepath, "w", encoding="utf-8") as f:
             f.write(f"# CHANGELOG — 0.1.{series_num} 系列\n\n")
-            f.write(f"> 此文件已从主 CHANGELOG.md 归档。原始版本详见 Git 历史。\n\n")
+            f.write("> 此文件已从主 CHANGELOG.md 归档。原始版本详见 Git 历史。\n\n")
             f.write(content_trimmed)
 
         file_versions = []
@@ -153,7 +153,7 @@ def main() -> None:
         f.write(index_content)
 
     print(f"\n  更新: CHANGELOG.md (保留 {len(keep_series)} 个系列)")
-    print(f"  创建: CHANGELOG_INDEX.md")
+    print("  创建: CHANGELOG_INDEX.md")
     print("  完成!")
 
 

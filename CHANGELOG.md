@@ -1,5 +1,17 @@
 # Changelog
 
+## V0.1.14.3 Alpha (2026-07-07)
+
+### P0/P1 稳定性修复
+
+- Phase 1: 删除 api.js placeholder, 审计 review.js
+- Phase 2: 分析 compute 成为纯计算, _mark_scored 移至 commit
+- Phase 3: 渲染 compute 使用 lease 专属临时文件
+- Phase 4: 发布持久化 UploadAttempt, REMOTE_RESULT_UNKNOWN → RECONCILIATION_REQUIRED
+- Phase 5: Transcript 错误处理 + 幂等路径修复, 删除冗余 heartbeat
+- Phase 6: shutdown_event 替代跨模块 bool, 锁立即初始化
+- Phase 7: 统一版本真源
+
 ## V0.1.14.2 Alpha (2026-07-07)
 
 ### CI 修复 + 全量代码规范审计
