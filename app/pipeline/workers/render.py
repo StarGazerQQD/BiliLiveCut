@@ -192,9 +192,7 @@ def commit_render(lease: TaskLease, compute_result: dict, ms: int) -> None:
             # 幂等创建 FinalClip (按 candidate_id 去重)
             from sqlmodel import select
 
-            existing_clip = db.exec(
-                select(FinalClip).where(FinalClip.candidate_id == candidate_id)
-            ).first()
+            existing_clip = db.exec(select(FinalClip).where(FinalClip.candidate_id == candidate_id)).first()
 
             if existing_clip is not None:
                 # 复用已有 FinalClip, 更新 file_path/元数据

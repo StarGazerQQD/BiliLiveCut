@@ -118,9 +118,7 @@ def prepare_publish_attempt(lease: TaskLease) -> dict[str, Any]:
             }
 
         # 确保 UploadTask 存在
-        upload_task = db.exec(
-            select(UploadTask).where(UploadTask.clip_id == clip_id)
-        ).first()
+        upload_task = db.exec(select(UploadTask).where(UploadTask.clip_id == clip_id)).first()
         if upload_task is None:
             upload_task = UploadTask(
                 clip_id=clip_id,
@@ -177,9 +175,7 @@ def execute_remote_upload(attempt_token: str) -> dict[str, Any]:
     with get_session() as db:
         from sqlmodel import select
 
-        attempt = db.exec(
-            select(UploadAttempt).where(UploadAttempt.attempt_token == attempt_token)
-        ).first()
+        attempt = db.exec(select(UploadAttempt).where(UploadAttempt.attempt_token == attempt_token)).first()
         if attempt is None:
             return {"error": "attempt not found", "permanent": True}
 
@@ -246,8 +242,10 @@ def execute_remote_upload(attempt_token: str) -> dict[str, Any]:
         "attempt_token": attempt_token,
         "upload_task_id": upload_task.id or 0,
         "outcome": (
-            "success" if ustatus == UploadStatus.SUCCESS
-            else "failed_retryable" if ustatus in (UploadStatus.QUEUED, UploadStatus.UPLOADING, UploadStatus.FAILED)
+            "success"
+            if ustatus == UploadStatus.SUCCESS
+            else "failed_retryable"
+            if ustatus in (UploadStatus.QUEUED, UploadStatus.UPLOADING, UploadStatus.FAILED)
             else "failed_permanent"
         ),
         "upload_status": ustatus,
@@ -272,9 +270,7 @@ def commit_publish_result(lease: TaskLease, attempt_token: str, compute_result: 
 
         from sqlmodel import select
 
-        attempt = db.exec(
-            select(UploadAttempt).where(UploadAttempt.attempt_token == attempt_token)
-        ).first()
+        attempt = db.exec(select(UploadAttempt).where(UploadAttempt.attempt_token == attempt_token)).first()
         if attempt is None:
             _logger.error("commit_publish: attempt not found token=%s", attempt_token)
             return

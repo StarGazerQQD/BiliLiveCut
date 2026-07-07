@@ -175,6 +175,7 @@ def commit_transcript(lease: TaskLease, compute_result: dict[str, Any], ms: int)
             if "error" in compute_result:
                 _logger.error("commit_transcript_error: task=%s error=%s", lease.task_id, compute_result["error"])
                 from app.pipeline.stage_result import mark_failed
+
                 mark_failed(
                     task,
                     compute_result["error"],
@@ -188,6 +189,7 @@ def commit_transcript(lease: TaskLease, compute_result: dict[str, Any], ms: int)
             if segment_id is None or segment_id < 0:
                 _logger.error("commit_transcript: invalid segment_id=%s", segment_id)
                 from app.pipeline.stage_result import mark_failed
+
                 mark_failed(task, "invalid segment_id in compute result", permanent=True)
                 db.add(task)
                 db.commit()

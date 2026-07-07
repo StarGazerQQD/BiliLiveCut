@@ -157,11 +157,14 @@ def commit_highlight(lease: TaskLease, compute_result: dict[str, Any], ms: int) 
                 return
 
             # ── CANDIDATE: 从 draft 数据创建 Candidate ───
-            dedup_hash = compute_result.get("dedup_hash") or hashlib.sha1(
-                f"{compute_result.get('session_id', '')}:"
-                f"{round(compute_result.get('start_ts', ''))}:"
-                f"{round(compute_result.get('end_ts', ''))}".encode()
-            ).hexdigest()
+            dedup_hash = (
+                compute_result.get("dedup_hash")
+                or hashlib.sha1(
+                    f"{compute_result.get('session_id', '')}:"
+                    f"{round(compute_result.get('start_ts', ''))}:"
+                    f"{round(compute_result.get('end_ts', ''))}".encode()
+                ).hexdigest()
+            )
 
             candidate = HighlightCandidate(
                 session_id=compute_result["session_id"],
