@@ -133,8 +133,9 @@ jobs:
         if: runner.os == 'macOS'
         run: brew install ffmpeg
 
-      # pip 镜像: 国内加速 (仅 Ubuntu/Windows; macOS 走 PyPI 直连)
-      - name: Install Python dev deps
+      # Ubuntu / Windows — 国内镜像加速安装
+      - name: Install Python dev deps (Linux/Windows)
+        if: runner.os == 'Linux' || runner.os == 'Windows'
         shell: bash
         run: |
           python -m pip install --upgrade pip
@@ -143,6 +144,16 @@ jobs:
             --extra-index-url https://pypi.tuna.tsinghua.edu.cn/simple \
             --trusted-host mirrors.aliyun.com \
             --trusted-host pypi.tuna.tsinghua.edu.cn
+
+      # macOS — PyPI 直连, 跳过 C 扩展编译 (跨平台兼容)
+      - name: Install Python dev deps (macOS)
+        if: runner.os == 'macOS'
+        shell: bash
+        env:
+          BLC_SKIP_C_EXTENSIONS: "1"
+        run: |
+          python -m pip install --upgrade pip
+          pip install -e ".[dev,web]"
 
       - name: Install test extras
         shell: bash

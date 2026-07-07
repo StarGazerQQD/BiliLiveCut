@@ -9,6 +9,11 @@
 - **修复** 2 个 ruff check 警告 (D210 docstring 首尾空格, B008 File() 默认参数)
 - **改进** audit job 移除 `if: PR/schedule` 约束, push 时也执行 pip-audit
 - **改进** coverage-summary job 处理空 artifact 目录 (不再报 exit code 2)
+- **修复** macOS CI 构建失败: C 扩展 MSVC 编译 flag 泄漏到 clang
+  - `setup.py` / `setup_c.py`: 平台检测改为 `sys.platform == "win32"` 精确匹配
+  - 新增 `BLC_SKIP_C_EXTENSIONS` 环境变量, macOS CI 跳过 C 扩展编译
+  - 移除非 Windows 平台的 `-march=native` (macOS Apple Silicon 兼容)
+  - CI workflow: macOS job 改用 PyPI 直连 (不再反射国内镜像), 独立 `Install dev deps` step
 - **杂项** README 测试数从 178 更新为 290; CI badge 已添加
 
 ### 审计通过
