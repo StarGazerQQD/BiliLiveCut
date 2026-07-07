@@ -1,0 +1,127 @@
+"""Stale 任务恢复 — 心跳超时回退 + 孤立片段发现。"""
+
+from __future__ import annotations
+
+import os
+from datetime import timedelta
+
+from sqlmodel import select
+
+from app.db.models import (
+    RawSegment,
+    SegmentTask,
+    TaskStatus,
+)
+from app.db.models import SegmentStatus as OldStatus
+from app.db.session import get_session
+from app.pipeline.lifecycle import now_utc
+
+_STALE_TIMEOUT_S: int = int(os.environ.get("STALE_TIMEOUT_S", "120"))
+
+
+def resume_stage(failed_stage: str | None) -> str:
+    """根据失败阶段返回应回退到的排队阶段。
+
+    :param failed_stage: 失败时的活跃阶段。
+    :returns: 正确的排队阶段。
+    """
+    if failed_stage is None:
+        return TaskStatus.QUEUED_FOR_TRANS
+    mapping = {
+        TaskStatus.TRANSCRIBING: TaskStatus.QUEUED_FOR_TRANS,
+        TaskStatus.ANALYZING: TaskStatus.QUEUED_FOR_ANALYSIS,
+        TaskStatus.RENDERING: TaskStatus.QUEUED_FOR_RENDER,
+        TaskStatus.PUBLISHING: TaskStatus.QUEUED_FOR_PUBLISH,
+        TaskStatus.TRANSCRIBED: TaskStatus.QUEUED_FOR_ANALYSIS,
+        TaskStatus.CANDIDATE_CREATED: TaskStatus.QUEUED_FOR_RENDER,
+    }
+    return mapping.get(failed_stage, TaskStatus.QUEUED_FOR_TRANS)
+
+
+def recover_stale() -> None:
+    """心跳超时的活跃任务回退到排队状态。"""
+    import logging
+
+    _logger = logging.getLogger(__name__)
+    stale_threshold = now_utc() - timedelta(seconds=_STALE_TIMEOUT_S)
+    with get_session() as db:
+        stale = db.exec(
+            select(SegmentTask).where(
+                SegmentTask.stage.in_(
+                    [
+                        TaskStatus.TRANSCRIBING,
+                        TaskStatus.ANALYZING,
+                        TaskStatus.RENDERING,
+                        TaskStatus.PUBLISHING,
+                    ]
+                ),
+                SegmentTask.heartbeat_at.is_not(None),
+                SegmentTask.heartbeat_at < stale_threshold,
+            )
+        ).all()
+        for task in stale:
+            res = resume_stage(task.failed_stage or task.stage)
+            task.stage = res
+            task.claimed_by = None
+            task.claimed_at = None
+            task.heartbeat_at = None
+            task.lease_token = None
+            task.next_retry_at = None
+            db.add(task)
+        if stale:
+            _logger.warning("Stale 恢复: 回退 %d 个心跳超时任务。", len(stale))
+
+
+def recover_orphans() -> None:
+    """恢复孤立任务: stale 恢复 + 无心跳中间状态回退 + 孤立片段任务创建。"""
+    import logging
+
+    _logger = logging.getLogger(__name__)
+    from app.pipeline.stage_result import make_idempotency_key, make_pipeline_key, make_stage_key
+
+    recover_stale()
+    with get_session() as db:
+        stuck = db.exec(
+            select(SegmentTask).where(
+                SegmentTask.stage.in_(
+                    [
+                        TaskStatus.TRANSCRIBING,
+                        TaskStatus.ANALYZING,
+                        TaskStatus.RENDERING,
+                        TaskStatus.PUBLISHING,
+                    ]
+                ),
+                SegmentTask.heartbeat_at.is_(None),
+            )
+        ).all()
+        for task in stuck:
+            res = resume_stage(task.stage)
+            task.stage = res
+            task.started_at = None
+            task.next_retry_at = None
+            task.claimed_by = None
+            db.add(task)
+        if stuck:
+            _logger.info("恢复: 回退 %d 个旧格式中间状态任务。", len(stuck))
+
+        existing_ids = {t.segment_id for t in db.exec(select(SegmentTask.segment_id)).all()}
+        orphan_segs = db.exec(
+            select(RawSegment).where(
+                RawSegment.status == OldStatus.RECORDED,
+                ~RawSegment.id.in_(existing_ids) if existing_ids else True,
+            )
+        ).all()
+        for seg in orphan_segs:
+            pipeline_key = make_pipeline_key(seg.id)
+            stage_key = make_stage_key(seg.id, "recorded")
+            t = SegmentTask(
+                segment_id=seg.id,
+                session_id=seg.session_id,
+                stage=TaskStatus.RECORDED,
+                pipeline_key=pipeline_key,
+                stage_key=stage_key,
+                idempotency_key=make_idempotency_key(seg.id, "recorded"),
+            )
+            db.add(t)
+        if orphan_segs:
+            _logger.info("恢复: 为 %d 个孤立片段创建任务。", len(orphan_segs))

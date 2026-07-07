@@ -1,167 +1,93 @@
-"""持久化任务队列 Worker (V0.1.14-alpha 模块拆分)。
+"""持久化任务队列 Worker (v0.1.14.3 模块拆分)。
 
-V0.1.14: 核心逻辑已按职责拆分到 app.pipeline.* 子模块:
-  - stage_result.py  — 状态转换、幂等键、任务标记函数
+核心职责已按模块拆分:
+  - claiming.py      — 原子任务领取
+  - heartbeat.py     — 心跳线程管理
+  - stale_recovery.py — Stale 任务恢复
+  - lifecycle.py     — 全局状态、子进程/资源跟踪
+  - scheduler.py     — 阶段推进、重试、任务执行
+  - stage_result.py  — 状态转换、幂等键、任务标记
   - lease.py         — TaskLease / LeaseLostError / still_owns_lease
   - workers/         — 各阶段 compute / commit / run 实现
 
-Worker 主循环、调度、并发槽管理、ResourceBudget 接入保持在本文件。
+本文件保留: TaskWorker 主类、调度循环、任务生命周期入口、兼容门面。
 """
 
 from __future__ import annotations
 
 import asyncio
 import os
-import random
 import threading
-import time
-import uuid
-from datetime import UTC, datetime, timedelta
+from typing import Any
 
 from loguru import logger
-from sqlalchemy import text as sa_text
 from sqlmodel import select
 
 from app.db.models import (
-    RawSegment,
     SegmentTask,
     TaskStatus,
 )
-from app.db.models import (
-    SegmentStatus as OldStatus,
-)
 from app.db.session import get_session
-from app.pipeline.lease import LeaseLostError, TaskLease, still_owns_lease
+
+# ── 从子模块导入 ────────────────────────────────────────────────
+from app.pipeline.claiming import pop_and_claim
+from app.pipeline.heartbeat import clear_heartbeat_if_own, start_heartbeat_thread
+from app.pipeline.lifecycle import (
+    _WORKER_ID,
+    cleanup_subprocesses,
+    now_utc,
+)
+from app.pipeline.lifecycle import (
+    _shutting_down as _shutting_down,
+)
+from app.pipeline.scheduler import (
+    advance_approved,
+    advance_awaiting_review,
+    advance_candidate,
+    advance_recorded,
+    advance_rendered,
+    advance_transcribed,
+    execute_task,
+    retry_expired,
+    room_cfg_from_task,
+)
 from app.pipeline.stage_result import (
     active_stage,
     enqueue_next,
     mark_failed,
-    mark_heartbeat,
 )
-from app.pipeline.workers import (
-    run_analyze,
-    run_publish,
-    run_render,
-    run_transcribe,
+from app.pipeline.stale_recovery import (
+    recover_orphans,
+    recover_stale,
+    resume_stage,
 )
 
 # ── 并发配置 ──────────────────────────────────────────────────────
-MAX_TRANSCRIBING = int(os.environ.get("MAX_TRANSCRIBING", "1"))
-MAX_ANALYZING = int(os.environ.get("MAX_ANALYZING", "2"))
-MAX_RENDERING = int(os.environ.get("MAX_RENDERING", "2"))
-MAX_PUBLISHING = int(os.environ.get("MAX_PUBLISHING", "1"))
+MAX_TRANSCRIBING: int = int(os.environ.get("MAX_TRANSCRIBING", "1"))
+MAX_ANALYZING: int = int(os.environ.get("MAX_ANALYZING", "2"))
+MAX_RENDERING: int = int(os.environ.get("MAX_RENDERING", "2"))
+MAX_PUBLISHING: int = int(os.environ.get("MAX_PUBLISHING", "1"))
 
-_WORKER_SHUTDOWN_TIMEOUT_S = int(os.environ.get("WORKER_SHUTDOWN_TIMEOUT_SECONDS", "30"))
+_WORKER_SHUTDOWN_TIMEOUT_S: int = int(os.environ.get("WORKER_SHUTDOWN_TIMEOUT_SECONDS", "30"))
 
-_RETRY_BASE_S = 10
-_RETRY_MAX_S = 600
-_RETRY_JITTER_S = 5
+_HEARTBEAT_INTERVAL_S: int = 30
+_STALE_TIMEOUT_S: int = 120
 
-_HEARTBEAT_INTERVAL_S = 30
-_STALE_TIMEOUT_S = 120
-_HEARTBEAT_POLL_S = 5
-
-_WORKER_ID = f"worker-{uuid.uuid4().hex[:8]}"
 _logger = logger
 
-# V0.1.13: Task-level resource tracking (ResourceBudget integration)
-_task_resources: dict[int, dict[str, int | float]] = {}
-_task_resources_lock: threading.Lock | None = None
-
-# V0.1.12.2: Worker 生命周期
-_shutting_down: bool = False
-# V0.1.12.4: 子进程跟踪
-_subprocesses: list = []
-_subprocesses_lock: threading.Lock | None = None
-
-
-# ── 全局单例 Worker ─────────────────────────────────────────────────
-
-
-def _now() -> datetime:
-    return datetime.now(UTC)
-
-
-def _jitter(base: float, jitter_s: float = _RETRY_JITTER_S) -> float:
-    return base + random.uniform(0, jitter_s)
-
-
-def _resume_stage(failed_stage: str | None) -> str:
-    if failed_stage is None:
-        return TaskStatus.QUEUED_FOR_TRANS
-    mapping = {
-        TaskStatus.TRANSCRIBING: TaskStatus.QUEUED_FOR_TRANS,
-        TaskStatus.ANALYZING: TaskStatus.QUEUED_FOR_ANALYSIS,
-        TaskStatus.RENDERING: TaskStatus.QUEUED_FOR_RENDER,
-        TaskStatus.PUBLISHING: TaskStatus.QUEUED_FOR_PUBLISH,
-        TaskStatus.TRANSCRIBED: TaskStatus.QUEUED_FOR_ANALYSIS,
-        TaskStatus.CANDIDATE_CREATED: TaskStatus.QUEUED_FOR_RENDER,
-    }
-    return mapping.get(failed_stage, TaskStatus.QUEUED_FOR_TRANS)
-
 
 # ═══════════════════════════════════════════════════
-# 子进程跟踪 (lifecycle)
-# ═══════════════════════════════════════════════════
-
-
-def track_subprocess(proc) -> None:
-    """注册子进程句柄, 供关闭时统一 terminate/kill。"""
-    global _subprocesses_lock
-    if _subprocesses_lock is None:
-        _subprocesses_lock = threading.Lock()
-    with _subprocesses_lock:
-        _subprocesses.append(proc)
-
-
-def untrack_subprocess(proc) -> None:
-    """从跟踪集中移除已正常结束的子进程。"""
-    global _subprocesses_lock
-    if _subprocesses_lock is None:
-        return
-    with _subprocesses_lock:
-        try:
-            _subprocesses.remove(proc)
-        except ValueError:
-            pass
-
-
-def _cleanup_subprocesses() -> None:
-    """关闭所有被跟踪的子进程: SIGTERM → 等待 → SIGKILL。"""
-    import time as _time
-
-    global _subprocesses_lock
-    if _subprocesses_lock is None:
-        return
-    with _subprocesses_lock:
-        procs = list(_subprocesses)
-        _subprocesses.clear()
-    if not procs:
-        return
-    _logger.warning("清理 {} 个子进程 (SIGTERM)", len(procs))
-    for p in procs:
-        try:
-            if p.poll() is None:
-                p.terminate()
-        except Exception:
-            pass
-    _time.sleep(5)
-    for p in procs:
-        try:
-            if p.poll() is None:
-                p.kill()
-                _logger.warning("子进程 {} 已被 SIGKILL", p.pid)
-        except Exception:
-            pass
-
-
-# ═══════════════════════════════════════════════════
-# 任务生命周期
+# 任务生命周期 API
 # ═══════════════════════════════════════════════════
 
 
 def create_task(segment_id: int, session_id: int) -> SegmentTask | None:
-    """为已完成录制的片段创建任务(幂等)。"""
+    """为已完成录制的片段创建任务 (幂等)。
+
+    :param segment_id: ``raw_segments`` 主键。
+    :param session_id: ``recording_sessions`` 主键。
+    :returns: 新创建的 SegmentTask; 幂等命中时返回 None。
+    """
     from sqlalchemy.exc import IntegrityError
 
     from app.pipeline.stage_result import make_idempotency_key, make_pipeline_key, make_stage_key
@@ -200,287 +126,20 @@ def create_task(segment_id: int, session_id: int) -> SegmentTask | None:
             return None
 
 
-# ═══════════════════════════════════════════════════
-# 原子领取 (claiming)
-# ═══════════════════════════════════════════════════
-
-
-def _pop_and_claim(queued_stage: str) -> SegmentTask | None:
-    """原子领取: 条件 UPDATE + 行数校验 + lease_token。"""
-    now = _now()
-    act_stage = active_stage(queued_stage)
-    lease_token = uuid.uuid4().hex
-    with get_session() as db:
-        candidate = db.exec(
-            select(SegmentTask.id, SegmentTask.segment_id)
-            .where(
-                SegmentTask.stage == queued_stage,
-                (SegmentTask.next_retry_at.is_(None)) | (SegmentTask.next_retry_at <= now),
-            )
-            .order_by(SegmentTask.priority.asc(), SegmentTask.created_at.asc())
-            .limit(1)
-        ).first()
-
-        if candidate is None:
-            return None
-
-        task_id, segment_id = candidate
-
-        result = db.exec(
-            sa_text(
-                """UPDATE segment_tasks
-               SET stage = :active,
-                   claimed_by = :worker_id,
-                   claimed_at = :now,
-                   heartbeat_at = :now,
-                   lease_token = :lease_token,
-                   attempts = attempts + 1,
-                   started_at = :now,
-                   last_error = NULL
-               WHERE id = :task_id
-                 AND stage = :queued_stage"""
-            ),
-            params={
-                "active": act_stage,
-                "worker_id": _WORKER_ID,
-                "now": now.isoformat(),
-                "lease_token": lease_token,
-                "task_id": task_id,
-                "queued_stage": queued_stage,
-            },
-        )
-
-        if result.rowcount != 1:
-            _logger.info("原子领取失败 task_id={} 已被其他 Worker 抢占", task_id)
-            return None
-
-        task = db.get(SegmentTask, task_id)
-        if task is None:
-            return None
-
-        _logger.info(
-            "原子领取成功 task_id={} stage={} segment={} worker={} lease={}",
-            task_id,
-            act_stage,
-            segment_id,
-            _WORKER_ID,
-            lease_token[:12],
-        )
-        return task
-
-
-# ═══════════════════════════════════════════════════
-# 阶段推进
-# ═══════════════════════════════════════════════════
-
-
-def _room_cfg_from_task(task: SegmentTask) -> dict:
-    """从任务读取房间级自动化开关。"""
-    from app.db.models import LiveRoom, RecordingSession
-
-    with get_session() as db:
-        session = db.get(RecordingSession, task.session_id)
-        if session is None:
-            return {"auto_analyze": False, "auto_render": False, "auto_approve": False, "auto_upload": False}
-        room = db.get(LiveRoom, session.room_id) if session.room_id else None
-        if room is None:
-            return {"auto_analyze": False, "auto_render": False, "auto_approve": False, "auto_upload": False}
-        return {
-            "auto_analyze": bool(room.auto_analyze),
-            "auto_render": bool(room.auto_render),
-            "auto_approve": bool(room.auto_approve),
-            "auto_upload": bool(room.auto_upload),
-            "auto_approve_threshold": float(room.auto_approve_threshold),
-            "review_threshold": float(room.review_threshold),
-        }
-
-
-def _advance_recorded() -> None:
-    with get_session() as db:
-        tasks = db.exec(select(SegmentTask).where(SegmentTask.stage == TaskStatus.RECORDED)).all()
-        for task in tasks:
-            seg = db.get(RawSegment, task.segment_id)
-            if seg is not None and seg.status == OldStatus.RECORDED:
-                cfg = _room_cfg_from_task(task)
-                if not cfg.get("auto_analyze", False):
-                    _logger.debug("auto_analyze=off, 片段 {} 不自动进入转写队列", task.segment_id)
-                    continue
-                enqueue_next(task, TaskStatus.QUEUED_FOR_TRANS)
-                db.add(task)
-
-
-def _advance_transcribed() -> None:
-    with get_session() as db:
-        tasks = db.exec(select(SegmentTask).where(SegmentTask.stage == TaskStatus.TRANSCRIBED)).all()
-        for task in tasks:
-            cfg = _room_cfg_from_task(task)
-            if not cfg.get("auto_analyze", False):
-                _logger.debug("auto_analyze=off, 片段 {} 不自动创建分析任务", task.segment_id)
-                continue
-            enqueue_next(task, TaskStatus.QUEUED_FOR_ANALYSIS)
-            db.add(task)
-
-
-def _advance_candidate() -> None:
-    from app.db.models import HighlightCandidate
-    from app.pipeline.approval import approve_event_and_task
-
-    with get_session() as db:
-        tasks = db.exec(select(SegmentTask).where(SegmentTask.stage == TaskStatus.CANDIDATE_CREATED)).all()
-        for task in tasks:
-            cfg = _room_cfg_from_task(task)
-            auto_approve = bool(cfg.get("auto_approve", False))
-            threshold = float(cfg.get("auto_approve_threshold", 0.82))
-
-            if auto_approve:
-                candidate = db.get(HighlightCandidate, task.candidate_id) if task.candidate_id else None
-                score = candidate.highlight_score if candidate else 0.0
-                if score >= threshold and task.event_id is not None:
-                    ok = approve_event_and_task(
-                        task_id=task.id,
-                        event_id=task.event_id,
-                        source="auto",
-                        review_decision="approved_solo",
-                        db=db,
-                    )
-                    if ok:
-                        _logger.info(
-                            "auto_approve: task={} candidate={} event={} score={:.2f}",
-                            task.id,
-                            task.candidate_id,
-                            task.event_id,
-                            score,
-                        )
-                        continue
-
-            enqueue_next(task, TaskStatus.AWAITING_REVIEW)
-            db.add(task)
-
-
-def _advance_awaiting_review() -> None:
-    from app.db.models import HighlightCandidate
-    from app.pipeline.approval import approve_event_and_task
-
-    with get_session() as db:
-        tasks = db.exec(select(SegmentTask).where(SegmentTask.stage == TaskStatus.AWAITING_REVIEW)).all()
-        for task in tasks:
-            cfg = _room_cfg_from_task(task)
-            auto_approve = bool(cfg.get("auto_approve", False))
-            threshold = float(cfg.get("auto_approve_threshold", 0.82))
-
-            if not auto_approve:
-                _logger.debug("auto_approve=off, task {} 留在 awaiting_review", task.id)
-                continue
-
-            candidate = db.get(HighlightCandidate, task.candidate_id) if task.candidate_id else None
-            score = candidate.highlight_score if candidate else 0.0
-            if score < threshold:
-                _logger.debug("候选 {} 分数 {:.2f} < 阈值 {:.2f}, 不自动批准", task.candidate_id, score, threshold)
-                continue
-
-            if task.event_id is None:
-                _logger.warning("task {} 缺少 event_id, 无法自动批准", task.id)
-                continue
-
-            ok = approve_event_and_task(
-                task_id=task.id,
-                event_id=task.event_id,
-                source="auto",
-                review_decision="approved_solo",
-                db=db,
-            )
-            if ok:
-                _logger.info(
-                    "auto_approve: task={} candidate={} event={} score={:.2f}",
-                    task.id,
-                    task.candidate_id,
-                    task.event_id,
-                    score,
-                )
-
-
-def _advance_approved() -> None:
-    from app.pipeline.approval import assert_event_approved
-
-    with get_session() as db:
-        tasks = db.exec(select(SegmentTask).where(SegmentTask.stage == TaskStatus.APPROVED)).all()
-        for task in tasks:
-            cfg = _room_cfg_from_task(task)
-            auto_render = bool(cfg.get("auto_render", False))
-
-            if auto_render:
-                if task.event_id and not assert_event_approved(task.event_id):
-                    _logger.error(
-                        "consistency_error: task={} event={} review_status 非 APPROVED, 阻止进入渲染队列。",
-                        task.id,
-                        task.event_id,
-                    )
-                    task.last_error = f"data_consistency_error: event {task.event_id} not approved, cannot render"
-                    db.add(task)
-                    continue
-                enqueue_next(task, TaskStatus.QUEUED_FOR_RENDER)
-                _logger.info("auto_render: task={} candidate={} -> queued_for_render", task.id, task.candidate_id)
-            else:
-                enqueue_next(task, TaskStatus.APPROVED_WAITING_RENDER)
-                _logger.info("auto_render=off: task={} -> approved_waiting_render", task.id)
-            db.add(task)
-
-
-def _advance_rendered() -> None:
-    with get_session() as db:
-        tasks = db.exec(select(SegmentTask).where(SegmentTask.stage == TaskStatus.RENDERED)).all()
-        for task in tasks:
-            cfg = _room_cfg_from_task(task)
-            auto_upload = bool(cfg.get("auto_upload", False))
-
-            if auto_upload:
-                enqueue_next(task, TaskStatus.QUEUED_FOR_PUBLISH)
-                _logger.info("auto_upload: task={} clip={} -> queued_for_publish", task.id, task.clip_id)
-            else:
-                enqueue_next(task, TaskStatus.AWAITING_PUBLISH_CONFIRMATION)
-                _logger.info("auto_upload=off: task={} -> awaiting_publish_confirmation", task.id)
-            db.add(task)
-
-
-# ═══════════════════════════════════════════════════
-# 重试
-# ═══════════════════════════════════════════════════
-
-
-def _retry_expired() -> None:
-    now = _now()
-    with get_session() as db:
-        tasks = db.exec(
-            select(SegmentTask).where(
-                SegmentTask.stage == TaskStatus.TRANSIENT_FAILED,
-                SegmentTask.next_retry_at <= now,
-            )
-        ).all()
-        for task in tasks:
-            if task.attempts >= task.max_retries:
-                task.stage = TaskStatus.FAILED
-                task.last_error = task.last_error or "重试次数超限"
-                task.completed_at = now
-            else:
-                resume = _resume_stage(task.failed_stage)
-                task.stage = resume
-                task.next_retry_at = None
-                task.claimed_by = None
-                task.claimed_at = None
-                _logger.info("任务 {} 重试: {} -> {}", task.id, task.failed_stage, resume)
-            db.add(task)
-
-
 def retry_task(task_id: int) -> bool:
-    """手动/自动重试统一入口:从 failed_stage 恢复。"""
+    """手动重试失败任务。
+
+    :param task_id: SegmentTask ID。
+    :returns: 是否成功。
+    """
     with get_session() as db:
         task = db.get(SegmentTask, task_id)
         if task is None:
             return False
-        if task.stage not in (TaskStatus.FAILED, TaskStatus.TRANSIENT_FAILED):
+        if task.stage not in (TaskStatus.FAILED, TaskStatus.CANCELLED, TaskStatus.TRANSIENT_FAILED):
             return False
-        resume = _resume_stage(task.failed_stage)
-        task.stage = resume
+        res = resume_stage(task.failed_stage or task.stage)
+        task.stage = res
         task.attempts = 0
         task.last_error = None
         task.error_is_permanent = False
@@ -488,13 +147,18 @@ def retry_task(task_id: int) -> bool:
         task.claimed_by = None
         task.claimed_at = None
         task.heartbeat_at = None
-        _logger.info("任务 {} 手动重试: {} -> {}", task_id, task.failed_stage, resume)
+        task.lease_token = None
+        task.completed_at = None
         db.add(task)
         return True
 
 
 def cancel_task(task_id: int) -> bool:
-    """取消指定任务。"""
+    """取消任务。
+
+    :param task_id: SegmentTask ID。
+    :returns: 是否成功。
+    """
     with get_session() as db:
         task = db.get(SegmentTask, task_id)
         if task is None:
@@ -504,254 +168,65 @@ def cancel_task(task_id: int) -> bool:
         return True
 
 
-# ═══════════════════════════════════════════════════
-# 心跳 + Stale 恢复
-# ═══════════════════════════════════════════════════
+def task_counts() -> dict[str, int]:
+    """统计各阶段任务数量。
 
-
-def _recover_stale() -> None:
-    stale_threshold = _now() - timedelta(seconds=_STALE_TIMEOUT_S)
+    :returns: stage → count 字典。
+    """
     with get_session() as db:
-        stale = db.exec(
-            select(SegmentTask).where(
-                SegmentTask.stage.in_(
-                    [
-                        TaskStatus.TRANSCRIBING,
-                        TaskStatus.ANALYZING,
-                        TaskStatus.RENDERING,
-                        TaskStatus.PUBLISHING,
-                    ]
-                ),
-                SegmentTask.heartbeat_at.is_not(None),
-                SegmentTask.heartbeat_at < stale_threshold,
-            )
-        ).all()
-        for task in stale:
-            resume = _resume_stage(task.failed_stage or task.stage)
-            task.stage = resume
-            task.claimed_by = None
-            task.claimed_at = None
-            task.heartbeat_at = None
-            task.lease_token = None
-            task.next_retry_at = None
-            db.add(task)
-        if stale:
-            _logger.warning("Stale 恢复:回退 {} 个心跳超时任务。", len(stale))
+        rows = db.exec(select(SegmentTask.stage, SegmentTask.id)).all()
+        counts: dict[str, int] = {}
+        for stage, _ in rows:
+            counts[stage] = counts.get(stage, 0) + 1
+        return counts
 
 
-def _recover_orphans() -> None:
-    from app.pipeline.stage_result import make_idempotency_key, make_pipeline_key, make_stage_key
+def list_tasks(limit: int = 50, stage: str | None = None) -> list[dict[str, Any]]:
+    """查询任务列表。
 
-    _recover_stale()
+    :param limit: 返回最大条数。
+    :param stage: 可选按阶段过滤。
+    :returns: 任务字典列表。
+    """
     with get_session() as db:
-        stuck = db.exec(
-            select(SegmentTask).where(
-                SegmentTask.stage.in_(
-                    [
-                        TaskStatus.TRANSCRIBING,
-                        TaskStatus.ANALYZING,
-                        TaskStatus.RENDERING,
-                        TaskStatus.PUBLISHING,
-                    ]
-                ),
-                SegmentTask.heartbeat_at.is_(None),
-            )
-        ).all()
-        for task in stuck:
-            resume = _resume_stage(task.stage)
-            task.stage = resume
-            task.started_at = None
-            task.next_retry_at = None
-            task.claimed_by = None
-            db.add(task)
-        if stuck:
-            _logger.info("恢复:回退 {} 个旧格式中间状态任务。", len(stuck))
+        q = select(SegmentTask).order_by(SegmentTask.created_at.desc())
+        if stage:
+            q = q.where(SegmentTask.stage == stage)
+        tasks = db.exec(q.limit(limit)).all()
+        return [_task_to_dict(t) for t in tasks]
 
-        existing_ids = {t.segment_id for t in db.exec(select(SegmentTask.segment_id)).all()}
-        orphan_segs = db.exec(
-            select(RawSegment).where(
-                RawSegment.status == OldStatus.RECORDED,
-                ~RawSegment.id.in_(existing_ids) if existing_ids else True,
-            )
-        ).all()
-        for seg in orphan_segs:
-            pipeline_key = make_pipeline_key(seg.id)
-            stage_key = make_stage_key(seg.id, "recorded")
-            t = SegmentTask(
-                segment_id=seg.id,
-                session_id=seg.session_id,
-                stage=TaskStatus.RECORDED,
-                pipeline_key=pipeline_key,
-                stage_key=stage_key,
-                idempotency_key=make_idempotency_key(seg.id, "recorded"),
-            )
-            db.add(t)
-        if orphan_segs:
-            _logger.info("恢复:为 {} 个孤立片段创建任务。", len(orphan_segs))
+
+def _task_to_dict(t: SegmentTask) -> dict[str, Any]:
+    """将 SegmentTask 序列化为字典。"""
+    return {
+        "id": t.id,
+        "segment_id": t.segment_id,
+        "session_id": t.session_id,
+        "stage": t.stage,
+        "attempts": t.attempts,
+        "max_retries": t.max_retries,
+        "last_error": t.last_error,
+        "created_at": t.created_at.isoformat() if t.created_at else None,
+        "started_at": t.started_at.isoformat() if t.started_at else None,
+        "completed_at": t.completed_at.isoformat() if t.completed_at else None,
+        "claimed_by": t.claimed_by,
+        "candidate_id": t.candidate_id,
+        "event_id": t.event_id,
+        "clip_id": t.clip_id,
+    }
 
 
 # ═══════════════════════════════════════════════════
-# 心跳线程
-# ═══════════════════════════════════════════════════
-
-
-def _start_heartbeat_thread(
-    task_id: int,
-    lease_token: str | None = None,
-    expected_stage: str | None = None,
-) -> threading.Event:
-    """启动后台心跳线程, 使用租约条件更新 heartbeat_at。"""
-    stop = threading.Event()
-
-    def _beat() -> None:
-        while not stop.is_set() and not _shutting_down:
-            try:
-                with get_session() as db:
-                    if lease_token and expected_stage:
-                        result = db.exec(
-                            sa_text(
-                                """UPDATE segment_tasks
-                                   SET heartbeat_at = :now
-                                   WHERE id = :task_id
-                                     AND claimed_by = :worker_id
-                                     AND lease_token = :lease_token
-                                     AND stage = :expected_stage"""
-                            ),
-                            params={
-                                "now": _now().isoformat(),
-                                "task_id": task_id,
-                                "worker_id": _WORKER_ID,
-                                "lease_token": lease_token,
-                                "expected_stage": expected_stage,
-                            },
-                        )
-                        if result.rowcount == 0:
-                            _logger.warning("lease_lost: task={} 心跳更新失败, 租约已被接管", task_id)
-                            break
-                    elif lease_token:
-                        result = db.exec(
-                            sa_text(
-                                """UPDATE segment_tasks
-                                   SET heartbeat_at = :now
-                                   WHERE id = :task_id
-                                     AND claimed_by = :worker_id
-                                     AND lease_token = :lease_token"""
-                            ),
-                            params={
-                                "now": _now().isoformat(),
-                                "task_id": task_id,
-                                "worker_id": _WORKER_ID,
-                                "lease_token": lease_token,
-                            },
-                        )
-                        if result.rowcount == 0:
-                            _logger.warning("lease_lost: task={} 心跳更新失败, 租约已被接管", task_id)
-                            break
-                    else:
-                        t = db.get(SegmentTask, task_id)
-                        if t is not None:
-                            mark_heartbeat(t)
-                            db.add(t)
-            except Exception:
-                pass
-            stop.wait(_HEARTBEAT_POLL_S)
-
-    t = threading.Thread(target=_beat, daemon=True, name=f"hb-{task_id}")
-    t.start()
-    return stop
-
-
-def _clear_heartbeat_if_own(task_id: int, lease_token: str | None = None) -> None:
-    """条件清除 heartbeat, 必须携带租约。"""
-    try:
-        with get_session() as db:
-            if lease_token:
-                result = db.exec(
-                    sa_text(
-                        """UPDATE segment_tasks
-                           SET heartbeat_at = NULL
-                           WHERE id = :task_id
-                             AND claimed_by = :worker_id
-                             AND lease_token = :lease_token"""
-                    ),
-                    params={
-                        "task_id": task_id,
-                        "worker_id": _WORKER_ID,
-                        "lease_token": lease_token,
-                    },
-                )
-                if result.rowcount == 0:
-                    _logger.debug("_clear_heartbeat_if_own: task={} 租约已转移, 跳过清除", task_id)
-                    return
-                _logger.debug("_clear_heartbeat_if_own: task={} heartbeat 已清除", task_id)
-            else:
-                t = db.get(SegmentTask, task_id)
-                if t is not None and t.stage not in (TaskStatus.COMPLETED, TaskStatus.FAILED):
-                    t.heartbeat_at = None
-                    db.add(t)
-    except Exception:
-        pass
-
-
-# ═══════════════════════════════════════════════════
-# 任务执行
-# ═══════════════════════════════════════════════════
-
-
-def _execute_task(task_id: int, active_stage_val: str, lease_token: str | None = None) -> None:
-    """执行耗时任务, 传递 lease_token 用于条件提交。"""
-    t0 = time.time()
-    hb_stop: threading.Event | None = None
-    lease: TaskLease | None = None
-    try:
-        hb_stop = _start_heartbeat_thread(task_id, lease_token, active_stage_val)
-        lease = TaskLease(
-            task_id=task_id, worker_id=_WORKER_ID, lease_token=lease_token, expected_stage=active_stage_val
-        )
-
-        if active_stage_val == TaskStatus.TRANSCRIBING:
-            run_transcribe(lease)
-        elif active_stage_val == TaskStatus.ANALYZING:
-            run_analyze(lease)
-        elif active_stage_val == TaskStatus.RENDERING:
-            run_render(lease)
-        elif active_stage_val == TaskStatus.PUBLISHING:
-            run_publish(lease)
-    except LeaseLostError:
-        _logger.warning("lease_lost_during_execution: task={}", task_id)
-    except Exception as exc:
-        _ms = int((time.time() - t0) * 1000)
-        _logger.error("任务 {} 阶段 {} 失败: {}", task_id, active_stage_val, exc)
-        with get_session() as db:
-            t = db.get(SegmentTask, task_id)
-            if t is not None and lease is not None and still_owns_lease(db, lease):
-                mark_failed(t, f"{type(exc).__name__}: {exc}", permanent=False)
-                db.add(t)
-            elif t is not None:
-                _logger.warning("stale_result_discarded: task={} 已失去租约, 丢弃失败结果", task_id)
-    finally:
-        if hb_stop is not None:
-            hb_stop.set()
-        _clear_heartbeat_if_own(task_id, lease_token)
-        # V0.1.13: Release tracked resources
-        global _task_resources_lock, _task_resources
-        if _task_resources_lock is None:
-            _task_resources_lock = threading.Lock()
-        with _task_resources_lock:
-            task_cost = _task_resources.pop(task_id, None)
-        if task_cost:
-            from app.core.resource_budget import release_resources
-
-            release_resources(**task_cost)
-
-
-# ═══════════════════════════════════════════════════
-# TaskWorker (V0.1.11-alpha: 真正并发)
+# TaskWorker
 # ═══════════════════════════════════════════════════
 
 
 class TaskWorker:
-    """持久化任务队列 Worker,支持各阶段真正并发。"""
+    """持久化任务队列 Worker, 支持各阶段真正并发。
+
+    对外入口: start() → 启动调度循环; stop() → 优雅关闭。
+    内部调度循环调用 scheduler/claiming/heartbeat/stale_recovery 子模块。
+    """
 
     def __init__(self) -> None:
         self._transcribing: set[asyncio.Task[None]] = set()
@@ -759,7 +234,7 @@ class TaskWorker:
         self._rendering: set[asyncio.Task[None]] = set()
         self._publishing: set[asyncio.Task[None]] = set()
         self._main_task: asyncio.Task[None] | None = None
-        self._running = False
+        self._running: bool = False
         _logger.info("TaskWorker init worker_id={}", _WORKER_ID)
 
     async def start(self) -> None:
@@ -769,7 +244,7 @@ class TaskWorker:
         global _shutting_down
         _shutting_down = False
         self._running = True
-        _recover_orphans()
+        recover_orphans()
         self._main_task = asyncio.create_task(self._loop())
         _logger.info("TaskWorker started T{}/A{}/R{}", MAX_TRANSCRIBING, MAX_ANALYZING, MAX_RENDERING)
 
@@ -807,19 +282,20 @@ class TaskWorker:
                     t.cancel()
 
         _logger.info("TaskWorker stopped.")
-        _cleanup_subprocesses()
+        cleanup_subprocesses()
 
     async def _loop(self) -> None:
+        """主调度循环 — 每个 tick 执行阶段推进、stale 恢复、任务分发。"""
         while self._running and not _shutting_down:
             try:
-                _retry_expired()
-                _recover_stale()
-                _advance_recorded()
-                _advance_transcribed()
-                _advance_candidate()
-                _advance_awaiting_review()
-                _advance_approved()
-                _advance_rendered()
+                retry_expired()
+                recover_stale()
+                advance_recorded()
+                advance_transcribed()
+                advance_candidate()
+                advance_awaiting_review()
+                advance_approved()
+                advance_rendered()
                 # V0.1.13: Disk protection
                 from app.pipeline.storage_lifecycle import is_safe_for_new_tasks
 
@@ -864,8 +340,7 @@ class TaskWorker:
                     break
             else:
                 cost = {}
-
-            task = _pop_and_claim(queued_stage)
+            task = pop_and_claim(queued_stage)
             if task is None:
                 if cost:
                     from app.core.resource_budget import release_resources
@@ -874,7 +349,8 @@ class TaskWorker:
                 break
 
             if cost:
-                global _task_resources_lock
+                from app.pipeline.lifecycle import _task_resources, _task_resources_lock
+
                 if _task_resources_lock is None:
                     _task_resources_lock = threading.Lock()
                 with _task_resources_lock:
@@ -882,108 +358,73 @@ class TaskWorker:
 
             act_stage = active_stage(queued_stage)
             lease = task.lease_token
-            t = asyncio.create_task(asyncio.to_thread(_execute_task, task.id, act_stage, lease))
+            t = asyncio.create_task(asyncio.to_thread(execute_task, task.id, act_stage, lease))
             running.add(t)
 
     @property
-    def stats(self) -> dict:
+    def stats(self) -> dict[str, Any]:
         """当前 Worker 和任务队列统计。"""
-        counts = _task_counts()
+        counts = task_counts()
         counts["worker"] = {
             "worker_id": _WORKER_ID,
             "transcribing": len(self._transcribing),
             "analyzing": len(self._analyzing),
             "rendering": len(self._rendering),
             "publishing": len(self._publishing),
-            "max_transcribing": MAX_TRANSCRIBING,
-            "max_analyzing": MAX_ANALYZING,
-            "max_rendering": MAX_RENDERING,
-            "max_publishing": MAX_PUBLISHING,
         }
         return counts
 
 
 # ═══════════════════════════════════════════════════
-# 统计和列表
+# 后向兼容导出
 # ═══════════════════════════════════════════════════
 
+# 任务生命周期 API (可直接从原 task_worker 路径导入)
+_task_counts = task_counts
+_RETRY_BASE_S: int = 10
+_RETRY_MAX_S: int = 600
+_RETRY_JITTER_S: float = 5.0
+_HEARTBEAT_POLL_S: int = 5
 
-def _task_counts() -> dict:
-    with get_session() as db:
-        rows = db.exec(select(SegmentTask)).all()
-    result: dict = {"total": len(rows)}
-    for stage in (
-        TaskStatus.RECORDED,
-        TaskStatus.QUEUED_FOR_TRANS,
-        TaskStatus.TRANSCRIBING,
-        TaskStatus.QUEUED_FOR_ANALYSIS,
-        TaskStatus.ANALYZING,
-        TaskStatus.CANDIDATE_CREATED,
-        TaskStatus.AWAITING_REVIEW,
-        TaskStatus.APPROVED,
-        TaskStatus.APPROVED_WAITING_RENDER,
-        TaskStatus.QUEUED_FOR_RENDER,
-        TaskStatus.RENDERING,
-        TaskStatus.RENDERED,
-        TaskStatus.AWAITING_PUBLISH_CONFIRMATION,
-        TaskStatus.QUEUED_FOR_PUBLISH,
-        TaskStatus.PUBLISHING,
-        TaskStatus.COMPLETED,
-        TaskStatus.FAILED,
-        TaskStatus.CANCELLED,
-        TaskStatus.STALE,
-    ):
-        result[stage] = sum(1 for r in rows if r.stage == stage)
-    return result
+# 阶段推进 (旧名称兼容)
+_room_cfg_from_task = room_cfg_from_task
+_advance_recorded = advance_recorded
+_advance_transcribed = advance_transcribed
+_advance_candidate = advance_candidate
+_advance_awaiting_review = advance_awaiting_review
+_advance_approved = advance_approved
+_advance_rendered = advance_rendered
+_retry_expired = retry_expired
 
+# 领取
+_pop_and_claim = pop_and_claim
 
-def list_tasks(limit: int = 50, stage: str | None = None) -> list[dict]:
-    """列出任务队列中的任务。"""
-    with get_session() as db:
-        stmt = select(SegmentTask)
-        if stage:
-            stmt = stmt.where(SegmentTask.stage == stage)
-        stmt = stmt.order_by(SegmentTask.created_at.desc()).limit(limit)
-        tasks = db.exec(stmt).all()
-    return [_task_to_dict(t) for t in tasks]
+# 心跳
+_start_heartbeat_thread = start_heartbeat_thread
+_clear_heartbeat_if_own = clear_heartbeat_if_own
 
+# 恢复
+_resume_stage = resume_stage
+_recover_stale = recover_stale
+_recover_orphans = recover_orphans
 
-def _task_to_dict(t: SegmentTask) -> dict:
-    return {
-        "id": t.id,
-        "segment_id": t.segment_id,
-        "session_id": t.session_id,
-        "candidate_id": t.candidate_id,
-        "event_id": t.event_id,
-        "clip_id": t.clip_id,
-        "stage": t.stage,
-        "failed_stage": t.failed_stage,
-        "attempts": t.attempts,
-        "max_retries": t.max_retries,
-        "next_retry_at": t.next_retry_at.isoformat() if t.next_retry_at else None,
-        "last_error": t.last_error,
-        "error_is_permanent": t.error_is_permanent,
-        "claimed_by": t.claimed_by,
-        "claimed_at": t.claimed_at.isoformat() if t.claimed_at else None,
-        "heartbeat_at": t.heartbeat_at.isoformat() if t.heartbeat_at else None,
-        "created_at": t.created_at.isoformat() if t.created_at else None,
-        "started_at": t.started_at.isoformat() if t.started_at else None,
-        "completed_at": t.completed_at.isoformat() if t.completed_at else None,
-        "processing_time_ms": t.processing_time_ms,
-        "total_elapsed_ms": t.total_elapsed_ms,
-    }
+# 生命周期
+_now = now_utc
+_cleanup_subprocesses = cleanup_subprocesses
 
+# 执行
+_execute_task = execute_task
 
-# ── 全局单例 ──
-# ── 兼容重导出 (V0.1.14: 函数已迁移到子模块) ──
-from app.pipeline.stage_result import (  # noqa: E402, F401
+# stage_result 兼容 (被测试和外部引用)
+from app.pipeline.stage_result import (  # noqa: E402, F401, I001
     can_transition,
     make_idempotency_key,
     make_pipeline_key,
     make_stage_key,
     mark_active,
+    mark_failed as _mark_failed_for_export,
 )
-from app.pipeline.workers.analyze import _ensure_event  # noqa: E402, F401
+from app.pipeline.workers.analyze import _ensure_event  # noqa: E402, F401, I001
 
 # 后向兼容: 旧名称
 _can_transition = can_transition
@@ -991,4 +432,31 @@ _make_idempotency_key = make_idempotency_key
 _make_pipeline_key = make_pipeline_key
 _make_stage_key = make_stage_key
 
-task_worker: TaskWorker = TaskWorker()
+# old mark_failed exports for backward compat
+mark_failed = _mark_failed_for_export  # noqa: F811
+
+# 全局单例
+_app: TaskWorker | None = None
+task_worker: TaskWorker | None = None  # 后向兼容: 模块级实例
+
+
+def get_worker() -> TaskWorker:
+    """获取全局 TaskWorker 单例。
+
+    :returns: TaskWorker 实例。
+    """
+    global _app
+    if _app is None:
+        _app = TaskWorker()
+    return _app
+
+
+# 后向兼容: 模块级实例引用 get_worker 的返回值
+def _ensure_instance() -> TaskWorker:
+    global task_worker
+    if task_worker is None:
+        task_worker = get_worker()
+    return task_worker
+
+
+task_worker = _ensure_instance()
