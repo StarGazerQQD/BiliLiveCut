@@ -1,4 +1,5 @@
 """统计分析 (V0.1.14.1)."""
+
 from __future__ import annotations
 
 from typing import Any
@@ -6,6 +7,7 @@ from typing import Any
 from fastapi import APIRouter
 
 router = APIRouter()
+
 
 @router.get("/analytics")
 def get_analytics() -> dict[str, Any]:

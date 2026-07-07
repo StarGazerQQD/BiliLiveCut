@@ -1,4 +1,5 @@
 """Rooms (V0.1.14.1)."""
+
 from __future__ import annotations
 
 import asyncio
@@ -45,6 +46,7 @@ async def _on_session_end(session_id: int) -> None:
         data={"clips_dir": clips_path, "ready_dir": str(ready_to_upload_dir())},
     )
     logger.info("会话 {} 结束,上传关闭,已弹出切片目录: {}", session_id, clips_path)
+
 
 class RecorderManager:
     """管理多个直播间的并发录制任务(asyncio)。
@@ -153,6 +155,7 @@ class RecorderManager:
 
 recorder_manager = RecorderManager()
 
+
 async def add_room(url: str, authorized: bool) -> LiveRoom:
     """解析并登记直播间(与 CLI ``add-room`` 等价)。
 
@@ -185,6 +188,7 @@ async def add_room(url: str, authorized: bool) -> LiveRoom:
         db.flush()
         db.refresh(room)
         return room
+
 
 def update_room(db_id: int, fields: dict[str, Any]) -> LiveRoom:
     """更新直播间的可调参数(阈值、模式、授权等)。
@@ -234,6 +238,7 @@ def update_room(db_id: int, fields: dict[str, Any]) -> LiveRoom:
         db.add(room)
         return room
 
+
 def _mark_session_interrupted(session_id: int) -> None:
     """将会话标记为中断。
 
@@ -244,6 +249,7 @@ def _mark_session_interrupted(session_id: int) -> None:
         if sess is not None:
             sess.status = SessionStatus.INTERRUPTED
             db.add(sess)
+
 
 async def auto_recover_interrupted_sessions() -> list[int]:
     """启动时扫描中断的录制会话并尝试恢复。
@@ -294,6 +300,7 @@ async def auto_recover_interrupted_sessions() -> list[int]:
     if recovered:
         logger.info("自动恢复完成:共恢复 {} 个房间。", len(recovered))
     return recovered
+
 
 def recording_status() -> list[dict[str, Any]]:
     """返回各活跃录制会话的状态(含片段计数)。

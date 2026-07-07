@@ -1,4 +1,5 @@
 """设置上传 (V0.1.14.1)."""
+
 from __future__ import annotations
 
 from typing import Any
@@ -11,11 +12,14 @@ from app.web import service
 _MAX_QUERY_LIMIT = 500
 _MAX_QUERY_DAYS = 365
 
+
 def _clamp(v, lo, hi):
     return max(lo, min(v, hi))
 
 
 class SettingsRequest(BaseModel):
+    """运行时开关与上传配置请求体。"""
+
     biliup_enabled: bool | None = None
     auto_upload: bool | None = None
     trend_schedule_enabled: bool | None = None
@@ -25,6 +29,7 @@ class SettingsRequest(BaseModel):
 
 
 router = APIRouter()
+
 
 @router.get("/settings")
 def get_settings() -> dict[str, Any]:
@@ -70,4 +75,3 @@ def get_notifications(since_id: int = 0) -> list[dict[str, Any]]:
 def open_clips_dir() -> dict[str, str]:
     """在本机文件管理器打开切片目录。"""
     return {"clips_dir": service.open_clips_directory()}
-

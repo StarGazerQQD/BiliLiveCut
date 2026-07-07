@@ -1,4 +1,5 @@
 """API route facade (V0.1.14.1)."""
+
 from __future__ import annotations
 
 from fastapi import APIRouter

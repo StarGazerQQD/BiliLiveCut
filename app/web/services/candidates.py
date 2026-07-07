@@ -1,4 +1,5 @@
 """Candidates (V0.1.14.1)."""
+
 from __future__ import annotations
 
 import asyncio
@@ -44,6 +45,7 @@ def set_candidate_status(candidate_id: int, status: str) -> None:
                     tl.apply_threshold_if_changed(session.room_id)
         except Exception as exc:  # noqa: BLE001
             logger.warning("阈值自学习反馈记录失败: {}", exc)
+
 
 async def approve_candidate(candidate_id: int) -> int | None:
     """批准候选并出片(切片+文案); V0.1.12.8: 传入外层 db 消除事务割裂。
@@ -96,6 +98,7 @@ async def approve_candidate(candidate_id: int) -> int | None:
     clip = await asyncio.to_thread(produce_clip, candidate_id)
     return clip.id if clip else None
 
+
 def delete_candidate(candidate_id: int) -> None:
     """删除候选。
 
@@ -105,6 +108,7 @@ def delete_candidate(candidate_id: int) -> None:
         cand = db.get(HighlightCandidate, candidate_id)
         if cand is not None:
             db.delete(cand)
+
 
 def list_candidates(limit: int = 50, status: str | None = None) -> list[dict[str, Any]]:
     """列出高光候选(按分数降序)。

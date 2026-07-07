@@ -1,4 +1,5 @@
 """直播间管理 (V0.1.14.1)."""
+
 from __future__ import annotations
 
 from typing import Any
@@ -10,10 +11,15 @@ from app.web import service
 
 
 class AddRoomRequest(BaseModel):
+    """添加直播间请求体。"""
+
     url: str
     authorized: bool = False
 
+
 class UpdateRoomRequest(BaseModel):
+    """直播间配置更新请求体。"""
+
     mode: str | None = None
     highlight_threshold: float | None = None
     auto_publish_threshold: float | None = None
@@ -25,12 +31,16 @@ class UpdateRoomRequest(BaseModel):
     danmaku_sentiment_enabled: bool | None = None
     room_config: dict | None = None
 
+
 class StartRequest(BaseModel):
+    """录制/流水线启动请求体。"""
+
     pipeline: bool = True
     produce: bool = False
 
 
 router = APIRouter()
+
 
 @router.post("/rooms")
 async def create_room(req: AddRoomRequest) -> dict[str, Any]:
@@ -67,4 +77,3 @@ async def stop_recording(db_id: int) -> dict[str, str]:
     """停止某直播间录制。"""
     await service.recorder_manager.stop(db_id)
     return {"status": "stopped"}
-

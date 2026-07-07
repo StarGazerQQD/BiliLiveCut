@@ -1,4 +1,5 @@
 """网感资料库 (V0.1.14.1)."""
+
 from __future__ import annotations
 
 from typing import Any
@@ -11,15 +12,19 @@ from app.web import service
 _MAX_QUERY_LIMIT = 500
 _MAX_QUERY_DAYS = 365
 
+
 def _clamp(v, lo, hi):
     return max(lo, min(v, hi))
 
 
 class TrendCollectRequest(BaseModel):
+    """网感资料收集请求体。"""
+
     topic: str = ""
 
 
 router = APIRouter()
+
 
 @router.get("/trends")
 def get_trends(limit: int = 30, days: int = 7) -> dict[str, Any]:
@@ -34,4 +39,3 @@ async def collect_trends(req: TrendCollectRequest | None = None) -> dict[str, An
     """立即触发一次联网采集并写入资料库。"""
     topic = req.topic if req else ""
     return await service.collect_trends_now(topic=topic or "")
-

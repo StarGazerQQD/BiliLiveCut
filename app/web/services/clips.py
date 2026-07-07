@@ -1,4 +1,5 @@
 """Clips (V0.1.14.1)."""
+
 from __future__ import annotations
 
 import asyncio
@@ -46,6 +47,7 @@ def publish_clip(clip_id: int) -> dict[str, Any]:
 # 设置开关 / 上传队列 / 目录
 # --------------------------------------------------------------------------- #
 
+
 async def enqueue_clip_upload(clip_id: int) -> dict[str, Any]:
     """手动把某成品加入上传队列并执行(线程池运行)。
 
@@ -56,6 +58,7 @@ async def enqueue_clip_upload(clip_id: int) -> dict[str, Any]:
 
     task = await asyncio.to_thread(enqueue_and_upload, clip_id)
     return {"task_id": task.id, "status": task.status, "error": task.last_error}
+
 
 async def retry_upload(task_id: int) -> dict[str, Any]:
     """重试一个上传任务(线程池运行)。
@@ -68,6 +71,7 @@ async def retry_upload(task_id: int) -> dict[str, Any]:
     task = await asyncio.to_thread(process_upload_task, task_id)
     return {"task_id": task.id, "status": task.status, "error": task.last_error}
 
+
 def open_clips_directory() -> str:
     """在本机文件管理器打开切片目录(供"打开目录"按钮使用)。
 
@@ -76,6 +80,7 @@ def open_clips_directory() -> str:
     path = str(clips_dir())
     open_path(path)
     return path
+
 
 def reject_clip(clip_id: int) -> None:
     """拒绝成品切片。
@@ -92,6 +97,7 @@ def reject_clip(clip_id: int) -> None:
 # --------------------------------------------------------------------------- #
 # 查询(读)
 # --------------------------------------------------------------------------- #
+
 
 def list_clips(limit: int = 50) -> list[dict[str, Any]]:
     """列出成品切片(按创建时间降序)。

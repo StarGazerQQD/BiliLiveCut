@@ -1,4 +1,5 @@
 """录制预约 (V0.1.14.1)."""
+
 from __future__ import annotations
 
 from typing import Any
@@ -10,12 +11,15 @@ from app.web import service
 
 
 class ScheduleRequest(BaseModel):
+    """录制预约请求体。"""
+
     room_id: int
     scheduled_at: str
     recurrent: str = ""
 
 
 router = APIRouter()
+
 
 @router.get("/schedules")
 def get_schedules() -> list[dict[str, Any]]:
@@ -49,4 +53,3 @@ def patch_schedule(schedule_id: int, enabled: bool) -> dict[str, Any]:
         return service.toggle_schedule(schedule_id, enabled)
     except ValueError as exc:
         raise HTTPException(status_code=404, detail=str(exc)) from exc
-

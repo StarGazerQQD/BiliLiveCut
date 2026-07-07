@@ -1,4 +1,5 @@
 """大模型配置 (V0.1.14.1)."""
+
 from __future__ import annotations
 
 from typing import Any
@@ -10,6 +11,8 @@ from app.web import service
 
 
 class LLMProviderIn(BaseModel):
+    """大模型提供商配置项。"""
+
     id: str = ""
     name: str = ""
     base_url: str
@@ -21,11 +24,15 @@ class LLMProviderIn(BaseModel):
     enabled: bool = True
     priority: int = 100
 
+
 class LLMProvidersRequest(BaseModel):
+    """大模型提供商批量设置请求体。"""
+
     providers: list[LLMProviderIn]
 
 
 router = APIRouter()
+
 
 @router.get("/llm-providers")
 def get_llm_providers() -> dict[str, Any]:
@@ -43,4 +50,3 @@ def put_llm_providers(req: LLMProvidersRequest) -> dict[str, Any]:
 async def test_llm_providers() -> dict[str, Any]:
     """逐个测试已启用大模型的连通性。"""
     return await service.test_llm_providers()
-

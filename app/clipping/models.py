@@ -57,5 +57,3 @@ class ClipOptions:
             crf=settings.clip_video_crf,
             preset=settings.clip_preset,
         )
-
-

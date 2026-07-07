@@ -1,4 +1,5 @@
 """成品剪辑 (V0.1.14.1)."""
+
 from __future__ import annotations
 
 from typing import Any
@@ -10,12 +11,13 @@ from app.web import service
 _MAX_QUERY_LIMIT = 500
 _MAX_QUERY_DAYS = 365
 
+
 def _clamp(v, lo, hi):
     return max(lo, min(v, hi))
 
 
-
 router = APIRouter()
+
 
 @router.get("/clips")
 def get_clips(limit: int = 50) -> list[dict[str, Any]]:
@@ -119,4 +121,3 @@ def reject_clip(clip_id: int) -> dict[str, str]:
     """拒绝成品切片。"""
     service.reject_clip(clip_id)
     return {"status": "rejected"}
-

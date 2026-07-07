@@ -1,4 +1,5 @@
 """Trends (V0.1.14.1)."""
+
 from __future__ import annotations
 
 import asyncio
@@ -43,6 +44,7 @@ def trends_overview(limit: int = 30, days: int = 7) -> dict[str, Any]:
         ],
         "keywords": keywords,
     }
+
 
 async def collect_trends_now(topic: str = "") -> dict[str, Any]:
     """立即触发一次网感采集(在线程池中执行,避免阻塞事件循环)。

@@ -1,4 +1,5 @@
 """主题管理 (V0.1.14.1)."""
+
 from __future__ import annotations
 
 from typing import Any
@@ -8,17 +9,25 @@ from pydantic import BaseModel, field_validator
 
 
 class MergeTopicsRequest(BaseModel):
+    """合并主题请求体（将 source_id 并入 target_id）。"""
+
     source_id: int
     target_id: int
 
+
 class TopicUpdateRequest(BaseModel):
+    """主题信息更新请求体。"""
+
     title: str | None = None
     summary: str | None = None
     keywords_json: str | None = None
     status: str | None = None
     is_collection: bool | None = None
 
+
 class SplitTopicRequest(BaseModel):
+    """拆分主题请求体（提取指定事件组成新主题）。"""
+
     event_ids: list[int]
 
     @field_validator("event_ids")
@@ -28,11 +37,15 @@ class SplitTopicRequest(BaseModel):
             raise ValueError("event_ids empty")
         return v
 
+
 class ReorderTopicRequest(BaseModel):
+    """主题内视频重排序请求体。"""
+
     event_ids: list[int]
 
 
 router = APIRouter()
+
 
 @router.get("/topics")
 def list_topics(session_id: int | None = None) -> dict[str, Any]:
@@ -122,4 +135,3 @@ def cluster_session_candidates(session_id: int) -> dict[str, Any]:
 
     topics = cluster_candidates(session_id)
     return {"status": "clustered", "topics": topics}
-

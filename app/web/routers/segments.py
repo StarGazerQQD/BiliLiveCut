@@ -1,4 +1,5 @@
 """录制转写 (V0.1.14.1)."""
+
 from __future__ import annotations
 
 from typing import Any
@@ -10,11 +11,13 @@ from app.web import service
 _MAX_QUERY_LIMIT = 500
 _MAX_QUERY_DAYS = 365
 
+
 def _clamp(v, lo, hi):
     return max(lo, min(v, hi))
 
 
 router = APIRouter()
+
 
 @router.get("/recording")
 def get_recording() -> list[dict[str, Any]]:
@@ -38,4 +41,3 @@ def get_danmaku(limit: int = 50, session_id: int | None = None) -> dict[str, Any
     """
     limit = _clamp(limit, 1, _MAX_QUERY_LIMIT)
     return service.danmaku_overview(limit=limit, session_id=session_id)
-

@@ -1,4 +1,5 @@
 """n (V0.1.14.1)."""
+
 from __future__ import annotations
 
 import asyncio
@@ -39,6 +40,7 @@ from app.sources.bilibili.client import BilibiliLiveClient
 _NOTIFICATIONS: deque[dict[str, Any]] = deque(maxlen=50)
 _notify_seq = 0
 
+
 def push_notification(message: str, kind: str = "info", data: dict[str, Any] | None = None) -> None:
     """向前端通知缓冲推送一条消息。
 
@@ -57,6 +59,7 @@ def push_notification(message: str, kind: str = "info", data: dict[str, Any] | N
             "data": data or {},
         }
     )
+
 
 def get_notifications(since_id: int = 0) -> list[dict[str, Any]]:
     """获取比 ``since_id`` 更新的通知。

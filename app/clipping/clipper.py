@@ -1,4 +1,5 @@
 """Clipping facade (V0.1.14.1)."""
+
 from app.clipping.core import (  # noqa: F401
     ClipOptions,
     _build_audio_filter,

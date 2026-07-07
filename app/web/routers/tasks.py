@@ -1,4 +1,5 @@
 """任务队列 (V0.1.14.1)."""
+
 from __future__ import annotations
 
 from typing import Any
@@ -8,11 +9,13 @@ from fastapi import APIRouter, HTTPException
 _MAX_QUERY_LIMIT = 500
 _MAX_QUERY_DAYS = 365
 
+
 def _clamp(v, lo, hi):
     return max(lo, min(v, hi))
 
 
 router = APIRouter()
+
 
 @router.get("/tasks")
 def get_tasks(limit: int = 50, stage: str | None = None) -> dict[str, Any]:
@@ -45,4 +48,3 @@ def cancel_task(task_id: int) -> dict[str, Any]:
     if not ok:
         raise HTTPException(status_code=400, detail="任务不存在或已完成/失败/取消")
     return {"status": "cancelled"}
-

@@ -1,4 +1,5 @@
 """候选审核 (V0.1.14.1)."""
+
 from __future__ import annotations
 
 from typing import Any, Literal
@@ -12,13 +13,16 @@ from app.web import service
 _MAX_QUERY_LIMIT = 500
 _MAX_QUERY_DAYS = 365
 
+
 def _clamp(v, lo, hi):
     return max(lo, min(v, hi))
 
 
 class BatchRequest(BaseModel):
+    """批量审批/发布/删除请求体。"""
+
     candidate_ids: list[int]
-    action: Literal["approve","reject","publish","delete"]
+    action: Literal["approve", "reject", "publish", "delete"]
 
     @field_validator("candidate_ids")
     @classmethod
@@ -29,7 +33,9 @@ class BatchRequest(BaseModel):
             raise ValueError("too many")
         return v
 
+
 router = APIRouter()
+
 
 @router.get("/candidates")
 def get_candidates(limit: int = 50, status: str | None = None) -> list[dict[str, Any]]:
@@ -93,4 +99,3 @@ async def batch_candidates(request: BatchRequest) -> dict[str, Any]:
         except (ValueError, HTTPException) as exc:
             failures.append({"candidate_id": cid, "error": str(exc)})
     return {"success": results, "failed": failures}
-

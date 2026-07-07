@@ -1,4 +1,5 @@
 """登录管理 (V0.1.14.1)."""
+
 from __future__ import annotations
 
 import time as _login_time
@@ -12,11 +13,13 @@ _LOGIN_FAILURES: dict[str, list[float]] = {}
 _MAX_LOGIN_ATTEMPTS = 5
 _LOGIN_WINDOW_S = 300
 
+
 def _check_login_rate(ip: str) -> bool:
     now = _login_time.time()
     timestamps = _LOGIN_FAILURES.get(ip, [])
     _LOGIN_FAILURES[ip] = [t for t in timestamps if now - t <= _LOGIN_WINDOW_S]
     return len(_LOGIN_FAILURES[ip]) < _MAX_LOGIN_ATTEMPTS
+
 
 def _record_login_failure(ip: str) -> None:
     now = _login_time.time()
@@ -26,6 +29,7 @@ def _record_login_failure(ip: str) -> None:
 
 
 router = APIRouter()
+
 
 # ----------------------------- 账号登录 / Cookie 管理 ----------------------------- #
 @router.get("/cookie-status")

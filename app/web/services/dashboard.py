@@ -1,4 +1,5 @@
 """Dashboard (V0.1.14.1)."""
+
 from __future__ import annotations
 
 import json
@@ -52,6 +53,7 @@ def dashboard_state() -> dict[str, Any]:
         "modes": [RoomMode.MANUAL, RoomMode.SEMI, RoomMode.AUTO],
     }
 
+
 def _room_dict(room: LiveRoom, running: bool) -> dict[str, Any]:
     """把房间转为可序列化字典并附带运行状态。"""
     return {
@@ -80,6 +82,7 @@ def _room_dict(room: LiveRoom, running: bool) -> dict[str, Any]:
         # V0.1.6 P2: 房间配置。
         "room_config": json.loads(room.room_config_json) if room.room_config_json else {},
     }
+
 
 def danmaku_overview(limit: int = 50, session_id: int | None = None) -> dict[str, Any]:
     """返回最近弹幕与按会话聚合的弹幕热度统计。
@@ -121,6 +124,7 @@ def danmaku_overview(limit: int = 50, session_id: int | None = None) -> dict[str
         for d in recent_rows
     ]
     return {"available": True, "total": len(all_rows), "recent": recent, "sessions": sessions}
+
 
 def pipeline_progress(session_id: int | None = None) -> dict[str, Any]:
     """返回录制→转写→评分的流水线进度统计。

@@ -1,4 +1,5 @@
-﻿"""ASR transcribe facade (V0.1.14.1)."""
+"""ASR transcribe facade (V0.1.14.1)."""
+
 from app.analysis.transcription.backends import (  # noqa: F401
     FasterWhisperBackend,
     FunASRBackend,

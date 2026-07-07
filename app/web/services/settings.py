@@ -1,4 +1,5 @@
 """Settings (V0.1.14.1)."""
+
 from __future__ import annotations
 
 import asyncio
@@ -26,6 +27,7 @@ def get_settings_view() -> dict[str, Any]:
         "ready_dir": str(ready_to_upload_dir()),
     }
 
+
 def update_settings(fields: dict[str, Any]) -> dict[str, Any]:
     """更新运行时开关(biliup_enabled / auto_upload)。
 
@@ -40,6 +42,7 @@ def update_settings(fields: dict[str, Any]) -> dict[str, Any]:
     _update_trend_schedule(fields)
     return get_settings_view()
 
+
 def _valid_hhmm(value: str) -> bool:
     """校验 ``HH:MM`` 时间字符串是否合法。
 
@@ -51,6 +54,7 @@ def _valid_hhmm(value: str) -> bool:
         return 0 <= int(h) < 24 and 0 <= int(m) < 60
     except (ValueError, AttributeError):
         return False
+
 
 def _update_trend_schedule(fields: dict[str, Any]) -> None:
     """更新网感定时采集的相关设置(开关/窗口/间隔)。
@@ -71,6 +75,7 @@ def _update_trend_schedule(fields: dict[str, Any]) -> None:
             raise ValueError("采集间隔需 >= 1 分钟。")
         settings_store.set_setting("trend_schedule_interval_min", str(interval))
 
+
 def list_llm_providers() -> dict[str, Any]:
     """返回多大模型配置(对外视图,key 掩码)。
 
@@ -83,6 +88,7 @@ def list_llm_providers() -> dict[str, Any]:
         "active_count": len(provs.active_providers()),
     }
 
+
 def save_llm_providers(items: list[dict[str, Any]]) -> dict[str, Any]:
     """保存多大模型配置(未提供新 key 的条目沿用旧 key)。
 
@@ -93,6 +99,7 @@ def save_llm_providers(items: list[dict[str, Any]]) -> dict[str, Any]:
 
     provs.merge_and_save(items)
     return list_llm_providers()
+
 
 async def test_llm_providers() -> dict[str, Any]:
     """逐个测试已启用 provider 的连通性(各发一次极小请求)。

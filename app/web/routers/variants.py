@@ -1,4 +1,5 @@
 """版本管理 (V0.1.14.1)."""
+
 from __future__ import annotations
 
 from typing import Any
@@ -6,6 +7,7 @@ from typing import Any
 from fastapi import APIRouter
 
 router = APIRouter()
+
 
 @router.get("/events/{event_id}/variants")
 def list_variants(event_id: int) -> list[dict[str, Any]]:
@@ -34,4 +36,3 @@ def list_variants(event_id: int) -> list[dict[str, Any]]:
         }
         for v in variants
     ]
-

@@ -1,4 +1,5 @@
 """Schedules (V0.1.14.1)."""
+
 from __future__ import annotations
 
 from typing import Any
@@ -37,6 +38,7 @@ def list_schedules() -> list[dict[str, Any]]:
             )
     return result
 
+
 def create_schedule(room_id: int, scheduled_at: str, recurrent: str = "") -> dict[str, Any]:
     """创建一个录制预约。
 
@@ -71,6 +73,7 @@ def create_schedule(room_id: int, scheduled_at: str, recurrent: str = "") -> dic
         db.refresh(sched)
         return {"id": sched.id, "room_id": sched.room_id, "scheduled_at": sched.scheduled_at.isoformat()}
 
+
 def delete_schedule(schedule_id: int) -> None:
     """删除一个录制预约。
 
@@ -82,6 +85,7 @@ def delete_schedule(schedule_id: int) -> None:
         if sched is None:
             raise ValueError(f"预约不存在: id={schedule_id}")
         db.delete(sched)
+
 
 def toggle_schedule(schedule_id: int, enabled: bool) -> dict[str, Any]:
     """切换录制预约的启用/禁用。
@@ -98,6 +102,7 @@ def toggle_schedule(schedule_id: int, enabled: bool) -> dict[str, Any]:
         sched.enabled = enabled
         db.add(sched)
         return {"id": sched.id, "enabled": sched.enabled}
+
 
 def get_due_schedules() -> list[dict[str, Any]]:
     """返回到期且尚未触发的预约(供后台定时器调用)。
@@ -119,6 +124,7 @@ def get_due_schedules() -> list[dict[str, Any]]:
         {"id": r.id, "room_id": r.room_id, "scheduled_at": r.scheduled_at.isoformat(), "recurrent": r.recurrent}
         for r in rows
     ]
+
 
 def mark_schedule_triggered(schedule_id: int) -> None:
     """标记预约已触发。

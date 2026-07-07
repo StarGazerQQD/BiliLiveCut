@@ -1,4 +1,5 @@
 """媒体预览 (V0.1.14.1)."""
+
 from __future__ import annotations
 
 from pathlib import Path
@@ -9,6 +10,7 @@ from fastapi.responses import FileResponse
 from app.web import service
 
 router = APIRouter()
+
 
 @router.get("/clips/{clip_id}/video")
 def clip_video(clip_id: int) -> FileResponse:
@@ -42,4 +44,3 @@ def clip_cover(clip_id: int) -> FileResponse:
     if not str(file_path).startswith(str(clips_root)):
         raise HTTPException(status_code=403, detail="禁止访问")
     return FileResponse(str(file_path), media_type="image/jpeg")
-
