@@ -1,5 +1,14 @@
-"""Web 服务层 (V0.1.14).
+"""Web services (V0.1.14.1)."""
 
-实现代码保持于 app.web.service.py。
-本子包提供模块化入口，供未来按业务实体拆分。
-"""
+from app.web.services.candidates import *  # noqa: F401, F403
+from app.web.services.clips import *  # noqa: F401, F403
+from app.web.services.dashboard import *  # noqa: F401, F403
+from app.web.services.learning import *  # noqa: F401, F403
+from app.web.services.logs import *  # noqa: F401, F403
+from app.web.services.notifications import *  # noqa: F401, F403
+from app.web.services.publishing import *  # noqa: F401, F403
+from app.web.services.rooms import *  # noqa: F401, F403
+from app.web.services.schedules import *  # noqa: F401, F403
+from app.web.services.settings import *  # noqa: F401, F403
+from app.web.services.transcripts import *  # noqa: F401, F403
+from app.web.services.trends import *  # noqa: F401, F403
