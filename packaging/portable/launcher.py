@@ -43,10 +43,7 @@ MODEL_DIRNAME = "whisper-large-v3-turbo"
 HF_MIRROR = "https://hf-mirror.com"
 
 # FFmpeg
-FFMPEG_WIN_URL = (
-    "https://github.com/BtbN/FFmpeg-Builds/releases/download/latest/"
-    "ffmpeg-master-latest-win64-gpl.zip"
-)
+FFMPEG_WIN_URL = "https://github.com/BtbN/FFmpeg-Builds/releases/download/latest/ffmpeg-master-latest-win64-gpl.zip"
 
 
 # ── 资源路径 ──────────────────────────────────────────────────────
@@ -75,10 +72,7 @@ def get_payload_zip() -> Path:
     """
     p = get_bundled_resource_path("source_payload.zip")
     if p is None:
-        raise RuntimeError(
-            "找不到内置 Payload (source_payload.zip)。"
-            "请确保 EXE 已正确嵌入 Payload。"
-        )
+        raise RuntimeError("找不到内置 Payload (source_payload.zip)。请确保 EXE 已正确嵌入 Payload。")
     return p
 
 
@@ -90,9 +84,7 @@ def get_payload_manifest() -> dict[str, Any]:
     """
     p = get_bundled_resource_path("payload_manifest.json")
     if p is None:
-        raise RuntimeError(
-            "找不到内置 Manifest (payload_manifest.json)。"
-        )
+        raise RuntimeError("找不到内置 Manifest (payload_manifest.json)。")
     return json.loads(p.read_text(encoding="utf-8"))
 
 
@@ -153,19 +145,13 @@ def install_source_from_payload(app_root: Path) -> Path:
     actual_hash = hasher.hexdigest()
     expected_hash = manifest.get("payload_sha256", "")
     if actual_hash != expected_hash:
-        raise RuntimeError(
-            f"Payload 哈希不匹配: actual={actual_hash[:16]} expected={expected_hash[:16]}"
-        )
+        raise RuntimeError(f"Payload 哈希不匹配: actual={actual_hash[:16]} expected={expected_hash[:16]}")
 
     # 验证版本和 Commit
     if manifest.get("release_version") != RELEASE_VERSION:
-        raise RuntimeError(
-            f"Payload 版本不匹配: {manifest.get('release_version')} != {RELEASE_VERSION}"
-        )
+        raise RuntimeError(f"Payload 版本不匹配: {manifest.get('release_version')} != {RELEASE_VERSION}")
     if manifest.get("source_commit_short") != SOURCE_COMMIT_SHORT:
-        raise RuntimeError(
-            f"Source Commit 不匹配: {manifest.get('source_commit_short')} != {SOURCE_COMMIT_SHORT}"
-        )
+        raise RuntimeError(f"Source Commit 不匹配: {manifest.get('source_commit_short')} != {SOURCE_COMMIT_SHORT}")
 
     print(f"  Payload: v{RELEASE_VERSION} | Source: {SOURCE_COMMIT_SHORT} | SHA256: {actual_hash[:16]}")
 
@@ -320,7 +306,11 @@ def prepare_venv(app_root: Path) -> Path:
     :param app_root: 应用根目录。
     :returns: venv python 路径。
     """
-    venv_python = app_root / VENV_DIR / ("Scripts" if sys.platform == "win32" else "bin") / "python.exe" if sys.platform == "win32" else app_root / VENV_DIR / "bin" / "python"
+    venv_python = (
+        app_root / VENV_DIR / ("Scripts" if sys.platform == "win32" else "bin") / "python.exe"
+        if sys.platform == "win32"
+        else app_root / VENV_DIR / "bin" / "python"
+    )
 
     if sys.platform == "win32":
         venv_python = app_root / VENV_DIR / "Scripts" / "python.exe"
@@ -358,8 +348,7 @@ def install_dependencies(venv_python: Path, app_root: Path, req_file: Path) -> N
     # 检查是否已安装
     try:
         subprocess.run(
-            [str(venv_python), "-c",
-             "import fastapi, uvicorn, sqlmodel, pydantic; print('ok')"],
+            [str(venv_python), "-c", "import fastapi, uvicorn, sqlmodel, pydantic; print('ok')"],
             check=True,
             capture_output=True,
             timeout=30,
@@ -375,9 +364,15 @@ def install_dependencies(venv_python: Path, app_root: Path, req_file: Path) -> N
         print(f"  离线安装依赖 ({len(list(wheels_dir.glob('*.whl')))} wheels)...")
         subprocess.run(
             [
-                str(venv_python), "-m", "pip", "install",
-                "--no-index", "--find-links", str(wheels_dir),
-                "-r", str(req_file),
+                str(venv_python),
+                "-m",
+                "pip",
+                "install",
+                "--no-index",
+                "--find-links",
+                str(wheels_dir),
+                "-r",
+                str(req_file),
             ],
             check=True,
             timeout=600,
@@ -387,10 +382,16 @@ def install_dependencies(venv_python: Path, app_root: Path, req_file: Path) -> N
         print("  联网安装依赖 (国内镜像)...")
         subprocess.run(
             [
-                str(venv_python), "-m", "pip", "install",
-                "-r", str(req_file),
-                "-i", PIP_INDEX,
-                "--extra-index-url", PIP_EXTRA_INDEX,
+                str(venv_python),
+                "-m",
+                "pip",
+                "install",
+                "-r",
+                str(req_file),
+                "-i",
+                PIP_INDEX,
+                "--extra-index-url",
+                PIP_EXTRA_INDEX,
                 *[f"--trusted-host={h}" for h in PIP_TRUSTED_HOSTS],
             ],
             check=True,
@@ -428,7 +429,7 @@ def main() -> None:
     print(f"  {APP_NAME} {VERSION} — Portable 启动器")
     print("=" * 60)
     print(f"  工作目录: {app_root}")
-    print(f"  GitHub 请求: 0 (源码来自内置 Payload)")
+    print("  GitHub 请求: 0 (源码来自内置 Payload)")
     print()
 
     try:
@@ -493,8 +494,14 @@ def main() -> None:
 
         subprocess.run(
             [
-                str(venv_python), "-m", "app.cli", "serve",
-                "--host", "127.0.0.1", "--port", "8000",
+                str(venv_python),
+                "-m",
+                "app.cli",
+                "serve",
+                "--host",
+                "127.0.0.1",
+                "--port",
+                "8000",
             ],
             env=env,
             cwd=str(app_root),

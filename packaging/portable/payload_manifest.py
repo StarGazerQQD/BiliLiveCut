@@ -6,7 +6,6 @@
 from __future__ import annotations
 
 import hashlib
-import json
 import os
 import platform
 from datetime import UTC, datetime
@@ -151,9 +150,7 @@ def validate_manifest(manifest: dict[str, Any], payload_zip_path: Path) -> list[
             errors.append(f"Manifest 缺少必需字段: {field}")
 
     if manifest.get("release_version") != RELEASE_VERSION:
-        errors.append(
-            f"发布版本不匹配: manifest={manifest.get('release_version')} expected={RELEASE_VERSION}"
-        )
+        errors.append(f"发布版本不匹配: manifest={manifest.get('release_version')} expected={RELEASE_VERSION}")
 
     if manifest.get("source_commit") != SOURCE_COMMIT_FULL:
         errors.append(

@@ -28,8 +28,6 @@ def get_app_root() -> Path:
     """
     # PyInstaller one-file: sys._MEIPASS 是临时解压目录，exe 在 sys.executable 的父目录
     if getattr(sys, "frozen", False):
-        import sys
-
         return Path(sys.executable).resolve().parent
     return Path.cwd()
 
@@ -146,7 +144,7 @@ def install_release(
     """
     import zipfile
 
-    from payload_manifest import compute_file_sha256, validate_manifest
+    from payload_manifest import validate_manifest
 
     if app_root is None:
         app_root = get_app_root()
@@ -277,4 +275,3 @@ def create_env_from_template(app_root: Path | None = None) -> bool:
         return True
 
     return False
-

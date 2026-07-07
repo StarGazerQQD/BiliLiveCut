@@ -87,9 +87,7 @@ def main() -> int:
 
     # 3. 验证每个系列只存在于一个文件
     for sn in set(main_series) & set(archive_versions.keys()):
-        all_errors.append(
-            f"系列 0.1.{sn} 同时存在于主 CHANGELOG.md 和归档文件中 (重复)"
-        )
+        all_errors.append(f"系列 0.1.{sn} 同时存在于主 CHANGELOG.md 和归档文件中 (重复)")
 
     # 4. 验证归档文件命名
     for sn in archive_versions:
@@ -121,11 +119,11 @@ def main() -> int:
     print(f"归档文件: {len(archive_versions)} 个")
 
     if all_errors:
-        print(f"\n{'='*60}")
+        print(f"\n{'=' * 60}")
         print(f"发现 {len(all_errors)} 个问题:")
         for err in all_errors:
             print(f"  - {err}")
-        print(f"{'='*60}")
+        print(f"{'=' * 60}")
         return 1
     else:
         print("\n所有校验通过!")

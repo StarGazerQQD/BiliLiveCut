@@ -1,4 +1,5 @@
 """构建 Payload 的快捷入口。"""
+
 import sys
 
 sys.path.insert(0, "packaging/portable")

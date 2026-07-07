@@ -8,7 +8,6 @@ from __future__ import annotations
 
 import json
 import shutil
-import subprocess
 import sys
 import tempfile
 import zipfile
@@ -54,7 +53,8 @@ def build_full_bundle() -> Path:
 
         # README
         readme = bundle / "README.txt"
-        readme.write_text(f"""\
+        readme.write_text(
+            f"""\
 BiliLiveCut Portable Full {RELEASE_VERSION}
 ============================================
 
@@ -84,7 +84,9 @@ BiliLiveCut Portable Full {RELEASE_VERSION}
   业务源码基线: 74c21b4
   发布版本: {RELEASE_VERSION}
   构建时间: {__import__("datetime").datetime.now().strftime("%Y-%m-%d %H:%M:%S")}
-""", encoding="utf-8")
+""",
+            encoding="utf-8",
+        )
 
         # checksums.json
         manifest_path = PAYLOAD_DIR / "payload_manifest.json"
@@ -102,9 +104,7 @@ BiliLiveCut Portable Full {RELEASE_VERSION}
             "source_commit": manifest["source_commit"],
             "exe_sha256": exe_sha256.hexdigest(),
         }
-        (bundle / "checksums.json").write_text(
-            json.dumps(checksums, ensure_ascii=False, indent=2), encoding="utf-8"
-        )
+        (bundle / "checksums.json").write_text(json.dumps(checksums, ensure_ascii=False, indent=2), encoding="utf-8")
 
         # 打包 ZIP
         zip_path = DIST_DIR / f"{FULL_NAME}.zip"
@@ -130,9 +130,7 @@ BiliLiveCut Portable Full {RELEASE_VERSION}
         (DIST_DIR / "build-manifest.json").write_text(
             json.dumps(build_manifest, ensure_ascii=False, indent=2), encoding="utf-8"
         )
-        (DIST_DIR / "SHA256SUMS.txt").write_text(
-            f"{zip_sha256}  {FULL_NAME}.zip\n", encoding="utf-8"
-        )
+        (DIST_DIR / "SHA256SUMS.txt").write_text(f"{zip_sha256}  {FULL_NAME}.zip\n", encoding="utf-8")
 
         print(f"\n  [OK] {zip_path.name} ({zip_path.stat().st_size / 1024 / 1024:.1f} MB)")
         print(f"  SHA256: {zip_sha256[:32]}")

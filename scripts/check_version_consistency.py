@@ -77,9 +77,7 @@ def check_changelog(expected: str) -> None:
         return
     title = m.group(0)
     title_ver = re.search(r"V(\d+\.\d+\.\d+\.\d+)", title)
-    base_ver = re.match(r"^(\d+\.\d+\.\d+\.\d+)", expected) or re.match(
-        r"^(\d+\.\d+\.\d+)", expected
-    )
+    base_ver = re.match(r"^(\d+\.\d+\.\d+\.\d+)", expected) or re.match(r"^(\d+\.\d+\.\d+)", expected)
     if not base_ver:
         errors.append(f"{path.name}: 无法解析期望版本 {expected!r}")
         return

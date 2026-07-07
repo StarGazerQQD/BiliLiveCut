@@ -11,21 +11,18 @@
 from __future__ import annotations
 
 import json
-import os
-import shutil
+import sys
 import tempfile
 from pathlib import Path
 
 import pytest
 
 # 添加 portable 模块到路径
-_portable_dir = Path(__file__).resolve().parent.parent
-
-# 需要将 portable 模块目录加入 sys.path
-import sys
+_portable_dir = Path(__file__).resolve().parent.parent  # portable/
+_proj_root = _portable_dir.parent.parent  # BiliLiveCut/
 
 sys.path.insert(0, str(_portable_dir))
-sys.path.insert(0, str(_portable_dir.parent.parent))  # project root
+sys.path.insert(0, str(_proj_root))
 
 
 # ── 辅助 ──────────────────────────────────────────────────────────
@@ -102,8 +99,8 @@ class TestSourceSnapshot:
 
     def test_version_overlay_only_allowed(self, tmp_worktree: str) -> None:
         """验证版本覆盖只修改允许的文件。"""
-        from source_snapshot import apply_version_overlay, extract_source
         from payload_manifest import RELEASE_VERSION
+        from source_snapshot import apply_version_overlay, extract_source
 
         staging = Path(tmp_worktree) / "test_overlay"
         staging.mkdir(parents=True)
@@ -278,7 +275,7 @@ class TestUserDataProtection:
 
     def test_env_not_overwritten(self, tmp_worktree: str) -> None:
         """测试已有 .env 不被覆盖。"""
-        from runtime_layout import install_release, get_active_source_dir, create_env_from_template
+        from runtime_layout import create_env_from_template, install_release
 
         # 先安装 Release
         app_root = Path(tmp_worktree)

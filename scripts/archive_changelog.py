@@ -118,8 +118,7 @@ def main() -> None:
 
     # 7. 更新主 CHANGELOG
     archive_notice = (
-        "\n\n---\n\n"
-        "历史版本归档见 [docs/changelog/CHANGELOG_INDEX.md](docs/changelog/CHANGELOG_INDEX.md)。\n"
+        "\n\n---\n\n历史版本归档见 [docs/changelog/CHANGELOG_INDEX.md](docs/changelog/CHANGELOG_INDEX.md)。\n"
     )
     kept_content = "\n".join(kept_lines).rstrip() + archive_notice + "\n"
 

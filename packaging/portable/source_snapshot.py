@@ -7,9 +7,7 @@ from __future__ import annotations
 
 import logging
 import os
-import shutil
 import subprocess
-import tempfile
 from datetime import UTC, datetime
 from pathlib import Path
 
@@ -98,9 +96,7 @@ def resolve_commit(commit_ref: str) -> str:
 
         # 验证是否是预期的 Commit
         if full_hash != SOURCE_COMMIT_FULL:
-            raise RuntimeError(
-                f"Commit Hash 不匹配: resolved={full_hash} expected={SOURCE_COMMIT_FULL}"
-            )
+            raise RuntimeError(f"Commit Hash 不匹配: resolved={full_hash} expected={SOURCE_COMMIT_FULL}")
 
         return full_hash
     except subprocess.CalledProcessError as exc:
@@ -129,8 +125,7 @@ def extract_source(commit_ref: str, output_dir: Path) -> dict:
     tmp_tar = output_dir / "_archive.tar"
 
     try:
-        cmd = ["git", "-c", "core.autocrlf=false", "archive", "--format=tar",
-               "--output", str(tmp_tar), full_hash]
+        cmd = ["git", "-c", "core.autocrlf=false", "archive", "--format=tar", "--output", str(tmp_tar), full_hash]
         _logger.info("extracting: %s", " ".join(cmd))
         subprocess.run(cmd, check=True, timeout=30)
 
@@ -190,7 +185,7 @@ def apply_version_overlay(staging_dir: Path) -> list[str]:
     init_path = staging_dir / "app" / "__init__.py"
     if init_path.exists():
         content = init_path.read_text(encoding="utf-8")
-        if '0.1.14.4-alpha' in content or '0.1.14.3-alpha' in content:
+        if "0.1.14.4-alpha" in content or "0.1.14.3-alpha" in content:
             content = content.replace('"0.1.14.4-alpha"', f'"{RELEASE_VERSION}"')
             content = content.replace('"0.1.14.3-alpha"', f'"{RELEASE_VERSION}"')
             content = content.replace('"V0.1.14.4 Alpha"', '"V0.1.14.5 Alpha"')
@@ -202,7 +197,7 @@ def apply_version_overlay(staging_dir: Path) -> list[str]:
     toml_path = staging_dir / "pyproject.toml"
     if toml_path.exists():
         content = toml_path.read_text(encoding="utf-8")
-        if '0.1.14.4' in content or '0.1.14.3' in content:
+        if "0.1.14.4" in content or "0.1.14.3" in content:
             content = content.replace('version = "0.1.14.4-alpha"', f'version = "{RELEASE_VERSION}"')
             content = content.replace('version = "0.1.14.3-alpha"', f'version = "{RELEASE_VERSION}"')
             toml_path.write_text(content, encoding="utf-8")
@@ -233,8 +228,8 @@ def apply_version_overlay(staging_dir: Path) -> list[str]:
     setup_py = staging_dir / "setup.py"
     if setup_py.exists():
         content = setup_py.read_text(encoding="utf-8")
-        content = content.replace('0.1.14.4-alpha', RELEASE_VERSION)
-        content = content.replace('0.1.14.3-alpha', RELEASE_VERSION)
+        content = content.replace("0.1.14.4-alpha", RELEASE_VERSION)
+        content = content.replace("0.1.14.3-alpha", RELEASE_VERSION)
         setup_py.write_text(content, encoding="utf-8")
         modified.append("setup.py")
 
@@ -284,8 +279,7 @@ def verify_source_origin(staging_dir: Path, source_commit: str) -> None:
 
         try:
             result = subprocess.run(
-                ["git", "-c", "core.autocrlf=false", "show",
-                 f"{source_commit}:{rel_path.replace(os.sep, '/')}"],
+                ["git", "-c", "core.autocrlf=false", "show", f"{source_commit}:{rel_path.replace(os.sep, '/')}"],
                 capture_output=True,
                 timeout=10,
             )
@@ -296,10 +290,7 @@ def verify_source_origin(staging_dir: Path, source_commit: str) -> None:
             staging_content = file_path.read_bytes().replace(b"\r\n", b"\n")
 
             if commit_content != staging_content:
-                raise RuntimeError(
-                    f"业务文件 {rel_path} 与 Commit {source_commit[:8]} 不一致 — "
-                    "源码可能被非受控修改"
-                )
+                raise RuntimeError(f"业务文件 {rel_path} 与 Commit {source_commit[:8]} 不一致 — 源码可能被非受控修改")
         except subprocess.CalledProcessError:
             continue
         except RuntimeError:

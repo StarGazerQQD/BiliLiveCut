@@ -42,10 +42,7 @@ MODEL_REPO = "mobiuslabsgmbh/faster-whisper-large-v3-turbo"
 MODEL_DIRNAME = "whisper-large-v3-turbo"
 
 # FFmpeg 静态构建(Windows x64;BtbN 提供 ffmpeg.exe/ffprobe.exe 于 bin/ 下)。
-FFMPEG_WIN_URL = (
-    "https://github.com/BtbN/FFmpeg-Builds/releases/download/latest/"
-    "ffmpeg-master-latest-win64-gpl.zip"
-)
+FFMPEG_WIN_URL = "https://github.com/BtbN/FFmpeg-Builds/releases/download/latest/ffmpeg-master-latest-win64-gpl.zip"
 # GitHub 在境内常不稳,提供代理镜像前缀作为回退。
 GH_PROXY_PREFIX = "https://gh-proxy.com/"
 # 下载超时(秒),避免网络不通时长时间卡死。
@@ -74,10 +71,20 @@ MODEL_RECOMMENDED = ["vocabulary.txt", "vocabulary.json", "preprocessor_config.j
 
 # 离线安装成功所需的关键(含原生)传递依赖,缺失会告警提示补齐。
 CRITICAL_TRANSITIVE = [
-    "ctranslate2", "tokenizers", "onnxruntime", "av",   # faster-whisper 运行时
-    "starlette", "anyio", "click", "h11", "sniffio",     # web / http 栈
-    "certifi", "idna", "httpcore",
-    "annotated_types", "typing_extensions",              # pydantic 依赖
+    "ctranslate2",
+    "tokenizers",
+    "onnxruntime",
+    "av",  # faster-whisper 运行时
+    "starlette",
+    "anyio",
+    "click",
+    "h11",
+    "sniffio",  # web / http 栈
+    "certifi",
+    "idna",
+    "httpcore",
+    "annotated_types",
+    "typing_extensions",  # pydantic 依赖
 ]
 
 
@@ -188,8 +195,7 @@ def vendor_wheels(pip_index: str) -> None:
     )
     # 一并封装 pip/setuptools/wheel,保证离线机也能装。
     subprocess.run(
-        [sys.executable, "-m", "pip", "download", "pip", "setuptools", "wheel",
-         "-d", str(wheels)] + index_args,
+        [sys.executable, "-m", "pip", "download", "pip", "setuptools", "wheel", "-d", str(wheels)] + index_args,
         check=True,
     )
     count = len(list(wheels.glob("*.whl"))) + len(list(wheels.glob("*.tar.gz")))
@@ -407,7 +413,10 @@ def _platform_check(build_pf: dict | None, current: dict) -> dict:
     """
     if not build_pf:
         return {
-            "ok": True, "recorded": False, "build": None, "current": current,
+            "ok": True,
+            "recorded": False,
+            "build": None,
+            "current": current,
             "warnings": ["无打包平台记录(manifest 缺失或为旧版),跳过平台一致性校验。"],
         }
     warnings: list[str] = []
@@ -415,14 +424,11 @@ def _platform_check(build_pf: dict | None, current: dict) -> dict:
     if build_pf.get("system") != current["system"]:
         ok = False
         warnings.append(
-            f"操作系统不一致:打包={build_pf.get('system')} 当前={current['system']}"
-            "(wheel 不通用,离线安装会失败)"
+            f"操作系统不一致:打包={build_pf.get('system')} 当前={current['system']}(wheel 不通用,离线安装会失败)"
         )
     if build_pf.get("machine") != current["machine"]:
         ok = False
-        warnings.append(
-            f"CPU 架构不一致:打包={build_pf.get('machine')} 当前={current['machine']}"
-        )
+        warnings.append(f"CPU 架构不一致:打包={build_pf.get('machine')} 当前={current['machine']}")
     if _minor(build_pf.get("python", "")) != _minor(current["python"]):
         ok = False
         warnings.append(
@@ -482,10 +488,7 @@ def collect_status(build_platform: dict | None = None) -> dict:
     source = {"items": src_items, "ok": all(src_items.values())}
     env_present = (DIST_DIR / ".env").exists()
 
-    overall = (
-        model["ok"] and wheels["ok"] and ffmpeg["ok"]
-        and source["ok"] and env_present and platform_check["ok"]
-    )
+    overall = model["ok"] and wheels["ok"] and ffmpeg["ok"] and source["ok"] and env_present and platform_check["ok"]
     return {
         "generated_at": datetime.now(UTC).isoformat(),
         "build_platform": build_platform,
@@ -516,6 +519,7 @@ def print_report(status: dict) -> bool:
     :param status: 状态字典。
     :returns: 全部通过返回 ``True``。
     """
+
     def mark(ok: bool) -> str:
         return "[OK]  " if ok else "[FAIL]"
 
@@ -534,14 +538,12 @@ def print_report(status: dict) -> bool:
 
     m = status["model"]
     size_mb = m["model_bin_size"] / 1024 / 1024
-    print(f"{mark(m['ok'])} 模型 large-v3-turbo:model.bin={'有' if m['model_bin'] else '无'} "
-          f"({size_mb:.0f} MB)")
+    print(f"{mark(m['ok'])} 模型 large-v3-turbo:model.bin={'有' if m['model_bin'] else '无'} ({size_mb:.0f} MB)")
     if m["required_missing"]:
         print(f"        缺少必需文件:{', '.join(m['required_missing'])}")
 
     f = status["ffmpeg"]
-    print(f"{mark(f['ok'])} FFmpeg:ffmpeg={'有' if f['ffmpeg'] else '无'} "
-          f"ffprobe={'有' if f['ffprobe'] else '无'}")
+    print(f"{mark(f['ok'])} FFmpeg:ffmpeg={'有' if f['ffmpeg'] else '无'} ffprobe={'有' if f['ffprobe'] else '无'}")
     if not f["ok"]:
         print("        缺少 ffmpeg/ffprobe:请打包时不要跳过,或用 --ffmpeg-zip 指定本地压缩包。")
 
@@ -660,11 +662,13 @@ def main() -> None:
     parser.add_argument("--only-source", action="store_true", help="仅复制源码")
     parser.add_argument("--check", action="store_true", help="仅体检:核对模型/依赖/ffmpeg/平台")
     parser.add_argument(
-        "--repair", action="store_true",
+        "--repair",
+        action="store_true",
         help="自动修复:发现缺失/平台不一致即自动下载合适组件(全自动)",
     )
     parser.add_argument(
-        "--hf-mirror", default="https://hf-mirror.com",
+        "--hf-mirror",
+        default="https://hf-mirror.com",
         help="HuggingFace 镜像地址(留空用官方)",
     )
     parser.add_argument("--pip-index", default="", help="pip 镜像索引地址")

@@ -8,7 +8,6 @@
 from __future__ import annotations
 
 import json
-import shutil
 import subprocess
 import sys
 from pathlib import Path
@@ -56,9 +55,13 @@ def build_exe() -> Path:
 
     # PyInstaller 构建
     cmd = [
-        sys.executable, "-m", "PyInstaller",
-        "--distpath", str(DIST_DIR),
-        "--workpath", str(PORTABLE_DIR / "build" / "pyinstaller"),
+        sys.executable,
+        "-m",
+        "PyInstaller",
+        "--distpath",
+        str(DIST_DIR),
+        "--workpath",
+        str(PORTABLE_DIR / "build" / "pyinstaller"),
         str(SPEC_FILE),
     ]
 

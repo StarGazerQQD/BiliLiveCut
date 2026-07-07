@@ -1,5 +1,39 @@
 # Changelog
 
+## V0.1.14.5 Alpha (2026-07-07)
+
+### Portable 内嵌 Payload 构建系统 — 源码基线固定、离线发行
+
+本轮为架构迭代，建立源码从固定 Git Commit 提取、内嵌到 Portable EXE 的完整发行链路。
+
+**目录迁移**
+- `Publish-PnP/` → `packaging/portable/`，同步更新所有引用和 `.gitignore`
+
+**Payload 构建系统**
+- `payload_manifest.py`: 定义 Payload Manifest 规范 (format_version 1)，含逐文件 SHA-256
+- `source_snapshot.py`: 从 `74c21b4` 通过 `git archive` 安全提取源码，禁止工作区污染
+- `build_payload.py`: 构建 `source_payload.zip`，自动验证可复现性（连续构建 SHA-256 一致）
+- `runtime_layout.py`: Runtime 目录布局、`staging` → `rename` 原子安装、`current.json` 原子更新
+
+**Portable Launcher**
+- `launcher.py`: 重写为从 EXE 内置 Payload 释放源码，首次启动 GitHub 请求数为 0
+- `build_exe.py`: Lite 版构建 (PyInstaller one-file)
+- `build_full_bundle.py`: Full 离线包构建
+- `portable_launcher.spec`: PyInstaller 规格文件
+
+**Payload 数据**
+- Payload ZIP: 187 文件，426 KB
+- SHA-256: `93ff7bfab0cba6c1e88f3d9a815b21164aa70a3b0110be70adfe15cf84f92708`
+- Source: `74c21b4` (`74c21b401f1da4ef52f0333c94e3874e80f8ceef`)
+- Release Overlay: `app/__init__.py`, `pyproject.toml`, `README.md`, `CHANGELOG.md`, `setup.py`, `setup_c.py`
+
+**测试 (19 项全部通过)**
+- Source Snapshot: Commit 解析、提取、Overlay 受控
+- Payload: ZIP 构建、Manifest 校验、Zip Slip 防护、可复现性
+- Runtime: 原子安装、staging 清理、current.json、重复安装跳过
+- 用户数据: `.env` 不覆盖、Release 目录不含敏感文件
+- 安全: Manifest 篡改检测、Payload 篡改检测
+
 ## V0.1.14.4 Alpha (2026-07-07)
 
 ### 稳定性收口 — 全链路崩溃安全

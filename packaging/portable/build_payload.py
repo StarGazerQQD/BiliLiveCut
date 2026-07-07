@@ -13,9 +13,7 @@ from __future__ import annotations
 import json
 import logging
 import shutil
-import time
 import zipfile
-from datetime import UTC, datetime
 from pathlib import Path
 
 from payload_manifest import (
@@ -151,9 +149,7 @@ def build_payload(source_commit: str = "74c21b4", builder_commit: str | None = N
     import subprocess
 
     if builder_commit is None:
-        result = subprocess.run(
-            ["git", "rev-parse", "HEAD"], capture_output=True, text=True, check=True
-        )
+        result = subprocess.run(["git", "rev-parse", "HEAD"], capture_output=True, text=True, check=True)
         builder_commit = result.stdout.strip()
 
     # 清理并创建输出目录
