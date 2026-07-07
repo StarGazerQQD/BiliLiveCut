@@ -1,7 +1,7 @@
 """分析阶段 Worker — compute/commit 真正分离。
 
 analyze_compute 只做评分计算, 不创建 Candidate/Event, 不写 DB。
-commit_highlight 在租约保护下创建 Candidate + Event, 并执行所有 DB 写操作。
+commit_highlight 在租约保护下实现真正并发幂等的 Candidate + Event 创建。
 """
 
 from __future__ import annotations
@@ -15,6 +15,7 @@ from datetime import timedelta
 from enum import StrEnum
 from typing import Any
 
+from sqlalchemy.exc import IntegrityError as _IntegrityError
 from sqlmodel import select
 
 from app.analysis import audio as audio_mod
@@ -156,7 +157,7 @@ def commit_highlight(lease: TaskLease, compute_result: dict[str, Any], ms: int) 
                 db.commit()
                 return
 
-            # ── CANDIDATE: 从 draft 数据创建 Candidate ───
+            # ── CANDIDATE: 幂等创建 Candidate ───────────
             dedup_hash = (
                 compute_result.get("dedup_hash")
                 or hashlib.sha1(
@@ -166,55 +167,35 @@ def commit_highlight(lease: TaskLease, compute_result: dict[str, Any], ms: int) 
                 ).hexdigest()
             )
 
-            candidate = HighlightCandidate(
-                session_id=compute_result["session_id"],
-                peak_ts=compute_result["peak_ts"],
-                start_ts=compute_result["start_ts"],
-                end_ts=compute_result["end_ts"],
-                rule_score=compute_result["rule_score"],
-                llm_score=compute_result.get("llm_score", 0.0),
-                highlight_score=compute_result["highlight_score"],
-                features_json=compute_result.get("features_json", "{}"),
-                reason=compute_result.get("reason", ""),
-                status=compute_result.get("initial_status", CandidateStatus.PENDING),
-                dedup_hash=dedup_hash,
-            )
-            db.add(candidate)
-            db.flush()
-            db.refresh(candidate)
-
-            cid = candidate.id
-            _logger.info(
-                "candidate_created: cid=%s segment=%s score=%.3f",
-                cid,
-                segment_id,
+            candidate = _get_or_create_candidate(
+                db,
+                dedup_hash,
+                compute_result["session_id"],
+                compute_result["peak_ts"],
+                compute_result["start_ts"],
+                compute_result["end_ts"],
+                compute_result["rule_score"],
+                compute_result.get("llm_score", 0.0),
                 compute_result["highlight_score"],
+                compute_result.get("features_json", "{}"),
+                compute_result.get("reason", ""),
+                compute_result.get("initial_status", CandidateStatus.PENDING),
             )
+            cid = candidate.id
 
-            # 幂等创建 Event
-            from app.db.models import HighlightEvent as HE  # noqa: PLC0415
-
-            existing = db.exec(select(HE).where(HE.candidate_id == cid)).first()
-            event_id = existing.id if existing is not None else None
-            if event_id is None:
-                event = HighlightEvent(
-                    candidate_id=cid,
-                    session_id=compute_result["session_id"],
-                    raw_start_ts=compute_result["start_ts"],
-                    raw_end_ts=compute_result["end_ts"],
-                    rule_score=compute_result["rule_score"],
-                    llm_score=compute_result.get("llm_score", 0.0),
-                    highlight_score=compute_result["highlight_score"],
-                    features_json=compute_result.get("features_json", "{}"),
-                    reason=compute_result.get("reason", ""),
-                    review_status=ReviewStatus.PENDING,
-                    review_by="auto",
-                )
-                db.add(event)
-                db.flush()
-                db.refresh(event)
-                event_id = event.id
-                _logger.info("auto_event: eid=%s cid=%s", event_id, cid)
+            # 幂等创建 Event (含 IntegrityError 保护)
+            event_id = _get_or_create_event(
+                db,
+                cid,
+                compute_result["session_id"],
+                compute_result["start_ts"],
+                compute_result["end_ts"],
+                compute_result["rule_score"],
+                compute_result.get("llm_score", 0.0),
+                compute_result["highlight_score"],
+                compute_result.get("features_json", "{}"),
+                compute_result.get("reason", ""),
+            )
 
             mark_completed(task, ms)
             enqueue_next(task, TaskStatus.CANDIDATE_CREATED, candidate_id=cid, event_id=event_id)
@@ -223,6 +204,142 @@ def commit_highlight(lease: TaskLease, compute_result: dict[str, Any], ms: int) 
 
     except LeaseLostError:
         _logger.warning("stale_result_discarded: highlight task=%s 已失去租约", lease.task_id)
+
+
+def _get_or_create_candidate(
+    db,
+    dedup_hash: str,
+    session_id: int,
+    peak_ts,
+    start_ts,
+    end_ts,
+    rule_score: float,
+    llm_score: float,
+    highlight_score: float,
+    features_json: str,
+    reason: str,
+    initial_status: str,
+) -> HighlightCandidate:
+    """并发幂等获取或创建 HighlightCandidate。
+
+    按稳定业务键 dedup_hash 查询:
+    → 存在则复用
+    → 不存在则尝试插入并 flush
+    → IntegrityError → rollback savepoint → 重新查询已存在记录
+
+    :param db: SQLModel session。
+    :param dedup_hash: 稳定内容指纹 (业务唯一键)。
+    :returns: 已有或新创建的 HighlightCandidate。
+    """
+    # 1) 优先查询已有 Candidate
+    existing = db.exec(select(HighlightCandidate).where(HighlightCandidate.dedup_hash == dedup_hash)).first()
+    if existing is not None:
+        _logger.info(
+            "candidate_reused: cid=%s dedup_hash=%s (幂等复用)",
+            existing.id,
+            dedup_hash[:16],
+        )
+        return existing
+
+    # 2) 不存在 → 尝试插入 (在 savepoint 中)
+    candidate = HighlightCandidate(
+        session_id=session_id,
+        peak_ts=peak_ts,
+        start_ts=start_ts,
+        end_ts=end_ts,
+        rule_score=rule_score,
+        llm_score=llm_score,
+        highlight_score=highlight_score,
+        features_json=features_json,
+        reason=reason,
+        status=initial_status,
+        dedup_hash=dedup_hash,
+    )
+    try:
+        with db.begin_nested():
+            db.add(candidate)
+            db.flush()
+        db.refresh(candidate)
+        _logger.info(
+            "candidate_created: cid=%s dedup_hash=%s score=%.3f",
+            candidate.id,
+            dedup_hash[:16],
+            highlight_score,
+        )
+        return candidate
+    except _IntegrityError:
+        # 并发冲突 — 回滚 savepoint, 查询对方创建的记录
+        _logger.info(
+            "candidate_conflict_resolved: dedup_hash=%s (并发创建, 复用已有)",
+            dedup_hash[:16],
+        )
+        existing = db.exec(select(HighlightCandidate).where(HighlightCandidate.dedup_hash == dedup_hash)).first()
+        if existing is not None:
+            return existing
+        # 极端情况: 冲突后仍查不到 (不可能, 但做防御)
+        raise AssertionError(f"IntegrityError on dedup_hash={dedup_hash[:16]} but existing record not found") from None
+
+
+def _get_or_create_event(
+    db,
+    candidate_id: int,
+    session_id: int,
+    raw_start_ts,
+    raw_end_ts,
+    rule_score: float,
+    llm_score: float,
+    highlight_score: float,
+    features_json: str,
+    reason: str,
+) -> int:
+    """并发幂等获取或创建 HighlightEvent。
+
+    按 candidate_id 查询 (表级唯一约束保护):
+    → 存在则返回已有 event_id
+    → 不存在则尝试插入
+    → IntegrityError → rollback savepoint → 重新查询
+
+    :param db: SQLModel session。
+    :param candidate_id: 关联的 HighlightCandidate ID。
+    :returns: event_id。
+    """
+    # 1) 优先查询
+    existing = db.exec(select(HighlightEvent).where(HighlightEvent.candidate_id == candidate_id)).first()
+    if existing is not None:
+        _logger.debug("event_reused: eid=%s cid=%s (幂等复用)", existing.id, candidate_id)
+        return existing.id
+
+    # 2) 尝试插入
+    event = HighlightEvent(
+        candidate_id=candidate_id,
+        session_id=session_id,
+        raw_start_ts=raw_start_ts,
+        raw_end_ts=raw_end_ts,
+        rule_score=rule_score,
+        llm_score=llm_score,
+        highlight_score=highlight_score,
+        features_json=features_json,
+        reason=reason,
+        review_status=ReviewStatus.PENDING,
+        review_by="auto",
+    )
+    try:
+        with db.begin_nested():
+            db.add(event)
+            db.flush()
+        db.refresh(event)
+        _logger.info("auto_event: eid=%s cid=%s", event.id, candidate_id)
+        return event.id
+    except _IntegrityError:
+        # 并发冲突 — 回滚 savepoint, 查询对方创建的记录
+        _logger.info(
+            "event_conflict_resolved: cid=%s (并发创建, 复用已有)",
+            candidate_id,
+        )
+        existing = db.exec(select(HighlightEvent).where(HighlightEvent.candidate_id == candidate_id)).first()
+        if existing is not None:
+            return existing.id
+        raise AssertionError(f"IntegrityError on candidate_id={candidate_id} but existing Event not found") from None
 
 
 def _mark_scored_in_db(db, segment_id: int) -> None:

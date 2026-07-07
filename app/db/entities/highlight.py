@@ -26,8 +26,11 @@ class HighlightCandidate(SQLModel, table=True):
     features_json: str | None = Field(default=None, description="各维度特征 JSON")
     reason: str | None = Field(default=None, description="LLM 给出的高光理由")
     status: str = Field(default=CandidateStatus.PENDING, description="候选状态")
-    dedup_hash: str | None = Field(default=None, index=True, description="内容指纹,用于查重")
+    dedup_hash: str | None = Field(default=None, description="内容指纹, 用于并发幂等去重 (稳定业务键, 生产路径必填)")
     created_at: datetime = Field(default_factory=utcnow)
+
+    # V0.1.14.3: dedup_hash 业务唯一约束 (并发幂等)
+    __table_args__ = (UniqueConstraint("dedup_hash", name="uq_candidate_dedup"),)
 
 
 class HighlightEvent(SQLModel, table=True):

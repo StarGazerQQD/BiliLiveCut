@@ -449,6 +449,7 @@ def _verify_critical_indexes() -> bool:
         ("transcripts", "segment_id", "Transcript.segment_id 索引"),
     ]
     composite = [
+        ("highlight_candidates", "HighlightCandidate(dedup_hash) 唯一"),
         ("highlight_topics", "HighlightTopic(event_id, topic_id) 唯一"),
         ("upload_tasks", "UploadTask(clip_id, uploader) 唯一"),
         ("clip_variants", "ClipVariant 三维唯一"),
