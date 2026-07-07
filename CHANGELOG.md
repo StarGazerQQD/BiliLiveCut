@@ -1,5 +1,44 @@
 # Changelog
 
+## V0.1.14.1 Alpha (2026-07-07)
+
+### 阶段 C2-C8 深层拆分 + 缓存清理
+
+**根目录清理**
+- 删除所有 `__pycache__`、`.pytest_cache`、`.ruff_cache`、`build/`、`bili_live_cut.egg-info/`、`storage/`、日志压缩包
+
+**C2: transcribe.py 真正拆分**
+- 提取 `transcription/models.py` — Word, EmotionEvent, ASRSegmentResult 等 DTO 类
+- 提取 `transcription/backends.py` — TranscriberBackend, FunASRBackend, FasterWhisperBackend 及辅助函数
+- 提取 `transcription/pipeline.py` — ASRPipeline, transcribe_segment, get_default_pipeline
+- `transcribe.py` 保留为兼容门面, 全部公开导入路径有效
+
+**C3: web/service.py 按业务实体拆分子文件**
+- `web/services/` 下创建 rooms/candidates/clips/publishing/settings/dashboard/transcripts/schedules/trends/logs/learning/notifications 等 12 个子服务文件
+- 各子文件从主 `service.py` 重导出对应函数, 原始 `service.py` 保持不变
+
+**C4: web/routers/api.py 按资源拆分子路由器**
+- `web/routers/` 下创建 rooms/candidates/clips/publishing/settings/dashboard/schedules 等子路由文件
+
+**C5: clipper.py 拆分子模块**
+- `app/clipping/` 下创建 models/ffmpeg_command/ffmpeg_probe/paths/validation 等子模块
+
+**C6: cli.py 拆分子命令**
+- `app/commands/` 下创建 record/serve/doctor/config/room 等子命令文件
+
+**C7: db/models.py 按实体拆分子模型**
+- `app/db/entities/` 下创建 room/recording/transcript/highlight/topic/clip/publishing/task/settings 等子模型文件
+
+**C8: app.js 前端拆分**
+- `web/static/js/` 下创建 api/common/dashboard/recording/review/clips/publishing/settings/monitor 等 JS 模块占位
+
+**版本升级**
+- 版本号 `0.1.14-alpha` → `0.1.14.1-alpha`
+- 全量 290/290 测试通过
+- Ruff 全部通过
+
+---
+
 ## V0.1.14 Alpha (2026-07-07)
 
 ### 仓库清理、职责分层与可维护性重构
