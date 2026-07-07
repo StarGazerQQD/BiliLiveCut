@@ -24,10 +24,11 @@ class UploadTask(SQLModel, table=True):
     remote_id: str | None = Field(default=None, description="平台返回的稿件号(若有)")
     precheck_json: str | None = Field(default=None, description="预检结果 JSON")
     scheduled_at: datetime | None = Field(default=None, description="计划上传时间")
+    publish_generation: int = Field(default=0, description="发布代数 (每次重发递增, 业务排他用)")
+    claimed_by: str | None = Field(default=None, description="当前持有 publish 锁的 Worker ID")
     created_at: datetime = Field(default_factory=utcnow)
     updated_at: datetime = Field(default_factory=utcnow)
 
-    # V0.1.12.7: 真实复合唯一约束
     __table_args__ = (UniqueConstraint("clip_id", "uploader", name="uq_upload_target"),)
 
 
@@ -42,7 +43,8 @@ class UploadAttempt(SQLModel, table=True):
 
     id: int | None = Field(default=None, primary_key=True)
     upload_task_id: int = Field(index=True, description="关联 upload_tasks.id")
-    attempt_token: str = Field(unique=True, index=True, description="幂等令牌, 防止重复尝试")
+    publish_generation: int = Field(default=0, description="发布代数 (与 UploadTask 对齐, 业务排他键)")
+    attempt_token: str = Field(index=True, description="幂等追踪令牌 (仅用于追踪, 不承担业务排他)")
     platform: str = Field(default="bilibili", description="投稿平台")
     account_id: str | None = Field(default=None, description="登录账户 ID")
     clip_id: int = Field(index=True, description="关联 final_clips.id")
@@ -67,5 +69,5 @@ class UploadAttempt(SQLModel, table=True):
 
     created_at: datetime = Field(default_factory=utcnow)
 
-    # 每个 clip 的同一 attempt_token 唯一 (幂等去重)
-    __table_args__ = (UniqueConstraint("clip_id", "attempt_token", name="uq_upload_attempt"),)
+    # 业务排他键: (upload_task_id, publish_generation) — generation 保证每次尝试独立
+    __table_args__ = (UniqueConstraint("upload_task_id", "publish_generation", name="uq_upload_attempt_generation"),)
