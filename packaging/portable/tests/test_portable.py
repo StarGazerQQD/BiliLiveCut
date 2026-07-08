@@ -69,7 +69,7 @@ class TestSourceSnapshot:
 
     def test_commit_resolvable(self) -> None:
         """验证 731a31c 可解析。"""
-        from source_snapshot import resolve_commit
+        from blc_portable.payload.source_snapshot import resolve_commit
 
         full = resolve_commit("731a31c")
         assert len(full) == 40
@@ -77,7 +77,7 @@ class TestSourceSnapshot:
 
     def test_extract_contains_app_cli(self, tmp_worktree: str) -> None:
         """验证提取内容包含关键业务文件。"""
-        from source_snapshot import extract_source
+        from blc_portable.payload.source_snapshot import extract_source
 
         staging = Path(tmp_worktree) / "test_staging"
         staging.mkdir(parents=True)
@@ -88,7 +88,7 @@ class TestSourceSnapshot:
 
     def test_extract_no_workspace_contamination(self, tmp_worktree: str) -> None:
         """验证提取内容不包含当前工作区的脏文件。"""
-        from source_snapshot import extract_source
+        from blc_portable.payload.source_snapshot import extract_source
 
         staging = Path(tmp_worktree) / "test_clean"
         staging.mkdir(parents=True)
@@ -101,8 +101,8 @@ class TestSourceSnapshot:
 
     def test_version_overlay_only_allowed(self, tmp_worktree: str) -> None:
         """验证版本覆盖只修改允许的文件。"""
-        from payload_manifest import RELEASE_VERSION
-        from source_snapshot import apply_version_overlay, extract_source
+        from blc_portable.payload.manifest import RELEASE_VERSION
+        from blc_portable.payload.source_snapshot import apply_version_overlay, extract_source
 
         staging = Path(tmp_worktree) / "test_overlay"
         staging.mkdir(parents=True)
@@ -137,7 +137,7 @@ class TestPayload:
 
     def test_manifest_valid(self, payload_manifest: dict, payload_zip: Path) -> None:
         """验证 Manifest 基本字段。"""
-        from payload_manifest import RELEASE_VERSION, SOURCE_COMMIT_FULL, validate_manifest
+        from blc_portable.payload.manifest import RELEASE_VERSION, SOURCE_COMMIT_FULL, validate_manifest
 
         assert payload_manifest["release_version"] == RELEASE_VERSION
         assert payload_manifest["source_commit"] == SOURCE_COMMIT_FULL
@@ -153,7 +153,7 @@ class TestPayload:
 
     def test_payload_sha256_matches(self, payload_manifest: dict, payload_zip: Path) -> None:
         """验证 Payload ZIP SHA-256 与 Manifest 一致。"""
-        from payload_manifest import compute_payload_sha256
+        from blc_portable.payload.manifest import compute_payload_sha256
 
         actual = compute_payload_sha256(payload_zip)
         expected = payload_manifest["payload_sha256"]
@@ -188,7 +188,7 @@ class TestPayload:
         """验证 Zip Slip 防护。"""
         import zipfile
 
-        from build_payload import _safe_extract_zip
+        from blc_portable.payload.builder import _safe_extract_zip
 
         # 创建一个包含路径遍历的 ZIP
         with tempfile.TemporaryDirectory() as td:
@@ -223,7 +223,7 @@ class TestRuntimeInstall:
 
     def test_install_release(self, payload_zip: Path, payload_manifest: dict, tmp_worktree: str) -> None:
         """测试首次安装。"""
-        from runtime_layout import RELEASE_ID, get_release_dir, install_release
+        from blc_portable.launcher.runtime_layout import RELEASE_ID, get_release_dir, install_release
 
         app_root = Path(tmp_worktree)
         result = install_release(payload_zip, payload_manifest, app_root)
@@ -236,7 +236,7 @@ class TestRuntimeInstall:
 
     def test_install_skips_existing(self, payload_zip: Path, payload_manifest: dict, tmp_worktree: str) -> None:
         """测试相同 Release 不重复安装。"""
-        from runtime_layout import install_release
+        from blc_portable.launcher.runtime_layout import install_release
 
         app_root = Path(tmp_worktree)
         result1 = install_release(payload_zip, payload_manifest, app_root)
@@ -247,7 +247,7 @@ class TestRuntimeInstall:
 
     def test_current_json_atomic(self, payload_zip: Path, payload_manifest: dict, tmp_worktree: str) -> None:
         """测试 current.json 原子写入。"""
-        from runtime_layout import install_release, read_current
+        from blc_portable.launcher.runtime_layout import install_release, read_current
 
         app_root = Path(tmp_worktree)
         install_release(payload_zip, payload_manifest, app_root)
@@ -260,7 +260,7 @@ class TestRuntimeInstall:
 
     def test_staging_not_left_behind(self, payload_zip: Path, payload_manifest: dict, tmp_worktree: str) -> None:
         """测试 staging 目录在安装后清理。"""
-        from runtime_layout import get_staging_dir, install_release
+        from blc_portable.launcher.runtime_layout import get_staging_dir, install_release
 
         app_root = Path(tmp_worktree)
         install_release(payload_zip, payload_manifest, app_root)
@@ -277,7 +277,7 @@ class TestUserDataProtection:
 
     def test_env_not_overwritten(self, tmp_worktree: str) -> None:
         """测试已有 .env 不被覆盖。"""
-        from runtime_layout import create_env_from_template, install_release
+        from blc_portable.launcher.runtime_layout import create_env_from_template, install_release
 
         # 先安装 Release
         app_root = Path(tmp_worktree)
@@ -327,7 +327,7 @@ class TestManifestTamperDetection:
 
     def test_manifest_tamper_detected(self, payload_zip: Path, payload_manifest: dict, tmp_worktree: str) -> None:
         """测试 Manifest 篡改被检测。"""
-        from runtime_layout import install_release
+        from blc_portable.launcher.runtime_layout import install_release
 
         app_root = Path(tmp_worktree)
         tampered = dict(payload_manifest)
@@ -338,7 +338,7 @@ class TestManifestTamperDetection:
 
     def test_payload_tamper_detected(self, payload_manifest: dict, tmp_worktree: str) -> None:
         """测试 Payload ZIP 篡改被检测。"""
-        from runtime_layout import install_release
+        from blc_portable.launcher.runtime_layout import install_release
 
         app_root = Path(tmp_worktree)
         # 创建一个假 ZIP
@@ -364,7 +364,7 @@ class TestBundleResourcePath:
             pytest.skip("payload not built (e.g. CI environment)")
         # 需要在 path 中有 launcher 模块
         sys.path.insert(0, str(_portable_dir))
-        from launcher import get_bundled_resource_path
+        from blc_portable.launcher.main import get_bundled_resource_path
 
         p = get_bundled_resource_path("payload_manifest.json")
         assert p is not None

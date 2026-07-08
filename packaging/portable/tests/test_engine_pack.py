@@ -135,7 +135,7 @@ class TestEnginePackManifest:
 
     def test_engines_definition(self) -> None:
         """四引擎定义列表-中四个引擎都存在。"""
-        from engine_pack_manifest import ENGINES
+        from blc_portable.engine_pack.manifest import ENGINES
 
         ids = [e["engine_id"] for e in ENGINES]
         assert "whisper" in ids
@@ -145,7 +145,7 @@ class TestEnginePackManifest:
 
     def test_paraformer_has_sub_models(self) -> None:
         """Paraformer 包含三个子模型 (fsmn-vad / ct-punc / cam++)."""
-        from engine_pack_manifest import ENGINES
+        from blc_portable.engine_pack.manifest import ENGINES
 
         pfm = next(e for e in ENGINES if e["engine_id"] == "paraformer")
         subs = pfm.get("sub_models", [])
@@ -156,7 +156,7 @@ class TestEnginePackManifest:
 
     def test_create_manifest(self) -> None:
         """create_manifest 生成有效的 Manifest。"""
-        from engine_pack_manifest import create_manifest
+        from blc_portable.engine_pack.manifest import create_manifest
 
         m = create_manifest(
             source_commit="731a31cd04ae1df27dd6b6c5ffc535123932b825",
@@ -173,7 +173,7 @@ class TestEnginePackManifest:
 
     def test_validate_manifest_valid(self) -> None:
         """完整 Manifest 校验通过。"""
-        from engine_pack_manifest import create_manifest, validate_manifest
+        from blc_portable.engine_pack.manifest import create_manifest, validate_manifest
 
         m = create_manifest(
             source_commit="731a31cd04ae1df27dd6b6c5ffc535123932b825",
@@ -186,7 +186,7 @@ class TestEnginePackManifest:
 
     def test_validate_manifest_missing_engine(self) -> None:
         """缺少引擎时校验报错。"""
-        from engine_pack_manifest import EnginePackManifest, validate_manifest
+        from blc_portable.engine_pack.manifest import EnginePackManifest, validate_manifest
 
         m = EnginePackManifest(
             format_version=1,
@@ -204,7 +204,7 @@ class TestEnginePackManifest:
 
     def test_validate_crc32_format(self) -> None:
         """CRC32 格式应为 8 位大写十六进制。"""
-        from engine_pack_manifest import EnginePackManifest, validate_manifest
+        from blc_portable.engine_pack.manifest import EnginePackManifest, validate_manifest
 
         m = EnginePackManifest(
             format_version=1,
@@ -222,7 +222,7 @@ class TestEnginePackManifest:
 
     def test_get_engine_pack_info(self) -> None:
         """get_engine_pack_info 返回内置信息。"""
-        from engine_pack_manifest import get_engine_pack_info
+        from blc_portable.engine_pack.manifest import get_engine_pack_info
 
         info = get_engine_pack_info()
         assert "filename" in info
@@ -239,7 +239,7 @@ class TestCRC32:
 
     def test_crc32_uppercase_hex(self, tmp_path: Path) -> None:
         """CRC32 输出应为 8 位大写十六进制。"""
-        from engine_pack import compute_crc32
+        from blc_portable.engine_pack.installer import compute_crc32
 
         p = tmp_path / "test.bin"
         p.write_bytes(b"test")
@@ -250,7 +250,7 @@ class TestCRC32:
 
     def test_crc32_empty_file(self, tmp_path: Path) -> None:
         """空文件 CRC32 应为 00000000。"""
-        from engine_pack import compute_crc32
+        from blc_portable.engine_pack.installer import compute_crc32
 
         p = tmp_path / "empty.bin"
         p.write_bytes(b"")
@@ -267,7 +267,7 @@ class TestEnginePackInstall:
         self, tmp_app_root: Path, fixture_engine_pack: Path
     ) -> None:
         """在 app_root 下能找到 Engine Pack。"""
-        from engine_pack import find_local_engine_pack
+        from blc_portable.engine_pack.installer import find_local_engine_pack
 
         dest = tmp_app_root / fixture_engine_pack.name
         shutil.copy2(str(fixture_engine_pack), str(dest))
@@ -278,7 +278,7 @@ class TestEnginePackInstall:
 
     def test_find_local_not_found(self, tmp_app_root: Path) -> None:
         """找不到时应返回 None。"""
-        from engine_pack import find_local_engine_pack
+        from blc_portable.engine_pack.installer import find_local_engine_pack
 
         result = find_local_engine_pack(tmp_app_root, "nonexistent.zip")
         assert result is None
@@ -287,7 +287,7 @@ class TestEnginePackInstall:
         self, tmp_app_root: Path, fixture_engine_pack: Path
     ) -> None:
         """CRC32 匹配时应成功安装，网络请求为 0。"""
-        from engine_pack import compute_crc32, install_from_engine_pack
+        from blc_portable.engine_pack.installer import compute_crc32, install_from_engine_pack
 
         dest = tmp_app_root / fixture_engine_pack.name
         shutil.copy2(str(fixture_engine_pack), str(dest))
@@ -320,7 +320,7 @@ class TestEnginePackInstall:
         self, tmp_app_root: Path, fixture_engine_pack: Path
     ) -> None:
         """CRC32 不匹配时应抛出 RuntimeError。"""
-        from engine_pack import install_from_engine_pack
+        from blc_portable.engine_pack.installer import install_from_engine_pack
 
         dest = tmp_app_root / fixture_engine_pack.name
         shutil.copy2(str(fixture_engine_pack), str(dest))
@@ -337,7 +337,7 @@ class TestEnginePackInstall:
         self, tmp_app_root: Path, fixture_engine_pack: Path
     ) -> None:
         """CRC32 失败时不应安装任何模型。"""
-        from engine_pack import install_from_engine_pack
+        from blc_portable.engine_pack.installer import install_from_engine_pack
 
         dest = tmp_app_root / fixture_engine_pack.name
         shutil.copy2(str(fixture_engine_pack), str(dest))
@@ -362,13 +362,13 @@ class TestCheckInstalledModels:
 
     def test_not_installed(self, tmp_app_root: Path) -> None:
         """未安装时返回 False。"""
-        from engine_pack import check_installed_models
+        from blc_portable.engine_pack.installer import check_installed_models
 
         assert not check_installed_models(tmp_app_root / "models", "0.1.14.6-alpha")
 
     def test_version_mismatch(self, tmp_app_root: Path) -> None:
         """版本不匹配时返回 False。"""
-        from engine_pack import check_installed_models
+        from blc_portable.engine_pack.installer import check_installed_models
 
         models_dir = tmp_app_root / "models"
         for eng in ["whisper", "paraformer", "sensevoice", "funasr_nano"]:
@@ -387,7 +387,7 @@ class TestCheckInstalledModels:
 
     def test_installed_and_valid(self, tmp_app_root: Path) -> None:
         """正确安装时返回 True。"""
-        from engine_pack import check_installed_models
+        from blc_portable.engine_pack.installer import check_installed_models
 
         models_dir = tmp_app_root / "models"
         for eng in ["whisper", "paraformer", "sensevoice", "funasr_nano"]:
@@ -413,7 +413,7 @@ class TestZipSlip:
 
     def test_reject_absolute_path(self, tmp_path: Path) -> None:
         """包含绝对路径的 ZIP 应被拒绝。"""
-        from engine_pack import _safe_extract
+        from blc_portable.engine_pack.installer import _safe_extract
 
         zip_path = tmp_path / "bad.zip"
         target = tmp_path / "out"
@@ -427,7 +427,7 @@ class TestZipSlip:
 
     def test_reject_parent_traversal(self, tmp_path: Path) -> None:
         """包含 .. 的 ZIP 应被拒绝。"""
-        from engine_pack import _safe_extract
+        from blc_portable.engine_pack.installer import _safe_extract
 
         zip_path = tmp_path / "bad.zip"
         target = tmp_path / "out"
@@ -448,7 +448,7 @@ class TestHashFunctions:
 
     def test_sha256_known_value(self, tmp_path: Path) -> None:
         """SHA-256 已知值测试。"""
-        from engine_pack import compute_sha256
+        from blc_portable.engine_pack.installer import compute_sha256
 
         p = tmp_path / "test.bin"
         p.write_bytes(b"hello")
@@ -457,7 +457,7 @@ class TestHashFunctions:
 
     def test_crc32_known_value(self, tmp_path: Path) -> None:
         """CRC32 已知值 (123456789)。"""
-        from engine_pack import compute_crc32
+        from blc_portable.engine_pack.installer import compute_crc32
 
         p = tmp_path / "crc32_test.bin"
         p.write_bytes(b"123456789")

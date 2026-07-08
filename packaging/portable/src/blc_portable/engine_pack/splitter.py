@@ -85,7 +85,10 @@ def split_archive(
                 "sha256": compute_sha256_file(part_path),
             }
             parts.append(part_info)
-            print(f"  [{i + 1}/{num_parts}] {part_name}: {part_info['size'] / (1024**3):.2f} GiB  CRC32={part_info['crc32']}")
+            print(
+                f"  [{i + 1}/{num_parts}] {part_name}: "
+                f"{part_info['size'] / (1024**3):.2f} GiB  CRC32={part_info['crc32']}"
+            )
 
     return parts
 
@@ -166,7 +169,7 @@ def verify_split(archive_path: Path, output_dir: Path, parts: list[dict[str, Any
 
     combined_hex = combined_hash.hexdigest()
     if combined_hex != original_hash:
-        print(f"  分卷拼接 SHA-256 不匹配!")
+        print("  分卷拼接 SHA-256 不匹配!")
         print(f"    原始: {original_hash}")
         print(f"    拼接: {combined_hex}")
         return False
