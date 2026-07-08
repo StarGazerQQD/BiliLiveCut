@@ -356,6 +356,10 @@ class TestBundleResourcePath:
     def test_not_frozen_finds_payload(self) -> None:
         """测试非 PyInstaller 环境下能找到 Payload。"""
         assert not getattr(sys, "frozen", False)
+        # CI 环境不构建 Payload，跳过
+        payload_dir = _portable_dir / "dist" / "payload"
+        if not (payload_dir / "payload_manifest.json").exists():
+            pytest.skip("payload not built (e.g. CI environment)")
         # 需要在 path 中有 launcher 模块
         sys.path.insert(0, str(_portable_dir))
         from launcher import get_bundled_resource_path
