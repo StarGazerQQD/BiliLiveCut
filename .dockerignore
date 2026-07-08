@@ -1,0 +1,75 @@
+# Docker 构建忽略规则 — Build Context 为仓库根目录
+# 此文件必须位于仓库根目录，不得移动到 packaging/docker/
+
+# Python
+__pycache__/
+*.py[cod]
+*.egg-info/
+.eggs/
+build/
+dist/
+
+# 虚拟环境
+.venv/
+venv/
+env/
+
+# 配置与密钥
+.env
+*.env.local
+
+# 运行产物
+storage/
+*.db
+*.sqlite3
+*.log
+
+# 测试 / 工具缓存
+.pytest_cache/
+.ruff_cache/
+.mypy_cache/
+.coverage
+htmlcov/
+
+# Rust 编译产物
+app/accelerators/rust/target/
+app/analysis/_rust_cluster.pyd
+app/analysis/_rust_cluster.so
+app/analysis/_rust_cluster.dll
+
+# C 扩展编译产物
+*.pyd
+*.so
+*.dll
+*.exp
+*.lib
+*.obj
+build/temp.*/
+
+# IDE / OS
+.vscode/
+.idea/
+.DS_Store
+Thumbs.db
+
+# CI 日志解压产物
+logs_*.zip
+/temp_ci_logs/
+/temp_ci_logs_new/
+/temp_ci_new/
+/temp_logs_*/
+
+# Portable 构建产物
+/packaging/portable/build/
+/packaging/portable/dist/
+
+# 模型缓存
+/packaging/portable/.model_cache/
+/models/
+
+# 审计工具缓存
+.audit_cache/
+
+# 测试基线文件
+/tests-before-v0146.txt
+/tests-after-v0146.txt

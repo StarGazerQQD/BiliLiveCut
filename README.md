@@ -253,9 +253,22 @@ python -m app.cli serve              # 默认 http://127.0.0.1:8000
 
 ```bash
 cp .env.example .env
-docker compose up -d
+# Docker 构建上下文为仓库根目录，Compose 文件位于 packaging/docker/
+docker compose -f packaging/docker/compose.yaml up --build -d
 # 打开 http://localhost:8000
 ```
+
+或者使用便捷脚本：
+
+```bash
+# Windows
+scripts\docker-up.bat
+
+# Linux/macOS
+bash scripts/docker-up.sh
+```
+
+详情参见 [packaging/docker/README.md](packaging/docker/README.md)。
 
 ## 测试
 
