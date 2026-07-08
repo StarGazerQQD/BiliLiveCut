@@ -10,7 +10,7 @@
 //!
 //! 编译:
 //!     cd app/analysis/_rust_src && cargo build --release
-//!     或 python build_rust.py
+//!     或 python tools/native/build_rust.py
 //!
 //! 回退:
 //!     无 Rust 编译环境时自动使用 _speedups_round2_py.py

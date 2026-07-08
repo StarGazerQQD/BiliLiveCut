@@ -1,10 +1,12 @@
-"""BiliLiveCut Rust 加速模块编译脚本 (V0.1.10.1).
+"""BiliLiveCut Rust 加速模块编译脚本 (V0.1.14.6).
 
 编译 O(N**2) 聚类矩阵 Rust 扩展 (_rust_cluster.pyd/.so)。
 
 用法:
-    python build_rust.py          # 编译并复制到包目录
-    python build_rust.py --check  # 仅检查 Rust 环境是否可用
+    python tools/native/build_rust.py          # 编译并复制到包目录
+    python tools/native/build_rust.py --check  # 仅检查 Rust 环境是否可用
+
+可以从仓库根目录或任何工作目录运行 — 脚本自动定位仓库根目录。
 
 前置条件:
     - Rust 工具链 (https://rustup.rs): rustc + cargo
@@ -19,9 +21,11 @@ import subprocess
 import sys
 from pathlib import Path
 
-HERE = Path(__file__).resolve().parent
-RUST_SRC = HERE / "app" / "accelerators" / "rust"
-TARGET_DIR = HERE / "app" / "analysis"
+_HERE = Path(__file__).resolve().parent
+# tools/native/ → 仓库根目录
+_REPO_ROOT = _HERE.parent.parent
+RUST_SRC = _REPO_ROOT / "app" / "accelerators" / "rust"
+TARGET_DIR = _REPO_ROOT / "app" / "analysis"
 
 
 def _run(cmd: list[str], cwd: Path) -> subprocess.CompletedProcess:
@@ -97,6 +101,7 @@ def build() -> bool:
 
     src = candidates[0]
     dst = TARGET_DIR / f"_rust_cluster{ext}"
+    TARGET_DIR.mkdir(parents=True, exist_ok=True)
     shutil.copy2(src, dst)
     print(f"  [build_rust] 复制: {src.name} → {dst}")
     print("  [build_rust] Rust 扩展已就绪 ✓")
@@ -110,6 +115,7 @@ def main() -> int:
     """
     print("=" * 60)
     print("  BiliLiveCut Rust 加速模块编译")
+    print(f"  仓库根目录: {_REPO_ROOT}")
     print("=" * 60)
 
     if "--check" in sys.argv:

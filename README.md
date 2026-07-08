@@ -115,7 +115,7 @@
 ```powershell
 # 自动检测：pip install -e . 自动尝试编译；失败 → 自动回退 Python 实现
 # Rust 编译（可选，需安装 Rust 工具链）：
-python build_rust.py
+python tools/native/build_rust.py
 # C 扩展手动编译（Windows 需 Visual Studio Build Tools）：
 python setup_c.py build_ext --inplace
 ```

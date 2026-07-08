@@ -26,7 +26,6 @@ PAYLOAD_ITEMS = [
     "pyproject.toml",
     "setup.py",
     "setup_c.py",
-    "build_rust.py",
     ".env.example",
 ]
 
