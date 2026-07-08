@@ -1,0 +1,65 @@
+{
+  "format_version": 1,
+  "engine_pack_version": 1,
+  "release_tag": "asr-engine-pack-v1",
+  "compatible_app_version": "0.1.14.6-alpha",
+  "source_commit": "731a31c",
+  "archive_filename": "BiliLiveCut-ASR-EnginePack-v1.zip",
+  "part_size_bytes": 1932735283,
+  "engines": [
+    {
+      "engine_id": "paraformer",
+      "engine_name": "Paraformer-zh (主引擎)",
+      "model_id": "iic/speech_paraformer-large-vad-punc_asr_nat-zh-cn-16k-common-vocab8404-pytorch",
+      "hub": "modelscope",
+      "revision": "v2.0.4",
+      "target_path": "models/paraformer",
+      "sub_models": [
+        {"model_id": "iic/speech_fsmn_vad_zh-cn-16k-common-pytorch", "hub": "modelscope", "revision": "v2.0.4", "name": "fsmn-vad"},
+        {"model_id": "iic/punc_ct-transformer_zh-cn-common-vocab272727-pytorch", "hub": "modelscope", "revision": "v2.0.4", "name": "ct-punc"},
+        {"model_id": "iic/speech_campplus_sv_zh-cn_16k-common", "hub": "modelscope", "revision": null, "name": "cam++"}
+      ],
+      "license": "Apache-2.0",
+      "redistribution_allowed": true
+    },
+    {
+      "engine_id": "sensevoice",
+      "engine_name": "SenseVoice-Small (辅助特征)",
+      "model_id": "iic/SenseVoiceSmall",
+      "hub": "modelscope",
+      "revision": null,
+      "target_path": "models/sensevoice",
+      "sub_models": [],
+      "license": "Apache-2.0",
+      "redistribution_allowed": true
+    },
+    {
+      "engine_id": "funasr_nano",
+      "engine_name": "Fun-ASR-Nano (低置信复核)",
+      "model_id": "iic/Fun-ASR-Nano",
+      "hub": "modelscope",
+      "revision": null,
+      "target_path": "models/funasr_nano",
+      "sub_models": [],
+      "license": "Apache-2.0",
+      "redistribution_allowed": true
+    },
+    {
+      "engine_id": "whisper",
+      "engine_name": "Whisper (兜底引擎)",
+      "model_id": "large-v3-turbo",
+      "model_repo": "mobiuslabsgmbh/faster-whisper-large-v3-turbo",
+      "hub": "huggingface",
+      "revision": null,
+      "target_path": "models/whisper",
+      "sub_models": [],
+      "license": "MIT",
+      "redistribution_allowed": true,
+      "note": "Whisper 使用 faster-whisper 的 model_size 参数加载，无传统 Revision"
+    }
+  ],
+  "mirrors": {
+    "modelscope": ["https://www.modelscope.cn"],
+    "huggingface": ["https://hf-mirror.com", "https://huggingface.co"]
+  }
+}
