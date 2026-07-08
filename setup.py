@@ -12,7 +12,7 @@ if not _skip_extensions:
     # 第一轮: C 直接编译 (Aho-Corasick + 余弦相似度 + bigram)。
     _c_speedups = Extension(
         "app.analysis._c_speedups",
-        sources=["app/accelerators/c/_c_speedups.c"],
+        sources=["tools/native/c/_c_speedups.c"],
         extra_compile_args=(
             ["/O2", "/arch:AVX2", "/fp:fast", "/utf-8"] if sys.platform == "win32" else ["-O3", "-ffast-math"]
         ),
@@ -25,7 +25,7 @@ if not _skip_extensions:
 
         _r2 = Extension(
             "app.analysis._speedups_round2",
-            sources=["app/accelerators/cython/_speedups_round2.pyx"],
+            sources=["tools/native/cython/_speedups_round2.pyx"],
             extra_compile_args=(["/O2", "/arch:AVX2", "/utf-8"] if sys.platform == "win32" else ["-O3", "-ffast-math"]),
         )
         _extensions.append(_r2)

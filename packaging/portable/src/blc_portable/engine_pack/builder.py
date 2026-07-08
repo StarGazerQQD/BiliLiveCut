@@ -38,7 +38,7 @@ from typing import Any
 
 # ── 常量 ───────────────────────────────────────────────────
 
-PORTABLE_DIR = Path(__file__).resolve().parent
+PORTABLE_DIR = Path(__file__).resolve().parent.parent.parent.parent
 PROJECT_ROOT = PORTABLE_DIR.parent.parent
 BUILD_DIR = PORTABLE_DIR / "build" / "engine-pack"
 DIST_DIR = PORTABLE_DIR / "dist" / "engine-pack"
@@ -622,6 +622,23 @@ def build_engine_pack(fixture: bool = False, from_cache: bool = False) -> dict[s
     print("\n  [OK] Engine Pack 构建完成")
     print(f"  {archive_path}")
     return build_result
+
+
+def main() -> int:
+    """入口 — 供薄入口和独立运行调用。
+
+    :returns: 0 成功, 1 失败。
+    """
+    try:
+        fixture_mode = "--fixture" in sys.argv
+        cache_mode = "--from-cache" in sys.argv
+        build_engine_pack(fixture=fixture_mode, from_cache=cache_mode)
+        return 0
+    except SystemExit as e:
+        return int(str(e)) if str(e) else 0
+    except Exception as exc:
+        print(f"[错误] {exc}")
+        return 1
 
 
 if __name__ == "__main__":

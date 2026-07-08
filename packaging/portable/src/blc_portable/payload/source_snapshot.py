@@ -120,13 +120,24 @@ def extract_source(commit_ref: str, output_dir: Path) -> dict:
     if existing:
         raise RuntimeError(f"输出目录非空: {output_dir} 包含 {len(existing)} 个条目")
 
+    # 确定仓库根目录（git archive 必须在仓库根运行）
+    repo_root_result = subprocess.run(
+        ["git", "rev-parse", "--show-toplevel"],
+        capture_output=True,
+        text=True,
+        timeout=10,
+    )
+    if repo_root_result.returncode != 0:
+        raise RuntimeError("无法确定 Git 仓库根目录")
+    repo_root = Path(repo_root_result.stdout.strip())
+
     # 使用 git archive 提取
     tmp_tar = output_dir / "_archive.tar"
 
     try:
         cmd = ["git", "-c", "core.autocrlf=false", "archive", "--format=tar", "--output", str(tmp_tar), full_hash]
-        _logger.info("extracting: %s", " ".join(cmd))
-        subprocess.run(cmd, check=True, timeout=30)
+        _logger.info("extracting: %s (cwd=%s)", " ".join(cmd), repo_root)
+        subprocess.run(cmd, check=True, timeout=30, cwd=str(repo_root))
 
         if not tmp_tar.exists() or tmp_tar.stat().st_size == 0:
             raise RuntimeError("git archive 未产生有效输出")

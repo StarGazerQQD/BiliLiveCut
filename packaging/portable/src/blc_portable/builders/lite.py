@@ -12,9 +12,9 @@ import subprocess
 import sys
 from pathlib import Path
 
-PORTABLE_DIR = Path(__file__).resolve().parent
+PORTABLE_DIR = Path(__file__).resolve().parent.parent.parent.parent
 PROJECT_ROOT = PORTABLE_DIR.parent.parent
-SPEC_FILE = PORTABLE_DIR / "portable_launcher.spec"
+SPEC_FILE = PORTABLE_DIR / "specs" / "portable_launcher.spec"
 DIST_DIR = PORTABLE_DIR / "dist" / "lite"
 PAYLOAD_DIR = PORTABLE_DIR / "dist" / "payload"
 MANIFEST_PATH = PAYLOAD_DIR / "payload_manifest.json"
@@ -28,9 +28,7 @@ def build_payload_if_needed() -> None:
     """确保 Payload 已构建。"""
     if not MANIFEST_PATH.exists() or not (PAYLOAD_DIR / "source_payload.zip").exists():
         print("[build_exe] Payload 不存在，开始构建...")
-        sys.path.insert(0, str(PORTABLE_DIR))
-        sys.path.insert(0, str(PROJECT_ROOT))
-        from build_payload import build_payload
+        from blc_portable.payload.builder import build_payload
 
         build_payload()
         print("[build_exe] Payload 构建完成")
@@ -99,7 +97,7 @@ def build_exe() -> Path:
         print(f"\n[错误] PyInstaller 编译失败 (退出码 {result.returncode})")
         sys.exit(1)
 
-    exe_path = DIST_DIR / f"BiliLiveCut-Portable-Lite-{RELEASE_VERSION}-x64.exe"
+    exe_path = DIST_DIR / f"BiliLiveCut-Portable-Lite-v{RELEASE_VERSION}-x64.exe"
     if not exe_path.exists():
         print(f"\n[错误] 未生成 {exe_path}")
         sys.exit(1)
@@ -143,6 +141,21 @@ def build_exe() -> Path:
         print(f"  内置 Engine Pack CRC32: {build_manifest['engine_pack_crc32']}")
 
     return exe_path
+
+
+def main() -> int:
+    """入口 — 供薄入口调用。
+    
+    :returns: 0 成功, 1 失败。
+    """
+    try:
+        build_exe()
+        return 0
+    except SystemExit as e:
+        return int(str(e)) if str(e) else 0
+    except Exception as exc:
+        print(f"[错误] {exc}")
+        return 1
 
 
 if __name__ == "__main__":

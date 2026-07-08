@@ -36,10 +36,13 @@ htmlcov/
 !packaging/portable/tests/
 
 # Rust 编译产物 (V0.1.14)
-app/accelerators/rust/target/
+tools/native/rust/target/
 app/analysis/_rust_cluster.pyd
 app/analysis/_rust_cluster.so
 app/analysis/_rust_cluster.dll
+
+# Cython 生成的中间 C 文件 (不入库)
+tools/native/cython/*.c
 
 # C 扩展编译产物 (V0.1.9)
 *.pyd

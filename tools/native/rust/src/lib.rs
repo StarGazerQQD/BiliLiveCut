@@ -9,7 +9,7 @@
 //! - 返回 N×N f64 矩阵
 //!
 //! 编译:
-//!     cd app/analysis/_rust_src && cargo build --release
+//!     cd tools/native/rust && cargo build --release
 //!     或 python tools/native/build_rust.py
 //!
 //! 回退:

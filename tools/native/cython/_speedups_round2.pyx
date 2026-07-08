@@ -12,8 +12,7 @@
 
 cimport cython
 from libc.math cimport fmod
-from libc.stdlib cimport malloc, free
-from cpython cimport PyList_New, PyList_SET_ITEM, PyList_GET_ITEM, PyFloat_AsDouble, PyUnicode_AsUTF8
+from cpython cimport PyFloat_AsDouble
 
 
 # ============================================================================
@@ -44,7 +43,7 @@ def cluster_similarity_matrix(list items):
     cdef str text
     cdef object ts
     for i in range(n):
-        item = <dict>PyList_GET_ITEM(items, i)
+        item = items[i]
         text = item.get("asr_text", "") or ""
         texts.append(text)
         # 预计算 bigram Counter (使用已加速的 fast_char_bigrams)
@@ -139,14 +138,14 @@ def danmaku_baseline_rate(list timestamps_seconds, float bucket_s=10.0):
     if n < 10:
         return 0.0, 0
 
-    cdef float t0 = PyFloat_AsDouble(PyList_GET_ITEM(timestamps_seconds, 0))
+    cdef float t0 = PyFloat_AsDouble(timestamps_seconds[0])
     cdef dict buckets = {}
     cdef float t, idx_float
     cdef int idx
     cdef int i
 
     for i in range(n):
-        t = PyFloat_AsDouble(PyList_GET_ITEM(timestamps_seconds, i))
+        t = PyFloat_AsDouble(timestamps_seconds[i])
         idx = <int>((t - t0) / bucket_s)
         buckets[idx] = buckets.get(idx, 0) + 1
 
@@ -194,15 +193,15 @@ def group_srt_blocks(
     cdef str cur_text_str, word_text
     cdef int i
 
-    cur_start = PyFloat_AsDouble(PyList_GET_ITEM(<object>PyList_GET_ITEM(words, 0), 0))
-    cur_end = PyFloat_AsDouble(PyList_GET_ITEM(<object>PyList_GET_ITEM(words, 0), 1))
+    cur_start = PyFloat_AsDouble(words[0][0])
+    cur_end = PyFloat_AsDouble(words[0][1])
     cur_text_str = ""
 
     for i in range(n):
-        item = <object>PyList_GET_ITEM(words, i)
-        start = PyFloat_AsDouble(PyList_GET_ITEM(item, 0))
-        end = PyFloat_AsDouble(PyList_GET_ITEM(item, 1))
-        word_text = <str>PyList_GET_ITEM(item, 2)
+        item = words[i]
+        start = PyFloat_AsDouble(item[0])
+        end = PyFloat_AsDouble(item[1])
+        word_text = <str>item[2]
 
         if cur_text_str and len(cur_text_str) + len(word_text) > max_chars:
             blocks_start.append(cur_start)

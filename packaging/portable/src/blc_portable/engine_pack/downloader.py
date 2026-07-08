@@ -20,7 +20,7 @@ import time
 from pathlib import Path
 from typing import Any
 
-PORTABLE_DIR = Path(__file__).resolve().parent
+PORTABLE_DIR = Path(__file__).resolve().parent.parent.parent.parent
 CACHE_DIR = PORTABLE_DIR / ".model_cache"
 CACHE_DIR.mkdir(parents=True, exist_ok=True)
 

@@ -54,7 +54,7 @@ def get_bundled_resource_path(rel: str) -> Path | None:
     if getattr(sys, "frozen", False):
         base = Path(sys._MEIPASS)  # type: ignore[attr-defined]
     else:
-        base = Path(__file__).resolve().parent / "dist" / "payload"
+        base = Path(__file__).resolve().parent.parent.parent.parent / "dist" / "payload"
 
     p = base / rel
     return p if p.exists() else None

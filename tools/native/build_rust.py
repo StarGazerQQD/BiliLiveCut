@@ -24,7 +24,7 @@ from pathlib import Path
 _HERE = Path(__file__).resolve().parent
 # tools/native/ → 仓库根目录
 _REPO_ROOT = _HERE.parent.parent
-RUST_SRC = _REPO_ROOT / "app" / "accelerators" / "rust"
+RUST_SRC = _REPO_ROOT / "tools" / "native" / "rust"
 TARGET_DIR = _REPO_ROOT / "app" / "analysis"
 
 
@@ -79,18 +79,30 @@ def build() -> bool:
 
     print(f"  [build_rust] 编译 Rust 扩展 ({RUST_SRC})…")
 
-    # cargo build --release
-    result = _run(["cargo", "build", "--release"], cwd=RUST_SRC)
+    # Python 3.14 兼容性（pyo3 0.22.6 官方支持到 3.13）
+    import os as _os
+    env = _os.environ.copy()
+    env.setdefault("PYO3_USE_ABI3_FORWARD_COMPATIBILITY", "1")
+
+    # cargo build --release (带 Python 3.14 兼容性)
+    import subprocess as _sp
+    result = _sp.run(
+        ["cargo", "build", "--release"],
+        cwd=RUST_SRC, capture_output=True, text=True, env=env,
+    )
     if result.returncode != 0:
         print(f"  [build_rust] 编译失败:\n{result.stderr}")
         return False
 
     print(f"  [build_rust] 编译成功\n{result.stdout.strip()}")
 
-    # 查找产物
+    # 查找产物 (.pyd, .so, .dll)
     ext = ".pyd" if "win" in sys.platform else ".so"
     build_dir = RUST_SRC / "target" / "release"
     candidates = list(build_dir.glob(f"_rust_cluster*{ext}"))
+    # 也匹配 .dll (Windows Rust 默认输出)
+    if sys.platform == "win32" and not candidates:
+        candidates = list(build_dir.glob("_rust_cluster*.dll"))
     # macOS: lib_rust_cluster.dylib
     if not candidates:
         candidates = list(build_dir.glob("lib_rust_cluster*"))
@@ -104,7 +116,7 @@ def build() -> bool:
     TARGET_DIR.mkdir(parents=True, exist_ok=True)
     shutil.copy2(src, dst)
     print(f"  [build_rust] 复制: {src.name} → {dst}")
-    print("  [build_rust] Rust 扩展已就绪 ✓")
+    print("  [build_rust] Rust 扩展已就绪 [OK]")
     return True
 
 

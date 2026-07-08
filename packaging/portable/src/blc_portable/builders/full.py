@@ -15,7 +15,7 @@ import tempfile
 import zipfile
 from pathlib import Path
 
-PORTABLE_DIR = Path(__file__).resolve().parent
+PORTABLE_DIR = Path(__file__).resolve().parent.parent.parent.parent
 PROJECT_ROOT = PORTABLE_DIR.parent.parent
 DIST_DIR = PORTABLE_DIR / "dist" / "full"
 LITE_DIR = PORTABLE_DIR / "dist" / "lite"
@@ -40,7 +40,7 @@ def build_full_bundle() -> Path:
     print("=" * 60)
 
     # 确保 Lite EXE 存在
-    lite_exe_name = f"BiliLiveCut-Portable-Lite-{RELEASE_VERSION}-x64.exe"
+    lite_exe_name = f"BiliLiveCut-Portable-Lite-v{RELEASE_VERSION}-x64.exe"
     lite_path = LITE_DIR / lite_exe_name
     if not lite_path.exists():
         print("[错误] 请先构建 Lite EXE: python build_exe.py")
@@ -165,6 +165,21 @@ BiliLiveCut Portable Full {RELEASE_VERSION}
         print(f"  SHA256: {zip_sha256[:32]}")
 
     return zip_path
+
+
+def main() -> int:
+    """入口 — 供薄入口调用。
+
+    :returns: 0 成功, 1 失败。
+    """
+    try:
+        build_full_bundle()
+        return 0
+    except SystemExit as e:
+        return int(str(e)) if str(e) else 0
+    except Exception as exc:
+        print(f"[错误] {exc}")
+        return 1
 
 
 if __name__ == "__main__":

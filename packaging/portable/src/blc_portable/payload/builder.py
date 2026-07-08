@@ -13,6 +13,7 @@ from __future__ import annotations
 import json
 import logging
 import shutil
+import sys
 import zipfile
 from pathlib import Path
 
@@ -31,7 +32,7 @@ from .source_snapshot import (
 _logger = logging.getLogger(__name__)
 
 # 输出目录
-PORTABLE_ROOT = Path(__file__).resolve().parent
+PORTABLE_ROOT = Path(__file__).resolve().parent.parent.parent.parent
 BUILD_DIR = PORTABLE_ROOT / "build"
 DIST_DIR = PORTABLE_ROOT / "dist"
 PAYLOAD_DIR = DIST_DIR / "payload"
@@ -138,6 +139,97 @@ def _safe_extract_zip(zip_path: Path, dest: Path) -> list[str]:
     return extracted
 
 
+# ── 原生加速模块编译与注入 ─────────────────────────────────
+
+
+def _compile_and_copy_native_modules(staging_dir: Path) -> dict[str, bool]:
+    """编译 C/Cython/Rust 原生加速模块并复制到 staging 目录。
+
+    在可用时编译，编译失败则优雅跳过。产物复制到 staging_dir/app/analysis/，
+    随 Payload ZIP 一起分发。运行时由 app.accelerators.dispatcher 自动加载。
+
+    :param staging_dir: Payload staging 目录。
+    :returns: 各模块编译状态 dict。
+    """
+    import subprocess as _sp
+
+    repo_root = PORTABLE_ROOT.parent.parent
+    analysis_dir = repo_root / "app" / "analysis"
+    staging_analysis = staging_dir / "app" / "analysis"
+    staging_analysis.mkdir(parents=True, exist_ok=True)
+    results: dict[str, bool] = {}
+
+    # ── C 扩展 ──
+    try:
+        _logger.info("编译 C 扩展 ...")
+        r = _sp.run(
+            [sys.executable, str(repo_root / "setup_c.py"), "build_ext", "--inplace"],
+            capture_output=True, text=True, encoding="utf-8", errors="replace",
+            cwd=str(repo_root), timeout=120,
+        )
+        if r.returncode == 0:
+            results["c"] = True
+            _logger.info("C 扩展编译成功")
+        else:
+            _logger.warning("C 扩展编译失败: %s", r.stderr[-300:])
+            results["c"] = False
+    except Exception as exc:
+        _logger.warning("C 扩展编译异常: %s", exc)
+        results["c"] = False
+
+    # ── Cython 扩展 ──
+    try:
+        _logger.info("编译 Cython 扩展 ...")
+        r = _sp.run(
+            [sys.executable, str(repo_root / "setup.py"), "build_ext", "--inplace"],
+            capture_output=True, text=True, encoding="utf-8", errors="replace",
+            cwd=str(repo_root), timeout=300,
+        )
+        if r.returncode == 0:
+            results["cython"] = True
+            _logger.info("Cython 扩展编译成功")
+        else:
+            _logger.warning("Cython 扩展编译失败: %s", r.stderr[-300:])
+            results["cython"] = False
+    except Exception as exc:
+        _logger.warning("Cython 扩展编译异常: %s", exc)
+        results["cython"] = False
+
+    # ── Rust 扩展 ──
+    try:
+        _logger.info("编译 Rust 扩展 ...")
+        r = _sp.run(
+            [sys.executable, str(repo_root / "tools" / "native" / "build_rust.py")],
+            capture_output=True, text=True, encoding="utf-8", errors="replace",
+            cwd=str(repo_root), timeout=300,
+        )
+        if r.returncode == 0:
+            results["rust"] = True
+            _logger.info("Rust 扩展编译成功")
+        else:
+            _logger.warning("Rust 扩展编译失败: %s", r.stderr[-300:])
+            results["rust"] = False
+    except Exception as exc:
+        _logger.warning("Rust 扩展编译异常: %s", exc)
+        results["rust"] = False
+
+    # ── 复制编译产物 → staging ──
+    copied = 0
+    for ext in ("*.pyd", "*.so", "*.dll"):
+        for src in analysis_dir.glob(ext):
+            dst = staging_analysis / src.name
+            shutil.copy2(str(src), str(dst))
+            _logger.info("复制原生模块: %s (%d bytes)", src.name, dst.stat().st_size)
+            copied += 1
+
+    if copied:
+        _logger.info("已注入 %d 个原生加速模块到 Payload", copied)
+    else:
+        _logger.warning("未生成任何原生模块 — Portable 将使用纯 Python 回退")
+
+    return results
+
+
 def build_payload(source_commit: str = "731a31c", builder_commit: str | None = None) -> dict:
     """构建完整 Payload: 提取 → Overlay → Manifest → ZIP → 校验。
 
@@ -166,6 +258,11 @@ def build_payload(source_commit: str = "731a31c", builder_commit: str | None = N
     # Step 2: 应用版本 Overlay
     _logger.info("Step 2: 应用版本 Overlay → %s", RELEASE_VERSION)
     overlay_files = apply_version_overlay(staging_dir)
+
+    # Step 2.5: 编译并注入原生加速模块
+    _logger.info("Step 2.5: 编译 C/Cython/Rust 原生加速模块 ...")
+    native_results = _compile_and_copy_native_modules(staging_dir)
+    _logger.info("原生模块编译结果: %s", native_results)
 
     # Step 3: 验证业务文件未被非受控修改
     _logger.info("Step 3: 验证源码来源")
@@ -239,6 +336,7 @@ def build_payload(source_commit: str = "731a31c", builder_commit: str | None = N
     verify_zip = BUILD_DIR / "verify_payload.zip"
     extract_source(source_commit, verify_staging)
     apply_version_overlay(verify_staging)
+    _compile_and_copy_native_modules(verify_staging)  # 复现验证也需编译模块
 
     with zipfile.ZipFile(str(verify_zip), "w", zipfile.ZIP_DEFLATED) as zf:
         v_files: list[Path] = []
@@ -289,8 +387,6 @@ def build_payload(source_commit: str = "731a31c", builder_commit: str | None = N
 
 def _run_build_payload_main() -> None:
     """CLI 入口。"""
-    import sys
-
     logging.basicConfig(level=logging.INFO, format="[%(name)s] %(message)s")
 
     try:
@@ -303,6 +399,21 @@ def _run_build_payload_main() -> None:
     except Exception as exc:
         print(f"\n构建失败: {exc}")
         sys.exit(1)
+
+
+def main() -> int:
+    """入口 — 供薄入口调用。
+
+    :returns: 0 成功, 1 失败。
+    """
+    try:
+        build_payload()
+        return 0
+    except SystemExit as e:
+        return int(str(e)) if str(e) else 0
+    except Exception as exc:
+        print(f"[错误] {exc}")
+        return 1
 
 
 if __name__ == "__main__":
