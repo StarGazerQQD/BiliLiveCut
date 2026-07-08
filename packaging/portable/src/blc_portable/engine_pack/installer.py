@@ -236,7 +236,7 @@ def install_from_engine_pack(
         manifest_path = staging_dir / "engine-pack-manifest.json"
         if not manifest_path.exists():
             raise RuntimeError("Engine Pack 缺少 engine-pack-manifest.json")
-        from engine_pack_manifest import load_manifest
+        from .manifest import load_manifest
 
         manifest = load_manifest(manifest_path)
         if manifest.engine_pack_version != expected_version:

@@ -11,7 +11,7 @@ import subprocess
 from datetime import UTC, datetime
 from pathlib import Path
 
-from payload_manifest import (
+from .manifest import (
     RELEASE_VERSION,
     SOURCE_COMMIT_FULL,
     SOURCE_COMMIT_SHORT,

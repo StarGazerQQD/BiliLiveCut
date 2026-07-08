@@ -144,7 +144,7 @@ def install_release(
     """
     import zipfile
 
-    from payload_manifest import validate_manifest
+    from ..payload.manifest import validate_manifest
 
     if app_root is None:
         app_root = get_app_root()

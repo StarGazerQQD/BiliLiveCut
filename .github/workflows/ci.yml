@@ -237,7 +237,7 @@ jobs:
         timeout-minutes: 10
 
       - name: Ruff check portable modules
-        run: ruff check packaging/portable/
+        run: ruff check packaging/portable/src/ packaging/portable/tests/
 
 # ═══════════════════════════════════════════════════════════════════
 # Job 5: 汇总覆盖率 (可选, 展示总覆盖率; 需要 test 全部完成)

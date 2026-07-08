@@ -237,7 +237,7 @@ def download_all_engines(app_root: Path) -> dict[str, Any]:
 
         # 原子安装
         print(f"\n  全部 {total} 个引擎下载完成，正在安装...")
-        from engine_pack import install_models_dir_from_staging
+        from ..engine_pack.installer import install_models_dir_from_staging
 
         ok = install_models_dir_from_staging(
             app_root,

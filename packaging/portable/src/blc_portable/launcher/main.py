@@ -393,7 +393,7 @@ def prepare_models(app_root: Path, user_engine_pack_path: str | None = None) -> 
     :param user_engine_pack_path: 用户通过 --engine-pack 指定的路径。
     :returns: 模型准备信息字典。
     """
-    from engine_pack import check_installed_models, find_local_engine_pack, install_from_engine_pack
+    from ..engine_pack.installer import check_installed_models, find_local_engine_pack, install_from_engine_pack
 
     MODEL_ENGINE_PACK_VERSION = "0.1.14.6-alpha"
 
@@ -436,7 +436,7 @@ def prepare_models(app_root: Path, user_engine_pack_path: str | None = None) -> 
     # 3. 全量在线下载
     print("  全量在线下载四引擎模型...")
     try:
-        from model_installer import download_all_engines
+        from .model_downloader import download_all_engines
 
         return download_all_engines(app_root)
     except ImportError as exc:

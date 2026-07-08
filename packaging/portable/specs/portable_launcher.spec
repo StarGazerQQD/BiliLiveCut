@@ -11,7 +11,7 @@
 import sys
 from pathlib import Path
 
-_here = Path(SPECPATH)  # spec 文件所在目录
+_here = Path(SPECPATH).parent  # spec 文件在 specs/ 子目录, 仓库根在上一级
 
 # Payload 资源
 _payload_zip = str(_here / "dist" / "payload" / "source_payload.zip")
@@ -31,8 +31,8 @@ if Path(_engine_pack_info).exists():
     _datas.append((_engine_pack_info, "."))
 
 a = Analysis(
-    ["launcher.py"],
-    pathex=[],
+    ["src/blc_portable/launcher/main.py"],
+    pathex=["src"],
     binaries=[],
     datas=_datas,
     hiddenimports=["sqlmodel", "sqlalchemy", "pydantic", "uvicorn", "fastapi"],

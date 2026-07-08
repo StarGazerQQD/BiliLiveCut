@@ -20,7 +20,9 @@ import pytest
 # 添加 portable 模块到路径
 _portable_dir = Path(__file__).resolve().parent.parent  # portable/
 _proj_root = _portable_dir.parent.parent  # BiliLiveCut/
+_src_dir = _portable_dir / "src"  # portable/src/
 
+sys.path.insert(0, str(_src_dir))
 sys.path.insert(0, str(_portable_dir))
 sys.path.insert(0, str(_proj_root))
 
