@@ -53,6 +53,9 @@ build/temp.*/
 # 审计工具缓存
 .audit_cache/
 
+# Portable 模型缓存
+packaging/portable/.model_cache/
+
 # IDE / OS
 .vscode/
 .idea/
