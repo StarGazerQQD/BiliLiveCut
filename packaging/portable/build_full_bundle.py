@@ -1,6 +1,6 @@
 """Portable Full 完整包构建脚本。
 
-输出: BiliLiveCut-Portable-Full-v0.1.14.5-alpha-x64.zip
+输出: BiliLiveCut-Portable-Full-v0.1.14.6-alpha-x64.zip
 内容: EXE + Portable Python + 离线 Wheels + FFmpeg (不含模型)
 
 注意: 模型不由 Full 包携带。四个 ASR 引擎模型统一由独立的 Engine Pack 提供。
@@ -22,7 +22,7 @@ LITE_DIR = PORTABLE_DIR / "dist" / "lite"
 PAYLOAD_DIR = PORTABLE_DIR / "dist" / "payload"
 RESOURCES_DIR = PORTABLE_DIR / "resources"
 
-RELEASE_VERSION = "0.1.14.5-alpha"
+RELEASE_VERSION = "0.1.14.6-alpha"
 FULL_NAME = f"BiliLiveCut-Portable-Full-{RELEASE_VERSION}-x64"
 
 
@@ -94,7 +94,7 @@ BiliLiveCut Portable Full {RELEASE_VERSION}
 
 首次启动:
   双击 BiliLiveCut-Portable.exe
-  → 从内置 Payload 释放源码 (固定 Commit: 74c21b4)
+  → 从内置 Payload 释放源码 (固定 Commit: 731a31c)
   → 检测 portable-python
   → 安装依赖 (--no-index, 使用本地 wheels)
   → 检测 Engine Pack 或在线下载模型
@@ -108,7 +108,7 @@ BiliLiveCut Portable Full {RELEASE_VERSION}
   .env        配置文件
 
 来源:
-  业务源码基线: 74c21b4
+  业务源码基线: 731a31c
   发布版本: {RELEASE_VERSION}
   构建时间: {datetime.datetime.now().strftime("%Y-%m-%d %H:%M:%S")}
 """,

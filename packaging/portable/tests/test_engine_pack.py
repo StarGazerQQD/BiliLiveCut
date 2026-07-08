@@ -66,10 +66,10 @@ def fixture_engine_pack() -> Generator[Path, None, None]:
 
         manifest: dict[str, Any] = {
             "format_version": 1,
-            "engine_pack_version": "0.1.14.5-alpha",
-            "portable_release_version": "0.1.14.5-alpha",
-            "source_commit": "74c21b401f1da4ef52f0333c94e3874e80f8ceef",
-            "source_commit_short": "74c21b4",
+            "engine_pack_version": "0.1.14.6-alpha",
+            "portable_release_version": "0.1.14.6-alpha",
+            "source_commit": "731a31cd04ae1df27dd6b6c5ffc535123932b825",
+            "source_commit_short": "731a31c",
             "archive_filename": "test.engine.pack.zip",
             "archive_crc32": "",
             "archive_sha256": "",
@@ -159,14 +159,14 @@ class TestEnginePackManifest:
         from engine_pack_manifest import create_manifest
 
         m = create_manifest(
-            source_commit="74c21b401f1da4ef52f0333c94e3874e80f8ceef",
+            source_commit="731a31cd04ae1df27dd6b6c5ffc535123932b825",
             archive_crc32="1234ABCD",
             archive_sha256="a" * 64,
             file_list={},
         )
 
         assert m.format_version == 1
-        assert m.engine_pack_version == "0.1.14.5-alpha"
+        assert m.engine_pack_version == "0.1.14.6-alpha"
         assert m.archive_crc32 == "1234ABCD"
         assert len(m.engines) == 4
         assert m.get_engine_ids() == ["whisper", "paraformer", "sensevoice", "funasr_nano"]
@@ -176,7 +176,7 @@ class TestEnginePackManifest:
         from engine_pack_manifest import create_manifest, validate_manifest
 
         m = create_manifest(
-            source_commit="74c21b401f1da4ef52f0333c94e3874e80f8ceef",
+            source_commit="731a31cd04ae1df27dd6b6c5ffc535123932b825",
             archive_crc32="1234ABCD",
             archive_sha256="a" * 64,
             file_list={},
@@ -190,10 +190,10 @@ class TestEnginePackManifest:
 
         m = EnginePackManifest(
             format_version=1,
-            engine_pack_version="0.1.14.5-alpha",
-            portable_release_version="0.1.14.5-alpha",
-            source_commit="74c21b401f1da4ef52f0333c94e3874e80f8ceef",
-            source_commit_short="74c21b4",
+            engine_pack_version="0.1.14.6-alpha",
+            portable_release_version="0.1.14.6-alpha",
+            source_commit="731a31cd04ae1df27dd6b6c5ffc535123932b825",
+            source_commit_short="731a31c",
             archive_filename="test.zip",
             archive_crc32="1234ABCD",
             archive_sha256="a" * 64,
@@ -208,10 +208,10 @@ class TestEnginePackManifest:
 
         m = EnginePackManifest(
             format_version=1,
-            engine_pack_version="0.1.14.5-alpha",
-            portable_release_version="0.1.14.5-alpha",
-            source_commit="74c21b401f1da4ef52f0333c94e3874e80f8ceef",
-            source_commit_short="74c21b4",
+            engine_pack_version="0.1.14.6-alpha",
+            portable_release_version="0.1.14.6-alpha",
+            source_commit="731a31cd04ae1df27dd6b6c5ffc535123932b825",
+            source_commit_short="731a31c",
             archive_filename="test.zip",
             archive_crc32="123",
             archive_sha256="a" * 64,
@@ -298,7 +298,7 @@ class TestEnginePackInstall:
             tmp_app_root,
             dest,
             expected_crc32=crc32_val,
-            expected_version="0.1.14.5-alpha",
+            expected_version="0.1.14.6-alpha",
         )
 
         assert result["source"] == "engine_pack"
@@ -314,7 +314,7 @@ class TestEnginePackInstall:
         installed = models_dir / "engine-pack-installed.json"
         assert installed.exists()
         info = json.loads(installed.read_text(encoding="utf-8"))
-        assert info["engine_pack_version"] == "0.1.14.5-alpha"
+        assert info["engine_pack_version"] == "0.1.14.6-alpha"
 
     def test_crc32_mismatch_raises(
         self, tmp_app_root: Path, fixture_engine_pack: Path
@@ -330,7 +330,7 @@ class TestEnginePackInstall:
                 tmp_app_root,
                 dest,
                 expected_crc32="DEADBEEF",
-                expected_version="0.1.14.5-alpha",
+                expected_version="0.1.14.6-alpha",
             )
 
     def test_bad_crc32_does_not_install_models(
@@ -345,7 +345,7 @@ class TestEnginePackInstall:
         try:
             install_from_engine_pack(
                 tmp_app_root, dest, expected_crc32="DEADBEEF",
-                expected_version="0.1.14.5-alpha",
+                expected_version="0.1.14.6-alpha",
             )
         except RuntimeError:
             pass
@@ -364,7 +364,7 @@ class TestCheckInstalledModels:
         """未安装时返回 False。"""
         from engine_pack import check_installed_models
 
-        assert not check_installed_models(tmp_app_root / "models", "0.1.14.5-alpha")
+        assert not check_installed_models(tmp_app_root / "models", "0.1.14.6-alpha")
 
     def test_version_mismatch(self, tmp_app_root: Path) -> None:
         """版本不匹配时返回 False。"""
@@ -383,7 +383,7 @@ class TestCheckInstalledModels:
             encoding="utf-8",
         )
 
-        assert not check_installed_models(models_dir, "0.1.14.5-alpha")
+        assert not check_installed_models(models_dir, "0.1.14.6-alpha")
 
     def test_installed_and_valid(self, tmp_app_root: Path) -> None:
         """正确安装时返回 True。"""
@@ -396,13 +396,13 @@ class TestCheckInstalledModels:
 
         (models_dir / "engine-pack-installed.json").write_text(
             json.dumps({
-                "engine_pack_version": "0.1.14.5-alpha",
+                "engine_pack_version": "0.1.14.6-alpha",
                 "engines_installed": ["whisper", "paraformer", "sensevoice", "funasr_nano"],
             }),
             encoding="utf-8",
         )
 
-        assert check_installed_models(models_dir, "0.1.14.5-alpha")
+        assert check_installed_models(models_dir, "0.1.14.6-alpha")
 
 
 # ── Zip Slip 防护 ─────────────────────────────────────────────

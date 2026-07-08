@@ -11,7 +11,7 @@
 
 输出:
     dist/engine-pack/
-    ├── BiliLiveCut-EnginePack-v0.1.14.5-alpha.zip
+    ├── BiliLiveCut-EnginePack-v0.1.14.6-alpha.zip
     ├── engine-pack-manifest.json
     ├── CRC32SUMS.txt
     ├── SHA256SUMS.txt
@@ -44,8 +44,8 @@ BUILD_DIR = PORTABLE_DIR / "build" / "engine-pack"
 DIST_DIR = PORTABLE_DIR / "dist" / "engine-pack"
 RESOURCES_DIR = PORTABLE_DIR / "resources"
 
-ENGINE_PACK_VERSION = "0.1.14.5-alpha"
-SOURCE_COMMIT_SHORT = "74c21b4"
+ENGINE_PACK_VERSION = "0.1.14.6-alpha"
+SOURCE_COMMIT_SHORT = "731a31c"
 ARCHIVE_NAME = f"BiliLiveCut-EnginePack-{ENGINE_PACK_VERSION}"
 
 CHUNK_SIZE = 8 * 1024 * 1024
@@ -360,7 +360,7 @@ def write_output_files(
     :param crc32_val: CRC32 值。
     :param sha256_val: SHA-256 值。
     :param archive_path: ZIP 文件路径。
-    :param source_commit: 74c21b4 完整 Hash。
+    :param source_commit: 731a31c 完整 Hash。
     :param file_list: 逐文件清单。
     :param is_fixture: 是否为 Fixture。
     :returns: build_manifest 字典。

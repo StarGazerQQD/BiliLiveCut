@@ -25,9 +25,9 @@ from typing import Any
 
 # ── 常量 ──────────────────────────────────────────────────
 APP_NAME = "BiliLiveCut"
-VERSION = "V0.1.14.5 Alpha"
-RELEASE_VERSION = "0.1.14.5-alpha"
-SOURCE_COMMIT_SHORT = "74c21b4"
+VERSION = "V0.1.14.6 Alpha"
+RELEASE_VERSION = "0.1.14.6-alpha"
+SOURCE_COMMIT_SHORT = "731a31c"
 RELEASE_ID = f"{RELEASE_VERSION}+{SOURCE_COMMIT_SHORT}"
 
 VENV_DIR = ".venv"
@@ -395,7 +395,7 @@ def prepare_models(app_root: Path, user_engine_pack_path: str | None = None) -> 
     """
     from engine_pack import check_installed_models, find_local_engine_pack, install_from_engine_pack
 
-    MODEL_ENGINE_PACK_VERSION = "0.1.14.5-alpha"
+    MODEL_ENGINE_PACK_VERSION = "0.1.14.6-alpha"
 
     # 读取内置 Engine Pack 信息
     pack_info = get_engine_pack_info()

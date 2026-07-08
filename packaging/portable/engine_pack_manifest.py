@@ -1,7 +1,7 @@
 """Engine Pack Manifest 数据结构与校验。
 
 定义四引擎模型包的 Manifest 格式，包含引擎列表、模型版本、文件清单和校验信息。
-与 ``74c21b4`` 中的四引擎真实配置严格对应：
+与 ``731a31c`` 中的四引擎真实配置严格对应：
 
 ============  ========  ===========================  ==========  ==========================
 引擎          引擎 ID   模型 ID                       Revision   下载源
@@ -26,13 +26,13 @@ from typing import Any
 # 常量
 # ═══════════════════════════════════════════════════════════
 
-ENGINE_PACK_VERSION = "0.1.14.5-alpha"
-RELEASE_VERSION = "0.1.14.5-alpha"
-SOURCE_COMMIT_SHORT = "74c21b4"
+ENGINE_PACK_VERSION = "0.1.14.6-alpha"
+RELEASE_VERSION = "0.1.14.6-alpha"
+SOURCE_COMMIT_SHORT = "731a31c"
 MANIFEST_FORMAT_VERSION = 1
 ARCHIVE_FILENAME = f"BiliLiveCut-EnginePack-{ENGINE_PACK_VERSION}.zip"
 
-# ── 四引擎定义 (与 74c21b4 源码严格对应) ──
+# ── 四引擎定义 (与 731a31c 源码严格对应) ──
 
 ENGINES: list[dict[str, object]] = [
     {
@@ -228,7 +228,7 @@ def create_manifest(
 ) -> EnginePackManifest:
     """根据四引擎定义创建 Manifest。
 
-    :param source_commit: 74c21b4 对应的完整 Commit Hash。
+    :param source_commit: 731a31c 对应的完整 Commit Hash。
     :param archive_crc32: ZIP 文件的 CRC32 (8 位大写十六进制)。
     :param archive_sha256: ZIP 文件的 SHA-256。
     :param file_list: 逐文件信息 {path: {size, sha256}}。

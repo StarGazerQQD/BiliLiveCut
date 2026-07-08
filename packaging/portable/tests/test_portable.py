@@ -1,7 +1,7 @@
 """Portable 构建系统完整测试套件。
 
 覆盖:
-- Source Snapshot (74c21b4 解析/提取/Overlay)
+- Source Snapshot (731a31c 解析/提取/Overlay)
 - Payload (构建/ZIP/Manifest/可复现性)
 - Runtime 安装 (原子安装/staging/current.json)
 - 用户数据保护 (.env/数据库/storage)
@@ -66,12 +66,12 @@ class TestSourceSnapshot:
     """测试源码快照提取。"""
 
     def test_commit_resolvable(self) -> None:
-        """验证 74c21b4 可解析。"""
+        """验证 731a31c 可解析。"""
         from source_snapshot import resolve_commit
 
-        full = resolve_commit("74c21b4")
+        full = resolve_commit("731a31c")
         assert len(full) == 40
-        assert full == "74c21b401f1da4ef52f0333c94e3874e80f8ceef"
+        assert full == "731a31cd04ae1df27dd6b6c5ffc535123932b825"
 
     def test_extract_contains_app_cli(self, tmp_worktree: str) -> None:
         """验证提取内容包含关键业务文件。"""
@@ -79,8 +79,8 @@ class TestSourceSnapshot:
 
         staging = Path(tmp_worktree) / "test_staging"
         staging.mkdir(parents=True)
-        report = extract_source("74c21b4", staging)
-        assert report["source_commit_short"] == "74c21b4"
+        report = extract_source("731a31c", staging)
+        assert report["source_commit_short"] == "731a31c"
         assert (staging / "app" / "cli.py").exists()
         assert (staging / "pyproject.toml").exists()
 
@@ -90,7 +90,7 @@ class TestSourceSnapshot:
 
         staging = Path(tmp_worktree) / "test_clean"
         staging.mkdir(parents=True)
-        extract_source("74c21b4", staging)
+        extract_source("731a31c", staging)
 
         # 确认不包含构建产物
         assert not (staging / ".venv").exists()
@@ -104,7 +104,7 @@ class TestSourceSnapshot:
 
         staging = Path(tmp_worktree) / "test_overlay"
         staging.mkdir(parents=True)
-        extract_source("74c21b4", staging)
+        extract_source("731a31c", staging)
         modified = apply_version_overlay(staging)
 
         for f in modified:
@@ -139,7 +139,7 @@ class TestPayload:
 
         assert payload_manifest["release_version"] == RELEASE_VERSION
         assert payload_manifest["source_commit"] == SOURCE_COMMIT_FULL
-        assert payload_manifest["source_commit_short"] == "74c21b4"
+        assert payload_manifest["source_commit_short"] == "731a31c"
         assert payload_manifest["format_version"] == 1
         assert "payload_sha256" in payload_manifest
         assert len(payload_manifest["payload_sha256"]) == 64
@@ -252,8 +252,8 @@ class TestRuntimeInstall:
 
         current = read_current(app_root)
         assert current is not None
-        assert current["release_version"] == "0.1.14.5-alpha"
-        assert current["source_commit_short"] == "74c21b4"
+        assert current["release_version"] == "0.1.14.6-alpha"
+        assert current["source_commit_short"] == "731a31c"
         assert "payload_sha256" in current
 
     def test_staging_not_left_behind(self, payload_zip: Path, payload_manifest: dict, tmp_worktree: str) -> None:

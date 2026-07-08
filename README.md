@@ -2,14 +2,14 @@
 
 [![CI](https://github.com/StarGazerQQD/BiliLiveCut/actions/workflows/ci.yml/badge.svg)](https://github.com/StarGazerQQD/BiliLiveCut/actions/workflows/ci.yml)
 
-**当前版本：V0.1.14.5 Alpha** (`0.1.14.5-alpha`)
+**当前版本：V0.1.14.6 Alpha** (`0.1.14.6-alpha`)
 
 针对 Bilibili 直播的全自动工作流：实时录制 → 转写 → 识别高光 → 生成切片 → 生成文案 → (可选)上传。
 阶段 1–5 全链路已可用；即插即用分发包见 [`packaging/portable/`](packaging/portable/README.md)。
 
 > ⚠️ **合规声明**：本项目仅调用 Bilibili 网页播放器自身使用的公开接口，不做任何逆向、破解或绕过平台安全策略的行为。请**仅录制你拥有授权的内容**，遵守平台服务条款与合理访问频率。自动上传默认采用 `manual` 模式（只产出成品与元数据，不调用任何平台接口），零封号风险。
 
-## V0.1.14.5 新特性：Portable 内嵌 Payload 构建系统
+## V0.1.14.6 新特性：发行结构重构
 
 解决中国大陆 GitHub 不稳定问题，建立从固定 Git Commit 提取源码、嵌入 Portable EXE 的发行链路。彻底摆脱首发时对 GitHub 的依赖。
 
@@ -19,7 +19,7 @@
 
 | 特性 | 说明 |
 |------|------|
-| **Source 固定** | 源码始终来自 `74c21b4`，通过 `git archive` 提取，不混入工作区和后续改动 |
+| **Source 固定** | 源码始终来自 `731a31c`，通过 `git archive` 提取，不混入工作区和后续改动 |
 | **零 GitHub 请求** | 首次启动完全从 EXE 内置 Payload 释放源码，不访问 GitHub |
 | **可复现 Payload** | 相同输入构建两次 SHA-256 完全一致 (`93ff7bfa...`) |
 | **原子 Runtime 安装** | `staging → rename` 原子切换，`current.json` 原子更新 |

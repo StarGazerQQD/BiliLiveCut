@@ -12,9 +12,9 @@ from datetime import UTC, datetime
 from pathlib import Path
 from typing import Any
 
-SOURCE_COMMIT_SHORT = "74c21b4"
-SOURCE_COMMIT_FULL = "74c21b401f1da4ef52f0333c94e3874e80f8ceef"
-RELEASE_VERSION = "0.1.14.5-alpha"
+SOURCE_COMMIT_SHORT = "731a31c"
+SOURCE_COMMIT_FULL = "731a31cd04ae1df27dd6b6c5ffc535123932b825"
+RELEASE_VERSION = "0.1.14.6-alpha"
 MANIFEST_FORMAT_VERSION = 1
 
 

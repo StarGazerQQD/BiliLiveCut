@@ -1,8 +1,8 @@
 """Payload 构建器 — 构建 source_payload.zip 和完整 Manifest。
 
 流程:
-1. 从 74c21b4 提取源码 → staging/
-2. 应用受控版本 Overlay → 0.1.14.5-alpha
+1. 从 731a31c 提取源码 → staging/
+2. 应用受控版本 Overlay → 0.1.14.6-alpha
 3. 生成 Manifest
 4. 构建 ZIP
 5. 校验
@@ -139,10 +139,10 @@ def _safe_extract_zip(zip_path: Path, dest: Path) -> list[str]:
     return extracted
 
 
-def build_payload(source_commit: str = "74c21b4", builder_commit: str | None = None) -> dict:
+def build_payload(source_commit: str = "731a31c", builder_commit: str | None = None) -> dict:
     """构建完整 Payload: 提取 → Overlay → Manifest → ZIP → 校验。
 
-    :param source_commit: 业务源码 Commit (默认 74c21b4)。
+    :param source_commit: 业务源码 Commit (默认 731a31c)。
     :param builder_commit: 构建工具 Commit (默认当前 HEAD)。
     :returns: 构建报告 dict。
     """

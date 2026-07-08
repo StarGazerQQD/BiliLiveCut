@@ -1,5 +1,36 @@
 # Changelog
 
+## V0.1.14.6 Alpha (2026-07-08)
+
+### 发行结构重构 — Docker/Rust/Portable 目录迁移与四引擎 Engine Pack
+
+本轮为发行结构重构，将 Docker 发行文件迁移至 `packaging/docker/`，Rust 构建脚本迁移至 `tools/native/`，
+Portable 代码重构为 `src/blc_portable/` 模块化结构，并构建独立的四引擎 ASR Engine Pack。
+
+**目录迁移**
+- `Dockerfile` + `docker-compose.yml` → `packaging/docker/`，同步更新所有引用和 Compose 路径
+- `build_rust.py` → `tools/native/`，同步更新所有脚本、文档和 CI 引用
+
+**Portable 结构重构**
+- 可导入代码迁移至 `packaging/portable/src/blc_portable/`，模块化拆分 launcher/payload/engine_pack/builders/util
+- 根构建脚本保持为薄入口，正式逻辑全部在 `src/blc_portable/` 中
+- 避免创建 `packaging/__init__.py`，防止遮蔽第三方 `packaging` 库
+
+**四引擎 ASR Engine Pack**
+- 独立构建包含 Paraformer/SenseVoice/FunASR-Nano/Whisper 四个引擎完整模型的 ZIP
+- 支持分卷 (1.8 GiB/卷) 以适应 GitHub Release 单文件限制
+- Engine Pack 与 Lite EXE / Full ZIP 完全分离，不嵌入不捆绑
+- Launcher 内嵌 Engine Pack CRC32/SHA-256/版本信息，启动时自动校验
+- 运行时分五种路径准备模型：已安装 → 本地完整 ZIP → 本地分卷 → GitHub Release → 官方源全量下载
+- 模型安装至 `<程序根目录>/models/`，独立于源码 Release 目录
+- 原子安装、安全解压、Zip Slip 防护
+
+**测试与 CI**
+- 全量 pytest 通过
+- Ruff check + format check 通过
+- 测试 Node ID 完整对比无减少
+- CI portable-test 新增 Engine Pack 测试
+
 ## V0.1.14.5 Alpha (2026-07-07)
 
 ### Portable 内嵌 Payload 构建系统 — 源码基线固定、离线发行

@@ -1,4 +1,4 @@
-# BiliLiveCut CI (V0.1.14.5)
+# BiliLiveCut CI (V0.1.14.6)
 # 触发: push/PR 到 main → lint → audit + test → coverage summary
 #
 # Job 结构:
@@ -217,7 +217,7 @@ jobs:
     steps:
       - uses: actions/checkout@v4
         with:
-          fetch-depth: 0  # 需要 git history (Commit 74c21b4)
+          fetch-depth: 0  # 需要 git history (Commit 731a31c)
 
       - uses: actions/setup-python@v5
         with:

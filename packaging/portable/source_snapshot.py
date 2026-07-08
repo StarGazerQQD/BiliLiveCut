@@ -1,6 +1,6 @@
 """源码快照提取器 — 从固定 Git Commit 提取业务源码。
 
-使用 git archive 提取 74c21b4 的源码，禁止从当前工作区直接复制。
+使用 git archive 提取 731a31c 的源码，禁止从当前工作区直接复制。
 """
 
 from __future__ import annotations
@@ -185,11 +185,13 @@ def apply_version_overlay(staging_dir: Path) -> list[str]:
     init_path = staging_dir / "app" / "__init__.py"
     if init_path.exists():
         content = init_path.read_text(encoding="utf-8")
-        if "0.1.14.4-alpha" in content or "0.1.14.3-alpha" in content:
+        if "0.1.14.5-alpha" in content or "0.1.14.4-alpha" in content or "0.1.14.3-alpha" in content:
+            content = content.replace('"0.1.14.5-alpha"', f'"{RELEASE_VERSION}"')
             content = content.replace('"0.1.14.4-alpha"', f'"{RELEASE_VERSION}"')
             content = content.replace('"0.1.14.3-alpha"', f'"{RELEASE_VERSION}"')
-            content = content.replace('"V0.1.14.4 Alpha"', '"V0.1.14.5 Alpha"')
-            content = content.replace('"V0.1.14.3 Alpha"', '"V0.1.14.5 Alpha"')
+            content = content.replace('"V0.1.14.5 Alpha"', f'"V{RELEASE_VERSION.replace("-alpha", "")} Alpha"')
+            content = content.replace('"V0.1.14.4 Alpha"', f'"V{RELEASE_VERSION.replace("-alpha", "")} Alpha"')
+            content = content.replace('"V0.1.14.3 Alpha"', f'"V{RELEASE_VERSION.replace("-alpha", "")} Alpha"')
             init_path.write_text(content, encoding="utf-8")
             modified.append("app/__init__.py")
 
@@ -197,7 +199,8 @@ def apply_version_overlay(staging_dir: Path) -> list[str]:
     toml_path = staging_dir / "pyproject.toml"
     if toml_path.exists():
         content = toml_path.read_text(encoding="utf-8")
-        if "0.1.14.4" in content or "0.1.14.3" in content:
+        if "0.1.14.5" in content or "0.1.14.4" in content or "0.1.14.3" in content:
+            content = content.replace('version = "0.1.14.5-alpha"', f'version = "{RELEASE_VERSION}"')
             content = content.replace('version = "0.1.14.4-alpha"', f'version = "{RELEASE_VERSION}"')
             content = content.replace('version = "0.1.14.3-alpha"', f'version = "{RELEASE_VERSION}"')
             toml_path.write_text(content, encoding="utf-8")
@@ -207,8 +210,10 @@ def apply_version_overlay(staging_dir: Path) -> list[str]:
     readme_path = staging_dir / "README.md"
     if readme_path.exists():
         content = readme_path.read_text(encoding="utf-8")
-        content = content.replace("V0.1.14.4 Alpha", "V0.1.14.5 Alpha")
-        content = content.replace("V0.1.14.3 Alpha", "V0.1.14.5 Alpha")
+        content = content.replace("V0.1.14.5 Alpha", "V0.1.14.6 Alpha")
+        content = content.replace("V0.1.14.4 Alpha", "V0.1.14.6 Alpha")
+        content = content.replace("V0.1.14.3 Alpha", "V0.1.14.6 Alpha")
+        content = content.replace("0.1.14.5-alpha", RELEASE_VERSION)
         content = content.replace("0.1.14.4-alpha", RELEASE_VERSION)
         content = content.replace("0.1.14.3-alpha", RELEASE_VERSION)
         readme_path.write_text(content, encoding="utf-8")
@@ -218,9 +223,11 @@ def apply_version_overlay(staging_dir: Path) -> list[str]:
     changelog_path = staging_dir / "CHANGELOG.md"
     if changelog_path.exists():
         existing = changelog_path.read_text(encoding="utf-8")
-        # 替换旧版本号为 0.1.14.5
+        # 替换旧版本号为 0.1.14.6
+        existing = existing.replace("0.1.14.5-alpha", RELEASE_VERSION)
         existing = existing.replace("0.1.14.4-alpha", RELEASE_VERSION)
-        existing = existing.replace("V0.1.14.4 Alpha", "V0.1.14.5 Alpha")
+        existing = existing.replace("V0.1.14.5 Alpha", "V0.1.14.6 Alpha")
+        existing = existing.replace("V0.1.14.4 Alpha", "V0.1.14.6 Alpha")
         changelog_path.write_text(existing, encoding="utf-8")
         modified.append("CHANGELOG.md")
 
@@ -228,6 +235,7 @@ def apply_version_overlay(staging_dir: Path) -> list[str]:
     setup_py = staging_dir / "setup.py"
     if setup_py.exists():
         content = setup_py.read_text(encoding="utf-8")
+        content = content.replace("0.1.14.5-alpha", RELEASE_VERSION)
         content = content.replace("0.1.14.4-alpha", RELEASE_VERSION)
         content = content.replace("0.1.14.3-alpha", RELEASE_VERSION)
         setup_py.write_text(content, encoding="utf-8")
@@ -237,8 +245,9 @@ def apply_version_overlay(staging_dir: Path) -> list[str]:
     setup_c = staging_dir / "setup_c.py"
     if setup_c.exists():
         content = setup_c.read_text(encoding="utf-8")
-        content = content.replace('"0.1.14.4"', '"0.1.14.5"')
-        content = content.replace('"0.1.14.3"', '"0.1.14.5"')
+        content = content.replace('"0.1.14.5"', '"0.1.14.6"')
+        content = content.replace('"0.1.14.4"', '"0.1.14.6"')
+        content = content.replace('"0.1.14.3"', '"0.1.14.6"')
         setup_c.write_text(content, encoding="utf-8")
         modified.append("setup_c.py")
 
