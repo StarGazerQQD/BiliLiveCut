@@ -11,7 +11,7 @@
 
 ## V0.1.14.5 新特性：Portable 内嵌 Payload 构建系统
 
-解决中国大陆 GitHub 不稳定问题，建立从固定 Git Commit 提取源码、嵌入 Portable EXE 的完整离线发行链路。
+解决中国大陆 GitHub 不稳定问题，建立从固定 Git Commit 提取源码、嵌入 Portable EXE 的发行链路。彻底摆脱首发时对 GitHub 的依赖。
 
 ```text
 用户取得 Portable EXE → 双击运行 → 读取内置 Payload → 不访问 GitHub → 校验 SHA-256 → 释放源码 → 启动
@@ -20,10 +20,10 @@
 | 特性 | 说明 |
 |------|------|
 | **Source 固定** | 源码始终来自 `74c21b4`，通过 `git archive` 提取，不混入工作区和后续改动 |
-| **零 GitHub 请求** | 首次启动完全从 EXE 内置 Payload 释放源码，不来-访问 GitHub |
+| **零 GitHub 请求** | 首次启动完全从 EXE 内置 Payload 释放源码，不访问 GitHub |
 | **可复现 Payload** | 相同输入构建两次 SHA-256 完全一致 (`93ff7bfa...`) |
 | **原子 Runtime 安装** | `staging → rename` 原子切换，`current.json` 原子更新 |
-| **Lite / Full 双发行** | Lite: 单 EXE 内嵌源码；Full: 离线包含 Portable Python + Wheels + FFmpeg |
+| **Lite / Full 双发行** | Lite: 轻量化单 EXE，安装时联网下载依赖；Full: 预置 Portable Python + Wheels + FFmpeg，安装无需额外下载 |
 | **Zip Slip 防护** | 解压拒绝绝对路径、`..` 和盘符路径 |
 
 测试: 19 项 Portable 测试 + 308 项主项目测试全部通过，Ruff 零错误。
