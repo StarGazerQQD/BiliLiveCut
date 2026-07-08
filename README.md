@@ -9,6 +9,62 @@
 
 > ⚠️ **合规声明**：本项目仅调用 Bilibili 网页播放器自身使用的公开接口，不做任何逆向、破解或绕过平台安全策略的行为。请**仅录制你拥有授权的内容**，遵守平台服务条款与合理访问频率。自动上传默认采用 `manual` 模式（只产出成品与元数据，不调用任何平台接口），零封号风险。
 
+## V0.1.14.5 新特性：Portable 内嵌 Payload 构建系统
+
+解决中国大陆 GitHub 不稳定问题，建立从固定 Git Commit 提取源码、嵌入 Portable EXE 的完整离线发行链路。
+
+```text
+用户取得 Portable EXE → 双击运行 → 读取内置 Payload → 不访问 GitHub → 校验 SHA-256 → 释放源码 → 启动
+```
+
+| 特性 | 说明 |
+|------|------|
+| **Source 固定** | 源码始终来自 `74c21b4`，通过 `git archive` 提取，不混入工作区和后续改动 |
+| **零 GitHub 请求** | 首次启动完全从 EXE 内置 Payload 释放源码，不来-访问 GitHub |
+| **可复现 Payload** | 相同输入构建两次 SHA-256 完全一致 (`93ff7bfa...`) |
+| **原子 Runtime 安装** | `staging → rename` 原子切换，`current.json` 原子更新 |
+| **Lite / Full 双发行** | Lite: 单 EXE 内嵌源码；Full: 离线包含 Portable Python + Wheels + FFmpeg |
+| **Zip Slip 防护** | 解压拒绝绝对路径、`..` 和盘符路径 |
+
+测试: 19 项 Portable 测试 + 308 项主项目测试全部通过，Ruff 零错误。
+
+详见 [`packaging/portable/README.md`](packaging/portable/README.md)。
+
+## V0.1.14 新特性：架构重构 + 稳定性收口
+
+### 模块拆分与可维护性重构
+
+- **仓库清理**: 删除临时 CI 日志、归档 CHANGELOG、测试目录分层 (`unit/` / `integration/` / `fault_injection/`)
+- **加速模块归拢**: C/Cython/Rust/Python fallback 统一归入 `app/accelerators/`
+- **深层拆分**: `task_worker.py` (1667行) 拆分为 4 阶段 compute/commit + 独立 Worker 模块；CLI 拆分子命令；Web 拆分子路由和服务；DB 拆分子模型；前端 JS 模块化
+- **版本化 Schema**: 轻量 `schema_meta` 元信息表 + SHA-256 指纹，不兼容数据库拒绝启动
+
+### 全链路崩溃安全 (Stability Closure)
+
+- **Durable Journal**: DB 不可用时远程上传成功结果写入 JSONL 持久化，重启后回填
+- **异常分类**: `classify_upload_error` 精确区分可重试/不确定/永久失败，禁止重复投稿
+- **Stale Recovery**: 超时 `IN_PROGRESS` Attempt → `RECONCILIATION_REQUIRED`，`full_recovery()` 全量恢复统一入口
+- **308/308 测试全部通过**，Ruff 零错误
+
+## V0.1.13 新特性：运行时集成与 Golden Path
+
+### 核心架构升级
+
+- **TaskLease + Compute/Commit 分离**: 4 阶段全部拆分为纯计算 (compute) + 原子提交 (commit)，租约贯穿全链路
+- **ResourceBudget 资源预算**: CPU/GPU/内存/显存四维资源池，任务领取前 reserve，不足时拒绝
+- **两级磁盘保护**: `LOW_DISK_THRESHOLD_GB`(20GB) / `CRITICAL_DISK_THRESHOLD_GB`(5GB)，危险磁盘安全停止录制
+- **FFmpeg 错误分类**: 结构化异常类型，永久错误不无限重试
+- **Bilibili 风控熔断**: `CircuitBreaker` 房间级熔断，403/412 触发后退避
+- **弹幕分级采样**: SC/互动 100% 采集，普通 30%，高密度降至 10%
+
+### 安全与运维
+
+- **Web loopback guard**: 非本机监听 + 空密码 → 拒绝启动，认证用 `secrets.compare_digest`
+- **敏感信息脱敏**: Cookie/SESSDATA/API Key/Token 统一脱敏器
+- **`bililivecut doctor`**: 15 项自检命令 (PASS/WARN/FAIL)
+- **CI 增强**: pip-audit + pytest-cov 覆盖率门禁，macOS 矩阵
+- **290/290 测试通过**
+
 ## V0.1.12 新特性：多引擎 ASR 流水线
 
 默认引擎从 Whisper 单引擎升级为**四层流水线**：
@@ -24,11 +80,11 @@
 
 ## V0.1.11 新特性：数据一致性与流水线稳定性
 
-- **数据模型语义修正**：`ClipVariant.event_id` 和 `HighlightTopic.event_id` 始终指向真实 `HighlightEvent.id`；自动创建 HighlightEvent 而非手动
-- **五开关独立生效**：`auto_record / auto_analyze / auto_render / auto_approve / auto_upload` 逐阶段独立判断，每次阶段转换重新读取房间配置
-- **TaskWorker 真正并发**：各阶段独立 `asyncio.create_task`，不串行阻塞；环境变量控制并发数
-- **原子任务领取**：`UPDATE WHERE` 条件赋值，防多 Worker 抢同一任务
-- **attempts 只增一次 + failed_stage 精确恢复 + heartbeat/stale 崩溃恢复**
+- **五大独立开关**: `auto_record / auto_analyze / auto_render / auto_approve / auto_upload` 逐阶段独立判断，每次阶段转换重新读取房间配置
+- **TaskWorker 真正并发**: 各阶段独立 `asyncio.create_task`，不串行阻塞；环境变量控制并发数
+- **原子任务领取**: `UPDATE WHERE` 条件赋值，防多 Worker 抢同一任务
+- **任务心跳 + stale 恢复**: 长任务周期性心跳更新，进程崩溃后自动恢复
+- **数据模型约束**: 增加 UNIQUE 约束，防止双写不一致
 
 ## 功能进度
 
@@ -225,9 +281,9 @@ pytest -q
 ```
 ├── app/                     # 后端主包 (sources / recording / analysis / clipping / publishing / pipeline / web)
 ├── config/                  # 权重与关键词 YAML
-├── tests/                   # 测试 (290 项)
+├── tests/                   # 测试 (308 项)
 ├── storage/                 # 运行产物 (.gitignore)
-├── packaging/portable/       # 即插即用分发版 (原 Publish-PnP)
+├── packaging/portable/      # 即插即用分发版 (原 Publish-PnP)
 ├── pyproject.toml           # 项目配置
 ├── .env.example             # 配置模板
 └── README.md                # 本文件
