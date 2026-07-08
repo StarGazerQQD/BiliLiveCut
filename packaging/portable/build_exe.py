@@ -1,4 +1,4 @@
-"""Portable Lite 构建脚本 — 将 Launcher + Payload 编译为单个 EXE。
+"""Portable Lite 构建脚本 — 将 Launcher + Payload + Engine Pack Info 编译为单个 EXE。
 
 用法:
     python build_exe.py            # 先构建 Payload，再编译 EXE
@@ -18,6 +18,8 @@ SPEC_FILE = PORTABLE_DIR / "portable_launcher.spec"
 DIST_DIR = PORTABLE_DIR / "dist" / "lite"
 PAYLOAD_DIR = PORTABLE_DIR / "dist" / "payload"
 MANIFEST_PATH = PAYLOAD_DIR / "payload_manifest.json"
+RESOURCES_DIR = PORTABLE_DIR / "resources"
+ENGINE_PACK_INFO_PATH = RESOURCES_DIR / "engine_pack_info.json"
 
 RELEASE_VERSION = "0.1.14.5-alpha"
 
@@ -34,6 +36,23 @@ def build_payload_if_needed() -> None:
         print("[build_exe] Payload 构建完成")
 
 
+def check_engine_pack_info() -> None:
+    """检查 Engine Pack 信息文件存在。"""
+    if not ENGINE_PACK_INFO_PATH.exists():
+        print("[build_exe] engine_pack_info.json 不存在，生成默认占位信息...")
+        RESOURCES_DIR.mkdir(parents=True, exist_ok=True)
+        default_info = {
+            "engine_pack_version": RELEASE_VERSION,
+            "filename": f"BiliLiveCut-EnginePack-{RELEASE_VERSION}.zip",
+            "crc32": "",
+            "expected_engine_ids": ["whisper", "paraformer", "sensevoice", "funasr_nano"],
+        }
+        ENGINE_PACK_INFO_PATH.write_text(
+            json.dumps(default_info, ensure_ascii=False, indent=2), encoding="utf-8"
+        )
+        print("  [注意] Engine Pack 尚未构建，CRC32 为空。构建 Engine Pack 后会自动填入真实 CRC32。")
+
+
 def build_exe() -> Path:
     """构建 Portable Lite EXE。
 
@@ -48,10 +67,18 @@ def build_exe() -> Path:
     # 构建 Payload
     build_payload_if_needed()
 
+    # 检查 Engine Pack 信息
+    check_engine_pack_info()
+
     # 验证 Manifest
     manifest = json.loads(MANIFEST_PATH.read_text(encoding="utf-8"))
     print(f"  Payload SHA256: {manifest['payload_sha256'][:32]}")
     print(f"  Source: {manifest['source_commit_short']}")
+
+    # 读取 Engine Pack 信息
+    if ENGINE_PACK_INFO_PATH.exists():
+        ep_info = json.loads(ENGINE_PACK_INFO_PATH.read_text(encoding="utf-8"))
+        print(f"  Engine Pack: {ep_info.get('filename', 'N/A')} CRC32={ep_info.get('crc32', 'N/A')}")
 
     # PyInstaller 构建
     cmd = [
@@ -65,7 +92,7 @@ def build_exe() -> Path:
         str(SPEC_FILE),
     ]
 
-    print(f"\n  执行: {' '.join(cmd[:3])} ...")
+    print("\n  PyInstaller 编译中 ...")
     result = subprocess.run(cmd, cwd=str(PORTABLE_DIR))
 
     if result.returncode != 0:
@@ -89,6 +116,11 @@ def build_exe() -> Path:
         "artifact_sha256": "",
     }
 
+    # 如果 Engine Pack 信息存在，添加 CRC32
+    if ENGINE_PACK_INFO_PATH.exists():
+        ep_info = json.loads(ENGINE_PACK_INFO_PATH.read_text(encoding="utf-8"))
+        build_manifest["engine_pack_crc32"] = ep_info.get("crc32", "")
+
     import hashlib
 
     hasher = hashlib.sha256()
@@ -107,6 +139,8 @@ def build_exe() -> Path:
     size_mb = exe_path.stat().st_size / (1024 * 1024)
     print(f"\n  [OK] {exe_path.name} ({size_mb:.1f} MB)")
     print(f"  SHA256: {build_manifest['artifact_sha256'][:32]}")
+    if "engine_pack_crc32" in build_manifest:
+        print(f"  内置 Engine Pack CRC32: {build_manifest['engine_pack_crc32']}")
 
     return exe_path
 

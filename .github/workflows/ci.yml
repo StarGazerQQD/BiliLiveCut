@@ -208,7 +208,39 @@ jobs:
           if-no-files-found: ignore
 
 # ═══════════════════════════════════════════════════════════════════
-# Job 4: 汇总覆盖率 (可选, 展示总覆盖率; 需要 test 全部完成)
+# Job 4: Portable 测试 (包含 Engine Pack)
+# ═══════════════════════════════════════════════════════════════════
+  portable-test:
+    name: "portable-test"
+    needs: lint
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0  # 需要 git history (Commit 74c21b4)
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+
+      - name: Install dev deps
+        run: |
+          python -m pip install --upgrade pip
+          pip install -e ".[dev,web]"
+          pip install pytest-cov
+
+      - name: Run Portable + Engine Pack tests
+        run: |
+          python -m pytest packaging/portable/tests/ \
+            --tb=short -v \
+            --timeout=120
+        timeout-minutes: 10
+
+      - name: Ruff check portable modules
+        run: ruff check packaging/portable/
+
+# ═══════════════════════════════════════════════════════════════════
+# Job 5: 汇总覆盖率 (可选, 展示总覆盖率; 需要 test 全部完成)
 # ═══════════════════════════════════════════════════════════════════
   coverage-summary:
     name: "coverage summary"

@@ -1,0 +1,11 @@
+{
+  "engine_pack_version": "0.1.14.5-alpha",
+  "filename": "BiliLiveCut-EnginePack-0.1.14.zip",
+  "crc32": "861E7161",
+  "expected_engine_ids": [
+    "whisper",
+    "paraformer",
+    "sensevoice",
+    "funasr_nano"
+  ]
+}

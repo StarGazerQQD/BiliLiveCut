@@ -6,7 +6,8 @@
 3. 校验 Payload SHA-256
 4. 原子安装到 runtime/releases/<release-id>/
 5. Python/依赖/FFmpeg 检测
-6. 启动 app.cli serve
+6. 模型准备: 已安装 → Engine Pack → 在线下载
+7. 启动 app.cli serve
 """
 
 from __future__ import annotations
@@ -22,7 +23,7 @@ import zipfile
 from pathlib import Path
 from typing import Any
 
-# ── 常量 ──────────────────────────────────────────────────────────
+# ── 常量 ──────────────────────────────────────────────────
 APP_NAME = "BiliLiveCut"
 VERSION = "V0.1.14.5 Alpha"
 RELEASE_VERSION = "0.1.14.5-alpha"
@@ -37,16 +38,11 @@ PIP_INDEX = "https://mirrors.aliyun.com/pypi/simple/"
 PIP_EXTRA_INDEX = "https://pypi.tuna.tsinghua.edu.cn/simple"
 PIP_TRUSTED_HOSTS = ["mirrors.aliyun.com", "pypi.tuna.tsinghua.edu.cn"]
 
-# Whisper 模型
-MODEL_REPO = "mobiuslabsgmbh/faster-whisper-large-v3-turbo"
-MODEL_DIRNAME = "whisper-large-v3-turbo"
-HF_MIRROR = "https://hf-mirror.com"
-
 # FFmpeg
 FFMPEG_WIN_URL = "https://github.com/BtbN/FFmpeg-Builds/releases/download/latest/ffmpeg-master-latest-win64-gpl.zip"
 
 
-# ── 资源路径 ──────────────────────────────────────────────────────
+# ── 资源路径 ──────────────────────────────────────────────
 
 
 def get_bundled_resource_path(rel: str) -> Path | None:
@@ -88,7 +84,21 @@ def get_payload_manifest() -> dict[str, Any]:
     return json.loads(p.read_text(encoding="utf-8"))
 
 
-# ── Runtime 管理 ──────────────────────────────────────────────────
+def get_engine_pack_info() -> dict[str, Any] | None:
+    """读取内置 Engine Pack 信息。
+
+    :returns: Engine Pack 信息字典，未嵌入返回 None。
+    """
+    p = get_bundled_resource_path("engine_pack_info.json")
+    if p is None:
+        return None
+    try:
+        return json.loads(p.read_text(encoding="utf-8"))
+    except (json.JSONDecodeError, OSError):
+        return None
+
+
+# ── Runtime 管理 ──────────────────────────────────────────
 
 
 def get_app_root() -> Path:
@@ -147,7 +157,6 @@ def install_source_from_payload(app_root: Path) -> Path:
     if actual_hash != expected_hash:
         raise RuntimeError(f"Payload 哈希不匹配: actual={actual_hash[:16]} expected={expected_hash[:16]}")
 
-    # 验证版本和 Commit
     if manifest.get("release_version") != RELEASE_VERSION:
         raise RuntimeError(f"Payload 版本不匹配: {manifest.get('release_version')} != {RELEASE_VERSION}")
     if manifest.get("source_commit_short") != SOURCE_COMMIT_SHORT:
@@ -159,14 +168,12 @@ def install_source_from_payload(app_root: Path) -> Path:
     staging = get_app_root() / "runtime" / "staging"
     release_dir = releases_dir / RELEASE_ID
 
-    # 清理旧 staging
     if staging.exists():
         shutil.rmtree(staging)
 
     try:
         staging.mkdir(parents=True, exist_ok=True)
 
-        # 安全解压到 staging
         with zipfile.ZipFile(zip_path) as zf:
             for member in zf.namelist():
                 if member.startswith("/") or ".." in member.split("/") or ":" in member:
@@ -182,18 +189,15 @@ def install_source_from_payload(app_root: Path) -> Path:
                     target.parent.mkdir(parents=True, exist_ok=True)
                     target.write_bytes(zf.read(member))
 
-        # 验证关键文件
         for path in ["app/cli.py", "pyproject.toml"]:
             if not (staging / path).exists():
                 raise RuntimeError(f"Release 缺少关键文件: {path}")
 
-        # 原子 rename
         releases_dir.mkdir(parents=True, exist_ok=True)
         if release_dir.exists():
             shutil.rmtree(release_dir)
         os.replace(str(staging), str(release_dir))
 
-        # 写入 current.json
         current_info = {
             "release_id": RELEASE_ID,
             "release_version": RELEASE_VERSION,
@@ -243,7 +247,7 @@ def ensure_env(app_root: Path, source_dir: Path) -> None:
         print("  .env 已从模板创建")
 
 
-# ── 环境准备 ─────────────────────────────────────────────────────
+# ── 环境准备 ──────────────────────────────────────────────
 
 
 def _find_system_python() -> Path | None:
@@ -285,15 +289,9 @@ def _find_portable_python(app_root: Path) -> Path | None:
     if not pp.exists():
         return None
     if sys.platform == "win32":
-        candidates = [
-            pp / "python.exe",
-            pp / "python3.exe",
-        ]
+        candidates = [pp / "python.exe", pp / "python3.exe"]
     else:
-        candidates = [
-            pp / "bin" / "python3",
-            pp / "bin" / "python",
-        ]
+        candidates = [pp / "bin" / "python3", pp / "bin" / "python"]
     for c in candidates:
         if c.exists():
             return c
@@ -306,12 +304,6 @@ def prepare_venv(app_root: Path) -> Path:
     :param app_root: 应用根目录。
     :returns: venv python 路径。
     """
-    venv_python = (
-        app_root / VENV_DIR / ("Scripts" if sys.platform == "win32" else "bin") / "python.exe"
-        if sys.platform == "win32"
-        else app_root / VENV_DIR / "bin" / "python"
-    )
-
     if sys.platform == "win32":
         venv_python = app_root / VENV_DIR / "Scripts" / "python.exe"
     else:
@@ -320,7 +312,6 @@ def prepare_venv(app_root: Path) -> Path:
     if venv_python.exists():
         return venv_python
 
-    # 查找 Python
     system_py = _find_portable_python(app_root) or _find_system_python()
     if system_py is None:
         raise RuntimeError(
@@ -345,7 +336,6 @@ def install_dependencies(venv_python: Path, app_root: Path, req_file: Path) -> N
     :param app_root: 应用根目录。
     :param req_file: requirements 文件。
     """
-    # 检查是否已安装
     try:
         subprocess.run(
             [str(venv_python), "-c", "import fastapi, uvicorn, sqlmodel, pydantic; print('ok')"],
@@ -360,38 +350,24 @@ def install_dependencies(venv_python: Path, app_root: Path, req_file: Path) -> N
 
     wheels_dir = app_root / WHEELS_DIR
     if wheels_dir.exists() and list(wheels_dir.glob("*.whl")):
-        # 离线安装
-        print(f"  离线安装依赖 ({len(list(wheels_dir.glob('*.whl')))} wheels)...")
+        print(f"  安装依赖 (本地 {len(list(wheels_dir.glob('*.whl')))} wheels)...")
         subprocess.run(
             [
-                str(venv_python),
-                "-m",
-                "pip",
-                "install",
-                "--no-index",
-                "--find-links",
-                str(wheels_dir),
-                "-r",
-                str(req_file),
+                str(venv_python), "-m", "pip", "install",
+                "--no-index", "--find-links", str(wheels_dir),
+                "-r", str(req_file),
             ],
             check=True,
             timeout=600,
         )
     else:
-        # 联网安装 (国内镜像)
-        print("  联网安装依赖 (国内镜像)...")
+        print("  安装依赖 (国内镜像)...")
         subprocess.run(
             [
-                str(venv_python),
-                "-m",
-                "pip",
-                "install",
-                "-r",
-                str(req_file),
-                "-i",
-                PIP_INDEX,
-                "--extra-index-url",
-                PIP_EXTRA_INDEX,
+                str(venv_python), "-m", "pip", "install",
+                "-r", str(req_file),
+                "-i", PIP_INDEX,
+                "--extra-index-url", PIP_EXTRA_INDEX,
                 *[f"--trusted-host={h}" for h in PIP_TRUSTED_HOSTS],
             ],
             check=True,
@@ -400,7 +376,80 @@ def install_dependencies(venv_python: Path, app_root: Path, req_file: Path) -> N
     print("  依赖安装完成")
 
 
-# ── 启动 ────────────────────────────────────────────────────────
+# ── 模型准备 ──────────────────────────────────────────────
+
+
+def prepare_models(app_root: Path, user_engine_pack_path: str | None = None) -> dict[str, Any]:
+    """模型准备编排 — 已安装 → Engine Pack → 在线下载。
+
+    1. 检查已安装模型 → 版本匹配直接复用
+    2. 查找本地 Engine Pack → CRC32 校验通过则从包安装 (网络 0)
+    3. 本地包无效 → 全量在线下载四引擎 (网络 N)
+    4. 无本地包 → 全量在线下载四引擎
+
+    无论如何不混合本地包与在线模型。
+
+    :param app_root: 应用根目录。
+    :param user_engine_pack_path: 用户通过 --engine-pack 指定的路径。
+    :returns: 模型准备信息字典。
+    """
+    from engine_pack import check_installed_models, find_local_engine_pack, install_from_engine_pack
+
+    MODEL_ENGINE_PACK_VERSION = "0.1.14.5-alpha"
+
+    # 读取内置 Engine Pack 信息
+    pack_info = get_engine_pack_info()
+    if pack_info is None:
+        pack_info = {
+            "engine_pack_version": MODEL_ENGINE_PACK_VERSION,
+            "filename": f"BiliLiveCut-EnginePack-{MODEL_ENGINE_PACK_VERSION}.zip",
+            "crc32": "",
+            "expected_engine_ids": ["whisper", "paraformer", "sensevoice", "funasr_nano"],
+        }
+
+    expected_filename = str(pack_info.get("filename", ""))
+    expected_crc32 = str(pack_info.get("crc32", ""))
+    expected_version = str(pack_info.get("engine_pack_version", MODEL_ENGINE_PACK_VERSION))
+
+    # 1. 检查已安装模型
+    models_dir = app_root / "models"
+    if check_installed_models(models_dir, expected_version):
+        print("  四引擎模型已安装 (版本匹配)，跳过模型准备")
+        return {
+            "source": "already_installed",
+            "network_requests": 0,
+        }
+
+    # 2. 查找本地 Engine Pack
+    pack_path = find_local_engine_pack(app_root, expected_filename, user_engine_pack_path)
+
+    if pack_path is not None:
+        print(f"\n  找到本地 Engine Pack: {pack_path.name}")
+        try:
+            return install_from_engine_pack(app_root, pack_path, expected_crc32, expected_version)
+        except RuntimeError:
+            # CRC32 不匹配或解压/校验失败 → 不使用本地包
+            print("  本地包未通过校验，切换在线下载...")
+    else:
+        print("\n  未找到本地 Engine Pack")
+
+    # 3. 全量在线下载
+    print("  全量在线下载四引擎模型...")
+    try:
+        from model_installer import download_all_engines
+
+        return download_all_engines(app_root)
+    except ImportError as exc:
+        print(f"  [警告] 模型下载依赖缺失: {exc}")
+        print("  将继续启动 (ASR 可能使用系统已缓存的模型)")
+        return {
+            "source": "skipped",
+            "network_requests": 0,
+            "warning": str(exc),
+        }
+
+
+# ── 启动 ──────────────────────────────────────────────────
 
 
 def _fail(msg: str) -> None:
@@ -421,6 +470,15 @@ def _fail(msg: str) -> None:
 
 def main() -> None:
     """Portable Launcher 主入口。"""
+    # 解析 --engine-pack 参数
+    user_engine_pack_path: str | None = None
+    if "--engine-pack" in sys.argv:
+        idx = sys.argv.index("--engine-pack")
+        if idx + 1 < len(sys.argv):
+            user_engine_pack_path = sys.argv[idx + 1]
+            sys.argv.pop(idx)  # 移除参数
+            sys.argv.pop(idx)
+
     app_root = get_app_root()
     os.chdir(str(app_root))
     os.environ.setdefault("PYTHONIOENCODING", "utf-8")
@@ -439,28 +497,27 @@ def main() -> None:
         # 2. 检查/安装 Runtime
         source_dir = get_current_release_dir()
         if source_dir is None:
-            print("[1/5] 从内置 Payload 安装源码...")
+            print("[1/6] 从内置 Payload 安装源码...")
             source_dir = install_source_from_payload(app_root)
             print()
         else:
-            print(f"[1/5] Runtime 已就绪: {source_dir}")
+            print(f"[1/6] Runtime 已就绪: {source_dir}")
             print()
 
         # 3. 确保 .env
-        print("[2/5] 配置文件...")
+        print("[2/6] 配置文件...")
         ensure_env(app_root, source_dir)
         print()
 
         # 4. 准备虚拟环境
-        print("[3/5] Python 环境...")
+        print("[3/6] Python 环境...")
         venv_python = prepare_venv(app_root)
         print()
 
         # 5. 安装依赖
-        print("[4/5] 依赖安装...")
+        print("[4/6] 依赖安装...")
         req_file = source_dir / "requirements-bundle.txt"
         if not req_file.exists():
-            # Fallback: try to find it
             req_file = app_root / "requirements-bundle.txt"
         if not req_file.exists():
             req_file = Path("requirements-bundle.txt")
@@ -470,8 +527,16 @@ def main() -> None:
             print(f"  [警告] 未找到 {req_file}，跳过依赖安装")
         print()
 
-        # 6. 启动 Web
-        print("[5/5] 启动 Web 控制台...")
+        # 6. 模型准备
+        print("[5/6] 模型准备...")
+        model_result = prepare_models(app_root, user_engine_pack_path)
+        model_source = model_result.get("source", "unknown")
+        network_reqs = model_result.get("network_requests", 0)
+        print(f"  模型来源: {model_source} (网络请求: {network_reqs})")
+        print()
+
+        # 7. 启动 Web
+        print("[6/6] 启动 Web 控制台...")
         print()
         print("=" * 60)
         print("  浏览器将自动打开: http://127.0.0.1:8000")
@@ -486,22 +551,20 @@ def main() -> None:
             env["FFPROBE_PATH"] = str(bin_dir / "ffprobe.exe")
             env["PATH"] = str(bin_dir) + os.pathsep + env.get("PATH", "")
 
-        # 注入源码路径
         env["BLC_PORTABLE"] = "1"
         env["BLC_SOURCE_DIR"] = str(source_dir)
+
+        # 设置模型目录环境变量 (供 FunASR/Whisper 使用)
+        models_dir = app_root / "models"
+        if models_dir.exists():
+            env["BLC_MODELS_DIR"] = str(models_dir)
 
         webbrowser.open("http://127.0.0.1:8000")
 
         subprocess.run(
             [
-                str(venv_python),
-                "-m",
-                "app.cli",
-                "serve",
-                "--host",
-                "127.0.0.1",
-                "--port",
-                "8000",
+                str(venv_python), "-m", "app.cli", "serve",
+                "--host", "127.0.0.1", "--port", "8000",
             ],
             env=env,
             cwd=str(app_root),
