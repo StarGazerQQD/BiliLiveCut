@@ -140,7 +140,7 @@ jobs:
       - name: Build source payload
         run: |
           cd packaging/portable
-          python -m blc_portable.payload.builder
+          python build_payload.py
         timeout-minutes: 5
 
       - name: Upload Payload artifacts
