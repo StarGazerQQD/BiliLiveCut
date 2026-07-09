@@ -32,11 +32,11 @@ RELEASE_VERSION = "0.1.14.7-alpha"
 def build_payload_if_needed() -> None:
     """确保 Payload 已构建。"""
     if not MANIFEST_PATH.exists() or not (PAYLOAD_DIR / "source_payload.zip").exists():
-        print("[build_exe] Payload 不存在，开始构建...")
+        print("[build_exe] Payload missing, building ...")
         from blc_portable.payload.builder import build_payload
 
         build_payload()
-        print("[build_exe] Payload 构建完成")
+        print("[build_exe] Payload built successfully")
 
 
 def check_engine_pack_info() -> None:
@@ -91,7 +91,7 @@ def check_engine_pack_info() -> None:
         error_msg = "Engine Pack validation FAILED:\n  - " + "\n  - ".join(errors)
         raise RuntimeError(error_msg)
 
-    print(f"  Engine Pack 校验通过: CRC32={crc32} SHA256={sha256[:16]}...")
+    print(f"  Engine Pack OK: CRC32={crc32} SHA256={sha256[:16]}...")
 
 
 def _generate_default_engine_pack_info() -> dict:
@@ -118,9 +118,9 @@ def _generate_default_engine_pack_info() -> dict:
 
 
 def build_exe() -> Path:
-    """构建 Portable Lite EXE。
+    """Build Portable Lite EXE.
 
-    :returns: 生成的 EXE 路径。
+    :returns: Path to generated EXE.
     """
     DIST_DIR.mkdir(parents=True, exist_ok=True)
 
@@ -128,23 +128,23 @@ def build_exe() -> Path:
     print(f"  BiliLiveCut Portable Lite {RELEASE_VERSION}")
     print("=" * 60)
 
-    # 构建 Payload
+    # Build Payload
     build_payload_if_needed()
 
-    # 检查 Engine Pack 信息
+    # Validate Engine Pack info
     check_engine_pack_info()
 
-    # 验证 Manifest
+    # Validate Manifest
     manifest = json.loads(MANIFEST_PATH.read_text(encoding="utf-8"))
     print(f"  Payload SHA256: {manifest['payload_sha256'][:32]}")
     print(f"  Source: {manifest['source_commit_short']}")
 
-    # 读取 Engine Pack 信息
+    # Read Engine Pack info
     if ENGINE_PACK_INFO_PATH.exists():
         ep_info = json.loads(ENGINE_PACK_INFO_PATH.read_text(encoding="utf-8"))
         print(f"  Engine Pack: {ep_info.get('filename', 'N/A')} CRC32={ep_info.get('crc32', 'N/A')}")
 
-    # PyInstaller 构建
+    # PyInstaller build
     cmd = [
         sys.executable,
         "-m",
@@ -156,16 +156,16 @@ def build_exe() -> Path:
         str(SPEC_FILE),
     ]
 
-    print("\n  PyInstaller 编译中 ...")
+    print("\n  PyInstaller compiling ...")
     result = subprocess.run(cmd, cwd=str(PORTABLE_DIR))
 
     if result.returncode != 0:
-        print(f"\n[错误] PyInstaller 编译失败 (退出码 {result.returncode})")
+        print(f"\n[Error] PyInstaller failed (exit code {result.returncode})")
         sys.exit(1)
 
     exe_path = DIST_DIR / f"BiliLiveCut-Portable-Lite-v{RELEASE_VERSION}-x64.exe"
     if not exe_path.exists():
-        print(f"\n[错误] 未生成 {exe_path}")
+        print(f"\n[Error] EXE not found: {exe_path}")
         sys.exit(1)
 
     # 生成 build-manifest.json
@@ -206,7 +206,7 @@ def build_exe() -> Path:
     print(f"\n  [OK] {exe_path.name} ({size_mb:.1f} MB)")
     print(f"  SHA256: {build_manifest['artifact_sha256'][:32]}")
     if "engine_pack_crc32" in build_manifest:
-        print(f"  内置 Engine Pack CRC32: {build_manifest['engine_pack_crc32']}")
+        print(f"  Embedded Engine Pack CRC32: {build_manifest['engine_pack_crc32']}")
 
     return exe_path
 
