@@ -96,8 +96,6 @@ def _safe_extract(zip_path: Path, target_dir: Path) -> None:
     :param target_dir: 目标目录。
     :raises RuntimeError: 检测到不安全路径或 ZIP 炸弹时。
     """
-    import shutil
-
     target_resolved = target_dir.resolve()
     max_extract_size = 20 * 1024 * 1024 * 1024  # 20 GB 上限
 
@@ -236,16 +234,12 @@ def install_from_engine_pack(
     # 1. CRC32 快速检测
     actual_crc32 = compute_crc32(pack_path)
     if actual_crc32 != expected_crc32:
-        raise RuntimeError(
-            f"CRC32 mismatch: expected={expected_crc32} actual={actual_crc32}"
-        )
+        raise RuntimeError(f"CRC32 mismatch: expected={expected_crc32} actual={actual_crc32}")
 
     # 2. SHA-256 强制校验
     actual_sha256 = compute_sha256(pack_path)
     if expected_sha256 and actual_sha256 != expected_sha256:
-        raise RuntimeError(
-            f"SHA-256 mismatch: expected={expected_sha256[:16]} actual={actual_sha256[:16]}"
-        )
+        raise RuntimeError(f"SHA-256 mismatch: expected={expected_sha256[:16]} actual={actual_sha256[:16]}")
 
     print(f"  Engine Pack 校验通过: CRC32={actual_crc32} SHA256={actual_sha256[:16]}...")
 
@@ -266,9 +260,7 @@ def install_from_engine_pack(
 
         manifest = load_manifest(manifest_path)
         if manifest.engine_pack_version != expected_version:
-            raise RuntimeError(
-                f"Engine Pack 版本不匹配: {manifest.engine_pack_version} != {expected_version}"
-            )
+            raise RuntimeError(f"Engine Pack 版本不匹配: {manifest.engine_pack_version} != {expected_version}")
 
         # 4. 四引擎目录存在性
         for engine in manifest.engines:
@@ -287,10 +279,7 @@ def install_from_engine_pack(
                 if expected_hash:
                     ahash = compute_sha256(target)
                     if ahash != expected_hash:
-                        raise RuntimeError(
-                            f"文件 SHA-256 不匹配: {fp_str} "
-                            f"期望={expected_hash[:16]} 实际={ahash[:16]}"
-                        )
+                        raise RuntimeError(f"文件 SHA-256 不匹配: {fp_str} 期望={expected_hash[:16]} 实际={ahash[:16]}")
 
         # 6. 引擎信息
         installed_engines: list[str] = []

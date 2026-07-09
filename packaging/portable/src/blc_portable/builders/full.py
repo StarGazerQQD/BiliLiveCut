@@ -10,7 +10,6 @@ from __future__ import annotations
 
 import json
 import shutil
-import sys
 import tempfile
 import zipfile
 from pathlib import Path
@@ -57,13 +56,11 @@ def build_full_bundle() -> Path:
     # 验证必须的离线组件
     missing: list[str] = []
 
-    portable_py = app_root / "portable-python" / "python.exe" if PORTABLE_DIR else None
-    if not portable_py:
-        portable_py = PROJECT_ROOT / "portable-python" / "python.exe"
+    portable_py = PROJECT_ROOT / "portable-python" / "python.exe"
     if not portable_py.exists():
-        missing.append(f"portable-python/python.exe (需预先准备 Portable Python)")
+        missing.append("portable-python/python.exe (需预先准备 Portable Python)")
 
-    wheels_dir = app_root / "vendor" / "wheels"
+    wheels_dir = PROJECT_ROOT / "vendor" / "wheels"
     if not wheels_dir.exists() or not list(wheels_dir.glob("*.whl")):
         candidate = PROJECT_ROOT / "vendor" / "wheels"
         if candidate.exists() and list(candidate.glob("*.whl")):
@@ -71,7 +68,7 @@ def build_full_bundle() -> Path:
         else:
             missing.append("vendor/wheels/ (无 .whl 文件 — 离线安装将不可用)")
 
-    ffmpeg = app_root / "bin" / "ffmpeg.exe"
+    ffmpeg = PROJECT_ROOT / "bin" / "ffmpeg.exe"
     if not ffmpeg.exists():
         candidate = PROJECT_ROOT / "bin" / "ffmpeg.exe"
         if candidate.exists():
@@ -79,7 +76,7 @@ def build_full_bundle() -> Path:
         else:
             missing.append("bin/ffmpeg.exe")
 
-    ffprobe = app_root / "bin" / "ffprobe.exe"
+    ffprobe = PROJECT_ROOT / "bin" / "ffprobe.exe"
     if not ffprobe.exists():
         candidate = PROJECT_ROOT / "bin" / "ffprobe.exe"
         if candidate.exists():

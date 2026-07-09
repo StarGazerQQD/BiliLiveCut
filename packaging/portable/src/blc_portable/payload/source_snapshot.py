@@ -195,7 +195,12 @@ def apply_version_overlay(staging_dir: Path) -> list[str]:
     init_path = staging_dir / "app" / "__init__.py"
     if init_path.exists():
         content = init_path.read_text(encoding="utf-8")
-        if "0.1.14.6-alpha" in content or "0.1.14.5-alpha" in content or "0.1.14.4-alpha" in content or "0.1.14.3-alpha" in content:
+        if (
+            "0.1.14.6-alpha" in content
+            or "0.1.14.5-alpha" in content
+            or "0.1.14.4-alpha" in content
+            or "0.1.14.3-alpha" in content
+        ):
             content = content.replace('"0.1.14.6-alpha"', f'"{RELEASE_VERSION}"')
             content = content.replace('"0.1.14.5-alpha"', f'"{RELEASE_VERSION}"')
             content = content.replace('"0.1.14.4-alpha"', f'"{RELEASE_VERSION}"')

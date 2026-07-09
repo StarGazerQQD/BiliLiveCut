@@ -50,7 +50,6 @@ def check_engine_pack_info() -> None:
     ep_info = json.loads(ENGINE_PACK_INFO_PATH.read_text(encoding="utf-8"))
     crc32 = str(ep_info.get("crc32", ""))
     sha256 = str(ep_info.get("sha256", ""))
-    manifest_sha = str(ep_info.get("manifest_sha256", ""))
     version = str(ep_info.get("engine_pack_version", ""))
     filename = str(ep_info.get("filename", ""))
 
@@ -200,7 +199,7 @@ def build_exe() -> Path:
 
 def main() -> int:
     """入口 — 供薄入口调用。
-    
+
     :returns: 0 成功, 1 失败。
     """
     try:

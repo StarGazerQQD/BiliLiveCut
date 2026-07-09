@@ -87,6 +87,7 @@ convention = "pep257"
 
 [tool.ruff.lint.per-file-ignores]
 "tests/**/*.py" = ["D100", "D102", "D103", "E501"]  # 测试文件放宽 docstring 和行长要求
+"packaging/portable/**/*.py" = ["E402", "D100", "D103"]  # 构建脚本需修改 sys.path 后再导入
 
 [tool.pytest.ini_options]
 asyncio_mode = "auto"

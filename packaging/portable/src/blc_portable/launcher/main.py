@@ -144,7 +144,11 @@ def get_current_release_dir() -> Path | None:
                 exe_payload_sha = manifest.get("payload_sha256", "")
                 if exe_payload_sha and expected_payload_sha:
                     if exe_payload_sha != expected_payload_sha:
-                        print(f"  Payload 已变更 (EXE SHA={exe_payload_sha[:16]} != installed SHA={expected_payload_sha[:16]})，需要重新安装")
+                        print(
+                            f"  Payload 已变更"
+                            f" (EXE SHA={exe_payload_sha[:16]}"
+                            f" != installed SHA={expected_payload_sha[:16]})，需要重新安装"
+                        )
                         return None
             except RuntimeError:
                 pass  # Manifest 不可读，继续使用现有 Runtime
@@ -383,9 +387,15 @@ def install_dependencies(venv_python: Path, app_root: Path, req_file: Path) -> N
         print(f"  安装依赖 (本地 {len(list(wheels_dir.glob('*.whl')))} wheels)...")
         subprocess.run(
             [
-                str(venv_python), "-m", "pip", "install",
-                "--no-index", "--find-links", str(wheels_dir),
-                "-r", str(req_file),
+                str(venv_python),
+                "-m",
+                "pip",
+                "install",
+                "--no-index",
+                "--find-links",
+                str(wheels_dir),
+                "-r",
+                str(req_file),
             ],
             check=True,
             timeout=600,
@@ -394,10 +404,16 @@ def install_dependencies(venv_python: Path, app_root: Path, req_file: Path) -> N
         print("  安装依赖 (国内镜像)...")
         subprocess.run(
             [
-                str(venv_python), "-m", "pip", "install",
-                "-r", str(req_file),
-                "-i", PIP_INDEX,
-                "--extra-index-url", PIP_EXTRA_INDEX,
+                str(venv_python),
+                "-m",
+                "pip",
+                "install",
+                "-r",
+                str(req_file),
+                "-i",
+                PIP_INDEX,
+                "--extra-index-url",
+                PIP_EXTRA_INDEX,
                 *[f"--trusted-host={h}" for h in PIP_TRUSTED_HOSTS],
             ],
             check=True,
@@ -548,7 +564,9 @@ def _run_doctor(app_root: Path) -> None:
     _check("Engine Pack 信息嵌入", ep is not None)
     if ep:
         _check("Engine Pack CRC32 非空", bool(ep.get("crc32")), str(ep.get("crc32"))[:12])
-        _check("Engine Pack SHA-256 非空", bool(ep.get("sha256")), str(ep.get("sha256"))[:12] if ep.get("sha256") else "空")
+        _check(
+            "Engine Pack SHA-256 非空", bool(ep.get("sha256")), str(ep.get("sha256"))[:12] if ep.get("sha256") else "空"
+        )
 
     # 4. Python 可用
     py = _find_system_python()
@@ -561,8 +579,11 @@ def _run_doctor(app_root: Path) -> None:
     if models_dir.exists():
         for engine_id in ("whisper", "paraformer", "sensevoice", "funasr_nano"):
             epath = models_dir / engine_id
-            _check(f"引擎 {engine_id}", epath.exists() and any(epath.iterdir()),
-                   f"{sum(1 for _ in epath.rglob('*') if _.is_file()) if epath.exists() else 0} 文件")
+            _check(
+                f"引擎 {engine_id}",
+                epath.exists() and any(epath.iterdir()),
+                f"{sum(1 for _ in epath.rglob('*') if _.is_file()) if epath.exists() else 0} 文件",
+            )
     else:
         _check("models 目录", False, "不存在")
 
@@ -587,7 +608,7 @@ def _verify_installed_models(app_root: Path) -> None:
     """
     import hashlib
 
-    from ..engine_pack.installer import INSTALLED_MANIFEST_NAME, _read_installed_manifest
+    from ..engine_pack.installer import _read_installed_manifest
 
     models_dir = app_root / "models"
     installed = _read_installed_manifest(models_dir)
@@ -618,7 +639,7 @@ def _verify_installed_models(app_root: Path) -> None:
         ts = 0
         for f in engine_dir.rglob("*"):
             if f.is_file():
-                sha = hashlib.sha256(f.read_bytes()).hexdigest()
+                hashlib.sha256(f.read_bytes()).hexdigest()
                 fc += 1
                 ts += f.stat().st_size
         print(f"  [OK] 引擎 {engine_id}: {fc} 文件, {ts / (1024**3):.2f} GB (SHA-256 已重算)")
@@ -646,22 +667,16 @@ def _verify_installed_models(app_root: Path) -> None:
   查看版本:                    BiliLiveCut-Portable.exe --version
 """,
     )
-    parser.add_argument("--engine-pack", type=str, default=None, metavar="PATH",
-                        help="指定本地 Engine Pack ZIP 路径")
-    parser.add_argument("--offline", action="store_true",
-                        help="离线模式: 禁止联网下载模型 (仅使用本地 Engine Pack)")
-    parser.add_argument("--fallback-online", action="store_true",
-                        help="Engine Pack 校验失败时允许联网下载 (仅 --engine-pack 模式)")
-    parser.add_argument("--verify-runtime", action="store_true",
-                        help="验证已安装 Runtime 完整性")
-    parser.add_argument("--verify-models", action="store_true",
-                        help="验证已安装模型完整性 (逐文件 SHA-256)")
-    parser.add_argument("--repair", action="store_true",
-                        help="修复模式: 重新安装 Runtime 和模型")
-    parser.add_argument("--doctor", action="store_true",
-                        help="运行系统诊断检查")
-    parser.add_argument("--version", action="store_true",
-                        help="显示版本信息并退出")
+    parser.add_argument("--engine-pack", type=str, default=None, metavar="PATH", help="指定本地 Engine Pack ZIP 路径")
+    parser.add_argument("--offline", action="store_true", help="离线模式: 禁止联网下载模型 (仅使用本地 Engine Pack)")
+    parser.add_argument(
+        "--fallback-online", action="store_true", help="Engine Pack 校验失败时允许联网下载 (仅 --engine-pack 模式)"
+    )
+    parser.add_argument("--verify-runtime", action="store_true", help="验证已安装 Runtime 完整性")
+    parser.add_argument("--verify-models", action="store_true", help="验证已安装模型完整性 (逐文件 SHA-256)")
+    parser.add_argument("--repair", action="store_true", help="修复模式: 重新安装 Runtime 和模型")
+    parser.add_argument("--doctor", action="store_true", help="运行系统诊断检查")
+    parser.add_argument("--version", action="store_true", help="显示版本信息并退出")
 
     args = parser.parse_args()
 
@@ -784,8 +799,14 @@ def _verify_installed_models(app_root: Path) -> None:
 
         subprocess.run(
             [
-                str(venv_python), "-m", "app.cli", "serve",
-                "--host", "127.0.0.1", "--port", "8000",
+                str(venv_python),
+                "-m",
+                "app.cli",
+                "serve",
+                "--host",
+                "127.0.0.1",
+                "--port",
+                "8000",
             ],
             env=env,
             cwd=str(app_root),
@@ -800,4 +821,4 @@ def _verify_installed_models(app_root: Path) -> None:
 
 
 if __name__ == "__main__":
-    main()
+    main()  # noqa: F821 (由 PyInstaller .spec 文件在顶层定义)

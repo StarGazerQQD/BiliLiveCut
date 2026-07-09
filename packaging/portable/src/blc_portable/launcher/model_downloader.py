@@ -97,8 +97,7 @@ def _download_hf_model(
         from huggingface_hub import snapshot_download
     except ImportError:
         raise ImportError(
-            "需要安装 huggingface_hub 来下载 Whisper 模型。\n"
-            "请执行: pip install huggingface_hub"
+            "需要安装 huggingface_hub 来下载 Whisper 模型。\n请执行: pip install huggingface_hub"
         ) from None
 
     if mirror:
@@ -136,10 +135,7 @@ def _download_ms_model(
     try:
         from modelscope.hub.snapshot_download import snapshot_download
     except ImportError:
-        raise ImportError(
-            "需要安装 modelscope 来下载 FunASR 模型。\n"
-            "请执行: pip install modelscope"
-        ) from None
+        raise ImportError("需要安装 modelscope 来下载 FunASR 模型。\n请执行: pip install modelscope") from None
 
     snapshot_download(
         model_id=model_id,

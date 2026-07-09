@@ -1,4 +1,5 @@
 """Lite EXE 构建器 — 薄入口，正式逻辑在 src/blc_portable/builders/lite.py。"""
+
 from __future__ import annotations
 
 import sys

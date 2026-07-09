@@ -54,11 +54,16 @@ def payload_zip() -> Path:
 
 @pytest.fixture
 def payload_manifest() -> dict:
-    """返回 Payload Manifest。"""
+    """返回 Payload Manifest (版本匹配时)。"""
+    from blc_portable.payload.manifest import RELEASE_VERSION as _PV
+
     p = _portable_dir / "dist" / "payload" / "payload_manifest.json"
     if not p.exists():
         pytest.skip("Manifest 未生成")
-    return json.loads(p.read_text(encoding="utf-8"))
+    data = json.loads(p.read_text(encoding="utf-8"))
+    if data.get("release_version") != _PV:
+        pytest.skip(f"Manifest 版本 ({data.get('release_version')}) != 代码版本 ({_PV})，需重建 Payload")
+    return data
 
 
 # ── Source Snapshot 测试 ──────────────────────────────────────────
@@ -248,13 +253,14 @@ class TestRuntimeInstall:
     def test_current_json_atomic(self, payload_zip: Path, payload_manifest: dict, tmp_worktree: str) -> None:
         """测试 current.json 原子写入。"""
         from blc_portable.launcher.runtime_layout import install_release, read_current
+        from blc_portable.payload.manifest import RELEASE_VERSION
 
         app_root = Path(tmp_worktree)
         install_release(payload_zip, payload_manifest, app_root)
 
         current = read_current(app_root)
         assert current is not None
-        assert current["release_version"] == "0.1.14.6-alpha"
+        assert current["release_version"] == RELEASE_VERSION
         assert current["source_commit_short"] == "731a31c"
         assert "payload_sha256" in current
 
@@ -278,6 +284,7 @@ class TestUserDataProtection:
     def test_env_not_overwritten(self, tmp_worktree: str) -> None:
         """测试已有 .env 不被覆盖。"""
         from blc_portable.launcher.runtime_layout import create_env_from_template, install_release
+        from blc_portable.payload.manifest import RELEASE_VERSION
 
         # 先安装 Release
         app_root = Path(tmp_worktree)
@@ -287,6 +294,10 @@ class TestUserDataProtection:
         manifest = json.loads(
             (_portable_dir / "dist" / "payload" / "payload_manifest.json").read_text(encoding="utf-8")
         )
+        if manifest.get("release_version") != RELEASE_VERSION:
+            pytest.skip(
+                f"Manifest 版本 ({manifest.get('release_version')}) != 代码版本 ({RELEASE_VERSION})，需重建 Payload"
+            )
         install_release(payload_zip, manifest, app_root)
 
         # 创建自定义 .env

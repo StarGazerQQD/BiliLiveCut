@@ -59,17 +59,17 @@ HF_MIRROR = "https://hf-mirror.com"
 # 禁止在此文件或任何其他模块再次定义 ENGINES 常量。
 
 import sys as _sys
+
 _CONFIG_DIR = str(PORTABLE_DIR / "config")
 if _CONFIG_DIR not in _sys.path:
     _sys.path.insert(0, _CONFIG_DIR)
 
-from model_catalog import load_engines, get_engine_pack_version as _cat_ep_version
-from model_catalog import EngineDef as _EngineDef
+from model_catalog import load_engines
 
 
 def _get_engines_for_build() -> list[dict[str, Any]]:
     """从模型目录加载引擎定义，转换为构建所需格式（向后兼容）。
-    
+
     :returns: 引擎定义列表。
     """
     raw = []
@@ -253,9 +253,7 @@ def build_fixture(staging: Path) -> None:
             "revision": engine.get("revision"),
             "_fixture": True,
         }
-        (target / "model_metadata.json").write_text(
-            json.dumps(meta, ensure_ascii=False, indent=2), encoding="utf-8"
-        )
+        (target / "model_metadata.json").write_text(json.dumps(meta, ensure_ascii=False, indent=2), encoding="utf-8")
         (target / "README.txt").write_text(
             f"Fixture placeholder for {engine['engine_name']}\n",
             encoding="utf-8",
@@ -267,9 +265,7 @@ def build_fixture(staging: Path) -> None:
             sub_dir = target / sub_name
             sub_dir.mkdir(parents=True, exist_ok=True)
             (sub_dir / "model_metadata.json").write_text(
-                json.dumps(
-                    {"model_id": sub_id, "_fixture": True}, ensure_ascii=False, indent=2
-                ),
+                json.dumps({"model_id": sub_id, "_fixture": True}, ensure_ascii=False, indent=2),
                 encoding="utf-8",
             )
 
@@ -443,9 +439,7 @@ def copy_from_cache(staging: Path) -> None:
     cache_dir = PORTABLE_DIR / ".model_cache"
 
     if not cache_dir.exists():
-        raise FileNotFoundError(
-            f"模型缓存目录不存在: {cache_dir}\n请先运行: python download_engines.py"
-        )
+        raise FileNotFoundError(f"模型缓存目录不存在: {cache_dir}\n请先运行: python download_engines.py")
 
     print("  从缓存复制模型 ...")
     engine_targets = {
@@ -476,7 +470,7 @@ def copy_from_cache(staging: Path) -> None:
                 fc += 1
                 ts += f.stat().st_size
 
-        print(f"    {cache_name}: {fc} 文件, {ts/(1024**3):.2f} GB")
+        print(f"    {cache_name}: {fc} 文件, {ts / (1024**3):.2f} GB")
 
 
 # ── 主入口 ────────────────────────────────────────────────

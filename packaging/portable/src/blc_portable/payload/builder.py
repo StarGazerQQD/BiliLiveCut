@@ -164,8 +164,12 @@ def _compile_and_copy_native_modules(staging_dir: Path) -> dict[str, bool]:
         _logger.info("编译 C 扩展 ...")
         r = _sp.run(
             [sys.executable, str(repo_root / "setup_c.py"), "build_ext", "--inplace"],
-            capture_output=True, text=True, encoding="utf-8", errors="replace",
-            cwd=str(repo_root), timeout=120,
+            capture_output=True,
+            text=True,
+            encoding="utf-8",
+            errors="replace",
+            cwd=str(repo_root),
+            timeout=120,
         )
         if r.returncode == 0:
             results["c"] = True
@@ -182,8 +186,12 @@ def _compile_and_copy_native_modules(staging_dir: Path) -> dict[str, bool]:
         _logger.info("编译 Cython 扩展 ...")
         r = _sp.run(
             [sys.executable, str(repo_root / "setup.py"), "build_ext", "--inplace"],
-            capture_output=True, text=True, encoding="utf-8", errors="replace",
-            cwd=str(repo_root), timeout=300,
+            capture_output=True,
+            text=True,
+            encoding="utf-8",
+            errors="replace",
+            cwd=str(repo_root),
+            timeout=300,
         )
         if r.returncode == 0:
             results["cython"] = True
@@ -200,8 +208,12 @@ def _compile_and_copy_native_modules(staging_dir: Path) -> dict[str, bool]:
         _logger.info("编译 Rust 扩展 ...")
         r = _sp.run(
             [sys.executable, str(repo_root / "tools" / "native" / "build_rust.py")],
-            capture_output=True, text=True, encoding="utf-8", errors="replace",
-            cwd=str(repo_root), timeout=300,
+            capture_output=True,
+            text=True,
+            encoding="utf-8",
+            errors="replace",
+            cwd=str(repo_root),
+            timeout=300,
         )
         if r.returncode == 0:
             results["rust"] = True

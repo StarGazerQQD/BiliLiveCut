@@ -1,4 +1,5 @@
 """Full 离线包构建器 — 薄入口，正式逻辑在 src/blc_portable/builders/full.py。"""
+
 from __future__ import annotations
 
 import sys

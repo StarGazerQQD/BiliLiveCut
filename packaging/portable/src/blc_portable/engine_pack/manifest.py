@@ -20,8 +20,20 @@ _CONFIG_DIR = str(Path(__file__).resolve().parent.parent.parent.parent / "config
 if _CONFIG_DIR not in sys.path:
     sys.path.insert(0, _CONFIG_DIR)
 
-from model_catalog import load_engines, get_engine_pack_version as _cat_ep_version, get_all_engine_ids as _cat_engine_ids
-from version_loader import get_engine_pack_version as _ver_ep_version, get_version, get_source_commit_short, get_source_commit_full, get_lite_exe_name, get_full_zip_name, get_engine_pack_zip_name
+from model_catalog import (
+    get_all_engine_ids as _cat_engine_ids,
+)
+from model_catalog import (
+    load_engines,
+)
+from version_loader import (
+    get_engine_pack_version as _ver_ep_version,
+)
+from version_loader import (
+    get_engine_pack_zip_name,
+    get_source_commit_short,
+    get_version,
+)
 
 ENGINE_PACK_VERSION = _ver_ep_version()
 RELEASE_VERSION = get_version()
@@ -49,11 +61,19 @@ def _get_engines_for_manifest() -> list[dict[str, object]]:
             d["model_repo"] = e.repository
         if e.sub_models:
             d["sub_models"] = [
-                {"model_id": s.repository, "hub": s.hub, "revision": s.requested_revision if s.requested_revision else None}
+                {
+                    "model_id": s.repository,
+                    "hub": s.hub,
+                    "revision": s.requested_revision if s.requested_revision else None,
+                }
                 for s in e.sub_models
             ]
         raw.append(d)
     return raw
+
+
+# 向后兼容: 测试和旧代码可通过 manifest.ENGINES 访问引擎列表
+ENGINES = _get_engines_for_manifest()
 
 # ── ModelScope 国内镜像 ──
 MODELSCOPE_MIRRORS = [

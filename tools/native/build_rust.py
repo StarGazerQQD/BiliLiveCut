@@ -81,14 +81,19 @@ def build() -> bool:
 
     # Python 3.14 兼容性（pyo3 0.22.6 官方支持到 3.13）
     import os as _os
+
     env = _os.environ.copy()
     env.setdefault("PYO3_USE_ABI3_FORWARD_COMPATIBILITY", "1")
 
     # cargo build --release (带 Python 3.14 兼容性)
     import subprocess as _sp
+
     result = _sp.run(
         ["cargo", "build", "--release"],
-        cwd=RUST_SRC, capture_output=True, text=True, env=env,
+        cwd=RUST_SRC,
+        capture_output=True,
+        text=True,
+        env=env,
     )
     if result.returncode != 0:
         print(f"  [build_rust] 编译失败:\n{result.stderr}")

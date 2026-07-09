@@ -1,1 +1,1 @@
-﻿"""Portable 构建器 — Lite/Full 发行构建入口。"""
+"""Portable 构建器 — Lite/Full 发行构建入口。"""

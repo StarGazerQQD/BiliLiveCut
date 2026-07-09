@@ -32,9 +32,13 @@ if TYPE_CHECKING:
 # 添加 portable 模块到路径 (与 test_portable.py 一致)
 _portable_dir = Path(__file__).resolve().parent.parent  # portable/
 _proj_root = _portable_dir.parent.parent  # BiliLiveCut/
+_src_dir = _portable_dir / "src"  # portable/src/
 sys.path.insert(0, str(_portable_dir))
 sys.path.insert(0, str(_proj_root))
+sys.path.insert(0, str(_src_dir))
 
+from blc_portable.engine_pack.manifest import MANIFEST_FORMAT_VERSION  # noqa: E402
+from blc_portable.payload.manifest import RELEASE_VERSION as _EP_RELEASE_VERSION  # noqa: E402
 
 # ── 测试辅助 ────────────────────────────────────────────────
 
@@ -65,9 +69,9 @@ def fixture_engine_pack() -> Generator[Path, None, None]:
             (eng_dir / "config.json").write_text('{"_fixture": true}', encoding="utf-8")
 
         manifest: dict[str, Any] = {
-            "format_version": 1,
-            "engine_pack_version": "0.1.14.6-alpha",
-            "portable_release_version": "0.1.14.6-alpha",
+            "format_version": MANIFEST_FORMAT_VERSION,
+            "engine_pack_version": _EP_RELEASE_VERSION,
+            "portable_release_version": _EP_RELEASE_VERSION,
             "source_commit": "731a31cd04ae1df27dd6b6c5ffc535123932b825",
             "source_commit_short": "731a31c",
             "archive_filename": "test.engine.pack.zip",
@@ -75,8 +79,16 @@ def fixture_engine_pack() -> Generator[Path, None, None]:
             "archive_sha256": "",
             "total_files": 8,
             "engines": [
-                {"engine_id": e, "engine_name": e, "model_id": e, "hub": "modelscope",
-                 "revision": "v2.0.4", "target_path": f"models/{e}", "model_repo": None, "sub_models": []}
+                {
+                    "engine_id": e,
+                    "engine_name": e,
+                    "model_id": e,
+                    "hub": "modelscope",
+                    "revision": "v2.0.4",
+                    "target_path": f"models/{e}",
+                    "model_repo": None,
+                    "sub_models": [],
+                }
                 for e in engines
             ],
             "files": {},
@@ -150,9 +162,10 @@ class TestEnginePackManifest:
         pfm = next(e for e in ENGINES if e["engine_id"] == "paraformer")
         subs = pfm.get("sub_models", [])
         sub_ids = [s["model_id"] for s in subs]
-        assert "fsmn-vad" in sub_ids
-        assert "ct-punc" in sub_ids
-        assert "cam++" in sub_ids
+        # model_catalog 使用完整仓库 ID
+        assert any("fsmn_vad" in sid.lower() for sid in sub_ids), f"缺少 fsmn-vad: {sub_ids}"
+        assert any("ct-punc" in sid.lower() or "punc_ct" in sid.lower() for sid in sub_ids), f"缺少 ct-punc: {sub_ids}"
+        assert any("campplus" in sid.lower() or "cam_" in sid.lower() for sid in sub_ids), f"缺少 cam++: {sub_ids}"
 
     def test_create_manifest(self) -> None:
         """create_manifest 生成有效的 Manifest。"""
@@ -165,8 +178,8 @@ class TestEnginePackManifest:
             file_list={},
         )
 
-        assert m.format_version == 1
-        assert m.engine_pack_version == "0.1.14.6-alpha"
+        assert m.format_version == MANIFEST_FORMAT_VERSION
+        assert m.engine_pack_version == _EP_RELEASE_VERSION
         assert m.archive_crc32 == "1234ABCD"
         assert len(m.engines) == 4
         assert m.get_engine_ids() == ["whisper", "paraformer", "sensevoice", "funasr_nano"]
@@ -189,9 +202,9 @@ class TestEnginePackManifest:
         from blc_portable.engine_pack.manifest import EnginePackManifest, validate_manifest
 
         m = EnginePackManifest(
-            format_version=1,
-            engine_pack_version="0.1.14.6-alpha",
-            portable_release_version="0.1.14.6-alpha",
+            format_version=MANIFEST_FORMAT_VERSION,
+            engine_pack_version=_EP_RELEASE_VERSION,
+            portable_release_version=_EP_RELEASE_VERSION,
             source_commit="731a31cd04ae1df27dd6b6c5ffc535123932b825",
             source_commit_short="731a31c",
             archive_filename="test.zip",
@@ -207,9 +220,9 @@ class TestEnginePackManifest:
         from blc_portable.engine_pack.manifest import EnginePackManifest, validate_manifest
 
         m = EnginePackManifest(
-            format_version=1,
-            engine_pack_version="0.1.14.6-alpha",
-            portable_release_version="0.1.14.6-alpha",
+            format_version=MANIFEST_FORMAT_VERSION,
+            engine_pack_version=_EP_RELEASE_VERSION,
+            portable_release_version=_EP_RELEASE_VERSION,
             source_commit="731a31cd04ae1df27dd6b6c5ffc535123932b825",
             source_commit_short="731a31c",
             archive_filename="test.zip",
@@ -263,9 +276,7 @@ class TestCRC32:
 class TestEnginePackInstall:
     """本地 Engine Pack 安装测试。"""
 
-    def test_find_local_engine_pack(
-        self, tmp_app_root: Path, fixture_engine_pack: Path
-    ) -> None:
+    def test_find_local_engine_pack(self, tmp_app_root: Path, fixture_engine_pack: Path) -> None:
         """在 app_root 下能找到 Engine Pack。"""
         from blc_portable.engine_pack.installer import find_local_engine_pack
 
@@ -283,22 +294,22 @@ class TestEnginePackInstall:
         result = find_local_engine_pack(tmp_app_root, "nonexistent.zip")
         assert result is None
 
-    def test_crc32_match_install(
-        self, tmp_app_root: Path, fixture_engine_pack: Path
-    ) -> None:
+    def test_crc32_match_install(self, tmp_app_root: Path, fixture_engine_pack: Path) -> None:
         """CRC32 匹配时应成功安装，网络请求为 0。"""
-        from blc_portable.engine_pack.installer import compute_crc32, install_from_engine_pack
+        from blc_portable.engine_pack.installer import compute_crc32, compute_sha256, install_from_engine_pack
 
         dest = tmp_app_root / fixture_engine_pack.name
         shutil.copy2(str(fixture_engine_pack), str(dest))
 
         crc32_val = compute_crc32(dest)
+        sha256_val = compute_sha256(dest)
 
         result = install_from_engine_pack(
             tmp_app_root,
             dest,
             expected_crc32=crc32_val,
-            expected_version="0.1.14.6-alpha",
+            expected_sha256=sha256_val,
+            expected_version=_EP_RELEASE_VERSION,
         )
 
         assert result["source"] == "engine_pack"
@@ -314,38 +325,40 @@ class TestEnginePackInstall:
         installed = models_dir / "engine-pack-installed.json"
         assert installed.exists()
         info = json.loads(installed.read_text(encoding="utf-8"))
-        assert info["engine_pack_version"] == "0.1.14.6-alpha"
+        assert info["engine_pack_version"] == _EP_RELEASE_VERSION
 
-    def test_crc32_mismatch_raises(
-        self, tmp_app_root: Path, fixture_engine_pack: Path
-    ) -> None:
+    def test_crc32_mismatch_raises(self, tmp_app_root: Path, fixture_engine_pack: Path) -> None:
         """CRC32 不匹配时应抛出 RuntimeError。"""
-        from blc_portable.engine_pack.installer import install_from_engine_pack
+        from blc_portable.engine_pack.installer import compute_sha256, install_from_engine_pack
 
         dest = tmp_app_root / fixture_engine_pack.name
         shutil.copy2(str(fixture_engine_pack), str(dest))
+        sha256_val = compute_sha256(dest)
 
         with pytest.raises(RuntimeError, match="CRC32 mismatch"):
             install_from_engine_pack(
                 tmp_app_root,
                 dest,
                 expected_crc32="DEADBEEF",
-                expected_version="0.1.14.6-alpha",
+                expected_sha256=sha256_val,
+                expected_version=_EP_RELEASE_VERSION,
             )
 
-    def test_bad_crc32_does_not_install_models(
-        self, tmp_app_root: Path, fixture_engine_pack: Path
-    ) -> None:
+    def test_bad_crc32_does_not_install_models(self, tmp_app_root: Path, fixture_engine_pack: Path) -> None:
         """CRC32 失败时不应安装任何模型。"""
-        from blc_portable.engine_pack.installer import install_from_engine_pack
+        from blc_portable.engine_pack.installer import compute_sha256, install_from_engine_pack
 
         dest = tmp_app_root / fixture_engine_pack.name
         shutil.copy2(str(fixture_engine_pack), str(dest))
+        sha256_val = compute_sha256(dest)
 
         try:
             install_from_engine_pack(
-                tmp_app_root, dest, expected_crc32="DEADBEEF",
-                expected_version="0.1.14.6-alpha",
+                tmp_app_root,
+                dest,
+                expected_crc32="DEADBEEF",
+                expected_sha256=sha256_val,
+                expected_version=_EP_RELEASE_VERSION,
             )
         except RuntimeError:
             pass
@@ -364,7 +377,7 @@ class TestCheckInstalledModels:
         """未安装时返回 False。"""
         from blc_portable.engine_pack.installer import check_installed_models
 
-        assert not check_installed_models(tmp_app_root / "models", "0.1.14.6-alpha")
+        assert not check_installed_models(tmp_app_root / "models", _EP_RELEASE_VERSION)
 
     def test_version_mismatch(self, tmp_app_root: Path) -> None:
         """版本不匹配时返回 False。"""
@@ -376,14 +389,16 @@ class TestCheckInstalledModels:
             (models_dir / eng / "model.bin").write_bytes(b"test")
 
         (models_dir / "engine-pack-installed.json").write_text(
-            json.dumps({
-                "engine_pack_version": "0.1.13.0-alpha",
-                "engines_installed": ["whisper", "paraformer", "sensevoice", "funasr_nano"],
-            }),
+            json.dumps(
+                {
+                    "engine_pack_version": "0.1.13.0-alpha",
+                    "engines_installed": ["whisper", "paraformer", "sensevoice", "funasr_nano"],
+                }
+            ),
             encoding="utf-8",
         )
 
-        assert not check_installed_models(models_dir, "0.1.14.6-alpha")
+        assert not check_installed_models(models_dir, _EP_RELEASE_VERSION)
 
     def test_installed_and_valid(self, tmp_app_root: Path) -> None:
         """正确安装时返回 True。"""
@@ -395,14 +410,16 @@ class TestCheckInstalledModels:
             (models_dir / eng / "model.bin").write_bytes(b"test")
 
         (models_dir / "engine-pack-installed.json").write_text(
-            json.dumps({
-                "engine_pack_version": "0.1.14.6-alpha",
-                "engines_installed": ["whisper", "paraformer", "sensevoice", "funasr_nano"],
-            }),
+            json.dumps(
+                {
+                    "engine_pack_version": _EP_RELEASE_VERSION,
+                    "engines_installed": ["whisper", "paraformer", "sensevoice", "funasr_nano"],
+                }
+            ),
             encoding="utf-8",
         )
 
-        assert check_installed_models(models_dir, "0.1.14.6-alpha")
+        assert check_installed_models(models_dir, _EP_RELEASE_VERSION)
 
 
 # ── Zip Slip 防护 ─────────────────────────────────────────────
