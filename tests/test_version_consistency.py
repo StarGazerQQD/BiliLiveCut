@@ -10,7 +10,7 @@ from pathlib import Path
 
 import pytest
 
-REPO_ROOT = Path(__file__).resolve().parent.parent.parent
+REPO_ROOT = Path(__file__).resolve().parent.parent
 
 
 def _load_version_json() -> dict:
@@ -73,10 +73,10 @@ def test_all_versions_equal_0_1_14_7_alpha() -> None:
     ep_builder_content = ep_builder_path.read_text(encoding="utf-8")
     assert f'ENGINE_PACK_VERSION = "{expected_version}"' in ep_builder_content, "engine_pack/builder.py 版本不匹配"
 
-    # engine_pack/manifest.py
+    # engine_pack/manifest.py (now uses version_loader function call)
     ep_manifest_path = REPO_ROOT / "packaging" / "portable" / "src" / "blc_portable" / "engine_pack" / "manifest.py"
     ep_manifest_content = ep_manifest_path.read_text(encoding="utf-8")
-    assert f'ENGINE_PACK_VERSION = "{expected_version}"' in ep_manifest_content, "engine_pack/manifest.py 版本不匹配"
+    assert "ENGINE_PACK_VERSION = _ver_ep_version" in ep_manifest_content, "engine_pack/manifest.py 应使用 version_loader"
 
     # launcher/main.py
     launcher_path = REPO_ROOT / "packaging" / "portable" / "src" / "blc_portable" / "launcher" / "main.py"
