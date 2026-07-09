@@ -3,11 +3,16 @@
 用法:
     python build_exe.py            # 先构建 Payload，再编译 EXE
     python build_exe.py --skip-payload  # 仅编译 (已有 Payload)
+
+CI 环境:
+    设置 BLC_CI_BUILD=1 可跳过 Engine Pack 校验 (不嵌入 engine_pack_info.json)。
+    CI 构建的 EXE 不含 Engine Pack 元数据，最终发布时需本地重建。
 """
 
 from __future__ import annotations
 
 import json
+import os
 import subprocess
 import sys
 from pathlib import Path
@@ -39,9 +44,16 @@ def check_engine_pack_info() -> None:
 
     任何校验信息为空都将导致构建失败。
 
-    :raises RuntimeError: Engine Pack 信息不完整。
+    设置环境变量 BLC_CI_BUILD=1 可跳过校验 (CI 环境无法构建真正的 Engine Pack)。
+
+    :raises RuntimeError: Engine Pack 信息不完整 (非 CI 模式)。
     """
+    is_ci = os.environ.get("BLC_CI_BUILD") == "1"
+
     if not ENGINE_PACK_INFO_PATH.exists():
+        if is_ci:
+            print("  [CI] engine_pack_info.json 不存在，跳过 (BLC_CI_BUILD=1)")
+            return
         raise RuntimeError(
             f"engine_pack_info.json 不存在: {ENGINE_PACK_INFO_PATH}\n"
             "请先构建 Engine Pack: python build_engine_pack.py --from-cache"
@@ -157,6 +169,7 @@ def build_exe() -> Path:
         sys.exit(1)
 
     # 生成 build-manifest.json
+    is_ci = os.environ.get("BLC_CI_BUILD") == "1"
     build_manifest = {
         "release_version": RELEASE_VERSION,
         "source_commit": manifest["source_commit"],
@@ -166,6 +179,7 @@ def build_exe() -> Path:
         "artifact_type": "lite",
         "payload_sha256": manifest["payload_sha256"],
         "artifact_sha256": "",
+        "ci_build": is_ci,
     }
 
     # 如果 Engine Pack 信息存在，添加 CRC32

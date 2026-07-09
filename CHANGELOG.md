@@ -26,6 +26,14 @@
 - Lite EXE 禁止生成空 CRC32/SHA-256/模型信息的 EXE
 - Full 包真正包含 Portable Python + Wheels + FFmpeg/FFprobe
 - 内容寻址 Runtime Release ID，Payload SHA-256 变化自动触发重装
+- Lite EXE 支持 `BLC_CI_BUILD=1` 环境变量跳过 Engine Pack 校验 (CI 构建用)
+
+**Release 工作流增强**
+- 新增 `build-sdist` job: 构建 sdist + wheel + Windows 源码 ZIP + SHA256SUMS
+- 新增 `build-payload` job: 从固定 commit `731a31c` 提取源码并打包 Payload
+- 新增 `build-windows-lite` job (Windows runner): PyInstaller 编译 Lite EXE
+- Release 资产包含: sdist、wheel、源码 ZIP、Lite EXE、SHA256SUMS
+- 注: Engine Pack ZIP 因模型体积过大 (10GB+) 由本地手动构建上传
 
 **Launcher CLI 升级**
 - `argparse` 替代手动 `sys.argv` 解析

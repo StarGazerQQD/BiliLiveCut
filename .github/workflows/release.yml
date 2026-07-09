@@ -1,9 +1,9 @@
 # BiliLiveCut Release 工作流
-# 触发: 推送 v* 标签 (如 v0.1.12.3-alpha)
+# 触发: 推送 v* 标签 (如 v0.1.14.7-alpha)
 #   1) 全量测试
-#   2) 构建源码包 (sdist + wheel)
-#   3) 构建 Windows 便携包
-#   4) 生成 SHA256 校验文件
+#   2) 构建源码包 (sdist + wheel + win-source-zip)
+#   3) 构建 Payload (source_payload.zip)
+#   4) 构建 Windows Lite EXE (PyInstaller)
 #   5) 上传到 GitHub Release
 # 注意: 不上传到 PyPI
 name: Release
@@ -15,7 +15,7 @@ on:
   workflow_dispatch:
     inputs:
       tag:
-        description: "发布 tag 名称 (如 v0.1.12.3-alpha)"
+        description: "发布 tag 名称 (如 v0.1.14.7-alpha)"
         required: true
 
 permissions:
@@ -23,7 +23,9 @@ permissions:
   actions: read
 
 jobs:
-  # ── Step 1: 全量测试 ──
+  # ═══════════════════════════════════════════════════════════════════
+  # Job 1: 全量测试
+  # ═══════════════════════════════════════════════════════════════════
   test:
     name: "Test (py3.12 / ubuntu)"
     runs-on: ubuntu-latest
@@ -52,6 +54,9 @@ jobs:
       - name: Ruff lint
         run: ruff check app/ tests/
 
+      - name: Ruff format check
+        run: ruff format --check app/ tests/
+
       - name: Run pytest
         env:
           ASR_NO_MODEL_DOWNLOAD: "1"
@@ -59,9 +64,11 @@ jobs:
         run: python -m pytest tests/ -v --tb=short
         timeout-minutes: 15
 
-  # ── Step 2: 构建发布包 ──
-  build:
-    name: "Build packages"
+  # ═══════════════════════════════════════════════════════════════════
+  # Job 2: 构建源码分发包 (sdist + wheel + win-source-zip)
+  # ═══════════════════════════════════════════════════════════════════
+  build-sdist:
+    name: "Build source packages"
     needs: test
     runs-on: ubuntu-latest
     steps:
@@ -84,47 +91,125 @@ jobs:
           VERSION=${TAG#v}
           echo "tag=$TAG" >> $GITHUB_OUTPUT
           echo "version=$VERSION" >> $GITHUB_OUTPUT
-          echo "Release $TAG (version $VERSION)"
 
-      # 构建 sdist (源码 tar.gz)
       - name: Build sdist
         run: python -m build --sdist --outdir dist/
 
-      # 构建纯 Python wheel
       - name: Build wheel
         run: python -m build --wheel --outdir dist/
 
-      # 生成 Windows 便携源码包 (zip)
       - name: Create Windows source package
         run: |
-          mkdir -p dist/bili-live-cut-${{ steps.tag.outputs.version }}
-          cp -r app/ config/ pyproject.toml README.md CHANGELOG.md LICENSE* dist/bili-live-cut-${{ steps.tag.outputs.version }}/ 2>/dev/null || true
+          mkdir -p "dist/bili-live-cut-${{ steps.tag.outputs.version }}"
+          cp -r app/ config/ pyproject.toml README.md CHANGELOG.md LICENSE* \
+            "dist/bili-live-cut-${{ steps.tag.outputs.version }}/" 2>/dev/null || true
           cd dist
-          zip -r "bili-live-cut-${{ steps.tag.outputs.version }}-win-portable.zip" "bili-live-cut-${{ steps.tag.outputs.version }}"
+          zip -r "bili-live-cut-${{ steps.tag.outputs.version }}-win-portable.zip" \
+            "bili-live-cut-${{ steps.tag.outputs.version }}"
           rm -rf "bili-live-cut-${{ steps.tag.outputs.version }}"
 
-      # 生成 SHA256 校验文件
       - name: Generate SHA256 checksums
         run: |
           cd dist
           sha256sum * > SHA256SUMS
           sha256sum -c SHA256SUMS
 
-      - name: List artifacts
-        run: ls -la dist/
-
-      # 上传构建产物 (供 Release job 使用)
-      - name: Upload build artifacts
+      - name: Upload sdist artifacts
         uses: actions/upload-artifact@v4
         with:
-          name: dist
+          name: sdist
           path: dist/*
           retention-days: 1
 
-  # ── Step 3: 创建 GitHub Release ──
+  # ═══════════════════════════════════════════════════════════════════
+  # Job 3: 构建 Payload (source_payload.zip + manifest)
+  # ═══════════════════════════════════════════════════════════════════
+  build-payload:
+    name: "Build Payload"
+    needs: test
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0  # 需要完整 git 历史用于 git archive
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+
+      - name: Build source payload
+        run: |
+          cd packaging/portable
+          python -m blc_portable.payload.builder
+        timeout-minutes: 5
+
+      - name: Upload Payload artifacts
+        uses: actions/upload-artifact@v4
+        with:
+          name: payload
+          path: |
+            packaging/portable/dist/payload/source_payload.zip
+            packaging/portable/dist/payload/payload_manifest.json
+          retention-days: 1
+
+  # ═══════════════════════════════════════════════════════════════════
+  # Job 4: 构建 Windows Lite EXE (PyInstaller)
+  # ═══════════════════════════════════════════════════════════════════
+  build-windows-lite:
+    name: "Build Windows Lite EXE"
+    needs: build-payload
+    runs-on: windows-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+
+      - name: Download Payload
+        uses: actions/download-artifact@v4
+        with:
+          name: payload
+          path: packaging/portable/dist/payload/
+
+      - name: Install dependencies
+        run: |
+          python -m pip install --upgrade pip
+          pip install pyinstaller
+          pip install -e ".[dev,web]"
+        timeout-minutes: 10
+
+      - name: Build Lite EXE
+        env:
+          BLC_CI_BUILD: "1"
+        run: |
+          cd packaging/portable
+          python build_exe.py
+        timeout-minutes: 15
+
+      - name: Generate checksums
+        run: |
+          cd packaging/portable/dist/lite
+          certutil -hashfile *.exe SHA256 > SHA256SUMS.txt
+
+      - name: Upload Lite EXE
+        uses: actions/upload-artifact@v4
+        with:
+          name: windows-lite
+          path: |
+            packaging/portable/dist/lite/*.exe
+            packaging/portable/dist/lite/build-manifest.json
+            packaging/portable/dist/lite/SHA256SUMS.txt
+          retention-days: 1
+
+  # ═══════════════════════════════════════════════════════════════════
+  # Job 5: 创建 GitHub Release
+  # ═══════════════════════════════════════════════════════════════════
   release:
     name: "Create GitHub Release"
-    needs: build
+    needs: [build-sdist, build-windows-lite]
     runs-on: ubuntu-latest
     permissions:
       contents: write
@@ -133,11 +218,23 @@ jobs:
         with:
           fetch-depth: 0
 
-      - name: Download build artifacts
+      - name: Download sdist
         uses: actions/download-artifact@v4
         with:
-          name: dist
-          path: dist/
+          name: sdist
+          path: dist/sdist/
+
+      - name: Download Lite EXE
+        uses: actions/download-artifact@v4
+        with:
+          name: windows-lite
+          path: dist/lite/
+
+      - name: Merge artifacts into dist/
+        run: |
+          cp dist/sdist/* dist/
+          cp dist/lite/* dist/
+          ls -la dist/
 
       - name: Extract tag version
         id: tag
@@ -149,7 +246,6 @@ jobs:
         id: changelog
         run: |
           VERSION="${{ steps.tag.outputs.tag }}"
-          # 提取当前版本对应的 CHANGELOG 内容
           cat > /tmp/extract_notes.py << 'PYEOF'
           import re, sys, os
           version = os.environ["RELEASE_VERSION"]
@@ -176,5 +272,4 @@ jobs:
           draft: false
           prerelease: ${{ contains(steps.tag.outputs.tag, 'alpha') || contains(steps.tag.outputs.tag, 'beta') || contains(steps.tag.outputs.tag, 'rc') }}
         env:
-          # GitHub Actions 自动提供, 无需手动配置
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
