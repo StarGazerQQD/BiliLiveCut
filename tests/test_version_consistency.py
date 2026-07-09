@@ -8,8 +8,6 @@ from __future__ import annotations
 import json
 from pathlib import Path
 
-import pytest
-
 REPO_ROOT = Path(__file__).resolve().parent.parent
 
 
@@ -28,7 +26,7 @@ def test_all_versions_equal_0_1_14_7_alpha() -> None:
     # app/__init__.py
     init_path = REPO_ROOT / "app" / "__init__.py"
     init_content = init_path.read_text(encoding="utf-8")
-    line = [l for l in init_content.split("\n") if "__version__ =" in l and '"' in l]
+    line = [line_text for line_text in init_content.split("\n") if "__version__ =" in line_text and '"' in line_text]
     assert line, "app/__init__.py 缺少 __version__"
     assert expected_version in line[0], f"app/__init__.py 版本不匹配: {line[0]} 期望包含 {expected_version}"
 
@@ -92,7 +90,7 @@ def test_all_versions_equal_0_1_14_7_alpha() -> None:
     # Engine Pack spec
     spec_path = REPO_ROOT / "packaging" / "portable" / "specs" / "portable_launcher.spec"
     spec_content = spec_path.read_text(encoding="utf-8")
-    assert expected_version in spec_content, f"portable_launcher.spec 版本不匹配"
+    assert expected_version in spec_content, "portable_launcher.spec 版本不匹配"
 
 
 def test_version_json_is_valid() -> None:
