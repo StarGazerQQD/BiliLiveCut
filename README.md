@@ -2,14 +2,14 @@
 
 [![CI](https://github.com/StarGazerQQD/BiliLiveCut/actions/workflows/ci.yml/badge.svg)](https://github.com/StarGazerQQD/BiliLiveCut/actions/workflows/ci.yml)
 
-**当前版本：V0.1.14.6 Alpha** (`0.1.14.6-alpha`)
+**当前版本：V0.1.14.7 Alpha** (`0.1.14.7-alpha`)
 
 针对 Bilibili 直播的全自动工作流：实时录制 → 转写 → 识别高光 → 生成切片 → 生成文案 → (可选)上传。
 阶段 1–5 全链路已可用；即插即用分发包见 [`packaging/portable/`](packaging/portable/README.md)。
 
 > ⚠️ **合规声明**：本项目仅调用 Bilibili 网页播放器自身使用的公开接口，不做任何逆向、破解或绕过平台安全策略的行为。请**仅录制你拥有授权的内容**，遵守平台服务条款与合理访问频率。自动上传默认采用 `manual` 模式（只产出成品与元数据，不调用任何平台接口），零封号风险。
 
-## V0.1.14.6 新特性：发行结构重构
+## V0.1.14.7 新特性：发行结构重构
 
 解决中国大陆 GitHub 不稳定问题，建立从固定 Git Commit 提取源码、嵌入 Portable EXE 的发行链路。彻底摆脱首发时对 GitHub 的依赖。
 

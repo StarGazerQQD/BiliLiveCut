@@ -1,5 +1,43 @@
 # Changelog
 
+## V0.1.14.7 Alpha (2026-07-09)
+
+### Portable 发布工程系统性修复与版本统一
+
+本轮为 Portable 发布工程系统性修复迭代，解决版本碎片化、模型定义不一致、校验缺失、Runtime 重用旧 Payload 等系统性问题。
+
+**版本管理统一**
+- 建立 `packaging/portable/config/version.json` 单一权威版本源
+- 新增 `version_loader.py` 统一版本加载，所有模块统一引用
+- 新增 `scripts/check_version_consistency.py` CI 检查脚本
+
+**模型配置统一**
+- 建立 `packaging/portable/config/model_sources.lock.json` 单一模型权威源
+- 新增 `model_catalog.py` 统一模型加载与校验
+- 修正 FunASR-Nano 仓库 (`iic/Fun-ASR-Nano` → `FunAudioLLM/Fun-ASR-Nano-2512`)
+- 所有模型锁定 resolved_revision，确保可复现
+
+**Engine Pack 完整性**
+- 强制 SHA-256 + CRC32 双重校验
+- `_safe_extract` 流式解压 + Zip Slip/Zip Bomb 防护
+- 安装清单包含 schema version、zip SHA-256、source commit
+
+**Portable EXE 构建**
+- Lite EXE 禁止生成空 CRC32/SHA-256/模型信息的 EXE
+- Full 包真正包含 Portable Python + Wheels + FFmpeg/FFprobe
+- 内容寻址 Runtime Release ID，Payload SHA-256 变化自动触发重装
+
+**Launcher CLI 升级**
+- `argparse` 替代手动 `sys.argv` 解析
+- 新增 `--doctor`、`--verify-models`、`--repair`、`--version`、`--offline`、`--fallback-online`
+
+**Cython 兼容性**
+- 修复 `_speedups_round2.pyx` 中 Cython 3.2.8 不兼容的 `PyList_GET_ITEM` 调用
+
+**测试**
+- 新增 `test_version_consistency.py` 版本一致性测试
+- 新增 `test_model_catalog.py` 模型目录完整性测试
+
 ## V0.1.14.6 Alpha (2026-07-08)
 
 ### 发行结构重构 — Docker/Rust/Portable 目录迁移与四引擎 Engine Pack
