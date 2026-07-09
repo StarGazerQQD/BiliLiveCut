@@ -42,21 +42,21 @@ def build_payload_if_needed() -> None:
 def check_engine_pack_info() -> None:
     """验证 Engine Pack 信息文件存在且 CRC32/SHA-256 非空。
 
-    任何校验信息为空都将导致构建失败。
-
-    设置环境变量 BLC_CI_BUILD=1 可跳过校验 (CI 环境无法构建真正的 Engine Pack)。
+    设置环境变量 BLC_CI_BUILD=1 可跳过所有校验 (CI 环境无法构建真正的 Engine Pack)。
 
     :raises RuntimeError: Engine Pack 信息不完整 (非 CI 模式)。
     """
     is_ci = os.environ.get("BLC_CI_BUILD") == "1"
 
+    # CI 模式: 完全跳过，无论文件是否存在
+    if is_ci:
+        print("  [CI] BLC_CI_BUILD=1, skip Engine Pack info validation")
+        return
+
     if not ENGINE_PACK_INFO_PATH.exists():
-        if is_ci:
-            print("  [CI] engine_pack_info.json 不存在，跳过 (BLC_CI_BUILD=1)")
-            return
         raise RuntimeError(
-            f"engine_pack_info.json 不存在: {ENGINE_PACK_INFO_PATH}\n"
-            "请先构建 Engine Pack: python build_engine_pack.py --from-cache"
+            "engine_pack_info.json missing: " + str(ENGINE_PACK_INFO_PATH) + "\n"
+            "Run: python build_engine_pack.py --from-cache"
         )
 
     ep_info = json.loads(ENGINE_PACK_INFO_PATH.read_text(encoding="utf-8"))
@@ -68,27 +68,27 @@ def check_engine_pack_info() -> None:
     errors: list[str] = []
 
     if not crc32:
-        errors.append("CRC32 为空 — 请先构建 Engine Pack")
+        errors.append("CRC32 is empty -- build Engine Pack first")
     elif len(crc32) != 8 or not all(c in "0123456789ABCDEF" for c in crc32):
-        errors.append(f"CRC32 格式无效: {crc32} (应为 8 位大写十六进制)")
+        errors.append(f"CRC32 invalid: {crc32} (expect 8 uppercase hex chars)")
 
     if not sha256:
-        errors.append("SHA-256 为空 — 请先构建 Engine Pack")
+        errors.append("SHA-256 is empty -- build Engine Pack first")
     elif len(sha256) != 64:
-        errors.append(f"SHA-256 格式无效: {sha256} (应为 64 位十六进制)")
+        errors.append(f"SHA-256 invalid: {sha256} (expect 64 hex chars)")
 
     if version != RELEASE_VERSION:
-        errors.append(f"Engine Pack 版本不匹配: {version} != {RELEASE_VERSION}")
+        errors.append(f"Engine Pack version mismatch: {version} != {RELEASE_VERSION}")
 
     if not filename:
-        errors.append("filename 为空")
+        errors.append("filename is empty")
 
     expected_ids = ep_info.get("expected_engine_ids", [])
     if not expected_ids:
-        errors.append("expected_engine_ids 为空")
+        errors.append("expected_engine_ids is empty")
 
     if errors:
-        error_msg = "Engine Pack 信息校验失败 — 构建中止:\n  - " + "\n  - ".join(errors)
+        error_msg = "Engine Pack validation FAILED:\n  - " + "\n  - ".join(errors)
         raise RuntimeError(error_msg)
 
     print(f"  Engine Pack 校验通过: CRC32={crc32} SHA256={sha256[:16]}...")
@@ -222,7 +222,11 @@ def main() -> int:
     except SystemExit as e:
         return int(str(e)) if str(e) else 0
     except Exception as exc:
-        print(f"[错误] {exc}")
+        # Windows GBK/cp1252 encoding may fail on Chinese error messages
+        try:
+            print(f"[Error] {exc}")
+        except UnicodeEncodeError:
+            print(f"[Error] {exc!r}")
         return 1
 
 

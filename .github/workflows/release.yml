@@ -139,6 +139,7 @@ jobs:
 
       - name: Build source payload
         run: |
+          pip install setuptools
           cd packaging/portable
           python build_payload.py
         timeout-minutes: 5
