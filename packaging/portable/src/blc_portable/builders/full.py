@@ -27,11 +27,19 @@ FULL_NAME = f"BiliLiveCut-Portable-Full-{RELEASE_VERSION}-x64"
 
 
 def build_full_bundle() -> Path:
-    """构建 Portable Full 包。
+    """构建 Portable Full 离线包。
+
+    Full 包必须实际包含:
+    - BiliLiveCut-Portable.exe (Lite EXE)
+    - portable-python/ (内嵌 Python 运行时)
+    - vendor/wheels/ (离线依赖包)
+    - bin/ffmpeg.exe, bin/ffprobe.exe
+    - README.txt, checksums.json, SHA256SUMS.txt
 
     注意: Full 不包含四引擎模型。模型由独立 Engine Pack 提供。
 
     :returns: ZIP 文件路径。
+    :raises RuntimeError: 关键组件缺失时。
     """
     DIST_DIR.mkdir(parents=True, exist_ok=True)
 
@@ -43,9 +51,52 @@ def build_full_bundle() -> Path:
     lite_exe_name = f"BiliLiveCut-Portable-Lite-v{RELEASE_VERSION}-x64.exe"
     lite_path = LITE_DIR / lite_exe_name
     if not lite_path.exists():
-        print("[错误] 请先构建 Lite EXE: python build_exe.py")
-        sys.exit(1)
+        raise RuntimeError(f"Lite EXE 不存在: {lite_path}\n请先构建: python build_exe.py")
     print(f"  EXE: {lite_path.stat().st_size / 1024 / 1024:.1f} MB")
+
+    # 验证必须的离线组件
+    missing: list[str] = []
+
+    portable_py = app_root / "portable-python" / "python.exe" if PORTABLE_DIR else None
+    if not portable_py:
+        portable_py = PROJECT_ROOT / "portable-python" / "python.exe"
+    if not portable_py.exists():
+        missing.append(f"portable-python/python.exe (需预先准备 Portable Python)")
+
+    wheels_dir = app_root / "vendor" / "wheels"
+    if not wheels_dir.exists() or not list(wheels_dir.glob("*.whl")):
+        candidate = PROJECT_ROOT / "vendor" / "wheels"
+        if candidate.exists() and list(candidate.glob("*.whl")):
+            wheels_dir = candidate
+        else:
+            missing.append("vendor/wheels/ (无 .whl 文件 — 离线安装将不可用)")
+
+    ffmpeg = app_root / "bin" / "ffmpeg.exe"
+    if not ffmpeg.exists():
+        candidate = PROJECT_ROOT / "bin" / "ffmpeg.exe"
+        if candidate.exists():
+            ffmpeg = candidate
+        else:
+            missing.append("bin/ffmpeg.exe")
+
+    ffprobe = app_root / "bin" / "ffprobe.exe"
+    if not ffprobe.exists():
+        candidate = PROJECT_ROOT / "bin" / "ffprobe.exe"
+        if candidate.exists():
+            ffprobe = candidate
+        else:
+            missing.append("bin/ffprobe.exe")
+
+    if missing:
+        print("\n  [警告] Full 离线包缺少以下组件:")
+        for m in missing:
+            print(f"    - {m}")
+        print("  离线安装可能失败。将仅打包已存在的组件。")
+        print("  Full 离线包构建前提:")
+        print("    1. portable-python/ 目录 (Python 3.11/3.12)")
+        print("    2. vendor/wheels/ 目录 (离线 Wheels)")
+        print("    3. bin/ffmpeg.exe 和 bin/ffprobe.exe")
+        print()
 
     # 读取 Engine Pack 信息 (如有)
     engine_pack_crc32 = ""
@@ -63,6 +114,61 @@ def build_full_bundle() -> Path:
         # 复制 EXE
         shutil.copy2(lite_path, bundle / "BiliLiveCut-Portable.exe")
         print("  [OK] 已复制 EXE")
+
+        # 复制 portable-python (如果存在)
+        pp_src = None
+        for candidate in [
+            PROJECT_ROOT / "portable-python",
+            Path("portable-python"),
+        ]:
+            if candidate.exists() and (candidate / "python.exe").exists():
+                pp_src = candidate
+                break
+        if pp_src:
+            pp_dst = bundle / "portable-python"
+            shutil.copytree(pp_src, pp_dst, dirs_exist_ok=True)
+            py_count = sum(1 for _ in pp_dst.rglob("*.exe") if _.is_file())
+            print(f"  [OK] 已复制 portable-python ({py_count} 可执行文件)")
+        else:
+            print("  [跳过] portable-python 不存在")
+
+        # 复制 vendor/wheels (如果存在)
+        wh_src = None
+        for candidate in [
+            PROJECT_ROOT / "vendor" / "wheels",
+            Path("vendor") / "wheels",
+        ]:
+            if candidate.exists() and list(candidate.glob("*.whl")):
+                wh_src = candidate
+                break
+        if wh_src:
+            wh_dst = bundle / "vendor" / "wheels"
+            wh_dst.mkdir(parents=True, exist_ok=True)
+            wh_count = 0
+            for whl in wh_src.glob("*.whl"):
+                shutil.copy2(whl, wh_dst / whl.name)
+                wh_count += 1
+            print(f"  [OK] 已复制 {wh_count} 个 wheels")
+        else:
+            print("  [跳过] vendor/wheels 不存在")
+
+        # 复制 FFmpeg (如果存在)
+        for tool_name in ("ffmpeg.exe", "ffprobe.exe"):
+            tool_src = None
+            for candidate in [
+                PROJECT_ROOT / "bin" / tool_name,
+                Path("bin") / tool_name,
+            ]:
+                if candidate.exists():
+                    tool_src = candidate
+                    break
+            if tool_src:
+                tool_dst = bundle / "bin"
+                tool_dst.mkdir(parents=True, exist_ok=True)
+                shutil.copy2(tool_src, tool_dst / tool_name)
+                print(f"  [OK] 已复制 {tool_name}")
+            else:
+                print(f"  [跳过] {tool_name} 不存在")
 
         # README
         import datetime

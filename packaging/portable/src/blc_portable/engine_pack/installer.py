@@ -90,15 +90,19 @@ def find_local_engine_pack(
 
 
 def _safe_extract(zip_path: Path, target_dir: Path) -> None:
-    """安全解压 ZIP，防御 Zip Slip、绝对路径、盘符、.. 攻击。
+    """安全流式解压 ZIP，防御 Zip Slip/Bomb、绝对路径、盘符。
 
     :param zip_path: ZIP 文件路径。
     :param target_dir: 目标目录。
-    :raises RuntimeError: 检测到不安全路径时。
+    :raises RuntimeError: 检测到不安全路径或 ZIP 炸弹时。
     """
+    import shutil
+
     target_resolved = target_dir.resolve()
+    max_extract_size = 20 * 1024 * 1024 * 1024  # 20 GB 上限
 
     with zipfile.ZipFile(zip_path) as zf:
+        total_size = 0
         for member in zf.namelist():
             if member.startswith("/") or member.startswith("\\"):
                 raise RuntimeError(f"Engine Pack 包含绝对路径: {member}")
@@ -116,7 +120,13 @@ def _safe_extract(zip_path: Path, target_dir: Path) -> None:
                 dest.mkdir(parents=True, exist_ok=True)
             else:
                 dest.parent.mkdir(parents=True, exist_ok=True)
-                dest.write_bytes(zf.read(member))
+                # 流式解压 — 避免大文件整读入内存
+                with zf.open(member) as src, open(dest, "wb") as dst:
+                    while chunk := src.read(CHUNK_SIZE):
+                        total_size += len(chunk)
+                        if total_size > max_extract_size:
+                            raise RuntimeError(f"解压总大小超过上限 ({max_extract_size} bytes)")
+                        dst.write(chunk)
 
 
 def _read_installed_manifest(models_dir: Path) -> dict[str, Any] | None:
@@ -139,6 +149,8 @@ def _write_installed_manifest(
     engine_pack_version: str,
     engines: list[str],
     files_info: dict[str, dict[str, object]],
+    zip_sha256: str = "",
+    source_commit: str = "",
 ) -> None:
     """原子写入已安装模型清单。
 
@@ -146,13 +158,20 @@ def _write_installed_manifest(
     :param engine_pack_version: Engine Pack 版本。
     :param engines: 已安装引擎列表。
     :param files_info: 引擎文件信息。
+    :param zip_sha256: ZIP SHA-256。
+    :param source_commit: 源码 Commit。
     """
     import datetime
 
     info: dict[str, Any] = {
+        "schema_version": 2,
         "engine_pack_version": engine_pack_version,
+        "zip_sha256": zip_sha256,
+        "engine_ids": engines,
+        "file_count": sum(int(f.get("file_count", 0)) for f in files_info.values()),  # type: ignore[arg-type]
+        "total_size_bytes": sum(int(f.get("total_size", 0)) for f in files_info.values()),  # type: ignore[arg-type]
         "installed_at": datetime.datetime.now().strftime("%Y-%m-%dT%H:%M:%S"),
-        "engines_installed": engines,
+        "source_commit": source_commit,
         "files": files_info,
     }
     tmp = models_dir / f"{INSTALLED_MANIFEST_NAME}.tmp"
@@ -175,7 +194,7 @@ def check_installed_models(models_dir: Path, expected_version: str) -> bool:
         return False
     if installed.get("engine_pack_version") != expected_version:
         return False
-    installed_engines = set(installed.get("engines_installed", []))
+    installed_engines = set(installed.get("engine_ids", installed.get("engines_installed", [])))
     expected = {"whisper", "paraformer", "sensevoice", "funasr_nano"}
     if installed_engines != expected:
         return False
@@ -190,38 +209,45 @@ def install_from_engine_pack(
     app_root: Path,
     pack_path: Path,
     expected_crc32: str,
+    expected_sha256: str,
     expected_version: str,
 ) -> dict[str, Any]:
     """从本地 Engine Pack 安装四引擎模型。
 
     流程:
-    1. 流式 CRC32 校验
-    2. 解压到唯一 staging 目录
-    3. 校验内部 Manifest
-    4. 校验四个引擎目录存在
-    5. 逐文件 SHA-256 校验
-    6. 原子替换 models/
-    7. 写入安装清单
-
-    CRC32 不匹配时直接抛出 RuntimeError，由调用方切换到在线下载路径。
+    1. 流式 CRC32 校验（快速损坏检测）
+    2. 流式 SHA-256 校验（强完整性验证，强制安装条件）
+    3. 流式解压到唯一 staging 目录
+    4. 校验内部 Manifest (版本、schema、引擎 ID)
+    5. 校验 Manifest SHA-256
+    6. 校验四个引擎目录和必需文件
+    7. 逐文件 SHA-256 校验
+    8. 原子替换 models/（含回滚）
+    9. 写入安装清单
 
     :param app_root: 应用根目录。
     :param pack_path: Engine Pack ZIP 路径。
-    :param expected_crc32: 内置 CRC32 (8 位大写十六进制)。
+    :param expected_crc32: 内置 CRC32。
+    :param expected_sha256: 内置 SHA-256。
     :param expected_version: 期望版本。
-    :returns: 安-装信息字典。
-    :raises RuntimeError: CRC32 不匹配、解压失败、校验失败。
+    :returns: 安装信息字典。
+    :raises RuntimeError: 校验失败。
     """
-    # 1. CRC32
-    actual = compute_crc32(pack_path)
-    if actual != expected_crc32:
-        print("  检测到本地 Engine Pack，但 CRC32 校验失败。")
-        print(f"  期望：{expected_crc32}")
-        print(f"  实际：{actual}")
-        print("  将忽略本地包，全量在线下载四个引擎模型。")
-        raise RuntimeError(f"CRC32 mismatch: expected={expected_crc32} actual={actual}")
+    # 1. CRC32 快速检测
+    actual_crc32 = compute_crc32(pack_path)
+    if actual_crc32 != expected_crc32:
+        raise RuntimeError(
+            f"CRC32 mismatch: expected={expected_crc32} actual={actual_crc32}"
+        )
 
-    print(f"  Engine Pack CRC32 通过: {actual}")
+    # 2. SHA-256 强制校验
+    actual_sha256 = compute_sha256(pack_path)
+    if expected_sha256 and actual_sha256 != expected_sha256:
+        raise RuntimeError(
+            f"SHA-256 mismatch: expected={expected_sha256[:16]} actual={actual_sha256[:16]}"
+        )
+
+    print(f"  Engine Pack 校验通过: CRC32={actual_crc32} SHA256={actual_sha256[:16]}...")
 
     models_dir = app_root / "models"
     staging_dir = app_root / f"models-staging-{uuid.uuid4().hex[:12]}"

@@ -35,20 +35,75 @@ def build_payload_if_needed() -> None:
 
 
 def check_engine_pack_info() -> None:
-    """检查 Engine Pack 信息文件存在。"""
+    """验证 Engine Pack 信息文件存在且 CRC32/SHA-256 非空。
+
+    任何校验信息为空都将导致构建失败。
+
+    :raises RuntimeError: Engine Pack 信息不完整。
+    """
     if not ENGINE_PACK_INFO_PATH.exists():
-        print("[build_exe] engine_pack_info.json 不存在，生成默认占位信息...")
-        RESOURCES_DIR.mkdir(parents=True, exist_ok=True)
-        default_info = {
-            "engine_pack_version": RELEASE_VERSION,
-            "filename": f"BiliLiveCut-EnginePack-{RELEASE_VERSION}.zip",
-            "crc32": "",
-            "expected_engine_ids": ["whisper", "paraformer", "sensevoice", "funasr_nano"],
-        }
-        ENGINE_PACK_INFO_PATH.write_text(
-            json.dumps(default_info, ensure_ascii=False, indent=2), encoding="utf-8"
+        raise RuntimeError(
+            f"engine_pack_info.json 不存在: {ENGINE_PACK_INFO_PATH}\n"
+            "请先构建 Engine Pack: python build_engine_pack.py --from-cache"
         )
-        print("  [注意] Engine Pack 尚未构建，CRC32 为空。构建 Engine Pack 后会自动填入真实 CRC32。")
+
+    ep_info = json.loads(ENGINE_PACK_INFO_PATH.read_text(encoding="utf-8"))
+    crc32 = str(ep_info.get("crc32", ""))
+    sha256 = str(ep_info.get("sha256", ""))
+    manifest_sha = str(ep_info.get("manifest_sha256", ""))
+    version = str(ep_info.get("engine_pack_version", ""))
+    filename = str(ep_info.get("filename", ""))
+
+    errors: list[str] = []
+
+    if not crc32:
+        errors.append("CRC32 为空 — 请先构建 Engine Pack")
+    elif len(crc32) != 8 or not all(c in "0123456789ABCDEF" for c in crc32):
+        errors.append(f"CRC32 格式无效: {crc32} (应为 8 位大写十六进制)")
+
+    if not sha256:
+        errors.append("SHA-256 为空 — 请先构建 Engine Pack")
+    elif len(sha256) != 64:
+        errors.append(f"SHA-256 格式无效: {sha256} (应为 64 位十六进制)")
+
+    if version != RELEASE_VERSION:
+        errors.append(f"Engine Pack 版本不匹配: {version} != {RELEASE_VERSION}")
+
+    if not filename:
+        errors.append("filename 为空")
+
+    expected_ids = ep_info.get("expected_engine_ids", [])
+    if not expected_ids:
+        errors.append("expected_engine_ids 为空")
+
+    if errors:
+        error_msg = "Engine Pack 信息校验失败 — 构建中止:\n  - " + "\n  - ".join(errors)
+        raise RuntimeError(error_msg)
+
+    print(f"  Engine Pack 校验通过: CRC32={crc32} SHA256={sha256[:16]}...")
+
+
+def _generate_default_engine_pack_info() -> dict:
+    """生成默认 Engine Pack 信息占位（仅供 Engine Pack 构建本身使用）。
+
+    注意: 此函数的目的是辅助 Engine Pack 构建流程生成初始占位文件。
+    Lite/Final 构建不应调用此函数，必须有真实的 Engine Pack 信息。
+
+    :returns: 默认占位字典。
+    """
+    return {
+        "format_version": 2,
+        "engine_pack_version": RELEASE_VERSION,
+        "compatible_app": {"min": RELEASE_VERSION, "max_exclusive": "0.1.15"},
+        "filename": f"BiliLiveCut-EnginePack-{RELEASE_VERSION}.zip",
+        "size_bytes": 0,
+        "crc32": "",
+        "sha256": "",
+        "manifest_sha256": "",
+        "source_commit": "",
+        "builder_commit": "",
+        "expected_engine_ids": ["whisper", "paraformer", "sensevoice", "funasr_nano"],
+    }
 
 
 def build_exe() -> Path:
