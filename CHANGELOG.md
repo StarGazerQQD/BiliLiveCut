@@ -34,6 +34,15 @@
 **Cython 兼容性**
 - 修复 `_speedups_round2.pyx` 中 Cython 3.2.8 不兼容的 `PyList_GET_ITEM` 调用
 
+**CI 发现的鲁棒性修复**
+- 修复 `tests/test_version_consistency.py` F401: 删除未使用的 `import pytest`
+- 修复 `tests/test_model_catalog.py` F401: 删除未使用的 `import pytest`
+- 修复 `tests/test_version_consistency.py` E741: 重命名模糊变量 `l` → `line_text`
+- 修复 `tests/test_version_consistency.py` F541: f-string 无占位符改为普通字符串
+- Ruff format: 两个测试文件重新格式化
+- 删除 v0.1.14.6 重构临时快照 `tests-after-v0146.txt` / `tests-before-v0146.txt`
+- `.gitignore` 新增 `/tests-*.txt` 规则防止临时测试快照入库
+
 **测试**
 - 新增 `test_version_consistency.py` 版本一致性测试
 - 新增 `test_model_catalog.py` 模型目录完整性测试
