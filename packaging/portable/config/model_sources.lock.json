@@ -1,0 +1,130 @@
+{
+  "schema_version": 2,
+  "engine_pack_version": "0.1.14.7-alpha",
+  "compatible_app": {
+    "min": "0.1.14.7-alpha",
+    "max_exclusive": "0.1.15"
+  },
+  "source_commit": "731a31cd04ae1df27dd6b6c5ffc535123932b825",
+  "generated_at": "",
+  "engines": [
+    {
+      "engine_id": "whisper",
+      "display_name": "Whisper (faster-whisper large-v3-turbo)",
+      "hub": "huggingface",
+      "repository": "mobiuslabsgmbh/faster-whisper-large-v3-turbo",
+      "requested_revision": "",
+      "resolved_revision": "e4b9645",
+      "target_path": "models/whisper",
+      "required_files": [
+        "model.bin",
+        "config.json",
+        "tokenizer.json",
+        "vocabulary.json",
+        "preprocessor_config.json"
+      ],
+      "files": {},
+      "license": {
+        "name": "MIT",
+        "source": "https://huggingface.co/mobiuslabsgmbh/faster-whisper-large-v3-turbo",
+        "redistribution_verified": false
+      }
+    },
+    {
+      "engine_id": "paraformer",
+      "display_name": "Paraformer-zh (主引擎)",
+      "hub": "modelscope",
+      "repository": "iic/speech_paraformer-large-vad-punc_asr_nat-zh-cn-16k-common-vocab8404-pytorch",
+      "requested_revision": "v2.0.4",
+      "resolved_revision": "v2.0.4",
+      "target_path": "models/paraformer",
+      "required_files": [
+        "model.pt",
+        "config.yaml",
+        "configuration.json",
+        "am.mvn",
+        "tokens.json",
+        "seg_dict"
+      ],
+      "sub_models": [
+        {
+          "engine_id": "paraformer_vad",
+          "display_name": "FSMN-VAD",
+          "hub": "modelscope",
+          "repository": "iic/speech_fsmn_vad_zh-cn-16k-common-pytorch",
+          "requested_revision": "v2.0.4",
+          "resolved_revision": "v2.0.4",
+          "target_subdir": "fsmn-vad"
+        },
+        {
+          "engine_id": "paraformer_punc",
+          "display_name": "CT-Transformer 标点",
+          "hub": "modelscope",
+          "repository": "iic/punc_ct-transformer_zh-cn-common-vocab272727-pytorch",
+          "requested_revision": "v2.0.4",
+          "resolved_revision": "v2.0.4",
+          "target_subdir": "ct-punc"
+        },
+        {
+          "engine_id": "paraformer_campplus",
+          "display_name": "CAM++ 说话人识别",
+          "hub": "modelscope",
+          "repository": "iic/speech_campplus_sv_zh-cn_16k-common",
+          "requested_revision": "v1.0.0",
+          "resolved_revision": "v1.0.0",
+          "target_subdir": "campplus"
+        }
+      ],
+      "files": {},
+      "license": {
+        "name": "Apache-2.0",
+        "source": "https://modelscope.cn/models/iic/speech_paraformer-large-vad-punc_asr_nat-zh-cn-16k-common-vocab8404-pytorch",
+        "redistribution_verified": false
+      }
+    },
+    {
+      "engine_id": "sensevoice",
+      "display_name": "SenseVoice-Small (辅助特征引擎)",
+      "hub": "modelscope",
+      "repository": "iic/SenseVoiceSmall",
+      "requested_revision": "",
+      "resolved_revision": "master",
+      "target_path": "models/sensevoice",
+      "required_files": [
+        "model.pt",
+        "config.yaml",
+        "configuration.json",
+        "am.mvn",
+        "tokens.json",
+        "chn_jpn_yue_eng_ko_spectok.bpe.model"
+      ],
+      "files": {},
+      "license": {
+        "name": "Apache-2.0",
+        "source": "https://modelscope.cn/models/iic/SenseVoiceSmall",
+        "redistribution_verified": false
+      }
+    },
+    {
+      "engine_id": "funasr_nano",
+      "display_name": "Fun-ASR-Nano (低置信度复核引擎)",
+      "hub": "modelscope",
+      "repository": "FunAudioLLM/Fun-ASR-Nano-2512",
+      "requested_revision": "",
+      "resolved_revision": "master",
+      "target_path": "models/funasr_nano",
+      "required_files": [
+        "model.pt",
+        "config.yaml",
+        "configuration.json",
+        "multilingual.tiktoken"
+      ],
+      "files": {},
+      "license": {
+        "name": "Apache-2.0",
+        "source": "https://modelscope.cn/models/FunAudioLLM/Fun-ASR-Nano-2512",
+        "redistribution_verified": false
+      }
+    }
+  ]
+}

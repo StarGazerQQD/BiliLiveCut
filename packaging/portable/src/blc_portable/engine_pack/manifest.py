@@ -1,80 +1,59 @@
 """Engine Pack Manifest 数据结构与校验。
 
 定义四引擎模型包的 Manifest 格式，包含引擎列表、模型版本、文件清单和校验信息。
-与 ``731a31c`` 中的四引擎真实配置严格对应：
-
-============  ========  ===========================  ==========  ==========================
-引擎          引擎 ID   模型 ID                       Revision   下载源
-============  ========  ===========================  ==========  ==========================
-Whisper       whisper   large-v3-turbo               N/A         HuggingFace
-Paraformer    paraformer paraformer-zh               v2.0.4      ModelScope (hub="ms")
-SenseVoice    sensevoice iic/SenseVoiceSmall          v2.0.4      ModelScope (hub="ms")
-FunASR-Nano   funasr_nano iic/Fun-ASR-Nano            v2.0.4      ModelScope (hub="ms")
-============  ========  ===========================  ==========  ==========================
-
-Paraformer 额外需要 ``fsmn-vad`` / ``ct-punc`` / ``cam++`` 三个子模型。
+所有引擎定义唯一权威来源: packaging/portable/config/model_sources.lock.json
 """
 
 from __future__ import annotations
 
 import json
+import sys
 from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any
 
 # ═══════════════════════════════════════════════════════════
-# 常量
+# 常量 — 从统一版本配置和模型目录加载
 # ═══════════════════════════════════════════════════════════
 
-ENGINE_PACK_VERSION = "0.1.14.7-alpha"
-RELEASE_VERSION = "0.1.14.7-alpha"
-SOURCE_COMMIT_SHORT = "731a31c"
-MANIFEST_FORMAT_VERSION = 1
-ARCHIVE_FILENAME = f"BiliLiveCut-EnginePack-{ENGINE_PACK_VERSION}.zip"
+_CONFIG_DIR = str(Path(__file__).resolve().parent.parent.parent.parent / "config")
+if _CONFIG_DIR not in sys.path:
+    sys.path.insert(0, _CONFIG_DIR)
 
-# ── 四引擎定义 (与 731a31c 源码严格对应) ──
+from model_catalog import load_engines, get_engine_pack_version as _cat_ep_version, get_all_engine_ids as _cat_engine_ids
+from version_loader import get_engine_pack_version as _ver_ep_version, get_version, get_source_commit_short, get_source_commit_full, get_lite_exe_name, get_full_zip_name, get_engine_pack_zip_name
 
-ENGINES: list[dict[str, object]] = [
-    {
-        "engine_id": "whisper",
-        "engine_name": "Whisper (兜底引擎)",
-        "model_id": "large-v3-turbo",
-        "model_repo": "mobiuslabsgmbh/faster-whisper-large-v3-turbo",
-        "hub": "huggingface",
-        "revision": None,  # Whisper 使用 model_size 参数，无 Revision
-        "target_path": "models/whisper",
-    },
-    {
-        "engine_id": "paraformer",
-        "engine_name": "Paraformer-zh (主引擎)",
-        "model_id": "paraformer-zh",
-        "hub": "modelscope",
-        "revision": "v2.0.4",
-        "target_path": "models/paraformer",
-        # Paraformer 的 AutoModel 额外需要三个子模型
-        "sub_models": [
-            {"model_id": "fsmn-vad", "hub": "modelscope", "revision": "v2.0.4"},
-            {"model_id": "ct-punc", "hub": "modelscope", "revision": "v2.0.4"},
-            {"model_id": "cam++", "hub": "modelscope", "revision": "v2.0.4"},
-        ],
-    },
-    {
-        "engine_id": "sensevoice",
-        "engine_name": "SenseVoice-Small (辅助特征)",
-        "model_id": "iic/SenseVoiceSmall",
-        "hub": "modelscope",
-        "revision": "v2.0.4",
-        "target_path": "models/sensevoice",
-    },
-    {
-        "engine_id": "funasr_nano",
-        "engine_name": "Fun-ASR-Nano (低置信复核)",
-        "model_id": "iic/Fun-ASR-Nano",
-        "hub": "modelscope",
-        "revision": "v2.0.4",
-        "target_path": "models/funasr_nano",
-    },
-]
+ENGINE_PACK_VERSION = _ver_ep_version()
+RELEASE_VERSION = get_version()
+SOURCE_COMMIT_SHORT = get_source_commit_short()
+MANIFEST_FORMAT_VERSION = 2
+ARCHIVE_FILENAME = get_engine_pack_zip_name()
+
+
+def _get_engines_for_manifest() -> list[dict[str, object]]:
+    """从模型目录加载引擎定义，转换为 Manifest 所需格式。
+
+    :returns: 引擎定义列表。
+    """
+    raw = []
+    for e in load_engines():
+        d: dict[str, object] = {
+            "engine_id": e.engine_id,
+            "engine_name": e.display_name,
+            "model_id": e.repo_id if e.hub == "huggingface" else e.repository,
+            "hub": e.hub,
+            "revision": e.requested_revision if e.requested_revision else None,
+            "target_path": e.target_path,
+        }
+        if e.hub == "huggingface":
+            d["model_repo"] = e.repository
+        if e.sub_models:
+            d["sub_models"] = [
+                {"model_id": s.repository, "hub": s.hub, "revision": s.requested_revision if s.requested_revision else None}
+                for s in e.sub_models
+            ]
+        raw.append(d)
+    return raw
 
 # ── ModelScope 国内镜像 ──
 MODELSCOPE_MIRRORS = [
@@ -245,7 +224,7 @@ def create_manifest(
             model_repo=e.get("model_repo") if isinstance(e.get("model_repo"), str) else None,
             sub_models=e.get("sub_models", []),
         )
-        for e in ENGINES
+        for e in _get_engines_for_manifest()
     ]
 
     return EnginePackManifest(
@@ -292,7 +271,7 @@ def validate_manifest(manifest: EnginePackManifest) -> list[str]:
     if not manifest.engines:
         errors.append("engines 列表为空")
 
-    expected_ids = {"whisper", "paraformer", "sensevoice", "funasr_nano"}
+    expected_ids = set(_cat_engine_ids())
     actual_ids = set(manifest.get_engine_ids())
     missing = expected_ids - actual_ids
     extra = actual_ids - expected_ids
@@ -329,14 +308,28 @@ def load_manifest(path: Path) -> EnginePackManifest:
     return manifest
 
 
-def get_engine_pack_info() -> dict[str, str]:
+def get_engine_pack_info() -> dict[str, object]:
     """生成 engine_pack_info.json 内容（供 PyInstaller 嵌入）。
+
+    包含 format_version、engine_pack_version、兼容 App 范围、
+    文件名、CRC32、SHA-256、Manifest SHA-256、期望引擎 ID。
 
     :returns: engine_pack_info 字典。
     """
+    engine_ids = _cat_engine_ids()
     return {
+        "format_version": 2,
         "engine_pack_version": ENGINE_PACK_VERSION,
+        "compatible_app": {
+            "min": RELEASE_VERSION,
+            "max_exclusive": "0.1.15",
+        },
         "filename": ARCHIVE_FILENAME,
-        "crc32": "",  # 由 build_engine_pack.py 填入真实 CRC32
-        "expected_engine_ids": ["whisper", "paraformer", "sensevoice", "funasr_nano"],
+        "size_bytes": 0,
+        "crc32": "",  # 由 build_engine_pack.py 填入真实值
+        "sha256": "",  # 由 build_engine_pack.py 填入真实值
+        "manifest_sha256": "",  # 由 build_engine_pack.py 填入真实值
+        "source_commit": SOURCE_COMMIT_SHORT,
+        "builder_commit": "",
+        "expected_engine_ids": engine_ids,
     }

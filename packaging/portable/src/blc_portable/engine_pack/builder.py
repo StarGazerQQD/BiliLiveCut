@@ -53,52 +53,44 @@ CHUNK_SIZE = 8 * 1024 * 1024
 HF_MIRROR = "https://hf-mirror.com"
 
 
-# ── 四引擎定义 ────────────────────────────────────────────
-# 模型 ID 已针对 ModelScope API 进行修正:
-#   - Fun-ASR-Nano: iic/Fun-ASR-Nano 不存在 → FunAudioLLM/Fun-ASR-Nano-2512
-#   - cam++: iic/speaker_campplus_... → iic/speech_campplus_... (正确前缀)
-#   - SenseVoiceSmall / cam++ / FunASR-Nano: v2.0.4 无对应 revision → None
+# ── 四引擎定义 — 来自统一模型目录 ──────────────────────────
+# 所有模型定义现在唯一权威来源: packaging/portable/config/model_sources.lock.json
+# 通过 blc_portable.config.model_catalog 统一加载。
+# 禁止在此文件或任何其他模块再次定义 ENGINES 常量。
 
-ENGINES: list[dict[str, Any]] = [
-    {
-        "engine_id": "whisper",
-        "engine_name": "Whisper (兜底引擎)",
-        "model_id": "large-v3-turbo",
-        "hub": "huggingface",
-        "repo_id": "mobiuslabsgmbh/faster-whisper-large-v3-turbo",
-        "revision": None,
-        "target_path": "models/whisper",
-    },
-    {
-        "engine_id": "paraformer",
-        "engine_name": "Paraformer-zh (主引擎)",
-        "model_id": "iic/speech_paraformer-large-vad-punc_asr_nat-zh-cn-16k-common-vocab8404-pytorch",
-        "hub": "modelscope",
-        "revision": "v2.0.4",
-        "target_path": "models/paraformer",
-        "sub_models": [
-            {"model_id": "iic/speech_fsmn_vad_zh-cn-16k-common-pytorch", "revision": "v2.0.4"},
-            {"model_id": "iic/punc_ct-transformer_zh-cn-common-vocab272727-pytorch", "revision": "v2.0.4"},
-            {"model_id": "iic/speech_campplus_sv_zh-cn_16k-common", "revision": None},
-        ],
-    },
-    {
-        "engine_id": "sensevoice",
-        "engine_name": "SenseVoice-Small (辅助特征)",
-        "model_id": "iic/SenseVoiceSmall",
-        "hub": "modelscope",
-        "revision": None,
-        "target_path": "models/sensevoice",
-    },
-    {
-        "engine_id": "funasr_nano",
-        "engine_name": "Fun-ASR-Nano (低置信复核)",
-        "model_id": "FunAudioLLM/Fun-ASR-Nano-2512",
-        "hub": "modelscope",
-        "revision": None,
-        "target_path": "models/funasr_nano",
-    },
-]
+import sys as _sys
+_CONFIG_DIR = str(PORTABLE_DIR / "config")
+if _CONFIG_DIR not in _sys.path:
+    _sys.path.insert(0, _CONFIG_DIR)
+
+from model_catalog import load_engines, get_engine_pack_version as _cat_ep_version
+from model_catalog import EngineDef as _EngineDef
+
+
+def _get_engines_for_build() -> list[dict[str, Any]]:
+    """从模型目录加载引擎定义，转换为构建所需格式（向后兼容）。
+    
+    :returns: 引擎定义列表。
+    """
+    raw = []
+    for e in load_engines():
+        d: dict[str, Any] = {
+            "engine_id": e.engine_id,
+            "engine_name": e.display_name,
+            "model_id": e.repo_id if e.hub == "huggingface" else e.repository,
+            "hub": e.hub,
+            "revision": e.requested_revision if e.requested_revision else None,
+            "target_path": e.target_path,
+        }
+        if e.hub == "huggingface":
+            d["repo_id"] = e.repository
+        if e.sub_models:
+            d["sub_models"] = [
+                {"model_id": s.repository, "revision": s.requested_revision if s.requested_revision else None}
+                for s in e.sub_models
+            ]
+        raw.append(d)
+    return raw
 
 
 # ── 辅助函数 ──────────────────────────────────────────────
@@ -175,7 +167,7 @@ def download_real_models(staging: Path) -> None:
     """下载四个引擎的真实模型到 staging 目录。
 
     每个引擎的 revision 可能为 None（使用默认分支），
-    已在 ENGINES 定义中根据 ModelScope API 实测结果设定。
+    已在模型目录中定义。
 
     :param staging: staging 根目录。
     """
@@ -183,7 +175,8 @@ def download_real_models(staging: Path) -> None:
     print("  下载四引擎模型 (完整下载)")
     print("=" * 60)
 
-    for idx, engine in enumerate(ENGINES):
+    engines_list = _get_engines_for_build()
+    for idx, engine in enumerate(engines_list):
         engine_id = str(engine["engine_id"])
         target = staging / str(engine["target_path"])
         target.mkdir(parents=True, exist_ok=True)
@@ -251,7 +244,7 @@ def build_fixture(staging: Path) -> None:
     :param staging: staging 根目录。
     """
     print("  生成 Fixture Engine Pack (测试用) ...")
-    for engine in ENGINES:
+    for engine in _get_engines_for_build():
         target = staging / str(engine["target_path"])
         target.mkdir(parents=True, exist_ok=True)
         meta = {
@@ -389,7 +382,7 @@ def write_output_files(
                 "model_repo": e.get("repo_id"),
                 "sub_models": e.get("sub_models", []),
             }
-            for e in ENGINES
+            for e in _get_engines_for_build()
         ],
         "files": file_list,
     }
@@ -567,7 +560,7 @@ def build_engine_pack(fixture: bool = False, from_cache: bool = False) -> dict[s
                 "model_repo": e.get("repo_id"),
                 "sub_models": e.get("sub_models", []),
             }
-            for e in ENGINES
+            for e in _get_engines_for_build()
         ],
         "files": file_list,
     }
