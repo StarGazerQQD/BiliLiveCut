@@ -1,0 +1,25 @@
+{
+  "release_version": "0.1.14.7-alpha",
+  "version_label": "V0.1.14.7 Alpha",
+  "source_commit_short": "731a31c",
+  "source_commit_full": "731a31cd04ae1df27dd6b6c5ffc535123932b825",
+  "engine_pack_version": "0.1.14.7-alpha",
+  "manifest_format_version": 1,
+  "schema_version": 2,
+  "compatible_python": {
+    "min": "3.11",
+    "max_validated": "3.12"
+  },
+  "compatible_app": {
+    "min": "0.1.14.7-alpha",
+    "max_exclusive": "0.1.15"
+  },
+  "target_platforms": ["windows"],
+  "target_architectures": ["x64"],
+  "naming": {
+    "lite_exe": "BiliLiveCut-Portable-Lite-v{version}-x64.exe",
+    "full_zip": "BiliLiveCut-Portable-Full-{version}-x64.zip",
+    "engine_pack_zip": "BiliLiveCut-EnginePack-{version}.zip",
+    "payload_zip": "source_payload.zip"
+  }
+}

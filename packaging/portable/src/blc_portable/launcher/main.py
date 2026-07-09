@@ -25,10 +25,10 @@ from typing import Any
 
 # ── 常量 ──────────────────────────────────────────────────
 APP_NAME = "BiliLiveCut"
-VERSION = "V0.1.14.6 Alpha"
-RELEASE_VERSION = "0.1.14.6-alpha"
+VERSION = "V0.1.14.7 Alpha"
+RELEASE_VERSION = "0.1.14.7-alpha"
 SOURCE_COMMIT_SHORT = "731a31c"
-RELEASE_ID = f"{RELEASE_VERSION}+{SOURCE_COMMIT_SHORT}"
+# 注意: RELEASE_ID 将在获得 Payload SHA-256 后动态生成 (内容寻址)
 
 VENV_DIR = ".venv"
 WHEELS_DIR = os.path.join("vendor", "wheels")
@@ -122,6 +122,8 @@ def get_releases_dir() -> Path:
 def get_current_release_dir() -> Path | None:
     """获取当前激活的 Release 目录。
 
+    使用内容寻址: {version}+{commit}+{payload_hash_prefix}
+
     :returns: Release 目录，不存在返回 None。
     """
     current_path = get_app_root() / "runtime" / "current.json"
@@ -129,9 +131,25 @@ def get_current_release_dir() -> Path | None:
         return None
     try:
         info = json.loads(current_path.read_text(encoding="utf-8"))
-        rid = info.get("release_id", RELEASE_ID)
+        rid = info.get("release_id", "")
+        if not rid:
+            return None
+        # 检查 payload hash 匹配
+        expected_payload_sha = info.get("payload_sha256", "")
         d = get_releases_dir() / rid
-        return d if d.exists() and (d / "app" / "cli.py").exists() else None
+        if d.exists() and (d / "app" / "cli.py").exists():
+            # 进一步校验: 比较 EXE 内嵌 Payload SHA 与安装时记录的 SHA
+            try:
+                manifest = get_payload_manifest()
+                exe_payload_sha = manifest.get("payload_sha256", "")
+                if exe_payload_sha and expected_payload_sha:
+                    if exe_payload_sha != expected_payload_sha:
+                        print(f"  Payload 已变更 (EXE SHA={exe_payload_sha[:16]} != installed SHA={expected_payload_sha[:16]})，需要重新安装")
+                        return None
+            except RuntimeError:
+                pass  # Manifest 不可读，继续使用现有 Runtime
+            return d
+        return None
     except (json.JSONDecodeError, OSError):
         return None
 
@@ -164,9 +182,13 @@ def install_source_from_payload(app_root: Path) -> Path:
 
     print(f"  Payload: v{RELEASE_VERSION} | Source: {SOURCE_COMMIT_SHORT} | SHA256: {actual_hash[:16]}")
 
+    # 内容寻址 Release ID: version + source commit + payload hash prefix
+    payload_hash_short = actual_hash[:12]
+    content_release_id = f"{RELEASE_VERSION}+{SOURCE_COMMIT_SHORT}+{payload_hash_short}"
+
     releases_dir = get_releases_dir()
     staging = get_app_root() / "runtime" / "staging"
-    release_dir = releases_dir / RELEASE_ID
+    release_dir = releases_dir / content_release_id
 
     if staging.exists():
         shutil.rmtree(staging)
@@ -199,12 +221,17 @@ def install_source_from_payload(app_root: Path) -> Path:
         os.replace(str(staging), str(release_dir))
 
         current_info = {
-            "release_id": RELEASE_ID,
+            "runtime_schema": 2,
+            "release_id": content_release_id,
             "release_version": RELEASE_VERSION,
             "source_commit": manifest.get("source_commit", ""),
             "source_commit_short": SOURCE_COMMIT_SHORT,
             "builder_commit": manifest.get("builder_commit", ""),
             "payload_sha256": actual_hash,
+            "manifest_sha256": manifest.get("payload_sha256", ""),
+            "python_abi": f"cp{sys.version_info.major}{sys.version_info.minor}",
+            "platform": sys.platform,
+            "architecture": "x64" if sys.maxsize > 2**32 else "x86",
             "installed_at": __import__("datetime").datetime.now().strftime("%Y-%m-%dT%H:%M:%S"),
         }
         tmp = get_app_root() / "runtime" / "current.json.tmp"
@@ -395,7 +422,7 @@ def prepare_models(app_root: Path, user_engine_pack_path: str | None = None) -> 
     """
     from ..engine_pack.installer import check_installed_models, find_local_engine_pack, install_from_engine_pack
 
-    MODEL_ENGINE_PACK_VERSION = "0.1.14.6-alpha"
+    MODEL_ENGINE_PACK_VERSION = "0.1.14.7-alpha"
 
     # 读取内置 Engine Pack 信息
     pack_info = get_engine_pack_info()

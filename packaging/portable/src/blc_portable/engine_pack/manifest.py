@@ -26,8 +26,8 @@ from typing import Any
 # 常量
 # ═══════════════════════════════════════════════════════════
 
-ENGINE_PACK_VERSION = "0.1.14.6-alpha"
-RELEASE_VERSION = "0.1.14.6-alpha"
+ENGINE_PACK_VERSION = "0.1.14.7-alpha"
+RELEASE_VERSION = "0.1.14.7-alpha"
 SOURCE_COMMIT_SHORT = "731a31c"
 MANIFEST_FORMAT_VERSION = 1
 ARCHIVE_FILENAME = f"BiliLiveCut-EnginePack-{ENGINE_PACK_VERSION}.zip"
