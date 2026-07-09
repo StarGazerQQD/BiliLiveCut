@@ -54,9 +54,7 @@ class TestModelCatalogIsSingleSource:
 
         engine = get_engine_by_id("paraformer")
         assert engine is not None
-        assert engine.repository.startswith("iic/"), (
-            f"paraformer repository 格式无效: {engine.repository}"
-        )
+        assert engine.repository.startswith("iic/"), f"paraformer repository 格式无效: {engine.repository}"
         assert "/" in engine.repository
 
     def test_whisper_uses_correct_repository(self) -> None:
@@ -73,9 +71,7 @@ class TestModelCatalogIsSingleSource:
 
         engines = load_engines()
         for e in engines:
-            assert e.resolved_revision, (
-                f"引擎 {e.engine_id} 的 resolved_revision 为空"
-            )
+            assert e.resolved_revision, f"引擎 {e.engine_id} 的 resolved_revision 为空"
 
     def test_no_duplicate_engine_ids(self) -> None:
         """引擎 ID 必须唯一。"""
@@ -105,9 +101,7 @@ class TestModelCatalogIsSingleSource:
         from model_catalog import get_engine_pack_version
         from version_loader import get_version
 
-        assert get_engine_pack_version() == get_version(), (
-            "engine_pack_version 与 release_version 不一致"
-        )
+        assert get_engine_pack_version() == get_version(), "engine_pack_version 与 release_version 不一致"
 
     def test_required_files_non_empty(self) -> None:
         """所有引擎 required_files 非空。"""
@@ -115,9 +109,7 @@ class TestModelCatalogIsSingleSource:
 
         engines = load_engines()
         for e in engines:
-            assert e.required_files, (
-                f"引擎 {e.engine_id} required_files 为空"
-            )
+            assert e.required_files, f"引擎 {e.engine_id} required_files 为空"
 
 
 class TestModelCatalogIntegration:
@@ -134,9 +126,7 @@ class TestModelCatalogIntegration:
 
     def test_builder_uses_catalog_not_hardcoded(self) -> None:
         """验证 builder.py 不再有硬编码 ENGINES 列表。"""
-        builder_path = (
-            REPO_ROOT / "packaging" / "portable" / "src" / "blc_portable" / "engine_pack" / "builder.py"
-        )
+        builder_path = REPO_ROOT / "packaging" / "portable" / "src" / "blc_portable" / "engine_pack" / "builder.py"
         content = builder_path.read_text(encoding="utf-8")
         # 不应再出现硬编码的 ENGINES: list 定义
         assert "ENGINES: list" not in content, "builder.py 仍有硬编码 ENGINES 常量"
@@ -145,9 +135,7 @@ class TestModelCatalogIntegration:
 
     def test_manifest_uses_catalog_not_hardcoded(self) -> None:
         """验证 manifest.py 不再有硬编码 ENGINES。"""
-        manifest_path = (
-            REPO_ROOT / "packaging" / "portable" / "src" / "blc_portable" / "engine_pack" / "manifest.py"
-        )
+        manifest_path = REPO_ROOT / "packaging" / "portable" / "src" / "blc_portable" / "engine_pack" / "manifest.py"
         content = manifest_path.read_text(encoding="utf-8")
         assert "ENGINES: list" not in content, "manifest.py 仍有硬编码 ENGINES"
         assert "model_catalog" in content, "manifest.py 未导入 model_catalog"

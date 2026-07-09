@@ -74,7 +74,9 @@ def test_all_versions_equal_0_1_14_7_alpha() -> None:
     # engine_pack/manifest.py (now uses version_loader function call)
     ep_manifest_path = REPO_ROOT / "packaging" / "portable" / "src" / "blc_portable" / "engine_pack" / "manifest.py"
     ep_manifest_content = ep_manifest_path.read_text(encoding="utf-8")
-    assert "ENGINE_PACK_VERSION = _ver_ep_version" in ep_manifest_content, "engine_pack/manifest.py 应使用 version_loader"
+    assert "ENGINE_PACK_VERSION = _ver_ep_version" in ep_manifest_content, (
+        "engine_pack/manifest.py 应使用 version_loader"
+    )
 
     # launcher/main.py
     launcher_path = REPO_ROOT / "packaging" / "portable" / "src" / "blc_portable" / "launcher" / "main.py"
