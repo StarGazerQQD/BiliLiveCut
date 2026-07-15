@@ -190,6 +190,48 @@ jobs:
           python build_exe.py
         timeout-minutes: 15
 
+      - name: Prepare Full offline components
+        shell: pwsh
+        run: |
+          # 1. Embeddable Python 3.12 (required for Full package)
+          Write-Output "::group::Downloading embeddable Python 3.12"
+          Invoke-WebRequest -Uri "https://www.python.org/ftp/python/3.12.8/python-3.12.8-embed-amd64.zip" `
+            -OutFile "$env:RUNNER_TEMP\python-embed.zip"
+          New-Item -ItemType Directory -Path portable-python -Force
+          Expand-Archive -Path "$env:RUNNER_TEMP\python-embed.zip" -DestinationPath portable-python -Force
+          Write-Output "::endgroup::"
+
+          # 2. FFmpeg static binaries
+          Write-Output "::group::Downloading FFmpeg"
+          Invoke-WebRequest -Uri "https://www.gyan.dev/ffmpeg/builds/ffmpeg-release-essentials.zip" `
+            -OutFile "$env:RUNNER_TEMP\ffmpeg.zip"
+          Expand-Archive -Path "$env:RUNNER_TEMP\ffmpeg.zip" -DestinationPath "$env:RUNNER_TEMP\ffmpeg-extracted" -Force
+          New-Item -ItemType Directory -Path bin -Force
+          $ffmpegDir = Get-ChildItem "$env:RUNNER_TEMP\ffmpeg-extracted" -Directory | Select-Object -First 1
+          Copy-Item "$($ffmpegDir.FullName)\bin\ffmpeg.exe" "bin\ffmpeg.exe"
+          Copy-Item "$($ffmpegDir.FullName)\bin\ffprobe.exe" "bin\ffprobe.exe"
+          Write-Output "::endgroup::"
+
+          # 3. Offline wheels (best-effort)
+          Write-Output "::group::Downloading wheels"
+          New-Item -ItemType Directory -Path vendor\wheels -Force
+          python -m pip download ".[web]" -d vendor\wheels `
+            --only-binary=:all: --platform win_amd64 --python-version 3.12 `
+            --no-deps 2>$null
+          python -m pip freeze > "$env:RUNNER_TEMP\installed.txt"
+          python -m pip download -r "$env:RUNNER_TEMP\installed.txt" -d vendor\wheels `
+            --only-binary=:all: --platform win_amd64 --python-version 3.12 2>$null
+          $wheelCount = (Get-ChildItem vendor\wheels\*.whl -ErrorAction SilentlyContinue | Measure-Object).Count
+          Write-Output "Wheels: $wheelCount"
+          Write-Output "::endgroup::"
+        timeout-minutes: 15
+
+      - name: Build Full Bundle
+        run: |
+          cd packaging/portable
+          python build_full_bundle.py
+        timeout-minutes: 5
+
       - name: Upload Lite EXE
         uses: actions/upload-artifact@v4
         with:
@@ -198,6 +240,16 @@ jobs:
             packaging/portable/dist/lite/*.exe
             packaging/portable/dist/lite/build-manifest.json
             packaging/portable/dist/lite/SHA256SUMS.txt
+          retention-days: 1
+
+      - name: Upload Full ZIP
+        uses: actions/upload-artifact@v4
+        with:
+          name: windows-full
+          path: |
+            packaging/portable/dist/full/*.zip
+            packaging/portable/dist/full/build-manifest.json
+            packaging/portable/dist/full/SHA256SUMS.txt
           retention-days: 1
 
   # ═══════════════════════════════════════════════════════════════════
@@ -226,10 +278,17 @@ jobs:
           name: windows-lite
           path: dist/lite/
 
+      - name: Download Full ZIP
+        uses: actions/download-artifact@v4
+        with:
+          name: windows-full
+          path: dist/full/
+
       - name: Merge artifacts into dist/
         run: |
           cp dist/sdist/* dist/
           cp dist/lite/* dist/
+          cp dist/full/* dist/
           ls -la dist/
 
       - name: Extract tag version
