@@ -11,7 +11,7 @@
 
 输出:
     dist/engine-pack/
-    ├── BiliLiveCut-EnginePack-v0.1.14.7-alpha.zip
+    ├── BiliLiveCut-EnginePack-v0.1.14.8-alpha.zip
     ├── engine-pack-manifest.json
     ├── CRC32SUMS.txt
     ├── SHA256SUMS.txt
@@ -44,7 +44,7 @@ BUILD_DIR = PORTABLE_DIR / "build" / "engine-pack"
 DIST_DIR = PORTABLE_DIR / "dist" / "engine-pack"
 RESOURCES_DIR = PORTABLE_DIR / "resources"
 
-ENGINE_PACK_VERSION = "0.1.14.7-alpha"
+ENGINE_PACK_VERSION = "0.1.14.8-alpha"
 SOURCE_COMMIT_SHORT = "731a31c"
 ARCHIVE_NAME = f"BiliLiveCut-EnginePack-{ENGINE_PACK_VERSION}"
 

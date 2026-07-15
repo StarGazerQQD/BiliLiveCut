@@ -2,12 +2,21 @@
 
 [![CI](https://github.com/StarGazerQQD/BiliLiveCut/actions/workflows/ci.yml/badge.svg)](https://github.com/StarGazerQQD/BiliLiveCut/actions/workflows/ci.yml)
 
-**当前版本：V0.1.14.7 Alpha** (`0.1.14.7-alpha`)
+**当前版本：V0.1.14.8 Alpha** (`0.1.14.8-alpha`)
 
-针对 Bilibili 直播的全自动工作流：实时录制 → 转写 → 识别高光 → 生成切片 → 生成文案 → (可选)上传。
+面向 Bilibili 直播的全自动工作流：实时录制 → 转写 → 识别高光 → 生成切片 → 生成文案 → (可选)上传。
 阶段 1–5 全链路已可用；即插即用分发包见 [`packaging/portable/`](packaging/portable/README.md)。
 
 > ⚠️ **合规声明**：本项目仅调用 Bilibili 网页播放器自身使用的公开接口，不做任何逆向、破解或绕过平台安全策略的行为。请**仅录制你拥有授权的内容**，遵守平台服务条款与合理访问频率。自动上传默认采用 `manual` 模式（只产出成品与元数据，不调用任何平台接口），零封号风险。
+
+> ℹ️ **Engine Pack 说明**：GitHub Release 中**不含** ASR 模型引擎包（约 5.5 GB，超出上传限制）。用户需在本地自行生成：
+> ```bash
+> cd packaging/portable
+> pip install modelscope huggingface_hub
+> python download_engines.py          # 下载四引擎模型（约 5.5 GB）
+> python build_engine_pack.py --from-cache  # 构建 Engine Pack ZIP
+> ```
+> 生成的 ZIP 放在便携版同目录下，首次启动时自动校验 CRC32/SHA-256 并安装模型。
 
 ## V0.1.14.7 新特性：发行结构重构
 

@@ -25,8 +25,8 @@ from typing import Any
 
 # ── 常量 ──────────────────────────────────────────────────
 APP_NAME = "BiliLiveCut"
-VERSION = "V0.1.14.7 Alpha"
-RELEASE_VERSION = "0.1.14.7-alpha"
+VERSION = "V0.1.14.8 Alpha"
+RELEASE_VERSION = "0.1.14.8-alpha"
 SOURCE_COMMIT_SHORT = "731a31c"
 # 注意: RELEASE_ID 将在获得 Payload SHA-256 后动态生成 (内容寻址)
 
@@ -441,7 +441,7 @@ def prepare_models(app_root: Path, user_engine_pack_path: str | None = None) -> 
     """
     from ..engine_pack.installer import check_installed_models, find_local_engine_pack, install_from_engine_pack
 
-    MODEL_ENGINE_PACK_VERSION = "0.1.14.7-alpha"
+    MODEL_ENGINE_PACK_VERSION = "0.1.14.8-alpha"
 
     # 读取内置 Engine Pack 信息
     pack_info = get_engine_pack_info()

@@ -2,7 +2,7 @@
 
 流程:
 1. 从 731a31c 提取源码 → staging/
-2. 应用受控版本 Overlay → 0.1.14.7-alpha
+2. 应用受控版本 Overlay → 0.1.14.8-alpha
 3. 生成 Manifest
 4. 构建 ZIP
 5. 校验

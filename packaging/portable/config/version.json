@@ -1,9 +1,9 @@
 {
-  "release_version": "0.1.14.7-alpha",
-  "version_label": "V0.1.14.7 Alpha",
+  "release_version": "0.1.14.8-alpha",
+  "version_label": "V0.1.14.8 Alpha",
   "source_commit_short": "731a31c",
   "source_commit_full": "731a31cd04ae1df27dd6b6c5ffc535123932b825",
-  "engine_pack_version": "0.1.14.7-alpha",
+  "engine_pack_version": "0.1.14.8-alpha",
   "manifest_format_version": 1,
   "schema_version": 2,
   "compatible_python": {
@@ -11,7 +11,7 @@
     "max_validated": "3.12"
   },
   "compatible_app": {
-    "min": "0.1.14.7-alpha",
+    "min": "0.1.14.8-alpha",
     "max_exclusive": "0.1.15"
   },
   "target_platforms": ["windows"],

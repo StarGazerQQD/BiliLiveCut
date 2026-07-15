@@ -1,5 +1,14 @@
 # Changelog
 
+## V0.1.14.8 Alpha (2026-07-15)
+
+### 修复
+
+- **builder**: 修复 `engine_pack_info.json` 缺失 `sha256`/`size_bytes`/`source_commit` 字段，导致 Lite EXE 构建校验失败
+- **full.py**: 英文化所有运行时 print 语句避免 Windows CI cp1252 `UnicodeEncodeError`
+- **release.yml**: 移除冗余 `certutil` checksums 步骤，拆分 Full 离线组件准备为独立步骤
+- **README**: 新增 Engine Pack 本地生成说明，明确 GitHub Release 不包含 ASR 模型引擎包
+
 ## V0.1.14.7 Alpha (2026-07-09)
 
 ### Portable 发布工程系统性修复与版本统一

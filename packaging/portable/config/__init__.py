@@ -1,1 +1,1 @@
-"""Portable 配置模块 — 提供版本、模型、锁等单源配置加载。"""
+"""BLC Portable config — version and model source definitions."""

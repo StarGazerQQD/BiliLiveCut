@@ -26,7 +26,7 @@ MANIFEST_PATH = PAYLOAD_DIR / "payload_manifest.json"
 RESOURCES_DIR = PORTABLE_DIR / "resources"
 ENGINE_PACK_INFO_PATH = RESOURCES_DIR / "engine_pack_info.json"
 
-RELEASE_VERSION = "0.1.14.7-alpha"
+RELEASE_VERSION = "0.1.14.8-alpha"
 
 
 def build_payload_if_needed() -> None:
