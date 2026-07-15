@@ -407,17 +407,20 @@ def write_output_files(
 
     # engine_pack_info.json (供 PyInstaller 嵌入)
     RESOURCES_DIR.mkdir(parents=True, exist_ok=True)
+    total_size = archive_path.stat().st_size
     engine_pack_info: dict[str, Any] = {
         "engine_pack_version": ENGINE_PACK_VERSION,
         "filename": archive_path.name,
+        "size_bytes": total_size,
         "crc32": crc32_val,
+        "sha256": sha256_val,
+        "source_commit": source_commit,
         "expected_engine_ids": ["whisper", "paraformer", "sensevoice", "funasr_nano"],
     }
     (RESOURCES_DIR / "engine_pack_info.json").write_text(
         json.dumps(engine_pack_info, ensure_ascii=False, indent=2), encoding="utf-8"
     )
 
-    total_size = archive_path.stat().st_size
     print(f"\n  Manifest:     {manifest_path}")
     print(f"  CRC32:        {crc32_val}")
     print(f"  SHA-256:      {sha256_val[:32]}...")
