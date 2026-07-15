@@ -1,9 +1,10 @@
-"""Portable Full 完整包构建脚本。
+"""Portable Full bundle build script.
 
-输出: BiliLiveCut-Portable-Full-v0.1.14.6-alpha-x64.zip
-内容: EXE + Portable Python + 离线 Wheels + FFmpeg (不含模型)
+Output: BiliLiveCut-Portable-Full-v{version}-x64.zip
+Contents: EXE + Portable Python + offline Wheels + FFmpeg (no models)
 
-注意: 模型不由 Full 包携带。四个 ASR 引擎模型统一由独立的 Engine Pack 提供。
+Note: Models are NOT bundled in Full. Four ASR engine models are provided
+by a separate Engine Pack.
 """
 
 from __future__ import annotations
@@ -26,19 +27,20 @@ FULL_NAME = f"BiliLiveCut-Portable-Full-{RELEASE_VERSION}-x64"
 
 
 def build_full_bundle() -> Path:
-    """构建 Portable Full 离线包。
+    """Build Portable Full offline bundle.
 
-    Full 包必须实际包含:
+    Full bundle must contain:
     - BiliLiveCut-Portable.exe (Lite EXE)
-    - portable-python/ (内嵌 Python 运行时)
-    - vendor/wheels/ (离线依赖包)
+    - portable-python/ (embedded Python runtime)
+    - vendor/wheels/ (offline dependency packages)
     - bin/ffmpeg.exe, bin/ffprobe.exe
     - README.txt, checksums.json, SHA256SUMS.txt
 
-    注意: Full 不包含四引擎模型。模型由独立 Engine Pack 提供。
+    Note: Full does NOT include engine models. Models are provided
+    by a separate Engine Pack.
 
-    :returns: ZIP 文件路径。
-    :raises RuntimeError: 关键组件缺失时。
+    :returns: Path to generated ZIP file.
+    :raises RuntimeError: When critical components are missing.
     """
     DIST_DIR.mkdir(parents=True, exist_ok=True)
 
@@ -50,7 +52,7 @@ def build_full_bundle() -> Path:
     lite_exe_name = f"BiliLiveCut-Portable-Lite-v{RELEASE_VERSION}-x64.exe"
     lite_path = LITE_DIR / lite_exe_name
     if not lite_path.exists():
-        raise RuntimeError(f"Lite EXE 不存在: {lite_path}\n请先构建: python build_exe.py")
+        raise RuntimeError(f"Lite EXE not found: {lite_path}\nBuild it first: python build_exe.py")
     print(f"  EXE: {lite_path.stat().st_size / 1024 / 1024:.1f} MB")
 
     # 验证必须的离线组件
@@ -58,7 +60,7 @@ def build_full_bundle() -> Path:
 
     portable_py = PROJECT_ROOT / "portable-python" / "python.exe"
     if not portable_py.exists():
-        missing.append("portable-python/python.exe (需预先准备 Portable Python)")
+        missing.append("portable-python/python.exe (prepare Portable Python first)")
 
     wheels_dir = PROJECT_ROOT / "vendor" / "wheels"
     if not wheels_dir.exists() or not list(wheels_dir.glob("*.whl")):
@@ -66,7 +68,7 @@ def build_full_bundle() -> Path:
         if candidate.exists() and list(candidate.glob("*.whl")):
             wheels_dir = candidate
         else:
-            missing.append("vendor/wheels/ (无 .whl 文件 — 离线安装将不可用)")
+            missing.append("vendor/wheels/ (no .whl files -- offline install will not work)")
 
     ffmpeg = PROJECT_ROOT / "bin" / "ffmpeg.exe"
     if not ffmpeg.exists():
@@ -85,14 +87,14 @@ def build_full_bundle() -> Path:
             missing.append("bin/ffprobe.exe")
 
     if missing:
-        print("\n  [警告] Full 离线包缺少以下组件:")
+        print("\n  [WARNING] Full offline bundle is missing:")
         for m in missing:
             print(f"    - {m}")
-        print("  离线安装可能失败。将仅打包已存在的组件。")
-        print("  Full 离线包构建前提:")
-        print("    1. portable-python/ 目录 (Python 3.11/3.12)")
-        print("    2. vendor/wheels/ 目录 (离线 Wheels)")
-        print("    3. bin/ffmpeg.exe 和 bin/ffprobe.exe")
+        print("  Offline install may fail. Will only package available components.")
+        print("  Full offline bundle prerequisites:")
+        print("    1. portable-python/ directory (Python 3.11/3.12)")
+        print("    2. vendor/wheels/ directory (offline Wheels)")
+        print("    3. bin/ffmpeg.exe and bin/ffprobe.exe")
         print()
 
     # 读取 Engine Pack 信息 (如有)
@@ -101,7 +103,7 @@ def build_full_bundle() -> Path:
     if ep_info_path.exists():
         ep_info = json.loads(ep_info_path.read_text(encoding="utf-8"))
         engine_pack_crc32 = ep_info.get("crc32", "")
-        print(f"  Engine Pack CRC32: {engine_pack_crc32 or '(空)'}")
+        print(f"  Engine Pack CRC32: {engine_pack_crc32 or '(empty)'}")
 
     with tempfile.TemporaryDirectory() as tmpdir:
         tmp = Path(tmpdir)
@@ -110,7 +112,7 @@ def build_full_bundle() -> Path:
 
         # 复制 EXE
         shutil.copy2(lite_path, bundle / "BiliLiveCut-Portable.exe")
-        print("  [OK] 已复制 EXE")
+        print("  [OK] Copied EXE")
 
         # 复制 portable-python (如果存在)
         pp_src = None
@@ -125,9 +127,9 @@ def build_full_bundle() -> Path:
             pp_dst = bundle / "portable-python"
             shutil.copytree(pp_src, pp_dst, dirs_exist_ok=True)
             py_count = sum(1 for _ in pp_dst.rglob("*.exe") if _.is_file())
-            print(f"  [OK] 已复制 portable-python ({py_count} 可执行文件)")
+            print(f"  [OK] Copied portable-python ({py_count} executables)")
         else:
-            print("  [跳过] portable-python 不存在")
+            print("  [SKIP] portable-python not found")
 
         # 复制 vendor/wheels (如果存在)
         wh_src = None
@@ -145,9 +147,9 @@ def build_full_bundle() -> Path:
             for whl in wh_src.glob("*.whl"):
                 shutil.copy2(whl, wh_dst / whl.name)
                 wh_count += 1
-            print(f"  [OK] 已复制 {wh_count} 个 wheels")
+            print(f"  [OK] Copied {wh_count} wheels")
         else:
-            print("  [跳过] vendor/wheels 不存在")
+            print("  [SKIP] vendor/wheels not found")
 
         # 复制 FFmpeg (如果存在)
         for tool_name in ("ffmpeg.exe", "ffprobe.exe"):
@@ -163,9 +165,9 @@ def build_full_bundle() -> Path:
                 tool_dst = bundle / "bin"
                 tool_dst.mkdir(parents=True, exist_ok=True)
                 shutil.copy2(tool_src, tool_dst / tool_name)
-                print(f"  [OK] 已复制 {tool_name}")
+                print(f"  [OK] Copied {tool_name}")
             else:
-                print(f"  [跳过] {tool_name} 不存在")
+                print(f"  [SKIP] {tool_name} not found")
 
         # README
         import datetime
@@ -176,44 +178,44 @@ def build_full_bundle() -> Path:
 BiliLiveCut Portable Full {RELEASE_VERSION}
 ============================================
 
-完整启动包 — 安装期间无需额外下载。
+Complete launch package -- no extra downloads during installation.
 
-与 Lite 版的区别:
-  - 内置 Portable Python (无需系统安装 Python)
-  - 内置离线 Wheels (无需联网安装依赖)
-  - 内置 FFmpeg/FFprobe (无需系统安装 FFmpeg)
+Compared to Lite:
+  - Built-in Portable Python (no system Python required)
+  - Built-in offline Wheels (no network for dependency install)
+  - Built-in FFmpeg/FFprobe (no system FFmpeg required)
 
-不含模型:
-  - 四个 ASR 引擎模型由独立 Engine Pack 提供。
-  - 将 BiliLiveCut-EnginePack-{RELEASE_VERSION}.zip 放在同一目录，
-    首次启动时自动校验 CRC32 并安装。
-  - 如果没有 Engine Pack，首次启动时自动在线下载全部四个引擎模型。
+No models included:
+  - Four ASR engine models are provided by a separate Engine Pack.
+  - Place BiliLiveCut-EnginePack-{RELEASE_VERSION}.zip in the same directory;
+    CRC32 is verified and models installed on first launch.
+  - Without Engine Pack, all four engine models are downloaded online.
 
-文件结构:
-  BiliLiveCut-Portable.exe    # 启动器 (双击运行)
-  portable-python/            # 内嵌 Python 运行时
-  vendor/wheels/              # 离线依赖包
+File structure:
+  BiliLiveCut-Portable.exe    # Launcher (double-click to run)
+  portable-python/            # Embedded Python runtime
+  vendor/wheels/              # Offline dependency packages
   bin/                        # FFmpeg/FFprobe
 
-首次启动:
-  双击 BiliLiveCut-Portable.exe
-  → 从内置 Payload 释放源码 (固定 Commit: 731a31c)
-  → 检测 portable-python
-  → 安装依赖 (--no-index, 使用本地 wheels)
-  → 检测 Engine Pack 或在线下载模型
-  → 启动 Web 控制台
+First launch:
+  Double-click BiliLiveCut-Portable.exe
+  -> Extract source code from built-in Payload
+  -> Detect portable-python
+  -> Install dependencies (--no-index, local wheels)
+  -> Detect Engine Pack or download models online
+  -> Start web console
 
-数据目录 (运行后生成):
-  data/       数据库
-  storage/    录制文件和成片
-  models/     四个 ASR 引擎模型 (由 Engine Pack 或在线下载安装)
-  logs/       日志
-  .env        配置文件
+Data directories (generated after run):
+  data/       Database
+  storage/    Recording files and clips
+  models/     Four ASR engine models (installed from Engine Pack or online)
+  logs/       Log files
+  .env        Configuration file
 
-来源:
-  业务源码基线: 731a31c
-  发布版本: {RELEASE_VERSION}
-  构建时间: {datetime.datetime.now().strftime("%Y-%m-%d %H:%M:%S")}
+Source:
+  Source baseline commit: [see checksums.json]
+  Release version: {RELEASE_VERSION}
+  Build time: {datetime.datetime.now().strftime("%Y-%m-%d %H:%M:%S")}
 """,
             encoding="utf-8",
         )
@@ -271,9 +273,9 @@ BiliLiveCut Portable Full {RELEASE_VERSION}
 
 
 def main() -> int:
-    """入口 — 供薄入口调用。
+    """Entry point -- called by thin wrapper.
 
-    :returns: 0 成功, 1 失败。
+    :returns: 0 on success, 1 on failure.
     """
     try:
         build_full_bundle()
@@ -281,7 +283,10 @@ def main() -> int:
     except SystemExit as e:
         return int(str(e)) if str(e) else 0
     except Exception as exc:
-        print(f"[错误] {exc}")
+        try:
+            print(f"[Error] {exc}")
+        except UnicodeEncodeError:
+            print(f"[Error] {exc!r}")
         return 1
 
 
