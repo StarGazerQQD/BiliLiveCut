@@ -190,18 +190,21 @@ jobs:
           python build_exe.py
         timeout-minutes: 15
 
-      - name: Prepare Full offline components
+      - name: Download embeddable Python 3.12
         shell: pwsh
         run: |
-          # 1. Embeddable Python 3.12 (required for Full package)
           Write-Output "::group::Downloading embeddable Python 3.12"
           Invoke-WebRequest -Uri "https://www.python.org/ftp/python/3.12.8/python-3.12.8-embed-amd64.zip" `
             -OutFile "$env:RUNNER_TEMP\python-embed.zip"
           New-Item -ItemType Directory -Path portable-python -Force
           Expand-Archive -Path "$env:RUNNER_TEMP\python-embed.zip" -DestinationPath portable-python -Force
           Write-Output "::endgroup::"
+          Write-Output "portable-python ready"
+        timeout-minutes: 5
 
-          # 2. FFmpeg static binaries
+      - name: Download FFmpeg static binaries
+        shell: pwsh
+        run: |
           Write-Output "::group::Downloading FFmpeg"
           Invoke-WebRequest -Uri "https://www.gyan.dev/ffmpeg/builds/ffmpeg-release-essentials.zip" `
             -OutFile "$env:RUNNER_TEMP\ffmpeg.zip"
@@ -211,19 +214,19 @@ jobs:
           Copy-Item "$($ffmpegDir.FullName)\bin\ffmpeg.exe" "bin\ffmpeg.exe"
           Copy-Item "$($ffmpegDir.FullName)\bin\ffprobe.exe" "bin\ffprobe.exe"
           Write-Output "::endgroup::"
+          Write-Output "FFmpeg ready"
+        timeout-minutes: 5
 
-          # 3. Offline wheels (best-effort)
-          Write-Output "::group::Downloading wheels"
+      - name: Download offline wheels (best-effort)
+        shell: pwsh
+        continue-on-error: true
+        run: |
+          $ErrorActionPreference = "Continue"
           New-Item -ItemType Directory -Path vendor\wheels -Force
-          python -m pip download ".[web]" -d vendor\wheels `
-            --only-binary=:all: --platform win_amd64 --python-version 3.12 `
-            --no-deps 2>$null
-          python -m pip freeze > "$env:RUNNER_TEMP\installed.txt"
-          python -m pip download -r "$env:RUNNER_TEMP\installed.txt" -d vendor\wheels `
-            --only-binary=:all: --platform win_amd64 --python-version 3.12 2>$null
-          $wheelCount = (Get-ChildItem vendor\wheels\*.whl -ErrorAction SilentlyContinue | Measure-Object).Count
-          Write-Output "Wheels: $wheelCount"
-          Write-Output "::endgroup::"
+          pip freeze | Out-File -FilePath "$env:RUNNER_TEMP\packages.txt" -Encoding utf8
+          pip download -r "$env:RUNNER_TEMP\packages.txt" -d vendor\wheels --only-binary=:all:
+          $wheelCount = @(Get-ChildItem vendor\wheels\*.whl -ErrorAction SilentlyContinue).Count
+          Write-Output "Wheels downloaded: $wheelCount"
         timeout-minutes: 15
 
       - name: Build Full Bundle
