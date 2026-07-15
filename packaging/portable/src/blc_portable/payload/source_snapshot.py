@@ -180,104 +180,63 @@ def extract_source(commit_ref: str, output_dir: Path) -> dict:
 def apply_version_overlay(staging_dir: Path) -> list[str]:
     """在 staging 目录中应用受控版本覆盖。
 
+    使用正则匹配任意 0.1.x 版本号/版本标签，只要不等于当前
+    RELEASE_VERSION 就替换。无需每次升版本时手动添加替换列表。
+
     只修改:
     - app/__init__.py: __version__ 和 __version_label__
     - pyproject.toml: version
     - README.md: 版本展示
     - CHANGELOG.md: 添加版本条目
+    - setup.py / setup_c.py: version
 
     :param staging_dir: Payload staging 目录。
     :returns: 实际修改的文件列表。
     """
+    import re
+
     modified: list[str] = []
 
-    # 1. app/__init__.py
-    init_path = staging_dir / "app" / "__init__.py"
-    if init_path.exists():
-        content = init_path.read_text(encoding="utf-8")
-        if (
-            "0.1.14.6-alpha" in content
-            or "0.1.14.5-alpha" in content
-            or "0.1.14.4-alpha" in content
-            or "0.1.14.3-alpha" in content
-        ):
-            content = content.replace('"0.1.14.6-alpha"', f'"{RELEASE_VERSION}"')
-            content = content.replace('"0.1.14.5-alpha"', f'"{RELEASE_VERSION}"')
-            content = content.replace('"0.1.14.4-alpha"', f'"{RELEASE_VERSION}"')
-            content = content.replace('"0.1.14.3-alpha"', f'"{RELEASE_VERSION}"')
-            content = content.replace('"V0.1.14.6 Alpha"', f'"V{RELEASE_VERSION.replace("-alpha", "")} Alpha"')
-            content = content.replace('"V0.1.14.5 Alpha"', f'"V{RELEASE_VERSION.replace("-alpha", "")} Alpha"')
-            content = content.replace('"V0.1.14.4 Alpha"', f'"V{RELEASE_VERSION.replace("-alpha", "")} Alpha"')
-            content = content.replace('"V0.1.14.3 Alpha"', f'"V{RELEASE_VERSION.replace("-alpha", "")} Alpha"')
-            init_path.write_text(content, encoding="utf-8")
-            modified.append("app/__init__.py")
+    # 版本标签 (如 "V0.1.14.8 Alpha")
+    base_version = RELEASE_VERSION.split("-")[0] if "-" in RELEASE_VERSION else RELEASE_VERSION
+    version_label = f"V{base_version} Alpha"
 
-    # 2. pyproject.toml
-    toml_path = staging_dir / "pyproject.toml"
-    if toml_path.exists():
-        content = toml_path.read_text(encoding="utf-8")
-        if "0.1.14.6" in content or "0.1.14.5" in content or "0.1.14.4" in content or "0.1.14.3" in content:
-            content = content.replace('version = "0.1.14.6-alpha"', f'version = "{RELEASE_VERSION}"')
-            content = content.replace('version = "0.1.14.5-alpha"', f'version = "{RELEASE_VERSION}"')
-            content = content.replace('version = "0.1.14.4-alpha"', f'version = "{RELEASE_VERSION}"')
-            content = content.replace('version = "0.1.14.3-alpha"', f'version = "{RELEASE_VERSION}"')
-            toml_path.write_text(content, encoding="utf-8")
-            modified.append("pyproject.toml")
+    # 正则: 匹配任意 0.1.X.Y[-suffix] 和 V0.1.X.Y Label
+    _version_re = re.compile(r"\b0\.1\.\d+\.\d+(?:-[a-z]+)?\b")
+    _label_re = re.compile(r"\bV0\.1\.\d+\.\d+\s+[A-Za-z]+\b")
 
-    # 3. README.md
-    readme_path = staging_dir / "README.md"
-    if readme_path.exists():
-        content = readme_path.read_text(encoding="utf-8")
-        content = content.replace("V0.1.14.7 Alpha", "V0.1.14.8 Alpha")
-        content = content.replace("V0.1.14.6 Alpha", "V0.1.14.8 Alpha")
-        content = content.replace("V0.1.14.5 Alpha", "V0.1.14.8 Alpha")
-        content = content.replace("V0.1.14.4 Alpha", "V0.1.14.8 Alpha")
-        content = content.replace("V0.1.14.3 Alpha", "V0.1.14.8 Alpha")
-        content = content.replace("0.1.14.7-alpha", RELEASE_VERSION)
-        content = content.replace("0.1.14.6-alpha", RELEASE_VERSION)
-        content = content.replace("0.1.14.5-alpha", RELEASE_VERSION)
-        content = content.replace("0.1.14.4-alpha", RELEASE_VERSION)
-        content = content.replace("0.1.14.3-alpha", RELEASE_VERSION)
-        readme_path.write_text(content, encoding="utf-8")
-        modified.append("README.md")
+    def _overlay(text: str, target_version: str) -> str:
+        """将文本中所有不等于 target_version/target_label 的旧版本号替换为新版本。"""
 
-    # 4. CHANGELOG.md
-    changelog_path = staging_dir / "CHANGELOG.md"
-    if changelog_path.exists():
-        existing = changelog_path.read_text(encoding="utf-8")
-        # 替换旧版本号为 0.1.14.8
-        existing = existing.replace("0.1.14.7-alpha", RELEASE_VERSION)
-        existing = existing.replace("0.1.14.6-alpha", RELEASE_VERSION)
-        existing = existing.replace("0.1.14.5-alpha", RELEASE_VERSION)
-        existing = existing.replace("0.1.14.4-alpha", RELEASE_VERSION)
-        existing = existing.replace("V0.1.14.7 Alpha", "V0.1.14.8 Alpha")
-        existing = existing.replace("V0.1.14.6 Alpha", "V0.1.14.8 Alpha")
-        existing = existing.replace("V0.1.14.5 Alpha", "V0.1.14.8 Alpha")
-        existing = existing.replace("V0.1.14.4 Alpha", "V0.1.14.8 Alpha")
-        changelog_path.write_text(existing, encoding="utf-8")
-        modified.append("CHANGELOG.md")
+        def _ver_repl(m: re.Match) -> str:
+            return target_version if m.group(0) != target_version else m.group(0)
 
-    # 5. setup.py
-    setup_py = staging_dir / "setup.py"
-    if setup_py.exists():
-        content = setup_py.read_text(encoding="utf-8")
-        content = content.replace("0.1.14.6-alpha", RELEASE_VERSION)
-        content = content.replace("0.1.14.5-alpha", RELEASE_VERSION)
-        content = content.replace("0.1.14.4-alpha", RELEASE_VERSION)
-        content = content.replace("0.1.14.3-alpha", RELEASE_VERSION)
-        setup_py.write_text(content, encoding="utf-8")
-        modified.append("setup.py")
+        def _lbl_repl(m: re.Match) -> str:
+            return version_label if m.group(0) != version_label else m.group(0)
 
-    # 6. setup_c.py
-    setup_c = staging_dir / "setup_c.py"
-    if setup_c.exists():
-        content = setup_c.read_text(encoding="utf-8")
-        content = content.replace('"0.1.14.6"', '"0.1.14.8"')
-        content = content.replace('"0.1.14.5"', '"0.1.14.8"')
-        content = content.replace('"0.1.14.4"', '"0.1.14.8"')
-        content = content.replace('"0.1.14.3"', '"0.1.14.8"')
-        setup_c.write_text(content, encoding="utf-8")
-        modified.append("setup_c.py")
+        text = _label_re.sub(_lbl_repl, text)
+        text = _version_re.sub(_ver_repl, text)
+        return text
+
+    # 各文件处理: read → overlay → write (仅在内容变化时)
+    targets: list[tuple[str, str]] = [
+        ("app/__init__.py", RELEASE_VERSION),
+        ("pyproject.toml", RELEASE_VERSION),
+        ("README.md", RELEASE_VERSION),
+        ("CHANGELOG.md", RELEASE_VERSION),
+        ("setup.py", RELEASE_VERSION),
+        ("setup_c.py", base_version),  # setup_c 使用无后缀版本号
+    ]
+
+    for rel_path, target_ver in targets:
+        file_path = staging_dir / rel_path
+        if not file_path.exists():
+            continue
+        content = file_path.read_text(encoding="utf-8")
+        new_content = _overlay(content, target_ver)
+        if new_content != content:
+            file_path.write_text(new_content, encoding="utf-8")
+            modified.append(rel_path)
 
     # 验证只修改了允许的文件
     for f in modified:
