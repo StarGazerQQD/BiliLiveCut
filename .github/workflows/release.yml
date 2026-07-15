@@ -190,11 +190,6 @@ jobs:
           python build_exe.py
         timeout-minutes: 15
 
-      - name: Generate checksums
-        run: |
-          cd packaging/portable/dist/lite
-          certutil -hashfile *.exe SHA256 > SHA256SUMS.txt
-
       - name: Upload Lite EXE
         uses: actions/upload-artifact@v4
         with:
