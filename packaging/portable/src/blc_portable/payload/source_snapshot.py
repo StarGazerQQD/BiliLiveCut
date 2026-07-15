@@ -228,11 +228,12 @@ def apply_version_overlay(staging_dir: Path) -> list[str]:
     readme_path = staging_dir / "README.md"
     if readme_path.exists():
         content = readme_path.read_text(encoding="utf-8")
-        content = content.replace("V0.1.14.6 Alpha", "V0.1.14.7 Alpha")
-        content = content.replace("V0.1.14.5 Alpha", "V0.1.14.7 Alpha")
-        content = content.replace("V0.1.14.4 Alpha", "V0.1.14.7 Alpha")
-        content = content.replace("V0.1.14.3 Alpha", "V0.1.14.7 Alpha")
-        content = content.replace("0.1.14.6-alpha", RELEASE_VERSION)
+        content = content.replace("V0.1.14.7 Alpha", "V0.1.14.8 Alpha")
+        content = content.replace("V0.1.14.6 Alpha", "V0.1.14.8 Alpha")
+        content = content.replace("V0.1.14.5 Alpha", "V0.1.14.8 Alpha")
+        content = content.replace("V0.1.14.4 Alpha", "V0.1.14.8 Alpha")
+        content = content.replace("V0.1.14.3 Alpha", "V0.1.14.8 Alpha")
+        content = content.replace("0.1.14.7-alpha", RELEASE_VERSION)
         content = content.replace("0.1.14.6-alpha", RELEASE_VERSION)
         content = content.replace("0.1.14.5-alpha", RELEASE_VERSION)
         content = content.replace("0.1.14.4-alpha", RELEASE_VERSION)
@@ -244,13 +245,15 @@ def apply_version_overlay(staging_dir: Path) -> list[str]:
     changelog_path = staging_dir / "CHANGELOG.md"
     if changelog_path.exists():
         existing = changelog_path.read_text(encoding="utf-8")
-        # 替换旧版本号为 0.1.14.7
+        # 替换旧版本号为 0.1.14.8
+        existing = existing.replace("0.1.14.7-alpha", RELEASE_VERSION)
         existing = existing.replace("0.1.14.6-alpha", RELEASE_VERSION)
         existing = existing.replace("0.1.14.5-alpha", RELEASE_VERSION)
         existing = existing.replace("0.1.14.4-alpha", RELEASE_VERSION)
-        existing = existing.replace("V0.1.14.6 Alpha", "V0.1.14.7 Alpha")
-        existing = existing.replace("V0.1.14.5 Alpha", "V0.1.14.7 Alpha")
-        existing = existing.replace("V0.1.14.4 Alpha", "V0.1.14.7 Alpha")
+        existing = existing.replace("V0.1.14.7 Alpha", "V0.1.14.8 Alpha")
+        existing = existing.replace("V0.1.14.6 Alpha", "V0.1.14.8 Alpha")
+        existing = existing.replace("V0.1.14.5 Alpha", "V0.1.14.8 Alpha")
+        existing = existing.replace("V0.1.14.4 Alpha", "V0.1.14.8 Alpha")
         changelog_path.write_text(existing, encoding="utf-8")
         modified.append("CHANGELOG.md")
 
@@ -269,10 +272,10 @@ def apply_version_overlay(staging_dir: Path) -> list[str]:
     setup_c = staging_dir / "setup_c.py"
     if setup_c.exists():
         content = setup_c.read_text(encoding="utf-8")
-        content = content.replace('"0.1.14.6"', '"0.1.14.7"')
-        content = content.replace('"0.1.14.5"', '"0.1.14.7"')
-        content = content.replace('"0.1.14.4"', '"0.1.14.7"')
-        content = content.replace('"0.1.14.3"', '"0.1.14.7"')
+        content = content.replace('"0.1.14.6"', '"0.1.14.8"')
+        content = content.replace('"0.1.14.5"', '"0.1.14.8"')
+        content = content.replace('"0.1.14.4"', '"0.1.14.8"')
+        content = content.replace('"0.1.14.3"', '"0.1.14.8"')
         setup_c.write_text(content, encoding="utf-8")
         modified.append("setup_c.py")
 
