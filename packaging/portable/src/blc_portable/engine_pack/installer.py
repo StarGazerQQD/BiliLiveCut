@@ -304,12 +304,16 @@ def install_from_engine_pack(
                     shutil.move(str(backup_dir), str(models_dir))
                 raise
 
-            # 8. 写入安装清单
+            # 8. Write installed manifest (inside atomic try/except for rollback safety)
             _write_installed_manifest(models_dir, expected_version, installed_engines, files_info)
+        except Exception:
+            if staging_dir.exists():
+                shutil.rmtree(str(staging_dir), ignore_errors=True)
+            raise
 
-            shutil.rmtree(str(staging_dir), ignore_errors=True)
-            if backup_dir and backup_dir.exists():
-                shutil.rmtree(str(backup_dir), ignore_errors=True)
+        shutil.rmtree(str(staging_dir), ignore_errors=True)
+        if backup_dir and backup_dir.exists():
+            shutil.rmtree(str(backup_dir), ignore_errors=True)
 
             print("  四引擎模型安装完成")
             return {

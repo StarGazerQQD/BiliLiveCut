@@ -19,7 +19,6 @@ import shutil
 import subprocess
 import sys
 import traceback
-import webbrowser
 import zipfile
 from collections.abc import Sequence
 from pathlib import Path
@@ -452,7 +451,13 @@ def prepare_models(app_root: Path, user_engine_pack_path: str | None = None) -> 
     else:
         print("\n  no local Engine Pack found")
 
-    # 3. 全量在线下载
+    # 3. Online download (blocked if --offline)
+    if os.environ.get("BLC_OFFLINE") == "1" or os.environ.get("PIP_NO_INDEX") == "1":
+        raise RuntimeError(
+            "Offline mode: no local Engine Pack found and online download is blocked.\n"
+            "Provide an Engine Pack ZIP or remove --offline flag."
+        )
+
     print("  downloading all 4 engine models online...")
     try:
         from .model_downloader import download_all_engines

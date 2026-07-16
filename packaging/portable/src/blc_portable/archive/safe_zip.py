@@ -102,7 +102,7 @@ def _safe_relative_path(destination_root: Path, member_name: str) -> Path:
     target = (destination_root / member_name).resolve()
     resolved_root = destination_root.resolve()
 
-    if not str(target).startswith(str(resolved_root) + "\\") and not str(target).startswith(str(resolved_root) + "/"):
+    if not target.resolve().is_relative_to(resolved_root):
         raise RuntimeError(f"Zip Slip: 路径越界 '{member_name}' -> {target}")
 
     return target
