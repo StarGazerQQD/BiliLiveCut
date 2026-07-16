@@ -55,7 +55,7 @@ def _load_launcher_engines() -> list[dict[str, Any]]:
             "model_id": e.repository,
             "repo_id": e.repository,
             "revision": e.resolved_revision if e.resolved_revision else None,
-            "target_dir": e.target_path,
+            "target_dir": e.engine_id,  # bare name: "whisper", "paraformer", etc.
             "description": e.display_name,
         }
         if e.sub_models:
@@ -215,7 +215,7 @@ def download_all_engines(app_root: Path) -> dict[str, Any]:
             fc = sum(1 for _ in target_dir.rglob("*") if _.is_file())
             ts = sum(f.stat().st_size for f in target_dir.rglob("*") if f.is_file())
             files_info[engine_id] = {
-                "target_path": str(engine_def["target_dir"]),
+                "target_path": f"models/{engine_id}",
                 "file_count": fc,
                 "total_size": ts,
             }
