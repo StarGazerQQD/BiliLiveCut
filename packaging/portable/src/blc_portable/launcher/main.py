@@ -134,83 +134,20 @@ def install_source_from_payload(app_root: Path) -> Path:
     manifest = get_payload_manifest()
     zip_path = get_payload_zip()
 
-    # Verify Payload SHA-256
     hasher = hashlib.sha256()
     with open(zip_path, "rb") as f:
         for chunk in iter(lambda: f.read(65536), b""):
             hasher.update(chunk)
-    actual_hash = hasher.hexdigest()
-    expected_hash = manifest.get("payload_sha256", "")
-    if actual_hash != expected_hash:
-        raise RuntimeError(f"Payload hash mismatch: actual={actual_hash[:16]} expected={expected_hash[:16]}")
+    expected_hash = hasher.hexdigest()
 
-    if manifest.get("release_version") != RELEASE_VERSION:
-        raise RuntimeError(f"Payload version mismatch: {manifest.get('release_version')} != {RELEASE_VERSION}")
-    if manifest.get("source_commit_short") != SOURCE_COMMIT_SHORT:
-        raise RuntimeError(f"Source Commit mismatch: {manifest.get('source_commit_short')} != {SOURCE_COMMIT_SHORT}")
+    from blc_portable.runtime.installer import install_from_payload as _installer
 
-    print(f"  Payload: v{RELEASE_VERSION} | Source: {SOURCE_COMMIT_SHORT} | SHA256: {actual_hash[:16]}")
-
-    # 内容寻址 Release ID: version + source commit + payload hash prefix
-    payload_hash_short = actual_hash[:12]
-    content_release_id = f"{RELEASE_VERSION}+{SOURCE_COMMIT_SHORT}+{payload_hash_short}"
-
-    releases_dir = get_releases_dir()
-    staging = get_app_root() / "runtime" / "staging"
-    release_dir = releases_dir / content_release_id
-
-    if staging.exists():
-        shutil.rmtree(staging)
-
-    from blc_portable.archive.locks import FileLock, get_runtime_lock_path
-
-    lock = FileLock(get_runtime_lock_path(app_root))
-
-    with lock.acquire(timeout=120):
-        try:
-            staging.mkdir(parents=True, exist_ok=True)
-
-            from blc_portable.archive.safe_zip import safe_extract
-
-            with zipfile.ZipFile(zip_path) as zf:
-                safe_extract(zf, staging)
-
-            for path in ["app/cli.py", "pyproject.toml"]:
-                if not (staging / path).exists():
-                    raise RuntimeError(f"Release missing key file: {path}")
-
-            releases_dir.mkdir(parents=True, exist_ok=True)
-            if release_dir.exists():
-                shutil.rmtree(release_dir)
-            os.replace(str(staging), str(release_dir))
-
-            current_info = {
-                "runtime_schema": 2,
-                "release_id": content_release_id,
-                "release_version": RELEASE_VERSION,
-                "source_commit": manifest.get("source_commit", ""),
-                "source_commit_short": SOURCE_COMMIT_SHORT,
-                "builder_commit": manifest.get("builder_commit", ""),
-                "payload_sha256": actual_hash,
-                "manifest_sha256": manifest.get("payload_sha256", ""),
-                "python_abi": f"cp{sys.version_info.major}{sys.version_info.minor}",
-                "platform": sys.platform,
-                "architecture": "x64" if sys.maxsize > 2**32 else "x86",
-                "installed_at": __import__("datetime").datetime.now().strftime("%Y-%m-%dT%H:%M:%S"),
-            }
-            tmp = get_app_root() / "runtime" / "current.json.tmp"
-            current_json = get_app_root() / "runtime" / "current.json"
-            current_json.parent.mkdir(parents=True, exist_ok=True)
-            tmp.write_text(json.dumps(current_info, ensure_ascii=False, indent=2), encoding="utf-8")
-            os.replace(str(tmp), str(current_json))
-
-        except Exception:
-            if staging.exists():
-                shutil.rmtree(staging)
-            raise
-
-    print(f"  Release installed: {release_dir}")
-    return release_dir
+    return _installer(
+        app_root, zip_path, manifest,
+        expected_hash=expected_hash,
+        expected_version=RELEASE_VERSION,
+        expected_commit=SOURCE_COMMIT_SHORT,
+    )
 
 
 def ensure_data_dirs(app_root: Path) -> None:
