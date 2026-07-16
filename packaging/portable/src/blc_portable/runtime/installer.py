@@ -6,8 +6,10 @@
 from __future__ import annotations
 
 import hashlib
+import json
 import os
 import shutil
+import uuid
 import zipfile
 from pathlib import Path
 from typing import Any
@@ -74,7 +76,7 @@ def install_from_payload(
     from .__init__ import get_releases_dir, get_runtime_dir
 
     releases_dir = get_releases_dir()
-    staging = get_runtime_dir() / "staging"
+    staging = get_runtime_dir() / f"staging-{uuid.uuid4().hex[:12]}"
     release_dir = releases_dir / content_release_id
 
     if staging.exists():
