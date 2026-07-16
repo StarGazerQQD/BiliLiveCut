@@ -1,0 +1,32 @@
+﻿---
+description: 所有 Git 提交信息必须使用简体中文
+alwaysApply: true
+---
+
+# Git Commit 语言规范
+
+所有 commit message 必须使用简体中文。
+
+## 格式
+
+```
+<类型>(<范围>): <简短中文描述>
+```
+
+## 示例
+
+```
+fix(launcher): 修复启动器 main() 缺失导致 NameError
+chore(version): 升级项目至 v0.1.14.10-alpha
+fix(release): 正式 Release 禁止 Fixture 构建产物
+fix(models): 删除独立 ENGINES 列表，统一使用 model_catalog
+refactor(runtime): 生产 Launcher 收口到唯一 Runtime 实现
+test: 新增 26 项 ZIP 安全测试
+docs(audit): 记录 v0.1.14.10 修复前基线审计
+```
+
+## 禁止
+
+- 纯英文 commit message
+- 中英混杂（除代码标识符外）
+- 模糊描述如 "fix stuff"、"update"、"changes"
