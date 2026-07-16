@@ -1,0 +1,18 @@
+# BiliLiveCut Portable Lite — 核心依赖锁 (Python 3.12, Windows x64)
+# Generate with: pip install -r requirements-runtime-py312-win-x64.lock
+# Then: pip freeze --require-hashes > requirements-runtime-py312-win-x64.lock
+
+fastapi==0.115.6
+uvicorn[standard]==0.34.0
+sqlmodel==0.0.22
+pydantic==2.10.5
+python-multipart==0.0.18
+websockets==14.1
+aiofiles==24.1.0
+python-dotenv==1.0.1
+httpx==0.28.1
+orjson==3.10.15
+jinja2==3.1.5
+faster-whisper==1.1.1
+funasr==1.2.5
+modelscope==1.24.0

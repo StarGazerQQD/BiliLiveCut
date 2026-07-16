@@ -310,6 +310,22 @@ def prepare_venv(app_root: Path) -> Path:
             "Portable Python download: https://www.python.org/downloads/windows/"
         )
 
+    # Validate Python version (only 3.11 and 3.12 supported)
+    r = subprocess.run(
+        [str(system_py), "-c", "import sys; v=sys.version_info[:2]; print(f'{v[0]}.{v[1]}')"],
+        capture_output=True, text=True, timeout=10,
+    )
+    py_ver = r.stdout.strip()
+    parts = py_ver.split(".")
+    major, minor = int(parts[0]), int(parts[1])
+    if major > 3 or (major == 3 and minor >= 13):
+        raise RuntimeError(
+            f"Python {py_ver} is not supported. Only Python 3.11 and 3.12.\n"
+            "Download: https://www.python.org/downloads/windows/"
+        )
+
+    print(f"  Python: {system_py} ({py_ver})")
+
     print(f"  Python: {system_py}")
     print("  creating venv...")
     subprocess.run(
@@ -339,19 +355,33 @@ def install_dependencies(venv_python: Path, app_root: Path, req_file: Path) -> N
     except subprocess.CalledProcessError:
         pass
 
+    # Select ABI-specific lock file
+    r = subprocess.run(
+        [str(venv_python), "-c", "import sys; v=sys.version_info[:2]; print(f'py{v[0]}{v[1]}')"],
+        capture_output=True, text=True, timeout=10,
+    )
+    abi = r.stdout.strip()
     lock_dir = Path(__file__).resolve().parent.parent.parent.parent / "packaging" / "portable" / "locks"
-    lock_file = lock_dir / "requirements-core-py312-win-x64.lock"
+    lock_file = lock_dir / f"requirements-runtime-{abi}-win-x64.lock"
 
-    # prefer lock files (offline reproducible)
-    if lock_file.exists():
-        print(f"  install deps (lock file: {lock_file.name})...")
+    if not lock_file.exists():
+        raise RuntimeError(f"Lock file not found: {lock_file.name}\nOnly Python 3.11 and 3.12 are supported.")
+
+    # Install from lock file
+    print(f"  install deps (lock file: {lock_file.name})...")
+    subprocess.run(
+        [str(venv_python), "-m", "pip", "install", "-r", str(lock_file)],
+        check=True, timeout=600,
+    )
+
+    # Import smoke check
+    print("  import smoke check...")
+    for mod in ("fastapi", "uvicorn", "sqlmodel", "pydantic", "app.cli"):
         subprocess.run(
-            [str(venv_python), "-m", "pip", "install", "-r", str(lock_file)],
-            check=True,
-            timeout=600,
+            [str(venv_python), "-c", f"import {mod}; print('  ok: {mod}')"],
+            check=True, capture_output=True, timeout=30,
         )
-        print("  deps install complete")
-        return
+    print("  deps install complete")
 
     wheels_dir = app_root / WHEELS_DIR
     if wheels_dir.exists() and list(wheels_dir.glob("*.whl")):
