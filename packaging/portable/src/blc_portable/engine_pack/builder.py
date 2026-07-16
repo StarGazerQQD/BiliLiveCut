@@ -365,7 +365,7 @@ def write_output_files(
     DIST_DIR.mkdir(parents=True, exist_ok=True)
 
     manifest: dict[str, Any] = {
-        "format_version": 1,
+        "schema_version": 3,
         "engine_pack_version": ENGINE_PACK_VERSION,
         "portable_release_version": ENGINE_PACK_VERSION,
         "source_commit": source_commit,

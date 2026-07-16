@@ -137,7 +137,7 @@ def _write_installed_manifest(
     import datetime
 
     info: dict[str, Any] = {
-        "schema_version": 2,
+        "schema_version": 3,
         "engine_pack_version": engine_pack_version,
         "zip_sha256": zip_sha256,
         "engine_ids": engines,
