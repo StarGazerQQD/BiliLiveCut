@@ -182,9 +182,31 @@ jobs:
           pip install -e ".[dev,web]"
         timeout-minutes: 10
 
+      - name: Verify Release production metadata
+        run: |
+          cd packaging/portable
+          python -c "
+import json, os, sys
+info_path = 'resources/engine_pack_info.json'
+if not os.path.exists(info_path):
+    print('FAIL: engine_pack_info.json missing'); sys.exit(1)
+info = json.load(open(info_path, encoding='utf-8'))
+errors = []
+crc = info.get('crc32', '')
+sha = info.get('sha256', '')
+if not crc or len(crc) != 8:
+    errors.append(f'CRC32 empty or invalid: {crc}')
+if not sha or len(sha) != 64:
+    errors.append(f'SHA-256 empty or invalid: {sha}')
+if errors:
+    for e in errors:
+        print(f'FAIL: {e}')
+    sys.exit(1)
+print('PASS: Engine Pack metadata valid')
+"
+        timeout-minutes: 1
+
       - name: Build Lite EXE
-        env:
-          BLC_FIXTURE_BUILD: "1"
         run: |
           cd packaging/portable
           python build_exe.py
