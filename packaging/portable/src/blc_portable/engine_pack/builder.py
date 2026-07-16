@@ -313,7 +313,7 @@ def create_zip(staging: Path, output_path: Path) -> None:
 
 
 def self_verify(archive_path: Path, manifest: dict[str, Any]) -> bool:
-    """自校验：解压 Engine Pack 并验证 Manifest。
+    """自校验：使用生产 verifier 验证 Engine Pack。
 
     :param archive_path: ZIP 路径。
     :param manifest: Manifest 字典。
@@ -323,17 +323,17 @@ def self_verify(archive_path: Path, manifest: dict[str, Any]) -> bool:
     verify_dir.mkdir(parents=True, exist_ok=True)
 
     try:
-        with zipfile.ZipFile(archive_path) as zf:
-            zf.extractall(verify_dir)
+        from .installer import _safe_extract
 
-        for engine in manifest["engines"]:
-            ep = verify_dir / str(engine["target_path"])
-            if not ep.exists():
-                print(f"  [FAIL] 缺少引擎目录: {engine['target_path']}")
-                return False
-            if not any(ep.iterdir()):
-                print(f"  [FAIL] 引擎目录为空: {engine['target_path']}")
-                return False
+        _safe_extract(archive_path, verify_dir)
+
+        from .verifier import verify_extracted_tree
+
+        errors = verify_extracted_tree(verify_dir, manifest)
+        if errors:
+            for e in errors:
+                print(f"  [FAIL] {e}")
+            return False
 
         print("  自校验通过")
         return True

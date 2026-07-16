@@ -230,7 +230,6 @@ jobs:
         timeout-minutes: 15
 
       - name: Build Full Bundle
-        continue-on-error: true
         run: |
           cd packaging/portable
           python build_full_bundle.py

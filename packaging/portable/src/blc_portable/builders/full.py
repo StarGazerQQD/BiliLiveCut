@@ -87,15 +87,19 @@ def build_full_bundle() -> Path:
             missing.append("bin/ffprobe.exe")
 
     if missing:
-        print("\n  [WARNING] Full offline bundle is missing:")
-        for m in missing:
-            print(f"    - {m}")
-        print("  Offline install may fail. Will only package available components.")
-        print("  Full offline bundle prerequisites:")
-        print("    1. portable-python/ directory (Python 3.11/3.12)")
-        print("    2. vendor/wheels/ directory (offline Wheels)")
-        print("    3. bin/ffmpeg.exe and bin/ffprobe.exe")
-        print()
+        is_fixture = os.environ.get("BLC_FIXTURE_BUILD") == "1" or os.environ.get("BLC_CI_BUILD") == "1"
+        if is_fixture:
+            print("\n  [WARNING] Full offline bundle is missing (fixture mode, continuing):")
+            for m in missing:
+                print(f"    - {m}")
+        else:
+            raise RuntimeError(
+                "Full build FAILED — missing components:\n  " + "\n  ".join(missing) +
+                "\nFull offline bundle prerequisites:" +
+                "\n  1. portable-python/ directory (Python 3.11/3.12)" +
+                "\n  2. vendor/wheels/ directory (offline Wheels)" +
+                "\n  3. bin/ffmpeg.exe and bin/ffprobe.exe"
+            )
 
     # 读取 Engine Pack 信息 (如有)
     engine_pack_crc32 = ""

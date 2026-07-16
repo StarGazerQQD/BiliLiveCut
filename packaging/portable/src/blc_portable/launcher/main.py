@@ -102,60 +102,24 @@ def get_engine_pack_info() -> dict[str, Any] | None:
 
 
 def get_app_root() -> Path:
-    """获取 Portable 应用根目录。
+    """获取 Portable 应用根目录。委托给 runtime 模块。"""
+    from blc_portable.runtime import get_app_root as _get
 
-    :returns: 根目录路径。
-    """
-    if getattr(sys, "frozen", False):
-        return Path(sys.executable).resolve().parent
-    return Path.cwd()
+    return _get()
 
 
 def get_releases_dir() -> Path:
-    """获取 releases 目录。
+    """获取 releases 目录。委托给 runtime 模块。"""
+    from blc_portable.runtime import get_releases_dir as _get
 
-    :returns: releases 目录。
-    """
-    return get_app_root() / "runtime" / "releases"
+    return _get()
 
 
 def get_current_release_dir() -> Path | None:
-    """获取当前激活的 Release 目录。
+    """获取当前激活的 Release 目录。委托给 runtime 模块。"""
+    from blc_portable.runtime import get_current_release_dir as _get
 
-    使用内容寻址: {version}+{commit}+{payload_hash_prefix}
-
-    :returns: Release 目录，不存在返回 None。
-    """
-    current_path = get_app_root() / "runtime" / "current.json"
-    if not current_path.exists():
-        return None
-    try:
-        info = json.loads(current_path.read_text(encoding="utf-8"))
-        rid = info.get("release_id", "")
-        if not rid:
-            return None
-        # 检查 payload hash 匹配
-        expected_payload_sha = info.get("payload_sha256", "")
-        d = get_releases_dir() / rid
-        if d.exists() and (d / "app" / "cli.py").exists():
-            # 进一步校验: 比较 EXE 内嵌 Payload SHA 与安装时记录的 SHA
-            try:
-                manifest = get_payload_manifest()
-                exe_payload_sha = manifest.get("payload_sha256", "")
-                if exe_payload_sha and expected_payload_sha:
-                    if exe_payload_sha != expected_payload_sha:
-                        print(
-                            f"  Payload 已变更"
-                            f" (EXE SHA={exe_payload_sha[:16]}"
-                            f" != installed SHA={expected_payload_sha[:16]})，需要重新安装"
-                        )
-                        return None
-            except RuntimeError:
-                pass  # Manifest 不可读，继续使用现有 Runtime
-            return d
-        return None
-    except (json.JSONDecodeError, OSError):
-        return None
+    return _get()
 
 
 def install_source_from_payload(app_root: Path) -> Path:
@@ -197,60 +161,52 @@ def install_source_from_payload(app_root: Path) -> Path:
     if staging.exists():
         shutil.rmtree(staging)
 
-    try:
-        staging.mkdir(parents=True, exist_ok=True)
+    from blc_portable.archive.locks import FileLock, get_runtime_lock_path
 
-        with zipfile.ZipFile(zip_path) as zf:
-            for member in zf.namelist():
-                # Zip Slip 防御
-                if member.startswith("/") or ".." in member.split("/") or ":" in member:
-                    raise RuntimeError(f"ZIP 包含不安全路径: {member}")
+    lock = FileLock(get_runtime_lock_path(app_root))
 
-                target = (staging / member).resolve()
-                if not str(target).startswith(str(staging.resolve())):
-                    raise RuntimeError(f"ZIP 路径越界: {member}")
+    with lock.acquire(timeout=120):
+        try:
+            staging.mkdir(parents=True, exist_ok=True)
 
-                if member.endswith("/"):
-                    target.mkdir(parents=True, exist_ok=True)
-                else:
-                    target.parent.mkdir(parents=True, exist_ok=True)
-                    # 流式解压 — 避免大文件整读入内存
-                    with zf.open(member) as src, open(target, "wb") as dst:
-                        shutil.copyfileobj(src, dst, length=8 * 1024 * 1024)
+            from blc_portable.archive.safe_zip import safe_extract
 
-        for path in ["app/cli.py", "pyproject.toml"]:
-            if not (staging / path).exists():
-                raise RuntimeError(f"Release 缺少关键文件: {path}")
+            with zipfile.ZipFile(zip_path) as zf:
+                safe_extract(zf, staging)
 
-        releases_dir.mkdir(parents=True, exist_ok=True)
-        if release_dir.exists():
-            shutil.rmtree(release_dir)
-        os.replace(str(staging), str(release_dir))
+            for path in ["app/cli.py", "pyproject.toml"]:
+                if not (staging / path).exists():
+                    raise RuntimeError(f"Release 缺少关键文件: {path}")
 
-        current_info = {
-            "runtime_schema": 2,
-            "release_id": content_release_id,
-            "release_version": RELEASE_VERSION,
-            "source_commit": manifest.get("source_commit", ""),
-            "source_commit_short": SOURCE_COMMIT_SHORT,
-            "builder_commit": manifest.get("builder_commit", ""),
-            "payload_sha256": actual_hash,
-            "manifest_sha256": manifest.get("payload_sha256", ""),
-            "python_abi": f"cp{sys.version_info.major}{sys.version_info.minor}",
-            "platform": sys.platform,
-            "architecture": "x64" if sys.maxsize > 2**32 else "x86",
-            "installed_at": __import__("datetime").datetime.now().strftime("%Y-%m-%dT%H:%M:%S"),
-        }
-        tmp = get_app_root() / "runtime" / "current.json.tmp"
-        current_json = get_app_root() / "runtime" / "current.json"
-        current_json.parent.mkdir(parents=True, exist_ok=True)
-        tmp.write_text(json.dumps(current_info, ensure_ascii=False, indent=2), encoding="utf-8")
-        os.replace(str(tmp), str(current_json))
+            releases_dir.mkdir(parents=True, exist_ok=True)
+            if release_dir.exists():
+                shutil.rmtree(release_dir)
+            os.replace(str(staging), str(release_dir))
 
-    except Exception:
-        if staging.exists():
-            shutil.rmtree(staging)
-        raise
+            current_info = {
+                "runtime_schema": 2,
+                "release_id": content_release_id,
+                "release_version": RELEASE_VERSION,
+                "source_commit": manifest.get("source_commit", ""),
+                "source_commit_short": SOURCE_COMMIT_SHORT,
+                "builder_commit": manifest.get("builder_commit", ""),
+                "payload_sha256": actual_hash,
+                "manifest_sha256": manifest.get("payload_sha256", ""),
+                "python_abi": f"cp{sys.version_info.major}{sys.version_info.minor}",
+                "platform": sys.platform,
+                "architecture": "x64" if sys.maxsize > 2**32 else "x86",
+                "installed_at": __import__("datetime").datetime.now().strftime("%Y-%m-%dT%H:%M:%S"),
+            }
+            tmp = get_app_root() / "runtime" / "current.json.tmp"
+            current_json = get_app_root() / "runtime" / "current.json"
+            current_json.parent.mkdir(parents=True, exist_ok=True)
+            tmp.write_text(json.dumps(current_info, ensure_ascii=False, indent=2), encoding="utf-8")
+            os.replace(str(tmp), str(current_json))
+
+        except Exception:
+            if staging.exists():
+                shutil.rmtree(staging)
+            raise
 
     print(f"  Release 已安装: {release_dir}")
     return release_dir
@@ -535,18 +491,33 @@ def _run_doctor(app_root: Path) -> None:
     print()
 
     checks_passed = 0
-    checks_total = 0
+    checks_warned = 0
+    checks_failed = 0
 
-    def _check(name: str, condition: bool, detail: str = "") -> None:
-        nonlocal checks_passed, checks_total
-        checks_total += 1
-        status = "[OK]" if condition else "[FAIL]"
+    def _check(name: str, condition: bool, detail: str = "",
+               expected: str = "", actual: str = "", suggestion: str = "") -> None:
+        nonlocal checks_passed, checks_warned, checks_failed
+        if condition:
+            status = "[PASS]"
+            checks_passed += 1
+        else:
+            status = "[FAIL]"
+            checks_failed += 1
         msg = f"  {status} {name}"
         if detail:
             msg += f": {detail}"
         print(msg)
-        if condition:
-            checks_passed += 1
+        if not condition and expected:
+            print(f"         期望: {expected}")
+        if not condition and actual:
+            print(f"         实际: {actual}")
+        if not condition and suggestion:
+            print(f"         建议: {suggestion}")
+
+    def _warn(name: str, detail: str = "") -> None:
+        nonlocal checks_warned
+        checks_warned += 1
+        print(f"  [WARN] {name}: {detail}")
 
     # 1. Runtime
     current = get_current_release_dir()
@@ -598,7 +569,7 @@ def _run_doctor(app_root: Path) -> None:
     print(f"  Architecture: {'x64' if sys.maxsize > 2**32 else 'x86'}")
 
     print()
-    print(f"  诊断完成: {checks_passed}/{checks_total} 项通过")
+    print(f"  诊断完成: {checks_passed} PASS, {checks_warned} WARN, {checks_failed} FAIL")
 
 
 def _verify_installed_models(app_root: Path) -> None:
@@ -627,6 +598,11 @@ def _verify_installed_models(app_root: Path) -> None:
 
     verified = 0
     failed = 0
+    total_files_checked = 0
+    hash_mismatches = 0
+    size_mismatches = 0
+
+    # 逐引擎比对安装清单中记录的文件
     for engine_id, info in installed.get("files", {}).items():
         target_path = str(info.get("target_path", f"models/{engine_id}"))
         engine_dir = models_dir / engine_id if (models_dir / engine_id).exists() else models_dir / target_path
@@ -635,21 +611,43 @@ def _verify_installed_models(app_root: Path) -> None:
             failed += 1
             continue
 
+        engine_file_count = info.get("file_count", 0)
+        engine_total_size = info.get("total_size", 0)
+
         fc = 0
         ts = 0
         for f in engine_dir.rglob("*"):
             if f.is_file():
-                hashlib.sha256(f.read_bytes()).hexdigest()
+                expected_hash = ""
+                # Check if installed manifest has per-file info
+                rel = f.relative_to(models_dir).as_posix()
+                file_info = installed.get("file_details", {}).get(rel, {})
+                expected_hash = str(file_info.get("sha256", ""))
+                actual_hash = hashlib.sha256(f.read_bytes()).hexdigest()
+                if expected_hash and actual_hash != expected_hash:
+                    hash_mismatches += 1
                 fc += 1
                 ts += f.stat().st_size
-        print(f"  [OK] 引擎 {engine_id}: {fc} 文件, {ts / (1024**3):.2f} GB (SHA-256 已重算)")
+                total_files_checked += 1
+
+        # Verify against manifest
+        if engine_file_count and fc != engine_file_count:
+            print(f"  [WARN] 引擎 {engine_id}: 文件数不匹配 declared={engine_file_count} actual={fc}")
+        if engine_total_size and ts != engine_total_size:
+            print(f"  [WARN] 引擎 {engine_id}: 大小不匹配 declared={engine_total_size} actual={ts}")
+
+        print(f"  [PASS] 引擎 {engine_id}: {fc} 文件, {ts / (1024**3):.2f} GB (SHA-256 已重算)")
         verified += 1
+
+    if hash_mismatches:
+        print(f"  [FAIL] {hash_mismatches} 个文件 SHA-256 不匹配")
+        failed += 1
 
     if failed:
         print(f"\n  [FAIL] {failed} 个引擎存在问题")
         sys.exit(1)
     else:
-        print(f"\n  [OK] 全部 {verified} 个引擎验证通过")
+        print(f"\n  [PASS] 全部 {verified} 个引擎验证通过 ({total_files_checked} 文件)")
 
 
 def _repair_runtime(app_root: Path) -> None:
@@ -725,10 +723,30 @@ def run_launcher(args: argparse.Namespace) -> int:
             _run_doctor(app_root)
             return 0
 
+        # --verify-runtime 模式
+        if args.verify_runtime:
+            from blc_portable.runtime.verifier import verify_runtime
+
+            ok, errors = verify_runtime(app_root)
+            if errors:
+                for e in errors:
+                    print(f"  [FAIL] {e}")
+            if ok:
+                print("\n  [PASS] Runtime verification: PASS")
+            else:
+                print("\n  [FAIL] Runtime verification: FAIL")
+            return 0 if ok else 1
+
         # --verify-models 模式
         if args.verify_models:
             _verify_installed_models(app_root)
             return 0
+
+        # --offline 模式: 阻止网络请求
+        if args.offline:
+            os.environ["BLC_OFFLINE"] = "1"
+            os.environ["PIP_NO_INDEX"] = "1"
+            print("  [OFFLINE] 离线模式已启用 — 禁止所有网络请求")
 
         # --repair 模式
         if args.repair:

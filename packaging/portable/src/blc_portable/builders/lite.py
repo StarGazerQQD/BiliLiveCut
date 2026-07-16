@@ -48,13 +48,10 @@ def check_engine_pack_info() -> None:
     :raises RuntimeError: Engine Pack 信息不完整 (非 Fixture 模式)。
     """
     is_fixture = os.environ.get("BLC_FIXTURE_BUILD") == "1"
-    is_ci = os.environ.get("BLC_CI_BUILD") == "1"
 
     # Fixture 模式 (PR/CI 快速测试)
-    if is_fixture or is_ci:
-        tag = "FIXTURE" if is_fixture else "CI(legacy)"
-        var = "BLC_FIXTURE_BUILD" if is_fixture else "BLC_CI_BUILD"
-        print(f"  [{tag}] {var}=1, skip Engine Pack info validation")
+    if is_fixture:
+        print("  [FIXTURE] BLC_FIXTURE_BUILD=1, skip Engine Pack info validation")
         return
 
     if not ENGINE_PACK_INFO_PATH.exists():
@@ -173,7 +170,7 @@ def build_exe() -> Path:
         sys.exit(1)
 
     # 生成 build-manifest.json
-    is_fixture = os.environ.get("BLC_FIXTURE_BUILD") == "1" or os.environ.get("BLC_CI_BUILD") == "1"
+    is_fixture = os.environ.get("BLC_FIXTURE_BUILD") == "1"
     build_manifest = {
         "release_version": RELEASE_VERSION,
         "source_commit": manifest["source_commit"],

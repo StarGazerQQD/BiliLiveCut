@@ -90,41 +90,16 @@ def find_local_engine_pack(
 
 
 def _safe_extract(zip_path: Path, target_dir: Path) -> None:
-    """安全流式解压 ZIP，防御 Zip Slip/Bomb、绝对路径、盘符。
+    """安全流式解压 ZIP，复用 blc_portable.archive.safe_zip。
 
     :param zip_path: ZIP 文件路径。
     :param target_dir: 目标目录。
     :raises RuntimeError: 检测到不安全路径或 ZIP 炸弹时。
     """
-    target_resolved = target_dir.resolve()
-    max_extract_size = 20 * 1024 * 1024 * 1024  # 20 GB 上限
+    from blc_portable.archive.safe_zip import safe_extract
 
     with zipfile.ZipFile(zip_path) as zf:
-        total_size = 0
-        for member in zf.namelist():
-            if member.startswith("/") or member.startswith("\\"):
-                raise RuntimeError(f"Engine Pack 包含绝对路径: {member}")
-            if ":" in member and len(member) >= 2 and member[1] == ":":
-                raise RuntimeError(f"Engine Pack 包含盘符: {member}")
-            parts = member.replace("\\", "/").split("/")
-            if ".." in parts:
-                raise RuntimeError(f"Engine Pack 包含 ..: {member}")
-
-            dest = (target_dir / member).resolve()
-            if not str(dest).startswith(str(target_resolved)):
-                raise RuntimeError(f"Engine Pack 路径越界: {member}")
-
-            if member.endswith("/") or member.endswith("\\"):
-                dest.mkdir(parents=True, exist_ok=True)
-            else:
-                dest.parent.mkdir(parents=True, exist_ok=True)
-                # 流式解压 — 避免大文件整读入内存
-                with zf.open(member) as src, open(dest, "wb") as dst:
-                    while chunk := src.read(CHUNK_SIZE):
-                        total_size += len(chunk)
-                        if total_size > max_extract_size:
-                            raise RuntimeError(f"解压总大小超过上限 ({max_extract_size} bytes)")
-                        dst.write(chunk)
+        safe_extract(zf, target_dir)
 
 
 def _read_installed_manifest(models_dir: Path) -> dict[str, Any] | None:
@@ -243,105 +218,115 @@ def install_from_engine_pack(
 
     print(f"  Engine Pack 校验通过: CRC32={actual_crc32} SHA256={actual_sha256[:16]}...")
 
+    from blc_portable.archive.locks import FileLock, get_engine_pack_lock_path
+
+    lock = FileLock(get_engine_pack_lock_path(app_root))
     models_dir = app_root / "models"
     staging_dir = app_root / f"models-staging-{uuid.uuid4().hex[:12]}"
 
-    try:
-        # 2. 安全解压
-        print("  解压 Engine Pack ...")
-        staging_dir.mkdir(parents=True, exist_ok=True)
-        _safe_extract(pack_path, staging_dir)
+    with lock.acquire(timeout=120):
+        try:
+            # 2. 安全解压
+            print("  解压 Engine Pack ...")
+            staging_dir.mkdir(parents=True, exist_ok=True)
+            _safe_extract(pack_path, staging_dir)
 
-        # 3. 校验 Manifest
-        manifest_path = staging_dir / "engine-pack-manifest.json"
-        if not manifest_path.exists():
-            raise RuntimeError("Engine Pack 缺少 engine-pack-manifest.json")
-        from .manifest import load_manifest
+            # 3. 校验 Manifest
+            manifest_path = staging_dir / "engine-pack-manifest.json"
+            if not manifest_path.exists():
+                raise RuntimeError("Engine Pack 缺少 engine-pack-manifest.json")
+            from .manifest import load_manifest
 
-        manifest = load_manifest(manifest_path)
-        if manifest.engine_pack_version != expected_version:
-            raise RuntimeError(f"Engine Pack 版本不匹配: {manifest.engine_pack_version} != {expected_version}")
+            manifest = load_manifest(manifest_path)
+            if manifest.engine_pack_version != expected_version:
+                raise RuntimeError(f"Engine Pack 版本不匹配: {manifest.engine_pack_version} != {expected_version}")
 
-        # 4. 四引擎目录存在性
-        for engine in manifest.engines:
-            ep = staging_dir / engine.target_path
-            if not ep.exists() or not any(ep.iterdir()):
-                raise RuntimeError(f"Engine Pack 缺少引擎目录: {engine.target_path}")
+            # 4. 四引擎目录存在性
+            for engine in manifest.engines:
+                ep = staging_dir / engine.target_path
+                if not ep.exists() or not any(ep.iterdir()):
+                    raise RuntimeError(f"Engine Pack 缺少引擎目录: {engine.target_path}")
 
-        # 5. 逐文件 SHA-256
-        if manifest.files:
-            print(f"  逐文件 SHA-256 校验 ({manifest.total_files} 文件) ...")
-            for fp_str, info in manifest.files.items():
-                target = staging_dir / fp_str
-                if not target.exists():
-                    raise RuntimeError(f"文件缺失: {fp_str}")
-                expected_hash = str(info.get("sha256", ""))
-                if expected_hash:
-                    ahash = compute_sha256(target)
-                    if ahash != expected_hash:
-                        raise RuntimeError(f"文件 SHA-256 不匹配: {fp_str} 期望={expected_hash[:16]} 实际={ahash[:16]}")
+            # 5. 逐文件校验 + 多余文件检测 (使用共用 verifier)
+            if manifest.files:
+                print(f"  逐文件 SHA-256 校验 ({manifest.total_files} 文件) ...")
+                from .verifier import verify_extracted_tree
 
-        # 6. 引擎信息
-        installed_engines: list[str] = []
-        files_info: dict[str, dict[str, object]] = {}
-        for engine in manifest.engines:
-            installed_engines.append(engine.engine_id)
-            ep = staging_dir / engine.target_path
-            fc = sum(1 for _ in ep.rglob("*") if _.is_file())
-            ts = sum(f.stat().st_size for f in ep.rglob("*") if f.is_file())
-            files_info[engine.engine_id] = {
-                "target_path": engine.target_path,
-                "file_count": fc,
-                "total_size": ts,
+                manifest_dict: dict[str, Any] = {
+                    "engines": [
+                        {"target_path": e.target_path, "engine_id": e.engine_id}
+                        for e in manifest.engines
+                    ],
+                    "files": {
+                        fp_str: {"size": int(info.get("size", 0)), "sha256": str(info.get("sha256", ""))}
+                        for fp_str, info in manifest.files.items()
+                    },
+                }
+                errors = verify_extracted_tree(staging_dir, manifest_dict)
+                if errors:
+                    raise RuntimeError("Engine Pack 校验失败:\n  " + "\n  ".join(errors))
+
+            # 6. 引擎信息
+            installed_engines: list[str] = []
+            files_info: dict[str, dict[str, object]] = {}
+            for engine in manifest.engines:
+                installed_engines.append(engine.engine_id)
+                ep = staging_dir / engine.target_path
+                fc = sum(1 for _ in ep.rglob("*") if _.is_file())
+                ts = sum(f.stat().st_size for f in ep.rglob("*") if f.is_file())
+                files_info[engine.engine_id] = {
+                    "target_path": engine.target_path,
+                    "file_count": fc,
+                    "total_size": ts,
+                }
+
+            # 7. 原子安装
+            print("  原子安装模型到 models/ ...")
+            backup_dir = None
+            if models_dir.exists() and any(models_dir.iterdir()):
+                backup_dir = app_root / f"models-backup-{uuid.uuid4().hex[:8]}"
+                shutil.move(str(models_dir), str(backup_dir))
+
+            try:
+                models_dir.mkdir(parents=True, exist_ok=True)
+                staging_models = staging_dir / "models"
+                if staging_models.exists():
+                    for sub in staging_models.iterdir():
+                        dest = models_dir / sub.name
+                        if dest.exists():
+                            if dest.is_dir():
+                                shutil.rmtree(str(dest), ignore_errors=True)
+                            else:
+                                dest.unlink(missing_ok=True)
+                        shutil.move(str(sub), str(dest))
+                shutil.move(str(manifest_path), str(models_dir / "engine-pack-manifest.json"))
+            except Exception:
+                if backup_dir and backup_dir.exists():
+                    if models_dir.exists():
+                        shutil.rmtree(str(models_dir), ignore_errors=True)
+                    shutil.move(str(backup_dir), str(models_dir))
+                raise
+
+            # 8. 写入安装清单
+            _write_installed_manifest(models_dir, expected_version, installed_engines, files_info)
+
+            shutil.rmtree(str(staging_dir), ignore_errors=True)
+            if backup_dir and backup_dir.exists():
+                shutil.rmtree(str(backup_dir), ignore_errors=True)
+
+            print("  四引擎模型安装完成")
+            return {
+                "source": "engine_pack",
+                "method": "local_extract",
+                "network_requests": 0,
+                "engines": installed_engines,
+                "files": files_info,
             }
 
-        # 7. 原子安装
-        print("  原子安装模型到 models/ ...")
-        backup_dir = None
-        if models_dir.exists() and any(models_dir.iterdir()):
-            backup_dir = app_root / f"models-backup-{uuid.uuid4().hex[:8]}"
-            shutil.move(str(models_dir), str(backup_dir))
-
-        try:
-            models_dir.mkdir(parents=True, exist_ok=True)
-            staging_models = staging_dir / "models"
-            if staging_models.exists():
-                for sub in staging_models.iterdir():
-                    dest = models_dir / sub.name
-                    if dest.exists():
-                        if dest.is_dir():
-                            shutil.rmtree(str(dest), ignore_errors=True)
-                        else:
-                            dest.unlink(missing_ok=True)
-                    shutil.move(str(sub), str(dest))
-            shutil.move(str(manifest_path), str(models_dir / "engine-pack-manifest.json"))
         except Exception:
-            if backup_dir and backup_dir.exists():
-                if models_dir.exists():
-                    shutil.rmtree(str(models_dir), ignore_errors=True)
-                shutil.move(str(backup_dir), str(models_dir))
+            if staging_dir.exists():
+                shutil.rmtree(str(staging_dir), ignore_errors=True)
             raise
-
-        # 8. 写入安装清单
-        _write_installed_manifest(models_dir, expected_version, installed_engines, files_info)
-
-        shutil.rmtree(str(staging_dir), ignore_errors=True)
-        if backup_dir and backup_dir.exists():
-            shutil.rmtree(str(backup_dir), ignore_errors=True)
-
-        print("  四引擎模型安装完成")
-        return {
-            "source": "engine_pack",
-            "method": "local_extract",
-            "network_requests": 0,
-            "engines": installed_engines,
-            "files": files_info,
-        }
-
-    except Exception:
-        if staging_dir.exists():
-            shutil.rmtree(str(staging_dir), ignore_errors=True)
-        raise
 
 
 def install_models_dir_from_staging(
