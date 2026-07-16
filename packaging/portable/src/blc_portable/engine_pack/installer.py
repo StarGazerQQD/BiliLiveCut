@@ -304,8 +304,9 @@ def install_from_engine_pack(
                     shutil.move(str(backup_dir), str(models_dir))
                 raise
 
-            # 8. Write installed manifest (inside atomic try/except for rollback safety)
+            # 8. Write installed manifest (inside try for rollback safety)
             _write_installed_manifest(models_dir, expected_version, installed_engines, files_info)
+
         except Exception:
             if staging_dir.exists():
                 shutil.rmtree(str(staging_dir), ignore_errors=True)
@@ -315,19 +316,14 @@ def install_from_engine_pack(
         if backup_dir and backup_dir.exists():
             shutil.rmtree(str(backup_dir), ignore_errors=True)
 
-            print("  四引擎模型安装完成")
-            return {
-                "source": "engine_pack",
-                "method": "local_extract",
-                "network_requests": 0,
-                "engines": installed_engines,
-                "files": files_info,
-            }
-
-        except Exception:
-            if staging_dir.exists():
-                shutil.rmtree(str(staging_dir), ignore_errors=True)
-            raise
+        print("  Engine pack models installed")
+        return {
+            "source": "engine_pack",
+            "method": "local_extract",
+            "network_requests": 0,
+            "engines": installed_engines,
+            "files": files_info,
+        }
 
 
 def install_models_dir_from_staging(
