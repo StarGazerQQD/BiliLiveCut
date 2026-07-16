@@ -300,7 +300,8 @@ def create_zip(staging: Path, output_path: Path) -> None:
             info = zipfile.ZipInfo(arcname)
             info.date_time = (2026, 1, 1, 0, 0, 0)
             info.external_attr = 0o644 << 16
-            # 流式写入，CHUNK_SIZE 分块读入
+            from blc_portable.archive.safe_zip import _default_compression
+            info.compress_type = _default_compression(arcname)
             with zf.open(info, "w") as dest, f.open("rb") as src:
                 while chunk := src.read(CHUNK_SIZE):
                     dest.write(chunk)
@@ -417,6 +418,16 @@ def write_output_files(
     RESOURCES_DIR.mkdir(parents=True, exist_ok=True)
     total_size = archive_path.stat().st_size
     manifest_sha = compute_sha256(DIST_DIR / "engine-pack-manifest.json")
+    # builder_commit = current HEAD (not fixed source commit)
+    builder_head = ""
+    try:
+        r = subprocess.run(["git", "rev-parse", "HEAD"], capture_output=True, text=True,
+                           cwd=str(PROJECT_ROOT), timeout=10)
+        if r.returncode == 0:
+            builder_head = r.stdout.strip()
+    except Exception:
+        pass
+
     model_lock_path = PORTABLE_DIR / "config" / "model_sources.lock.json"
     model_lock_sha = compute_sha256(model_lock_path) if model_lock_path.exists() else ""
     engine_pack_info: dict[str, Any] = {
@@ -427,13 +438,29 @@ def write_output_files(
         "size_bytes": total_size,
         "crc32": crc32_val,
         "sha256": sha256_val,
-        "manifest_sha256": manifest_sha,
+        "content_manifest_sha256": manifest_sha,
         "model_lock_sha256": model_lock_sha,
         "source_commit": source_commit,
-        "builder_commit": source_commit,
+        "builder_commit": builder_head,
         "build_timestamp": datetime.datetime.now().strftime("%Y-%m-%dT%H:%M:%S"),
         "expected_engine_ids": ["whisper", "paraformer", "sensevoice", "funasr_nano"],
     }
+
+    # Production validation: reject empty hash fields
+    if not is_fixture:
+        errors = []
+        if not crc32_val or len(crc32_val) != 8:
+            errors.append(f"CRC32 invalid: {crc32_val}")
+        if not sha256_val or len(sha256_val) != 64:
+            errors.append(f"SHA-256 invalid: {sha256_val}")
+        if not manifest_sha or len(manifest_sha) != 64:
+            errors.append(f"content_manifest_sha256 invalid: {manifest_sha}")
+        if not model_lock_sha or len(model_lock_sha) != 64:
+            errors.append(f"model_lock_sha256 invalid: {model_lock_sha}")
+        if not builder_head or len(builder_head) != 40:
+            errors.append(f"builder_commit invalid: {builder_head}")
+        if errors:
+            raise RuntimeError("Engine Pack production metadata validation FAILED:\n  " + "\n  ".join(errors))
     (RESOURCES_DIR / "engine_pack_info.json").write_text(
         json.dumps(engine_pack_info, ensure_ascii=False, indent=2), encoding="utf-8"
     )
@@ -550,7 +577,7 @@ def build_engine_pack(fixture: bool = False, from_cache: bool = False) -> dict[s
         "compatible_app": {"min": ENGINE_PACK_VERSION, "max_exclusive": "0.1.15"},
         "source_commit": source_commit,
         "source_commit_short": SOURCE_COMMIT_SHORT,
-        "builder_commit": source_commit,
+        "builder_commit": builder_head,
         "total_files": len(file_list),
         "fixture": fixture,
         "engines": [

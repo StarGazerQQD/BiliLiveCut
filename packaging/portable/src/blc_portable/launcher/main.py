@@ -713,6 +713,20 @@ def run_launcher(args: argparse.Namespace) -> int:
     print()
 
     try:
+        # --engine-pack and --fallback-online validation
+        if args.fallback_online and not args.engine_pack:
+            print("[ERROR] --fallback-online requires --engine-pack PATH")
+            return 1
+
+        if args.engine_pack:
+            ep_path = Path(args.engine_pack)
+            if not ep_path.exists():
+                print(f"[ERROR] Engine Pack not found: {ep_path}")
+                return 1
+            if not ep_path.is_file():
+                print(f"[ERROR] Engine Pack path is not a file: {ep_path}")
+                return 1
+
         # --doctor 模式
         if args.doctor:
             _run_doctor(app_root)
