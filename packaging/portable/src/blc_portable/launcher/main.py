@@ -21,12 +21,12 @@ import traceback
 import webbrowser
 import zipfile
 from pathlib import Path
-from typing import Any
+from typing import Any, Sequence
 
 # ── 常量 ──────────────────────────────────────────────────
 APP_NAME = "BiliLiveCut"
-VERSION = "V0.1.14.8 Alpha"
-RELEASE_VERSION = "0.1.14.8-alpha"
+VERSION = "V0.1.14.9 Alpha"
+RELEASE_VERSION = "0.1.14.9-alpha"
 SOURCE_COMMIT_SHORT = "731a31c"
 # 注意: RELEASE_ID 将在获得 Payload SHA-256 后动态生成 (内容寻址)
 
@@ -441,7 +441,7 @@ def prepare_models(app_root: Path, user_engine_pack_path: str | None = None) -> 
     """
     from ..engine_pack.installer import check_installed_models, find_local_engine_pack, install_from_engine_pack
 
-    MODEL_ENGINE_PACK_VERSION = "0.1.14.8-alpha"
+    MODEL_ENGINE_PACK_VERSION = "0.1.14.9-alpha"
 
     # 读取内置 Engine Pack 信息
     pack_info = get_engine_pack_info()
@@ -650,7 +650,27 @@ def _verify_installed_models(app_root: Path) -> None:
         sys.exit(1)
     else:
         print(f"\n  [OK] 全部 {verified} 个引擎验证通过")
-    """Portable Launcher 主入口 — 支持 argparse 参数解析。"""
+
+
+def _repair_runtime(app_root: Path) -> None:
+    """清除旧 Runtime 以触发重新安装。
+
+    :param app_root: 应用根目录。
+    """
+    current = app_root / "runtime" / "current.json"
+    if current.exists():
+        current.unlink()
+    releases = app_root / "runtime" / "releases"
+    if releases.exists():
+        shutil.rmtree(releases)
+    print("[修复] 已清理旧 Runtime，将重新安装")
+
+
+def build_parser() -> argparse.ArgumentParser:
+    """构建命令行参数解析器。
+
+    :returns: ArgumentParser 实例。
+    """
     import argparse
 
     parser = argparse.ArgumentParser(
@@ -677,21 +697,15 @@ def _verify_installed_models(app_root: Path) -> None:
     parser.add_argument("--repair", action="store_true", help="修复模式: 重新安装 Runtime 和模型")
     parser.add_argument("--doctor", action="store_true", help="运行系统诊断检查")
     parser.add_argument("--version", action="store_true", help="显示版本信息并退出")
+    return parser
 
-    args = parser.parse_args()
 
-    # --version
-    if args.version:
-        print(f"BiliLiveCut Portable {VERSION}")
-        print(f"Release Version: {RELEASE_VERSION}")
-        print(f"Source Commit: {SOURCE_COMMIT_SHORT}")
-        manifest = get_payload_manifest()
-        print(f"Payload SHA256: {manifest.get('payload_sha256', 'N/A')[:32]}")
-        pack_info = get_engine_pack_info()
-        if pack_info:
-            print(f"Engine Pack: {pack_info.get('engine_pack_version', 'N/A')} CRC32={pack_info.get('crc32', 'N/A')}")
-        sys.exit(0)
+def run_launcher(args: argparse.Namespace) -> int:
+    """执行启动流程。
 
+    :param args: 解析后的命令行参数。
+    :returns: 退出码 (0 成功, 非零失败)。
+    """
     user_engine_pack_path = args.engine_pack
 
     app_root = get_app_root()
@@ -709,22 +723,16 @@ def _verify_installed_models(app_root: Path) -> None:
         # --doctor 模式
         if args.doctor:
             _run_doctor(app_root)
-            sys.exit(0)
+            return 0
 
         # --verify-models 模式
         if args.verify_models:
             _verify_installed_models(app_root)
-            sys.exit(0)
+            return 0
 
         # --repair 模式
         if args.repair:
-            current = get_app_root() / "runtime" / "current.json"
-            if current.exists():
-                current.unlink()
-            releases = get_releases_dir()
-            if releases.exists():
-                shutil.rmtree(releases)
-            print("[修复] 已清理旧 Runtime，将重新安装")
+            _repair_runtime(app_root)
             print()
 
         # 1. 确保持久数据目录
@@ -790,7 +798,6 @@ def _verify_installed_models(app_root: Path) -> None:
         env["BLC_PORTABLE"] = "1"
         env["BLC_SOURCE_DIR"] = str(source_dir)
 
-        # 设置模型目录环境变量 (供 FunASR/Whisper 使用)
         models_dir = app_root / "models"
         if models_dir.exists():
             env["BLC_MODELS_DIR"] = str(models_dir)
@@ -811,14 +818,50 @@ def _verify_installed_models(app_root: Path) -> None:
             env=env,
             cwd=str(app_root),
         )
+        return 0
+
     except KeyboardInterrupt:
         print("\n服务已停止")
+        return 0
     except Exception:
         print("\n服务异常退出:")
         traceback.print_exc()
         print("\n按 Enter 键退出...")
         input()
+        return 1
+
+
+def main(argv: Sequence[str] | None = None) -> int:
+    """主入口 — 可导入和测试的 callable entry point。
+
+    :param argv: 命令行参数列表 (None 使用 sys.argv)。
+    :returns: 退出码 (0 成功, 非零失败)。
+    """
+    parser = build_parser()
+
+    try:
+        args = parser.parse_args(argv)
+    except SystemExit as e:
+        # argparse 内置 help/error 处理已输出消息
+        return int(str(e)) if str(e) else 0
+
+    # --version 单独处理 (不进入 run_launcher 的繁重启动流程)
+    if args.version:
+        print(f"BiliLiveCut Portable {VERSION}")
+        print(f"Release Version: {RELEASE_VERSION}")
+        print(f"Source Commit: {SOURCE_COMMIT_SHORT}")
+        try:
+            manifest = get_payload_manifest()
+            print(f"Payload SHA256: {manifest.get('payload_sha256', 'N/A')[:32]}")
+        except RuntimeError:
+            print("Payload SHA256: (不可读)")
+        pack_info = get_engine_pack_info()
+        if pack_info:
+            print(f"Engine Pack: {pack_info.get('engine_pack_version', 'N/A')} CRC32={pack_info.get('crc32', 'N/A')}")
+        return 0
+
+    return run_launcher(args)
 
 
 if __name__ == "__main__":
-    main()  # noqa: F821 (由 PyInstaller .spec 文件在顶层定义)
+    raise SystemExit(main())

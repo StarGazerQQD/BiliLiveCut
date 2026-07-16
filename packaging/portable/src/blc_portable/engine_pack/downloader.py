@@ -24,67 +24,52 @@ PORTABLE_DIR = Path(__file__).resolve().parent.parent.parent.parent
 CACHE_DIR = PORTABLE_DIR / ".model_cache"
 CACHE_DIR.mkdir(parents=True, exist_ok=True)
 
-# ── 四引擎定义 (全部走 ModelScope 国内加速) ──────────────────
+# ── 模型定义统一来源: packaging/portable/config/model_sources.lock.json ──
+# 通过 model_catalog 加载，不再维护独立 ENGINES 列表。
 
-ENGINES: list[dict[str, Any]] = [
-    {
-        "engine_id": "whisper",
-        "engine_name": "Whisper (兜底引擎) — faster-whisper-large-v3-turbo",
-        "model_id": "mobiuslabsgmbh/faster-whisper-large-v3-turbo",
-        "hub": "modelscope",
-        "revision": None,
-        "cache_dir": "whisper",
-        "target_path": "models/whisper",
-        "size_hint": "1.6 GB",
-    },
-    {
-        "engine_id": "paraformer",
-        "engine_name": "Paraformer-zh (主引擎) + 3 子模型",
-        "model_id": "iic/speech_paraformer-large-vad-punc_asr_nat-zh-cn-16k-common-vocab8404-pytorch",
-        "hub": "modelscope",
-        "revision": "v2.0.4",
-        "cache_dir": "paraformer",
-        "target_path": "models/paraformer",
-        "size_hint": "~900 MB",
-        "sub_models": [
-            {
-                "model_id": "iic/speech_fsmn_vad_zh-cn-16k-common-pytorch",
-                "revision": "v2.0.4",
-                "name": "fsmn-vad",
-            },
-            {
-                "model_id": "iic/punc_ct-transformer_zh-cn-common-vocab272727-pytorch",
-                "revision": "v2.0.4",
-                "name": "ct-punc",
-            },
-            {
-                "model_id": "iic/speech_campplus_sv_zh-cn_16k-common",
-                "revision": None,
-                "name": "cam++",
-            },
-        ],
-    },
-    {
-        "engine_id": "sensevoice",
-        "engine_name": "SenseVoice-Small (辅助特征)",
-        "model_id": "iic/SenseVoiceSmall",
-        "hub": "modelscope",
-        "revision": None,
-        "cache_dir": "sensevoice",
-        "target_path": "models/sensevoice",
-        "size_hint": "~900 MB",
-    },
-    {
-        "engine_id": "funasr_nano",
-        "engine_name": "Fun-ASR-Nano-2512 (低置信复核)",
-        "model_id": "FunAudioLLM/Fun-ASR-Nano-2512",
-        "hub": "modelscope",
-        "revision": None,
-        "cache_dir": "funasr_nano",
-        "target_path": "models/funasr_nano",
-        "size_hint": "~2.1 GB",
-    },
-]
+
+def _load_engine_defs() -> list[dict[str, Any]]:
+    """从统一模型目录加载引擎定义，适配下载器格式。
+
+    :returns: 引擎定义列表。
+    """
+    import sys as _sys
+
+    _CONFIG_DIR = str(PORTABLE_DIR / "config")
+    if _CONFIG_DIR not in _sys.path:
+        _sys.path.insert(0, _CONFIG_DIR)
+
+    from model_catalog import load_engines
+
+    engines: list[dict[str, Any]] = []
+    for e in load_engines():
+        d: dict[str, Any] = {
+            "engine_id": e.engine_id,
+            "engine_name": e.display_name,
+            "model_id": e.repository,
+            "hub": "modelscope",  # downloader 统一走 ModelScope 国内加速
+            "revision": e.resolved_revision if e.resolved_revision else None,
+            "cache_dir": _engine_id_to_cache_dir(e.engine_id),
+            "target_path": e.target_path,
+            "size_hint": "N/A",
+        }
+        if e.sub_models:
+            d["sub_models"] = [
+                {
+                    "model_id": s.repository,
+                    "revision": s.resolved_revision if s.resolved_revision else None,
+                    "name": s.target_subdir if s.target_subdir else s.repository.rsplit("/", 1)[-1],
+                }
+                for s in e.sub_models
+            ]
+        engines.append(d)
+    return engines
+
+
+def _engine_id_to_cache_dir(engine_id: str) -> str:
+    """引擎 ID → 缓存子目录名映射。"""
+    return engine_id
+
 
 STATE_FILE = CACHE_DIR / "download_state.json"
 
@@ -125,7 +110,7 @@ def show_status() -> None:
     print("=" * 60)
     total_files = 0
     total_gb = 0.0
-    for engine in ENGINES:
+    for engine in _load_engine_defs():
         engine_dir = get_engine_dir(engine)
         fc, gb = get_engine_size(engine_dir)
         total_files += fc
@@ -208,9 +193,10 @@ def main() -> None:
         return
 
     # 确定要下载的引擎
+    engine_defs = _load_engine_defs()
     targets = [a for a in sys.argv[1:] if not a.startswith("-")]
     if not targets:
-        targets = [e["engine_id"] for e in ENGINES]
+        targets = [e["engine_id"] for e in engine_defs]
 
     print("=" * 60)
     print("  BiliLiveCut Engine Pack — 模型缓存下载")
@@ -220,7 +206,7 @@ def main() -> None:
     print("=" * 60)
 
     failed: list[str] = []
-    for engine in ENGINES:
+    for engine in engine_defs:
         if engine["engine_id"] not in targets:
             continue
 

@@ -1,8 +1,10 @@
 {
-  "engine_pack_version": "0.1.14.8-alpha",
-  "filename": "BiliLiveCut-EnginePack-0.1.14.8-alpha.zip",
-  "crc32": "",
-  "sha256": "",
+  "engine_pack_version": "0.1.14.9-alpha",
+  "filename": "BiliLiveCut-EnginePack-0.1.14.9-alpha.zip",
+  "size_bytes": 5946021370,
+  "crc32": "948FC818",
+  "sha256": "4509f884143dad6dba29e2fab60b4fe1ad331f91ab94876cdd71e0742c9ef6e7",
+  "source_commit": "731a31cd04ae1df27dd6b6c5ffc535123932b825",
   "expected_engine_ids": [
     "whisper",
     "paraformer",

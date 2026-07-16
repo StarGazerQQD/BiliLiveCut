@@ -11,7 +11,7 @@
 
 输出:
     dist/engine-pack/
-    ├── BiliLiveCut-EnginePack-v0.1.14.8-alpha.zip
+    ├── BiliLiveCut-EnginePack-v0.1.14.9-alpha.zip
     ├── engine-pack-manifest.json
     ├── CRC32SUMS.txt
     ├── SHA256SUMS.txt
@@ -44,7 +44,7 @@ BUILD_DIR = PORTABLE_DIR / "build" / "engine-pack"
 DIST_DIR = PORTABLE_DIR / "dist" / "engine-pack"
 RESOURCES_DIR = PORTABLE_DIR / "resources"
 
-ENGINE_PACK_VERSION = "0.1.14.8-alpha"
+ENGINE_PACK_VERSION = "0.1.14.9-alpha"
 SOURCE_COMMIT_SHORT = "731a31c"
 ARCHIVE_NAME = f"BiliLiveCut-EnginePack-{ENGINE_PACK_VERSION}"
 
@@ -68,7 +68,10 @@ from model_catalog import load_engines
 
 
 def _get_engines_for_build() -> list[dict[str, Any]]:
-    """从模型目录加载引擎定义，转换为构建所需格式（向后兼容）。
+    """从模型目录加载引擎定义，转换为构建所需格式。
+
+    使用 resolved_revision（不可变），不使用 requested_revision。
+    子模型目录使用 catalog 中显式定义的 target_subdir。
 
     :returns: 引擎定义列表。
     """
@@ -79,14 +82,18 @@ def _get_engines_for_build() -> list[dict[str, Any]]:
             "engine_name": e.display_name,
             "model_id": e.repo_id if e.hub == "huggingface" else e.repository,
             "hub": e.hub,
-            "revision": e.requested_revision if e.requested_revision else None,
+            "revision": e.resolved_revision if e.resolved_revision else None,
             "target_path": e.target_path,
         }
         if e.hub == "huggingface":
             d["repo_id"] = e.repository
         if e.sub_models:
             d["sub_models"] = [
-                {"model_id": s.repository, "revision": s.requested_revision if s.requested_revision else None}
+                {
+                    "model_id": s.repository,
+                    "revision": s.resolved_revision if s.resolved_revision else None,
+                    "target_subdir": s.target_subdir if s.target_subdir else s.repository.rsplit("/", 1)[-1],
+                }
                 for s in e.sub_models
             ]
         raw.append(d)
@@ -216,11 +223,12 @@ def download_real_models(staging: Path) -> None:
                     kwargs_ms["revision"] = str(revision)
                 snapshot_download(**kwargs_ms)
 
-                # 子模型 (Paraformer)
+                # 子模型 (Paraformer) — 使用显式 target_subdir
                 for sub in engine.get("sub_models", []):
                     sub_id = str(sub["model_id"])
                     sub_rev = sub.get("revision")
-                    sub_dir = target / sub_id.rsplit("/", 1)[-1]  # 用最后一段作为目录名
+                    sub_dir_name = sub.get("target_subdir", sub_id.rsplit("/", 1)[-1])
+                    sub_dir = target / sub_dir_name
                     sub_dir.mkdir(parents=True, exist_ok=True)
                     print(f"    子模型: {sub_id}")
                     sub_kwargs: dict[str, Any] = {"model_id": sub_id, "local_dir": str(sub_dir)}
@@ -405,16 +413,25 @@ def write_output_files(
         json.dumps(build_manifest, ensure_ascii=False, indent=2), encoding="utf-8"
     )
 
-    # engine_pack_info.json (供 PyInstaller 嵌入)
+    # engine_pack_info.json (供 PyInstaller 嵌入) — 包含完整元数据
     RESOURCES_DIR.mkdir(parents=True, exist_ok=True)
     total_size = archive_path.stat().st_size
+    manifest_sha = compute_sha256(DIST_DIR / "engine-pack-manifest.json")
+    model_lock_path = PORTABLE_DIR / "config" / "model_sources.lock.json"
+    model_lock_sha = compute_sha256(model_lock_path) if model_lock_path.exists() else ""
     engine_pack_info: dict[str, Any] = {
+        "format_version": 3,
         "engine_pack_version": ENGINE_PACK_VERSION,
+        "compatible_app": {"min": ENGINE_PACK_VERSION, "max_exclusive": "0.1.15"},
         "filename": archive_path.name,
         "size_bytes": total_size,
         "crc32": crc32_val,
         "sha256": sha256_val,
+        "manifest_sha256": manifest_sha,
+        "model_lock_sha256": model_lock_sha,
         "source_commit": source_commit,
+        "builder_commit": source_commit,
+        "build_timestamp": datetime.datetime.now().strftime("%Y-%m-%dT%H:%M:%S"),
         "expected_engine_ids": ["whisper", "paraformer", "sensevoice", "funasr_nano"],
     }
     (RESOURCES_DIR / "engine_pack_info.json").write_text(
@@ -522,28 +539,18 @@ def build_engine_pack(fixture: bool = False, from_cache: bool = False) -> dict[s
     else:
         download_real_models(staging)
 
-    # ── 阶段 2: 第一次打包 (无 Manifest) → 计算 hashes ──
-    print("\n  [阶段 2/4] 第一次打包 → 计算 CRC32/SHA-256 ...")
-    create_zip(staging, archive_path)
-    crc32_pass1 = compute_crc32(archive_path)
-    sha256_pass1 = compute_sha256(archive_path)
-    print(f"  临时 CRC32: {crc32_pass1}")
-    print(f"  临时 SHA-256: {sha256_pass1[:32]}...")
-
-    # ── 阶段 3: 写入 Manifest → 第二次打包 ──
-    print("\n  [阶段 3/4] 写入 Manifest 到 staging → 重新打包 ...")
+    # ── 阶段 2: 构建文件清单 → 写入 Manifest (不含自身归档哈希) ──
+    print("\n  [阶段 2/3] 构建文件清单 → 写入 Manifest ...")
 
     file_list = build_file_list(staging)
 
     manifest_data: dict[str, Any] = {
-        "format_version": 1,
+        "schema_version": 3,
         "engine_pack_version": ENGINE_PACK_VERSION,
-        "portable_release_version": ENGINE_PACK_VERSION,
+        "compatible_app": {"min": ENGINE_PACK_VERSION, "max_exclusive": "0.1.15"},
         "source_commit": source_commit,
         "source_commit_short": SOURCE_COMMIT_SHORT,
-        "archive_filename": archive_path.name,
-        "archive_crc32": crc32_pass1,
-        "archive_sha256": sha256_pass1,
+        "builder_commit": source_commit,
         "total_files": len(file_list),
         "fixture": fixture,
         "engines": [
@@ -561,11 +568,14 @@ def build_engine_pack(fixture: bool = False, from_cache: bool = False) -> dict[s
         ],
         "files": file_list,
     }
+    # 注意: 内部 Manifest 不包含 archive_crc32/archive_sha256 (避免自引用问题)。
+    #       最终 ZIP 的外部哈希保存在 engine_pack_info.json 和 SHA256SUMS.txt 中。
     (staging / "engine-pack-manifest.json").write_text(
         json.dumps(manifest_data, ensure_ascii=False, indent=2), encoding="utf-8"
     )
 
-    # 第二次打包 (含 Manifest)
+    # ── 阶段 3: 一次性打包 → 计算最终哈希 → 生成输出 ──
+    print("\n  [阶段 3/3] 打包 ZIP → 计算哈希 → 生成输出 ...")
     create_zip(staging, archive_path)
 
     final_crc32 = compute_crc32(archive_path)
@@ -573,8 +583,8 @@ def build_engine_pack(fixture: bool = False, from_cache: bool = False) -> dict[s
     print(f"  最终 CRC32: {final_crc32}")
     print(f"  最终 SHA-256: {final_sha256[:32]}...")
 
-    # ── 阶段 4: 生成 dist/ 输出文件 ──
-    print("\n  [阶段 4/4] 生成输出文件 ...")
+    # ── 生成输出文件 ──
+    print("\n  生成输出文件 ...")
 
     manifest_data["archive_crc32"] = final_crc32
     manifest_data["archive_sha256"] = final_sha256

@@ -5,8 +5,8 @@
     python build_exe.py --skip-payload  # 仅编译 (已有 Payload)
 
 CI 环境:
-    设置 BLC_CI_BUILD=1 可跳过 Engine Pack 校验 (不嵌入 engine_pack_info.json)。
-    CI 构建的 EXE 不含 Engine Pack 元数据，最终发布时需本地重建。
+    设置 BLC_FIXTURE_BUILD=1 可跳过 Engine Pack 校验 (仅 PR/CI 快速测试)。
+    正式 Release 禁止使用任何 bypass 环境变量，必须嵌入完整 Engine Pack 元数据。
 """
 
 from __future__ import annotations
@@ -26,7 +26,7 @@ MANIFEST_PATH = PAYLOAD_DIR / "payload_manifest.json"
 RESOURCES_DIR = PORTABLE_DIR / "resources"
 ENGINE_PACK_INFO_PATH = RESOURCES_DIR / "engine_pack_info.json"
 
-RELEASE_VERSION = "0.1.14.8-alpha"
+RELEASE_VERSION = "0.1.14.9-alpha"
 
 
 def build_payload_if_needed() -> None:
@@ -42,15 +42,19 @@ def build_payload_if_needed() -> None:
 def check_engine_pack_info() -> None:
     """验证 Engine Pack 信息文件存在且 CRC32/SHA-256 非空。
 
-    设置环境变量 BLC_CI_BUILD=1 可跳过所有校验 (CI 环境无法构建真正的 Engine Pack)。
+    设置环境变量 BLC_FIXTURE_BUILD=1 可跳过所有校验 (仅 PR/CI 快速测试用途)。
+    正式 Release 禁止使用任何 bypass 环境变量。
 
-    :raises RuntimeError: Engine Pack 信息不完整 (非 CI 模式)。
+    :raises RuntimeError: Engine Pack 信息不完整 (非 Fixture 模式)。
     """
+    is_fixture = os.environ.get("BLC_FIXTURE_BUILD") == "1"
     is_ci = os.environ.get("BLC_CI_BUILD") == "1"
 
-    # CI 模式: 完全跳过，无论文件是否存在
-    if is_ci:
-        print("  [CI] BLC_CI_BUILD=1, skip Engine Pack info validation")
+    # Fixture 模式 (PR/CI 快速测试)
+    if is_fixture or is_ci:
+        tag = "FIXTURE" if is_fixture else "CI(legacy)"
+        var = "BLC_FIXTURE_BUILD" if is_fixture else "BLC_CI_BUILD"
+        print(f"  [{tag}] {var}=1, skip Engine Pack info validation")
         return
 
     if not ENGINE_PACK_INFO_PATH.exists():
@@ -169,7 +173,7 @@ def build_exe() -> Path:
         sys.exit(1)
 
     # 生成 build-manifest.json
-    is_ci = os.environ.get("BLC_CI_BUILD") == "1"
+    is_fixture = os.environ.get("BLC_FIXTURE_BUILD") == "1" or os.environ.get("BLC_CI_BUILD") == "1"
     build_manifest = {
         "release_version": RELEASE_VERSION,
         "source_commit": manifest["source_commit"],
@@ -179,7 +183,7 @@ def build_exe() -> Path:
         "artifact_type": "lite",
         "payload_sha256": manifest["payload_sha256"],
         "artifact_sha256": "",
-        "ci_build": is_ci,
+        "ci_build": is_fixture,
     }
 
     # 如果 Engine Pack 信息存在，添加 CRC32

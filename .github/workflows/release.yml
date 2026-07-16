@@ -1,5 +1,5 @@
 # BiliLiveCut Release 工作流
-# 触发: 推送 v* 标签 (如 v0.1.14.8-alpha)
+# 触发: 推送 v* 标签 (如 v0.1.14.9-alpha)
 #   1) 全量测试
 #   2) 构建源码包 (sdist + wheel + win-source-zip)
 #   3) 构建 Payload (source_payload.zip)
@@ -15,7 +15,7 @@ on:
   workflow_dispatch:
     inputs:
       tag:
-        description: "发布 tag 名称 (如 v0.1.14.8-alpha)"
+        description: "发布 tag 名称 (如 v0.1.14.9-alpha)"
         required: true
 
 permissions:
@@ -184,7 +184,7 @@ jobs:
 
       - name: Build Lite EXE
         env:
-          BLC_CI_BUILD: "1"
+          BLC_FIXTURE_BUILD: "1"
         run: |
           cd packaging/portable
           python build_exe.py
