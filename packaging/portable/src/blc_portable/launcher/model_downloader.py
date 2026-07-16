@@ -31,46 +31,40 @@ MODELSCOPE_MIRRORS = [
 
 # ── 四引擎下载定义 ────────────────────────────────────────
 
-ENGINES_TO_DOWNLOAD: list[dict[str, Any]] = [
-    {
-        "engine_id": "whisper",
-        "hub": "huggingface",
-        "repo_id": "mobiuslabsgmbh/faster-whisper-large-v3-turbo",
-        "revision": None,
-        "target_dir": "models/whisper",
-        "description": "Whisper large-v3-turbo (兜底引擎)",
-    },
-    {
-        "engine_id": "paraformer",
-        "hub": "modelscope",
-        "model_id": "paraformer-zh",
-        "revision": "v2.0.4",
-        "target_dir": "models/paraformer",
-        "description": "Paraformer-zh (主引擎)",
-        # Paraformer 额外需要 vad / punc / speaker 子模型
-        "sub_models": [
-            {"model_id": "fsmn-vad", "revision": "v2.0.4"},
-            {"model_id": "ct-punc", "revision": "v2.0.4"},
-            {"model_id": "cam++", "revision": "v2.0.4"},
-        ],
-    },
-    {
-        "engine_id": "sensevoice",
-        "hub": "modelscope",
-        "model_id": "iic/SenseVoiceSmall",
-        "revision": "v2.0.4",
-        "target_dir": "models/sensevoice",
-        "description": "SenseVoice-Small (辅助特征)",
-    },
-    {
-        "engine_id": "funasr_nano",
-        "hub": "modelscope",
-        "model_id": "iic/Fun-ASR-Nano",
-        "revision": "v2.0.4",
-        "target_dir": "models/funasr_nano",
-        "description": "Fun-ASR-Nano (低置信复核)",
-    },
-]
+ENGINES_TO_DOWNLOAD: list[dict[str, Any]] = []
+
+
+def _load_launcher_engines() -> list[dict[str, Any]]:
+    """从统一模型目录加载引擎定义。
+
+    :returns: 引擎下载定义列表。
+    """
+    import sys as _sys
+
+    _CONFIG_DIR = str(Path(__file__).resolve().parent.parent.parent.parent.parent / "config")
+    if _CONFIG_DIR not in _sys.path:
+        _sys.path.insert(0, _CONFIG_DIR)
+
+    from model_catalog import load_engines
+
+    engines = []
+    for e in load_engines():
+        d: dict[str, Any] = {
+            "engine_id": e.engine_id,
+            "hub": e.hub,
+            "model_id": e.repository,
+            "repo_id": e.repository,
+            "revision": e.resolved_revision if e.resolved_revision else None,
+            "target_dir": e.target_path,
+            "description": e.display_name,
+        }
+        if e.sub_models:
+            d["sub_models"] = [
+                {"model_id": s.repository, "revision": s.resolved_revision if s.resolved_revision else None}
+                for s in e.sub_models
+            ]
+        engines.append(d)
+    return engines
 
 
 # ── HuggingFace 下载 ──────────────────────────────────────

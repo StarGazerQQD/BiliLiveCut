@@ -47,7 +47,7 @@ def _load_engine_defs() -> list[dict[str, Any]]:
             "engine_id": e.engine_id,
             "engine_name": e.display_name,
             "model_id": e.repository,
-            "hub": "modelscope",  # downloader 统一走 ModelScope 国内加速
+            "hub": e.hub,
             "revision": e.resolved_revision if e.resolved_revision else None,
             "cache_dir": _engine_id_to_cache_dir(e.engine_id),
             "target_path": e.target_path,

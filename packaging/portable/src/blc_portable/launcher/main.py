@@ -838,14 +838,13 @@ def run_launcher(args: argparse.Namespace) -> int:
 
         env["BLC_PORTABLE"] = "1"
         env["BLC_SOURCE_DIR"] = str(source_dir)
+        env["PYTHONPATH"] = str(source_dir)
 
         models_dir = app_root / "models"
         if models_dir.exists():
             env["BLC_MODELS_DIR"] = str(models_dir)
 
-        webbrowser.open("http://127.0.0.1:8000")
-
-        subprocess.run(
+        result = subprocess.run(
             [
                 str(venv_python),
                 "-m",
@@ -859,7 +858,7 @@ def run_launcher(args: argparse.Namespace) -> int:
             env=env,
             cwd=str(app_root),
         )
-        return 0
+        return result.returncode
 
     except KeyboardInterrupt:
         print("\nService stopped")
@@ -867,8 +866,9 @@ def run_launcher(args: argparse.Namespace) -> int:
     except Exception:
         print("\nService exited with error:")
         traceback.print_exc()
-        print("\nPress Enter to exit...")
-        input()
+        if sys.stdin.isatty():
+            print("\nPress Enter to exit...")
+            input()
         return 1
 
 
