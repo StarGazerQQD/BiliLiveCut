@@ -1,13 +1,13 @@
 """BiliLiveCut Portable Launcher — 从 EXE 内置 Payload 释放源码并启动。
 
-运行流程:
-1. 检查持久 Runtime → 如已安装且完好，直接启动
-2. 读取 EXE 内置 Payload (source_payload.zip + payload_manifest.json)
-3. 校验 Payload SHA-256
-4. 原子安装到 runtime/releases/<release-id>/
-5. Python/依赖/FFmpeg 检测
-6. 模型准备: 已安装 → Engine Pack → 在线下载
-7. 启动 app.cli serve
+Startup flow:
+1. Check persistent Runtime → if installed and intact, launch directly
+2. Read EXE built-in Payload (source_payload.zip + payload_manifest.json)
+3. Verify Payload SHA-256
+4. Atomic install to runtime/releases/<release-id>/
+5. Python/deps/FFmpeg detection
+6. 模型准备: installed -> Engine Pack -> online download
+7. Launch app.cli serve
 """
 
 from __future__ import annotations
@@ -25,17 +25,17 @@ from collections.abc import Sequence
 from pathlib import Path
 from typing import Any
 
-# ── 常量 ──────────────────────────────────────────────────
+# -- Constants ──────────────────────────────────────────────────
 APP_NAME = "BiliLiveCut"
 VERSION = "V0.1.14.9 Alpha"
 RELEASE_VERSION = "0.1.14.9-alpha"
 SOURCE_COMMIT_SHORT = "731a31c"
-# 注意: RELEASE_ID 将在获得 Payload SHA-256 后动态生成 (内容寻址)
+# NOTE: RELEASE_ID 将在获得 Payload SHA-256 后动态生成 (内容寻址)
 
 VENV_DIR = ".venv"
 WHEELS_DIR = os.path.join("vendor", "wheels")
 
-# 国内镜像
+# China mirror
 PIP_INDEX = "https://mirrors.aliyun.com/pypi/simple/"
 PIP_EXTRA_INDEX = "https://pypi.tuna.tsinghua.edu.cn/simple"
 PIP_TRUSTED_HOSTS = ["mirrors.aliyun.com", "pypi.tuna.tsinghua.edu.cn"]
@@ -44,14 +44,14 @@ PIP_TRUSTED_HOSTS = ["mirrors.aliyun.com", "pypi.tuna.tsinghua.edu.cn"]
 FFMPEG_WIN_URL = "https://github.com/BtbN/FFmpeg-Builds/releases/download/latest/ffmpeg-master-latest-win64-gpl.zip"
 
 
-# ── 资源路径 ──────────────────────────────────────────────
+# -- Resource paths ──────────────────────────────────────────────
 
 
 def get_bundled_resource_path(rel: str) -> Path | None:
-    """获取打包资源路径，兼容 PyInstaller 和普通运行。
+    """Get bundled resource path, compatible with PyInstaller and normal run。
 
-    :param rel: 相对路径。
-    :returns: 资源路径，不存在返回 None。
+    :param rel: relative path。
+    :returns: 资源路径，not found返回 None。
     """
     if getattr(sys, "frozen", False):
         base = Path(sys._MEIPASS)  # type: ignore[attr-defined]
@@ -63,33 +63,33 @@ def get_bundled_resource_path(rel: str) -> Path | None:
 
 
 def get_payload_zip() -> Path:
-    """获取内嵌 Payload ZIP 路径。
+    """Get embedded Payload ZIP path。
 
     :returns: Payload ZIP 路径。
     :raises RuntimeError: 找不到时。
     """
     p = get_bundled_resource_path("source_payload.zip")
     if p is None:
-        raise RuntimeError("找不到内置 Payload (source_payload.zip)。请确保 EXE 已正确嵌入 Payload。")
+        raise RuntimeError("Built-in Payload not found (source_payload.zip). Ensure EXE embeds Payload correctly.")
     return p
 
 
 def get_payload_manifest() -> dict[str, Any]:
-    """读取内嵌 Manifest。
+    """Read embedded Manifest。
 
-    :returns: Manifest 字典。
+    :returns: Manifest dict。
     :raises RuntimeError: 找不到时。
     """
     p = get_bundled_resource_path("payload_manifest.json")
     if p is None:
-        raise RuntimeError("找不到内置 Manifest (payload_manifest.json)。")
+        raise RuntimeError("Built-in Manifest not found (payload_manifest.json).")
     return json.loads(p.read_text(encoding="utf-8"))
 
 
 def get_engine_pack_info() -> dict[str, Any] | None:
-    """读取内置 Engine Pack 信息。
+    """Read embedded Engine Pack info。
 
-    :returns: Engine Pack 信息字典，未嵌入返回 None。
+    :returns: Engine Pack info dict, None if not embedded。
     """
     p = get_bundled_resource_path("engine_pack_info.json")
     if p is None:
@@ -100,42 +100,42 @@ def get_engine_pack_info() -> dict[str, Any] | None:
         return None
 
 
-# ── Runtime 管理 ──────────────────────────────────────────
+# -- Runtime management ──────────────────────────────────────────
 
 
 def get_app_root() -> Path:
-    """获取 Portable 应用根目录。委托给 runtime 模块。"""
+    """Get Portable app root dir。委托给 runtime 模块。"""
     from blc_portable.runtime import get_app_root as _get
 
     return _get()
 
 
 def get_releases_dir() -> Path:
-    """获取 releases 目录。委托给 runtime 模块。"""
+    """Get releases dir。委托给 runtime 模块。"""
     from blc_portable.runtime import get_releases_dir as _get
 
     return _get()
 
 
 def get_current_release_dir() -> Path | None:
-    """获取当前激活的 Release 目录。委托给 runtime 模块。"""
+    """Get currently active Release dir。委托给 runtime 模块。"""
     from blc_portable.runtime import get_current_release_dir as _get
 
     return _get()
 
 
 def install_source_from_payload(app_root: Path) -> Path:
-    """从内嵌 Payload 原子安装源码到 Runtime。
+    """Atomic install from embedded Payload to Runtime。
 
-    :param app_root: 应用根目录。
-    :returns: 已安装的 Release 目录。
+    :param app_root: app root dir。
+    :returns: installed Release dir。
     """
     import hashlib
 
     manifest = get_payload_manifest()
     zip_path = get_payload_zip()
 
-    # 校验 Payload SHA-256
+    # Verify Payload SHA-256
     hasher = hashlib.sha256()
     with open(zip_path, "rb") as f:
         for chunk in iter(lambda: f.read(65536), b""):
@@ -143,12 +143,12 @@ def install_source_from_payload(app_root: Path) -> Path:
     actual_hash = hasher.hexdigest()
     expected_hash = manifest.get("payload_sha256", "")
     if actual_hash != expected_hash:
-        raise RuntimeError(f"Payload 哈希不匹配: actual={actual_hash[:16]} expected={expected_hash[:16]}")
+        raise RuntimeError(f"Payload hash mismatch: actual={actual_hash[:16]} expected={expected_hash[:16]}")
 
     if manifest.get("release_version") != RELEASE_VERSION:
-        raise RuntimeError(f"Payload 版本不匹配: {manifest.get('release_version')} != {RELEASE_VERSION}")
+        raise RuntimeError(f"Payload version mismatch: {manifest.get('release_version')} != {RELEASE_VERSION}")
     if manifest.get("source_commit_short") != SOURCE_COMMIT_SHORT:
-        raise RuntimeError(f"Source Commit 不匹配: {manifest.get('source_commit_short')} != {SOURCE_COMMIT_SHORT}")
+        raise RuntimeError(f"Source Commit mismatch: {manifest.get('source_commit_short')} != {SOURCE_COMMIT_SHORT}")
 
     print(f"  Payload: v{RELEASE_VERSION} | Source: {SOURCE_COMMIT_SHORT} | SHA256: {actual_hash[:16]}")
 
@@ -178,7 +178,7 @@ def install_source_from_payload(app_root: Path) -> Path:
 
             for path in ["app/cli.py", "pyproject.toml"]:
                 if not (staging / path).exists():
-                    raise RuntimeError(f"Release 缺少关键文件: {path}")
+                    raise RuntimeError(f"Release missing key file: {path}")
 
             releases_dir.mkdir(parents=True, exist_ok=True)
             if release_dir.exists():
@@ -210,24 +210,24 @@ def install_source_from_payload(app_root: Path) -> Path:
                 shutil.rmtree(staging)
             raise
 
-    print(f"  Release 已安装: {release_dir}")
+    print(f"  Release installed: {release_dir}")
     return release_dir
 
 
 def ensure_data_dirs(app_root: Path) -> None:
-    """确保持久数据目录存在。
+    """ensure persistent data dirs存在。
 
-    :param app_root: 应用根目录。
+    :param app_root: app root dir。
     """
     for d in ["data", "storage", "models", "vendor", "bin", "logs"]:
         (app_root / d).mkdir(parents=True, exist_ok=True)
 
 
 def ensure_env(app_root: Path, source_dir: Path) -> None:
-    """如果 .env 不存在，从模板创建。
+    """如果 .env not found，从模板创建。
 
-    :param app_root: 应用根目录。
-    :param source_dir: 源码目录。
+    :param app_root: app root dir。
+    :param source_dir: source dir。
     """
     env_path = app_root / ".env"
     if env_path.exists():
@@ -236,14 +236,14 @@ def ensure_env(app_root: Path, source_dir: Path) -> None:
     template = source_dir / ".env.example"
     if template.exists():
         env_path.write_text(template.read_text(encoding="utf-8"), encoding="utf-8")
-        print("  .env 已从模板创建")
+        print("  .env created from template")
 
 
-# ── 环境准备 ──────────────────────────────────────────────
+# -- Environment prep ──────────────────────────────────────────────
 
 
 def _find_system_python() -> Path | None:
-    """查找系统 Python 3.11+。"""
+    """查找System Python 3.11+。"""
     candidates = ["python", "python3", "py"]
     for name in candidates:
         try:
@@ -272,9 +272,9 @@ def _find_system_python() -> Path | None:
 
 
 def _find_portable_python(app_root: Path) -> Path | None:
-    """查找 portable-python 目录中的 Python。
+    """Find Python in portable-python dir。
 
-    :param app_root: 应用根目录。
+    :param app_root: app root dir。
     :returns: Python 路径。
     """
     pp = app_root / "portable-python"
@@ -291,10 +291,10 @@ def _find_portable_python(app_root: Path) -> Path | None:
 
 
 def prepare_venv(app_root: Path) -> Path:
-    """准备虚拟环境。
+    """Prepare virtual environment。
 
-    :param app_root: 应用根目录。
-    :returns: venv python 路径。
+    :param app_root: app root dir。
+    :returns: venv python path。
     """
     if sys.platform == "win32":
         venv_python = app_root / VENV_DIR / "Scripts" / "python.exe"
@@ -307,12 +307,12 @@ def prepare_venv(app_root: Path) -> Path:
     system_py = _find_portable_python(app_root) or _find_system_python()
     if system_py is None:
         raise RuntimeError(
-            "未找到 Python 3.11+。请安装 Python 或在 portable-python/ 目录放置 Portable Python。\n"
-            "Portable Python 下载: https://www.python.org/downloads/windows/"
+            "Python 3.11+ not found. Install Python or place Portable Python in portable-python/.\n"
+            "Portable Python download: https://www.python.org/downloads/windows/"
         )
 
     print(f"  Python: {system_py}")
-    print("  创建虚拟环境...")
+    print("  creating venv...")
     subprocess.run(
         [str(system_py), "-m", "venv", str(app_root / VENV_DIR)],
         check=True,
@@ -322,11 +322,11 @@ def prepare_venv(app_root: Path) -> Path:
 
 
 def install_dependencies(venv_python: Path, app_root: Path, req_file: Path) -> None:
-    """安装 Python 依赖。
+    """Install Python dependencies。
 
-    :param venv_python: venv python 路径。
-    :param app_root: 应用根目录。
-    :param req_file: requirements 文件。
+    :param venv_python: venv python path。
+    :param app_root: app root dir。
+    :param req_file: requirements files。
     """
     try:
         subprocess.run(
@@ -335,7 +335,7 @@ def install_dependencies(venv_python: Path, app_root: Path, req_file: Path) -> N
             capture_output=True,
             timeout=30,
         )
-        print("  依赖已安装")
+        print("  dependencies already installed")
         return
     except subprocess.CalledProcessError:
         pass
@@ -343,20 +343,20 @@ def install_dependencies(venv_python: Path, app_root: Path, req_file: Path) -> N
     lock_dir = Path(__file__).resolve().parent.parent.parent.parent / "packaging" / "portable" / "locks"
     lock_file = lock_dir / "requirements-core-py312-win-x64.lock"
 
-    # 优先使用 lock 文件 (离线可复现)
+    # prefer lock files (offline reproducible)
     if lock_file.exists():
-        print(f"  安装依赖 (lock 文件: {lock_file.name})...")
+        print(f"  install deps (lock file: {lock_file.name})...")
         subprocess.run(
             [str(venv_python), "-m", "pip", "install", "-r", str(lock_file)],
             check=True,
             timeout=600,
         )
-        print("  依赖安装完成")
+        print("  deps install complete")
         return
 
     wheels_dir = app_root / WHEELS_DIR
     if wheels_dir.exists() and list(wheels_dir.glob("*.whl")):
-        print(f"  安装依赖 (本地 {len(list(wheels_dir.glob('*.whl')))} wheels)...")
+        print(f"  install deps (local {len(list(wheels_dir.glob('*.whl')))} wheels)...")
         subprocess.run(
             [
                 str(venv_python),
@@ -373,7 +373,7 @@ def install_dependencies(venv_python: Path, app_root: Path, req_file: Path) -> N
             timeout=600,
         )
     else:
-        print("  安装依赖 (国内镜像)...")
+        print("  install deps (mirror)...")
         subprocess.run(
             [
                 str(venv_python),
@@ -391,23 +391,23 @@ def install_dependencies(venv_python: Path, app_root: Path, req_file: Path) -> N
             check=True,
             timeout=900,
         )
-    print("  依赖安装完成")
+    print("  deps install complete")
 
 
-# ── 模型准备 ──────────────────────────────────────────────
+# -- Model preparation ──────────────────────────────────────────────
 
 
 def prepare_models(app_root: Path, user_engine_pack_path: str | None = None) -> dict[str, Any]:
-    """模型准备编排 — 已安装 → Engine Pack → 在线下载。
+    """Model prep orchestration — installed -> Engine Pack -> online download。
 
-    1. 检查已安装模型 → 版本匹配直接复用
-    2. 查找本地 Engine Pack → CRC32 校验通过则从包安装 (网络 0)
-    3. 本地包无效 → 全量在线下载四引擎 (网络 N)
-    4. 无本地包 → 全量在线下载四引擎
+    1. check installed models -> version match = reuse
+    2. find local Engine Pack -> CRC32 passes = install from pack (zero network)
+    3. local pack invalid -> full online download (N requests)
+    4. no local pack -> full online download
 
-    无论如何不混合本地包与在线模型。
+    Never mix local pack with online models。
 
-    :param app_root: 应用根目录。
+    :param app_root: app root dir。
     :param user_engine_pack_path: 用户通过 --engine-pack 指定的路径。
     :returns: 模型准备信息字典。
     """
@@ -415,7 +415,7 @@ def prepare_models(app_root: Path, user_engine_pack_path: str | None = None) -> 
 
     MODEL_ENGINE_PACK_VERSION = "0.1.14.9-alpha"
 
-    # 读取内置 Engine Pack 信息
+    # Read embedded Engine Pack info
     pack_info = get_engine_pack_info()
     if pack_info is None:
         pack_info = {
@@ -433,7 +433,7 @@ def prepare_models(app_root: Path, user_engine_pack_path: str | None = None) -> 
     # 1. 检查已安装模型
     models_dir = app_root / "models"
     if check_installed_models(models_dir, expected_version):
-        print("  四引擎模型已安装 (版本匹配)，跳过模型准备")
+        print("  4-engine models installed (version match), skip model prep")
         return {
             "source": "already_installed",
             "network_requests": 0,
@@ -443,24 +443,24 @@ def prepare_models(app_root: Path, user_engine_pack_path: str | None = None) -> 
     pack_path = find_local_engine_pack(app_root, expected_filename, user_engine_pack_path)
 
     if pack_path is not None:
-        print(f"\n  找到本地 Engine Pack: {pack_path.name}")
+        print(f"\n  found local Engine Pack: {pack_path.name}")
         try:
             return install_from_engine_pack(app_root, pack_path, expected_crc32, expected_sha256, expected_version)
         except RuntimeError:
             # CRC32 不匹配或解压/校验失败 → 不使用本地包
-            print("  本地包未通过校验，切换在线下载...")
+            print("  local pack failed validation, falling back to online download")
     else:
-        print("\n  未找到本地 Engine Pack")
+        print("\n  no local Engine Pack found")
 
     # 3. 全量在线下载
-    print("  全量在线下载四引擎模型...")
+    print("  downloading all 4 engine models online...")
     try:
         from .model_downloader import download_all_engines
 
         return download_all_engines(app_root)
     except ImportError as exc:
-        print(f"  [警告] 模型下载依赖缺失: {exc}")
-        print("  将继续启动 (ASR 可能使用系统已缓存的模型)")
+        print(f"  [WARN] model download dependency missing: {exc}")
+        print("  continue startup (ASR may use cached models)")
         return {
             "source": "skipped",
             "network_requests": 0,
@@ -468,27 +468,27 @@ def prepare_models(app_root: Path, user_engine_pack_path: str | None = None) -> 
         }
 
 
-# ── 启动 ──────────────────────────────────────────────────
+# -- Launch ──────────────────────────────────────────────────
 
 
 def _fail(msg: str) -> None:
-    """输出错误并退出。
+    """Print error and exit。
 
     :param msg: 错误消息。
     """
     print()
     print("*" * 60)
     for line in msg.strip().split("\n"):
-        print(f"  [错误] {line}")
+        print(f"  [Error] {line}")
     print("*" * 60)
     print()
-    print("按 Enter 键退出...")
+    print("Press Enter to exit...")
     input()
     sys.exit(1)
 
 
 def _run_doctor(app_root: Path) -> None:
-    """运行系统诊断检查。
+    """Run System Diagnostics check。
 
     检查项:
     - Runtime 是否已安装
@@ -497,12 +497,12 @@ def _run_doctor(app_root: Path) -> None:
     - 关键文件存在性
     - 校验信息完整性
 
-    :param app_root: 应用根目录。
+    :param app_root: app root dir。
     """
     import platform
 
     print("=" * 60)
-    print(f"  {APP_NAME} Doctor — 系统诊断")
+    print(f"  {APP_NAME} Doctor — System Diagnostics")
     print("=" * 60)
     print()
 
@@ -525,11 +525,11 @@ def _run_doctor(app_root: Path) -> None:
             msg += f": {detail}"
         print(msg)
         if not condition and expected:
-            print(f"         期望: {expected}")
+            print(f"         expected: {expected}")
         if not condition and actual:
-            print(f"         实际: {actual}")
+            print(f"         actual: {actual}")
         if not condition and suggestion:
-            print(f"         建议: {suggestion}")
+            print(f"         suggestion: {suggestion}")
 
     def _warn(name: str, detail: str = "") -> None:
         nonlocal checks_warned
@@ -538,29 +538,31 @@ def _run_doctor(app_root: Path) -> None:
 
     # 1. Runtime
     current = get_current_release_dir()
-    _check("Runtime 已安装", current is not None, str(current) if current else "未安装")
+    _check("Runtime installed", current is not None, str(current) if current else "not installed")
 
     # 2. Payload
     try:
         manifest = get_payload_manifest()
-        _check("Payload Manifest 可读", True, f"v{manifest.get('release_version')}")
+        _check("Payload Manifest readable", True, f"v{manifest.get('release_version')}")
     except RuntimeError:
-        _check("Payload Manifest 可读", False, "不可读")
+        _check("Payload Manifest readable", False, "not readable")
 
     # 3. Engine Pack 信息
     ep = get_engine_pack_info()
-    _check("Engine Pack 信息嵌入", ep is not None)
+    _check("Engine Pack info embedded", ep is not None)
     if ep:
-        _check("Engine Pack CRC32 非空", bool(ep.get("crc32")), str(ep.get("crc32"))[:12])
+        _check("Engine Pack CRC32 non-empty", bool(ep.get("crc32")), str(ep.get("crc32"))[:12])
         _check(
-            "Engine Pack SHA-256 非空", bool(ep.get("sha256")), str(ep.get("sha256"))[:12] if ep.get("sha256") else "空"
+            "Engine Pack SHA-256 non-empty",
+            bool(ep.get("sha256")),
+            str(ep.get("sha256"))[:12] if ep.get("sha256") else "empty",
         )
 
     # 4. Python 可用
     py = _find_system_python()
-    _check("系统 Python 3.11+", py is not None, str(py) if py else "未找到")
+    _check("System Python 3.11+", py is not None, str(py) if py else "not found")
     pp = _find_portable_python(app_root)
-    _check("Portable Python", pp is not None, str(pp) if pp else "未找到")
+    _check("Portable Python", pp is not None, str(pp) if pp else "not found")
 
     # 5. Models
     models_dir = app_root / "models"
@@ -568,16 +570,16 @@ def _run_doctor(app_root: Path) -> None:
         for engine_id in ("whisper", "paraformer", "sensevoice", "funasr_nano"):
             epath = models_dir / engine_id
             _check(
-                f"引擎 {engine_id}",
+                f"engine {engine_id}",
                 epath.exists() and any(epath.iterdir()),
-                f"{sum(1 for _ in epath.rglob('*') if _.is_file()) if epath.exists() else 0} 文件",
+                f"{sum(1 for _ in epath.rglob('*') if _.is_file()) if epath.exists() else 0} files",
             )
     else:
-        _check("models 目录", False, "不存在")
+        _check("models dir", False, "not found")
 
     # 6. FFmpeg
     ffmpeg = app_root / "bin" / "ffmpeg.exe"
-    _check("FFmpeg", ffmpeg.exists(), str(ffmpeg) if ffmpeg.exists() else "未找到")
+    _check("FFmpeg", ffmpeg.exists(), str(ffmpeg) if ffmpeg.exists() else "not found")
 
     # 7. 平台信息
     print()
@@ -586,13 +588,13 @@ def _run_doctor(app_root: Path) -> None:
     print(f"  Architecture: {'x64' if sys.maxsize > 2**32 else 'x86'}")
 
     print()
-    print(f"  诊断完成: {checks_passed} PASS, {checks_warned} WARN, {checks_failed} FAIL")
+    print(f"  Diagnostics complete: {checks_passed} PASS, {checks_warned} WARN, {checks_failed} FAIL")
 
 
 def _verify_installed_models(app_root: Path) -> None:
-    """验证已安装模型完整性（逐文件 SHA-256 重算）。
+    """验证已安装模型完整性（per-file SHA-256 recompute）。
 
-    :param app_root: 应用根目录。
+    :param app_root: app root dir。
     """
     import hashlib
 
@@ -602,15 +604,15 @@ def _verify_installed_models(app_root: Path) -> None:
     installed = _read_installed_manifest(models_dir)
 
     if installed is None:
-        print("  [FAIL] 未找到已安装模型清单")
+        print("  [FAIL] installed model manifest not found")
         sys.exit(1)
 
     print("=" * 60)
-    print("  模型完整性验证")
+    print("  Model Integrity Verification")
     print("=" * 60)
-    print(f"  安装版本: {installed.get('engine_pack_version')}")
-    print(f"  安装时间: {installed.get('installed_at')}")
-    print(f"  引擎: {installed.get('engine_ids', [])}")
+    print(f"  Installed version: {installed.get('engine_pack_version')}")
+    print(f"  installed at: {installed.get('installed_at')}")
+    print(f"  engines: {installed.get('engine_ids', [])}")
     print()
 
     verified = 0
@@ -623,7 +625,7 @@ def _verify_installed_models(app_root: Path) -> None:
         target_path = str(info.get("target_path", f"models/{engine_id}"))
         engine_dir = models_dir / engine_id if (models_dir / engine_id).exists() else models_dir / target_path
         if not engine_dir.exists():
-            print(f"  [FAIL] 引擎 {engine_id}: 目录不存在")
+            print(f"  [FAIL] engine {engine_id}: dirnot found")
             failed += 1
             continue
 
@@ -648,71 +650,79 @@ def _verify_installed_models(app_root: Path) -> None:
 
         # Verify against manifest
         if engine_file_count and fc != engine_file_count:
-            print(f"  [WARN] 引擎 {engine_id}: 文件数不匹配 declared={engine_file_count} actual={fc}")
+            print(f"  [WARN] engine {engine_id}: file count mismatch declared={engine_file_count} actual={fc}")
         if engine_total_size and ts != engine_total_size:
-            print(f"  [WARN] 引擎 {engine_id}: 大小不匹配 declared={engine_total_size} actual={ts}")
+            print(f"  [WARN] engine {engine_id}: size mismatch declared={engine_total_size} actual={ts}")
 
-        print(f"  [PASS] 引擎 {engine_id}: {fc} 文件, {ts / (1024**3):.2f} GB (SHA-256 已重算)")
+        print(f"  [PASS] engine {engine_id}: {fc} files, {ts / (1024**3):.2f} GB (SHA-256 recomputed)")
         verified += 1
 
     if hash_mismatches:
-        print(f"  [FAIL] {hash_mismatches} 个文件 SHA-256 不匹配")
+        print(f"  [FAIL] {hash_mismatches}  file(s) SHA-256 mismatch")
         failed += 1
 
     if failed:
-        print(f"\n  [FAIL] {failed} 个引擎存在问题")
+        print(f"\n  [FAIL] {failed}  engines have issues")
         sys.exit(1)
     else:
-        print(f"\n  [PASS] 全部 {verified} 个引擎验证通过 ({total_files_checked} 文件)")
+        print(f"\n  [PASS] 全部 {verified}  engines verified OK ({total_files_checked}  files)")
 
 
 def _repair_runtime(app_root: Path) -> None:
-    """清除旧 Runtime 以触发重新安装。"""
+    """Clear old Runtime to trigger reinstall。"""
     from blc_portable.runtime.activation import delete_current_json
 
     delete_current_json(app_root)
     releases = app_root / "runtime" / "releases"
     if releases.exists():
         shutil.rmtree(releases)
-    print("[修复] 已清理旧 Runtime，将重新安装")
+    print("[Repair] cleared old Runtime, will reinstall")
 
 
 def build_parser() -> argparse.ArgumentParser:
-    """构建命令行参数解析器。
+    """Build command-line argument parser。
 
     :returns: ArgumentParser 实例。
     """
     import argparse
 
     parser = argparse.ArgumentParser(
-        description=f"BiliLiveCut {VERSION} — Portable 启动器",
+        description=f"BiliLiveCut {VERSION} — Portable Launcher",
         formatter_class=argparse.RawDescriptionHelpFormatter,
         epilog="""\
-示例:
-  直接启动:                    BiliLiveCut-Portable.exe
+Examples:
+    Launch:                  BiliLiveCut-Portable.exe
   指定 Engine Pack:            BiliLiveCut-Portable.exe --engine-pack ./BiliLiveCut-EnginePack.zip
-  离线模式:                    BiliLiveCut-Portable.exe --offline
-  验证已安装模型:               BiliLiveCut-Portable.exe --verify-models
-  运行故障诊断:                 BiliLiveCut-Portable.exe --doctor
-  修复损坏 Runtime:             BiliLiveCut-Portable.exe --repair
-  查看版本:                    BiliLiveCut-Portable.exe --version
+    Offline:                 BiliLiveCut-Portable.exe --offline
+    Verify models:           BiliLiveCut-Portable.exe --verify-models
+    Doctor:                  BiliLiveCut-Portable.exe --doctor
+  Repair damaged Runtime:             BiliLiveCut-Portable.exe --repair
+    Version:                 BiliLiveCut-Portable.exe --version
 """,
     )
-    parser.add_argument("--engine-pack", type=str, default=None, metavar="PATH", help="指定本地 Engine Pack ZIP 路径")
-    parser.add_argument("--offline", action="store_true", help="离线模式: 禁止联网下载模型 (仅使用本地 Engine Pack)")
     parser.add_argument(
-        "--fallback-online", action="store_true", help="Engine Pack 校验失败时允许联网下载 (仅 --engine-pack 模式)"
+        "--engine-pack", type=str, default=None, metavar="PATH", help="Specify local Engine Pack ZIP path"
     )
-    parser.add_argument("--verify-runtime", action="store_true", help="验证已安装 Runtime 完整性")
-    parser.add_argument("--verify-models", action="store_true", help="验证已安装模型完整性 (逐文件 SHA-256)")
-    parser.add_argument("--repair", action="store_true", help="修复模式: 重新安装 Runtime 和模型")
-    parser.add_argument("--doctor", action="store_true", help="运行系统诊断检查")
-    parser.add_argument("--version", action="store_true", help="显示版本信息并退出")
+    parser.add_argument(
+        "--offline", action="store_true", help="Offline mode: block network model download (local Engine Pack only)"
+    )
+    parser.add_argument(
+        "--fallback-online",
+        action="store_true",
+        help="Allow online download when Engine Pack validation fails (only with --engine-pack mode)",
+    )
+    parser.add_argument("--verify-runtime", action="store_true", help="Verify installed Runtime integrity")
+    parser.add_argument(
+        "--verify-models", action="store_true", help="Verify installed model integrity (per-file SHA-256)"
+    )
+    parser.add_argument("--repair", action="store_true", help="Repair mode: reinstall Runtime and models")
+    parser.add_argument("--doctor", action="store_true", help="Run System Diagnostics check")
+    parser.add_argument("--version", action="store_true", help="Show version info and exit")
     return parser
 
 
 def run_launcher(args: argparse.Namespace) -> int:
-    """执行启动流程。
+    """Execute launch flow。
 
     :param args: 解析后的命令行参数。
     :returns: 退出码 (0 成功, 非零失败)。
@@ -724,10 +734,10 @@ def run_launcher(args: argparse.Namespace) -> int:
     os.environ.setdefault("PYTHONIOENCODING", "utf-8")
 
     print("=" * 60)
-    print(f"  {APP_NAME} {VERSION} — Portable 启动器")
+    print(f"  {APP_NAME} {VERSION} — Portable Launcher")
     print("=" * 60)
-    print(f"  工作目录: {app_root}")
-    print("  GitHub 请求: 0 (源码来自内置 Payload)")
+    print(f"  Working dir: {app_root}")
+    print("  GitHub requests: 0 (source from built-in Payload)")
     print()
 
     try:
@@ -755,42 +765,42 @@ def run_launcher(args: argparse.Namespace) -> int:
             _verify_installed_models(app_root)
             return 0
 
-        # --offline 模式: 阻止网络请求
+        # --offline 模式: blocking network requests
         if args.offline:
             os.environ["BLC_OFFLINE"] = "1"
             os.environ["PIP_NO_INDEX"] = "1"
-            print("  [OFFLINE] 离线模式已启用 — 禁止所有网络请求")
+            print("  [OFFLINE] Offline mode enabled -- all network requests blocked")
 
         # --repair 模式
         if args.repair:
             _repair_runtime(app_root)
             print()
 
-        # 1. 确保持久数据目录
+        # 1. ensure persistent data dirs
         ensure_data_dirs(app_root)
 
-        # 2. 检查/安装 Runtime
+        # 2. check/install Runtime
         source_dir = get_current_release_dir()
         if source_dir is None:
-            print("[1/6] 从内置 Payload 安装源码...")
+            print("[1/6] Installing source from built-in Payload...")
             source_dir = install_source_from_payload(app_root)
             print()
         else:
-            print(f"[1/6] Runtime 已就绪: {source_dir}")
+            print(f"[1/6] Runtime ready: {source_dir}")
             print()
 
         # 3. 确保 .env
-        print("[2/6] 配置文件...")
+        print("[2/6] Config file...")
         ensure_env(app_root, source_dir)
         print()
 
-        # 4. 准备虚拟环境
-        print("[3/6] Python 环境...")
+        # 4. Prepare virtual environment
+        print("[3/6] Python environment...")
         venv_python = prepare_venv(app_root)
         print()
 
         # 5. 安装依赖
-        print("[4/6] 依赖安装...")
+        print("[4/6] Dependency install...")
         req_file = source_dir / "requirements-bundle.txt"
         if not req_file.exists():
             req_file = app_root / "requirements-bundle.txt"
@@ -799,23 +809,23 @@ def run_launcher(args: argparse.Namespace) -> int:
         if req_file.exists():
             install_dependencies(venv_python, app_root, req_file)
         else:
-            print(f"  [警告] 未找到 {req_file}，跳过依赖安装")
+            print(f"  [WARN] not found: {req_file}, skipping dependency install")
         print()
 
         # 6. 模型准备
-        print("[5/6] 模型准备...")
+        print("[5/6] Model preparation...")
         model_result = prepare_models(app_root, user_engine_pack_path)
         model_source = model_result.get("source", "unknown")
         network_reqs = model_result.get("network_requests", 0)
-        print(f"  模型来源: {model_source} (网络请求: {network_reqs})")
+        print(f"  Model source: {model_source} (network requests: {network_reqs})")
         print()
 
         # 7. 启动 Web
-        print("[6/6] 启动 Web 控制台...")
+        print("[6/6] Starting Web console...")
         print()
         print("=" * 60)
-        print("  浏览器将自动打开: http://127.0.0.1:8000")
-        print("  按 Ctrl+C 停止服务")
+        print("  Browser will open: http://127.0.0.1:8000")
+        print("  Press Ctrl+C to stop")
         print("=" * 60)
         print()
 
@@ -852,18 +862,18 @@ def run_launcher(args: argparse.Namespace) -> int:
         return 0
 
     except KeyboardInterrupt:
-        print("\n服务已停止")
+        print("\nService stopped")
         return 0
     except Exception:
-        print("\n服务异常退出:")
+        print("\nService exited with error:")
         traceback.print_exc()
-        print("\n按 Enter 键退出...")
+        print("\nPress Enter to exit...")
         input()
         return 1
 
 
 def main(argv: Sequence[str] | None = None) -> int:
-    """主入口 — 可导入和测试的 callable entry point。
+    """主入口 — importable and testable callable entrypoint。
 
     :param argv: 命令行参数列表 (None 使用 sys.argv)。
     :returns: 退出码 (0 成功, 非零失败)。
@@ -873,10 +883,10 @@ def main(argv: Sequence[str] | None = None) -> int:
     try:
         args = parser.parse_args(argv)
     except SystemExit as e:
-        # argparse 内置 help/error 处理已输出消息
+        # argparse 内置 help/error 处理already printed message
         return int(str(e)) if str(e) else 0
 
-    # --version 单独处理 (不进入 run_launcher 的繁重启动流程)
+    # --version separate handling (不进入 run_launcher 的heavy startup flow)
     if args.version:
         print(f"BiliLiveCut Portable {VERSION}")
         print(f"Release Version: {RELEASE_VERSION}")
@@ -885,7 +895,7 @@ def main(argv: Sequence[str] | None = None) -> int:
             manifest = get_payload_manifest()
             print(f"Payload SHA256: {manifest.get('payload_sha256', 'N/A')[:32]}")
         except RuntimeError:
-            print("Payload SHA256: (不可读)")
+            print("Payload SHA256: (unreadable)")
         pack_info = get_engine_pack_info()
         if pack_info:
             print(f"Engine Pack: {pack_info.get('engine_pack_version', 'N/A')} CRC32={pack_info.get('crc32', 'N/A')}")
