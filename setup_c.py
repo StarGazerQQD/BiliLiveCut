@@ -17,7 +17,7 @@ if not _skip:
     _c_speedups = Extension(
         "app.analysis._c_speedups",
         sources=["tools/native/c/_c_speedups.c"],
-        extra_compile_args=(["/O2", "/arch:AVX2", "/fp:fast"] if sys.platform == "win32" else ["-O3", "-ffast-math"]),
+        extra_compile_args=(["/O2", "/fp:fast"] if sys.platform == "win32" else ["-O3", "-ffast-math"]),
     )
     _extensions.append(_c_speedups)
 

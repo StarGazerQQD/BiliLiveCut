@@ -14,7 +14,7 @@ if not _skip_extensions:
         "app.analysis._c_speedups",
         sources=["tools/native/c/_c_speedups.c"],
         extra_compile_args=(
-            ["/O2", "/arch:AVX2", "/fp:fast", "/utf-8"] if sys.platform == "win32" else ["-O3", "-ffast-math"]
+            ["/O2", "/fp:fast", "/utf-8"] if sys.platform == "win32" else ["-O3", "-ffast-math"]
         ),
     )
     _extensions.append(_c_speedups)
@@ -26,7 +26,7 @@ if not _skip_extensions:
         _r2 = Extension(
             "app.analysis._speedups_round2",
             sources=["tools/native/cython/_speedups_round2.pyx"],
-            extra_compile_args=(["/O2", "/arch:AVX2", "/utf-8"] if sys.platform == "win32" else ["-O3", "-ffast-math"]),
+            extra_compile_args=(["/O2", "/utf-8"] if sys.platform == "win32" else ["-O3", "-ffast-math"]),
         )
         _extensions.append(_r2)
     except ImportError:
