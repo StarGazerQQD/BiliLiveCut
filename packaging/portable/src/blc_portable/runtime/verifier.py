@@ -1,11 +1,25 @@
-"""Runtime 验证器 — Payload/Runtime 完整性验证。"""
+"""Runtime verifier — Payload/Runtime integrity verification.
+
+Provides both metadata checks (verify_runtime) and per-file content
+verification (verify_runtime_files).
+"""
 
 from __future__ import annotations
 
+import hashlib
 import json
 import sys
 from pathlib import Path
 from typing import Any
+
+
+def _streaming_sha256(path: Path, chunk_size: int = 8 * 1024 * 1024) -> str:
+    """Streaming SHA-256 of a file."""
+    hasher = hashlib.sha256()
+    with open(path, "rb") as f:
+        while chunk := f.read(chunk_size):
+            hasher.update(chunk)
+    return hasher.hexdigest()
 
 
 def write_current_json(
@@ -113,6 +127,81 @@ def verify_runtime(app_root: Path) -> tuple[bool, list[str]]:
     # 7. Schema
     schema = info.get("runtime_schema", 0)
     if not isinstance(schema, int) or schema < 1:
-        errors.append(f"runtime_schema 无效: {schema}")
+        errors.append(f"runtime_schema invalid: {schema}")
 
     return len(errors) == 0, errors
+
+
+def verify_runtime_files(app_root: Path) -> tuple[bool, list[str]]:
+    """Verify installed Runtime files against installed manifest.
+
+    Checks: file existence, size, SHA-256 for every file in the release.
+    Uses streaming SHA-256 (never read_bytes()) for large files.
+
+    :param app_root: app root dir.
+    :returns: (pass, error list).
+    """
+    from .__init__ import get_current_release_dir
+
+    errors: list[str] = []
+    release_dir = get_current_release_dir()
+    if release_dir is None:
+        errors.append("No active Runtime release")
+        return False, errors
+
+    manifest_path = release_dir / "payload_manifest.json"
+    if not manifest_path.exists():
+        errors.append("Payload manifest not found in release")
+        return False, errors
+
+    try:
+        manifest = json.loads(manifest_path.read_text(encoding="utf-8"))
+    except (json.JSONDecodeError, OSError) as exc:
+        errors.append(f"Manifest unreadable: {exc}")
+        return False, errors
+
+    file_count = 0
+    size_mismatch = 0
+    sha_mismatch = 0
+    missing = 0
+    extra_files = 0
+
+    manifest_files = set()
+    for fp_str, info in manifest.get("file_list", manifest.get("files", {})).items():
+        manifest_files.add(fp_str)
+        target = release_dir / fp_str
+        if not target.exists():
+            missing += 1
+            errors.append(f"Missing: {fp_str}")
+            continue
+
+        expected_size = int(info.get("size", 0))
+        actual_size = target.stat().st_size
+        if expected_size and actual_size != expected_size:
+            size_mismatch += 1
+
+        expected_hash = str(info.get("sha256", ""))
+        if expected_hash and len(expected_hash) == 64:
+            actual_hash = _streaming_sha256(target)
+            if actual_hash != expected_hash:
+                sha_mismatch += 1
+        file_count += 1
+
+    # Check for extra files not in manifest
+    for actual_file in release_dir.rglob("*"):
+        if actual_file.is_file():
+            rel = actual_file.relative_to(release_dir).as_posix()
+            if rel not in manifest_files and rel != "payload_manifest.json":
+                extra_files += 1
+
+    if missing:
+        errors.append(f"Missing files: {missing}")
+    if size_mismatch:
+        errors.append(f"Size mismatches: {size_mismatch}")
+    if sha_mismatch:
+        errors.append(f"SHA-256 mismatches: {sha_mismatch}")
+    if extra_files:
+        errors.append(f"Extra files: {extra_files}")
+
+    total_errors = missing + size_mismatch + sha_mismatch + extra_files
+    return total_errors == 0 and len(errors) == 0, errors
