@@ -2,8 +2,6 @@
 
 from __future__ import annotations
 
-import json
-import os
 import sys
 from pathlib import Path
 
@@ -43,8 +41,8 @@ class TestLiteBuilder:
         check_engine_pack_info()
 
     def test_lite_version_in_manifest(self) -> None:
-        from blc_portable.payload.manifest import RELEASE_VERSION as MANIFEST_VERSION  # noqa: E402
         from blc_portable.builders.lite import RELEASE_VERSION as LITE_VERSION  # noqa: E402
+        from blc_portable.payload.manifest import RELEASE_VERSION as MANIFEST_VERSION  # noqa: E402
 
         assert LITE_VERSION == MANIFEST_VERSION
 
@@ -64,4 +62,5 @@ class TestFullBuilder:
         monkeypatch.setenv("BLC_FIXTURE_BUILD", "1")
         # Should not crash at import time
         from blc_portable.builders.full import build_full_bundle  # noqa: E402
+
         assert callable(build_full_bundle)

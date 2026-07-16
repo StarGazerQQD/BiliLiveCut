@@ -20,13 +20,34 @@ PAYLOAD_ITEMS = [
 
 # 禁止进入 Payload 的路径
 EXCLUDE_PATTERNS = [
-    ".git", ".github", "tests/", "docs/",
-    "__pycache__/", "*.pyc", "storage/", ".env",
-    ".venv/", "build/", "dist/", "models/",
-    "vendor/", "bin/", "*.log", "*.db", "*.sqlite3",
-    "*.egg-info/", ".pytest_cache/", ".ruff_cache/",
-    ".mypy_cache/", ".audit_cache/", ".vscode/", ".idea/",
-    ".DS_Store", "Thumbs.db", ".git_msg.txt", ".gitignore",
+    ".git",
+    ".github",
+    "tests/",
+    "docs/",
+    "__pycache__/",
+    "*.pyc",
+    "storage/",
+    ".env",
+    ".venv/",
+    "build/",
+    "dist/",
+    "models/",
+    "vendor/",
+    "bin/",
+    "*.log",
+    "*.db",
+    "*.sqlite3",
+    "*.egg-info/",
+    ".pytest_cache/",
+    ".ruff_cache/",
+    ".mypy_cache/",
+    ".audit_cache/",
+    ".vscode/",
+    ".idea/",
+    ".DS_Store",
+    "Thumbs.db",
+    ".git_msg.txt",
+    ".gitignore",
 ]
 
 # 允许的版本注入文件
@@ -40,9 +61,7 @@ ALLOWED_OVERLAY_FILES = [
 ]
 
 
-def get_payload_file_list(
-    staging_dir: Path, *, base_path: Path | None = None
-) -> list[str]:
+def get_payload_file_list(staging_dir: Path, *, base_path: Path | None = None) -> list[str]:
     """生成 Payload 文件清单 (相对于 staging_dir 的路径)。
 
     :param staging_dir: staging 根目录。

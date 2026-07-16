@@ -86,7 +86,8 @@ ignore = ["D203", "D213", "D400", "D415", "D403", "D107"]
 convention = "pep257"
 
 [tool.ruff.lint.per-file-ignores]
-"tests/**/*.py" = ["D100", "D102", "D103", "E501"]  # 测试文件放宽 docstring 和行长要求
+"tests/**/*.py" = ["D100", "D101", "D102", "D103", "E501"]  # 测试文件放宽 docstring 和行长要求
+"packaging/portable/tests/**/*.py" = ["D100", "D101", "D102", "D103", "E501"]  # 可移植测试文件放宽
 "packaging/portable/**/*.py" = ["E402", "D100", "D103"]  # 构建脚本需修改 sys.path 后再导入
 
 [tool.pytest.ini_options]

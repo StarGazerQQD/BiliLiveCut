@@ -42,7 +42,7 @@ class TestModelCatalogSingleSource:
         assert "/" in para["repository"], f"Not full repo: {para['repository']}"
         for sub in para.get("sub_models", []):
             assert "/" in sub["repository"], f"Sub-model not full repo: {sub['repository']}"
-            assert sub.get("target_subdir"), f"Sub-model missing target_subdir"
+            assert sub.get("target_subdir"), "Sub-model missing target_subdir"
 
     def test_all_submodels_have_explicit_target_subdir(self) -> None:
         catalog = _load_lock()

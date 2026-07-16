@@ -6,8 +6,6 @@ import json
 import sys
 from pathlib import Path
 
-import pytest
-
 REPO_ROOT = Path(__file__).resolve().parent.parent
 
 
@@ -21,18 +19,21 @@ class TestReleaseAudit:
     def test_audit_importable(self) -> None:
         sys.path.insert(0, str(REPO_ROOT / "scripts"))
         import release_audit  # noqa: E402
+
         assert hasattr(release_audit, "run_audit")
         assert hasattr(release_audit, "AuditResult")
 
     def test_audit_quick_passes(self) -> None:
         sys.path.insert(0, str(REPO_ROOT / "scripts"))
         import release_audit  # noqa: E402
+
         result = release_audit.run_audit(quick=True)
         assert result.exit_code == release_audit.EXIT_OK, f"Quick audit failed: {result.report()}"
 
     def test_launcher_has_main(self) -> None:
         sys.path.insert(0, str(REPO_ROOT / "scripts"))
         import release_audit  # noqa: E402
+
         result = release_audit.run_audit(quick=True)
         main_check = any("main()" in p for p in result.passed)
         assert main_check

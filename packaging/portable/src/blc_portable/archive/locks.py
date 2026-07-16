@@ -5,8 +5,8 @@ from __future__ import annotations
 import contextlib
 import os
 import time
+from collections.abc import Generator
 from pathlib import Path
-from typing import Generator
 
 
 class FileLock:

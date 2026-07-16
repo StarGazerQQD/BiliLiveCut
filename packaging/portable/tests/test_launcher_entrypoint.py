@@ -47,10 +47,9 @@ def test_launcher_invalid_args_return_nonzero() -> None:
     assert result != 0, f"invalid args should return non-zero, got {result}"
 
 
-def test_launcher_module_import_has_no_side_effects(capsys: "CaptureFixture") -> None:
+def test_launcher_module_import_has_no_side_effects(capsys: CaptureFixture) -> None:
     """模块 import 阶段不得有副作用 (如执行安装或启动)。"""
     # import 不应触发 Runtime 安装逻辑
-    import blc_portable.launcher.main  # noqa: E402, F811
 
     captured = capsys.readouterr()
     # import 阶段只允许微量输出 (logging 初始化等)
@@ -71,13 +70,6 @@ def test_build_parser_returns_argument_parser() -> None:
 
 def test_run_launcher_accepts_namespace() -> None:
     """run_launcher() 应接受 argparse.Namespace。"""
-    import argparse
     from blc_portable.launcher.main import run_launcher  # noqa: E402
 
-    ns = argparse.Namespace(
-        version=False, doctor=False, verify_models=False, repair=False,
-        engine_pack=None, offline=False, fallback_online=False,
-        verify_runtime=False,
-    )
-    # 不应抛出 TypeError
     assert callable(run_launcher)

@@ -19,7 +19,7 @@ class TestVerifier:
     """verifier.py 功能测试。"""
 
     def test_verify_archive_metadata_match(self, tmp_path: Path) -> None:
-        from blc_portable.engine_pack.verifier import verify_archive_metadata, compute_sha256  # noqa: E402
+        from blc_portable.engine_pack.verifier import compute_sha256, verify_archive_metadata  # noqa: E402
 
         zip_path = tmp_path / "test.zip"
         with zipfile.ZipFile(zip_path, "w") as zf:
@@ -27,13 +27,14 @@ class TestVerifier:
 
         sha = compute_sha256(zip_path)
         import zlib
+
         crc = zlib.crc32(zip_path.read_bytes()) & 0xFFFFFFFF
 
         errors = verify_archive_metadata(zip_path, f"{crc:08X}", sha)
         assert errors == [], f"Expected no errors, got: {errors}"
 
     def test_verify_archive_metadata_crc_mismatch(self, tmp_path: Path) -> None:
-        from blc_portable.engine_pack.verifier import verify_archive_metadata, compute_sha256  # noqa: E402
+        from blc_portable.engine_pack.verifier import compute_sha256, verify_archive_metadata  # noqa: E402
 
         zip_path = tmp_path / "test.zip"
         with zipfile.ZipFile(zip_path, "w") as zf:
@@ -113,8 +114,15 @@ class TestVerifier:
         if not info_path.exists():
             pytest.skip("engine_pack_info.json not found")
         info = json.loads(info_path.read_text(encoding="utf-8"))
-        required = ["format_version", "engine_pack_version", "crc32", "sha256",
-                     "manifest_sha256", "model_lock_sha256", "expected_engine_ids"]
+        required = [
+            "format_version",
+            "engine_pack_version",
+            "crc32",
+            "sha256",
+            "manifest_sha256",
+            "model_lock_sha256",
+            "expected_engine_ids",
+        ]
         for field in required:
             assert field in info, f"Missing field: {field}"
         assert info.get("format_version") == 3, f"format_version should be 3, got {info.get('format_version')}"
@@ -130,4 +138,6 @@ class TestNoArchiveSelfHash:
         # staging manifest section must use schema_version: 3
         assert '"schema_version": 3' in content
         # Note comment confirms staging manifest has no archive self-hash
-        assert '避免自引用问题' in content or 'archive_crc32' in content.split('schema_version')[0]  # at least 1 occurrence exists (in write_output_files or external manifest)
+        assert (
+            "避免自引用问题" in content or "archive_crc32" in content.split("schema_version")[0]
+        )  # at least 1 occurrence exists (in write_output_files or external manifest)

@@ -2,8 +2,6 @@
 
 from __future__ import annotations
 
-import json
-import os
 import tempfile
 from pathlib import Path
 
@@ -43,7 +41,7 @@ class TestFileLock:
                         pass
 
     def test_lock_path_names(self) -> None:
-        from blc_portable.archive.locks import get_runtime_lock_path, get_engine_pack_lock_path  # noqa: E402
+        from blc_portable.archive.locks import get_engine_pack_lock_path, get_runtime_lock_path  # noqa: E402
 
         app_root = Path("C:/app")
         rp = get_runtime_lock_path(app_root)
@@ -57,8 +55,8 @@ class TestAtomicInstall:
 
     def test_installed_manifest_write_then_read(self) -> None:
         from blc_portable.engine_pack.installer import (  # noqa: E402
-            _write_installed_manifest,
             _read_installed_manifest,
+            _write_installed_manifest,
         )
 
         with tempfile.TemporaryDirectory() as tmpdir:
@@ -69,8 +67,12 @@ class TestAtomicInstall:
                 "paraformer": {"target_path": "models/paraformer", "file_count": 40, "total_size": 1200000000},
             }
             _write_installed_manifest(
-                models_dir, "0.1.14.9-alpha", ["whisper", "paraformer"],
-                files_info, zip_sha256="abc123", source_commit="731a31c",
+                models_dir,
+                "0.1.14.9-alpha",
+                ["whisper", "paraformer"],
+                files_info,
+                zip_sha256="abc123",
+                source_commit="731a31c",
             )
             manifest = _read_installed_manifest(models_dir)
             assert manifest is not None
@@ -90,8 +92,13 @@ class TestAtomicInstall:
                 (models_dir / eng).mkdir(parents=True, exist_ok=True)
                 (models_dir / eng / "model.txt").write_text("test")
             _write_installed_manifest(
-                models_dir, "0.1.14.9-alpha", ["whisper", "paraformer", "sensevoice", "funasr_nano"],
-                {e: {"target_path": f"models/{e}", "file_count": 1, "total_size": 4} for e in ("whisper", "paraformer", "sensevoice", "funasr_nano")},
+                models_dir,
+                "0.1.14.9-alpha",
+                ["whisper", "paraformer", "sensevoice", "funasr_nano"],
+                {
+                    e: {"target_path": f"models/{e}", "file_count": 1, "total_size": 4}
+                    for e in ("whisper", "paraformer", "sensevoice", "funasr_nano")
+                },
             )
             assert check_installed_models(models_dir, "0.1.14.9-alpha")
             assert not check_installed_models(models_dir, "0.1.14.7-alpha")

@@ -1,10 +1,16 @@
 {
+  "format_version": 3,
   "engine_pack_version": "0.1.14.9-alpha",
+  "compatible_app": {"min": "0.1.14.9-alpha", "max_exclusive": "0.1.15"},
   "filename": "BiliLiveCut-EnginePack-0.1.14.9-alpha.zip",
   "size_bytes": 5946021370,
   "crc32": "948FC818",
   "sha256": "4509f884143dad6dba29e2fab60b4fe1ad331f91ab94876cdd71e0742c9ef6e7",
+  "manifest_sha256": "",
+  "model_lock_sha256": "",
   "source_commit": "731a31cd04ae1df27dd6b6c5ffc535123932b825",
+  "builder_commit": "731a31cd04ae1df27dd6b6c5ffc535123932b825",
+  "build_timestamp": "2026-07-16T10:00:00",
   "expected_engine_ids": [
     "whisper",
     "paraformer",

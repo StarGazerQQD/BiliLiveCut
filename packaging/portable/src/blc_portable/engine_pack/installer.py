@@ -253,10 +253,7 @@ def install_from_engine_pack(
                 from .verifier import verify_extracted_tree
 
                 manifest_dict: dict[str, Any] = {
-                    "engines": [
-                        {"target_path": e.target_path, "engine_id": e.engine_id}
-                        for e in manifest.engines
-                    ],
+                    "engines": [{"target_path": e.target_path, "engine_id": e.engine_id} for e in manifest.engines],
                     "files": {
                         fp_str: {"size": int(info.get("size", 0)), "sha256": str(info.get("sha256", ""))}
                         for fp_str, info in manifest.files.items()

@@ -10,6 +10,7 @@ by a separate Engine Pack.
 from __future__ import annotations
 
 import json
+import os
 import shutil
 import tempfile
 import zipfile
@@ -94,11 +95,12 @@ def build_full_bundle() -> Path:
                 print(f"    - {m}")
         else:
             raise RuntimeError(
-                "Full build FAILED — missing components:\n  " + "\n  ".join(missing) +
-                "\nFull offline bundle prerequisites:" +
-                "\n  1. portable-python/ directory (Python 3.11/3.12)" +
-                "\n  2. vendor/wheels/ directory (offline Wheels)" +
-                "\n  3. bin/ffmpeg.exe and bin/ffprobe.exe"
+                "Full build FAILED — missing components:\n  "
+                + "\n  ".join(missing)
+                + "\nFull offline bundle prerequisites:"
+                + "\n  1. portable-python/ directory (Python 3.11/3.12)"
+                + "\n  2. vendor/wheels/ directory (offline Wheels)"
+                + "\n  3. bin/ffmpeg.exe and bin/ffprobe.exe"
             )
 
     # 读取 Engine Pack 信息 (如有)

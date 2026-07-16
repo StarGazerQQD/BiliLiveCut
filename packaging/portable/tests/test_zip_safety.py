@@ -2,7 +2,6 @@
 
 from __future__ import annotations
 
-import os
 import tempfile
 import zipfile
 from pathlib import Path
@@ -18,11 +17,10 @@ if str(_src_dir) not in sys.path:
     sys.path.insert(0, str(_src_dir))
 
 from blc_portable.archive.safe_zip import (  # noqa: E402
-    _safe_relative_path,
-    _is_reserved_name,
     _default_compression,
+    _is_reserved_name,
+    _safe_relative_path,
     safe_extract,
-    iter_archive_members,
 )
 
 

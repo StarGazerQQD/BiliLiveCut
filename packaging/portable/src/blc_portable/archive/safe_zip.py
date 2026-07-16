@@ -14,14 +14,33 @@ from __future__ import annotations
 import shutil
 import stat
 import zipfile
+from collections.abc import Generator
 from pathlib import Path
-from typing import Generator
 
 # Windows 保留设备名 (不区分大小写)
 _WIN_RESERVED_NAMES = {
-    "CON", "PRN", "AUX", "NUL",
-    "COM1", "COM2", "COM3", "COM4", "COM5", "COM6", "COM7", "COM8", "COM9",
-    "LPT1", "LPT2", "LPT3", "LPT4", "LPT5", "LPT6", "LPT7", "LPT8", "LPT9",
+    "CON",
+    "PRN",
+    "AUX",
+    "NUL",
+    "COM1",
+    "COM2",
+    "COM3",
+    "COM4",
+    "COM5",
+    "COM6",
+    "COM7",
+    "COM8",
+    "COM9",
+    "LPT1",
+    "LPT2",
+    "LPT3",
+    "LPT4",
+    "LPT5",
+    "LPT6",
+    "LPT7",
+    "LPT8",
+    "LPT9",
 }
 
 # 默认安全限制
@@ -108,10 +127,31 @@ def _default_compression(path: str) -> int:
     :param path: 文件路径。
     :returns: ZIP 压缩常量。
     """
-    compressed_exts = {".bin", ".pt", ".pth", ".pkl", ".safetensors",
-                       ".pyd", ".dll", ".so", ".exe", ".whl", ".zip",
-                       ".tar", ".gz", ".bz2", ".7z", ".xz", ".mp4",
-                       ".mp3", ".wav", ".flac", ".jpg", ".jpeg", ".png"}
+    compressed_exts = {
+        ".bin",
+        ".pt",
+        ".pth",
+        ".pkl",
+        ".safetensors",
+        ".pyd",
+        ".dll",
+        ".so",
+        ".exe",
+        ".whl",
+        ".zip",
+        ".tar",
+        ".gz",
+        ".bz2",
+        ".7z",
+        ".xz",
+        ".mp4",
+        ".mp3",
+        ".wav",
+        ".flac",
+        ".jpg",
+        ".jpeg",
+        ".png",
+    }
     if Path(path).suffix.lower() in compressed_exts:
         return zipfile.ZIP_STORED
     return zipfile.ZIP_DEFLATED
@@ -168,9 +208,7 @@ def iter_archive_members(
         if info.compress_type != zipfile.ZIP_STORED and info.compress_size > 0:
             ratio = info.file_size / info.compress_size
             if ratio > max_compression_ratio:
-                raise RuntimeError(
-                    f"压缩炸弹: {info.filename} 压缩比 {ratio:.1f}x > {max_compression_ratio}x"
-                )
+                raise RuntimeError(f"压缩炸弹: {info.filename} 压缩比 {ratio:.1f}x > {max_compression_ratio}x")
 
         # 路径安全检查
         target = _safe_relative_path(destination_root, info.filename)
@@ -209,7 +247,8 @@ def safe_extract(
     extracted: list[str] = []
 
     for info, target in iter_archive_members(
-        zf, destination_root,
+        zf,
+        destination_root,
         max_total_size=max_total_size,
         max_file_count=max_file_count,
         max_single_file=max_single_file,

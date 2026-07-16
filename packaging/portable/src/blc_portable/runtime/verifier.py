@@ -50,6 +50,7 @@ def write_current_json(
     target.parent.mkdir(parents=True, exist_ok=True)
     tmp.write_text(json.dumps(current_info, ensure_ascii=False, indent=2), encoding="utf-8")
     import os
+
     os.replace(str(tmp), str(target))
 
 
@@ -62,7 +63,7 @@ def verify_runtime(app_root: Path) -> tuple[bool, list[str]]:
     :param app_root: 应用根目录。
     :returns: (通过, 错误列表)。
     """
-    from .__init__ import get_current_json_path, get_current_release_dir, get_releases_dir
+    from .__init__ import get_current_json_path, get_releases_dir
 
     errors: list[str] = []
     current_path = get_current_json_path()

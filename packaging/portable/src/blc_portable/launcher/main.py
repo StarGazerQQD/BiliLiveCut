@@ -12,6 +12,7 @@
 
 from __future__ import annotations
 
+import argparse
 import json
 import os
 import shutil
@@ -20,8 +21,9 @@ import sys
 import traceback
 import webbrowser
 import zipfile
+from collections.abc import Sequence
 from pathlib import Path
-from typing import Any, Sequence
+from typing import Any
 
 # ── 常量 ──────────────────────────────────────────────────
 APP_NAME = "BiliLiveCut"
@@ -346,7 +348,8 @@ def install_dependencies(venv_python: Path, app_root: Path, req_file: Path) -> N
         print(f"  安装依赖 (lock 文件: {lock_file.name})...")
         subprocess.run(
             [str(venv_python), "-m", "pip", "install", "-r", str(lock_file)],
-            check=True, timeout=600,
+            check=True,
+            timeout=600,
         )
         print("  依赖安装完成")
         return
@@ -507,8 +510,9 @@ def _run_doctor(app_root: Path) -> None:
     checks_warned = 0
     checks_failed = 0
 
-    def _check(name: str, condition: bool, detail: str = "",
-               expected: str = "", actual: str = "", suggestion: str = "") -> None:
+    def _check(
+        name: str, condition: bool, detail: str = "", expected: str = "", actual: str = "", suggestion: str = ""
+    ) -> None:
         nonlocal checks_passed, checks_warned, checks_failed
         if condition:
             status = "[PASS]"
@@ -613,7 +617,6 @@ def _verify_installed_models(app_root: Path) -> None:
     failed = 0
     total_files_checked = 0
     hash_mismatches = 0
-    size_mismatches = 0
 
     # 逐引擎比对安装清单中记录的文件
     for engine_id, info in installed.get("files", {}).items():

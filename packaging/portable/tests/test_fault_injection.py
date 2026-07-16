@@ -3,12 +3,9 @@
 from __future__ import annotations
 
 import json
-import os
 import tempfile
 import zipfile
 from pathlib import Path
-
-import pytest
 
 # 添加模块路径
 _portable_dir = Path(__file__).resolve().parent.parent  # portable/

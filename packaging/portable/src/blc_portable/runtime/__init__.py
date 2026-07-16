@@ -5,7 +5,6 @@ Launcher、测试、verifier 必须通过此模块获取路径，不得各自硬
 
 from __future__ import annotations
 
-import json
 import sys
 from pathlib import Path
 

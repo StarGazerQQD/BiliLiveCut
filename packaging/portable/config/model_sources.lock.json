@@ -88,7 +88,7 @@
       "hub": "modelscope",
       "repository": "iic/SenseVoiceSmall",
       "requested_revision": "",
-      "resolved_revision": "master",
+      "resolved_revision": "v1.0.0",
       "target_path": "models/sensevoice",
       "required_files": [
         "model.pt",
@@ -111,7 +111,7 @@
       "hub": "modelscope",
       "repository": "FunAudioLLM/Fun-ASR-Nano-2512",
       "requested_revision": "",
-      "resolved_revision": "master",
+      "resolved_revision": "v1.0.0",
       "target_path": "models/funasr_nano",
       "required_files": [
         "model.pt",

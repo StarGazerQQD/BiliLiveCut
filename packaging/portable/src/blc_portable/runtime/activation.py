@@ -10,18 +10,27 @@ from typing import Any
 
 
 def write_current_json(
-    app_root: Path, release_id: str, release_version: str,
-    source_commit: str, source_commit_short: str, builder_commit: str,
-    payload_sha256: str, manifest_sha256: str,
+    app_root: Path,
+    release_id: str,
+    release_version: str,
+    source_commit: str,
+    source_commit_short: str,
+    builder_commit: str,
+    payload_sha256: str,
+    manifest_sha256: str,
 ) -> None:
     """原子写入 current.json（先 .tmp 再 os.replace）。"""
     from . import get_runtime_dir
 
     current_info: dict[str, Any] = {
-        "runtime_schema": 3, "release_id": release_id,
-        "release_version": release_version, "source_commit": source_commit,
-        "source_commit_short": source_commit_short, "builder_commit": builder_commit,
-        "payload_sha256": payload_sha256, "manifest_sha256": manifest_sha256,
+        "runtime_schema": 3,
+        "release_id": release_id,
+        "release_version": release_version,
+        "source_commit": source_commit,
+        "source_commit_short": source_commit_short,
+        "builder_commit": builder_commit,
+        "payload_sha256": payload_sha256,
+        "manifest_sha256": manifest_sha256,
         "python_abi": f"cp{sys.version_info.major}{sys.version_info.minor}",
         "platform": sys.platform,
         "architecture": "x64" if sys.maxsize > 2**32 else "x86",
@@ -37,6 +46,7 @@ def write_current_json(
 def read_current_json(app_root: Path) -> dict[str, Any] | None:
     """安全读取 current.json。"""
     from . import get_runtime_dir
+
     p = get_runtime_dir() / "current.json"
     if not p.exists():
         return None
@@ -49,6 +59,7 @@ def read_current_json(app_root: Path) -> dict[str, Any] | None:
 def delete_current_json(app_root: Path) -> None:
     """删除 current.json（触发重新安装）。"""
     from . import get_runtime_dir
+
     p = get_runtime_dir() / "current.json"
     if p.exists():
         p.unlink(missing_ok=True)

@@ -199,9 +199,14 @@ def verify_extracted_tree(
     if missing_files:
         errors.append(f"缺失文件 ({len(missing_files)}): {missing_files[:5]}{'...' if len(missing_files) > 5 else ''}")
     if size_mismatch:
-        errors.append(f"文件大小不匹配 ({len(size_mismatch)}): {size_mismatch[:3]}{'...' if len(size_mismatch) > 3 else ''}")
+        suffix = "..."
+        errors.append(
+            f"文件大小不匹配 ({len(size_mismatch)}): {size_mismatch[:3]}{suffix if len(size_mismatch) > 3 else ''}"
+        )
     if sha_mismatch:
-        errors.append(f"文件 SHA-256 不匹配 ({len(sha_mismatch)}): {sha_mismatch[:3]}{'...' if len(sha_mismatch) > 3 else ''}")
+        errors.append(
+            f"文件 SHA-256 不匹配 ({len(sha_mismatch)}): {sha_mismatch[:3]}{suffix if len(sha_mismatch) > 3 else ''}"
+        )
 
     # 3. 多余文件检测
     manifest_paths = set(files.keys())
