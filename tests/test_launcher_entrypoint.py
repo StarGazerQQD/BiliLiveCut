@@ -8,7 +8,6 @@ from pathlib import Path
 from typing import TYPE_CHECKING
 
 if TYPE_CHECKING:
-    from _pytest.capture import CaptureFixture
     from _pytest.monkeypatch import MonkeyPatch
 
 REPO_ROOT = Path(__file__).resolve().parent.parent
