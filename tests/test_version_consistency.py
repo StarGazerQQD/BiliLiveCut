@@ -108,9 +108,8 @@ def test_version_json_is_valid() -> None:
 
 
 def test_runtime_release_id_contains_payload_hash() -> None:
-    """验证 launcher 支持内容寻址 Release ID。"""
-    launcher_path = REPO_ROOT / "packaging" / "portable" / "src" / "blc_portable" / "launcher" / "main.py"
-    content = launcher_path.read_text(encoding="utf-8")
-    # 必须包含 payload hash 相关的逻辑
-    assert "payload_hash_short" in content or "payload_sha" in content, "launcher 必须支持内容寻址 Release ID"
-    assert "content_release_id" in content, "launcher 必须使用内容寻址 Release ID"
+    """验证 Runtime installer 支持内容寻址 Release ID。"""
+    installer_path = REPO_ROOT / "packaging" / "portable" / "src" / "blc_portable" / "runtime" / "installer.py"
+    content = installer_path.read_text(encoding="utf-8")
+    assert "build_release_id" in content, "runtime installer must use content-addressed Release ID"
+    assert "payload_hash" in content, "runtime installer must use payload hash"
