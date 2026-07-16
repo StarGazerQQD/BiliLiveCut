@@ -277,35 +277,42 @@ def install_from_engine_pack(
                     "total_size": ts,
                 }
 
-            # 7. 原子安装
-            print("  原子安装模型到 models/ ...")
+            # 7. Atomic directory transaction: models.new -> switch -> verify
+            print("  Atomic model installation...")
+            models_new = app_root / f"models.new-{uuid.uuid4().hex[:12]}"
             backup_dir = None
-            if models_dir.exists() and any(models_dir.iterdir()):
-                backup_dir = app_root / f"models-backup-{uuid.uuid4().hex[:8]}"
-                shutil.move(str(models_dir), str(backup_dir))
-
             try:
-                models_dir.mkdir(parents=True, exist_ok=True)
+                models_new.mkdir(parents=True, exist_ok=True)
                 staging_models = staging_dir / "models"
                 if staging_models.exists():
                     for sub in staging_models.iterdir():
-                        dest = models_dir / sub.name
-                        if dest.exists():
-                            if dest.is_dir():
-                                shutil.rmtree(str(dest), ignore_errors=True)
-                            else:
-                                dest.unlink(missing_ok=True)
-                        shutil.move(str(sub), str(dest))
-                shutil.move(str(manifest_path), str(models_dir / "engine-pack-manifest.json"))
+                        shutil.move(str(sub), str(models_new / sub.name))
+                else:
+                    for item in staging_dir.iterdir():
+                        if item.name in ("engine-pack-manifest.json", "engine-pack-content-manifest.json"):
+                            continue
+                        if item.is_dir():
+                            shutil.move(str(item), str(models_new / item.name))
+                shutil.move(str(manifest_path), str(models_new / "engine-pack-content-manifest.json"))
+                _write_installed_manifest(models_new, expected_version, installed_engines, files_info)
+                if models_dir.exists() and any(models_dir.iterdir()):
+                    backup_dir = app_root / f"models.backup-{uuid.uuid4().hex[:8]}"
+                    shutil.move(str(models_dir), str(backup_dir))
+                elif models_dir.exists():
+                    shutil.rmtree(str(models_dir), ignore_errors=True)
+                os.replace(str(models_new), str(models_dir))
+                for engine_id in installed_engines:
+                    ep = models_dir / engine_id
+                    if not ep.exists() or not any(ep.iterdir()):
+                        raise RuntimeError(f"Post-switch verify failed: {engine_id}")
             except Exception:
                 if backup_dir and backup_dir.exists():
                     if models_dir.exists():
                         shutil.rmtree(str(models_dir), ignore_errors=True)
                     shutil.move(str(backup_dir), str(models_dir))
+                if models_new.exists():
+                    shutil.rmtree(str(models_new), ignore_errors=True)
                 raise
-
-            # 8. Write installed manifest (inside try for rollback safety)
-            _write_installed_manifest(models_dir, expected_version, installed_engines, files_info)
 
         except Exception:
             if staging_dir.exists():
