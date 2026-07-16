@@ -64,10 +64,9 @@ EXCLUDE_PATTERNS = [
 # 允许的发布元数据覆盖文件
 ALLOWED_OVERLAY_FILES = [
     "app/_version.py",
+    "app/_portable_release.py",
     "app/__init__.py",
     "pyproject.toml",
-    "README.md",
-    "CHANGELOG.md",
     "payload_manifest.json",
 ]
 
@@ -218,12 +217,11 @@ def apply_version_overlay(staging_dir: Path) -> list[str]:
         text = _version_re.sub(_ver_repl, text)
         return text
 
-    # 各文件处理: read → overlay → write (仅在内容变化时)
+    # 只操作明确的版本元数据字段，不全文替换 README/CHANGELOG
     targets: list[tuple[str, str]] = [
+        ("app/_portable_release.py", RELEASE_VERSION),  # 优先：专属便携版本文件
         ("app/__init__.py", RELEASE_VERSION),
         ("pyproject.toml", RELEASE_VERSION),
-        ("README.md", RELEASE_VERSION),
-        ("CHANGELOG.md", RELEASE_VERSION),
         ("setup.py", RELEASE_VERSION),
         ("setup_c.py", base_version),  # setup_c 使用无后缀版本号
     ]

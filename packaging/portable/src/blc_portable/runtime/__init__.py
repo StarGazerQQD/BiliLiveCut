@@ -60,18 +60,18 @@ def get_current_release_dir() -> Path | None:
     current_path = get_current_json_path()
     if not current_path.exists():
         return None
-    try:
-        info = json.loads(current_path.read_text(encoding="utf-8"))
-        rid = info.get("release_id", "")
-        if not rid:
-            return None
-        expected_payload_sha = info.get("payload_sha256", "")
-        d = get_releases_dir() / rid
-        if d.exists() and (d / "app" / "cli.py").exists():
-            return d
+    from .activation import read_current_json
+
+    info = read_current_json(app_root=get_app_root())
+    if info is None:
         return None
-    except (json.JSONDecodeError, OSError):
+    rid = info.get("release_id", "")
+    if not rid:
         return None
+    d = get_releases_dir() / rid
+    if d.exists() and (d / "app" / "cli.py").exists():
+        return d
+    return None
 
 
 def get_staging_dir() -> Path:

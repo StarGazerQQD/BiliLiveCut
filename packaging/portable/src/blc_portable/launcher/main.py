@@ -338,6 +338,19 @@ def install_dependencies(venv_python: Path, app_root: Path, req_file: Path) -> N
     except subprocess.CalledProcessError:
         pass
 
+    lock_dir = Path(__file__).resolve().parent.parent.parent.parent / "packaging" / "portable" / "locks"
+    lock_file = lock_dir / "requirements-core-py312-win-x64.lock"
+
+    # 优先使用 lock 文件 (离线可复现)
+    if lock_file.exists():
+        print(f"  安装依赖 (lock 文件: {lock_file.name})...")
+        subprocess.run(
+            [str(venv_python), "-m", "pip", "install", "-r", str(lock_file)],
+            check=True, timeout=600,
+        )
+        print("  依赖安装完成")
+        return
+
     wheels_dir = app_root / WHEELS_DIR
     if wheels_dir.exists() and list(wheels_dir.glob("*.whl")):
         print(f"  安装依赖 (本地 {len(list(wheels_dir.glob('*.whl')))} wheels)...")
@@ -651,13 +664,10 @@ def _verify_installed_models(app_root: Path) -> None:
 
 
 def _repair_runtime(app_root: Path) -> None:
-    """清除旧 Runtime 以触发重新安装。
+    """清除旧 Runtime 以触发重新安装。"""
+    from blc_portable.runtime.activation import delete_current_json
 
-    :param app_root: 应用根目录。
-    """
-    current = app_root / "runtime" / "current.json"
-    if current.exists():
-        current.unlink()
+    delete_current_json(app_root)
     releases = app_root / "runtime" / "releases"
     if releases.exists():
         shutil.rmtree(releases)
