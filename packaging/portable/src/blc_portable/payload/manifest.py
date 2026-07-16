@@ -14,7 +14,7 @@ from typing import Any
 
 SOURCE_COMMIT_SHORT = "731a31c"  # 与 packaging/portable/config/version.json 保持同步
 SOURCE_COMMIT_FULL = "731a31cd04ae1df27dd6b6c5ffc535123932b825"
-RELEASE_VERSION = "0.1.14.9-alpha"
+RELEASE_VERSION = "0.1.14.10-alpha"
 MANIFEST_FORMAT_VERSION = 2
 
 

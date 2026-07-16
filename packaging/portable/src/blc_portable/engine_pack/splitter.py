@@ -114,7 +114,7 @@ def generate_index(
     return {
         "format_version": 1,
         "engine_pack_version": str(engine_pack_version),
-        "compatible_app_version": "0.1.14.9-alpha",
+        "compatible_app_version": "0.1.14.10-alpha",
         "repository": repository,
         "release_tag": release_tag,
         "archive_filename": archive_path.name,
