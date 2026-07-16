@@ -11,4 +11,7 @@ from app.accelerators.python_fallback.speedups import (  # noqa: F401
     fast_cosine_similarity,
     fast_match_keywords,
     fast_meme_count,
+    fast_multi_emotion,
+    fast_sliding_max,
+    fast_count_bursts,
 )

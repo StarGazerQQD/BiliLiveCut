@@ -61,6 +61,9 @@ build/temp.*/
 # Portable 模型缓存
 packaging/portable/.model_cache/
 
+# 模型大文件 (Whisper .bin 等，仅保留 config/tokenizer)
+Publish-PnP/models/**/*.bin
+
 # IDE / OS
 .vscode/
 .idea/

@@ -4,6 +4,7 @@ from __future__ import annotations
 
 from fastapi import APIRouter
 
+from app.web.routers.ml import router as ml_router
 from app.web.routers.analytics import router as analytics_router
 from app.web.routers.auth import router as auth_router
 from app.web.routers.candidates import router as candidates_router
@@ -41,5 +42,6 @@ router.include_router(auth_router)
 router.include_router(tasks_router)
 router.include_router(topics_router)
 router.include_router(variants_router)
+router.include_router(ml_router)
 router.include_router(analytics_router)
 router.include_router(metrics_router)

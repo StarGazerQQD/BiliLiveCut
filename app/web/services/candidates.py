@@ -46,6 +46,10 @@ def set_candidate_status(candidate_id: int, status: str) -> None:
         except Exception as exc:  # noqa: BLE001
             logger.warning("阈值自学习反馈记录失败: {}", exc)
 
+        # V0.1.14.8: 自动触发 ML 模型重训练
+        from app.web.services.learning import _maybe_auto_ml_learn
+        _maybe_auto_ml_learn()
+
 
 async def approve_candidate(candidate_id: int) -> int | None:
     """批准候选并出片(切片+文案); V0.1.12.8: 传入外层 db 消除事务割裂。
@@ -138,3 +142,40 @@ def list_candidates(limit: int = 50, status: str | None = None) -> list[dict[str
         }
         for c in rows
     ]
+
+_last_ml_learn_at: float = 0.0
+
+def _maybe_auto_ml_learn() -> None:
+    global _last_ml_learn_at
+    try:
+        from app.core.config import settings as _s
+        if not _s.ml_auto_learn:
+            return
+        import time
+        if time.monotonic() - _last_ml_learn_at < _s.ml_auto_learn_cooldown_min * 60:
+            return
+        from Highlight_Model.models.self_learn import SelfLearnEngine
+        state = SelfLearnEngine()._state
+        prev_ids = set(state.get("trained_sample_ids", []))
+        from app.db.models import ThresholdFeedback
+        from app.db.session import get_session
+        from sqlmodel import select, func
+        with get_session() as db:
+            total = db.scalar(select(func.count()).select_from(ThresholdFeedback)) or 0
+        if total - len(prev_ids) < _s.ml_min_new_samples:
+            return
+        _last_ml_learn_at = time.monotonic()
+        import threading
+        threading.Thread(target=_run_auto_learn, daemon=True).start()
+    except Exception:
+        pass
+
+def _run_auto_learn() -> None:
+    try:
+        from Highlight_Model.models.self_learn import SelfLearnEngine
+        from loguru import logger as _log
+        result = SelfLearnEngine().run()
+        if result.success:
+            _log.info("ML auto-learn done iter#{} AUC={:.3f}", result.iteration, result.metrics.get("auc", 0))
+    except Exception:
+        pass

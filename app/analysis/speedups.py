@@ -19,6 +19,20 @@ from app.accelerators.dispatcher import (  # noqa: F401
     group_srt_blocks,
 )
 
+# V0.1.14.8-HL: ML-specific acceleration functions
+try:
+    from app.analysis._c_speedups import (  # type: ignore[import]
+        fast_multi_emotion,
+        fast_sliding_max,
+        fast_count_bursts,
+    )
+except ImportError:
+    from app.analysis._speedups_py import (  # type: ignore[no-redef]
+        fast_multi_emotion,
+        fast_sliding_max,
+        fast_count_bursts,
+    )
+
 __all__ = [
     "fast_ahocorasick_build",
     "fast_ahocorasick_search",
@@ -27,6 +41,9 @@ __all__ = [
     "fast_cosine_similarity",
     "fast_match_keywords",
     "fast_meme_count",
+    "fast_multi_emotion",
+    "fast_sliding_max",
+    "fast_count_bursts",
     "cluster_similarity_matrix",
     "danmaku_baseline_rate",
     "group_srt_blocks",

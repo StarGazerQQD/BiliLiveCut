@@ -7,6 +7,7 @@ from app.commands.config import CONFIG_COMMANDS
 from app.commands.database import DATABASE_COMMANDS
 from app.commands.doctor import DOCTOR_COMMANDS
 from app.commands.maintenance import MAINTENANCE_COMMANDS
+from app.commands.ml import ML_COMMANDS
 from app.commands.process import PROCESS_COMMANDS
 from app.commands.record import RECORD_COMMANDS
 from app.commands.room import ROOM_COMMANDS
@@ -21,6 +22,7 @@ ALL_COMMANDS: list[tuple[str, callable, str | None]] = (
     + CONFIG_COMMANDS
     + ROOM_COMMANDS
     + MAINTENANCE_COMMANDS
+    + ML_COMMANDS
 )
 
 __all__ = ["ALL_COMMANDS"] + [

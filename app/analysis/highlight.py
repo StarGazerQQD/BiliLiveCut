@@ -388,6 +388,45 @@ def score_segment(segment_id: int) -> HighlightCandidate | None:
 
     words = json.loads(words_json) if words_json else []
 
+    # ---- V0.1.14.8: ML 高光模型 (可选) ----
+    use_ml = (room is not None and bool(room.ml_highlight_enabled)
+              and _ml_model_available())
+    ml_shadow = use_ml and settings.ml_shadow_mode
+    ml_score: float | None = None
+
+    if use_ml:
+        try:
+            ml_score = _ml_predict(segment_id)
+            if ml_shadow:
+                logger.info("Shadow模式: segment={} ML={:.3f}", segment_id, ml_score)
+            else:
+                logger.info("ML模型预测: segment={} score={:.3f}", segment_id, ml_score)
+        except Exception as exc:
+            logger.warning("ML预测失败,回退规则管线: {}", exc)
+
+    if use_ml and not ml_shadow and ml_score is not None:
+        highlight_score = float(ml_score)
+        reason = f"ML模型预测 (score={highlight_score:.3f})"
+        rule_score = 0.0
+        llm_score = 0.0
+        feats = audio_mod.analyze_audio(file_path)
+        kw_hits: list[str] = []
+        peak_off = feats.peak_offset()
+        start_off = peak_off - cfg.pre_roll_s
+        end_off = peak_off + cfg.post_roll_s
+        start_off = audio_mod.snap_to_silence(start_off, feats.silences)
+        end_off = audio_mod.snap_to_silence(end_off, feats.silences)
+        peak_ts = seg_start_ts + timedelta(seconds=peak_off)
+        start_ts = seg_start_ts + timedelta(seconds=start_off)
+        end_ts = seg_start_ts + timedelta(seconds=end_off)
+        if _is_duplicate(session_id, (start_ts.timestamp(), end_ts.timestamp()), cfg.iou_threshold):
+            _mark_scored(segment_id)
+            return None
+        _ml_create_candidate(segment_id, session_id, highlight_score, reason,
+                              peak_ts, start_ts, end_ts, room_review_threshold,
+                              room_auto_approve, room_auto_approve_threshold)
+        return None
+
     # ---- 1) 规则特征 ----
     feats = audio_mod.analyze_audio(file_path)
     kw_score, kw_hits = match_keywords(text)
@@ -808,3 +847,54 @@ def _mark_scored(segment_id: int) -> None:
         if seg is not None and seg.status != SegmentStatus.SCORED:
             seg.status = SegmentStatus.SCORED
             db.add(seg)
+
+
+# --------------------------------------------------------------------------- #
+# V0.1.14.8: ML 高光模型集成
+# --------------------------------------------------------------------------- #
+_ml_inference = None
+
+
+def _ml_model_available() -> bool:
+    from pathlib import Path as _Path
+    return _Path("storage/models/highlight_model.pkl").exists()
+
+
+def _ml_predict(segment_id: int) -> float:
+    global _ml_inference
+    if _ml_inference is None:
+        from Highlight_Model.models.inference import ModelInference
+        _ml_inference = ModelInference(threshold=0.5)
+        _ml_inference.load()
+    return _ml_inference.predict_proba(segment_id)
+
+
+def _ml_create_candidate(segment_id: int, session_id: int, highlight_score: float,
+                         reason: str, peak_ts, start_ts, end_ts,
+                         review_threshold: float, room_auto_approve: bool,
+                         auto_approve_threshold: float) -> None:
+    if room_auto_approve and highlight_score >= auto_approve_threshold:
+        initial_status = CandidateStatus.APPROVED
+    elif highlight_score >= review_threshold:
+        initial_status = CandidateStatus.PENDING
+    else:
+        initial_status = CandidateStatus.REJECTED
+
+    dedup_hash = hashlib.sha1(
+        f"{session_id}:{round(start_ts.timestamp())}:{round(end_ts.timestamp())}".encode()
+    ).hexdigest()
+
+    candidate = HighlightCandidate(
+        session_id=session_id, peak_ts=peak_ts, start_ts=start_ts, end_ts=end_ts,
+        rule_score=0.0, llm_score=0.0, highlight_score=highlight_score,
+        features_json=json.dumps({"source": "ml_model", "score": highlight_score}, ensure_ascii=False),
+        reason=reason, status=initial_status, dedup_hash=dedup_hash,
+    )
+    with get_session() as db:
+        db.add(candidate)
+        db.flush()
+        db.refresh(candidate)
+        cid = candidate.id
+
+    _mark_scored(segment_id)
+    logger.success("★ ML高光候选 id={} segment={} score={:.3f} status={}", cid, segment_id, highlight_score, initial_status)

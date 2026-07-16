@@ -1,5 +1,14 @@
 # Changelog
 
+## V0.1.14.8-HL-Alpha (2026-07-16)
+
+### 同步 main + 自有 ML 高光模型
+
+- **合并母仓库 main v0.1.14.8** (876f558)，含 CI/CD 流水线 + Lite EXE 构建 + Engine Pack + 字符编码修复
+- **HL 独有**: 98维特征提取 + XGBoost + SelfLearnEngine + ModelRegistry + DriftDetector + DataQualityGuard
+- **Web/CLI 集成**: ML 仪表盘 + 自学习按钮 + 审计 + 回滚 + 自动重训练触发
+- **加速器**: fast_multi_emotion / fast_sliding_max / fast_count_bursts Python 回退
+
 ## V0.1.14.8 Alpha (2026-07-15)
 
 ### 修复

@@ -213,6 +213,17 @@
         </div>
       </div>
       <div id="llm-list"></div>
+
+      <!-- V0.1.14.8: ML 高光模型 -->
+      <div class="card" style="margin-top:18px">
+        <h3>ML 高光模型 (本地 XGBoost)</h3>
+        <p class="hint" id="ml-dash-status">载入中…</p>
+        <div class="row" style="gap:8px;flex-wrap:wrap">
+          <button id="btn-ml-dash-learn" onclick="triggerMLLearn()">🔄 触发自学习</button>
+          <button id="btn-ml-dash-audit" onclick="triggerMLAudit()">📊 审计</button>
+        </div>
+        <div id="ml-version-list" style="margin-top:10px;font-size:12px"></div>
+      </div>
     </section>
 
     <!-- 账号管理:Bilibili Cookie 登录 -->
@@ -359,5 +370,6 @@
 
   <div id="toast" class="toast"></div>
   <script type="module" src="/static/app.js"></script>
+  <script type="module" src="/static/js/ml.js"></script>
 </body>
 </html>
