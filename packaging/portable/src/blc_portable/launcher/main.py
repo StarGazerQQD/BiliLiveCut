@@ -665,7 +665,7 @@ def _verify_installed_models(app_root: Path) -> None:
         print(f"\n  [FAIL] {failed}  engines have issues")
         sys.exit(1)
     else:
-        print(f"\n  [PASS] 全部 {verified}  engines verified OK ({total_files_checked}  files)")
+        print(f"\n  [PASS] All {verified} engines verified OK ({total_files_checked} files)")
 
 
 def _repair_runtime(app_root: Path) -> None:
@@ -692,7 +692,7 @@ def build_parser() -> argparse.ArgumentParser:
         epilog="""\
 Examples:
     Launch:                  BiliLiveCut-Portable.exe
-  指定 Engine Pack:            BiliLiveCut-Portable.exe --engine-pack ./BiliLiveCut-EnginePack.zip
+  Specify Engine Pack:      BiliLiveCut-Portable.exe --engine-pack ./BiliLiveCut-EnginePack.zip
     Offline:                 BiliLiveCut-Portable.exe --offline
     Verify models:           BiliLiveCut-Portable.exe --verify-models
     Doctor:                  BiliLiveCut-Portable.exe --doctor
