@@ -38,40 +38,11 @@ DIST_DIR = PORTABLE_ROOT / "dist"
 PAYLOAD_DIR = DIST_DIR / "payload"
 
 
-# Payload 白名单 — 允许进 ZIP 的内容
-PAYLOAD_INCLUDE = [
-    "app/",
-    "config/",
-    "pyproject.toml",
-    "setup.py",
-    "setup_c.py",
-    ".env.example",
-    "README.md",
-    "CHANGELOG.md",
-    "payload_manifest.json",
-]
+# Payload lists — single source from file_plan.py
+from .file_plan import PAYLOAD_ITEMS as PAYLOAD_INCLUDE, EXCLUDE_PATTERNS as PAYLOAD_EXCLUDE  # noqa: E402
 
-# Payload 排除 — 禁止进 ZIP
-PAYLOAD_EXCLUDE = [
-    ".git",
-    ".github",
-    "tests/",
-    "docs/",
-    "__pycache__/",
-    "*.pyc",
-    "storage/",
-    ".venv/",
-    "models/",
-    "vendor/",
-    "bin/",
-    "*.log",
-    "*.db",
-    "*.sqlite3",
-    "*.egg-info/",
-    ".pytest_cache/",
-    ".ruff_cache/",
-    ".mypy_cache/",
-]
+PAYLOAD_INCLUDE = list(PAYLOAD_INCLUDE)
+PAYLOAD_EXCLUDE = list(PAYLOAD_EXCLUDE)
 
 
 def _should_include(rel_path: str) -> bool:
