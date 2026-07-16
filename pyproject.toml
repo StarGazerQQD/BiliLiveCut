@@ -92,8 +92,16 @@ convention = "pep257"
 
 [tool.pytest.ini_options]
 asyncio_mode = "auto"
-testpaths = ["tests"]
+testpaths = ["tests", "packaging/portable/tests"]
 addopts = "--tb=short -q"
+markers = [
+    "unit: Unit tests (fast, no IO)",
+    "integration: Integration tests (moderate speed, some IO)",
+    "artifact: Artifact tests (requires built EXE/ZIP)",
+    "windows: Windows-only tests",
+    "offline: Offline / no-network tests",
+    "release: Release-gating tests",
+]
 
 [tool.coverage.run]
 source = ["app"]
