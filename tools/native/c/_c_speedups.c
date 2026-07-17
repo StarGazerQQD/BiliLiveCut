@@ -613,6 +613,10 @@ static PyObject *fast_meme_count(PyObject *self, PyObject *args) {
         }
     }
     ac_build_failure(&am_local);
+    if (PyErr_Occurred()) {
+        ac_free(&am_local);
+        return NULL;
+    }
 
     long count = 0;
     Py_ssize_t nt = PyList_GET_SIZE(texts_obj);
