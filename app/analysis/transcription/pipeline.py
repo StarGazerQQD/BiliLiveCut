@@ -21,7 +21,6 @@ V0.1.12.2 变更:
 from __future__ import annotations
 
 import json
-import re
 import time
 import uuid
 from dataclasses import dataclass, field
@@ -32,10 +31,10 @@ from typing import TYPE_CHECKING, Protocol
 from loguru import logger
 
 from app.analysis import asr_metrics
+from app.analysis.transcription.backends import FunASRBackend  # noqa: F401
 from app.core.config import settings
 from app.db.models import RawSegment, SegmentStatus, Transcript
 from app.db.session import get_session
-from app.analysis.transcription.backends import FunASRBackend  # noqa: F401
 
 if TYPE_CHECKING:
     pass
