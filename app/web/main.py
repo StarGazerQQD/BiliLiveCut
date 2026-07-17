@@ -253,7 +253,6 @@ class _AuthMiddleware(_BaseMiddleware):
         """
         origin = request.headers.get("Origin", "")
         referer = request.headers.get("Referer", "")
-        host = request.headers.get("Host", "localhost")
 
         # 无 Origin/Referer → 非浏览器客户端,依赖 Basic Auth
         if not origin and not referer:
