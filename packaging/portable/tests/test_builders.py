@@ -54,8 +54,12 @@ class TestFullBuilder:
         assert RELEASE_VERSION == "0.1.14.10-alpha"
 
     def test_full_check_missing_components(self) -> None:
-        # Full builder should raise when key components are missing (non-fixture)
-        pass  # Covered by test_full_fails_closed when components not present
+        """Full build without portable-python or wheels must raise RuntimeError."""
+        from blc_portable.builders.full import build_full_bundle  # noqa: E402
+
+        # No portable-python, no wheels, no ffmpeg -> must fail
+        with pytest.raises(RuntimeError):
+            build_full_bundle()
 
     def test_full_fixture_ok(self, monkeypatch: pytest.MonkeyPatch) -> None:
         monkeypatch.setenv("BLC_CI_BUILD", "1")  # Legacy support

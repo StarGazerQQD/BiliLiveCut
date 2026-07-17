@@ -200,12 +200,33 @@ if not os.path.exists(info_path):
     print('FAIL: engine_pack_info.json missing'); sys.exit(1)
 info = json.load(open(info_path, encoding='utf-8'))
 errors = []
+# ZIP-level integrity
 crc = info.get('crc32', '')
 sha = info.get('sha256', '')
 if not crc or len(crc) != 8:
     errors.append(f'CRC32 empty or invalid: {crc}')
 if not sha or len(sha) != 64:
     errors.append(f'SHA-256 empty or invalid: {sha}')
+# Nested hashes
+for field in ('content_manifest_sha256', 'model_lock_sha256'):
+    val = info.get(field, '')
+    if not val or len(val) != 64:
+        errors.append(f'{field} empty or invalid: {val}')
+# Commits
+for field in ('source_commit', 'builder_commit'):
+    val = info.get(field, '')
+    if not val or len(val) < 7:
+        errors.append(f'{field} empty or too short: {val}')
+# Engine IDs
+ids = info.get('expected_engine_ids', [])
+if len(ids) != 4:
+    errors.append(f'expected_engine_ids incomplete: {ids}')
+# Size
+if not info.get('size_bytes', 0):
+    errors.append('size_bytes is zero')
+# Version
+if info.get('engine_pack_version', '') != info.get('compatible_app', {}).get('min', ''):
+    errors.append('version/compatible_app.min mismatch')
 if errors:
     for e in errors:
         print(f'FAIL: {e}')

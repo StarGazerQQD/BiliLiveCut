@@ -119,7 +119,7 @@ class TestVerifier:
             "engine_pack_version",
             "crc32",
             "sha256",
-            "manifest_sha256",
+            "content_manifest_sha256",
             "model_lock_sha256",
             "expected_engine_ids",
         ]

@@ -279,19 +279,7 @@ def install_dependencies(venv_python: Path, app_root: Path, req_file: Path) -> N
     :param app_root: app root dir。
     :param req_file: requirements files。
     """
-    try:
-        subprocess.run(
-            [str(venv_python), "-c", "import fastapi, uvicorn, sqlmodel, pydantic; print('ok')"],
-            check=True,
-            capture_output=True,
-            timeout=30,
-        )
-        print("  dependencies already installed")
-        return
-    except subprocess.CalledProcessError:
-        pass
-
-    # Select ABI-specific lock file
+    # Select ABI-specific lock file first
     r = subprocess.run(
         [str(venv_python), "-c", "import sys; v=sys.version_info[:2]; print(f'py{v[0]}{v[1]}')"],
         capture_output=True, text=True, timeout=10,
@@ -302,6 +290,35 @@ def install_dependencies(venv_python: Path, app_root: Path, req_file: Path) -> N
 
     if not lock_file.exists():
         raise RuntimeError(f"Lock file not found: {lock_file.name}\nOnly Python 3.11 and 3.12 are supported.")
+
+    # Check if pip freeze output matches lock (skip full hash comparison, do version check)
+    try:
+        raw_freeze = subprocess.run(
+            [str(venv_python), "-m", "pip", "freeze"],
+            capture_output=True, text=True, timeout=30, check=True,
+        ).stdout
+        installed = {}
+        for line in raw_freeze.strip().split("\n"):
+            if "==" in line:
+                pkg, ver = line.strip().split("==", 1)
+                installed[pkg.lower()] = ver
+        missing = []
+        with open(lock_file, "r", encoding="utf-8") as lf:
+            for line in lf:
+                line = line.strip()
+                if not line or line.startswith("#") or "[" in line:
+                    continue
+                pkg = line.split("==")[0].split("[")[0].strip().lower()
+                expected_ver = line.split("==")[1].split(";")[0].strip()
+                actual_ver = installed.get(pkg)
+                if actual_ver is None or actual_ver != expected_ver:
+                    missing.append(f"{pkg}: expected {expected_ver}, got {actual_ver}")
+        if not missing:
+            print("  dependencies already installed (version match)")
+            return
+        print(f"  dependencies outdated or missing ({len(missing)}), re-installing...")
+    except (subprocess.CalledProcessError, OSError):
+        pass
 
     # Install from lock file
     print(f"  install deps (lock file: {lock_file.name})...")
