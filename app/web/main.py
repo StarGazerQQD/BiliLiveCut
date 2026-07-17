@@ -241,12 +241,35 @@ class _AuthMiddleware(_BaseMiddleware):
         return host in ("127.0.0.1", "::1", "localhost", "testclient") or host.startswith("127.")
 
     def _is_modifying(self, request: Request) -> bool:
-        """检查请求是否为状态修改类请求 (POST/PUT/PATCH/DELETE)。
-
-        :param request: FastAPI Request 对象。
-        :returns: ``True`` 表示是修改请求。
-        """
+        """检查请求是否为状态修改类请求 (POST/PUT/PATCH/DELETE)。"""
         return request.method in ("POST", "PUT", "PATCH", "DELETE")
+
+    def _check_csrf(self, request: Request) -> bool:
+        """跨站请求伪造检查。
+
+        浏览器修改请求必须带有正确的 Origin/Referer。
+        无 Origin 的非浏览器客户端必须通过 Basic Auth 认证。
+        localhost 的同源请求直接放行。
+        """
+        origin = request.headers.get("Origin", "")
+        referer = request.headers.get("Referer", "")
+        host = request.headers.get("Host", "localhost")
+
+        # 无 Origin/Referer → 非浏览器客户端,依赖 Basic Auth
+        if not origin and not referer:
+            return True
+
+        # 提取源的协议+主机部分
+        origin_hosts: list[str] = []
+        for header_val in (origin, referer):
+            if header_val and "://" in header_val:
+                origin_hosts.append(header_val.split("://", 1)[1].split("/", 1)[0].split(":")[0])
+
+        for origin_host in origin_hosts:
+            if origin_host in ("127.0.0.1", "localhost", "::1"):
+                return True
+
+        return False
 
     async def dispatch(self, request: Request, call_next):
         path = request.url.path
@@ -270,10 +293,17 @@ class _AuthMiddleware(_BaseMiddleware):
 
         auth = request.headers.get("Authorization", "")
         if not auth.startswith("Basic "):
+            # 无 Basic Auth 时,修改请求额外检查 CSRF
+            if self._is_modifying(request) and not self._check_csrf(request):
+                logger.warning("csrf_blocked: {} {} from Origin={} Referer={}", request.method, path,
+                               request.headers.get("Origin", "-"), request.headers.get("Referer", "-"))
+                return _JSONResponse({"detail": "跨站请求被拒绝"}, status_code=403)
             return _JSONResponse({"detail": "需要认证"}, status_code=401, headers={"WWW-Authenticate": "Basic"})
         try:
             decoded = _base64.b64decode(auth[6:]).decode("utf-8", errors="ignore")
             username, _, password = decoded.partition(":")
+            if not username or username != "admin":
+                return _JSONResponse({"detail": "认证失败"}, status_code=403)
             if not _secrets.compare_digest(password, _ADMIN_PASSWORD):
                 ip = request.client.host if request.client else "unknown"
                 _record_login_failure(ip)
@@ -285,6 +315,11 @@ class _AuthMiddleware(_BaseMiddleware):
                 return _JSONResponse({"detail": "认证失败"}, status_code=403)
         except Exception:
             return _JSONResponse({"detail": "认证格式错误"}, status_code=400)
+        # Basic Auth 通过后,修改请求仍须校验 CSRF
+        if self._is_modifying(request) and not self._check_csrf(request):
+            logger.warning("csrf_blocked_auth: {} {} from Origin={}", request.method, path,
+                           request.headers.get("Origin", "-"))
+            return _JSONResponse({"detail": "跨站请求被拒绝"}, status_code=403)
         return await call_next(request)
 
 
