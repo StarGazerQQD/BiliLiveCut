@@ -16,7 +16,7 @@ class TestLiteBuilder:
     def test_lite_has_release_version(self) -> None:
         from blc_portable.builders.lite import RELEASE_VERSION, build_exe  # noqa: E402
 
-        assert RELEASE_VERSION == "0.1.14.10-alpha"
+        assert RELEASE_VERSION == "0.1.14.11-alpha"
         assert callable(build_exe)
 
     def test_lite_rejects_everything_empty(self) -> None:
@@ -51,7 +51,7 @@ class TestFullBuilder:
     def test_full_has_release_version(self) -> None:
         from blc_portable.builders.full import RELEASE_VERSION  # noqa: E402
 
-        assert RELEASE_VERSION == "0.1.14.10-alpha"
+        assert RELEASE_VERSION == "0.1.14.11-alpha"
 
     def test_full_check_missing_components(self) -> None:
         """Full build without portable-python or wheels must raise RuntimeError."""

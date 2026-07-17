@@ -1,19 +1,19 @@
 {
-  "release_version": "0.1.14.10-alpha",
-  "version_label": "V0.1.14.10 Alpha",
+  "release_version": "0.1.14.11-alpha",
+  "version_label": "V0.1.14.11 Alpha",
   "source_commit_short": "731a31c",
   "source_commit_full": "731a31cd04ae1df27dd6b6c5ffc535123932b825",
-  "engine_pack_version": "0.1.14.10-alpha",
-  "runtime_schema": 3,
-  "engine_pack_schema": 3,
-  "payload_schema": 3,
-  "model_lock_schema": 3,
+  "engine_pack_version": "0.1.14.11-alpha",
+  "runtime_schema": 4,
+  "engine_pack_schema": 4,
+  "payload_schema": 4,
+  "model_lock_schema": 4,
   "compatible_python": {
     "min": "3.11",
     "max_validated": "3.12"
   },
   "compatible_app": {
-    "min": "0.1.14.10-alpha",
+    "min": "0.1.14.11-alpha",
     "max_exclusive": "0.1.15"
   },
   "target_platforms": ["windows"],

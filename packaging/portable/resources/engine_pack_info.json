@@ -1,11 +1,11 @@
 {
   "format_version": 3,
-  "engine_pack_version": "0.1.14.10-alpha",
+  "engine_pack_version": "0.1.14.11-alpha",
   "compatible_app": {
-    "min": "0.1.14.10-alpha",
+    "min": "0.1.14.11-alpha",
     "max_exclusive": "0.1.15"
   },
-  "filename": "BiliLiveCut-EnginePack-0.1.14.10-alpha.zip",
+  "filename": "BiliLiveCut-EnginePack-0.1.14.11-alpha.zip",
   "size_bytes": 4265,
   "crc32": "6BFE5DC7",
   "sha256": "2d3b19fef2cb00b0adc0056a42573334751c56efad758f78d84d9c6512629562",

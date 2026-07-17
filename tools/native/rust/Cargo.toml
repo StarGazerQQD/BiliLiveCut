@@ -1,6 +1,6 @@
 [package]
 name = "bili-live-cut-rust"
-version = "0.1.14.9"
+version = "0.1.14.11"
 edition = "2021"
 description = "BiliLiveCut Rust 加速模块 — O(N**2) 聚类矩阵并行计算"
 

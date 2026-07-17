@@ -7,7 +7,7 @@ publishing / pipeline / web),通过数据库与任务队列解耦。
 
 # 版本号统一由 packaging/portable/config/version.json 管理。
 # 此处读取为便捷常量，实际权威来源在 config/version.json。
-__version__ = "0.1.14.10-alpha"
+__version__ = "0.1.14.11-alpha"
 __version_label__ = "V0.1.14.8 Alpha"
 
 
