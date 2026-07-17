@@ -182,22 +182,19 @@ jobs:
           pip install -e ".[dev,web]"
         timeout-minutes: 10
 
-      - name: Build Fixture Engine Pack for CI validation
-        env:
-          BLC_FIXTURE_BUILD: "1"
+      - name: Validate Engine Pack metadata for production
         run: |
           cd packaging/portable
-          python build_engine_pack.py --fixture
-        timeout-minutes: 3
-
-      - name: Verify Release production metadata
-        run: |
-          cd packaging/portable
+          # Production Engine Pack (~5.5 GB) cannot be built in CI.
+          # engine_pack_info.json must be committed from a local build.
+          # This step validates the committed file is production-grade.
           python -c "
 import json, os, sys
 info_path = 'resources/engine_pack_info.json'
 if not os.path.exists(info_path):
-    print('FAIL: engine_pack_info.json missing'); sys.exit(1)
+    print('FAIL: engine_pack_info.json missing');
+    print('ACTION: Build Engine Pack locally and commit resources/engine_pack_info.json')
+    sys.exit(1)
 info = json.load(open(info_path, encoding='utf-8'))
 errors = []
 # ZIP-level integrity
