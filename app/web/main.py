@@ -295,8 +295,9 @@ class _AuthMiddleware(_BaseMiddleware):
                 )
             # Even loopback + no password: enforce CSRF on modifying requests
             if self._is_modifying(request) and not self._check_csrf(request):
-                logger.warning("csrf_blocked: {} {} Origin={}", request.method, path,
-                               request.headers.get("Origin", "-"))
+                logger.warning(
+                    "csrf_blocked: {} {} Origin={}", request.method, path, request.headers.get("Origin", "-")
+                )
                 return _JSONResponse({"detail": "跨站请求被拒绝"}, status_code=403)
             return await call_next(request)
 

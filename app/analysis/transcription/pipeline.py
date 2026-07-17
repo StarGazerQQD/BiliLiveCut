@@ -269,6 +269,7 @@ def _probe_audio_duration(audio_path: str) -> float:
 
 # ═══════════════════════════════════════════════════════════
 
+
 class FasterWhisperBackend:
     """基于 faster-whisper 的本地转写后端 (兜底引擎)。"""
 

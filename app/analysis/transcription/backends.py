@@ -344,8 +344,12 @@ class FunASRBackend:
                 disable_update=True,
             )
         else:
-            logger.info("Loading Paraformer-zh online: model=%s device=%s revision=%s",
-                         self._primary_model_name, device, revision)
+            logger.info(
+                "Loading Paraformer-zh online: model=%s device=%s revision=%s",
+                self._primary_model_name,
+                device,
+                revision,
+            )
             self._primary = AutoModel(
                 model=self._primary_model_name,
                 vad_model="fsmn-vad",
