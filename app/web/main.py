@@ -247,33 +247,49 @@ class _AuthMiddleware(_BaseMiddleware):
     def _check_csrf(self, request: Request) -> bool:
         """跨站请求伪造检查。
 
-        浏览器修改请求必须带有与 Host 匹配的 Origin/Referer。
+        浏览器修改请求必须带有与当前请求完全同源的 Origin。
         无 Origin 的非浏览器客户端通过（依赖 Basic Auth）。
-        否则比较 Origin/Referer 的主机部分是否等于请求 Host。
+        有 Origin 时必须以 Origin 为准（优先级高于 Referer）。
+        比较 scheme + host + effective-port 的标准形式。
         """
         origin = request.headers.get("Origin", "")
-        referer = request.headers.get("Referer", "")
-        host = request.headers.get("Host", "") or request.url.hostname or ""
 
-        # 无 Origin/Referer → 非浏览器客户端,依赖 Basic Auth
-        if not origin and not referer:
+        # 无 Origin → 非浏览器客户端,依赖 Basic Auth
+        if not origin:
             return True
 
-        # Extract hostname from request Host (strip port)
-        request_host = host.split(":")[0] if host else ""
+        # Build the expected origin from the actual request
+        scheme = request.url.scheme or "http"
+        host = request.headers.get("Host", "") or request.url.hostname or ""
+        # Determine effective port
+        if ":" in host:
+            hostname, port_str = host.rsplit(":", 1)
+        else:
+            hostname = host
+            port_str = ""
+        effective_port = port_str if port_str else ("443" if scheme == "https" else "80")
 
-        # 提取源的主机名部分
-        origin_hosts: list[str] = []
-        for header_val in (origin, referer):
-            if header_val and "://" in header_val:
-                origin_hosts.append(header_val.split("://", 1)[1].split("/", 1)[0].split(":")[0])
+        expected = f"{scheme}://{hostname}:{effective_port}"
 
-        # 任一 Origin/Referer 的主机名匹配请求 Host → 同源
-        for origin_host in origin_hosts:
-            if origin_host == request_host:
-                return True
+        # Compare full origin (scheme://host:port)
+        # Strip trailing slash and default port normalization for equality
+        normalized_origin = origin.rstrip("/")
+        # If origin uses default port (e.g., :80 for http), strip it for comparison
+        origin_parts = normalized_origin.split("://", 1)
+        if len(origin_parts) == 2:
+            origin_host_port = origin_parts[1]
+            if ":" in origin_host_port:
+                oh, op = origin_host_port.rsplit(":", 1)
+                if op in ("80", "443"):
+                    normalized_origin = f"{origin_parts[0]}://{oh}"
 
-        return False
+        normalized_expected = expected
+        if ":" in expected.split("://", 1)[1] if "://" in expected else True:
+            ep_parts = expected.split("://", 1)[1].rsplit(":", 1)
+            if ep_parts[-1] in ("80", "443"):
+                normalized_expected = f'{expected.split("://", 1)[0]}://{ep_parts[0]}'
+
+        return normalized_origin == normalized_expected
 
     async def dispatch(self, request: Request, call_next):
         path = request.url.path
