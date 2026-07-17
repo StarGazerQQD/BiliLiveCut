@@ -227,6 +227,14 @@ if not info.get('size_bytes', 0):
 # Version
 if info.get('engine_pack_version', '') != info.get('compatible_app', {}).get('min', ''):
     errors.append('version/compatible_app.min mismatch')
+# Artifact class (must be production, reject fixture)
+ac = info.get('artifact_class', 'production')
+if ac != 'production':
+    errors.append(f'artifact_class is {ac!r} — production build requires "production"')
+# Format version
+fv = info.get('format_version', 0)
+if fv < 4:
+    errors.append(f'format_version must be >= 4, got {fv}')
 if errors:
     for e in errors:
         print(f'FAIL: {e}')

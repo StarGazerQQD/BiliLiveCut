@@ -1,5 +1,5 @@
 {
-  "format_version": 3,
+  "format_version": 4,
   "engine_pack_version": "0.1.14.11-alpha",
   "compatible_app": {
     "min": "0.1.14.11-alpha",
@@ -19,5 +19,6 @@
     "paraformer",
     "sensevoice",
     "funasr_nano"
-  ]
+  ],
+  "artifact_class": "production"
 }

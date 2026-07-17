@@ -201,6 +201,12 @@ def check_engine_pack_metadata(audit: AuditResult) -> None:
                   "CRC32 为空 — 正式构建必须失败")
     audit.check("engine_pack_info.sha256 non-empty", bool(info.get("sha256", "")),
                   "SHA-256 为空 — 正式构建必须失败")
+    audit.check("engine_pack_info.artifact_class is production",
+                  info.get("artifact_class", "") == "production",
+                  f"artifact_class={info.get('artifact_class', 'MISSING')} — 非 production")
+    audit.check("engine_pack_info.format_version >= 4",
+                  info.get("format_version", 0) >= 4,
+                  f"format_version={info.get('format_version', 0)} — 需 >= 4")
 
 
 def check_csrf(audit: AuditResult) -> None:

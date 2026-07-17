@@ -87,6 +87,15 @@ def check_engine_pack_info() -> None:
     if not expected_ids:
         errors.append("expected_engine_ids is empty")
 
+    # Reject fixture artifacts in production builds
+    artifact_class = str(ep_info.get("artifact_class", "production"))
+    if artifact_class != "production":
+        errors.append(f"artifact_class is {artifact_class!r} — production build requires 'production'")
+
+    format_version = ep_info.get("format_version", 0)
+    if format_version < 4:
+        errors.append(f"format_version must be >= 4, got {format_version}")
+
     if errors:
         error_msg = "Engine Pack validation FAILED:\n  - " + "\n  - ".join(errors)
         raise RuntimeError(error_msg)
