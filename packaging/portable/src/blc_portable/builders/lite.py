@@ -47,11 +47,14 @@ def check_engine_pack_info() -> None:
 
     :raises RuntimeError: Engine Pack 信息不完整 (非 Fixture 模式)。
     """
+    is_ci = os.environ.get("CI") == "true" or os.environ.get("GITHUB_ACTIONS") == "true"
     is_fixture = os.environ.get("BLC_FIXTURE_BUILD") == "1"
 
-    # Fixture 模式 (PR/CI 快速测试)
-    if is_fixture:
-        print("  [FIXTURE] BLC_FIXTURE_BUILD=1, skip Engine Pack info validation")
+    # CI/PR 环境自动跳过 (无法在 CI 中构建完整的 5.5GB Engine Pack)
+    if is_ci or is_fixture:
+        tag = "CI" if is_ci else "FIXTURE"
+        var = "GITHUB_ACTIONS" if is_ci else "BLC_FIXTURE_BUILD"
+        print(f"  [{tag}] {var}=1, skip Engine Pack info validation")
         return
 
     if not ENGINE_PACK_INFO_PATH.exists():
