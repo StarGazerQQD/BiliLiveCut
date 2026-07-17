@@ -247,25 +247,30 @@ class _AuthMiddleware(_BaseMiddleware):
     def _check_csrf(self, request: Request) -> bool:
         """跨站请求伪造检查。
 
-        浏览器修改请求必须带有正确的 Origin/Referer。
-        无 Origin 的非浏览器客户端必须通过 Basic Auth 认证。
-        localhost 的同源请求直接放行。
+        浏览器修改请求必须带有与 Host 匹配的 Origin/Referer。
+        无 Origin 的非浏览器客户端通过（依赖 Basic Auth）。
+        否则比较 Origin/Referer 的主机部分是否等于请求 Host。
         """
         origin = request.headers.get("Origin", "")
         referer = request.headers.get("Referer", "")
+        host = request.headers.get("Host", "") or request.url.hostname or ""
 
         # 无 Origin/Referer → 非浏览器客户端,依赖 Basic Auth
         if not origin and not referer:
             return True
 
-        # 提取源的协议+主机部分
+        # Extract hostname from request Host (strip port)
+        request_host = host.split(":")[0] if host else ""
+
+        # 提取源的主机名部分
         origin_hosts: list[str] = []
         for header_val in (origin, referer):
             if header_val and "://" in header_val:
                 origin_hosts.append(header_val.split("://", 1)[1].split("/", 1)[0].split(":")[0])
 
+        # 任一 Origin/Referer 的主机名匹配请求 Host → 同源
         for origin_host in origin_hosts:
-            if origin_host in ("127.0.0.1", "localhost", "::1"):
+            if origin_host == request_host:
                 return True
 
         return False
@@ -288,6 +293,11 @@ class _AuthMiddleware(_BaseMiddleware):
                     {"detail": "安全策略: 未设置 ADMIN_PASSWORD 时仅允许本机访问管理接口。"},
                     status_code=403,
                 )
+            # Even loopback + no password: enforce CSRF on modifying requests
+            if self._is_modifying(request) and not self._check_csrf(request):
+                logger.warning("csrf_blocked: {} {} Origin={}", request.method, path,
+                               request.headers.get("Origin", "-"))
+                return _JSONResponse({"detail": "跨站请求被拒绝"}, status_code=403)
             return await call_next(request)
 
         auth = request.headers.get("Authorization", "")
