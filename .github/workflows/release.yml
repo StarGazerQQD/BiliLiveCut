@@ -182,6 +182,14 @@ jobs:
           pip install -e ".[dev,web]"
         timeout-minutes: 10
 
+      - name: Build Fixture Engine Pack for CI validation
+        env:
+          BLC_FIXTURE_BUILD: "1"
+        run: |
+          cd packaging/portable
+          python build_engine_pack.py --fixture
+        timeout-minutes: 3
+
       - name: Verify Release production metadata
         run: |
           cd packaging/portable

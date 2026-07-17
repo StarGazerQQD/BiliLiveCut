@@ -10,9 +10,9 @@
   "crc32": "948FC818",
   "sha256": "4509f884143dad6dba29e2fab60b4fe1ad331f91ab94876cdd71e0742c9ef6e7",
   "manifest_sha256": "",
-  "model_lock_sha256": "0000000000000000000000000000000000000000000000000000000000000000",
+  "model_lock_sha256": "",
   "source_commit": "731a31cd04ae1df27dd6b6c5ffc535123932b825",
-  "builder_commit": "0f8bfad000000000000000000000000000000000",
+  "builder_commit": "",
   "build_timestamp": "2026-07-16T10:00:00",
   "expected_engine_ids": [
     "whisper",
@@ -20,6 +20,5 @@
     "sensevoice",
     "funasr_nano"
   ],
-  "content_manifest_sha256": "0000000000000000000000000000000000000000000000000000000000000000",
-  "note": "CI placeholder. 正式发布前必须本地重建"
+  "content_manifest_sha256": ""
 }

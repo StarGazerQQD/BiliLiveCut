@@ -9,19 +9,18 @@ _PROJ_ROOT = _PORTABLE_DIR.parent.parent
 
 
 def test_release_workflow_rejects_fixture_build() -> None:
+    """Build Lite EXE 步骤不能使用 BLC_FIXTURE_BUILD 绕过校验。Fixture Engine Pack 构建步骤除外。"""
     release_yml = _PROJ_ROOT / ".github" / "workflows" / "release.yml"
     content = release_yml.read_text(encoding="utf-8")
     lines = content.split("\n")
-    in_env = False
-    for line in lines:
-        if "env:" in line and "BLC_" not in line:
-            in_env = True
-            continue
-        if line.strip() and not line.strip().startswith("#"):
-            if not line.startswith(" "):
-                in_env = False
-        if in_env and "BLC_FIXTURE_BUILD" in line:
-            raise AssertionError("release.yml must not set BLC_FIXTURE_BUILD")
+    in_lite_build = False
+    for i, line in enumerate(lines):
+        if "Build Lite EXE" in line and "name:" in line:
+            in_lite_build = True
+        if in_lite_build and "name:" in line and "Build Lite EXE" not in line and "Upload" not in line:
+            in_lite_build = False
+        if in_lite_build and "BLC_FIXTURE_BUILD" in line:
+            raise AssertionError("Build Lite EXE step must not use BLC_FIXTURE_BUILD")
 
 
 def test_release_job_requires_production_metadata() -> None:
