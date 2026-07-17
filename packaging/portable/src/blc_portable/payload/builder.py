@@ -39,7 +39,7 @@ PAYLOAD_DIR = DIST_DIR / "payload"
 
 
 # Payload lists — single source from file_plan.py
-from .file_plan import PAYLOAD_ITEMS as PAYLOAD_INCLUDE, EXCLUDE_PATTERNS as PAYLOAD_EXCLUDE  # noqa: E402
+from .file_plan import PAYLOAD_ITEMS as PAYLOAD_INCLUDE, EXCLUDE_PATTERNS as PAYLOAD_EXCLUDE  # noqa: E402, I001
 
 PAYLOAD_INCLUDE = list(PAYLOAD_INCLUDE)
 PAYLOAD_EXCLUDE = list(PAYLOAD_EXCLUDE)

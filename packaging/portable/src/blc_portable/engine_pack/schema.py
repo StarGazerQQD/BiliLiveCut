@@ -3,7 +3,6 @@
 from __future__ import annotations
 
 from dataclasses import dataclass, field
-from typing import Any
 
 SCHEMA_VERSION = 3
 
@@ -24,6 +23,7 @@ class ContentManifest:
     total_uncompressed_size: int = 0
 
     def to_dict(self) -> dict:
+        """Convert content manifest to dict."""
         return {
             "schema_version": self.schema_version,
             "engine_pack_version": self.engine_pack_version,
@@ -56,6 +56,7 @@ class ExternalMetadata:
     expected_engine_ids: list = field(default_factory=list)
 
     def to_dict(self) -> dict:
+        """Convert external metadata to dict."""
         return {
             "format_version": self.format_version,
             "engine_pack_version": self.engine_pack_version,
@@ -72,6 +73,7 @@ class ExternalMetadata:
         }
 
     def validate(self) -> list[str]:
+        """Validate external metadata completeness."""
         errors = []
         if not self.crc32 or len(self.crc32) != 8:
             errors.append("CRC32 empty or invalid")
