@@ -5,6 +5,7 @@ Launcher、测试、verifier 必须通过此模块获取路径，不得各自硬
 
 from __future__ import annotations
 
+import json
 import sys
 from pathlib import Path
 
@@ -50,9 +51,10 @@ def get_current_json_path() -> Path:
 
 
 def get_current_release_dir() -> Path | None:
-    """获取当前激活的 Release 目录。
+    """获取当前激活的 Release 目录，比较嵌入式 identity 与 installed identity。
 
     使用内容寻址: {version}+{commit}+{payload_hash_prefix}
+    任何不一致都返回 None 以触发重新安装。
 
     :returns: Release 目录，不存在返回 None。
     """
@@ -68,9 +70,34 @@ def get_current_release_dir() -> Path | None:
     if not rid:
         return None
     d = get_releases_dir() / rid
-    if d.exists() and (d / "app" / "cli.py").exists():
-        return d
-    return None
+    if not d.exists() or not (d / "app" / "cli.py").exists():
+        return None
+
+    # Compare embedded payload identity with installed identity
+    try:
+        embedded_manifest_path = _find_embedded_manifest()
+        if embedded_manifest_path:
+            embedded = json.loads(embedded_manifest_path.read_text(encoding="utf-8"))
+            embedded_sha = embedded.get("payload_sha256", "")
+            installed_sha = info.get("payload_sha256", "")
+            if embedded_sha and installed_sha and embedded_sha != installed_sha:
+                return None
+    except (json.JSONDecodeError, OSError):
+        pass
+
+    return d
+
+
+def _find_embedded_manifest() -> Path | None:
+    """查找嵌入式 Payload Manifest，兼容 PyInstaller 和源码运行。"""
+    import sys as _sys
+
+    if getattr(_sys, "frozen", False):
+        base = Path(getattr(_sys, "_MEIPASS", ""))
+    else:
+        base = Path(__file__).resolve().parent.parent.parent.parent / "dist" / "payload"
+    p = base / "payload_manifest.json"
+    return p if p.exists() else None
 
 
 def get_staging_dir() -> Path:
