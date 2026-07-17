@@ -281,7 +281,7 @@ class FunASRBackend:
 
     MODEL_ID_PRIMARY = "paraformer-zh"
     MODEL_ID_SENSEVOICE = "iic/SenseVoiceSmall"
-    MODEL_ID_NANO = "iic/Fun-ASR-Nano"
+    MODEL_ID_NANO = "FunAudioLLM/Fun-ASR-Nano-2512"
 
     def __init__(
         self,
