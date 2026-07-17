@@ -320,10 +320,14 @@ def install_dependencies(venv_python: Path, app_root: Path, req_file: Path) -> N
     except (subprocess.CalledProcessError, OSError):
         pass
 
-    # Install from lock file
+    # Install from lock file with hash verification
     print(f"  install deps (lock file: {lock_file.name})...")
+    offline_flag = []
+    if os.environ.get("PIP_NO_INDEX") == "1":
+        offline_flag = ["--no-index", "--find-links", str(lock_dir.parent)]
     subprocess.run(
-        [str(venv_python), "-m", "pip", "install", "-r", str(lock_file)],
+        [str(venv_python), "-m", "pip", "install", "-r", str(lock_file), "--require-hashes"]
+        + offline_flag,
         check=True, timeout=600,
     )
 
@@ -333,45 +337,6 @@ def install_dependencies(venv_python: Path, app_root: Path, req_file: Path) -> N
         subprocess.run(
             [str(venv_python), "-c", f"import {mod}; print('  ok: {mod}')"],
             check=True, capture_output=True, timeout=30,
-        )
-    print("  deps install complete")
-
-    wheels_dir = app_root / WHEELS_DIR
-    if wheels_dir.exists() and list(wheels_dir.glob("*.whl")):
-        print(f"  install deps (local {len(list(wheels_dir.glob('*.whl')))} wheels)...")
-        subprocess.run(
-            [
-                str(venv_python),
-                "-m",
-                "pip",
-                "install",
-                "--no-index",
-                "--find-links",
-                str(wheels_dir),
-                "-r",
-                str(req_file),
-            ],
-            check=True,
-            timeout=600,
-        )
-    else:
-        print("  install deps (mirror)...")
-        subprocess.run(
-            [
-                str(venv_python),
-                "-m",
-                "pip",
-                "install",
-                "-r",
-                str(req_file),
-                "-i",
-                PIP_INDEX,
-                "--extra-index-url",
-                PIP_EXTRA_INDEX,
-                *[f"--trusted-host={h}" for h in PIP_TRUSTED_HOSTS],
-            ],
-            check=True,
-            timeout=900,
         )
     print("  deps install complete")
 
