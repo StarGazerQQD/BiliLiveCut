@@ -268,16 +268,22 @@ print('PASS: Engine Pack metadata valid')
           Write-Output "FFmpeg ready"
         timeout-minutes: 5
 
-      - name: Download offline wheels (best-effort)
+      - name: Download Windows wheels from lock files
         shell: pwsh
-        continue-on-error: true
         run: |
-          $ErrorActionPreference = "Continue"
           New-Item -ItemType Directory -Path vendor\wheels -Force
-          pip freeze | Out-File -FilePath "$env:RUNNER_TEMP\packages.txt" -Encoding utf8
-          pip download -r "$env:RUNNER_TEMP\packages.txt" -d vendor\wheels --only-binary=:all:
+          foreach ($lock in @("requirements-runtime-py311-win-x64.lock", "requirements-runtime-py312-win-x64.lock")) {
+            $lockPath = "packaging/portable/locks/$lock"
+            if (Test-Path $lockPath) {
+              python -m pip download -r $lockPath -d vendor\wheels --only-binary=:all: --platform win_amd64
+            }
+          }
           $wheelCount = @(Get-ChildItem vendor\wheels\*.whl -ErrorAction SilentlyContinue).Count
           Write-Output "Wheels downloaded: $wheelCount"
+          if ($wheelCount -eq 0) {
+            Write-Error "FATAL: No wheels downloaded — Full build will fail"
+            exit 1
+          }
         timeout-minutes: 15
 
       - name: Build Full Bundle
