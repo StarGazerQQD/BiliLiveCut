@@ -73,17 +73,21 @@ def get_current_release_dir() -> Path | None:
     if not d.exists() or not (d / "app" / "cli.py").exists():
         return None
 
-    # Compare embedded payload identity with installed identity
+    # Compare embedded payload identity with installed identity — fail-closed
+    # Any mismatch, missing manifest, empty hash, or parse error → reinstall
+    embedded_manifest_path = _find_embedded_manifest()
+    if embedded_manifest_path is None:
+        return None
     try:
-        embedded_manifest_path = _find_embedded_manifest()
-        if embedded_manifest_path:
-            embedded = json.loads(embedded_manifest_path.read_text(encoding="utf-8"))
-            embedded_sha = embedded.get("payload_sha256", "")
-            installed_sha = info.get("payload_sha256", "")
-            if embedded_sha and installed_sha and embedded_sha != installed_sha:
-                return None
+        embedded = json.loads(embedded_manifest_path.read_text(encoding="utf-8"))
     except (json.JSONDecodeError, OSError):
-        pass
+        return None
+    embedded_sha = embedded.get("payload_sha256", "")
+    installed_sha = info.get("payload_sha256", "")
+    if not embedded_sha or not installed_sha:
+        return None
+    if embedded_sha != installed_sha:
+        return None
 
     return d
 
