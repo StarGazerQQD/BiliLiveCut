@@ -60,7 +60,11 @@ def _load_launcher_engines() -> list[dict[str, Any]]:
         }
         if e.sub_models:
             d["sub_models"] = [
-                {"model_id": s.repository, "revision": s.resolved_revision if s.resolved_revision else None}
+                {
+                    "model_id": s.repository,
+                    "revision": s.resolved_revision if s.resolved_revision else None,
+                    "target_subdir": s.target_subdir if s.target_subdir else s.repository.rsplit("/", 1)[-1],
+                }
                 for s in e.sub_models
             ]
         engines.append(d)

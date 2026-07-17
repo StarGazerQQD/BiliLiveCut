@@ -759,7 +759,18 @@ class FasterWhisperBackend:
         device: str | None = None,
         compute_type: str | None = None,
     ) -> None:
-        self.model_size = model_size or settings.whisper_model
+        import os as _os
+
+        models_dir = _os.environ.get("BLC_MODELS_DIR", "")
+        if models_dir:
+            whisper_local = Path(models_dir) / "whisper"
+            if whisper_local.is_dir():
+                self.model_size = str(whisper_local)
+                logger.info("Whisper: using local Engine Pack model at %s", self.model_size)
+            else:
+                self.model_size = model_size or settings.whisper_model
+        else:
+            self.model_size = model_size or settings.whisper_model
         self.device = device or settings.asr_fallback_device or settings.whisper_device
         self.compute_type = compute_type or settings.whisper_compute_type
 
