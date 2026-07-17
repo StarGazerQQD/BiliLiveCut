@@ -4,7 +4,7 @@ from __future__ import annotations
 
 from dataclasses import dataclass, field
 
-SCHEMA_VERSION = 3
+SCHEMA_VERSION = 4
 
 
 @dataclass
@@ -17,6 +17,7 @@ class ContentManifest:
     source_commit: str = ""
     builder_commit: str = ""
     model_lock_sha256: str = ""
+    artifact_class: str = "production"
     engines: list[dict] = field(default_factory=list)
     files: dict = field(default_factory=dict)
     total_files: int = 0
@@ -31,6 +32,7 @@ class ContentManifest:
             "source_commit": self.source_commit,
             "builder_commit": self.builder_commit,
             "model_lock_sha256": self.model_lock_sha256,
+            "artifact_class": self.artifact_class,
             "engines": self.engines,
             "files": self.files,
             "total_files": self.total_files,
@@ -50,6 +52,7 @@ class ExternalMetadata:
     sha256: str = ""
     content_manifest_sha256: str = ""
     model_lock_sha256: str = ""
+    artifact_class: str = "production"
     source_commit: str = ""
     builder_commit: str = ""
     build_timestamp: str = ""
@@ -66,6 +69,7 @@ class ExternalMetadata:
             "sha256": self.sha256,
             "content_manifest_sha256": self.content_manifest_sha256,
             "model_lock_sha256": self.model_lock_sha256,
+            "artifact_class": self.artifact_class,
             "source_commit": self.source_commit,
             "builder_commit": self.builder_commit,
             "build_timestamp": self.build_timestamp,

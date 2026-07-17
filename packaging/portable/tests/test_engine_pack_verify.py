@@ -136,7 +136,7 @@ class TestNoArchiveSelfHash:
         builder_py = _portable_dir / "src" / "blc_portable" / "engine_pack" / "builder.py"
         content = builder_py.read_text(encoding="utf-8")
         # staging manifest section must use schema_version: 3
-        assert '"schema_version": 3' in content
+        assert '"schema_version": 4' in content
         # Note comment confirms staging manifest has no archive self-hash
         assert (
             "避免自引用问题" in content or "archive_crc32" in content.split("schema_version")[0]

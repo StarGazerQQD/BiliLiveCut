@@ -366,7 +366,7 @@ def write_output_files(
     DIST_DIR.mkdir(parents=True, exist_ok=True)
 
     manifest: dict[str, Any] = {
-        "schema_version": 3,
+        "schema_version": 4,
         "engine_pack_version": ENGINE_PACK_VERSION,
         "portable_release_version": ENGINE_PACK_VERSION,
         "source_commit": source_commit,
@@ -431,7 +431,8 @@ def write_output_files(
     model_lock_path = PORTABLE_DIR / "config" / "model_sources.lock.json"
     model_lock_sha = compute_sha256(model_lock_path) if model_lock_path.exists() else ""
     engine_pack_info: dict[str, Any] = {
-        "format_version": 3,
+        "format_version": 4,
+        "artifact_class": "fixture" if is_fixture else "production",
         "engine_pack_version": ENGINE_PACK_VERSION,
         "compatible_app": {"min": ENGINE_PACK_VERSION, "max_exclusive": "0.1.15"},
         "filename": archive_path.name,
@@ -582,7 +583,7 @@ def build_engine_pack(fixture: bool = False, from_cache: bool = False) -> dict[s
     file_list = build_file_list(staging)
 
     manifest_data: dict[str, Any] = {
-        "schema_version": 3,
+        "schema_version": 4,
         "engine_pack_version": ENGINE_PACK_VERSION,
         "compatible_app": {"min": ENGINE_PACK_VERSION, "max_exclusive": "0.1.15"},
         "source_commit": source_commit,
