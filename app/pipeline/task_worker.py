@@ -329,27 +329,29 @@ class TaskWorker:
             if resource_key:
                 from app.core.resource_budget import acquire_resources, get_task_cost
 
-                cost = acquire_resources(**get_task_cost(resource_key))
-                if not cost:
+                cost_spec = get_task_cost(resource_key)  # dict, e.g. {"cpu": 1, "memory_mb": 500}
+                acquired = acquire_resources(**cost_spec)  # bool: True = acquired, False = insufficient
+                if not acquired:
                     _logger.debug("资源不足, 跳过阶段 {} (resource_key={})", queued_stage, resource_key)
                     break
             else:
-                cost = {}
+                cost_spec = {}
+                acquired = True
             task = pop_and_claim(queued_stage)
             if task is None:
-                if cost:
+                if acquired and cost_spec:
                     from app.core.resource_budget import release_resources
 
-                    release_resources(**cost)
+                    release_resources(**cost_spec)
                 break
 
-            if cost:
+            if acquired and cost_spec:
                 from app.pipeline.lifecycle import _task_resources, _task_resources_lock
 
                 if _task_resources_lock is None:
                     _task_resources_lock = threading.Lock()
                 with _task_resources_lock:
-                    _task_resources[task.id] = cost
+                    _task_resources[task.id] = cost_spec
 
             act_stage = active_stage(queued_stage)
             lease = task.lease_token
