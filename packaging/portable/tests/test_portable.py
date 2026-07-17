@@ -142,12 +142,12 @@ class TestPayload:
 
     def test_manifest_valid(self, payload_manifest: dict, payload_zip: Path) -> None:
         """验证 Manifest 基本字段。"""
-        from blc_portable.payload.manifest import RELEASE_VERSION, SOURCE_COMMIT_FULL, validate_manifest
+        from blc_portable.payload.manifest import MANIFEST_FORMAT_VERSION, RELEASE_VERSION, SOURCE_COMMIT_FULL, SOURCE_COMMIT_SHORT, validate_manifest
 
         assert payload_manifest["release_version"] == RELEASE_VERSION
         assert payload_manifest["source_commit"] == SOURCE_COMMIT_FULL
-        assert payload_manifest["source_commit_short"] == "731a31c"
-        assert payload_manifest["format_version"] == 1
+        assert payload_manifest["source_commit_short"] == SOURCE_COMMIT_SHORT
+        assert payload_manifest["format_version"] == MANIFEST_FORMAT_VERSION
         assert "payload_sha256" in payload_manifest
         assert len(payload_manifest["payload_sha256"]) == 64
         assert "files" in payload_manifest
