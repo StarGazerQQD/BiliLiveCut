@@ -207,6 +207,9 @@ def check_engine_pack_metadata(audit: AuditResult) -> None:
     audit.check("engine_pack_info.format_version >= 4",
                   info.get("format_version", 0) >= 4,
                   f"format_version={info.get('format_version', 0)} — 需 >= 4")
+    audit.check("engine_pack_info.size_bytes >= 500 MB",
+                  info.get("size_bytes", 0) >= 500_000_000,
+                  f"size_bytes={info.get('size_bytes', 0)} — Producing仅4KB为Fixtures")
 
 
 def check_csrf(audit: AuditResult) -> None:

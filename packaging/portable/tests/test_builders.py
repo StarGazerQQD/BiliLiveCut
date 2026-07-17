@@ -22,12 +22,9 @@ class TestLiteBuilder:
     def test_lite_rejects_everything_empty(self) -> None:
         from blc_portable.builders.lite import check_engine_pack_info  # noqa: E402
 
-        # Without fixture mode, missing engine_pack_info should raise
-        # But if a valid info file exists locally, this test verifies
-        # the function itself is importable and callable
         info_path = _portable_dir / "resources" / "engine_pack_info.json"
         if info_path.exists():
-            # If file exists, verify it parses cleanly
+            # Production file: must pass all checks including size
             check_engine_pack_info()
         else:
             with pytest.raises(RuntimeError):

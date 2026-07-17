@@ -221,9 +221,10 @@ for field in ('source_commit', 'builder_commit'):
 ids = info.get('expected_engine_ids', [])
 if len(ids) != 4:
     errors.append(f'expected_engine_ids incomplete: {ids}')
-# Size
-if not info.get('size_bytes', 0):
-    errors.append('size_bytes is zero')
+# Size — real production engine pack is ~5.5 GB, fixture is ~4 KB
+size_bytes = info.get('size_bytes', 0)
+if size_bytes < 500_000_000:
+    errors.append(f'size_bytes too small for production ({size_bytes} < 500 MB) — likely a fixture')
 # Version
 if info.get('engine_pack_version', '') != info.get('compatible_app', {}).get('min', ''):
     errors.append('version/compatible_app.min mismatch')

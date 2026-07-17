@@ -96,6 +96,11 @@ def check_engine_pack_info() -> None:
     if format_version < 4:
         errors.append(f"format_version must be >= 4, got {format_version}")
 
+    # Minimum production size: real engine pack is ~5.5 GB, fixture is ~4 KB
+    size_bytes = ep_info.get("size_bytes", 0)
+    if size_bytes < 500_000_000:
+        errors.append(f"size_bytes too small for production ({size_bytes} < 500 MB) — likely a fixture")
+
     if errors:
         error_msg = "Engine Pack validation FAILED:\n  - " + "\n  - ".join(errors)
         raise RuntimeError(error_msg)
