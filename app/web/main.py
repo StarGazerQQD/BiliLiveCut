@@ -70,11 +70,6 @@ async def lifespan(_app: FastAPI) -> AsyncIterator[None]:
 
     trend_scheduler.start(recording_active=lambda: bool(service.recorder_manager.running_ids()))
 
-    # V0.1.13: 启动后台指标采集器
-    from app.core.metrics import start_metrics_collector
-
-    start_metrics_collector(interval_s=60)
-
     # V0.1.6:启动持久化任务队列 Worker。
     from app.pipeline.task_worker import task_worker
 
