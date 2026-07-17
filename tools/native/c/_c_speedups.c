@@ -253,10 +253,7 @@ static PyObject *fast_ahocorasick_build(PyObject *self, PyObject *args) {
 
     ac_build_failure(am);
     if (PyErr_Occurred()) {
-        for (int i = 0; i < am->node_count; i++)
-            for (int j = 0; j < am->nodes[i].output_len; j++)
-                free(am->nodes[i].outputs[j]);
-        free(am->nodes);
+        Py_DECREF(am);
         return NULL;
     }
     return (PyObject *)am;

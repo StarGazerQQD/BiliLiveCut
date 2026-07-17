@@ -87,18 +87,23 @@ def fast_ahocorasick_build(patterns: Sequence[str]) -> Any:
 
 
 def fast_ahocorasick_search(automaton: dict, text: str) -> list[str]:
-    """用自动机搜索文本,返回所有命中的模式。
+    """用自动机搜索文本,返回所有命中的模式。与 C 扩展行为一致。
 
     :param automaton: 自动机。
     :param text: 文本。
-    :returns: 命中模式列表。
+    :returns: 命中模式列表 (可能与文本等长，连续命中每个字符各计一次)。
     """
     trie = automaton["trie"]
     outputs = automaton["outputs"]
+    fail = automaton["fail"]
     results: list[str] = []
     node = 0
     for ch in text:
-        node = trie[node].get(ord(ch), 0)
+        cb = ord(ch)
+        # Follow failure links for characters not in trie (matching C extension behavior)
+        while node != 0 and cb not in trie[node]:
+            node = fail[node] if node > 0 else 0
+        node = trie[node].get(cb, 0)
         for pat in outputs[node]:
             results.append(pat)
     return results
@@ -113,9 +118,13 @@ def fast_aho_has_match(automaton: dict, text: str) -> bool:
     """
     trie = automaton["trie"]
     outputs = automaton["outputs"]
+    fail = automaton["fail"]
     node = 0
     for ch in text:
-        node = trie[node].get(ord(ch), 0)
+        cb = ord(ch)
+        while node != 0 and cb not in trie[node]:
+            node = fail[node] if node > 0 else 0
+        node = trie[node].get(cb, 0)
         if outputs[node]:
             return True
     return False
