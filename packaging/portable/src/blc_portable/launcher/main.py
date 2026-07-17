@@ -303,7 +303,7 @@ def install_dependencies(venv_python: Path, app_root: Path, req_file: Path) -> N
                 pkg, ver = line.strip().split("==", 1)
                 installed[pkg.lower()] = ver
         missing = []
-        with open(lock_file, "r", encoding="utf-8") as lf:
+        with open(lock_file, encoding="utf-8") as lf:
             for line in lf:
                 line = line.strip()
                 if not line or line.startswith("#") or "[" in line:
