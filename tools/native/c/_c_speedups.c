@@ -614,7 +614,7 @@ static PyObject *fast_meme_count(PyObject *self, PyObject *args) {
     }
     ac_build_failure(&am_local);
     if (PyErr_Occurred()) {
-        ac_free(&am_local);
+        free(am_local.nodes);
         return NULL;
     }
 
