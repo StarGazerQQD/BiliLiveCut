@@ -252,6 +252,13 @@ static PyObject *fast_ahocorasick_build(PyObject *self, PyObject *args) {
     }
 
     ac_build_failure(am);
+    if (PyErr_Occurred()) {
+        for (int i = 0; i < am->node_count; i++)
+            for (int j = 0; j < am->nodes[i].output_len; j++)
+                free(am->nodes[i].outputs[j]);
+        free(am->nodes);
+        return NULL;
+    }
     return (PyObject *)am;
 }
 
@@ -527,6 +534,13 @@ static PyObject *fast_match_keywords(PyObject *self, PyObject *args) {
         Py_DECREF(item);
     }
     ac_build_failure(&am_local);
+    if (PyErr_Occurred()) {
+        for (int i = 0; i < am_local.node_count; i++)
+            for (int j = 0; j < am_local.nodes[i].output_len; j++)
+                free(am_local.nodes[i].outputs[j]);
+        free(am_local.nodes);
+        return NULL;
+    }
 
     PyObject *result = PyList_New(0);
     if (!result) {
@@ -614,6 +628,9 @@ static PyObject *fast_meme_count(PyObject *self, PyObject *args) {
     }
     ac_build_failure(&am_local);
     if (PyErr_Occurred()) {
+        for (int i = 0; i < am_local.node_count; i++)
+            for (int j = 0; j < am_local.nodes[i].output_len; j++)
+                free(am_local.nodes[i].outputs[j]);
         free(am_local.nodes);
         return NULL;
     }
