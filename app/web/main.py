@@ -294,8 +294,13 @@ class _AuthMiddleware(_BaseMiddleware):
         if not auth.startswith("Basic "):
             # 无 Basic Auth 时,修改请求额外检查 CSRF
             if self._is_modifying(request) and not self._check_csrf(request):
-                logger.warning("csrf_blocked: {} {} from Origin={} Referer={}", request.method, path,
-                               request.headers.get("Origin", "-"), request.headers.get("Referer", "-"))
+                logger.warning(
+                    "csrf_blocked: {} {} from Origin={} Referer={}",
+                    request.method,
+                    path,
+                    request.headers.get("Origin", "-"),
+                    request.headers.get("Referer", "-"),
+                )
                 return _JSONResponse({"detail": "跨站请求被拒绝"}, status_code=403)
             return _JSONResponse({"detail": "需要认证"}, status_code=401, headers={"WWW-Authenticate": "Basic"})
         try:
@@ -316,8 +321,9 @@ class _AuthMiddleware(_BaseMiddleware):
             return _JSONResponse({"detail": "认证格式错误"}, status_code=400)
         # Basic Auth 通过后,修改请求仍须校验 CSRF
         if self._is_modifying(request) and not self._check_csrf(request):
-            logger.warning("csrf_blocked_auth: {} {} from Origin={}", request.method, path,
-                           request.headers.get("Origin", "-"))
+            logger.warning(
+                "csrf_blocked_auth: {} {} from Origin={}", request.method, path, request.headers.get("Origin", "-")
+            )
             return _JSONResponse({"detail": "跨站请求被拒绝"}, status_code=403)
         return await call_next(request)
 
