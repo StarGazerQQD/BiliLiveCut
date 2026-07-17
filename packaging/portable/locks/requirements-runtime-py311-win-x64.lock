@@ -1,5 +1,6 @@
-# BiliLiveCut Portable Lite — 核心依赖锁 (Python 3.11, Windows x64)
-# Generate with: pip freeze --require-hashes > requirements-runtime-py311-win-x64.lock
+﻿# BiliLiveCut Portable Lite -- runtime dependency lock (Python 3.11, Windows x64)
+# Regenerate: pip install -r locks/requirements-runtime-py311-win-x64.lock && pip freeze > this_file
+# Add --hash lines by running: pip freeze --require-hashes > this_file on a clean Windows venv
 
 fastapi==0.115.6
 uvicorn[standard]==0.34.0

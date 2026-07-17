@@ -300,19 +300,23 @@ def install_dependencies(venv_python: Path, app_root: Path, req_file: Path) -> N
         installed = {}
         for line in raw_freeze.strip().split("\n"):
             if "==" in line:
-                pkg, ver = line.strip().split("==", 1)
-                installed[pkg.lower()] = ver
+                pkg_ver = line.strip().split("==", 1)
+                installed[pkg_ver[0].lower()] = pkg_ver[1]
         missing = []
         with open(lock_file, encoding="utf-8") as lf:
             for line in lf:
                 line = line.strip()
-                if not line or line.startswith("#") or "[" in line:
+                if not line or line.startswith("#") or line.startswith("--"):
                     continue
-                pkg = line.split("==")[0].split("[")[0].strip().lower()
-                expected_ver = line.split("==")[1].split(";")[0].strip()
-                actual_ver = installed.get(pkg)
-                if actual_ver is None or actual_ver != expected_ver:
-                    missing.append(f"{pkg}: expected {expected_ver}, got {actual_ver}")
+                if "==" not in line:
+                    continue
+                raw_pkg = line.split("==")[0].strip().lower()
+                # Strip extras like [standard] from package name
+                pkg = raw_pkg.split("[")[0]
+                raw_ver = line.split("==")[1].split(";")[0].split("\\")[0].strip()
+                actual_ver = installed.get(raw_pkg) or installed.get(pkg)
+                if actual_ver is None or actual_ver != raw_ver:
+                    missing.append(f"{raw_pkg}: expected {raw_ver}, got {actual_ver}")
         if not missing:
             print("  dependencies already installed (version match)")
             return
@@ -320,8 +324,10 @@ def install_dependencies(venv_python: Path, app_root: Path, req_file: Path) -> N
     except (subprocess.CalledProcessError, OSError):
         pass
 
-    # Install from lock file (exact versions, hashes pending — regenerate with pip freeze --require-hashes)
+    # Install from lock file (hashes. require-hashes only if lock file contains --hash lines)
     print(f"  install deps (lock file: {lock_file.name})...")
+    has_hashes = any(line.strip().startswith("--hash") for line in open(lock_file, encoding="utf-8"))
+    hashes_flag = ["--require-hashes"] if has_hashes else []
     offline_flag = []
     if os.environ.get("PIP_NO_INDEX") == "1":
         wheelhouse = Path(__file__).resolve().parent.parent.parent.parent / "vendor" / "wheels"
@@ -331,7 +337,7 @@ def install_dependencies(venv_python: Path, app_root: Path, req_file: Path) -> N
             offline_flag = ["--no-index"]
     subprocess.run(
         [str(venv_python), "-m", "pip", "install", "-r", str(lock_file)]
-        + offline_flag,
+        + hashes_flag + offline_flag,
         check=True, timeout=600,
     )
 
