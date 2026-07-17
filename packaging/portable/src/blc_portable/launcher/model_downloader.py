@@ -172,13 +172,24 @@ def download_all_engines(app_root: Path) -> dict[str, Any]:
     staging_dir = app_root / f"models-staging-{uuid.uuid4().hex[:12]}"
     staging_dir.mkdir(parents=True, exist_ok=True)
 
-    total = len(ENGINES_TO_DOWNLOAD)
+    engine_defs = _load_launcher_engines()
+    expected_ids = {"whisper", "paraformer", "sensevoice", "funasr_nano"}
+    actual_ids = {e["engine_id"] for e in engine_defs}
+
+    if not engine_defs:
+        raise RuntimeError("Model catalog is empty — cannot download models")
+    if actual_ids != expected_ids:
+        raise RuntimeError(
+            f"Model catalog mismatch: expected {expected_ids}, got {actual_ids}"
+        )
+
+    total = len(engine_defs)
     installed_engines: list[str] = []
     files_info: dict[str, dict[str, object]] = {}
     failed_engines: list[str] = []
 
     try:
-        for idx, engine_def in enumerate(ENGINES_TO_DOWNLOAD):
+        for idx, engine_def in enumerate(engine_defs):
             engine_id = str(engine_def["engine_id"])
             target_dir = staging_dir / str(engine_def["target_dir"])
             target_dir.mkdir(parents=True, exist_ok=True)
@@ -201,7 +212,8 @@ def download_all_engines(app_root: Path) -> dict[str, Any]:
                     for sub in engine_def.get("sub_models", []):
                         sub_id = str(sub["model_id"])
                         sub_rev = str(sub.get("revision", revision))
-                        sub_dir = target_dir / sub_id
+                        sub_name = sub.get("target_subdir", sub_id.rsplit("/", 1)[-1])
+                        sub_dir = target_dir / sub_name
                         sub_dir.mkdir(parents=True, exist_ok=True)
                         print(f"    下载子模型: {sub_id}")
                         _download_ms_model(sub_id, sub_dir, sub_rev)
@@ -224,6 +236,12 @@ def download_all_engines(app_root: Path) -> dict[str, Any]:
         if failed_engines:
             failures = "; ".join(failed_engines)
             raise RuntimeError(f"以下引擎下载失败: {failures}")
+
+        # Validate staging before committing
+        if not installed_engines:
+            raise RuntimeError("No engines downloaded — refusing to overwrite existing models")
+        if set(installed_engines) != expected_ids:
+            raise RuntimeError(f"Engine set mismatch: installed={set(installed_engines)} expected={expected_ids}")
 
         # 原子安装
         print(f"\n  全部 {total} 个引擎下载完成，正在安装...")
