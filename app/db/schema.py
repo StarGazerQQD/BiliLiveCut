@@ -524,7 +524,6 @@ def _verify_foreign_keys() -> bool:
         ("clip_variants", "highlight_events", "ClipVariant.event_id -> HighlightEvent"),
         ("highlight_topics", "highlight_events", "HighlightTopic.event_id -> HighlightEvent"),
         ("highlight_topics", "topics", "HighlightTopic.topic_id -> Topic"),
-        ("upload_tasks", "final_clips", "UploadTask.clip_id -> FinalClip"),
     ]
 
     all_ok = True
@@ -535,8 +534,7 @@ def _verify_foreign_keys() -> bool:
                 found = any(row[2] == ref_table for row in fk_rows)
                 if not found:
                     logger.warning("外键缺失: {}", desc)
-                    # 外键缺失不一定是致命错误 (SQLite 默认不强制)
-                    # 但记录警告
+                    all_ok = False
                 else:
                     logger.debug("外键存在: {}", desc)
     except Exception as exc:
