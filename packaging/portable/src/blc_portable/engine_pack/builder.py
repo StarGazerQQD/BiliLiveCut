@@ -549,6 +549,16 @@ def build_engine_pack(fixture: bool = False, from_cache: bool = False) -> dict[s
     source_commit = get_full_commit(SOURCE_COMMIT_SHORT)
     print(f"\n  Source Commit: {source_commit}")
 
+    # 当前 builder HEAD (不是固定源码 commit)
+    builder_head = ""
+    try:
+        r = subprocess.run(["git", "rev-parse", "HEAD"], capture_output=True, text=True,
+                           cwd=str(PROJECT_ROOT), timeout=10)
+        if r.returncode == 0:
+            builder_head = r.stdout.strip()
+    except Exception:
+        pass
+
     # 清理并创建 build 目录
     BUILD_DIR.mkdir(parents=True, exist_ok=True)
     DIST_DIR.mkdir(parents=True, exist_ok=True)

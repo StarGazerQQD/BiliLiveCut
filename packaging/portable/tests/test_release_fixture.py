@@ -14,7 +14,7 @@ def test_release_workflow_rejects_fixture_build() -> None:
     content = release_yml.read_text(encoding="utf-8")
     lines = content.split("\n")
     in_lite_build = False
-    for i, line in enumerate(lines):
+    for _i, line in enumerate(lines):
         if "Build Lite EXE" in line and "name:" in line:
             in_lite_build = True
         if in_lite_build and "name:" in line and "Build Lite EXE" not in line and "Upload" not in line:
