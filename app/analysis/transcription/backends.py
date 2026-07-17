@@ -279,7 +279,7 @@ class FunASRBackend:
     :param funasr_nano: 是否加载 Fun-ASR-Nano。
     """
 
-    MODEL_ID_PRIMARY = "paraformer-zh"
+    MODEL_ID_PRIMARY = "iic/speech_paraformer-large-vad-punc_asr_nat-zh-cn-16k-common-vocab8404-pytorch"
     MODEL_ID_SENSEVOICE = "iic/SenseVoiceSmall"
     MODEL_ID_NANO = "FunAudioLLM/Fun-ASR-Nano-2512"
 
@@ -289,7 +289,17 @@ class FunASRBackend:
         sensevoice: bool | None = None,
         funasr_nano: bool | None = None,
     ) -> None:
-        self._primary_model_name = primary or "paraformer-zh"
+        import os as _os
+
+        models_dir = _os.environ.get("BLC_MODELS_DIR", "")
+        self._models_dir = models_dir
+        self._use_local_models = bool(models_dir) and __import__("pathlib").Path(models_dir).is_dir()
+
+        # When Portable provides local models, use absolute paths
+        if self._use_local_models:
+            self._primary_model_name = str(__import__("pathlib").Path(models_dir) / "paraformer")
+        else:
+            self._primary_model_name = primary or self.MODEL_ID_PRIMARY
         self._use_sensevoice = sensevoice if sensevoice is not None else settings.asr_sensevoice
         self._use_funasr = funasr_nano if funasr_nano is not None else settings.asr_funasr_review
         self._primary: object | None = None
@@ -304,31 +314,49 @@ class FunASRBackend:
     # ---- 懒加载 ----
 
     def _load_primary(self) -> object:
-        """加载 Paraformer-zh 主引擎 (中文 ASR + 标点 + 时间戳)。"""
+        """Load Paraformer-zh main engine (Chinese ASR + punctuation + timestamps).
+
+        When BLC_MODELS_DIR is set (Portable mode), uses absolute local paths
+        for model + VAD + punctuation + speaker sub-models, avoiding any network call.
+        """
         if self._primary is not None:
             return self._primary
         try:
             from funasr import AutoModel
         except ImportError:
-            raise RuntimeError("需要安装 funasr。请执行: pip install funasr modelscope") from None
+            raise RuntimeError("Need funasr installed. Run: pip install funasr modelscope") from None
         device = settings.asr_primary_device or settings.whisper_device
-        logger.info(
-            "加载 Paraformer-zh 主引擎 model={} device={} revision={}",
-            self._primary_model_name,
-            device,
-            self.model_revision,
-        )
-        self._primary = AutoModel(
-            model=self._primary_model_name,
-            vad_model="fsmn-vad",
-            punc_model="ct-punc",
-            spk_model="cam++",
-            device=device,
-            hub="ms",
-            revision=self.model_revision,
-        )
+        revision = settings.asr_model_revision or None
+
+        if self._use_local_models:
+            # Portable mode: use Engine Pack local directories
+            vad_path = str(Path(self._models_dir) / "paraformer" / "fsmn-vad")
+            punc_path = str(Path(self._models_dir) / "paraformer" / "ct-punc")
+            spk_path = str(Path(self._models_dir) / "paraformer" / "campplus")
+            logger.info("Loading Paraformer from local paths: model=%s vad=%s", self._primary_model_name, vad_path)
+            self._primary = AutoModel(
+                model=self._primary_model_name,
+                vad_model=vad_path,
+                punc_model=punc_path,
+                spk_model=spk_path,
+                device=device,
+                hub="ms",
+                disable_update=True,
+            )
+        else:
+            logger.info("Loading Paraformer-zh online: model=%s device=%s revision=%s",
+                         self._primary_model_name, device, revision)
+            self._primary = AutoModel(
+                model=self._primary_model_name,
+                vad_model="fsmn-vad",
+                punc_model="ct-punc",
+                spk_model="cam++",
+                device=device,
+                hub="ms",
+                revision=revision,
+            )
         asr_metrics.record_backend_call("paraformer", 0, success=True)
-        logger.info("Paraformer 模型加载完成: loaded=True device={}", device)
+        logger.info("Paraformer loaded: device=%s local=%s", device, self._use_local_models)
         return self._primary
 
     def _load_sensevoice(self) -> object:
@@ -339,30 +367,49 @@ class FunASRBackend:
             from funasr import AutoModel
         except ImportError:
             raise RuntimeError("需要安装 funasr。请执行: pip install funasr modelscope") from None
-        logger.info("加载 SenseVoice-Small 辅助特征引擎 revision={}", self.model_revision)
-        self._sensevoice = AutoModel(
-            model=self.MODEL_ID_SENSEVOICE,
-            device=settings.asr_auxiliary_device or settings.whisper_device,
-            hub="ms",
-            revision=self.model_revision,
-        )
+        if self._use_local_models:
+            sensevoice_path = str(Path(self._models_dir) / "sensevoice")
+            logger.info("Loading SenseVoice-Small from local path: %s", sensevoice_path)
+            self._sensevoice = AutoModel(
+                model=sensevoice_path,
+                device=settings.asr_auxiliary_device or settings.whisper_device,
+                hub="ms",
+                disable_update=True,
+            )
+        else:
+            self._sensevoice = AutoModel(
+                model=self.MODEL_ID_SENSEVOICE,
+                device=settings.asr_auxiliary_device or settings.whisper_device,
+                hub="ms",
+                revision=settings.asr_model_revision or None,
+            )
         return self._sensevoice
 
     def _load_funasr(self) -> object:
-        """加载 Fun-ASR-Nano (低置信度复核)。"""
+        """Load Fun-ASR-Nano (low-confidence review)."""
         if self._funasr is not None:
             return self._funasr
         try:
             from funasr import AutoModel
         except ImportError:
-            raise RuntimeError("需要安装 funasr。请执行: pip install funasr modelscope") from None
-        logger.info("加载 Fun-ASR-Nano 复核引擎 revision={}", self.model_revision)
-        self._funasr = AutoModel(
-            model=self.MODEL_ID_NANO,
-            device=settings.asr_review_device or settings.whisper_device,
-            hub="ms",
-            revision=self.model_revision,
-        )
+            raise RuntimeError("Need funasr. Run: pip install funasr modelscope") from None
+        if self._use_local_models:
+            nano_path = str(Path(self._models_dir) / "funasr_nano")
+            logger.info("Loading Fun-ASR-Nano from local path: %s", nano_path)
+            self._funasr = AutoModel(
+                model=nano_path,
+                device=settings.asr_review_device or settings.whisper_device,
+                hub="ms",
+                disable_update=True,
+            )
+        else:
+            logger.info("Loading Fun-ASR-Nano online revision=%s", settings.asr_model_revision or "None")
+            self._funasr = AutoModel(
+                model=self.MODEL_ID_NANO,
+                device=settings.asr_review_device or settings.whisper_device,
+                hub="ms",
+                revision=settings.asr_model_revision or None,
+            )
         return self._funasr
 
     # ---- 转写 (V0.1.12.2: 返回 ASRTranscriptResult) ----
