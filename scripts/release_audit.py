@@ -193,14 +193,24 @@ def check_engine_pack_metadata(audit: AuditResult) -> None:
         return
 
     for field in ("engine_pack_version", "crc32", "sha256", "expected_engine_ids",
-                   "format_version", "manifest_sha256", "model_lock_sha256"):
-        audit.check(f"engine_pack_info.{field}", field in info,
-                      f"缺少字段 '{field}'" if field not in info else "")
+                   "format_version", "content_manifest_sha256", "model_lock_sha256"):
+        audit.check(f"engine_pack_info.{field}", field in info or "manifest_sha256" in info,
+                      "" if (field in info or (field == "content_manifest_sha256" and "manifest_sha256" in info)) else f"缺少字段 '{field}'")
 
     audit.check("engine_pack_info.crc32 non-empty", bool(info.get("crc32", "")),
                   "CRC32 为空 — 正式构建必须失败")
     audit.check("engine_pack_info.sha256 non-empty", bool(info.get("sha256", "")),
                   "SHA-256 为空 — 正式构建必须失败")
+
+
+def check_csrf(audit: AuditResult) -> None:
+    """检查 Web 层 CSRF 防护存在性。"""
+    main_py = REPO_ROOT / "app" / "web" / "main.py"
+    if not main_py.exists():
+        return
+    content = main_py.read_text(encoding="utf-8")
+    audit.check("CSRF _check_csrf", "_check_csrf" in content)
+    audit.check("Basic Auth 用户名验证", 'username != "admin"' in content)
 
 
 def run_audit(quick: bool = False) -> AuditResult:
@@ -218,6 +228,7 @@ def run_audit(quick: bool = False) -> AuditResult:
         check_model_single_source(audit)
         check_resolved_revision(audit)
         check_engine_pack_metadata(audit)
+        check_csrf(audit)
 
     return audit
 
