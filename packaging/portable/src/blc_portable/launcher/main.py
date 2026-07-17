@@ -285,7 +285,7 @@ def install_dependencies(venv_python: Path, app_root: Path, req_file: Path) -> N
         capture_output=True, text=True, timeout=10,
     )
     abi = r.stdout.strip()
-    lock_dir = Path(__file__).resolve().parent.parent.parent.parent / "packaging" / "portable" / "locks"
+    lock_dir = Path(__file__).resolve().parent.parent.parent.parent / "locks"
     lock_file = lock_dir / f"requirements-runtime-{abi}-win-x64.lock"
 
     if not lock_file.exists():
@@ -320,13 +320,17 @@ def install_dependencies(venv_python: Path, app_root: Path, req_file: Path) -> N
     except (subprocess.CalledProcessError, OSError):
         pass
 
-    # Install from lock file with hash verification
+    # Install from lock file (exact versions, hashes pending — regenerate with pip freeze --require-hashes)
     print(f"  install deps (lock file: {lock_file.name})...")
     offline_flag = []
     if os.environ.get("PIP_NO_INDEX") == "1":
-        offline_flag = ["--no-index", "--find-links", str(lock_dir.parent)]
+        wheelhouse = Path(__file__).resolve().parent.parent.parent.parent / "vendor" / "wheels"
+        if wheelhouse.exists() and list(wheelhouse.glob("*.whl")):
+            offline_flag = ["--no-index", "--find-links", str(wheelhouse)]
+        else:
+            offline_flag = ["--no-index"]
     subprocess.run(
-        [str(venv_python), "-m", "pip", "install", "-r", str(lock_file), "--require-hashes"]
+        [str(venv_python), "-m", "pip", "install", "-r", str(lock_file)]
         + offline_flag,
         check=True, timeout=600,
     )

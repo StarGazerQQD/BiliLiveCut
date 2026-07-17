@@ -272,12 +272,8 @@ print('PASS: Engine Pack metadata valid')
         shell: pwsh
         run: |
           New-Item -ItemType Directory -Path vendor\wheels -Force
-          foreach ($lock in @("requirements-runtime-py311-win-x64.lock", "requirements-runtime-py312-win-x64.lock")) {
-            $lockPath = "packaging/portable/locks/$lock"
-            if (Test-Path $lockPath) {
-              python -m pip download -r $lockPath -d vendor\wheels --only-binary=:all: --platform win_amd64
-            }
-          }
+          python -m pip download -r packaging/portable/locks/requirements-runtime-py311-win-x64.lock -d vendor\wheels --only-binary=:all: --platform win_amd64 --python-version 3.11
+          python -m pip download -r packaging/portable/locks/requirements-runtime-py312-win-x64.lock -d vendor\wheels --only-binary=:all: --platform win_amd64 --python-version 3.12
           $wheelCount = @(Get-ChildItem vendor\wheels\*.whl -ErrorAction SilentlyContinue).Count
           Write-Output "Wheels downloaded: $wheelCount"
           if ($wheelCount -eq 0) {
