@@ -1,18 +1,23 @@
 # Changelog
 
-## V0.1.14.11 Alpha (2026-07-16)
+## V0.1.14.11 Alpha (2026-07-17)
 
 ### 修复
 
-- **launcher**: 修复确定性启动故障 — `main()` 函数缺失。重构为 `build_parser()` → `run_launcher()` → `main(argv)` 模块级 callable 入口，支持参数解析和明确退出码
-- **models**: 删除 `downloader.py` 中独立 `ENGINES` 列表，全部引擎定义统一读取 `model_sources.lock.json`（单一权威来源）
-- **engine-pack**: Builder 切换为使用 `resolved_revision`（不可变），不再使用 `requested_revision`。子模型目录使用 catalog 显式 `target_subdir`
-- **engine-pack**: 删除双阶段打包中的内部 Manifest 自引用归档哈希，改为单阶段打包。内部 Manifest 不再包含 `archive_crc32`/`archive_sha256`
-- **engine-pack**: 外部 `engine_pack_info.json` 增加 `format_version`、`manifest_sha256`、`model_lock_sha256`、`build_timestamp` 等字段
-- **release.yml**: 替换 `BLC_CI_BUILD=1` 为 `BLC_FIXTURE_BUILD=1`（PR/CI 快速测试），正式 Release 禁止 bypass
-- **lite.py**: 同时支持 `BLC_FIXTURE_BUILD` 和 `BLC_CI_BUILD`（兼容旧版），Production 模式禁止 bypass
-- **安全**: 新增 `blc_portable/archive/safe_zip.py` — Zip Slip 防护、压缩炸弹检测、流式解压、保留设备名检查
-- **测试**: 新增 `test_launcher_entrypoint.py` — 验证 `main()` 可调用、`--version`/`--help` 返回 0、无效参数返回非零、import 无副作用
+- **pipeline**: 修复 `acquire_resources()` 返回 bool 但被当作 dict 传递给 `release_resources(**cost)` 的 TypeError
+- **models**: 删除空 `ENGINES_TO_DOWNLOAD=[]`，替换为 `_load_launcher_engines()` 加载统一 Catalog
+- **models**: 子模型目录使用 `target_subdir` 而非完整 repository ID，防止目录名错误
+- **asr**: 修复 `iic/Fun-ASR-Nano` → `FunAudioLLM/Fun-ASR-Nano-2512` 正确仓库 ID（backends.py 和 pipeline.py）
+- **engine-pack**: Schema 升级至 v4，统一 Builder/Installer/Verifier 版本号
+- **engine-pack**: 新增 `artifact_class` 字段区分 `production`/`fixture`
+- **runtime**: 嵌入式 Payload identity 与 installed current.json 比对新旧 EXE
+- **portable**: 删除 `requirements-bundle.txt` 及 wheels/mirror 死代码，只用 ABI 锁文件 + `--require-hashes`
+- **full**: 删除 `continue-on-error`，wheels 从 lock 文件下载，零 wheel 立即失败
+- **web**: 实现真实 CSRF 防护（Origin/Referer 校验、Basic Auth 后仍检查同源）
+- **web**: Basic Auth 用户名和密码都必须校验
+- **native**: 删除 `/arch:AVX2` 强制编译标志，使用 generic x86-64 基线
+- **c**: 修复 `ac_build_failure()` 返回 void 但调用方未检测 `PyErr_Occurred()` 的 bug
+- **release.yml**: 新增 production metadata 完整校验（嵌套哈希、commit、engine_ids、size）
 
 ## V0.1.14.8 Alpha (2026-07-15)
 
