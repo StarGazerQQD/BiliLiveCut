@@ -125,7 +125,7 @@ class TestVerifier:
         ]
         for field in required:
             assert field in info, f"Missing field: {field}"
-        assert info.get("format_version") == 3, f"format_version should be 3, got {info.get('format_version')}"
+        assert info.get("format_version") == 4, f"format_version should be 4, got {info.get('format_version')}"
 
 
 class TestNoArchiveSelfHash:
