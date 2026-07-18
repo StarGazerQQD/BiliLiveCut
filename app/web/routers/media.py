@@ -24,7 +24,7 @@ def clip_video(clip_id: int) -> FileResponse:
     # 路径遍历保护:确保文件在 clips 目录内。
     file_path = Path(clip["file_path"]).resolve()
     clips_root = _clips_dir().resolve()
-    if not str(file_path).startswith(str(clips_root)):
+    if not file_path.is_relative_to(clips_root):
         raise HTTPException(status_code=403, detail="禁止访问")
     return FileResponse(str(file_path), media_type="video/mp4")
 
@@ -41,6 +41,6 @@ def clip_cover(clip_id: int) -> FileResponse:
     # 路径遍历保护:确保文件在 clips 目录内。
     file_path = Path(clip["cover_path"]).resolve()
     clips_root = _clips_dir().resolve()
-    if not str(file_path).startswith(str(clips_root)):
+    if not file_path.is_relative_to(clips_root):
         raise HTTPException(status_code=403, detail="禁止访问")
     return FileResponse(str(file_path), media_type="image/jpeg")

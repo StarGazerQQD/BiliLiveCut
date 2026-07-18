@@ -202,23 +202,30 @@ def build_exe() -> Path:
         build_manifest["engine_pack_crc32"] = ep_info.get("crc32", "")
 
     import hashlib
+    import zlib
 
     hasher = hashlib.sha256()
+    crc_val: int = 0
     with open(exe_path, "rb") as f:
         for chunk in iter(lambda: f.read(65536), b""):
             hasher.update(chunk)
+            crc_val = zlib.crc32(chunk, crc_val)
     build_manifest["artifact_sha256"] = hasher.hexdigest()
+    build_manifest["artifact_crc32"] = f"{crc_val & 0xFFFFFFFF:08X}"
 
     bm_path = DIST_DIR / "build-manifest.json"
     bm_path.write_text(json.dumps(build_manifest, ensure_ascii=False, indent=2), encoding="utf-8")
 
-    # SHA256SUMS
+    # SHA256SUMS + CRC32SUMS
     sums_path = DIST_DIR / "SHA256SUMS.txt"
     sums_path.write_text(f"{build_manifest['artifact_sha256']}  {exe_path.name}\n", encoding="utf-8")
+    crc_path = DIST_DIR / "CRC32SUMS.txt"
+    crc_path.write_text(f"{build_manifest['artifact_crc32']}  {exe_path.name}\n", encoding="utf-8")
 
     size_mb = exe_path.stat().st_size / (1024 * 1024)
     print(f"\n  [OK] {exe_path.name} ({size_mb:.1f} MB)")
     print(f"  SHA256: {build_manifest['artifact_sha256'][:32]}")
+    print(f"  CRC32: {build_manifest['artifact_crc32']}")
     if "engine_pack_crc32" in build_manifest:
         print(f"  Embedded Engine Pack CRC32: {build_manifest['engine_pack_crc32']}")
 
