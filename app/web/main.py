@@ -282,7 +282,7 @@ class _AuthMiddleware(_BaseMiddleware):
         if ":" in expected.split("://", 1)[1] if "://" in expected else True:
             ep_parts = expected.split("://", 1)[1].rsplit(":", 1)
             if ep_parts[-1] in ("80", "443"):
-                normalized_expected = f'{expected.split("://", 1)[0]}://{ep_parts[0]}'
+                normalized_expected = f"{expected.split('://', 1)[0]}://{ep_parts[0]}"
 
         return normalized_origin == normalized_expected
 
