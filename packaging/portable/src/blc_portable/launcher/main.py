@@ -351,10 +351,8 @@ def install_dependencies(venv_python: Path, app_root: Path, req_file: Path | Non
     except (subprocess.CalledProcessError, OSError):
         pass
 
-    # Install from lock file (hashes. require-hashes only if lock file contains --hash lines)
+    # Install from lock file with mandatory hash verification
     print(f"  install deps (lock file: {lock_file.name})...")
-    has_hashes = any(line.strip().startswith("--hash") for line in open(lock_file, encoding="utf-8"))
-    hashes_flag = ["--require-hashes"] if has_hashes else []
     offline_flag = []
     if os.environ.get("PIP_NO_INDEX") == "1":
         wheelhouse = Path(__file__).resolve().parent.parent.parent.parent / "vendor" / "wheels"
@@ -363,7 +361,7 @@ def install_dependencies(venv_python: Path, app_root: Path, req_file: Path | Non
         else:
             offline_flag = ["--no-index"]
     subprocess.run(
-        [str(venv_python), "-m", "pip", "install", "-r", str(lock_file)] + hashes_flag + offline_flag,
+        [str(venv_python), "-m", "pip", "install", "-r", str(lock_file), "--require-hashes"] + offline_flag,
         check=True,
         timeout=600,
     )
