@@ -142,7 +142,9 @@ def install_source_from_payload(app_root: Path) -> Path:
     from blc_portable.runtime.installer import install_from_payload as _installer
 
     return _installer(
-        app_root, zip_path, manifest,
+        app_root,
+        zip_path,
+        manifest,
         expected_hash=expected_hash,
         expected_version=RELEASE_VERSION,
         expected_commit=SOURCE_COMMIT_SHORT,
@@ -249,7 +251,9 @@ def prepare_venv(app_root: Path) -> Path:
     # Validate Python version (only 3.11 and 3.12 supported)
     r = subprocess.run(
         [str(system_py), "-c", "import sys; v=sys.version_info[:2]; print(f'{v[0]}.{v[1]}')"],
-        capture_output=True, text=True, timeout=10,
+        capture_output=True,
+        text=True,
+        timeout=10,
     )
     py_ver = r.stdout.strip()
     parts = py_ver.split(".")
@@ -272,30 +276,53 @@ def prepare_venv(app_root: Path) -> Path:
     return venv_python
 
 
-def install_dependencies(venv_python: Path, app_root: Path, req_file: Path) -> None:
-    """Install Python dependencies。
+def _find_lock_file(venv_python: Path) -> Path:
+    """Find the ABI-specific lock file, compatible with frozen and source modes.
 
-    :param venv_python: venv python path。
-    :param app_root: app root dir。
-    :param req_file: requirements files。
+    :param venv_python: venv python path, used to detect ABI.
+    :returns: Path to the lock file.
+    :raises RuntimeError: When no matching lock file exists.
     """
-    # Select ABI-specific lock file first
     r = subprocess.run(
         [str(venv_python), "-c", "import sys; v=sys.version_info[:2]; print(f'py{v[0]}{v[1]}')"],
-        capture_output=True, text=True, timeout=10,
+        capture_output=True,
+        text=True,
+        timeout=10,
     )
     abi = r.stdout.strip()
-    lock_dir = Path(__file__).resolve().parent.parent.parent.parent / "locks"
-    lock_file = lock_dir / f"requirements-runtime-{abi}-win-x64.lock"
+    lock_name = f"requirements-runtime-{abi}-win-x64.lock"
 
-    if not lock_file.exists():
-        raise RuntimeError(f"Lock file not found: {lock_file.name}\nOnly Python 3.11 and 3.12 are supported.")
+    if getattr(sys, "frozen", False):
+        base = Path(sys._MEIPASS)  # type: ignore[attr-defined]
+        candidate = base / "locks" / lock_name
+        if candidate.exists():
+            return candidate
+
+    # Source/test mode
+    candidate = Path(__file__).resolve().parent.parent.parent.parent / "locks" / lock_name
+    if candidate.exists():
+        return candidate
+
+    raise RuntimeError(f"Lock file not found: {lock_name}\nOnly Python 3.11 and 3.12 are supported.")
+
+
+def install_dependencies(venv_python: Path, app_root: Path, req_file: Path | None = None) -> None:
+    """Install Python dependencies from ABI-specific lock file.
+
+    :param venv_python: venv python path.
+    :param app_root: app root dir.
+    :param req_file: [deprecated] requirements file path, no longer used.
+    """
+    lock_file = _find_lock_file(venv_python)
 
     # Check if pip freeze output matches lock (skip full hash comparison, do version check)
     try:
         raw_freeze = subprocess.run(
             [str(venv_python), "-m", "pip", "freeze"],
-            capture_output=True, text=True, timeout=30, check=True,
+            capture_output=True,
+            text=True,
+            timeout=30,
+            check=True,
         ).stdout
         installed = {}
         for line in raw_freeze.strip().split("\n"):
@@ -336,9 +363,9 @@ def install_dependencies(venv_python: Path, app_root: Path, req_file: Path) -> N
         else:
             offline_flag = ["--no-index"]
     subprocess.run(
-        [str(venv_python), "-m", "pip", "install", "-r", str(lock_file)]
-        + hashes_flag + offline_flag,
-        check=True, timeout=600,
+        [str(venv_python), "-m", "pip", "install", "-r", str(lock_file)] + hashes_flag + offline_flag,
+        check=True,
+        timeout=600,
     )
 
     # Import smoke check
@@ -346,7 +373,9 @@ def install_dependencies(venv_python: Path, app_root: Path, req_file: Path) -> N
     for mod in ("fastapi", "uvicorn", "sqlmodel", "pydantic", "app.cli"):
         subprocess.run(
             [str(venv_python), "-c", f"import {mod}; print('  ok: {mod}')"],
-            check=True, capture_output=True, timeout=30,
+            check=True,
+            capture_output=True,
+            timeout=30,
         )
     print("  deps install complete")
 
@@ -776,17 +805,9 @@ def run_launcher(args: argparse.Namespace) -> int:
         venv_python = prepare_venv(app_root)
         print()
 
-        # 5. 安装依赖
+        # 5. Dependency install (from ABI-specific lock file)
         print("[4/6] Dependency install...")
-        req_file = source_dir / "requirements-bundle.txt"
-        if not req_file.exists():
-            req_file = app_root / "requirements-bundle.txt"
-        if not req_file.exists():
-            req_file = Path("requirements-bundle.txt")
-        if req_file.exists():
-            install_dependencies(venv_python, app_root, req_file)
-        else:
-            print(f"  [WARN] not found: {req_file}, skipping dependency install")
+        install_dependencies(venv_python, app_root)
         print()
 
         # 6. 模型准备

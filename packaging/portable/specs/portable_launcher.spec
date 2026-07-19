@@ -26,10 +26,15 @@ _manifest = str(_here / "dist" / "payload" / "payload_manifest.json")
 _engine_pack_info = str(_here / "resources" / "engine_pack_info.json")
 
 # 构建 datas 列表
+_lock_dir = str(_here / "locks")
+_lock_files = []
+for _lf in sorted(Path(_lock_dir).glob("requirements-runtime-*-win-x64.lock")):
+    _lock_files.append((str(_lf), "locks"))
+
 _datas = [
     (_payload_zip, "."),
     (_manifest, "."),
-]
+] + _lock_files
 
 # engine_pack_info.json 存在则嵌入, 不存在则不嵌入 (此-时 CRC32 为空)
 if Path(_engine_pack_info).exists():
