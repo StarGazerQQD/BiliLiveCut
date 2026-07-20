@@ -416,7 +416,8 @@ def prepare_models(app_root: Path, user_engine_pack_path: str | None = None) -> 
 
     # 1. 检查已安装模型
     models_dir = app_root / "models"
-    if check_installed_models(models_dir, expected_version):
+    ok, _ = check_installed_models(models_dir, expected_version)
+    if ok:
         print("  4-engine models installed (version match), skip model prep")
         return {
             "source": "already_installed",

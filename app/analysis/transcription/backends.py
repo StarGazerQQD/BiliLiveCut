@@ -23,189 +23,19 @@ from __future__ import annotations
 import re
 import time
 import uuid
-from dataclasses import dataclass, field
 from functools import lru_cache
 from pathlib import Path
-from typing import TYPE_CHECKING, Protocol
 
 from loguru import logger
 
 from app.analysis import asr_metrics
+from app.analysis.transcription.models import (  # single source of truth — no duplicates
+    ASRSegmentResult,
+    ASRTranscriptResult,
+    EmotionEvent,
+    Word,
+)
 from app.core.config import settings
-
-if TYPE_CHECKING:
-    pass
-
-# ═══════════════════════════════════════════════════════════
-# 统一 ASR 结果模型 (V0.1.12.2)
-# ═══════════════════════════════════════════════════════════
-
-
-@dataclass(slots=True)
-class Word:
-    """一个词及其时间戳(秒, 相对片段起点)。"""
-
-    word: str
-    start: float
-    end: float
-
-
-@dataclass(slots=True)
-class EmotionEvent:
-    """SenseVoice 检测到的辅助事件 (V0.1.12.2: 必须有真实时间范围)。"""
-
-    event_type: str  # "laughter" / "music" / "applause" / "emotion:HAPPY" / ...
-    start: float  # 秒, 不得为 0.0 除非整个音频为此事件 (需明确标记)
-    end: float
-    confidence: float = 1.0
-
-
-@dataclass(slots=True)
-class ASRSegmentResult:
-    """单句 ASR 结果 (V0.1.12.2 新增)。
-
-    不同后端置信度定义不同, 通过 ``confidence_type`` 区分:
-      - ``paraformer-sentence-confidence``: Paraformer sentence_info[].confidence (0-1)
-      - ``avg_logprob``: Whisper segment.avg_logprob (负值, 越大越可信)
-      - ``char-confidence``: Fun-ASR-Nano 字级置信度
-      - ``none``: 无置信度
-
-    禁止给无置信度的句子伪造 ``raw_confidence = 0.0``。
-    """
-
-    start: float
-    end: float
-    text: str
-
-    raw_confidence: float | None = None
-    confidence_type: str | None = None
-    normalized_confidence: float | None = None  # 统一 0-1, 越高越可信
-    confidence_available: bool = False
-
-    language: str | None = None
-    words: list[Word] = field(default_factory=list)
-    metadata: dict = field(default_factory=dict)
-
-
-@dataclass(slots=True)
-class ASRTranscriptResult:
-    """整段转写结果 (V0.1.12.2 新增)。
-
-    后续高光、复核和运维代码只读取此统一结构。
-    """
-
-    text: str  # 全文
-    segments: list[ASRSegmentResult] = field(default_factory=list)
-
-    backend: str = ""
-    model_id: str = ""
-    model_revision: str | None = None
-
-    inference_duration: float = 0.0
-    audio_duration: float = 0.0
-    real_time_factor: float | None = None
-
-    language: str | None = None
-    metadata: dict = field(default_factory=dict)
-
-    # 复核相关 (Phase 2 填充)
-    base_text: str = ""  # 主引擎原始文本
-    review_text: str = ""  # 复核文本
-    final_text: str = ""  # 合并后最终文本
-    review_triggered: bool = False
-    review_risk_score: float | None = None
-    review_reasons: list[str] = field(default_factory=list)
-    review_backend: str = ""
-    final_text_source: str = "primary"  # "primary" / "review" / "fallback" / "manual_review_needed" / "none"
-    reviewed_segments: list[dict] = field(default_factory=list)
-
-    # V0.1.12.4: fallback 追踪
-    primary_backend: str = ""
-    primary_status: str = ""  # "" / "success" / "failed"
-    primary_error_type: str = ""
-    primary_error_message: str = ""
-    fallback_backend: str = ""
-    fallback_trigger_reason: str = ""  # "primary_empty_output" / "primary_exception"
-
-    # 辅助特征
-    emotions: list[EmotionEvent] = field(default_factory=list)
-
-
-def _segment_to_confidence(seg: ASRSegmentResult) -> float | None:
-    """获取句子的归一化置信度 (0-1), 无则返回 None。"""
-    if seg.confidence_available and seg.normalized_confidence is not None:
-        return seg.normalized_confidence
-    return None
-
-
-# ═══════════════════════════════════════════════════════════
-# 向后兼容: 保留旧 TranscriptionResult
-# ═══════════════════════════════════════════════════════════
-
-
-@dataclass(slots=True)
-class TranscriptionResult:
-    """[向后兼容] 旧转写结果, 内部自动从 ASRTranscriptResult 转换。
-
-    V0.1.12.2 新增代码应使用 :class:`ASRTranscriptResult`。
-    """
-
-    text: str
-    language: str
-    words: list[Word] = field(default_factory=list)
-    avg_logprob: float = 0.0
-    emotions: list[EmotionEvent] = field(default_factory=list)
-    reviewed_segments: list[dict] = field(default_factory=list)
-    engine: str = "paraformer"
-
-    @classmethod
-    def from_unified(cls, unified: ASRTranscriptResult) -> TranscriptionResult:
-        """从统一结果转换。"""
-        return cls(
-            text=unified.final_text or unified.text,
-            language=unified.language or "zh",
-            words=[w for seg in unified.segments for w in seg.words],
-            avg_logprob=(
-                unified.segments[0].raw_confidence
-                if unified.segments and unified.segments[0].confidence_type == "avg_logprob"
-                else 0.0
-            ),
-            emotions=unified.emotions,
-            reviewed_segments=unified.reviewed_segments,
-            engine=unified.backend,
-        )
-
-
-def _unified_to_legacy(unified: ASRTranscriptResult) -> TranscriptionResult:
-    """快速转换: 统一结果 → 向后兼容结果。"""
-    return TranscriptionResult.from_unified(unified)
-
-
-# ═══════════════════════════════════════════════════════════
-# 后端协议
-# ═══════════════════════════════════════════════════════════
-
-
-class TranscriberBackend(Protocol):
-    """转写后端协议 (V0.1.12.2: 主接口返回 ASRTranscriptResult)。"""
-
-    def transcribe(
-        self,
-        audio_path: str,
-        initial_prompt: str | None = None,
-    ) -> ASRTranscriptResult:
-        """转写音频文件。"""
-        ...
-
-    def transcribe_segment(
-        self,
-        audio_path: str,
-        start: float,
-        end: float,
-    ) -> ASRTranscriptResult:
-        """转写音频片段 (用于复核)。"""
-        ...
-
 
 # ═══════════════════════════════════════════════════════════
 # 工具函数
@@ -274,6 +104,8 @@ class FunASRBackend:
 
     首次调用时懒加载模型, 进程内单例缓存。
 
+    V0.1.14.11: 每引擎使用 model catalog 独立 revision, 不再共用 settings.asr_model_revision。
+
     :param primary: 主引擎模型名, 默认 paraformer-zh。
     :param sensevoice: 是否加载 SenseVoice-Small。
     :param funasr_nano: 是否加载 Fun-ASR-Nano。
@@ -282,6 +114,11 @@ class FunASRBackend:
     MODEL_ID_PRIMARY = "iic/speech_paraformer-large-vad-punc_asr_nat-zh-cn-16k-common-vocab8404-pytorch"
     MODEL_ID_SENSEVOICE = "iic/SenseVoiceSmall"
     MODEL_ID_NANO = "FunAudioLLM/Fun-ASR-Nano-2512"
+
+    # Per-engine revisions from model catalog — overrides global settings.asr_model_revision
+    _REVISION_PRIMARY = "v2.0.4"
+    _REVISION_SENSEVOICE = "master"
+    _REVISION_NANO = "master"
 
     def __init__(
         self,
@@ -308,16 +145,30 @@ class FunASRBackend:
 
     @property
     def model_revision(self) -> str:
-        """当前加载模型的 revision/hash。"""
-        return settings.asr_model_revision or "master"
+        """当前加载模型的 revision/hash (保持向后兼容, 返回 primary revision)。"""
+        return self._REVISION_PRIMARY or "master"
+
+    @property
+    def primary_revision(self) -> str:
+        """Paraformer 独立 revision。"""
+        return self._REVISION_PRIMARY or "master"
+
+    @property
+    def sensevoice_revision(self) -> str:
+        """SenseVoice 独立 revision。"""
+        return self._REVISION_SENSEVOICE or "master"
+
+    @property
+    def nano_revision(self) -> str:
+        """Fun-ASR-Nano 独立 revision。"""
+        return self._REVISION_NANO or "master"
 
     # ---- 懒加载 ----
 
     def _load_primary(self) -> object:
         """Load Paraformer-zh main engine (Chinese ASR + punctuation + timestamps).
 
-        When BLC_MODELS_DIR is set (Portable mode), uses absolute local paths
-        for model + VAD + punctuation + speaker sub-models, avoiding any network call.
+        Uses self._REVISION_PRIMARY (per-engine), not global settings.asr_model_revision.
         """
         if self._primary is not None:
             return self._primary
@@ -326,7 +177,7 @@ class FunASRBackend:
         except ImportError:
             raise RuntimeError("Need funasr installed. Run: pip install funasr modelscope") from None
         device = settings.asr_primary_device or settings.whisper_device
-        revision = settings.asr_model_revision or None
+        revision = self._REVISION_PRIMARY or None
 
         if self._use_local_models:
             # Portable mode: use Engine Pack local directories
@@ -364,7 +215,7 @@ class FunASRBackend:
         return self._primary
 
     def _load_sensevoice(self) -> object:
-        """加载 SenseVoice-Small (情感/笑声/音乐/事件检测)。"""
+        """加载 SenseVoice-Small (情感/笑声/音乐/事件检测)。 Uses per-engine revision."""
         if self._sensevoice is not None:
             return self._sensevoice
         try:
@@ -385,12 +236,12 @@ class FunASRBackend:
                 model=self.MODEL_ID_SENSEVOICE,
                 device=settings.asr_auxiliary_device or settings.whisper_device,
                 hub="ms",
-                revision=settings.asr_model_revision or None,
+                revision=self._REVISION_SENSEVOICE or None,
             )
         return self._sensevoice
 
     def _load_funasr(self) -> object:
-        """Load Fun-ASR-Nano (low-confidence review)."""
+        """Load Fun-ASR-Nano (low-confidence review). Uses per-engine revision."""
         if self._funasr is not None:
             return self._funasr
         try:
@@ -407,12 +258,12 @@ class FunASRBackend:
                 disable_update=True,
             )
         else:
-            logger.info("Loading Fun-ASR-Nano online revision=%s", settings.asr_model_revision or "None")
+            logger.info("Loading Fun-ASR-Nano online revision=%s", self._REVISION_NANO or "master")
             self._funasr = AutoModel(
                 model=self.MODEL_ID_NANO,
                 device=settings.asr_review_device or settings.whisper_device,
                 hub="ms",
-                revision=settings.asr_model_revision or None,
+                revision=self._REVISION_NANO or None,
             )
         return self._funasr
 

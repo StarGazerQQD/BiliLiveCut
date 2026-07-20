@@ -6,7 +6,7 @@
 
 from __future__ import annotations
 
-from app.analysis.transcribe import (
+from app.analysis.transcription import (
     ASRSegmentResult,
     ASRTranscriptResult,
     TranscriptionResult,

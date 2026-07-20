@@ -1,10 +1,11 @@
-# BiliLiveCut CI (V0.1.14.6)
-# 触发: push/PR 到 main → lint → audit + test → coverage summary
+# BiliLiveCut CI (V0.1.14.11)
+# 触发: push/PR 到 main → lint → audit + test → portable → coverage summary
 #
 # Job 结构:
-#   lint       — ruff check + format + version + JS syntax (~20s, 快速失败)
-#   audit      — pip-audit (~45s, 不阻塞)
-#   test       — matrix 多平台多 Python → pytest + coverage (~3min)
+#   lint       — ruff check + format + version + release_audit + JS syntax
+#   audit      — pip-audit (不阻塞, 漏洞豁免为机器可读)
+#   test       — matrix 多平台多 Python → pytest + coverage (≥50%)
+#   portable   — Payload 构建 + Portable 全部测试
 #   coverage   — 汇总多矩阵覆盖率报告
 
 name: CI
@@ -39,16 +40,16 @@ permissions:
   contents: read
 
 # ═══════════════════════════════════════════════════════════════════
-# Job 1: Lint — 极速失败, 不通过则不跑后续任何 job
+# Job 1: Lint — 极速失败 (ruff + version + release_audit)
 # ═══════════════════════════════════════════════════════════════════
 jobs:
   lint:
     name: "lint"
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v4  # v4.2.2
 
-      - uses: actions/setup-python@v5
+      - uses: actions/setup-python@v5  # v5.4.0
         with:
           python-version: "3.12"
 
@@ -56,13 +57,16 @@ jobs:
         run: pip install ruff
 
       - name: Ruff check
-        run: ruff check app/ tests/
+        run: ruff check .
 
       - name: Ruff format check
-        run: ruff format --check app/ tests/
+        run: ruff format --check .
 
       - name: Check version consistency
         run: python scripts/check_version_consistency.py
+
+      - name: Release audit (quick)
+        run: python scripts/release_audit.py --quick
 
       - name: JavaScript syntax check
         run: |
@@ -72,7 +76,7 @@ jobs:
           node --check app/web/static/app.js
 
 # ═══════════════════════════════════════════════════════════════════
-# Job 2: Audit — 仅 PR/schedule 触发, 不阻塞 CI
+# Job 2: Audit — pip-audit (不阻塞, 漏洞豁免为机器可读)
 # ═══════════════════════════════════════════════════════════════════
   audit:
     name: "audit"
@@ -93,13 +97,29 @@ jobs:
           pip install pip-audit
 
       - name: pip-audit vulnerability scan
+        id: audit
         run: |
-          pip-audit --strict --skip-editable 2>&1 || {
-            echo "::warning::pip-audit 发现漏洞 (评估风险后手工豁免)"
-          }
+          pip-audit --strict --skip-editable -r <(pip freeze) 2>&1 | tee /tmp/pip-audit.log
+          AUDIT_EXIT=$?
+          if [ $AUDIT_EXIT -ne 0 ]; then
+            echo "pip-audit found vulnerabilities (exit=$AUDIT_EXIT)"
+            # Check if vulnerability exemptions file exists
+            if [ -f "scripts/pip-audit-exemptions.json" ]; then
+              echo "Exemptions file found — evaluating..."
+              python scripts/check_pip_audit_exemptions.py /tmp/pip-audit.log || {
+                echo "::warning::pip-audit vulnerabilities NOT covered by exemptions"
+                exit $AUDIT_EXIT
+              }
+              echo "All vulnerabilities covered by exemptions"
+            else
+              echo "::warning::pip-audit found vulnerabilities (evaluate risk and add to scripts/pip-audit-exemptions.json)"
+              exit $AUDIT_EXIT
+            fi
+          fi
+        continue-on-error: true
 
 # ═══════════════════════════════════════════════════════════════════
-# Job 3: Test — 全矩阵 (需要 lint 通过)
+# Job 3: Test — 全矩阵 pytest + coverage ≥ 50%
 # ═══════════════════════════════════════════════════════════════════
   test:
     name: "${{ matrix.os }} / py${{ matrix.python-version }}"
@@ -111,7 +131,6 @@ jobs:
         os: [ubuntu-latest, windows-latest]
         python-version: ["3.11", "3.12", "3.13"]
         include:
-          # macOS: 仅 main 分支 push 时触发, 节省 Actions 额度
           - os: macos-latest
             python-version: "3.12"
             if: github.event_name == 'push' && github.ref == 'refs/heads/main'
@@ -126,36 +145,27 @@ jobs:
           cache: pip
           cache-dependency-path: pyproject.toml
 
-      # Ubuntu — FFmpeg via apt
       - name: Install FFmpeg (Ubuntu)
         if: runner.os == 'Linux'
         run: |
           sudo apt-get update -qq
           sudo apt-get install -y -qq ffmpeg
 
-      # Windows — FFmpeg via chocolatey
       - name: Install FFmpeg (Windows)
         if: runner.os == 'Windows'
         run: choco install ffmpeg --no-progress -y
 
-      # macOS — FFmpeg via homebrew
       - name: Install FFmpeg (macOS)
         if: runner.os == 'macOS'
         run: brew install ffmpeg
 
-      # Ubuntu / Windows — 国内镜像加速安装
       - name: Install Python dev deps (Linux/Windows)
         if: runner.os == 'Linux' || runner.os == 'Windows'
         shell: bash
         run: |
           python -m pip install --upgrade pip
-          pip install -e ".[dev,web]" \
-            --index-url https://mirrors.aliyun.com/pypi/simple/ \
-            --extra-index-url https://pypi.tuna.tsinghua.edu.cn/simple \
-            --trusted-host mirrors.aliyun.com \
-            --trusted-host pypi.tuna.tsinghua.edu.cn
+          pip install -e ".[dev,web]"
 
-      # macOS — PyPI 直连, 跳过 C 扩展编译 (跨平台兼容)
       - name: Install Python dev deps (macOS)
         if: runner.os == 'macOS'
         shell: bash
@@ -169,24 +179,18 @@ jobs:
         shell: bash
         run: pip install python-multipart
 
-      - name: Show installed packages
-        shell: bash
-        run: pip list
-
-      # 全量 pytest + 覆盖率 (Mock 后端, 不下载真实模型)
-      - name: Run pytest with coverage
+      - name: Run pytest with coverage (≥50%)
         shell: bash
         env:
           ASR_NO_MODEL_DOWNLOAD: "1"
           WHISPER_MODEL: ""
         run: |
-          pip install pytest-cov
           python -m pytest tests/ \
             -v --tb=short \
             --cov=app \
             --cov-report=term-missing \
             --cov-report=xml \
-            --cov-fail-under=45
+            --cov-fail-under=50
         timeout-minutes: 15
 
       - name: Upload coverage report
@@ -208,7 +212,7 @@ jobs:
           if-no-files-found: ignore
 
 # ═══════════════════════════════════════════════════════════════════
-# Job 4: Portable 测试 (包含 Engine Pack)
+# Job 4: Portable 测试 + Payload 构建
 # ═══════════════════════════════════════════════════════════════════
   portable-test:
     name: "portable-test"
@@ -217,7 +221,7 @@ jobs:
     steps:
       - uses: actions/checkout@v4
         with:
-          fetch-depth: 0  # 需要 git history (Commit 731a31c)
+          fetch-depth: 0
 
       - uses: actions/setup-python@v5
         with:
@@ -228,6 +232,12 @@ jobs:
           python -m pip install --upgrade pip
           pip install -e ".[dev,web]"
           pip install pytest-cov pytest-timeout
+
+      - name: Build Payload
+        run: |
+          cd packaging/portable
+          python build_payload.py --skip-reproducible
+        timeout-minutes: 10
 
       - name: Run Portable + Engine Pack tests
         run: |
@@ -240,7 +250,7 @@ jobs:
         run: ruff check packaging/portable/src/ packaging/portable/tests/
 
 # ═══════════════════════════════════════════════════════════════════
-# Job 5: 汇总覆盖率 (可选, 展示总覆盖率; 需要 test 全部完成)
+# Job 5: 汇总覆盖率
 # ═══════════════════════════════════════════════════════════════════
   coverage-summary:
     name: "coverage summary"
@@ -266,4 +276,4 @@ jobs:
 
       - name: Summary
         run: |
-          echo "全矩阵测试完成。覆盖率报告已归档。"
+          echo "All matrix tests complete. Coverage reports archived."

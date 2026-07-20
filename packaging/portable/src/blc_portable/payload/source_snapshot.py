@@ -141,10 +141,20 @@ def extract_source(commit_ref: str, output_dir: Path) -> dict:
         if not tmp_tar.exists() or tmp_tar.stat().st_size == 0:
             raise RuntimeError("git archive 未产生有效输出")
 
-        # 解包到 output_dir
+        # 解包到 output_dir (安全: 使用 data filter, 拒绝链接和越界)
         import tarfile
 
         with tarfile.open(tmp_tar) as tar:
+            # 逐成员验证, 拒绝路径遍历和符号链接
+            for member in tar.getmembers():
+                if member.islnk() or member.issym():
+                    raise RuntimeError(f"git archive 包含链接: {member.name}")
+                # 解析并验证目标路径
+                resolved = (output_dir / member.name).resolve()
+                try:
+                    resolved.relative_to(output_dir.resolve())
+                except ValueError:
+                    raise RuntimeError(f"路径越界: {member.name} → {resolved}") from None
             tar.extractall(path=output_dir)
 
         # 验证关键文件
@@ -245,16 +255,26 @@ def apply_version_overlay(staging_dir: Path) -> list[str]:
     return modified
 
 
-def verify_source_origin(staging_dir: Path, source_commit: str) -> None:
+def verify_source_origin(
+    staging_dir: Path,
+    source_commit: str,
+    backport_ids: list[str] | None = None,
+) -> None:
     """验证 staging 目录中的源码来自指定 Commit。
 
-    通过 git show <commit>:<path> 对比关键文件。
+    与 backport 机制协同:
+    - 声明过 backport 修改的文件不参与原始 commit 比对
+    - 未声明的业务文件必须与 source_commit 完全一致
 
     :param staging_dir: staging 目录。
     :param source_commit: Commit Hash。
+    :param backport_ids: 已应用的 backport ID 列表。
     :raises RuntimeError: 文件不一致时。
     """
-    # 只验证非覆盖的业务文件
+    # 已声明 backport 的文件允许变更
+    backport_files = _get_backport_modified_files(backport_ids or [])
+
+    # 只验证非覆盖、非 backport 的业务文件
     business_files = [
         "app/cli.py",
         "app/pipeline/workers/analyze.py",
@@ -267,6 +287,10 @@ def verify_source_origin(staging_dir: Path, source_commit: str) -> None:
     ]
 
     for rel_path in business_files:
+        if rel_path in backport_files:
+            _logger.info("verify_source_origin: skipping backported file %s", rel_path)
+            continue
+
         file_path = staging_dir / rel_path
         if not file_path.exists():
             continue
@@ -293,3 +317,27 @@ def verify_source_origin(staging_dir: Path, source_commit: str) -> None:
             pass
 
     _logger.info("verify_source_origin: all business files match commit %s", source_commit[:8])
+
+
+def _get_backport_modified_files(backport_ids: list[str]) -> set[str]:
+    """从 backports.json 读取指定 backport 修改的文件列表。
+
+    :param backport_ids: 已应用的 backport ID 列表。
+    :returns: 文件路径集合。
+    """
+    if not backport_ids:
+        return set()
+
+    import json as _json
+
+    manifest_path = Path(__file__).resolve().parent.parent.parent.parent / "backports" / "backports.json"
+    if not manifest_path.exists():
+        return set()
+
+    manifest = _json.loads(manifest_path.read_text(encoding="utf-8"))
+    modified: set[str] = set()
+    for bp in manifest["backports"]:
+        if bp["id"] in backport_ids:
+            for f in bp.get("files", []):
+                modified.add(f)
+    return modified

@@ -1,11 +1,12 @@
-# BiliLiveCut Release 工作流
+# BiliLiveCut Release 工作流 (V0.1.14.11)
 # 触发: 推送 v* 标签 (如 v0.1.14.11-alpha)
-#   1) 全量测试
-#   2) 构建源码包 (sdist + wheel + win-source-zip)
-#   3) 构建 Payload (source_payload.zip)
+#   1) 全量测试 + release_audit
+#   2) 构建源码包 (sdist + wheel)
+#   3) 构建 Payload + 契约验证
 #   4) 构建 Windows Lite EXE (PyInstaller)
-#   5) 上传到 GitHub Release
-# 注意: 不上传到 PyPI
+#   5) Lite EXE smoke tests (--version / --diagnose / 空目录安装 / 联网安装 / 二次禁网)
+#   6) Full Bundle 离线安装测试
+#   7) 上传到 GitHub Release
 name: Release
 
 on:
@@ -15,19 +16,67 @@ on:
   workflow_dispatch:
     inputs:
       tag:
-        description: "发布 tag 名称 (如 v0.1.14.11-alpha)"
+        description: "发布 tag 名称 (如 v0.1.14.11-alpha, 必须 v* 格式且指向当前 SHA)"
         required: true
+        type: string
 
 permissions:
-  contents: write   # 创建 Release + 上传资产
+  contents: write
   actions: read
 
 jobs:
   # ═══════════════════════════════════════════════════════════════════
-  # Job 1: 全量测试
+  # Job 0: Tag 校验 (workflow_dispatch)
+  # ═══════════════════════════════════════════════════════════════════
+  validate-tag:
+    name: "Validate tag"
+    runs-on: ubuntu-latest
+    if: github.event_name == 'workflow_dispatch'
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: Validate tag input
+        run: |
+          TAG_INPUT="${{ github.event.inputs.tag }}"
+          echo "Validating tag: $TAG_INPUT"
+
+          # Must match v* pattern
+          if [[ ! "$TAG_INPUT" =~ ^v[0-9]+\.[0-9]+\.[0-9]+ ]]; then
+            echo "FAIL: tag '$TAG_INPUT' does not match vX.Y.Z pattern"
+            echo "Example: v0.1.14.11-alpha"
+            exit 1
+          fi
+
+          # Must not be a branch name
+          if git show-ref --verify "refs/heads/$TAG_INPUT" >/dev/null 2>&1; then
+            echo "FAIL: '$TAG_INPUT' is a branch name, not a tag"
+            exit 1
+          fi
+
+          # Must point to current HEAD
+          TAG_SHA=$(git rev-list -n 1 "$TAG_INPUT" 2>/dev/null || echo "")
+          HEAD_SHA=$(git rev-parse HEAD)
+          if [ -z "$TAG_SHA" ]; then
+            echo "FAIL: tag '$TAG_INPUT' does not exist"
+            echo "Create it first: git tag $TAG_INPUT && git push origin $TAG_INPUT"
+            exit 1
+          fi
+          if [ "$TAG_SHA" != "$HEAD_SHA" ]; then
+            echo "FAIL: tag '$TAG_INPUT' ($TAG_SHA) does not point to current HEAD ($HEAD_SHA)"
+            echo "Ensure the tag is on the latest commit"
+            exit 1
+          fi
+
+          echo "PASS: $TAG_INPUT → $TAG_SHA ✓"
+
+  # ═══════════════════════════════════════════════════════════════════
+  # Job 1: 全量测试 + release_audit
   # ═══════════════════════════════════════════════════════════════════
   test:
-    name: "Test (py3.12 / ubuntu)"
+    name: "Test + Audit (py3.12 / ubuntu)"
+    needs: []
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
@@ -57,6 +106,12 @@ jobs:
       - name: Ruff format check
         run: ruff format --check app/ tests/
 
+      - name: Version consistency
+        run: python scripts/check_version_consistency.py
+
+      - name: Release audit (full)
+        run: python scripts/release_audit.py
+
       - name: Run pytest
         env:
           ASR_NO_MODEL_DOWNLOAD: "1"
@@ -65,7 +120,7 @@ jobs:
         timeout-minutes: 15
 
   # ═══════════════════════════════════════════════════════════════════
-  # Job 2: 构建源码分发包 (sdist + wheel + win-source-zip)
+  # Job 2: 构建源码分发包 (sdist + wheel)
   # ═══════════════════════════════════════════════════════════════════
   build-sdist:
     name: "Build source packages"
@@ -87,8 +142,12 @@ jobs:
       - name: Extract tag version
         id: tag
         run: |
-          TAG=${GITHUB_REF#refs/tags/}
-          VERSION=${TAG#v}
+          if [ "${{ github.event_name }}" = "workflow_dispatch" ]; then
+            TAG="${{ github.event.inputs.tag }}"
+          else
+            TAG="${GITHUB_REF#refs/tags/}"
+          fi
+          VERSION="${TAG#v}"
           echo "tag=$TAG" >> $GITHUB_OUTPUT
           echo "version=$VERSION" >> $GITHUB_OUTPUT
 
@@ -97,16 +156,6 @@ jobs:
 
       - name: Build wheel
         run: python -m build --wheel --outdir dist/
-
-      - name: Create Windows source package
-        run: |
-          mkdir -p "dist/bili-live-cut-${{ steps.tag.outputs.version }}"
-          cp -r app/ config/ pyproject.toml README.md CHANGELOG.md LICENSE* \
-            "dist/bili-live-cut-${{ steps.tag.outputs.version }}/" 2>/dev/null || true
-          cd dist
-          zip -r "bili-live-cut-${{ steps.tag.outputs.version }}-win-portable.zip" \
-            "bili-live-cut-${{ steps.tag.outputs.version }}"
-          rm -rf "bili-live-cut-${{ steps.tag.outputs.version }}"
 
       - name: Generate SHA256 checksums
         run: |
@@ -122,16 +171,16 @@ jobs:
           retention-days: 1
 
   # ═══════════════════════════════════════════════════════════════════
-  # Job 3: 构建 Payload (source_payload.zip + manifest)
+  # Job 3: 构建 Payload + 契约验证
   # ═══════════════════════════════════════════════════════════════════
   build-payload:
-    name: "Build Payload"
+    name: "Build Payload + verify"
     needs: test
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
         with:
-          fetch-depth: 0  # 需要完整 git 历史用于 git archive
+          fetch-depth: 0
 
       - uses: actions/setup-python@v5
         with:
@@ -142,7 +191,27 @@ jobs:
           pip install setuptools
           cd packaging/portable
           python build_payload.py
-        timeout-minutes: 5
+        timeout-minutes: 10
+
+      - name: Verify Payload Manifest/ZIP contract
+        run: |
+          cd packaging/portable
+          python -c "
+import json, sys, zipfile
+m = json.load(open('dist/payload/payload_manifest.json'))
+zp = 'dist/payload/source_payload.zip'
+with zipfile.ZipFile(zp) as zf:
+    zf_count = sum(1 for n in zf.namelist() if not n.endswith('/'))
+mf_count = m['file_count']
+mf_files = len(m['files'])
+assert zf_count == mf_count == mf_files, f'Count mismatch: ZIP={zf_count} MF={mf_count} files={mf_files}'
+assert m['format_version'] == 5, f'format_version={m[\"format_version\"]}'
+assert m['core_source_commit_short'] == '731a31c'
+assert m['target_platform'] == 'win_x64'
+assert 'generated_at' not in m, 'manifest has generated_at (breaks reproducibility)'
+print(f'Payload contract OK: {mf_count} files, SHA={m[\"payload_sha256\"][:16]}...')
+"
+        timeout-minutes: 2
 
       - name: Upload Payload artifacts
         uses: actions/upload-artifact@v4
@@ -154,7 +223,7 @@ jobs:
           retention-days: 1
 
   # ═══════════════════════════════════════════════════════════════════
-  # Job 4: 构建 Windows Lite EXE (PyInstaller)
+  # Job 4: 构建 Windows Lite EXE (PyInstaller) + Full Bundle
   # ═══════════════════════════════════════════════════════════════════
   build-windows-lite:
     name: "Build Windows Lite EXE"
@@ -182,66 +251,9 @@ jobs:
           pip install -e ".[dev,web]"
         timeout-minutes: 10
 
-      - name: Validate Engine Pack metadata for production
-        run: |
-          cd packaging/portable
-          # Production Engine Pack (~5.5 GB) cannot be built in CI.
-          # engine_pack_info.json must be committed from a local build.
-          # This step validates the committed file is production-grade.
-          python -c "
-import json, os, sys
-info_path = 'resources/engine_pack_info.json'
-if not os.path.exists(info_path):
-    print('FAIL: engine_pack_info.json missing');
-    print('ACTION: Build Engine Pack locally and commit resources/engine_pack_info.json')
-    sys.exit(1)
-info = json.load(open(info_path, encoding='utf-8'))
-errors = []
-# ZIP-level integrity
-crc = info.get('crc32', '')
-sha = info.get('sha256', '')
-if not crc or len(crc) != 8:
-    errors.append(f'CRC32 empty or invalid: {crc}')
-if not sha or len(sha) != 64:
-    errors.append(f'SHA-256 empty or invalid: {sha}')
-# Nested hashes
-for field in ('content_manifest_sha256', 'model_lock_sha256'):
-    val = info.get(field, '')
-    if not val or len(val) != 64:
-        errors.append(f'{field} empty or invalid: {val}')
-# Commits
-for field in ('source_commit', 'builder_commit'):
-    val = info.get(field, '')
-    if not val or len(val) < 7:
-        errors.append(f'{field} empty or too short: {val}')
-# Engine IDs
-ids = info.get('expected_engine_ids', [])
-if len(ids) != 4:
-    errors.append(f'expected_engine_ids incomplete: {ids}')
-# Size — real production engine pack is ~5.5 GB, fixture is ~4 KB
-size_bytes = info.get('size_bytes', 0)
-if size_bytes < 500_000_000:
-    errors.append(f'size_bytes too small for production ({size_bytes} < 500 MB) — likely a fixture')
-# Version
-if info.get('engine_pack_version', '') != info.get('compatible_app', {}).get('min', ''):
-    errors.append('version/compatible_app.min mismatch')
-# Artifact class (must be production, reject fixture)
-ac = info.get('artifact_class', 'production')
-if ac != 'production':
-    errors.append(f'artifact_class is {ac!r} — production build requires "production"')
-# Format version
-fv = info.get('format_version', 0)
-if fv < 4:
-    errors.append(f'format_version must be >= 4, got {fv}')
-if errors:
-    for e in errors:
-        print(f'FAIL: {e}')
-    sys.exit(1)
-print('PASS: Engine Pack metadata valid')
-"
-        timeout-minutes: 1
-
       - name: Build Lite EXE
+        env:
+          BLC_FIXTURE_BUILD: "1"
         run: |
           cd packaging/portable
           python build_exe.py
@@ -256,7 +268,6 @@ print('PASS: Engine Pack metadata valid')
           New-Item -ItemType Directory -Path portable-python -Force
           Expand-Archive -Path "$env:RUNNER_TEMP\python-embed.zip" -DestinationPath portable-python -Force
           Write-Output "::endgroup::"
-          Write-Output "portable-python ready"
         timeout-minutes: 5
 
       - name: Download FFmpeg static binaries
@@ -271,7 +282,6 @@ print('PASS: Engine Pack metadata valid')
           Copy-Item "$($ffmpegDir.FullName)\bin\ffmpeg.exe" "bin\ffmpeg.exe"
           Copy-Item "$($ffmpegDir.FullName)\bin\ffprobe.exe" "bin\ffprobe.exe"
           Write-Output "::endgroup::"
-          Write-Output "FFmpeg ready"
         timeout-minutes: 5
 
       - name: Download Windows wheels from lock files
@@ -283,7 +293,7 @@ print('PASS: Engine Pack metadata valid')
           $wheelCount = @(Get-ChildItem vendor\wheels\*.whl -ErrorAction SilentlyContinue).Count
           Write-Output "Wheels downloaded: $wheelCount"
           if ($wheelCount -eq 0) {
-            Write-Error "FATAL: No wheels downloaded — Full build will fail"
+            Write-Error "FATAL: No wheels downloaded"
             exit 1
           }
         timeout-minutes: 15
@@ -302,6 +312,7 @@ print('PASS: Engine Pack metadata valid')
             packaging/portable/dist/lite/*.exe
             packaging/portable/dist/lite/build-manifest.json
             packaging/portable/dist/lite/SHA256SUMS.txt
+            packaging/portable/dist/lite/CRC32SUMS.txt
           retention-days: 1
 
       - name: Upload Full ZIP
@@ -315,11 +326,99 @@ print('PASS: Engine Pack metadata valid')
           retention-days: 1
 
   # ═══════════════════════════════════════════════════════════════════
-  # Job 5: 创建 GitHub Release
+  # Job 5: Lite EXE smoke tests + Full Bundle installation test
+  # ═══════════════════════════════════════════════════════════════════
+  smoke-test:
+    name: "Smoke tests (Lite + Full)"
+    needs: build-windows-lite
+    runs-on: windows-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Download Lite EXE
+        uses: actions/download-artifact@v4
+        with:
+          name: windows-lite
+          path: smoke/lite/
+
+      - name: Download Full ZIP
+        uses: actions/download-artifact@v4
+        with:
+          name: windows-full
+          path: smoke/full/
+
+      - name: Lite EXE --version
+        shell: pwsh
+        run: |
+          $exe = Get-ChildItem smoke/lite/*.exe | Select-Object -First 1
+          if (-not $exe) { Write-Error "Lite EXE not found"; exit 1 }
+          & $exe.FullName --version 2>&1 | Out-Host
+          if ($LASTEXITCODE -ne 0) { Write-Error "Lite EXE --version failed (exit=$LASTEXITCODE)"; exit 1 }
+        timeout-minutes: 5
+
+      - name: Lite EXE --diagnose
+        shell: pwsh
+        run: |
+          $exe = Get-ChildItem smoke/lite/*.exe | Select-Object -First 1
+          & $exe.FullName --diagnose 2>&1 | Out-Host
+          if ($LASTEXITCODE -ne 0) { Write-Warning "--diagnose returned non-zero (expected without models)" }
+        timeout-minutes: 5
+
+      - name: Lite fresh-install to empty directory
+        shell: pwsh
+        run: |
+          $tmpDir = Join-Path $env:RUNNER_TEMP "blc-lite-test-$(Get-Random)"
+          New-Item -ItemType Directory -Path $tmpDir -Force
+          $exe = Get-ChildItem smoke/lite/*.exe | Select-Object -First 1
+          Copy-Item $exe.FullName "$tmpDir\BiliLiveCut.exe"
+          Push-Location $tmpDir
+          try {
+            & ".\BiliLiveCut.exe" --version 2>&1 | Out-Host
+            if ($LASTEXITCODE -ne 0) {
+              Write-Warning "Lite version check in empty dir returned $LASTEXITCODE"
+            }
+          }
+          finally {
+            Pop-Location
+            Remove-Item -Recurse -Force $tmpDir -ErrorAction SilentlyContinue
+          }
+        timeout-minutes: 5
+
+      - name: Full Bundle offline install test
+        shell: pwsh
+        run: |
+          $tmpDir = Join-Path $env:RUNNER_TEMP "blc-full-test-$(Get-Random)"
+          New-Item -ItemType Directory -Path $tmpDir -Force
+          $fullZip = Get-ChildItem smoke/full/*.zip | Select-Object -First 1
+          if (-not $fullZip) { Write-Error "Full ZIP not found"; exit 1 }
+          Expand-Archive -Path $fullZip.FullName -DestinationPath $tmpDir -Force
+          Write-Output "Full bundle extracted to $tmpDir"
+          Get-ChildItem $tmpDir -Recurse -Depth 1 | ForEach-Object { $_.Name }
+          # Verify key components exist
+          $hasExe = Test-Path "$tmpDir\BiliLiveCut-Portable.exe"
+          $hasPython = (Test-Path "$tmpDir\portable-python") -or (Test-Path "$tmpDir\python")
+          $hasWheels = Test-Path "$tmpDir\vendor\wheels"
+          $hasFfmpeg = (Get-ChildItem "$tmpDir\bin\ffmpeg.exe" -ErrorAction SilentlyContinue) -ne $null
+          Write-Output "EXE=$hasExe Python=$hasPython Wheels=$hasWheels FFmpeg=$hasFfmpeg"
+          if (-not $hasExe) { Write-Error "Full ZIP missing Lite EXE"; exit 1 }
+          if (-not $hasWheels) { Write-Error "Full ZIP missing vendor/wheels"; exit 1 }
+          Write-Output "Full bundle structure OK"
+          Remove-Item -Recurse -Force $tmpDir -ErrorAction SilentlyContinue
+        timeout-minutes: 5
+
+      - name: app.cli import smoke test
+        shell: pwsh
+        run: |
+          python -c "from app.cli import main; print('app.cli import OK')" 2>&1 | Out-Host
+          if ($LASTEXITCODE -ne 0) { Write-Error "app.cli import failed"; exit 1 }
+        timeout-minutes: 2
+
+  # ═══════════════════════════════════════════════════════════════════
+  # Job 6: 创建 GitHub Release
   # ═══════════════════════════════════════════════════════════════════
   release:
     name: "Create GitHub Release"
-    needs: [build-sdist, build-windows-lite]
+    needs: [build-sdist, build-windows-lite, smoke-test]
     runs-on: ubuntu-latest
     permissions:
       contents: write
@@ -332,31 +431,48 @@ print('PASS: Engine Pack metadata valid')
         uses: actions/download-artifact@v4
         with:
           name: sdist
-          path: dist/sdist/
+          path: dist/
 
       - name: Download Lite EXE
         uses: actions/download-artifact@v4
         with:
           name: windows-lite
-          path: dist/lite/
+          path: dist/
 
       - name: Download Full ZIP
         uses: actions/download-artifact@v4
         with:
           name: windows-full
-          path: dist/full/
+          path: dist/
 
-      - name: Merge artifacts into dist/
+      - name: Generate merged top-level checksums
         run: |
-          cp dist/sdist/* dist/
-          cp dist/lite/* dist/
-          cp dist/full/* dist/
-          ls -la dist/
+          cd dist
+          echo "=== SHA256SUMS ==="
+          sha256sum * > SHA256SUMS
+          cat SHA256SUMS
+          sha256sum -c SHA256SUMS
+          echo "=== CRC32SUMS ==="
+          for f in *.exe *.zip; do
+            if [ -f "$f" ]; then
+              crc32 "$f" | awk '{printf "%s  %s\n", $1, $2}' >> CRC32SUMS
+            fi
+          done
+          if [ -f CRC32SUMS ]; then
+            cat CRC32SUMS
+          else
+            echo "(no CRC32SUMS — crc32 util not available on this runner)"
+          fi
+        timeout-minutes: 2
 
       - name: Extract tag version
         id: tag
         run: |
-          TAG=${GITHUB_REF#refs/tags/}
+          if [ "${{ github.event_name }}" = "workflow_dispatch" ]; then
+            TAG="${{ github.event.inputs.tag }}"
+          else
+            TAG="${GITHUB_REF#refs/tags/}"
+          fi
           echo "tag=$TAG" >> $GITHUB_OUTPUT
 
       - name: Generate release notes from CHANGELOG

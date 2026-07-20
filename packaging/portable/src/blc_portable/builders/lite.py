@@ -42,16 +42,31 @@ def build_payload_if_needed() -> None:
 def check_engine_pack_info() -> None:
     """验证 Engine Pack 信息文件存在且 CRC32/SHA-256 非空。
 
+    校验链:
+    - CRC32 (8 hex) / SHA-256 (64 hex) / size_bytes / filename
+    - engine_pack_version 匹配
+    - artifact_class 必须显式存在 — 缺失或为 fixture → 失败
+    - format_version >= 4
+    - content_manifest_sha256 / model_lock_sha256 非空且 64 hex
+    - expected_engine_ids 为 [whisper, paraformer, sensevoice, funasr_nano]
+    - engine_pack_api_version / model_set_version 存在
+    - size_bytes >= 500 MB (排除 fixture)
+
     设置环境变量 BLC_FIXTURE_BUILD=1 可跳过所有校验 (仅 PR/CI 快速测试用途)。
     正式 Release 禁止使用任何 bypass 环境变量。
 
     :raises RuntimeError: Engine Pack 信息不完整 (非 Fixture 模式)。
     """
+    import json
+    import os
+
     is_fixture = os.environ.get("BLC_FIXTURE_BUILD") == "1"
 
     if is_fixture:
         print("  [FIXTURE] BLC_FIXTURE_BUILD=1, skip Engine Pack info validation")
         return
+
+    ENGINE_PACK_INFO_PATH = PORTABLE_DIR / "resources" / "engine_pack_info.json"
 
     if not ENGINE_PACK_INFO_PATH.exists():
         raise RuntimeError(
@@ -64,40 +79,75 @@ def check_engine_pack_info() -> None:
     sha256 = str(ep_info.get("sha256", ""))
     version = str(ep_info.get("engine_pack_version", ""))
     filename = str(ep_info.get("filename", ""))
+    size_bytes = int(ep_info.get("size_bytes", 0))
+    content_manifest_sha = str(ep_info.get("content_manifest_sha256", ""))
+    model_lock_sha = str(ep_info.get("model_lock_sha256", ""))
+    expected_ids = list(ep_info.get("expected_engine_ids", []))
+    artifact_class = str(ep_info.get("artifact_class", ""))
+    format_version = int(ep_info.get("format_version", 0))
+    engine_pack_api_ver = int(ep_info.get("engine_pack_api_version", 0))
+    model_set_ver = int(ep_info.get("model_set_version", 0))
 
     errors: list[str] = []
 
+    # 1. CRC32
     if not crc32:
-        errors.append("CRC32 is empty -- build Engine Pack first")
+        errors.append("CRC32 is empty — build Engine Pack first")
     elif len(crc32) != 8 or not all(c in "0123456789ABCDEF" for c in crc32):
         errors.append(f"CRC32 invalid: {crc32} (expect 8 uppercase hex chars)")
 
+    # 2. SHA-256
     if not sha256:
-        errors.append("SHA-256 is empty -- build Engine Pack first")
+        errors.append("SHA-256 is empty — build Engine Pack first")
     elif len(sha256) != 64:
-        errors.append(f"SHA-256 invalid: {sha256} (expect 64 hex chars)")
+        errors.append(f"SHA-256 invalid length: {len(sha256)} (expect 64 hex chars)")
 
+    # 3. Version
     if version != RELEASE_VERSION:
         errors.append(f"Engine Pack version mismatch: {version} != {RELEASE_VERSION}")
 
+    # 4. Filename
     if not filename:
         errors.append("filename is empty")
 
-    expected_ids = ep_info.get("expected_engine_ids", [])
-    if not expected_ids:
-        errors.append("expected_engine_ids is empty")
-
-    # Reject fixture artifacts in production builds
-    artifact_class = str(ep_info.get("artifact_class", "production"))
-    if artifact_class != "production":
+    # 5. artifact_class — 必须显式存在
+    if not artifact_class:
+        errors.append("artifact_class is missing — must be explicitly 'production' or 'fixture'")
+    elif artifact_class != "production":
         errors.append(f"artifact_class is {artifact_class!r} — production build requires 'production'")
 
-    format_version = ep_info.get("format_version", 0)
+    # 6. format_version
     if format_version < 4:
         errors.append(f"format_version must be >= 4, got {format_version}")
 
-    # Minimum production size: real engine pack is ~5.5 GB, fixture is ~4 KB
-    size_bytes = ep_info.get("size_bytes", 0)
+    # 7. Content manifest SHA-256
+    if not content_manifest_sha:
+        errors.append("content_manifest_sha256 is empty")
+    elif len(content_manifest_sha) != 64:
+        errors.append(f"content_manifest_sha256 invalid length: {len(content_manifest_sha)} (expect 64)")
+
+    # 8. Model lock SHA-256
+    if not model_lock_sha:
+        errors.append("model_lock_sha256 is empty")
+    elif len(model_lock_sha) != 64:
+        errors.append(f"model_lock_sha256 invalid length: {len(model_lock_sha)} (expect 64)")
+
+    # 9. Expected engine IDs
+    required_ids = {"whisper", "paraformer", "sensevoice", "funasr_nano"}
+    if not expected_ids:
+        errors.append("expected_engine_ids is empty")
+    else:
+        actual_ids = set(expected_ids)
+        if actual_ids != required_ids:
+            errors.append(f"expected_engine_ids mismatch: got {sorted(actual_ids)} need {sorted(required_ids)}")
+
+    # 10. Engine Pack API version
+    if engine_pack_api_ver < 1:
+        errors.append(f"engine_pack_api_version invalid: {engine_pack_api_ver}")
+    if model_set_ver < 1:
+        errors.append(f"model_set_version invalid: {model_set_ver}")
+
+    # 11. Minimum production size
     if size_bytes < 500_000_000:
         errors.append(f"size_bytes too small for production ({size_bytes} < 500 MB) — likely a fixture")
 
@@ -105,7 +155,10 @@ def check_engine_pack_info() -> None:
         error_msg = "Engine Pack validation FAILED:\n  - " + "\n  - ".join(errors)
         raise RuntimeError(error_msg)
 
-    print(f"  Engine Pack OK: CRC32={crc32} SHA256={sha256[:16]}...")
+    print(
+        f"  Engine Pack OK: CRC32={crc32} SHA256={sha256[:16]}... "
+        f"API={engine_pack_api_ver} Models={model_set_ver} Size={size_bytes / (1024**3):.1f} GB"
+    )
 
 
 def _generate_default_engine_pack_info() -> dict:

@@ -301,6 +301,7 @@ def create_zip(staging: Path, output_path: Path) -> None:
             info.date_time = (2026, 1, 1, 0, 0, 0)
             info.external_attr = 0o644 << 16
             from blc_portable.archive.safe_zip import _default_compression
+
             info.compress_type = _default_compression(arcname)
             with zf.open(info, "w") as dest, f.open("rb") as src:
                 while chunk := src.read(CHUNK_SIZE):
@@ -421,8 +422,9 @@ def write_output_files(
     # builder_commit = current HEAD (not fixed source commit)
     builder_head = ""
     try:
-        r = subprocess.run(["git", "rev-parse", "HEAD"], capture_output=True, text=True,
-                           cwd=str(PROJECT_ROOT), timeout=10)
+        r = subprocess.run(
+            ["git", "rev-parse", "HEAD"], capture_output=True, text=True, cwd=str(PROJECT_ROOT), timeout=10
+        )
         if r.returncode == 0:
             builder_head = r.stdout.strip()
     except Exception:
@@ -430,10 +432,28 @@ def write_output_files(
 
     model_lock_path = PORTABLE_DIR / "config" / "model_sources.lock.json"
     model_lock_sha = compute_sha256(model_lock_path) if model_lock_path.exists() else ""
+
+    # Load version.json for schema version cross-references
+    version_json_path = PORTABLE_DIR / "config" / "version.json"
+    engine_pack_api_version = 4
+    model_set_version = 4
+    payload_schema_version = 4
+    if version_json_path.exists():
+        vj = json.loads(version_json_path.read_text(encoding="utf-8"))
+        engine_pack_api_version = int(vj.get("engine_pack_schema", 4))
+        model_set_version = int(vj.get("model_lock_schema", 4))
+        payload_schema_version = int(vj.get("payload_schema", 4))
+
+    # artifact_class 必须显式存在 — 禁止缺失后默认为 production
+    artifact_class = "fixture" if is_fixture else "production"
+
     engine_pack_info: dict[str, Any] = {
         "format_version": 4,
-        "artifact_class": "fixture" if is_fixture else "production",
+        "artifact_class": artifact_class,
         "engine_pack_version": ENGINE_PACK_VERSION,
+        "engine_pack_api_version": engine_pack_api_version,
+        "model_set_version": model_set_version,
+        "payload_schema_version": payload_schema_version,
         "compatible_app": {"min": ENGINE_PACK_VERSION, "max_exclusive": "0.1.15"},
         "filename": archive_path.name,
         "size_bytes": total_size,
@@ -536,6 +556,7 @@ def build_engine_pack(fixture: bool = False, from_cache: bool = False) -> dict[s
     3. 生成 dist/ 输出 → 自校验
 
     :param fixture: True 生成测试 Fixture，False 真实下载。
+    :param from_cache: 从缓存复制。
     :returns: 构建信息字典。
     """
     print("=" * 60)
@@ -544,7 +565,27 @@ def build_engine_pack(fixture: bool = False, from_cache: bool = False) -> dict[s
         print("  [Fixture 模式]")
     elif from_cache:
         print("  [缓存模式 — 从 build/model_cache/ 复制]")
+    else:
+        print("  [Production 模式]")
     print("=" * 60)
+
+    # ── Production redistribution gate ──
+    if not fixture:
+        unverified = []
+        for e in _get_engines_for_build():
+            eid = e.get("engine_id", "?")
+            from model_catalog import get_engine_by_id
+
+            eng_def = get_engine_by_id(eid)
+            if eng_def and not eng_def.redistribution_verified:
+                unverified.append(eid)
+        if unverified:
+            raise RuntimeError(
+                f"Production build blocked: {len(unverified)} engine(s) have "
+                f"redistribution_verified=false: {', '.join(unverified)}\n"
+                "All engines must have redistribution_verified=true for production builds.\n"
+                "Use --fixture for test builds without redistribution verification."
+            )
 
     # 解析 Commit
     source_commit = get_full_commit(SOURCE_COMMIT_SHORT)
@@ -553,8 +594,9 @@ def build_engine_pack(fixture: bool = False, from_cache: bool = False) -> dict[s
     # 当前 builder HEAD (不是固定源码 commit)
     builder_head = ""
     try:
-        r = subprocess.run(["git", "rev-parse", "HEAD"], capture_output=True, text=True,
-                           cwd=str(PROJECT_ROOT), timeout=10)
+        r = subprocess.run(
+            ["git", "rev-parse", "HEAD"], capture_output=True, text=True, cwd=str(PROJECT_ROOT), timeout=10
+        )
         if r.returncode == 0:
             builder_head = r.stdout.strip()
     except Exception:

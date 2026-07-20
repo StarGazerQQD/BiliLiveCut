@@ -38,6 +38,45 @@ _BASE_DIR = Path(__file__).resolve().parent
 _TEMPLATES = Jinja2Templates(directory=str(_BASE_DIR / "templates"))
 
 
+def _setup_proxy_env() -> None:
+    """代理环境变量规范化 (V0.1.14.11)。
+
+    不篡改用户代理配置 (HTTP_PROXY/HTTPS_PROXY/ALL_PROXY),
+    但确保 localhost 始终绕过代理以支持本地 Dashboard 访问。
+
+    NO_PROXY 合并规则:
+    - 如果用户已设置 NO_PROXY, 追加 localhost 项
+    - 如果用户未设置, 设置 NO_PROXY=127.0.0.1,localhost,::1
+
+    SOCKS 诊断:
+    - 如果检测到 ALL_PROXY 使用 socks:// scheme,
+      记录警告并建议用户确认 httpx[socks] 已安装。
+    """
+    import os as _os
+
+    no_proxy_defaults = ["127.0.0.1", "localhost", "::1"]
+    existing = _os.environ.get("NO_PROXY", "") or _os.environ.get("no_proxy", "")
+
+    if existing:
+        existing_items = [x.strip() for x in existing.split(",") if x.strip()]
+        for item in no_proxy_defaults:
+            if item not in existing_items:
+                existing_items.append(item)
+        _os.environ["NO_PROXY"] = ",".join(existing_items)
+    else:
+        _os.environ["NO_PROXY"] = ",".join(no_proxy_defaults)
+
+    # SOCKS diagnostic
+    all_proxy = _os.environ.get("ALL_PROXY", "") or _os.environ.get("all_proxy", "")
+    if all_proxy and all_proxy.lower().startswith("socks"):
+        logger.warning(
+            "检测到 SOCKS 代理配置 (ALL_PROXY={})。"
+            "请确认 httpx[socks] 已安装, 否则本地 Dashboard 请求可能失败。"
+            "安装: pip install httpx[socks]",
+            all_proxy,
+        )
+
+
 @asynccontextmanager
 async def lifespan(_app: FastAPI) -> AsyncIterator[None]:
     """应用生命周期:启动初始化、启动 TaskWorker、自动恢复、预约调度、关闭时优雅停止。"""
@@ -65,6 +104,10 @@ async def lifespan(_app: FastAPI) -> AsyncIterator[None]:
     from app.core.metrics import start_metrics_collector
 
     start_metrics_collector(interval_s=60)
+
+    # V0.1.14.11: 代理环境变量规范化
+    # 不篡改用户代理配置 (HTTP_PROXY/HTTPS_PROXY/ALL_PROXY), 但确保 localhost 绕过代理
+    _setup_proxy_env()
 
     from app.trends.scheduler import trend_scheduler
 
@@ -240,51 +283,107 @@ class _AuthMiddleware(_BaseMiddleware):
         return request.method in ("POST", "PUT", "PATCH", "DELETE")
 
     def _check_csrf(self, request: Request) -> bool:
-        """跨站请求伪造检查。
+        """跨站请求伪造检查 (V0.1.14.11 强化)。
 
         浏览器修改请求必须带有与当前请求完全同源的 Origin。
         无 Origin 的非浏览器客户端通过（依赖 Basic Auth）。
-        有 Origin 时必须以 Origin 为准（优先级高于 Referer）。
-        比较 scheme + host + effective-port 的标准形式。
+
+        比较规则:
+        - 解析完整的 (scheme, hostname, port)
+        - 仅折叠 scheme 对应的默认端口: http→80, https→443
+        - http://host:443 ≠ http://host (443 不是 http 默认端口)
+        - 支持 IPv6 bracket 形式
+        - 非法 Origin 返回 False
         """
         origin = request.headers.get("Origin", "")
 
-        # 无 Origin → 非浏览器客户端,依赖 Basic Auth
+        # 无 Origin → 非浏览器客户端, 依赖 Basic Auth
         if not origin:
             return True
 
-        # Build the expected origin from the actual request
+        # ── Parse origin ──
+        parsed = self._parse_origin(origin)
+        if parsed is None:
+            return False
+
+        # ── Build expected from request ──
         scheme = request.url.scheme or "http"
-        host = request.headers.get("Host", "") or request.url.hostname or ""
-        # Determine effective port
-        if ":" in host:
-            hostname, port_str = host.rsplit(":", 1)
+        host_headers = request.headers.get("Host", "")
+        if host_headers:
+            hostname = host_headers.split(":")[0]
+            port_hint = host_headers.split(":")[1] if ":" in host_headers else ""
         else:
-            hostname = host
-            port_str = ""
-        effective_port = port_str if port_str else ("443" if scheme == "https" else "80")
+            hostname = request.url.hostname or ""
+            port_hint = str(request.url.port or "")
 
-        expected = f"{scheme}://{hostname}:{effective_port}"
+        # Effective port: explicit port on Host header, or default for scheme
+        effective_port = port_hint if port_hint else ("443" if scheme == "https" else "80")
 
-        # Compare full origin (scheme://host:port)
-        # Strip trailing slash and default port normalization for equality
-        normalized_origin = origin.rstrip("/")
-        # If origin uses default port (e.g., :80 for http), strip it for comparison
-        origin_parts = normalized_origin.split("://", 1)
-        if len(origin_parts) == 2:
-            origin_host_port = origin_parts[1]
-            if ":" in origin_host_port:
-                oh, op = origin_host_port.rsplit(":", 1)
-                if op in ("80", "443"):
-                    normalized_origin = f"{origin_parts[0]}://{oh}"
+        # ── Compare (scheme, hostname, port) ──
+        origin_scheme, origin_host, origin_port = parsed
 
-        normalized_expected = expected
-        if ":" in expected.split("://", 1)[1] if "://" in expected else True:
-            ep_parts = expected.split("://", 1)[1].rsplit(":", 1)
-            if ep_parts[-1] in ("80", "443"):
-                normalized_expected = f"{expected.split('://', 1)[0]}://{ep_parts[0]}"
+        if origin_scheme != scheme:
+            return False
+        if origin_host != hostname:
+            return False
 
-        return normalized_origin == normalized_expected
+        # Port comparison: only collapse when both sides use default port for their scheme
+        origin_port_for_compare = origin_port if origin_port else ("443" if origin_scheme == "https" else "80")
+        expected_port_for_compare = effective_port
+
+        return origin_port_for_compare == expected_port_for_compare
+
+    @staticmethod
+    def _parse_origin(origin: str) -> tuple[str, str, str] | None:
+        """Parse an Origin header into (scheme, normalized_host, port).
+
+        Handles:
+        - https://example.com → (https, example.com, )
+        - http://example.com:8080 → (http, example.com, 8080)
+        - http://[::1]:8000 → (http, ::1, 8000)
+        - Invalid origins → None
+
+        :param origin: Origin header value.
+        :returns: (scheme, hostname, port) or None if invalid.
+        """
+        origin = origin.strip()
+        if not origin:
+            return None
+
+        # Split scheme
+        if "://" not in origin:
+            return None
+        scheme, rest = origin.split("://", 1)
+        scheme = scheme.lower()
+        if scheme not in ("http", "https"):
+            return None
+
+        # Split host:port
+        rest = rest.rstrip("/")
+        host_part = rest
+        port = ""
+
+        # Handle IPv6 bracket: [::1]:8080
+        if rest.startswith("["):
+            end_bracket = rest.find("]")
+            if end_bracket == -1:
+                return None
+            host_part = rest[1:end_bracket]
+            after = rest[end_bracket + 1 :]
+            if after.startswith(":"):
+                port = after[1:]
+            elif after:
+                return None  # garbage after bracket
+        else:
+            if ":" in rest:
+                parts = rest.rsplit(":", 1)
+                host_part, port = parts[0], parts[1]
+
+        # Validate hostname is not empty
+        if not host_part:
+            return None
+
+        return (scheme, host_part, port)
 
     async def dispatch(self, request: Request, call_next):
         path = request.url.path
@@ -358,19 +457,36 @@ import time as _time  # noqa: E402
 _RATE_LIMIT = 30  # 每窗口最多 30 次请求
 _RATE_WINDOW = 60  # 窗口 60 秒
 _rate_buckets: dict[str, tuple[float, int]] = {}  # key → (window_start, count)
+_MAX_BUCKETS = 1000  # 有界桶上限, 超出则 LRU 淘汰最旧 entry
 
 
 class _RateLimitMiddleware(_BaseMiddleware):
-    """简易速率限制中间件(写操作端点)。"""
+    """速率限制中间件 (V0.1.14.11: 有界 TTL/LRU)。
+
+    仅对写操作 (非 GET/HEAD/OPTIONS) 生效。
+    按客户端 IP 分桶, 60s 窗口内最多 30 次。
+    桶数超过 _MAX_BUCKETS 时淘汰最旧的, 不粗暴清空全部。
+    可信代理配置: 检查 X-Forwarded-For X-Real-IP。
+    """
 
     async def dispatch(self, request: Request, call_next):
         if request.method in ("GET", "HEAD", "OPTIONS"):
             return await call_next(request)
-        key = request.client.host if request.client else "unknown"
+
+        # V0.1.14.11: 检查可信代理头 (仅 loopback 连接视为可信)
+        client_ip = request.client.host if request.client else "unknown"
+        if client_ip in ("127.0.0.1", "::1", "localhost"):
+            forwarded = request.headers.get("X-Forwarded-For", "")
+            if forwarded:
+                client_ip = forwarded.split(",")[0].strip()
+            real_ip = request.headers.get("X-Real-IP", "")
+            if real_ip:
+                client_ip = real_ip.strip()
+
         now = _time.time()
-        entry = _rate_buckets.get(key)
+        entry = _rate_buckets.get(client_ip)
         if entry is None or now - entry[0] > _RATE_WINDOW:
-            _rate_buckets[key] = (now, 1)
+            _rate_buckets[client_ip] = (now, 1)
         else:
             count = entry[1] + 1
             if count > _RATE_LIMIT:
@@ -378,10 +494,13 @@ class _RateLimitMiddleware(_BaseMiddleware):
                     {"detail": "请求过于频繁,请稍后重试。"},
                     status_code=429,
                 )
-            _rate_buckets[key] = (entry[0], count)
-        # 定期清理过期桶(每 100 次触发一次)。
-        if sum(1 for _ in _rate_buckets) > 500:
-            _rate_buckets.clear()
+            _rate_buckets[client_ip] = (entry[0], count)
+
+        # V0.1.14.11: 有界LRU淘汰, 不粗暴清空全部
+        if len(_rate_buckets) > _MAX_BUCKETS:
+            oldest_key = min(_rate_buckets.keys(), key=lambda k: _rate_buckets[k][0])
+            del _rate_buckets[oldest_key]
+
         return await call_next(request)
 
 

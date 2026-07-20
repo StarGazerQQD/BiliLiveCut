@@ -38,7 +38,7 @@ def _get_settings():
 
 # ── 常量 ──────────────────────────────────────────────────
 
-CURRENT_SCHEMA_VERSION = 1
+CURRENT_SCHEMA_VERSION = 2  # V0.1.14.11: Added UploadTask/UploadAttempt FKs
 
 # ── Schema 元信息表 ──────────────────────────────────────
 
@@ -519,11 +519,14 @@ def _verify_actual_structure() -> tuple[bool, str]:
 
 
 def _verify_foreign_keys() -> bool:
-    """校验关键表的外键存在。"""
+    """校验关键表的外键存在 (V0.1.14.11 增加 UploadTask/UploadAttempt FK)。"""
     fk_checks = [
         ("clip_variants", "highlight_events", "ClipVariant.event_id -> HighlightEvent"),
         ("highlight_topics", "highlight_events", "HighlightTopic.event_id -> HighlightEvent"),
         ("highlight_topics", "topics", "HighlightTopic.topic_id -> Topic"),
+        ("upload_tasks", "final_clips", "UploadTask.clip_id -> FinalClip"),
+        ("upload_attempts", "upload_tasks", "UploadAttempt.upload_task_id -> UploadTask"),
+        ("upload_attempts", "final_clips", "UploadAttempt.clip_id -> FinalClip"),
     ]
 
     all_ok = True

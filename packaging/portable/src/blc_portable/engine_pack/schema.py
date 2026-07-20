@@ -52,7 +52,10 @@ class ExternalMetadata:
     sha256: str = ""
     content_manifest_sha256: str = ""
     model_lock_sha256: str = ""
-    artifact_class: str = "production"
+    artifact_class: str = ""
+    engine_pack_api_version: int = SCHEMA_VERSION
+    model_set_version: int = SCHEMA_VERSION
+    payload_schema_version: int = SCHEMA_VERSION
     source_commit: str = ""
     builder_commit: str = ""
     build_timestamp: str = ""
@@ -70,6 +73,9 @@ class ExternalMetadata:
             "content_manifest_sha256": self.content_manifest_sha256,
             "model_lock_sha256": self.model_lock_sha256,
             "artifact_class": self.artifact_class,
+            "engine_pack_api_version": self.engine_pack_api_version,
+            "model_set_version": self.model_set_version,
+            "payload_schema_version": self.payload_schema_version,
             "source_commit": self.source_commit,
             "builder_commit": self.builder_commit,
             "build_timestamp": self.build_timestamp,
@@ -85,8 +91,14 @@ class ExternalMetadata:
             errors.append("SHA-256 empty or invalid")
         if not self.content_manifest_sha256 or len(self.content_manifest_sha256) != 64:
             errors.append("content_manifest_sha256 empty or invalid")
+        if not self.model_lock_sha256 or len(self.model_lock_sha256) != 64:
+            errors.append("model_lock_sha256 empty or invalid")
         if not self.size_bytes:
             errors.append("size_bytes is zero")
         if not self.expected_engine_ids:
             errors.append("expected_engine_ids empty")
+        if not self.artifact_class:
+            errors.append("artifact_class is empty — must be explicitly 'production' or 'fixture'")
+        if self.artifact_class not in ("production", "fixture"):
+            errors.append(f"artifact_class invalid: '{self.artifact_class}' — must be 'production' or 'fixture'")
         return errors

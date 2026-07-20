@@ -129,8 +129,10 @@ class TestPublishRecovery:
         with get_session() as db:
             clip = _make_final_clip(101, candidate_id=101)
             db.add(clip)
+            db.flush()  # ensure FinalClip exists before UploadTask
             task = UploadTask(id=201, clip_id=101, status=UploadStatus.SUCCESS, uploader="manual")
             db.add(task)
+            db.flush()  # ensure UploadTask exists before UploadAttempt
             attempt = UploadAttempt(
                 upload_task_id=201,
                 publish_generation=2,
@@ -167,6 +169,7 @@ class TestStaleUploadAttemptRecovery:
         with get_session() as db:
             task = UploadTask(id=300, clip_id=200, uploader="manual", status=UploadStatus.UPLOADING)
             db.add(task)
+            db.flush()  # ensure UploadTask exists before UploadAttempt
             attempt = UploadAttempt(
                 upload_task_id=300,
                 publish_generation=1,
@@ -196,6 +199,7 @@ class TestSyncSegmentTaskFromAttempt:
         with get_session() as db:
             clip = _make_final_clip(500, candidate_id=500)
             db.add(clip)
+            db.flush()  # ensure FinalClip exists
             task = SegmentTask(
                 id=1000,
                 segment_id=1,
@@ -209,6 +213,7 @@ class TestSyncSegmentTaskFromAttempt:
             db.add(task)
             ut = UploadTask(id=400, clip_id=500, uploader="manual", status=UploadStatus.SUCCESS)
             db.add(ut)
+            db.flush()  # ensure UploadTask exists before UploadAttempt
             attempt = UploadAttempt(
                 upload_task_id=400,
                 publish_generation=1,

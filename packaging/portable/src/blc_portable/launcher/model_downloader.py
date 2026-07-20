@@ -183,9 +183,7 @@ def download_all_engines(app_root: Path) -> dict[str, Any]:
     if not engine_defs:
         raise RuntimeError("Model catalog is empty — cannot download models")
     if actual_ids != expected_ids:
-        raise RuntimeError(
-            f"Model catalog mismatch: expected {expected_ids}, got {actual_ids}"
-        )
+        raise RuntimeError(f"Model catalog mismatch: expected {expected_ids}, got {actual_ids}")
 
     total = len(engine_defs)
     installed_engines: list[str] = []

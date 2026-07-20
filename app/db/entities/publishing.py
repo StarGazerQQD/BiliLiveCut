@@ -16,7 +16,12 @@ class UploadTask(SQLModel, table=True):
     __tablename__ = "upload_tasks"
 
     id: int | None = Field(default=None, primary_key=True)
-    clip_id: int = Field(index=True, description="所属 final_clips.id")
+    clip_id: int = Field(
+        default=0,
+        index=True,
+        foreign_key="final_clips.id",
+        description="所属 final_clips.id",
+    )
     uploader: str = Field(default="manual", description="使用的上传器")
     status: str = Field(default=UploadStatus.QUEUED, description="任务状态")
     attempts: int = Field(default=0, description="已尝试次数")
@@ -42,12 +47,22 @@ class UploadAttempt(SQLModel, table=True):
     __tablename__ = "upload_attempts"
 
     id: int | None = Field(default=None, primary_key=True)
-    upload_task_id: int = Field(index=True, description="关联 upload_tasks.id")
+    upload_task_id: int = Field(
+        default=0,
+        index=True,
+        foreign_key="upload_tasks.id",
+        description="关联 upload_tasks.id",
+    )
     publish_generation: int = Field(default=0, description="发布代数 (与 UploadTask 对齐, 业务排他键)")
     attempt_token: str = Field(index=True, description="幂等追踪令牌 (仅用于追踪, 不承担业务排他)")
     platform: str = Field(default="bilibili", description="投稿平台")
     account_id: str | None = Field(default=None, description="登录账户 ID")
-    clip_id: int = Field(index=True, description="关联 final_clips.id")
+    clip_id: int = Field(
+        default=0,
+        index=True,
+        foreign_key="final_clips.id",
+        description="关联 final_clips.id",
+    )
 
     status: str = Field(
         default="prepared",

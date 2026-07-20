@@ -48,6 +48,8 @@ def install_from_payload(
 ) -> Path:
     """从 Payload ZIP 原子安装源码到 releases 目录。
 
+    校验链: Payload SHA → Manifest version/commit → file_count → 逐文件 cross-verify。
+
     :param app_root: 应用根目录。
     :param zip_path: Payload ZIP 路径。
     :param manifest: Payload manifest 字典。
@@ -57,17 +59,25 @@ def install_from_payload(
     :returns: 已安装的 Release 目录。
     :raises RuntimeError: 校验或安装失败时。
     """
-    # 校验 Payload SHA-256
+    # Level 1: Payload SHA-256
     actual_hash = compute_payload_hash(zip_path)
     if actual_hash != expected_hash:
         raise RuntimeError(f"Payload hash mismatch: actual={actual_hash[:16]} expected={expected_hash[:16]}")
 
+    # Level 2: Version and commit
     if manifest.get("release_version") != expected_version:
         raise RuntimeError(f"Payload version mismatch: {manifest.get('release_version')} != {expected_version}")
     if manifest.get("source_commit_short") != expected_commit:
         raise RuntimeError(f"Source commit mismatch: {manifest.get('source_commit_short')} != {expected_commit}")
 
-    print(f"  Payload: v{expected_version} | Source: {expected_commit} | SHA256: {actual_hash[:16]}")
+    # Level 3: file_count must be present and non-zero
+    file_count = manifest.get("file_count", 0)
+    if not isinstance(file_count, int) or file_count < 1:
+        raise RuntimeError(f"Manifest file_count invalid: {file_count}")
+
+    print(
+        f"  Payload: v{expected_version} | Source: {expected_commit} | SHA256: {actual_hash[:16]} | Files: {file_count}"
+    )
 
     # 内容寻址 Release ID
     content_release_id = build_release_id(expected_version, expected_commit, actual_hash)
@@ -90,18 +100,40 @@ def install_from_payload(
         try:
             staging.mkdir(parents=True, exist_ok=True)
 
+            # 安全解压
+            actual_extracted: set[str] = set()
             with zipfile.ZipFile(zip_path) as zf:
                 safe_extract(zf, staging)
+                for name in zf.namelist():
+                    if not name.endswith("/"):
+                        actual_extracted.add(name)
 
+            # Level 4: Key file existence
             for path in ["app/cli.py", "pyproject.toml"]:
                 if not (staging / path).exists():
                     raise RuntimeError(f"Release missing key file: {path}")
 
+            # Level 5: Cross-verify extracted files vs Manifest
+            from blc_portable.payload.manifest import cross_verify_installed
+
+            cross_errors = cross_verify_installed(staging, manifest)
+            if cross_errors:
+                error_detail = "; ".join(cross_errors[:5])
+                raise RuntimeError(f"Installation cross-verify failed ({len(cross_errors)} errors): {error_detail}...")
+
+            # Level 6: File count match
+            if len(actual_extracted) != file_count:
+                raise RuntimeError(
+                    f"Extracted file count mismatch: extracted={len(actual_extracted)} manifest={file_count}"
+                )
+
+            # 原子 rename
             releases_dir.mkdir(parents=True, exist_ok=True)
             if release_dir.exists():
                 shutil.rmtree(release_dir)
             os.replace(str(staging), str(release_dir))
 
+            # 写入 current.json
             from .verifier import write_current_json
 
             write_current_json(

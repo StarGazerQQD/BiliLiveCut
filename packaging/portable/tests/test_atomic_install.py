@@ -100,14 +100,17 @@ class TestAtomicInstall:
                     for e in ("whisper", "paraformer", "sensevoice", "funasr_nano")
                 },
             )
-            assert check_installed_models(models_dir, "0.1.14.9-alpha")
-            assert not check_installed_models(models_dir, "0.1.14.7-alpha")
+            ok1, _ = check_installed_models(models_dir, "0.1.14.9-alpha")
+            assert ok1
+            ok2, _ = check_installed_models(models_dir, "0.1.14.7-alpha")
+            assert not ok2
 
     def test_not_installed_returns_false(self) -> None:
         from blc_portable.engine_pack.installer import check_installed_models  # noqa: E402
 
         with tempfile.TemporaryDirectory() as tmpdir:
-            assert not check_installed_models(Path(tmpdir) / "nonexistent", "0.1.14.9-alpha")
+            ok, _ = check_installed_models(Path(tmpdir) / "nonexistent", "0.1.14.9-alpha")
+            assert not ok
 
     def test_rollback_on_move_failure(self) -> None:
         from blc_portable.engine_pack.installer import install_models_dir_from_staging  # noqa: E402

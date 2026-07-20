@@ -1,0 +1,9 @@
+{
+  "format_version": 1,
+  "description": "Machine-readable pip-audit vulnerability exemptions.",
+  "last_reviewed": "2026-07-19",
+  "review_owner": "StarGazerQQD",
+  "exemptions": [
+  ],
+  "notes": "Add entries as {cve, package, reason, owner, expires}. Run python scripts/check_pip_audit_exemptions.py to validate."
+}

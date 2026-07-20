@@ -377,7 +377,8 @@ class TestCheckInstalledModels:
         """未安装时返回 False。"""
         from blc_portable.engine_pack.installer import check_installed_models
 
-        assert not check_installed_models(tmp_app_root / "models", _EP_RELEASE_VERSION)
+        ok, _ = check_installed_models(tmp_app_root / "models", _EP_RELEASE_VERSION)
+        assert not ok
 
     def test_version_mismatch(self, tmp_app_root: Path) -> None:
         """版本不匹配时返回 False。"""
@@ -398,7 +399,8 @@ class TestCheckInstalledModels:
             encoding="utf-8",
         )
 
-        assert not check_installed_models(models_dir, _EP_RELEASE_VERSION)
+        ok1, _ = check_installed_models(models_dir, _EP_RELEASE_VERSION)
+        assert not ok1
 
     def test_installed_and_valid(self, tmp_app_root: Path) -> None:
         """正确安装时返回 True。"""
@@ -419,7 +421,8 @@ class TestCheckInstalledModels:
             encoding="utf-8",
         )
 
-        assert check_installed_models(models_dir, _EP_RELEASE_VERSION)
+        ok2, _ = check_installed_models(models_dir, _EP_RELEASE_VERSION)
+        assert ok2
 
 
 # ── Zip Slip 防护 ─────────────────────────────────────────────

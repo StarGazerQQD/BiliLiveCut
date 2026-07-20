@@ -21,7 +21,7 @@ V0.1.12.2 变更:
 from __future__ import annotations
 
 from dataclasses import dataclass, field
-from typing import TYPE_CHECKING
+from typing import TYPE_CHECKING, Protocol
 
 if TYPE_CHECKING:
     pass
@@ -120,6 +120,11 @@ class ASRTranscriptResult:
     # 辅助特征
     emotions: list[EmotionEvent] = field(default_factory=list)
 
+    # V0.1.14.11: 模型 provenance (实际解析后的模型标识)
+    model_source: str = ""  # "local" / "online" / "fallback"
+    model_catalog_id: str = ""  # Engine Pack ID (whisper/paraformer/sensevoice/funasr_nano)
+    loaded_from: str = ""  # 实际加载路径或仓库 ID
+
 
 def _segment_to_confidence(seg: ASRSegmentResult) -> float | None:
     """获取句子的归一化置信度 (0-1), 无则返回 None。"""
@@ -174,3 +179,24 @@ def _unified_to_legacy(unified: ASRTranscriptResult) -> TranscriptionResult:
 # ═══════════════════════════════════════════════════════════
 # 后端协议
 # ═══════════════════════════════════════════════════════════
+
+
+class TranscriberBackend(Protocol):
+    """转写后端协议 (V0.1.12.2: 主接口返回 ASRTranscriptResult)。"""
+
+    def transcribe(
+        self,
+        audio_path: str,
+        initial_prompt: str | None = None,
+    ) -> ASRTranscriptResult:
+        """转写音频文件。"""
+        ...
+
+    def transcribe_segment(
+        self,
+        audio_path: str,
+        start: float,
+        end: float,
+    ) -> ASRTranscriptResult:
+        """转写音频片段 (用于复核)。"""
+        ...

@@ -5,7 +5,7 @@
 
 from __future__ import annotations
 
-from app.analysis.transcribe import (
+from app.analysis.transcription import (
     ASRSegmentResult,
     _compute_review_risk_score,
     _merge_review_text,

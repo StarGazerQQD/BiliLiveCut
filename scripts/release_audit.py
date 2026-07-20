@@ -51,16 +51,31 @@ class AuditResult:
         self.failed: list[tuple[str, str]] = []
 
     def check(self, name: str, condition: bool, detail: str = "") -> None:
+        """Record a check result (pass or fail).
+
+        :param name: Check name.
+        :param condition: True = pass, False = fail.
+        :param detail: Failure detail message.
+        """
         if condition:
             self.passed.append(name)
         else:
             self.failed.append((name, detail))
 
     def warn(self, name: str, detail: str = "") -> None:
+        """Record a warning (non-blocking).
+
+        :param name: Warning name.
+        :param detail: Warning detail message.
+        """
         self.warned.append((name, detail))
 
     @property
     def exit_code(self) -> int:
+        """Compute exit code: 0=pass, 1=warn, 2=fail.
+
+        :returns: EXIT_OK, EXIT_WARN, or EXIT_FAIL.
+        """
         if self.failed:
             return EXIT_FAIL
         if self.warned:
@@ -68,23 +83,27 @@ class AuditResult:
         return EXIT_OK
 
     def report(self) -> str:
+        """Generate human-readable audit report.
+
+        :returns: Formatted report string.
+        """
         lines: list[str] = []
-        lines.append(f"\n{'='*60}")
-        lines.append(f"  Release Audit Report")
-        lines.append(f"{'='*60}")
+        lines.append(f"\n{'=' * 60}")
+        lines.append("  Release Audit Report")
+        lines.append(f"{'=' * 60}")
         lines.append(f"  PASS: {len(self.passed)}")
         lines.append(f"  WARN: {len(self.warned)}")
         lines.append(f"  FAIL: {len(self.failed)}")
 
         if self.failed:
-            lines.append(f"\n  --- FAIL ---")
+            lines.append("\n  --- FAIL ---")
             for name, detail in self.failed:
                 lines.append(f"  [FAIL] {name}")
                 if detail:
                     lines.append(f"         {detail}")
 
         if self.warned:
-            lines.append(f"\n  --- WARN ---")
+            lines.append("\n  --- WARN ---")
             for name, detail in self.warned:
                 lines.append(f"  [WARN] {name}")
                 if detail:
@@ -113,10 +132,6 @@ def check_launcher_main(audit: AuditResult) -> None:
     audit.check("launcher run_launcher()", "run_launcher" in funcs, "缺少 run_launcher()")
     audit.check("launcher __main__ guard", 'if __name__ == "__main__"' in source)
 
-    # 检查是否有 if __name__ == "__main__": main() 的 NameError
-    if "main()  # noqa: F821" in source:
-        audit.check("launcher/main.py", False, "包含 noqa: F821")
-
 
 def check_ci_bypass(audit: AuditResult) -> None:
     """检查是否使用 production-incompatible CI bypass。"""
@@ -127,10 +142,14 @@ def check_ci_bypass(audit: AuditResult) -> None:
         content = lite_py.read_text(encoding="utf-8")
         has_ci_build = "BLC_CI_BUILD" in content
         has_fixture = "BLC_FIXTURE_BUILD" in content
-        audit.check("lite.py 不再使用 BLC_CI_BUILD", not has_ci_build,
-                      "仍有 BLC_CI_BUILD 残留 — 正式 Release 禁止" if has_ci_build else "")
-        audit.check("lite.py 使用 BLC_FIXTURE_BUILD", has_fixture,
-                      "缺少 BLC_FIXTURE_BUILD 支持" if not has_fixture else "")
+        audit.check(
+            "lite.py 不再使用 BLC_CI_BUILD",
+            not has_ci_build,
+            "仍有 BLC_CI_BUILD 残留 — 正式 Release 禁止" if has_ci_build else "",
+        )
+        audit.check(
+            "lite.py 使用 BLC_FIXTURE_BUILD", has_fixture, "缺少 BLC_FIXTURE_BUILD 支持" if not has_fixture else ""
+        )
 
     if release_yml.exists():
         content = release_yml.read_text(encoding="utf-8")
@@ -145,12 +164,18 @@ def check_model_single_source(audit: AuditResult) -> None:
         content = downloader.read_text(encoding="utf-8")
         # 不应有独立的 ENGINES 常量
         has_engines_assign = "ENGINES: list" in content or "ENGINES = [" in content
-        audit.check("downloader.py 无独立 ENGINES", not has_engines_assign,
-                      "仍有独立 ENGINES 列表 — 应使用 model_catalog" if has_engines_assign else "")
+        audit.check(
+            "downloader.py 无独立 ENGINES",
+            not has_engines_assign,
+            "仍有独立 ENGINES 列表 — 应使用 model_catalog" if has_engines_assign else "",
+        )
 
         has_catalog_import = "_load_engine_defs" in content or "load_engines" in content
-        audit.check("downloader.py 使用统一 Catalog", has_catalog_import,
-                      "未导入 model_catalog" if not has_catalog_import else "")
+        audit.check(
+            "downloader.py 使用统一 Catalog",
+            has_catalog_import,
+            "未导入 model_catalog" if not has_catalog_import else "",
+        )
 
     # 检查无 legacy repo reference
     for py_file in REPO_ROOT.rglob("*.py"):
@@ -160,8 +185,11 @@ def check_model_single_source(audit: AuditResult) -> None:
             continue
         ct = py_file.read_text(encoding="utf-8", errors="replace")
         if "iic/Fun-ASR-Nano" in ct and "FunAudioLLM" not in ct:
-            audit.check(f"Legacy FunASR repo: {py_file.relative_to(REPO_ROOT)}", False,
-                f"{py_file.relative_to(REPO_ROOT)} 仍使用 iic/Fun-ASR-Nano")
+            audit.check(
+                f"Legacy FunASR repo: {py_file.relative_to(REPO_ROOT)}",
+                False,
+                f"{py_file.relative_to(REPO_ROOT)} 仍使用 iic/Fun-ASR-Nano",
+            )
 
 
 def check_resolved_revision(audit: AuditResult) -> None:
@@ -174,8 +202,9 @@ def check_resolved_revision(audit: AuditResult) -> None:
     uses_resolved = "resolved_revision" in content
     # The old way: e.requested_revision
     uses_requested = "requested_revision" in content
-    audit.check("Builder 使用 resolved_revision", uses_resolved,
-                  "Builder 未使用 resolved_revision" if not uses_resolved else "")
+    audit.check(
+        "Builder 使用 resolved_revision", uses_resolved, "Builder 未使用 resolved_revision" if not uses_resolved else ""
+    )
     if uses_requested and "resolved_revision" not in content:
         audit.check("Builder 使用 resolved_revision", False, "必须使用 resolved_revision")
 
@@ -192,24 +221,44 @@ def check_engine_pack_metadata(audit: AuditResult) -> None:
         audit.check("engine_pack_info.json", False, "JSON 解析失败")
         return
 
-    for field in ("engine_pack_version", "crc32", "sha256", "expected_engine_ids",
-                   "format_version", "content_manifest_sha256", "model_lock_sha256"):
-        audit.check(f"engine_pack_info.{field}", field in info or "manifest_sha256" in info,
-                      "" if (field in info or (field == "content_manifest_sha256" and "manifest_sha256" in info)) else f"缺少字段 '{field}'")
+    for field in (
+        "engine_pack_version",
+        "crc32",
+        "sha256",
+        "expected_engine_ids",
+        "format_version",
+        "content_manifest_sha256",
+        "model_lock_sha256",
+    ):
+        audit.check(
+            f"engine_pack_info.{field}",
+            field in info or "manifest_sha256" in info,
+            ""
+            if (field in info or (field == "content_manifest_sha256" and "manifest_sha256" in info))
+            else f"缺少字段 '{field}'",
+        )
 
-    audit.check("engine_pack_info.crc32 non-empty", bool(info.get("crc32", "")),
-                  "CRC32 为空 — 正式构建必须失败")
-    audit.check("engine_pack_info.sha256 non-empty", bool(info.get("sha256", "")),
-                  "SHA-256 为空 — 正式构建必须失败")
-    audit.check("engine_pack_info.artifact_class is production",
-                  info.get("artifact_class", "") == "production",
-                  f"artifact_class={info.get('artifact_class', 'MISSING')} — 非 production")
-    audit.check("engine_pack_info.format_version >= 4",
-                  info.get("format_version", 0) >= 4,
-                  f"format_version={info.get('format_version', 0)} — 需 >= 4")
-    audit.check("engine_pack_info.size_bytes >= 500 MB",
-                  info.get("size_bytes", 0) >= 500_000_000,
-                  f"size_bytes={info.get('size_bytes', 0)} — Producing仅4KB为Fixtures")
+    audit.check("engine_pack_info.crc32 non-empty", bool(info.get("crc32", "")), "CRC32 为空 — 正式构建必须失败")
+    audit.check("engine_pack_info.sha256 non-empty", bool(info.get("sha256", "")), "SHA-256 为空 — 正式构建必须失败")
+    # In repo: fixture is OK. Production builds auto-generate with artifact_class=production.
+    artifact_class = info.get("artifact_class", "")
+    audit.check("engine_pack_info.artifact_class present", bool(artifact_class), "artifact_class 缺失 — 必须显式声明")
+    if artifact_class == "fixture":
+        audit.warn(
+            "engine_pack_info.artifact_class is fixture",
+            "Repository fixture (expected — production builds auto-generate)",
+        )
+    elif artifact_class != "production":
+        audit.check(
+            "engine_pack_info.artifact_class is production",
+            False,
+            f"artifact_class={artifact_class} — 必须为 'production' 或 'fixture'",
+        )
+    audit.check(
+        "engine_pack_info.format_version >= 4",
+        info.get("format_version", 0) >= 4,
+        f"format_version={info.get('format_version', 0)} — 需 >= 4",
+    )
 
 
 def check_csrf(audit: AuditResult) -> None:

@@ -30,9 +30,17 @@ storage/
 .coverage
 htmlcov/
 .git_msg.txt
-/tests/
+/tests/*
 !/tests/test_version_consistency.py
 !/tests/test_model_catalog.py
+!/tests/unit/
+!/tests/unit/test_asr_architecture.py
+!/tests/unit/test_native_parity.py
+!/tests/unit/test_security_and_db.py
+!/tests/unit/test_stage9_cov.py
+!/tests/unit/test_web_services_cov.py
+!/tests/integration/
+!/tests/fault_injection/
 
 # 允许 packaging/portable/tests/
 !packaging/portable/tests/

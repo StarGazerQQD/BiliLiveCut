@@ -298,9 +298,8 @@ async def import_ass_file(
 ) -> dict[str, object]:
     """导入 ASS 文件,提取其样式配置并创建模板。
 
-    限制:最大 1MB,防止内存耗尽。
-    会自动解析 [V4+ Styles] 段落的 Style 行,提取所有字段。
-    如果有多个 Style 行,为每个 Style 创建一个模板。
+    限制:最大 1 MiB (1,048,576 bytes), 防内存耗尽。
+    使用流式读取, 超限立即返回 413, 不将完整超限内容读入内存。
 
     :param file: 上传的 .ass 文件。
     :returns: 创建的模板列表。
@@ -308,7 +307,22 @@ async def import_ass_file(
     if not file.filename or not file.filename.lower().endswith(".ass"):
         raise HTTPException(status_code=400, detail="请上传 .ass 文件")
 
-    content = (await file.read()).decode("utf-8", errors="replace")
+    # V0.1.14.11: 流式读取 + 硬限制 1 MiB, 超限立即 413
+    max_bytes = 1_048_576  # 1 MiB
+    chunks: list[bytes] = []
+    total = 0
+    while True:
+        chunk = await file.read(min(65536, max_bytes - total + 1))
+        if not chunk:
+            break
+        total += len(chunk)
+        if total > max_bytes:
+            raise HTTPException(
+                status_code=413,
+                detail=f"文件过大: 最大允许 {max_bytes // 1024} KiB, 当前已超过 {total // 1024} KiB",
+            )
+        chunks.append(chunk)
+    content = b"".join(chunks).decode("utf-8", errors="replace")
     styles = _parse_ass_styles(content)
 
     if not styles:

@@ -58,7 +58,8 @@ class TestEnginePackFaultInjection:
             (models_dir / "engine-pack-installed.json").write_text(
                 json.dumps({"engine_pack_version": "0.1.14.7-alpha", "engine_ids": ["whisper"]})
             )
-            assert not check_installed_models(models_dir, "0.1.14.9-alpha")
+            ok, _ = check_installed_models(models_dir, "0.1.14.9-alpha")
+            assert not ok
 
     def test_missing_engine_directory(self) -> None:
         from blc_portable.engine_pack.installer import check_installed_models  # noqa: E402
@@ -73,7 +74,8 @@ class TestEnginePackFaultInjection:
                 "engine_ids": ["whisper", "paraformer", "sensevoice", "funasr_nano"],
             }
             (models_dir / "engine-pack-installed.json").write_text(json.dumps(installed))
-            assert not check_installed_models(models_dir, "0.1.14.9-alpha")
+            ok2, _ = check_installed_models(models_dir, "0.1.14.9-alpha")
+            assert not ok2
 
 
 class TestVerifierFaultInjection:

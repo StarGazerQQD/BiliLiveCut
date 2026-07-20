@@ -153,29 +153,121 @@ def _write_installed_manifest(
     os.replace(str(tmp), str(target))
 
 
-def check_installed_models(models_dir: Path, expected_version: str) -> bool:
-    """快速检查四引擎是否已全部安装且版本匹配。
+def check_installed_models(
+    models_dir: Path,
+    expected_version: str,
+    full_rehash: bool = False,
+) -> tuple[bool, list[str]]:
+    """检查四引擎是否已全部安装且版本匹配。
 
-    不重算模型目录 Hash，仅校验安装清单和目录存在性。
+    快速模式 (full_rehash=False):
+    - 校验安装清单存在性和版本
+    - 引擎 ID 集合完整
+    - 目录存在且非空
+
+    完整重哈希模式 (full_rehash=True):
+    - 所有以上检查
+    - 逐文件 SHA-256 与安装清单对比
+    - 额外文件检测
+    - 文件数量检测
 
     :param models_dir: models 目录。
     :param expected_version: 期望的 Engine Pack 版本。
-    :returns: True 表示已安装且有效。
+    :param full_rehash: 是否执行完整 SHA-256 重哈希。
+    :returns: (通过, 错误列表)。
     """
+    errors: list[str] = []
     installed = _read_installed_manifest(models_dir)
     if installed is None:
-        return False
+        errors.append("engine-pack-installed.json 不存在")
+        return False, errors
+
     if installed.get("engine_pack_version") != expected_version:
-        return False
+        errors.append(f"Version mismatch: installed={installed.get('engine_pack_version')} expected={expected_version}")
+
     installed_engines = set(installed.get("engine_ids", installed.get("engines_installed", [])))
     expected = {"whisper", "paraformer", "sensevoice", "funasr_nano"}
     if installed_engines != expected:
-        return False
+        missing = expected - installed_engines
+        extra = installed_engines - expected
+        if missing:
+            errors.append(f"Missing engines: {sorted(missing)}")
+        if extra:
+            errors.append(f"Extra engines: {sorted(extra)}")
+
+    # Check each engine dir is non-empty
     for engine in expected:
         d = models_dir / engine
-        if not d.exists() or not any(d.iterdir()):
-            return False
-    return True
+        if not d.exists():
+            errors.append(f"Engine directory missing: {engine}")
+        elif not any(d.iterdir()):
+            errors.append(f"Engine directory empty: {engine}")
+
+    # ── Full rehash mode ──
+    if full_rehash and not errors:
+        files_manifest = installed.get("files", {})
+        if not files_manifest:
+            errors.append("Installed manifest has no 'files' section — cannot rehash")
+            return False, errors
+
+        sha_mismatches = 0
+        size_mismatches = 0
+        extra_files = 0
+        max_detail = 5
+
+        manifest_file_set: set[str] = set()
+        for engine_id, engine_info in files_manifest.items():
+            engine_files = engine_info.get("files", {})
+            for rel_path, file_entry in engine_files.items():
+                full_rel = f"{engine_id}/{rel_path}"
+                manifest_file_set.add(full_rel)
+
+                target = models_dir / full_rel
+                if not target.is_file():
+                    errors.append(f"Missing: {full_rel}")
+                    continue
+
+                expected_sha = file_entry.get("sha256", "")
+                expected_size = file_entry.get("size", 0)
+
+                if expected_size:
+                    actual_size = target.stat().st_size
+                    if actual_size != expected_size:
+                        size_mismatches += 1
+                        if size_mismatches <= max_detail:
+                            errors.append(f"Size mismatch: {full_rel} expected={expected_size} actual={actual_size}")
+
+                if expected_sha and len(expected_sha) == 64:
+                    actual_sha = compute_sha256(target)
+                    if actual_sha != expected_sha:
+                        sha_mismatches += 1
+                        if sha_mismatches <= max_detail:
+                            errors.append(
+                                f"SHA-256 mismatch: {full_rel} expected={expected_sha[:16]}... "
+                                f"actual={actual_sha[:16]}..."
+                            )
+
+        # Check for extra files
+        for engine_id in expected:
+            engine_dir = models_dir / engine_id
+            if not engine_dir.exists():
+                continue
+            for p in engine_dir.rglob("*"):
+                if p.is_file():
+                    rel = p.relative_to(models_dir).as_posix()
+                    if rel not in manifest_file_set:
+                        extra_files += 1
+                        if extra_files <= max_detail:
+                            errors.append(f"Extra file: {rel}")
+
+        if sha_mismatches:
+            errors.append(f"Full rehash: {sha_mismatches} file(s) SHA-256 mismatch")
+        if size_mismatches:
+            errors.append(f"Full rehash: {size_mismatches} file(s) size mismatch")
+        if extra_files:
+            errors.append(f"Full rehash: {extra_files} file(s) not in manifest")
+
+    return len(errors) == 0, errors
 
 
 def install_from_engine_pack(

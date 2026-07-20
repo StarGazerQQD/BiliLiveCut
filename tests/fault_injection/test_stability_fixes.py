@@ -624,7 +624,7 @@ class TestASRFallback:
 
     def test_asr_result_has_fallback_fields(self) -> None:
         """ASRTranscriptResult 支持新 fallback 字段。"""
-        from app.analysis.transcribe import ASRTranscriptResult
+        from app.analysis.transcription import ASRTranscriptResult
 
         r = ASRTranscriptResult(
             text="test",
@@ -642,7 +642,7 @@ class TestASRFallback:
 
     def test_final_text_source_priority(self) -> None:
         """manual_review_needed > review > fallback > primary。"""
-        from app.analysis.transcribe import _compute_review_risk_score, _merge_review_text
+        from app.analysis.transcription import _compute_review_risk_score, _merge_review_text
 
         # 优先级由 _review_loop 代码保证: manual_review_needed 先检查
         # 此测试验证逻辑存在

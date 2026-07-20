@@ -57,11 +57,19 @@ def _extract_cookie_string(page) -> str:
 def _save_cookie(cookie_string: str) -> None:
     """将 Cookie 持久化到运行时设置,供录制/弹幕模块使用。"""
     from app.core import settings_store
-    from app.core.sanitize import sanitize_text
 
     settings_store.set_setting("bilibili_cookie", cookie_string)
-    logger.info("Bilibili Cookie 已保存（{} 个 kv）", cookie_string.count(";") + 1)
-    logger.debug("Cookie 摘要: {}", sanitize_text(cookie_string))
+    # 安全摘要: 计数 + 键名列表, 不输出原始值
+    kv_count = cookie_string.count(";") + 1 if cookie_string else 0
+    keys = []
+    for part in cookie_string.split(";"):
+        part = part.strip()
+        if "=" in part:
+            keys.append(part.split("=", 1)[0].strip())
+    key_list = ", ".join(keys[:10])
+    if len(keys) > 10:
+        key_list += f" ... (+{len(keys) - 10})"
+    logger.info("Bilibili Cookie saved: {} kv pairs, keys=[{}]", kv_count, key_list)
 
 
 def _login_task(result_store: dict) -> None:
@@ -183,19 +191,16 @@ def get_cookie_info() -> dict:
 
     raw = settings_store.get_setting("bilibili_cookie", "")
 
-    # 也检查 .env 中的 cookie（兼容旧配置）
+    # Also check .env cookie (compat)
     if not raw:
         from app.core.config import settings
 
         raw = settings.bilibili_cookie
 
+    # 安全摘要: 只输出 DedeUserID 值
     if not raw:
         return {"has_cookie": False}
 
-    # 解析 UID (脱敏后处理, 防止原始值泄漏到日志)
-    from app.core.sanitize import sanitize_text
-
-    logger.debug("Cookie 摘要: {}", sanitize_text(raw))
     match = re.search(r"DedeUserID=(\d+)", raw)
     uid = match.group(1) if match else None
 
