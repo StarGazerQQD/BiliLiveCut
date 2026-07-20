@@ -3,8 +3,6 @@
 from __future__ import annotations
 
 import os
-import tempfile
-from pathlib import Path
 from typing import TYPE_CHECKING
 from unittest.mock import MagicMock
 
@@ -15,7 +13,6 @@ if TYPE_CHECKING:
 
 pytest.importorskip("fastapi")
 from fastapi.testclient import TestClient  # noqa: E402
-
 
 # ── CSRF parsing ───────────────────────────────────────
 

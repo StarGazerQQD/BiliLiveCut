@@ -6,12 +6,9 @@ All tests must be robust and not flaky.
 
 from __future__ import annotations
 
-import json
 import tempfile
 from pathlib import Path
 from typing import TYPE_CHECKING
-
-import pytest
 
 if TYPE_CHECKING:
     from _pytest.monkeypatch import MonkeyPatch
@@ -97,9 +94,6 @@ class TestSettingsStoreFull:
 
     def test_settings_store_set_get_delete(self, monkeypatch: MonkeyPatch) -> None:
         """settings_store set/get/delete cycle."""
-        import os
-        import tempfile
-
         from app.core import settings_store
 
         with tempfile.TemporaryDirectory() as tmp:
@@ -118,9 +112,6 @@ class TestSettingsStoreFull:
 
     def test_settings_store_persistence(self, monkeypatch: MonkeyPatch) -> None:
         """Settings persist across calls."""
-        import os
-        import tempfile
-
         from app.core import settings_store
 
         with tempfile.TemporaryDirectory() as tmp:

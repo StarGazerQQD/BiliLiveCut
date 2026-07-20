@@ -13,7 +13,6 @@ from __future__ import annotations
 
 import pytest
 
-
 # ── Helpers ─────────────────────────────────────────────
 
 
@@ -57,14 +56,14 @@ class TestAhoCorasickParity:
 
     def test_fast_aho_has_match_positive(self) -> None:
         """Has match returns True."""
-        from app.analysis.speedups import fast_ahocorasick_build, fast_aho_has_match
+        from app.analysis.speedups import fast_aho_has_match, fast_ahocorasick_build
 
         am = fast_ahocorasick_build(("test",))
         assert fast_aho_has_match(am, "this is a test string")
 
     def test_fast_aho_has_match_negative(self) -> None:
         """Has match returns False."""
-        from app.analysis.speedups import fast_ahocorasick_build, fast_aho_has_match
+        from app.analysis.speedups import fast_aho_has_match, fast_ahocorasick_build
 
         am = fast_ahocorasick_build(("zzz",))
         assert not fast_aho_has_match(am, "hello world")

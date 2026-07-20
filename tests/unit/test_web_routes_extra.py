@@ -2,17 +2,15 @@
 
 from __future__ import annotations
 
-from pathlib import Path
 from typing import TYPE_CHECKING
 
 import pytest
 
 if TYPE_CHECKING:
-    from _pytest.monkeypatch import MonkeyPatch
+    pass
 
 pytest.importorskip("fastapi")
 from fastapi.testclient import TestClient  # noqa: E402
-
 
 # ── Review router coverage ─────────────────────────────
 

@@ -9,13 +9,9 @@
 
 from __future__ import annotations
 
-import json
 import os
 import tempfile
-from pathlib import Path
 from typing import TYPE_CHECKING
-
-import pytest
 
 if TYPE_CHECKING:
     from _pytest.monkeypatch import MonkeyPatch
@@ -164,8 +160,6 @@ class TestCookieSecurity:
 
     def test_save_cookie_logs_keys_not_values(self) -> None:
         """Cookie 保存日志只记录键名和数量。"""
-        import logging
-
         from app.web.login_handler import _save_cookie
 
         # Mock settings_store
@@ -200,6 +194,7 @@ class TestDatabaseForeignKeys:
     def test_upload_task_fk_prevents_orphan(self, temp_db: None) -> None:
         """孤儿 UploadTask (clip_id=99999 不存在) 触发外键约束失败。"""
         import pytest as pytest_mod
+        from sqlalchemy.exc import IntegrityError
 
         from app.db.entities.publishing import UploadTask
         from app.db.session import get_session
@@ -208,13 +203,14 @@ class TestDatabaseForeignKeys:
             task = UploadTask(clip_id=99999, uploader="manual", status="queued")
             db.add(task)
             # Should raise IntegrityError due to FK constraint
-            with pytest_mod.raises(Exception):
+            with pytest_mod.raises(IntegrityError):
                 db.flush()
             db.rollback()
 
     def test_upload_attempt_fk_prevents_orphan_task(self, temp_db: None) -> None:
         """孤儿 UploadAttempt (upload_task_id=99999 不存在) 触发外键约束失败。"""
         import pytest as pytest_mod
+        from sqlalchemy.exc import IntegrityError
 
         from app.db.entities.publishing import UploadAttempt
         from app.db.session import get_session
@@ -226,7 +222,7 @@ class TestDatabaseForeignKeys:
                 clip_id=99999,
             )
             db.add(attempt)
-            with pytest_mod.raises(Exception):
+            with pytest_mod.raises(IntegrityError):
                 db.flush()
             db.rollback()
 
