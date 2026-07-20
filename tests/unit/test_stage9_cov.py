@@ -159,36 +159,8 @@ class TestWebInit:
 
 
 # ── Monitoring metrics coverage ───────────────────────
-
-
-class TestMetrics:
-    """app.core.metrics coverage."""
-
-    def test_metrics_module(self) -> None:
-        """metrics module imports."""
-        from app.core import metrics
-
-        assert hasattr(metrics, "start_metrics_collector")
+# (metrics coverage covered by test_phase3_metrics.py)
 
 
 # ── ASR metrics coverage ───────────────────────────────
-
-
-class TestAsrMetrics:
-    """app.analysis.asr_metrics coverage."""
-
-    def test_asr_metrics_module(self) -> None:
-        """asr_metrics module imports."""
-        from app.analysis import asr_metrics
-
-        assert hasattr(asr_metrics, "record_backend_call")
-        assert hasattr(asr_metrics, "record_fallback")
-        assert hasattr(asr_metrics, "record_rtf")
-
-    def test_asr_metrics_record_noop(self) -> None:
-        """Record calls don't crash."""
-        from app.analysis import asr_metrics
-
-        asr_metrics.record_backend_call("test", 0.5, success=True)
-        asr_metrics.record_fallback()
-        asr_metrics.record_rtf(0.1)
+# (asr_metrics coverage covered by test_phase3_metrics.py)
