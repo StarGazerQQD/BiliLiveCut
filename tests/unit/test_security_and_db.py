@@ -10,6 +10,8 @@
 from __future__ import annotations
 
 import os
+import subprocess
+import sys
 import tempfile
 from typing import TYPE_CHECKING
 
@@ -249,3 +251,34 @@ class TestDatabaseForeignKeys:
 
         assert callable(run_migration)
         assert callable(scan_orphan_records)
+
+
+class TestSchemaFingerprint:
+    """Schema 指纹必须能跨应用进程稳定复现。"""
+
+    def test_callable_defaults_do_not_include_memory_addresses(self) -> None:
+        from sqlmodel import SQLModel
+
+        from app.db import models  # noqa: F401
+        from app.db.schema import _serializable_default
+
+        defaults = [
+            _serializable_default(column.default)
+            for table in SQLModel.metadata.sorted_tables
+            for column in table.columns
+            if column.default is not None
+        ]
+
+        assert all("0x" not in value for value in defaults if value is not None)
+
+    def test_fingerprint_is_stable_across_processes(self) -> None:
+        command = [
+            sys.executable,
+            "-c",
+            "from app.db.schema import compute_schema_fingerprint; print(compute_schema_fingerprint())",
+        ]
+
+        first = subprocess.check_output(command, text=True).strip()
+        second = subprocess.check_output(command, text=True).strip()
+
+        assert first == second

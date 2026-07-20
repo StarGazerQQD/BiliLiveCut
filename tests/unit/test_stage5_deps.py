@@ -51,8 +51,8 @@ def test_metrics_router_registered(temp_db: None) -> None:
 
 def test_ffmpeg_errors_module_imports() -> None:
     """ffmpeg_errors module with classify_ffmpeg_error function."""
-    from app.core.ffmpeg_errors import classify_ffmpeg_error
+    from app.core.ffmpeg_errors import FfmpegErrorType, classify_ffmpeg_error
 
     # Unknown error returns UNKNOWN type
-    result = classify_ffmpeg_error("random unknown error text")
-    assert result is not None
+    result = classify_ffmpeg_error(1, "random unknown error text")
+    assert result is FfmpegErrorType.UNKNOWN

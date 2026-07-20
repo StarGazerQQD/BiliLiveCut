@@ -29,6 +29,7 @@ def test_all_versions_equal_0_1_14_7_alpha() -> None:
     line = [line_text for line_text in init_content.split("\n") if "__version__ =" in line_text and '"' in line_text]
     assert line, "app/__init__.py 缺少 __version__"
     assert expected_version in line[0], f"app/__init__.py 版本不匹配: {line[0]} 期望包含 {expected_version}"
+    assert "__version_label__ = version_label()" in init_content, "app/__init__.py 展示标签必须从版本真源动态生成"
 
     # pyproject.toml
     toml_path = REPO_ROOT / "pyproject.toml"

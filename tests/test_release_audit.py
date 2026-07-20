@@ -43,6 +43,13 @@ class TestReleaseAudit:
         if release_yml.exists():
             content = release_yml.read_text(encoding="utf-8")
             assert "BLC_CI_BUILD" not in content, "release.yml still contains BLC_CI_BUILD"
+            assert "BLC_FIXTURE_BUILD" not in content, "release.yml must not publish fixture artifacts"
+
+    def test_release_workflow_smoke_uses_real_cli_entrypoint(self) -> None:
+        """Smoke test 不得导入不存在的 ``app.cli.main``。"""
+        content = (REPO_ROOT / ".github" / "workflows" / "release.yml").read_text(encoding="utf-8")
+        assert "from app.cli import app" in content
+        assert "from app.cli import main" not in content
 
     def test_engine_pack_info_has_crc32(self) -> None:
         info_path = REPO_ROOT / "packaging" / "portable" / "resources" / "engine_pack_info.json"

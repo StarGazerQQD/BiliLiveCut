@@ -646,7 +646,7 @@ class TestOpenPath:
         """Windows: os.startfile called for existing directory."""
         monkeypatch.setattr(sys, "platform", "win32")
         mock_startfile = MagicMock()
-        monkeypatch.setattr("os.startfile", mock_startfile)
+        monkeypatch.setattr("os.startfile", mock_startfile, raising=False)
 
         from app.core.osutil import open_path
 
@@ -659,7 +659,7 @@ class TestOpenPath:
         """Windows: nonexistent path opens parent directory."""
         monkeypatch.setattr(sys, "platform", "win32")
         mock_startfile = MagicMock()
-        monkeypatch.setattr("os.startfile", mock_startfile)
+        monkeypatch.setattr("os.startfile", mock_startfile, raising=False)
 
         from app.core.osutil import open_path
 
@@ -674,7 +674,7 @@ class TestOpenPath:
         def _fake_startfile(_p):
             raise OSError("access denied")
 
-        monkeypatch.setattr("os.startfile", _fake_startfile)
+        monkeypatch.setattr("os.startfile", _fake_startfile, raising=False)
 
         from app.core.osutil import open_path
 
@@ -729,7 +729,7 @@ class TestOpenPath:
         """Path object input handled correctly."""
         monkeypatch.setattr(sys, "platform", "win32")
         mock_startfile = MagicMock()
-        monkeypatch.setattr("os.startfile", mock_startfile)
+        monkeypatch.setattr("os.startfile", mock_startfile, raising=False)
 
         from app.core.osutil import open_path
 
@@ -741,7 +741,7 @@ class TestOpenPath:
         """When path exists, use the path itself, not parent."""
         monkeypatch.setattr(sys, "platform", "win32")
         mock_startfile = MagicMock()
-        monkeypatch.setattr("os.startfile", mock_startfile)
+        monkeypatch.setattr("os.startfile", mock_startfile, raising=False)
 
         from app.core.osutil import open_path
 

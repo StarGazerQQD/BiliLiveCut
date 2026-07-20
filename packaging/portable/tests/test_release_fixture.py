@@ -25,6 +25,23 @@ def test_release_workflow_has_tag_validation() -> None:
     assert "github.event.inputs.tag" in content, (
         "Release workflow must use github.event.inputs.tag for workflow_dispatch"
     )
+    assert "needs: validate-tag" in content, "Release test job must be blocked by tag validation"
+
+
+def test_release_workflow_never_builds_fixture_artifacts() -> None:
+    """正式 Release 不得设置 Fixture/CI 绕过变量。"""
+    release_yml = _PROJ_ROOT / ".github" / "workflows" / "release.yml"
+    content = release_yml.read_text(encoding="utf-8")
+    assert "BLC_FIXTURE_BUILD" not in content
+    assert "BLC_CI_BUILD" not in content
+
+
+def test_release_full_smoke_resolves_bundle_root() -> None:
+    """Full ZIP 的版本顶层目录必须先解析再检查组件。"""
+    release_yml = _PROJ_ROOT / ".github" / "workflows" / "release.yml"
+    content = release_yml.read_text(encoding="utf-8")
+    assert "$bundleRoot" in content
+    assert 'Test-Path "$root\\portable-python\\python.exe"' in content
 
 
 def test_release_workflow_has_release_audit() -> None:

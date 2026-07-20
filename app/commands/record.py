@@ -141,6 +141,10 @@ def cmd_record(
     :param pipeline: 是否在录制同时启用转写+高光分析流水线。
     :param produce: 是否在产生候选后自动切片与生成文案。
     """
+    if produce and not pipeline:
+        console.print("[red]--produce 必须与 --pipeline 一起使用。[/red]")
+        raise typer.Exit(code=1)
+
     with get_session() as db:
         room = db.get(LiveRoom, db_id)
         if room is None:
@@ -151,6 +155,12 @@ def cmd_record(
             raise typer.Exit(code=1)
         room_id = room.room_id
         room.enabled = True
+        # 五阶段调度器以房间级开关为唯一真源。CLI 显式参数需要同步到
+        # 房间配置，否则 Recorder 虽安装了回调，scheduler 仍会把任务留在 RECORDED。
+        if pipeline:
+            room.auto_analyze = True
+        if produce:
+            room.auto_render = True
         db.add(room)
 
     if room_id is None:
@@ -161,7 +171,9 @@ def cmd_record(
     if pipeline:
         from app.pipeline.orchestrator import make_pipeline_callback
 
-        on_segment = make_pipeline_callback(produce=produce)
+        # 传入房间主键，让回调读取刚同步的自动化配置；否则
+        # room_id=None 会按 auto_analyze=False 跳过任务登记。
+        on_segment = make_pipeline_callback(produce=produce, room_id=db_id)
         extra = " + 自动切片/文案" if produce else ""
         console.print(f"[cyan]已启用实时分析流水线(转写 + 高光评分{extra})。[/cyan]")
 
