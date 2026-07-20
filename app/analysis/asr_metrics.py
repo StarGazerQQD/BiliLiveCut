@@ -83,6 +83,7 @@ class ReviewStats:
 _backend_stats: dict[str, BackendStats] = defaultdict(BackendStats)
 _review_stats = ReviewStats()
 _oom_count: int = 0
+_fallback_count: int = 0
 _rtf_samples: list[float] = []
 _lock = threading.Lock()
 
@@ -124,7 +125,10 @@ def record_review_failure() -> None:
 
 
 def record_fallback() -> None:
-    """记录一次 Whisper fallback。"""
+    """记录一次 Whisper fallback (V0.1.14.11: 线程安全的 fallback 计数)。"""
+    global _fallback_count
+    with _lock:
+        _fallback_count += 1
 
 
 def record_oom() -> None:
@@ -174,6 +178,7 @@ def get_snapshot() -> dict:
                 "adoption_rate": round(_review_stats.adoption_rate, 4),
             },
             "oom_count": _oom_count,
+            "fallback_count": _fallback_count,
             "rtf_avg": round(rtf_avg, 4),
             "rtf_p95": round(rtp_p95, 4),
             "rtf_samples": len(_rtf_samples),
