@@ -184,32 +184,38 @@ jobs:
         env:
           ASR_NO_MODEL_DOWNLOAD: "1"
           WHISPER_MODEL: ""
-        run: |
-          python -m pytest tests/ \
-            -v --tb=short \
-            --cov=app \
-            --cov-report=term-missing \
-            --cov-report=xml \
-            --cov-fail-under=50
+        run: python scripts/run_coverage.py
         timeout-minutes: 15
 
       - name: Upload coverage report
+        if: always()
         uses: actions/upload-artifact@v4
         with:
           name: coverage-${{ matrix.os }}-py${{ matrix.python-version }}
           path: coverage.xml
           retention-days: 7
-          if-no-files-found: ignore
+          if-no-files-found: error
+
+      - name: Upload coverage report (backup — even if xml not found)
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: coverage-raw-${{ matrix.os }}-py${{ matrix.python-version }}
+          path: |
+            .coverage
+            coverage.xml
+          retention-days: 3
+          if-no-files-found: warn
 
       - name: Upload pytest output on failure
         if: failure()
         uses: actions/upload-artifact@v4
         with:
-          name: pytest-failure-${{ matrix.os }}-py${{ matrix.python-version }}
+          name: pytest-stdout-${{ matrix.os }}-py${{ matrix.python-version }}
           path: |
-            .pytest_cache/**/*.log
+            /tmp/pytest-output-*.log
           retention-days: 7
-          if-no-files-found: ignore
+          if-no-files-found: warn
 
 # ═══════════════════════════════════════════════════════════════════
 # Job 4: Portable 测试 + Payload 构建

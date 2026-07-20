@@ -114,3 +114,4 @@ exclude_lines = [
     "raise NotImplementedError",
 ]
 fail_under = 50  # V0.1.12.9: 初始门槛 50%, 后续提升至 70%
+precision = 2     # V0.1.14.11: 两位小数，避免 CI 显示 47% 而本地显示 48% 的误判
