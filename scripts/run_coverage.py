@@ -12,8 +12,8 @@
     Covered:         5502
     Missed:          5827
     Coverage:        48.57%
-    Target 50%:      需要再覆盖 163 行
-    Target 51%:      需要再覆盖 276 行
+    Target 50%:      163 additional lines needed
+    Target 51%:      276 additional lines needed
     Native C ext:    loaded (app.analysis._c_speedups)
     Result:          FAIL (48.57% < 50.00%)
 
@@ -54,7 +54,7 @@ def check_native_extension() -> tuple[bool, str]:
         importlib.import_module("app.analysis._c_speedups")
         return True, "loaded (app.analysis._c_speedups)"
     except ImportError:
-        return False, "NOT FOUND — C extension not compiled; coverage may differ from CI"
+        return False, "NOT FOUND - C extension not compiled; coverage may differ from CI"
 
 
 def parse_coverage_xml() -> dict | None:
@@ -138,7 +138,7 @@ def main() -> int:
     status = "OK" if native_loaded else "WARNING"
     print(f"\n  Native C extension: [{status}] {native_msg}")
     if not native_loaded:
-        print("  → Coverage may be overestimated (excluded C lines run in Python fallback)")
+        print("  -> Coverage may be overestimated (excluded C lines run in Python fallback)")
 
     # ── Run pytest ──
     print("\n  Running pytest with coverage...")
@@ -167,8 +167,8 @@ def main() -> int:
     print(f"  Covered:        {covered}")
     print(f"  Missed:         {missed}")
     print(f"  Coverage:       {pct:.2f}%")
-    print(f"  Target 50%:     需要再覆盖 {gap_50} 行")
-    print(f"  Target 51%:     需要再覆盖 {gap_51} 行")
+    print(f"  Target 50%:     {gap_50} additional lines needed")
+    print(f"  Target 51%:     {gap_51} additional lines needed")
     print()
 
     coverage_passed = pct >= 50.0
