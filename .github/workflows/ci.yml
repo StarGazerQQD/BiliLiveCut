@@ -183,7 +183,6 @@ jobs:
         shell: bash
         env:
           ASR_NO_MODEL_DOWNLOAD: "1"
-          WHISPER_MODEL: ""
         run: python scripts/run_coverage.py
         timeout-minutes: 15
 

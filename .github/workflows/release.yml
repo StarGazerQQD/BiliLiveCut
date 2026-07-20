@@ -31,7 +31,6 @@ jobs:
   validate-tag:
     name: "Validate tag"
     runs-on: ubuntu-latest
-    if: github.event_name == 'workflow_dispatch'
     steps:
       - uses: actions/checkout@v4
         with:
@@ -39,7 +38,11 @@ jobs:
 
       - name: Validate tag input
         run: |
-          TAG_INPUT="${{ github.event.inputs.tag }}"
+          if [ "${{ github.event_name }}" = "workflow_dispatch" ]; then
+            TAG_INPUT="${{ github.event.inputs.tag }}"
+          else
+            TAG_INPUT="${GITHUB_REF#refs/tags/}"
+          fi
           echo "Validating tag: $TAG_INPUT"
 
           # Must match v* pattern
@@ -76,7 +79,7 @@ jobs:
   # ═══════════════════════════════════════════════════════════════════
   test:
     name: "Test + Audit (py3.12 / ubuntu)"
-    needs: []
+    needs: validate-tag
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
@@ -115,7 +118,6 @@ jobs:
       - name: Run pytest
         env:
           ASR_NO_MODEL_DOWNLOAD: "1"
-          WHISPER_MODEL: ""
         run: python -m pytest tests/ -v --tb=short
         timeout-minutes: 15
 
@@ -196,21 +198,25 @@ jobs:
       - name: Verify Payload Manifest/ZIP contract
         run: |
           cd packaging/portable
-          python -c "
-import json, sys, zipfile
-m = json.load(open('dist/payload/payload_manifest.json'))
-zp = 'dist/payload/source_payload.zip'
-with zipfile.ZipFile(zp) as zf:
-    zf_count = sum(1 for n in zf.namelist() if not n.endswith('/'))
-mf_count = m['file_count']
-mf_files = len(m['files'])
-assert zf_count == mf_count == mf_files, f'Count mismatch: ZIP={zf_count} MF={mf_count} files={mf_files}'
-assert m['format_version'] == 5, f'format_version={m[\"format_version\"]}'
-assert m['core_source_commit_short'] == '731a31c'
-assert m['target_platform'] == 'win_x64'
-assert 'generated_at' not in m, 'manifest has generated_at (breaks reproducibility)'
-print(f'Payload contract OK: {mf_count} files, SHA={m[\"payload_sha256\"][:16]}...')
-"
+          python - <<'PY'
+          import json
+          import zipfile
+
+          manifest = json.load(open("dist/payload/payload_manifest.json"))
+          zip_path = "dist/payload/source_payload.zip"
+          with zipfile.ZipFile(zip_path) as zip_file:
+              zip_count = sum(1 for name in zip_file.namelist() if not name.endswith("/"))
+          manifest_count = manifest["file_count"]
+          manifest_files = len(manifest["files"])
+          assert zip_count == manifest_count == manifest_files, (
+              f"Count mismatch: ZIP={zip_count} MF={manifest_count} files={manifest_files}"
+          )
+          assert manifest["format_version"] == 5
+          assert manifest["core_source_commit_short"] == "731a31c"
+          assert manifest["target_platform"] == "win_x64"
+          assert "generated_at" not in manifest, "manifest has generated_at (breaks reproducibility)"
+          print(f"Payload contract OK: {manifest_count} files, SHA={manifest['payload_sha256'][:16]}...")
+          PY
         timeout-minutes: 2
 
       - name: Upload Payload artifacts
@@ -252,8 +258,6 @@ print(f'Payload contract OK: {mf_count} files, SHA={m[\"payload_sha256\"][:16]}.
         timeout-minutes: 10
 
       - name: Build Lite EXE
-        env:
-          BLC_FIXTURE_BUILD: "1"
         run: |
           cd packaging/portable
           python build_exe.py
@@ -394,14 +398,23 @@ print(f'Payload contract OK: {mf_count} files, SHA={m[\"payload_sha256\"][:16]}.
           Expand-Archive -Path $fullZip.FullName -DestinationPath $tmpDir -Force
           Write-Output "Full bundle extracted to $tmpDir"
           Get-ChildItem $tmpDir -Recurse -Depth 1 | ForEach-Object { $_.Name }
+          $bundleRoot = Get-ChildItem $tmpDir -Directory | Where-Object {
+            $_.Name -like "BiliLiveCut-Portable-Full-*"
+          } | Select-Object -First 1
+          if (-not $bundleRoot) { Write-Error "Full ZIP missing bundle root directory"; exit 1 }
           # Verify key components exist
-          $hasExe = Test-Path "$tmpDir\BiliLiveCut-Portable.exe"
-          $hasPython = (Test-Path "$tmpDir\portable-python") -or (Test-Path "$tmpDir\python")
-          $hasWheels = Test-Path "$tmpDir\vendor\wheels"
-          $hasFfmpeg = (Get-ChildItem "$tmpDir\bin\ffmpeg.exe" -ErrorAction SilentlyContinue) -ne $null
-          Write-Output "EXE=$hasExe Python=$hasPython Wheels=$hasWheels FFmpeg=$hasFfmpeg"
+          $root = $bundleRoot.FullName
+          $hasExe = Test-Path "$root\BiliLiveCut-Portable.exe"
+          $hasPython = (Test-Path "$root\portable-python\python.exe") -or (Test-Path "$root\python\python.exe")
+          $hasWheels = (Get-ChildItem "$root\vendor\wheels\*.whl" -ErrorAction SilentlyContinue).Count -gt 0
+          $hasFfmpeg = Test-Path "$root\bin\ffmpeg.exe"
+          $hasFfprobe = Test-Path "$root\bin\ffprobe.exe"
+          Write-Output "EXE=$hasExe Python=$hasPython Wheels=$hasWheels FFmpeg=$hasFfmpeg FFprobe=$hasFfprobe"
           if (-not $hasExe) { Write-Error "Full ZIP missing Lite EXE"; exit 1 }
+          if (-not $hasPython) { Write-Error "Full ZIP missing embedded Python"; exit 1 }
           if (-not $hasWheels) { Write-Error "Full ZIP missing vendor/wheels"; exit 1 }
+          if (-not $hasFfmpeg) { Write-Error "Full ZIP missing ffmpeg.exe"; exit 1 }
+          if (-not $hasFfprobe) { Write-Error "Full ZIP missing ffprobe.exe"; exit 1 }
           Write-Output "Full bundle structure OK"
           Remove-Item -Recurse -Force $tmpDir -ErrorAction SilentlyContinue
         timeout-minutes: 5
@@ -409,7 +422,7 @@ print(f'Payload contract OK: {mf_count} files, SHA={m[\"payload_sha256\"][:16]}.
       - name: app.cli import smoke test
         shell: pwsh
         run: |
-          python -c "from app.cli import main; print('app.cli import OK')" 2>&1 | Out-Host
+          python -c "from app.cli import app; print('app.cli import OK:', app.info.name)" 2>&1 | Out-Host
           if ($LASTEXITCODE -ne 0) { Write-Error "app.cli import failed"; exit 1 }
         timeout-minutes: 2
 
@@ -431,38 +444,47 @@ print(f'Payload contract OK: {mf_count} files, SHA={m[\"payload_sha256\"][:16]}.
         uses: actions/download-artifact@v4
         with:
           name: sdist
-          path: dist/
+          path: dist/sdist/
 
       - name: Download Lite EXE
         uses: actions/download-artifact@v4
         with:
           name: windows-lite
-          path: dist/
+          path: dist/lite/
 
       - name: Download Full ZIP
         uses: actions/download-artifact@v4
         with:
           name: windows-full
-          path: dist/
+          path: dist/full/
 
       - name: Generate merged top-level checksums
         run: |
-          cd dist
+          mkdir -p release-assets
+          cp dist/sdist/*.tar.gz release-assets/
+          cp dist/sdist/*.whl release-assets/
+          cp dist/lite/*.exe release-assets/
+          cp dist/lite/build-manifest.json release-assets/lite-build-manifest.json
+          cp dist/full/*.zip release-assets/
+          cp dist/full/build-manifest.json release-assets/full-build-manifest.json
+          cd release-assets
           echo "=== SHA256SUMS ==="
-          sha256sum * > SHA256SUMS
-          cat SHA256SUMS
-          sha256sum -c SHA256SUMS
+          sha256sum *.tar.gz *.whl *.exe *.zip *-build-manifest.json > SHA256SUMS.txt
+          cat SHA256SUMS.txt
+          sha256sum -c SHA256SUMS.txt
           echo "=== CRC32SUMS ==="
-          for f in *.exe *.zip; do
-            if [ -f "$f" ]; then
-              crc32 "$f" | awk '{printf "%s  %s\n", $1, $2}' >> CRC32SUMS
-            fi
-          done
-          if [ -f CRC32SUMS ]; then
-            cat CRC32SUMS
-          else
-            echo "(no CRC32SUMS — crc32 util not available on this runner)"
-          fi
+          python - <<'PY'
+          import pathlib, zlib
+          lines = []
+          for path in sorted([*pathlib.Path('.').glob('*.exe'), *pathlib.Path('.').glob('*.zip')]):
+              crc = 0
+              with path.open('rb') as fh:
+                  for chunk in iter(lambda: fh.read(1024 * 1024), b''):
+                      crc = zlib.crc32(chunk, crc)
+              lines.append(f"{crc & 0xFFFFFFFF:08X}  {path.name}")
+          pathlib.Path('CRC32SUMS.txt').write_text('\n'.join(lines) + '\n', encoding='utf-8')
+          PY
+          cat CRC32SUMS.txt
         timeout-minutes: 2
 
       - name: Extract tag version
@@ -481,11 +503,11 @@ print(f'Payload contract OK: {mf_count} files, SHA={m[\"payload_sha256\"][:16]}.
           VERSION="${{ steps.tag.outputs.tag }}"
           cat > /tmp/extract_notes.py << 'PYEOF'
           import re, sys, os
-          version = os.environ["RELEASE_VERSION"]
+          version = os.environ["RELEASE_VERSION"].removeprefix("v").split("-", 1)[0]
           with open("CHANGELOG.md", "r", encoding="utf-8") as f:
               content = f.read()
           escaped = re.escape(version)
-          pattern = re.compile(rf"(## {escaped}.+?)(?=\n## |\Z)", re.DOTALL)
+          pattern = re.compile(rf"(##\s+V{escaped}(?:\s+Alpha)?.+?)(?=\n## |\Z)", re.DOTALL | re.IGNORECASE)
           m = pattern.search(content)
           if m:
               print(m.group(1).strip())
@@ -501,7 +523,7 @@ print(f'Payload contract OK: {mf_count} files, SHA={m[\"payload_sha256\"][:16]}.
           tag_name: ${{ steps.tag.outputs.tag }}
           body_path: /tmp/release_notes.md
           files: |
-            dist/*
+            release-assets/*
           draft: false
           prerelease: ${{ contains(steps.tag.outputs.tag, 'alpha') || contains(steps.tag.outputs.tag, 'beta') || contains(steps.tag.outputs.tag, 'rc') }}
         env:

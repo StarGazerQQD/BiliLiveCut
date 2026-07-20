@@ -4,6 +4,13 @@
 
 ### 修复
 
+- **database**: Schema 指纹去除 callable 内存地址并稳定排序约束，修复数据库重建后重启即被误判为不兼容
+- **pipeline**: 修复转写提交写入不存在的 `SegmentTask.transcript_id` 并向 `enqueue_next()` 传入无效参数
+- **cli**: `record --pipeline/--produce` 同步房间调度开关并传递房间主键，拒绝单独使用 `--produce`
+- **asr**: 修复兼容入口从错误模块导入 `TranscriberBackend` 导致编排器无法加载
+- **ci**: 覆盖率运行器同时校验 pytest 退出码，移除破坏默认配置测试的空 `WHISPER_MODEL`
+- **release**: 正式构建禁止 fixture 绕过，修复标签门禁、Full ZIP/CLI smoke、产物聚合与校验和生成
+- **version**: `__version_label__` 改为从版本真源动态生成，Docker 文档同步至当前版本
 - **pipeline**: 修复 `acquire_resources()` 返回 bool 但被当作 dict 传递给 `release_resources(**cost)` 的 TypeError
 - **models**: 删除空 `ENGINES_TO_DOWNLOAD=[]`，替换为 `_load_launcher_engines()` 加载统一 Catalog
 - **models**: 子模型目录使用 `target_subdir` 而非完整 repository ID，防止目录名错误

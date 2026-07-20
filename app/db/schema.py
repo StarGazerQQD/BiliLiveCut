@@ -90,7 +90,7 @@ def compute_schema_fingerprint() -> str:
 
         # 唯一约束 (从表约束中提取, 排序以保证稳定)
         constraints: list[dict] = []
-        for c in sorted(table.constraints, key=lambda c: c.name or ""):
+        for c in table.constraints:
             if hasattr(c, "columns"):
                 constraints.append(
                     {
@@ -98,6 +98,7 @@ def compute_schema_fingerprint() -> str:
                         "columns": sorted([col.name for col in c.columns]),
                     }
                 )
+        constraints.sort(key=lambda item: (item["type"], item["columns"]))
 
         # 外键
         foreign_keys: list[dict] = []
@@ -217,9 +218,14 @@ def _serializable_default(default) -> str | None:
     """将 SQLAlchemy 默认值序列化为可比较的字符串。"""
     if default is None:
         return None
-    if hasattr(default, "arg"):
-        return str(default.arg)
-    return str(default)
+    value = default.arg if hasattr(default, "arg") else default
+    if callable(value):
+        module = getattr(value, "__module__", type(value).__module__)
+        qualname = getattr(value, "__qualname__", type(value).__qualname__)
+        return f"callable:{module}.{qualname}"
+    if value is None or isinstance(value, (bool, int, float, str)):
+        return json.dumps(value, ensure_ascii=False, sort_keys=True)
+    return f"{type(value).__module__}.{type(value).__qualname__}:{value}"
 
 
 # ── 数据库创建 ────────────────────────────────────────────

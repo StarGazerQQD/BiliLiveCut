@@ -206,10 +206,8 @@ def commit_transcript(lease: TaskLease, compute_result: dict[str, Any], ms: int)
                 if seg is not None and seg.status != SegmentStatus.TRANSCRIBED:
                     seg.status = SegmentStatus.TRANSCRIBED
                     db.add(seg)
-                # 修复 task.transcript_id
-                task.transcript_id = existing.id
                 mark_completed(task, ms)
-                enqueue_next(task, TaskStatus.TRANSCRIBED, transcript_id=existing.id)
+                enqueue_next(task, TaskStatus.TRANSCRIBED)
                 db.add(task)
                 db.commit()
                 return
@@ -246,9 +244,8 @@ def commit_transcript(lease: TaskLease, compute_result: dict[str, Any], ms: int)
                 db.add(seg)
 
             # 推进任务
-            task.transcript_id = transcript.id
             mark_completed(task, ms)
-            enqueue_next(task, TaskStatus.TRANSCRIBED, transcript_id=transcript.id)
+            enqueue_next(task, TaskStatus.TRANSCRIBED)
             db.add(task)
 
             db.commit()

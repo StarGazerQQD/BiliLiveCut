@@ -154,6 +154,26 @@ def check_ci_bypass(audit: AuditResult) -> None:
     if release_yml.exists():
         content = release_yml.read_text(encoding="utf-8")
         audit.check("release.yml 无 BLC_CI_BUILD", "BLC_CI_BUILD" not in content)
+        audit.check(
+            "release.yml 无 BLC_FIXTURE_BUILD",
+            "BLC_FIXTURE_BUILD" not in content,
+            "正式 Release 不得绕过 Engine Pack production 元数据校验",
+        )
+        audit.check(
+            "release.yml 标签校验阻断测试",
+            "needs: validate-tag" in content,
+            "test job 必须依赖 validate-tag",
+        )
+        audit.check(
+            "release.yml CLI smoke 导入真实入口",
+            "from app.cli import app" in content and "from app.cli import main" not in content,
+            "CLI smoke test 必须导入 Typer app，而不是不存在的 main",
+        )
+        audit.check(
+            "release.yml Full ZIP 定位顶层目录",
+            "$bundleRoot" in content,
+            "Full ZIP 含版本目录，smoke test 必须先定位 bundle root",
+        )
 
 
 def check_model_single_source(audit: AuditResult) -> None:
@@ -240,13 +260,14 @@ def check_engine_pack_metadata(audit: AuditResult) -> None:
 
     audit.check("engine_pack_info.crc32 non-empty", bool(info.get("crc32", "")), "CRC32 为空 — 正式构建必须失败")
     audit.check("engine_pack_info.sha256 non-empty", bool(info.get("sha256", "")), "SHA-256 为空 — 正式构建必须失败")
-    # In repo: fixture is OK. Production builds auto-generate with artifact_class=production.
+    # 仓库允许保存显式标记的 fixture；正式构建由 builders/lite.py fail-closed。
     artifact_class = info.get("artifact_class", "")
     audit.check("engine_pack_info.artifact_class present", bool(artifact_class), "artifact_class 缺失 — 必须显式声明")
     if artifact_class == "fixture":
-        audit.warn(
-            "engine_pack_info.artifact_class is fixture",
-            "Repository fixture (expected — production builds auto-generate)",
+        audit.check(
+            "engine_pack_info fixture 显式隔离",
+            info.get("size_bytes", 0) < 500_000_000,
+            "fixture 必须保持小体积，正式构建会拒绝它",
         )
     elif artifact_class != "production":
         audit.check(

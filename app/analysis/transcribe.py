@@ -3,7 +3,6 @@
 from app.analysis.transcription.backends import (  # noqa: F401
     FasterWhisperBackend,
     FunASRBackend,
-    TranscriberBackend,
     _compute_real_time_factor,
     _compute_review_risk_score,
     _levenshtein_distance,
@@ -16,6 +15,7 @@ from app.analysis.transcription.models import (  # noqa: F401
     ASRSegmentResult,
     ASRTranscriptResult,
     EmotionEvent,
+    TranscriberBackend,
     TranscriptionResult,
     Word,
     _segment_to_confidence,
