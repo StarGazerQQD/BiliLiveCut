@@ -4,7 +4,8 @@
 # Job 结构:
 #   lint       — ruff check + format + version + release_audit + JS syntax
 #   audit      — pip-audit (不阻塞, 漏洞豁免为机器可读)
-#   test       — matrix 多平台多 Python → pytest + coverage (≥50%)
+#   test       — Linux/Windows 多 Python → pytest + coverage (≥50%)
+#   test-macos — main 推送时运行 macOS py3.12
 #   portable   — Payload 构建 + Portable 全部测试
 #   coverage   — 汇总多矩阵覆盖率报告
 
@@ -130,10 +131,6 @@ jobs:
       matrix:
         os: [ubuntu-latest, windows-latest]
         python-version: ["3.11", "3.12", "3.13"]
-        include:
-          - os: macos-latest
-            python-version: "3.12"
-            if: github.event_name == 'push' && github.ref == 'refs/heads/main'
 
     steps:
       - uses: actions/checkout@v4
@@ -155,22 +152,8 @@ jobs:
         if: runner.os == 'Windows'
         run: choco install ffmpeg --no-progress -y
 
-      - name: Install FFmpeg (macOS)
-        if: runner.os == 'macOS'
-        run: brew install ffmpeg
-
-      - name: Install Python dev deps (Linux/Windows)
-        if: runner.os == 'Linux' || runner.os == 'Windows'
+      - name: Install Python dev deps
         shell: bash
-        run: |
-          python -m pip install --upgrade pip
-          pip install -e ".[dev,web]"
-
-      - name: Install Python dev deps (macOS)
-        if: runner.os == 'macOS'
-        shell: bash
-        env:
-          BLC_SKIP_C_EXTENSIONS: "1"
         run: |
           python -m pip install --upgrade pip
           pip install -e ".[dev,web]"
@@ -211,6 +194,76 @@ jobs:
         uses: actions/upload-artifact@v4
         with:
           name: pytest-stdout-${{ matrix.os }}-py${{ matrix.python-version }}
+          path: |
+            /tmp/pytest-output-*.log
+          retention-days: 7
+          if-no-files-found: warn
+
+# macOS runner 明显慢于 Linux/Windows，仅在 main 分支推送时执行。
+# 独立 job 可使用真正的 job-level if；matrix.include 中的 if 只是普通数据字段。
+  test-macos:
+    name: "macos-latest / py3.12"
+    if: github.event_name == 'push' && github.ref == 'refs/heads/main'
+    needs: lint
+    runs-on: macos-latest
+    env:
+      BLC_SKIP_C_EXTENSIONS: "1"
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Set up Python 3.12
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+          cache: pip
+          cache-dependency-path: pyproject.toml
+
+      - name: Install FFmpeg
+        run: brew install ffmpeg
+
+      - name: Install Python dev deps
+        shell: bash
+        run: |
+          python -m pip install --upgrade pip
+          pip install -e ".[dev,web]"
+
+      - name: Install test extras
+        shell: bash
+        run: pip install python-multipart
+
+      - name: Run pytest with coverage (>=50%)
+        shell: bash
+        env:
+          ASR_NO_MODEL_DOWNLOAD: "1"
+        run: python scripts/run_coverage.py
+        timeout-minutes: 30
+
+      - name: Upload coverage report
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: coverage-macos-latest-py3.12
+          path: coverage.xml
+          retention-days: 7
+          if-no-files-found: error
+
+      - name: Upload coverage report (backup - even if xml not found)
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: coverage-raw-macos-latest-py3.12
+          path: |
+            .coverage
+            coverage.xml
+          retention-days: 3
+          if-no-files-found: warn
+
+      - name: Upload pytest output on failure
+        if: failure()
+        uses: actions/upload-artifact@v4
+        with:
+          name: pytest-stdout-macos-latest-py3.12
           path: |
             /tmp/pytest-output-*.log
           retention-days: 7
@@ -259,7 +312,7 @@ jobs:
 # ═══════════════════════════════════════════════════════════════════
   coverage-summary:
     name: "coverage summary"
-    needs: test
+    needs: [test, test-macos]
     runs-on: ubuntu-latest
     if: always() && !cancelled()
     steps:
