@@ -1,6 +1,6 @@
 """源码快照提取器 — 从固定 Git Commit 提取业务源码。
 
-使用 git archive 提取 731a31c 的源码，禁止从当前工作区直接复制。
+使用 git archive 提取当前发布基线的源码，禁止从当前工作区直接复制。
 """
 
 from __future__ import annotations
@@ -186,7 +186,12 @@ def extract_source(commit_ref: str, output_dir: Path) -> dict:
             tmp_tar.unlink()
 
 
-def apply_version_overlay(staging_dir: Path) -> list[str]:
+def apply_version_overlay(
+    staging_dir: Path,
+    *,
+    source_commit_full: str,
+    builder_commit_full: str,
+) -> list[str]:
     """在 staging 目录中应用受控版本覆盖。
 
     使用正则匹配任意 0.1.x 版本号/版本标签，只要不等于当前
@@ -200,6 +205,8 @@ def apply_version_overlay(staging_dir: Path) -> list[str]:
     - setup.py / setup_c.py: version
 
     :param staging_dir: Payload staging 目录。
+    :param source_commit_full: 写入 Payload 的业务源码完整 Commit Hash。
+    :param builder_commit_full: 写入 Payload 的构建器完整 Commit Hash。
     :returns: 实际修改的文件列表。
     """
     import re
@@ -211,8 +218,8 @@ def apply_version_overlay(staging_dir: Path) -> list[str]:
     version_label = f"V{base_version} Alpha"
 
     # 正则: 匹配任意 0.1.X.Y[-suffix] 和 V0.1.X.Y Label
-    _version_re = re.compile(r"\b0\.1\.\d+\.\d+(?:-[a-z]+)?\b")
-    _label_re = re.compile(r"\bV0\.1\.\d+\.\d+\s+[A-Za-z]+\b")
+    _version_re = re.compile(r"\b0\.1\.\d+(?:\.\d+)?(?:-[a-z]+)?\b")
+    _label_re = re.compile(r"\bV0\.1\.\d+(?:\.\d+)?\s+[A-Za-z]+\b")
 
     def _overlay(text: str, target_version: str) -> str:
         """将文本中所有不等于 target_version/target_label 的旧版本号替换为新版本。"""
@@ -242,6 +249,18 @@ def apply_version_overlay(staging_dir: Path) -> list[str]:
             continue
         content = file_path.read_text(encoding="utf-8")
         new_content = _overlay(content, target_ver)
+        if rel_path == "app/_portable_release.py":
+            metadata_values = {
+                "SOURCE_COMMIT": source_commit_full,
+                "SOURCE_COMMIT_SHORT": source_commit_full[:7],
+                "BUILDER_COMMIT": builder_commit_full,
+            }
+            for constant_name, value in metadata_values.items():
+                pattern = rf'^{constant_name}: str = "[^"]*"$'
+                replacement = f'{constant_name}: str = "{value}"'
+                new_content, replacement_count = re.subn(pattern, replacement, new_content, flags=re.MULTILINE)
+                if replacement_count != 1:
+                    raise RuntimeError(f"Portable 元数据常量缺失或重复: {constant_name}")
         if new_content != content:
             file_path.write_text(new_content, encoding="utf-8")
             modified.append(rel_path)
@@ -258,25 +277,21 @@ def apply_version_overlay(staging_dir: Path) -> list[str]:
 def verify_source_origin(
     staging_dir: Path,
     source_commit: str,
-    backport_ids: list[str] | None = None,
 ) -> None:
     """验证 staging 目录中的源码来自指定 Commit。
 
-    与 backport 机制协同:
-    - 声明过 backport 修改的文件不参与原始 commit 比对
-    - 未声明的业务文件必须与 source_commit 完全一致
+    除受控发布元数据 Overlay 外，业务文件必须与 source_commit 完全一致。
 
     :param staging_dir: staging 目录。
     :param source_commit: Commit Hash。
-    :param backport_ids: 已应用的 backport ID 列表。
     :raises RuntimeError: 文件不一致时。
     """
-    # 已声明 backport 的文件允许变更
-    backport_files = _get_backport_modified_files(backport_ids or [])
-
-    # 只验证非覆盖、非 backport 的业务文件
+    # 只验证不属于发布元数据 Overlay 的业务文件。
     business_files = [
         "app/cli.py",
+        "app/analysis/transcription/backends.py",
+        "app/analysis/transcription/pipeline.py",
+        "app/web/main.py",
         "app/pipeline/workers/analyze.py",
         "app/pipeline/workers/render.py",
         "app/pipeline/workers/publish.py",
@@ -287,57 +302,23 @@ def verify_source_origin(
     ]
 
     for rel_path in business_files:
-        if rel_path in backport_files:
-            _logger.info("verify_source_origin: skipping backported file %s", rel_path)
-            continue
-
         file_path = staging_dir / rel_path
         if not file_path.exists():
-            continue
+            raise RuntimeError(f"业务文件缺失: {rel_path}")
 
         try:
             result = subprocess.run(
                 ["git", "-c", "core.autocrlf=false", "show", f"{source_commit}:{rel_path.replace(os.sep, '/')}"],
                 capture_output=True,
+                check=True,
                 timeout=10,
             )
-            if result.returncode != 0:
-                continue
+        except (subprocess.CalledProcessError, subprocess.TimeoutExpired, OSError) as exc:
+            raise RuntimeError(f"无法从 Commit {source_commit[:8]} 读取业务文件: {rel_path}") from exc
 
-            commit_content = result.stdout.replace(b"\r\n", b"\n")
-            staging_content = file_path.read_bytes().replace(b"\r\n", b"\n")
-
-            if commit_content != staging_content:
-                raise RuntimeError(f"业务文件 {rel_path} 与 Commit {source_commit[:8]} 不一致 — 源码可能被非受控修改")
-        except subprocess.CalledProcessError:
-            continue
-        except RuntimeError:
-            raise
-        except Exception:
-            pass
+        commit_content = result.stdout.replace(b"\r\n", b"\n")
+        staging_content = file_path.read_bytes().replace(b"\r\n", b"\n")
+        if commit_content != staging_content:
+            raise RuntimeError(f"业务文件 {rel_path} 与 Commit {source_commit[:8]} 不一致 — 源码可能被非受控修改")
 
     _logger.info("verify_source_origin: all business files match commit %s", source_commit[:8])
-
-
-def _get_backport_modified_files(backport_ids: list[str]) -> set[str]:
-    """从 backports.json 读取指定 backport 修改的文件列表。
-
-    :param backport_ids: 已应用的 backport ID 列表。
-    :returns: 文件路径集合。
-    """
-    if not backport_ids:
-        return set()
-
-    import json as _json
-
-    manifest_path = Path(__file__).resolve().parent.parent.parent.parent / "backports" / "backports.json"
-    if not manifest_path.exists():
-        return set()
-
-    manifest = _json.loads(manifest_path.read_text(encoding="utf-8"))
-    modified: set[str] = set()
-    for bp in manifest["backports"]:
-        if bp["id"] in backport_ids:
-            for f in bp.get("files", []):
-                modified.add(f)
-    return modified

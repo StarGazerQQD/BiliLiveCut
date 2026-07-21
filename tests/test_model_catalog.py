@@ -103,6 +103,16 @@ class TestModelCatalogIsSingleSource:
 
         assert get_engine_pack_version() == get_version(), "engine_pack_version 与 release_version 不一致"
 
+    def test_catalog_source_commit_matches_portable_baseline(self) -> None:
+        """模型锁的源码身份必须与 Portable 版本配置一致。"""
+        catalog = _load_catalog()
+        version_config = json.loads((CONFIG_DIR / "version.json").read_text(encoding="utf-8"))
+        assert catalog["source_commit"] == version_config["source_commit_full"]
+
+    def test_legacy_unlocked_catalog_is_removed(self) -> None:
+        """旧版未锁定模型目录不得继续作为第二配置源存在。"""
+        assert not (CONFIG_DIR / "model_sources.json").exists()
+
     def test_required_files_non_empty(self) -> None:
         """所有引擎 required_files 非空。"""
         from model_catalog import load_engines

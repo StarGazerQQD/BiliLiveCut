@@ -1,46 +1,5 @@
 {
   "format_version": 1,
-  "source_commit": "731a31cd04ae1df27dd6b6c5ffc535123932b825",
-  "backports": [
-    {
-      "id": "bp-001-fix-nano-repo",
-      "upstream_commit": "7ba7a57",
-      "purpose": "安全: 修复FunASR-Nano仓库ID，从iic/Fun-ASR-Nano更正为FunAudioLLM/Fun-ASR-Nano-2512",
-      "category": "asr-integrity",
-      "files": ["app/analysis/transcription/backends.py", "app/analysis/transcription/pipeline.py"],
-      "sha256": "tbd"
-    },
-    {
-      "id": "bp-002-blc-models-dir",
-      "upstream_commit": "7d219d7",
-      "purpose": "兼容性: 添加BLC_MODELS_DIR环境变量支持，使Portable Engine Pack中的本地模型路径可被ASR运行时正确加载",
-      "category": "engine-pack-compat",
-      "files": ["app/analysis/transcription/backends.py"],
-      "sha256": "tbd"
-    },
-    {
-      "id": "bp-003-whisper-local-path",
-      "upstream_commit": "31dc175",
-      "purpose": "兼容性: Whisper后端支持BLC_MODELS_DIR本地模型路径，不再默认使用small模型",
-      "category": "engine-pack-compat",
-      "files": ["app/analysis/transcription/backends.py"],
-      "sha256": "tbd"
-    },
-    {
-      "id": "bp-004-engine-pack-contract",
-      "upstream_commit": "e3aac5f",
-      "purpose": "契约: 写入_portable_release.py版本文件，定义ASR期望的Engine Pack接口：模型目录结构和子模型命名约定",
-      "category": "engine-pack-contract",
-      "files": ["app/_portable_release.py"],
-      "sha256": "tbd"
-    },
-    {
-      "id": "bp-005-csrf-origin",
-      "upstream_commit": "HEAD",
-      "purpose": "安全: 修复CSRF Origin检查，仅折叠scheme默认端口(http→80,https→443)，支持IPv6 bracket，拒绝非法Origin",
-      "category": "web-security",
-      "files": ["app/web/main.py"],
-      "sha256": "tbd"
-    }
-  ]
+  "source_commit": "4bdaa13b8b406ee8048885f123a0c969724a61ae",
+  "backports": []
 }

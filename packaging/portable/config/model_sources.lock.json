@@ -1,11 +1,11 @@
 {
   "schema_version": 2,
-  "engine_pack_version": "0.1.14.12-alpha",
+  "engine_pack_version": "0.1.15-alpha",
   "compatible_app": {
-    "min": "0.1.14.12-alpha",
-    "max_exclusive": "0.1.15"
+    "min": "0.1.15-alpha",
+    "max_exclusive": "0.1.16"
   },
-  "source_commit": "731a31cd04ae1df27dd6b6c5ffc535123932b825",
+  "source_commit": "4bdaa13b8b406ee8048885f123a0c969724a61ae",
   "generated_at": "",
   "engines": [
     {

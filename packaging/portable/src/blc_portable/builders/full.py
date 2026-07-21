@@ -23,7 +23,7 @@ LITE_DIR = PORTABLE_DIR / "dist" / "lite"
 PAYLOAD_DIR = PORTABLE_DIR / "dist" / "payload"
 RESOURCES_DIR = PORTABLE_DIR / "resources"
 
-RELEASE_VERSION = "0.1.14.12-alpha"
+RELEASE_VERSION = "0.1.15-alpha"
 FULL_NAME = f"BiliLiveCut-Portable-Full-{RELEASE_VERSION}-x64"
 
 
