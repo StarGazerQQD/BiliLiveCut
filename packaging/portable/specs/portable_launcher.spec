@@ -8,6 +8,7 @@
 - app_icon.ico (如有)
 """
 
+import os
 import sys
 from pathlib import Path
 
@@ -37,7 +38,7 @@ _datas = [
 ] + _lock_files
 
 # engine_pack_info.json 存在则嵌入, 不存在则不嵌入 (此-时 CRC32 为空)
-if Path(_engine_pack_info).exists():
+if os.environ.get("BLC_OMIT_ENGINE_PACK_INFO") != "1" and Path(_engine_pack_info).exists():
     _datas.append((_engine_pack_info, "."))
 
 a = Analysis(

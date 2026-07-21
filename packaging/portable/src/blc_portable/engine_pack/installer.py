@@ -300,7 +300,7 @@ def install_from_engine_pack(
     """
     # 1. CRC32 快速检测
     actual_crc32 = compute_crc32(pack_path)
-    if actual_crc32 != expected_crc32:
+    if expected_crc32 and actual_crc32 != expected_crc32:
         raise RuntimeError(f"CRC32 mismatch: expected={expected_crc32} actual={actual_crc32}")
 
     # 2. SHA-256 强制校验
@@ -308,6 +308,8 @@ def install_from_engine_pack(
     if expected_sha256 and actual_sha256 != expected_sha256:
         raise RuntimeError(f"SHA-256 mismatch: expected={expected_sha256[:16]} actual={actual_sha256[:16]}")
 
+    if not expected_crc32 and not expected_sha256:
+        print("  Engine Pack has no external digest; validating its complete internal manifest")
     print(f"  Engine Pack 校验通过: CRC32={actual_crc32} SHA256={actual_sha256[:16]}...")
 
     from blc_portable.archive.locks import FileLock, get_engine_pack_lock_path

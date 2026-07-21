@@ -363,7 +363,7 @@ def build_payload(
 
     sums_lines: list[str] = []
     for p in sorted(PAYLOAD_DIR.glob("*")):
-        if p.is_file():
+        if p.is_file() and p.name != "SHA256SUMS.txt":
             sha = compute_file_sha256(p)
             sums_lines.append(f"{sha}  {p.name}")
 

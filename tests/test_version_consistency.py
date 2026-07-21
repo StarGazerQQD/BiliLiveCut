@@ -17,7 +17,7 @@ def _load_version_json() -> dict:
     return json.loads(p.read_text(encoding="utf-8"))
 
 
-def test_all_versions_equal_0_1_14_7_alpha() -> None:
+def test_all_declared_versions_match_release_metadata() -> None:
     """验证所有版本引用与权威配置一致。"""
     cfg = _load_version_json()
     expected_version = cfg["release_version"]
@@ -35,11 +35,6 @@ def test_all_versions_equal_0_1_14_7_alpha() -> None:
     toml_path = REPO_ROOT / "pyproject.toml"
     toml_content = toml_path.read_text(encoding="utf-8")
     assert f'version = "{expected_version}"' in toml_content, "pyproject.toml 版本不匹配"
-
-    # setup.py
-    setup_path = REPO_ROOT / "setup.py"
-    setup_content = setup_path.read_text(encoding="utf-8")
-    assert f'version="{expected_version}"' in setup_content, "setup.py 版本不匹配"
 
     # setup_c.py
     setup_c_path = REPO_ROOT / "setup_c.py"

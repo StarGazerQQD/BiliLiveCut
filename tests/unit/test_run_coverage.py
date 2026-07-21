@@ -22,11 +22,13 @@ def test_main_fails_when_pytest_fails_even_if_coverage_passes(monkeypatch) -> No
 
 def test_run_pytest_preserves_whisper_default(monkeypatch) -> None:
     captured_env: dict[str, str] = {}
+    captured_cmd: list[str] = []
 
     class Completed:
         returncode = 0
 
-    def fake_run(*_args: object, **kwargs: object) -> Completed:
+    def fake_run(command: list[str], **kwargs: object) -> Completed:
+        captured_cmd.extend(command)
         captured_env.update(kwargs["env"])
         return Completed()
 
@@ -36,6 +38,7 @@ def test_run_pytest_preserves_whisper_default(monkeypatch) -> None:
     assert run_coverage.run_pytest() == 0
     assert captured_env["ASR_NO_MODEL_DOWNLOAD"] == "1"
     assert "WHISPER_MODEL" not in captured_env
+    assert "--fail-on-skip" in captured_cmd
 
 
 def test_main_output_is_safe_for_windows_legacy_console(monkeypatch) -> None:

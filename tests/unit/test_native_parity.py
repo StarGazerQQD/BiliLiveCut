@@ -248,13 +248,10 @@ class TestBackendReporting:
 
     def test_get_cluster_backend_returns_string(self) -> None:
         """Cluster backend is a string."""
-        try:
-            from app.analysis.speedups import get_cluster_backend
+        from app.analysis.speedups import get_cluster_backend
 
-            cbid = get_cluster_backend()
-            assert isinstance(cbid, str)
-        except ImportError:
-            pytest.skip("Cluster backend not available")
+        cbid = get_cluster_backend()
+        assert isinstance(cbid, str)
 
 
 # ── Danmaku baseline rate ───────────────────────────
@@ -265,21 +262,15 @@ class TestDanmakuBaseline:
 
     def test_baseline_rate(self) -> None:
         """Basic rate calculation."""
-        try:
-            from app.analysis.speedups import danmaku_baseline_rate
+        from app.analysis.speedups import danmaku_baseline_rate
 
-            # Cython signature: danmaku_baseline_rate(list timestamps_seconds, float bucket_s=10.0)
-            result = danmaku_baseline_rate([0.0, 5.0, 10.0, 15.0])
-            assert result is not None  # returns either list or tuple depending on backend
-        except (ImportError, AttributeError, TypeError):
-            pytest.skip("danmaku_baseline_rate not available or wrong signature")
+        # Cython signature: danmaku_baseline_rate(list timestamps_seconds, float bucket_s=10.0)
+        result = danmaku_baseline_rate([0.0, 5.0, 10.0, 15.0])
+        assert result is not None  # returns either list or tuple depending on backend
 
     def test_empty_input(self) -> None:
         """Empty input handled."""
-        try:
-            from app.analysis.speedups import danmaku_baseline_rate
+        from app.analysis.speedups import danmaku_baseline_rate
 
-            result = danmaku_baseline_rate([], 0.0, 0.0)
-            assert result is not None
-        except (ImportError, AttributeError, Exception):
-            pytest.skip("danmaku_baseline_rate not available or raises on empty")
+        result = danmaku_baseline_rate([])
+        assert result == (0.0, 0)

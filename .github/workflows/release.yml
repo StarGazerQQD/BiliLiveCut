@@ -101,13 +101,11 @@ jobs:
             --extra-index-url https://pypi.tuna.tsinghua.edu.cn/simple \
             --trusted-host mirrors.aliyun.com \
             --trusted-host pypi.tuna.tsinghua.edu.cn
-          pip install python-multipart
-
       - name: Ruff lint
-        run: ruff check app/ tests/
+        run: python scripts/run_ruff.py check
 
       - name: Ruff format check
-        run: ruff format --check app/ tests/
+        run: python scripts/run_ruff.py format
 
       - name: Version consistency
         run: python scripts/check_version_consistency.py
@@ -118,7 +116,7 @@ jobs:
       - name: Run pytest
         env:
           ASR_NO_MODEL_DOWNLOAD: "1"
-        run: python -m pytest tests/ -v --tb=short
+        run: python -m pytest tests/ -v --tb=short --fail-on-skip
         timeout-minutes: 15
 
   # ═══════════════════════════════════════════════════════════════════
@@ -139,7 +137,10 @@ jobs:
 
       - name: Install build tools
         run: |
-          python -m pip install --upgrade pip build wheel
+          python -m pip install --upgrade pip build wheel check-manifest twine
+
+      - name: Validate source manifest
+        run: check-manifest --no-build-isolation --ignore ".cursor/*,.cursor/rules/*,.dockerignore"
 
       - name: Extract tag version
         id: tag
@@ -158,6 +159,29 @@ jobs:
 
       - name: Build wheel
         run: python -m build --wheel --outdir dist/
+
+      - name: Validate distribution metadata
+        run: python -m twine check --strict dist/*
+
+      - name: Reject workspace contamination in source archive
+        run: |
+          SDIST="$(find dist -maxdepth 1 -name '*.tar.gz' -print -quit)"
+          test -n "$SDIST"
+          if tar -tzf "$SDIST" | grep -E '/(\.model_cache|target|build|dist)/|coverage\.xml|runtime/current\.json'; then
+            echo "Source archive contains workspace/build contamination"
+            exit 1
+          fi
+
+      - name: Smoke test installed wheel with Web extra
+        run: |
+          WHEEL="$(find "$GITHUB_WORKSPACE/dist" -maxdepth 1 -name '*.whl' -print -quit)"
+          test -n "$WHEEL"
+          python -m venv "$RUNNER_TEMP/blc-wheel-smoke"
+          "$RUNNER_TEMP/blc-wheel-smoke/bin/python" -m pip install --upgrade pip
+          "$RUNNER_TEMP/blc-wheel-smoke/bin/pip" install "${WHEEL}[web]"
+          cd "$RUNNER_TEMP"
+          "$RUNNER_TEMP/blc-wheel-smoke/bin/python" -c "import app.web.main as web; import config; from pathlib import Path; root=Path(web.__file__).parent; cfg=Path(config.__file__).parent; assert (root/'templates'/'dashboard.html').is_file(); assert (root/'static'/'app.js').is_file(); assert (cfg/'scoring.yaml').is_file(); assert (cfg/'keywords.zh.txt').is_file(); print('wheel runtime assets smoke OK')"
+          "$RUNNER_TEMP/blc-wheel-smoke/bin/blc" version
 
       - name: Generate SHA256 checksums
         run: |
@@ -260,7 +284,7 @@ jobs:
       - name: Build Lite EXE
         run: |
           cd packaging/portable
-          python build_exe.py
+          python build_exe.py --without-engine-pack
         timeout-minutes: 15
 
       - name: Download embeddable Python 3.12

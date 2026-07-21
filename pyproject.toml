@@ -50,6 +50,7 @@ web = [
     "fastapi>=0.111",
     "uvicorn[standard]>=0.30",
     "jinja2>=3.1",
+    "python-multipart>=0.0.18",
 ]
 # 开发与测试工具。
 dev = [
@@ -59,6 +60,10 @@ dev = [
     "pytest-cov>=5.0",
     "pip-audit>=2.7",
     "ruff>=0.5",
+    "Pillow>=10.0",
+    "build>=1.2",
+    "check-manifest>=0.51",
+    "twine>=6.0",
 ]
 
 [project.scripts]
@@ -68,6 +73,22 @@ blc = "app.cli:app"
 [build-system]
 requires = ["setuptools>=69"]
 build-backend = "setuptools.build_meta"
+
+[tool.setuptools]
+include-package-data = true
+
+[tool.setuptools.packages.find]
+include = ["app", "app.*", "config"]
+
+[tool.setuptools.package-data]
+"app.web" = [
+    "templates/*.html",
+    "static/*.css",
+    "static/*.js",
+    "static/js/*.js",
+    "static/js/*.txt",
+]
+"config" = ["*.yaml", "*.txt"]
 
 [tool.ruff]
 line-length = 120

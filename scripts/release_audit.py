@@ -33,6 +33,7 @@ from __future__ import annotations
 import ast
 import json
 import sys
+import tomllib
 from pathlib import Path
 from typing import Any
 
@@ -174,6 +175,48 @@ def check_ci_bypass(audit: AuditResult) -> None:
             "$bundleRoot" in content,
             "Full ZIP 含版本目录，smoke test 必须先定位 bundle root",
         )
+        audit.check(
+            "release.yml 显式省略未分发 Engine Pack",
+            "python build_exe.py --without-engine-pack" in content,
+            "GitHub Release 不分发 Engine Pack，不得嵌入仓库 fixture 元数据",
+        )
+
+
+def check_distribution_config(audit: AuditResult) -> None:
+    """Check wheel/sdist runtime content and fail-closed release tooling."""
+    pyproject_path = REPO_ROOT / "pyproject.toml"
+    manifest_path = REPO_ROOT / "MANIFEST.in"
+    release_gate_path = REPO_ROOT / "scripts" / "release_gate.py"
+
+    pyproject = tomllib.loads(pyproject_path.read_text(encoding="utf-8"))
+    optional = pyproject["project"]["optional-dependencies"]
+    web = {requirement.split(">=", 1)[0].lower() for requirement in optional["web"]}
+    dev = {requirement.split(">=", 1)[0].lower() for requirement in optional["dev"]}
+    setuptools_config = pyproject["tool"]["setuptools"]
+    package_data = set(setuptools_config["package-data"]["app.web"])
+
+    audit.check("web extra 包含 python-multipart", "python-multipart" in web)
+    audit.check("dev extra 覆盖 Pillow", "pillow" in dev)
+    audit.check(
+        "wheel 包含 Web templates/static",
+        {"templates/*.html", "static/*.js", "static/js/*.js", "static/*.css"} <= package_data,
+    )
+    audit.check(
+        "wheel 包含评分配置和关键词表",
+        "config" in setuptools_config["packages"]["find"]["include"]
+        and {"*.yaml", "*.txt"} <= set(setuptools_config["package-data"]["config"]),
+    )
+    audit.check("sdist MANIFEST.in 存在", manifest_path.is_file())
+    manifest = manifest_path.read_text(encoding="utf-8") if manifest_path.is_file() else ""
+    audit.check("sdist 包含 Dockerfile", "include packaging/docker/Dockerfile" in manifest)
+    audit.check("sdist 排除 Cython 生成文件", "exclude tools/native/cython/_speedups_round2.c" in manifest)
+
+    release_gate = release_gate_path.read_text(encoding="utf-8")
+    audit.check(
+        "release gate 禁止 skip 选项", "--skip-payload" not in release_gate and "--skip-portable" not in release_gate
+    )
+    audit.check("release gate 强制可复现构建", "--skip-reproducible" not in release_gate)
+    audit.check("release gate 拒绝 pytest skip", "--fail-on-skip" in release_gate)
 
 
 def check_model_single_source(audit: AuditResult) -> None:
@@ -302,6 +345,7 @@ def run_audit(quick: bool = False) -> AuditResult:
 
     check_launcher_main(audit)
     check_ci_bypass(audit)
+    check_distribution_config(audit)
 
     if not quick:
         check_model_single_source(audit)

@@ -155,7 +155,7 @@ def extract_source(commit_ref: str, output_dir: Path) -> dict:
                     resolved.relative_to(output_dir.resolve())
                 except ValueError:
                     raise RuntimeError(f"路径越界: {member.name} → {resolved}") from None
-            tar.extractall(path=output_dir)
+            tar.extractall(path=output_dir, filter="data")
 
         # 验证关键文件
         missing = []

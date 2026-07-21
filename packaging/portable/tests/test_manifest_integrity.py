@@ -31,6 +31,7 @@ _portable_dir = Path(__file__).resolve().parent.parent
 PAYLOAD_DIR = _portable_dir / "dist" / "payload"
 PAYLOAD_ZIP = PAYLOAD_DIR / "source_payload.zip"
 MANIFEST_PATH = PAYLOAD_DIR / "payload_manifest.json"
+SHA256SUMS_PATH = PAYLOAD_DIR / "SHA256SUMS.txt"
 
 
 def _has_payload() -> bool:
@@ -95,6 +96,23 @@ class TestManifestZipConsistency:
         manifest_names = set(manifest["files"].keys())
         extra = zip_names - manifest_names
         assert not extra, f"ZIP has {len(extra)} files not in Manifest: {sorted(extra)[:5]}"
+
+
+class TestPayloadChecksums:
+    """Validate the standalone payload checksums file."""
+
+    def test_checksum_file_does_not_hash_itself(self) -> None:
+        """A checksum file cannot contain a stable checksum of its own content."""
+        names = {line.split(maxsplit=1)[1] for line in SHA256SUMS_PATH.read_text(encoding="utf-8").splitlines()}
+        assert "SHA256SUMS.txt" not in names
+
+    def test_all_declared_checksums_match(self) -> None:
+        """Every payload artifact listed in SHA256SUMS must match its digest."""
+        for line in SHA256SUMS_PATH.read_text(encoding="utf-8").splitlines():
+            expected, filename = line.split(maxsplit=1)
+            artifact = PAYLOAD_DIR / filename
+            assert artifact.is_file(), f"Missing checksummed artifact: {filename}"
+            assert hashlib.sha256(artifact.read_bytes()).hexdigest() == expected
 
 
 class TestFileHashIntegrity:

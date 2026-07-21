@@ -327,6 +327,24 @@ class TestEnginePackInstall:
         info = json.loads(installed.read_text(encoding="utf-8"))
         assert info["engine_pack_version"] == _EP_RELEASE_VERSION
 
+    def test_user_supplied_pack_without_embedded_digests(self, tmp_app_root: Path, fixture_engine_pack: Path) -> None:
+        """No-pack launchers accept local packs after complete internal-manifest verification."""
+        from blc_portable.engine_pack.installer import install_from_engine_pack
+
+        dest = tmp_app_root / fixture_engine_pack.name
+        shutil.copy2(str(fixture_engine_pack), str(dest))
+
+        result = install_from_engine_pack(
+            tmp_app_root,
+            dest,
+            expected_crc32="",
+            expected_sha256="",
+            expected_version=_EP_RELEASE_VERSION,
+        )
+
+        assert result["source"] == "engine_pack"
+        assert result["network_requests"] == 0
+
     def test_crc32_mismatch_raises(self, tmp_app_root: Path, fixture_engine_pack: Path) -> None:
         """CRC32 不匹配时应抛出 RuntimeError。"""
         from blc_portable.engine_pack.installer import compute_sha256, install_from_engine_pack

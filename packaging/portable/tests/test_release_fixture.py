@@ -36,6 +36,13 @@ def test_release_workflow_never_builds_fixture_artifacts() -> None:
     assert "BLC_CI_BUILD" not in content
 
 
+def test_release_workflow_explicitly_omits_undistributed_engine_pack() -> None:
+    """GitHub Release must not accidentally embed committed fixture metadata."""
+    release_yml = _PROJ_ROOT / ".github" / "workflows" / "release.yml"
+    content = release_yml.read_text(encoding="utf-8")
+    assert "python build_exe.py --without-engine-pack" in content
+
+
 def test_release_full_smoke_resolves_bundle_root() -> None:
     """Full ZIP 的版本顶层目录必须先解析再检查组件。"""
     release_yml = _PROJ_ROOT / ".github" / "workflows" / "release.yml"
