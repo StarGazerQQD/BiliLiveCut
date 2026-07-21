@@ -15,6 +15,7 @@ from __future__ import annotations
 import argparse
 import json
 import os
+import re
 import shutil
 import subprocess
 import sys
@@ -328,7 +329,8 @@ def install_dependencies(venv_python: Path, app_root: Path, req_file: Path | Non
         for line in raw_freeze.strip().split("\n"):
             if "==" in line:
                 pkg_ver = line.strip().split("==", 1)
-                installed[pkg_ver[0].lower()] = pkg_ver[1]
+                pkg = re.sub(r"[-_.]+", "-", pkg_ver[0]).lower()
+                installed[pkg] = pkg_ver[1]
         missing = []
         with open(lock_file, encoding="utf-8") as lf:
             for line in lf:
@@ -339,9 +341,9 @@ def install_dependencies(venv_python: Path, app_root: Path, req_file: Path | Non
                     continue
                 raw_pkg = line.split("==")[0].strip().lower()
                 # Strip extras like [standard] from package name
-                pkg = raw_pkg.split("[")[0]
-                raw_ver = line.split("==")[1].split(";")[0].split("\\")[0].strip()
-                actual_ver = installed.get(raw_pkg) or installed.get(pkg)
+                pkg = re.sub(r"[-_.]+", "-", raw_pkg.split("[")[0])
+                raw_ver = line.split("==", 1)[1].split(";", 1)[0].split("\\", 1)[0].strip().split()[0]
+                actual_ver = installed.get(pkg)
                 if actual_ver is None or actual_ver != raw_ver:
                     missing.append(f"{raw_pkg}: expected {raw_ver}, got {actual_ver}")
         if not missing:

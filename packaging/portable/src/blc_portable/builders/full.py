@@ -32,7 +32,7 @@ def build_full_bundle() -> Path:
 
     Full bundle must contain:
     - BiliLiveCut-Portable.exe (Lite EXE)
-    - portable-python/ (embedded Python runtime)
+    - portable-python/ (relocatable Python runtime with venv support)
     - vendor/wheels/ (offline dependency packages)
     - bin/ffmpeg.exe, bin/ffprobe.exe
     - README.txt, checksums.json, SHA256SUMS.txt
@@ -187,7 +187,7 @@ BiliLiveCut Portable Full {RELEASE_VERSION}
 Complete launch package -- no extra downloads during installation.
 
 Compared to Lite:
-  - Built-in Portable Python (no system Python required)
+  - Built-in relocatable Python with venv support (no system Python required)
   - Built-in offline Wheels (no network for dependency install)
   - Built-in FFmpeg/FFprobe (no system FFmpeg required)
 
@@ -199,7 +199,7 @@ No models included:
 
 File structure:
   BiliLiveCut-Portable.exe    # Launcher (double-click to run)
-  portable-python/            # Embedded Python runtime
+  portable-python/            # Relocatable Python runtime with venv support
   vendor/wheels/              # Offline dependency packages
   bin/                        # FFmpeg/FFprobe
 
