@@ -1,4 +1,4 @@
-"""Release fixture isolation tests (V0.1.14.11)."""
+"""Release fixture isolation tests (V0.1.14.12)."""
 
 from __future__ import annotations
 
@@ -52,6 +52,18 @@ def test_release_full_smoke_resolves_bundle_root() -> None:
     assert '"$root\\portable-python\\python.exe"' in content
     assert '& "$root\\portable-python\\python.exe" -m venv $venv' in content
     assert "Full bundle offline installation OK" in content
+
+
+def test_release_full_cli_smoke_uses_offline_venv() -> None:
+    """app.cli 必须由已离线安装完整依赖的 Full Bundle venv 导入。"""
+    release_yml = _PROJ_ROOT / ".github" / "workflows" / "release.yml"
+    content = release_yml.read_text(encoding="utf-8")
+    full_smoke_start = content.index("- name: Full Bundle offline install test")
+    cleanup_start = content.index("finally {", full_smoke_start)
+    cli_import = '& $venvPython -c "from app.cli import app;'
+
+    assert cli_import in content[full_smoke_start:cleanup_start]
+    assert 'python -c "from app.cli import app;' not in content
 
 
 def test_release_workflow_has_release_audit() -> None:

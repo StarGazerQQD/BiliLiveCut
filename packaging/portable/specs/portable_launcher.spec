@@ -63,7 +63,7 @@ exe = EXE(
     a.binaries,
     a.datas,
     [],
-    name="BiliLiveCut-Portable-Lite-v0.1.14.11-alpha-x64",
+    name="BiliLiveCut-Portable-Lite-v0.1.14.12-alpha-x64",
     debug=False,
     bootloader_ignore_signals=False,
     strip=False,

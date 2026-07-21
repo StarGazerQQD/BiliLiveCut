@@ -250,7 +250,7 @@ def _backport_engine_pack_contract(staging_dir: Path) -> None:
 from __future__ import annotations
 
 # 版本标识
-RELEASE_VERSION: str = "0.1.14.11-alpha"
+RELEASE_VERSION: str = "0.1.14.12-alpha"
 SOURCE_COMMIT: str = "731a31cd04ae1df27dd6b6c5ffc535123932b825"
 SOURCE_COMMIT_SHORT: str = "731a31c"
 
