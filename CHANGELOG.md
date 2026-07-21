@@ -1,5 +1,12 @@
 # Changelog
 
+## V0.1.14.12 Alpha (2026-07-21)
+
+### 修复
+
+- **release**: Full Bundle 的 `app.cli` 冒烟测试改用已完成离线依赖安装的 `$venvPython`，避免 runner 裸 Python 缺少 `typer` 导致发布误失败
+- **release**: 增加工作流契约测试，禁止 `app.cli` 冒烟检查退回裸 `python`
+
 ## V0.1.14.11 Alpha (2026-07-17)
 
 ### 修复

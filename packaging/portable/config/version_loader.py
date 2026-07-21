@@ -2,7 +2,7 @@
 
 用法:
     from blc_portable.config.version_loader import get_version, RELEASE_VERSION
-    print(RELEASE_VERSION)  # "0.1.14.11-alpha"
+    print(RELEASE_VERSION)  # "0.1.14.12-alpha"
 
 其他模块不得再硬编码版本号，必须通过此模块获取。
 """
@@ -36,7 +36,7 @@ def _load_version_config() -> dict:
 def get_version() -> str:
     """获取发布版本号。
 
-    :returns: 如 "0.1.14.11-alpha"
+    :returns: 如 "0.1.14.12-alpha"
     """
     return _load_version_config()["release_version"]
 
@@ -44,7 +44,7 @@ def get_version() -> str:
 def get_version_label() -> str:
     """获取版本显示标签。
 
-    :returns: 如 "V0.1.14.11 Alpha"
+    :returns: 如 "V0.1.14.12 Alpha"
     """
     return _load_version_config()["version_label"]
 
@@ -92,7 +92,7 @@ def get_compatible_app_max_exclusive() -> str:
 def get_lite_exe_name() -> str:
     """获取 Lite EXE 文件名模板。
 
-    :returns: 如 "BiliLiveCut-Portable-Lite-v0.1.14.11-alpha-x64.exe"
+    :returns: 如 "BiliLiveCut-Portable-Lite-v0.1.14.12-alpha-x64.exe"
     """
     template = _load_version_config()["naming"]["lite_exe"]
     return template.format(version=_load_version_config()["release_version"])
@@ -101,7 +101,7 @@ def get_lite_exe_name() -> str:
 def get_full_zip_name() -> str:
     """获取 Full ZIP 文件名模板。
 
-    :returns: 如 "BiliLiveCut-Portable-Full-0.1.14.11-alpha-x64.zip"
+    :returns: 如 "BiliLiveCut-Portable-Full-0.1.14.12-alpha-x64.zip"
     """
     template = _load_version_config()["naming"]["full_zip"]
     return template.format(version=_load_version_config()["release_version"])
@@ -110,7 +110,7 @@ def get_full_zip_name() -> str:
 def get_engine_pack_zip_name() -> str:
     """获取 Engine Pack ZIP 文件名模板。
 
-    :returns: 如 "BiliLiveCut-EnginePack-0.1.14.11-alpha.zip"
+    :returns: 如 "BiliLiveCut-EnginePack-0.1.14.12-alpha.zip"
     """
     template = _load_version_config()["naming"]["engine_pack_zip"]
     return template.format(version=_load_version_config()["release_version"])

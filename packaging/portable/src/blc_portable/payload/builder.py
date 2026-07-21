@@ -2,7 +2,7 @@
 
 流程:
 1. 从 731a31c 提取源码 → staging/
-2. 应用受控版本 Overlay → 0.1.14.11-alpha
+2. 应用受控版本 Overlay → 0.1.14.12-alpha
 3. 应用 backport 兼容性补丁
 4. 构建 ZIP (收集 included_files 集合)
 5. 基于 included_files 生成 Manifest (文件数/Hash 与 ZIP 严格一致)
