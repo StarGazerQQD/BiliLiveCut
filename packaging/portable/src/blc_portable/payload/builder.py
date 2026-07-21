@@ -1,13 +1,12 @@
 """Payload 构建器 — 构建 source_payload.zip 和完整 Manifest。
 
 流程:
-1. 从 731a31c 提取源码 → staging/
-2. 应用受控版本 Overlay → 0.1.14.12-alpha
-3. 应用 backport 兼容性补丁
-4. 构建 ZIP (收集 included_files 集合)
-5. 基于 included_files 生成 Manifest (文件数/Hash 与 ZIP 严格一致)
-6. 逐文件交叉校验 ZIP vs Manifest
-7. 可复现性验证 (重新构建, 相同 SHA-256)
+1. 从固定的当前发布基线 4bdaa13 提取源码 → staging/
+2. 应用受控版本 Overlay → 0.1.15-alpha
+3. 构建 ZIP (收集 included_files 集合)
+4. 基于 included_files 生成 Manifest (文件数/Hash 与 ZIP 严格一致)
+5. 逐文件交叉校验 ZIP vs Manifest
+6. 可复现性验证 (重新构建, 相同 SHA-256)
 """
 
 from __future__ import annotations
@@ -22,6 +21,7 @@ from pathlib import Path
 from .manifest import (
     RELEASE_VERSION,
     SOURCE_COMMIT_FULL,
+    SOURCE_COMMIT_SHORT,
     create_manifest,
     validate_manifest,
 )
@@ -272,15 +272,13 @@ def _compile_and_copy_native_modules(staging_dir: Path) -> dict[str, bool]:
 
 
 def build_payload(
-    source_commit: str = "731a31c",
     builder_commit: str | None = None,
     skip_reproducible: bool = False,
 ) -> dict:
-    """构建完整 Payload: 提取 → Overlay → Backport → ZIP → Manifest → 校验。
+    """构建完整 Payload: 提取 → Overlay → ZIP → Manifest → 校验。
 
     所有文件级操作基于唯一的 included_files 集合。
 
-    :param source_commit: 业务源码 Commit (默认 731a31c)。
     :param builder_commit: 构建工具 Commit (默认当前 HEAD)。
     :param skip_reproducible: 跳过可复现性验证。
     :returns: 构建报告 dict。
@@ -300,19 +298,17 @@ def build_payload(
     PAYLOAD_DIR.mkdir(parents=True, exist_ok=True)
 
     # Step 1: 提取源码
-    _logger.info("Step 1: Extracting source from %s", source_commit[:8])
-    extract_report = extract_source(source_commit, staging_dir)
+    _logger.info("Step 1: Extracting source from %s", SOURCE_COMMIT_SHORT)
+    extract_report = extract_source(SOURCE_COMMIT_FULL, staging_dir)
 
     # Step 2: 应用版本 Overlay
     _logger.info("Step 2: Applying version overlay -> %s", RELEASE_VERSION)
-    overlay_files = apply_version_overlay(staging_dir)
-
-    # Step 2.1: 应用 Portable 兼容性回移补丁
-    _logger.info("Step 2.1: Applying Portable compatibility backports")
-    from .backport_patcher import apply_all_backports
-
-    backport_ids = apply_all_backports(staging_dir)
-    _logger.info("Applied backports: %s", backport_ids)
+    overlay_files = apply_version_overlay(
+        staging_dir,
+        source_commit_full=SOURCE_COMMIT_FULL,
+        builder_commit_full=builder_commit,
+    )
+    backport_ids: list[str] = []
 
     # Step 2.5: 编译并注入原生加速模块
     _logger.info("Step 2.5: Compiling native extensions...")
@@ -321,7 +317,7 @@ def build_payload(
 
     # Step 3: 验证业务文件未被非受控修改
     _logger.info("Step 3: Verifying source origin")
-    verify_source_origin(staging_dir, SOURCE_COMMIT_FULL, backport_ids=backport_ids)
+    verify_source_origin(staging_dir, SOURCE_COMMIT_FULL)
 
     # Step 4: 收集统一文件集合
     _logger.info("Step 4: Collecting included files")
@@ -387,11 +383,12 @@ def build_payload(
         verify_zip = BUILD_DIR / "verify_payload.zip"
 
         # 完全相同的构建流程
-        extract_source(source_commit, verify_staging)
-        apply_version_overlay(verify_staging)
-        from .backport_patcher import apply_all_backports
-
-        apply_all_backports(verify_staging)
+        extract_source(SOURCE_COMMIT_FULL, verify_staging)
+        apply_version_overlay(
+            verify_staging,
+            source_commit_full=SOURCE_COMMIT_FULL,
+            builder_commit_full=builder_commit,
+        )
         _compile_and_copy_native_modules(verify_staging)
 
         # 使用同一套 included_files 逻辑收集文件
@@ -415,7 +412,7 @@ def build_payload(
     # 报告
     report = {
         "release_version": RELEASE_VERSION,
-        "source_commit_short": source_commit[:7],
+        "source_commit_short": SOURCE_COMMIT_SHORT,
         "source_commit_full": SOURCE_COMMIT_FULL,
         "builder_commit_full": builder_commit,
         "source_file_count": extract_report["file_count"],

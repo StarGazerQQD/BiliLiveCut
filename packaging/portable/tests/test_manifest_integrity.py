@@ -6,7 +6,7 @@
 - tamper 检测 (篡改 manifest, 篡改 ZIP, 篡改文件)
 - 路径安全 (绝对路径, ..遍历, 盘符)
 - 可复现性
-- wrong-backport / wrong-identity
+- 无 Backport / wrong-identity
 """
 
 from __future__ import annotations
@@ -194,10 +194,12 @@ class TestIdentityFields:
         for field in self.COMPAT_FIELDS:
             assert field in manifest, f"Missing compat field: {field}"
 
-    def test_core_source_commit_is_731a31c(self, manifest: dict) -> None:
-        """验证 core_source_commit 是 731a31c。"""
-        assert manifest["core_source_commit_short"] == "731a31c"
-        assert manifest["source_commit_short"] == "731a31c"
+    def test_core_source_commit_is_current_baseline(self, manifest: dict) -> None:
+        """验证 core_source_commit 是当前 Portable 源码基线。"""
+        assert manifest["core_source_commit"] == "4bdaa13b8b406ee8048885f123a0c969724a61ae"
+        assert manifest["core_source_commit_short"] == "4bdaa13"
+        assert manifest["source_commit"] == manifest["core_source_commit"]
+        assert manifest["source_commit_short"] == "4bdaa13"
 
     def test_portable_version_matches_release(self, manifest: dict) -> None:
         """验证 portable_release_version == release_version。"""
@@ -467,23 +469,11 @@ class TestWrongIdentity:
         assert errors, "Wrong release_version should be detected"
         assert any("release_version" in e for e in errors), f"Expected release_version error, got: {errors}"
 
-    def test_wrong_backport_detected(self) -> None:
-        """验证错误的 backport_ids 被检测。"""
-        # 这会通过 validate_manifest (不直接校验 backport_ids)，
-        # 但 identity 字段仍然能揭示问题
+    def test_latest_baseline_requires_no_backports(self) -> None:
+        """验证当前源码基线不再叠加历史 Backport。"""
         manifest = _load_manifest()
-        assert len(manifest["applied_backports"]) >= 4, (
-            f"Expected at least 4 backports, got {len(manifest['applied_backports'])}"
-        )
-        for bp_id in manifest["applied_backports"]:
-            assert bp_id.startswith("bp-"), f"Invalid backport ID: {bp_id}"
-            assert bp_id in [
-                "bp-001-fix-nano-repo",
-                "bp-002-blc-models-dir",
-                "bp-003-whisper-local-path",
-                "bp-004-engine-pack-contract",
-                "bp-005-csrf-origin",
-            ], f"Unknown backport ID: {bp_id}"
+        assert manifest["applied_backports"] == []
+        assert manifest["backport_ids"] == []
 
 
 # ── 路径安全 ──────────────────────────────────────────
@@ -509,7 +499,7 @@ class TestPathSafety:
                 {
                     "release_version": "0.1.14.11-alpha",
                     "source_commit": "7" * 40,
-                    "source_commit_short": "731a31c",
+                    "source_commit_short": "4bdaa13",
                     "format_version": 5,
                     "payload_sha256": "0" * 64,
                     "file_count": 1,
@@ -537,7 +527,7 @@ class TestPathSafety:
                 {
                     "release_version": "0.1.14.11-alpha",
                     "source_commit": "7" * 40,
-                    "source_commit_short": "731a31c",
+                    "source_commit_short": "4bdaa13",
                     "format_version": 5,
                     "payload_sha256": "0" * 64,
                     "file_count": 1,

@@ -1,5 +1,12 @@
 # Changelog
 
+## V0.1.15 Alpha (2026-07-21)
+
+### 变更
+
+- **portable**: 固定源码基线升级至当前 `main` 的 `4bdaa13`，移除已被新基线原生吸收的历史 Backport，并增加 Payload 业务源码逐文件一致性回归测试
+- **native**: PyO3/Rust 扩展构建显式使用当前虚拟环境的 Python，避免构建子进程找不到解释器后退回纯 Python 实现
+
 ## V0.1.14.12 Alpha (2026-07-21)
 
 ### 修复

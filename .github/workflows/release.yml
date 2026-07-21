@@ -1,5 +1,5 @@
-# BiliLiveCut Release 工作流 (V0.1.14.12)
-# 触发: 推送 v* 标签 (如 v0.1.14.12-alpha)
+# BiliLiveCut Release 工作流 (V0.1.15)
+# 触发: 推送 v* 标签 (如 v0.1.15-alpha)
 #   1) 全量测试 + release_audit
 #   2) 构建源码包 (sdist + wheel)
 #   3) 构建 Payload + 契约验证
@@ -16,7 +16,7 @@ on:
   workflow_dispatch:
     inputs:
       tag:
-        description: "发布 tag 名称 (如 v0.1.14.12-alpha, 必须 v* 格式且指向当前 SHA)"
+        description: "发布 tag 名称 (如 v0.1.15-alpha, 必须 v* 格式且指向当前 SHA)"
         required: true
         type: string
 
@@ -48,7 +48,7 @@ jobs:
           # Must match v* pattern
           if [[ ! "$TAG_INPUT" =~ ^v[0-9]+\.[0-9]+\.[0-9]+ ]]; then
             echo "FAIL: tag '$TAG_INPUT' does not match vX.Y.Z pattern"
-            echo "Example: v0.1.14.12-alpha"
+            echo "Example: v0.1.15-alpha"
             exit 1
           fi
 
@@ -227,6 +227,7 @@ jobs:
           import zipfile
 
           manifest = json.load(open("dist/payload/payload_manifest.json"))
+          version_config = json.load(open("config/version.json"))
           zip_path = "dist/payload/source_payload.zip"
           with zipfile.ZipFile(zip_path) as zip_file:
               zip_count = sum(1 for name in zip_file.namelist() if not name.endswith("/"))
@@ -236,7 +237,8 @@ jobs:
               f"Count mismatch: ZIP={zip_count} MF={manifest_count} files={manifest_files}"
           )
           assert manifest["format_version"] == 5
-          assert manifest["core_source_commit_short"] == "731a31c"
+          assert manifest["core_source_commit"] == version_config["source_commit_full"]
+          assert manifest["core_source_commit_short"] == version_config["source_commit_short"]
           assert manifest["target_platform"] == "win_x64"
           assert "generated_at" not in manifest, "manifest has generated_at (breaks reproducibility)"
           print(f"Payload contract OK: {manifest_count} files, SHA={manifest['payload_sha256'][:16]}...")

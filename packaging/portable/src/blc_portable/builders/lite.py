@@ -27,7 +27,7 @@ MANIFEST_PATH = PAYLOAD_DIR / "payload_manifest.json"
 RESOURCES_DIR = PORTABLE_DIR / "resources"
 ENGINE_PACK_INFO_PATH = RESOURCES_DIR / "engine_pack_info.json"
 
-RELEASE_VERSION = "0.1.14.12-alpha"
+RELEASE_VERSION = "0.1.15-alpha"
 
 
 def build_payload_if_needed() -> None:
@@ -173,7 +173,7 @@ def _generate_default_engine_pack_info() -> dict:
     return {
         "format_version": 2,
         "engine_pack_version": RELEASE_VERSION,
-        "compatible_app": {"min": RELEASE_VERSION, "max_exclusive": "0.1.15"},
+        "compatible_app": {"min": RELEASE_VERSION, "max_exclusive": "0.1.16"},
         "filename": f"BiliLiveCut-EnginePack-{RELEASE_VERSION}.zip",
         "size_bytes": 0,
         "crc32": "",

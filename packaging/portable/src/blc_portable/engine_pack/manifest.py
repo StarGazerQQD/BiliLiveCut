@@ -227,7 +227,7 @@ def create_manifest(
 ) -> EnginePackManifest:
     """根据四引擎定义创建 Manifest。
 
-    :param source_commit: 731a31c 对应的完整 Commit Hash。
+    :param source_commit: 当前发布基线对应的完整 Commit Hash。
     :param archive_crc32: ZIP 文件的 CRC32 (8 位大写十六进制)。
     :param archive_sha256: ZIP 文件的 SHA-256。
     :param file_list: 逐文件信息 {path: {size, sha256}}。
@@ -342,7 +342,7 @@ def get_engine_pack_info() -> dict[str, object]:
         "engine_pack_version": ENGINE_PACK_VERSION,
         "compatible_app": {
             "min": RELEASE_VERSION,
-            "max_exclusive": "0.1.15",
+            "max_exclusive": "0.1.16",
         },
         "filename": ARCHIVE_FILENAME,
         "size_bytes": 0,

@@ -11,7 +11,7 @@ REPO_ROOT = Path(__file__).resolve().parent.parent
 
 
 def tracked_python_files() -> list[str]:
-    """Return repository-relative paths for all tracked Python files."""
+    """Return existing repository-relative paths for tracked Python files."""
     result = subprocess.run(
         ["git", "ls-files", "--", "*.py"],
         cwd=REPO_ROOT,
@@ -20,7 +20,7 @@ def tracked_python_files() -> list[str]:
         text=True,
         encoding="utf-8",
     )
-    return [line for line in result.stdout.splitlines() if line]
+    return [line for line in result.stdout.splitlines() if line and (REPO_ROOT / line).is_file()]
 
 
 def main(argv: list[str] | None = None) -> int:

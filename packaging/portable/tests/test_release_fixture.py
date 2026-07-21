@@ -1,4 +1,4 @@
-"""Release fixture isolation tests (V0.1.14.12)."""
+"""Release fixture isolation tests (V0.1.15)."""
 
 from __future__ import annotations
 
@@ -80,6 +80,15 @@ def test_release_workflow_has_payload_contract_verify() -> None:
     assert "Payload contract" in content or "format_version" in content, (
         "Release workflow missing Payload contract verification"
     )
+
+
+def test_release_payload_contract_uses_version_config_source_baseline() -> None:
+    """Release workflow 的 Payload 基线校验必须引用版本配置真源。"""
+    release_yml = _PROJ_ROOT / ".github" / "workflows" / "release.yml"
+    content = release_yml.read_text(encoding="utf-8")
+    assert 'version_config = json.load(open("config/version.json"))' in content
+    assert 'manifest["core_source_commit"] == version_config["source_commit_full"]' in content
+    assert 'manifest["core_source_commit_short"] == version_config["source_commit_short"]' in content
 
 
 def test_release_workflow_uploads_crc32() -> None:

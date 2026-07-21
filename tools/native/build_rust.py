@@ -1,4 +1,4 @@
-"""BiliLiveCut Rust 加速模块编译脚本 (V0.1.14.8).
+"""BiliLiveCut Rust 加速模块编译脚本.
 
 编译 O(N**2) 聚类矩阵 Rust 扩展 (_rust_cluster.pyd/.so)。
 
@@ -93,6 +93,7 @@ def build() -> bool:
 
     env = _os.environ.copy()
     env.setdefault("PYO3_USE_ABI3_FORWARD_COMPATIBILITY", "1")
+    env.setdefault("PYO3_PYTHON", sys.executable)
 
     # cargo build --release (带 Python 3.14 兼容性)
     import subprocess as _sp

@@ -1,7 +1,7 @@
 """Portable 构建系统完整测试套件。
 
 覆盖:
-- Source Snapshot (731a31c 解析/提取/Overlay)
+- Source Snapshot (4bdaa13 解析/提取/Overlay)
 - Payload (构建/ZIP/Manifest/可复现性)
 - Runtime 安装 (原子安装/staging/current.json)
 - 用户数据保护 (.env/数据库/storage)
@@ -73,12 +73,12 @@ class TestSourceSnapshot:
     """测试源码快照提取。"""
 
     def test_commit_resolvable(self) -> None:
-        """验证 731a31c 可解析。"""
+        """验证当前 Portable 源码基线可解析。"""
         from blc_portable.payload.source_snapshot import resolve_commit
 
-        full = resolve_commit("731a31c")
+        full = resolve_commit("4bdaa13")
         assert len(full) == 40
-        assert full == "731a31cd04ae1df27dd6b6c5ffc535123932b825"
+        assert full == "4bdaa13b8b406ee8048885f123a0c969724a61ae"
 
     def test_extract_contains_app_cli(self, tmp_worktree: str) -> None:
         """验证提取内容包含关键业务文件。"""
@@ -86,8 +86,8 @@ class TestSourceSnapshot:
 
         staging = Path(tmp_worktree) / "test_staging"
         staging.mkdir(parents=True)
-        report = extract_source("731a31c", staging)
-        assert report["source_commit_short"] == "731a31c"
+        report = extract_source("4bdaa13", staging)
+        assert report["source_commit_short"] == "4bdaa13"
         assert (staging / "app" / "cli.py").exists()
         assert (staging / "pyproject.toml").exists()
 
@@ -97,7 +97,7 @@ class TestSourceSnapshot:
 
         staging = Path(tmp_worktree) / "test_clean"
         staging.mkdir(parents=True)
-        extract_source("731a31c", staging)
+        extract_source("4bdaa13", staging)
 
         # 确认不包含构建产物
         assert not (staging / ".venv").exists()
@@ -106,17 +106,22 @@ class TestSourceSnapshot:
 
     def test_version_overlay_only_allowed(self, tmp_worktree: str) -> None:
         """验证版本覆盖只修改允许的文件。"""
-        from blc_portable.payload.manifest import RELEASE_VERSION
+        from blc_portable.payload.manifest import RELEASE_VERSION, SOURCE_COMMIT_FULL
         from blc_portable.payload.source_snapshot import apply_version_overlay, extract_source
 
         staging = Path(tmp_worktree) / "test_overlay"
         staging.mkdir(parents=True)
-        extract_source("731a31c", staging)
-        modified = apply_version_overlay(staging)
+        extract_source("4bdaa13", staging)
+        modified = apply_version_overlay(
+            staging,
+            source_commit_full=SOURCE_COMMIT_FULL,
+            builder_commit_full=SOURCE_COMMIT_FULL,
+        )
 
         for f in modified:
             assert f in [
                 "app/__init__.py",
+                "app/_portable_release.py",
                 "pyproject.toml",
                 "README.md",
                 "CHANGELOG.md",
@@ -127,6 +132,23 @@ class TestSourceSnapshot:
         # 验证版本已更新
         init_content = (staging / "app" / "__init__.py").read_text(encoding="utf-8")
         assert RELEASE_VERSION in init_content
+        release_content = (staging / "app" / "_portable_release.py").read_text(encoding="utf-8")
+        assert f'SOURCE_COMMIT: str = "{SOURCE_COMMIT_FULL}"' in release_content
+        assert f'BUILDER_COMMIT: str = "{SOURCE_COMMIT_FULL}"' in release_content
+
+    def test_source_origin_rejects_business_file_tampering(self, tmp_worktree: str) -> None:
+        """验证关键业务文件偏离固定 Commit 时构建失败。"""
+        from blc_portable.payload.manifest import SOURCE_COMMIT_FULL
+        from blc_portable.payload.source_snapshot import extract_source, verify_source_origin
+
+        staging = Path(tmp_worktree) / "test_tamper"
+        staging.mkdir(parents=True)
+        extract_source(SOURCE_COMMIT_FULL, staging)
+        backends = staging / "app" / "analysis" / "transcription" / "backends.py"
+        backends.write_text(backends.read_text(encoding="utf-8") + "\n# tampered\n", encoding="utf-8")
+
+        with pytest.raises(RuntimeError, match="backends.py.*不一致"):
+            verify_source_origin(staging, SOURCE_COMMIT_FULL)
 
 
 # ── Payload 测试 ──────────────────────────────────────────────────
@@ -267,7 +289,7 @@ class TestRuntimeInstall:
         current = read_current(app_root)
         assert current is not None
         assert current["release_version"] == RELEASE_VERSION
-        assert current["source_commit_short"] == "731a31c"
+        assert current["source_commit_short"] == "4bdaa13"
         assert "payload_sha256" in current
 
     def test_staging_not_left_behind(self, payload_zip: Path, payload_manifest: dict, tmp_worktree: str) -> None:

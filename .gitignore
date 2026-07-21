@@ -45,7 +45,7 @@ htmlcov/
 # 允许 packaging/portable/tests/
 !packaging/portable/tests/
 
-# Rust 编译产物 (V0.1.14)
+# Rust 编译产物
 tools/native/rust/target/
 app/analysis/_rust_cluster.pyd
 app/analysis/_rust_cluster.so
