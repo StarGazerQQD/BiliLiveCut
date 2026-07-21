@@ -482,9 +482,11 @@ jobs:
             & "$root\portable-python\python.exe" -m venv $venv
             if ($LASTEXITCODE -ne 0) { throw "Bundled Python cannot create a venv" }
             $venvPython = "$venv\Scripts\python.exe"
-            & $venvPython -m pip install --no-index --find-links "$root\vendor\wheels" --require-hashes `
-              -r packaging/portable/locks/requirements-runtime-py312-win-x64.lock
-            if ($LASTEXITCODE -ne 0) { throw "Full Bundle offline dependency install failed" }
+            $env:PYTHONPATH = (Resolve-Path "packaging/portable/src").Path
+            $env:BLC_SMOKE_VENV_PYTHON = $venvPython
+            $env:BLC_SMOKE_APP_ROOT = $root
+            & $venvPython -c "import os; from pathlib import Path; from blc_portable.launcher.main import install_dependencies; install_dependencies(Path(os.environ['BLC_SMOKE_VENV_PYTHON']), Path(os.environ['BLC_SMOKE_APP_ROOT']))"
+            if ($LASTEXITCODE -ne 0) { throw "Full Bundle launcher dependency install failed" }
             & $venvPython -m pip check
             if ($LASTEXITCODE -ne 0) { throw "Full Bundle pip check failed" }
             & $venvPython -c "import brotli, fastapi, funasr, loguru, modelscope, pydantic_settings, sqlmodel, torch, torchaudio, uvicorn"

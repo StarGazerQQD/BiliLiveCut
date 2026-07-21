@@ -102,7 +102,9 @@ def test_release_workflow_performs_real_offline_installs() -> None:
     workflow = (_repo_root / ".github" / "workflows" / "release.yml").read_text(encoding="utf-8")
 
     assert "scripts/build_portable_runtime_wheels.py" in workflow
-    assert workflow.count("--require-hashes") >= 4
-    assert workflow.count("--no-index") >= 2
+    assert workflow.count("--require-hashes") >= 3
+    assert workflow.count("--no-index") >= 1
     assert 'portable-python\\python.exe" -m venv' in workflow
+    assert "from blc_portable.launcher.main import install_dependencies" in workflow
+    assert "Full Bundle launcher dependency install failed" in workflow
     assert "Full bundle offline installation OK" in workflow
