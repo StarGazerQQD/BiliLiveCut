@@ -47,7 +47,7 @@ def test_sdist_manifest_contains_runtime_and_audit_inputs() -> None:
     for rule in (
         "recursive-include app *.py *.html *.css *.js *.txt",
         "recursive-include config *.yaml *.txt",
-        "recursive-include packaging",
+        "recursive-include packaging *.py *.json *.yaml *.ini *.lock *.in *.spec *.md *.example",
         "recursive-include scripts",
         "recursive-include tests",
         "recursive-include tools",

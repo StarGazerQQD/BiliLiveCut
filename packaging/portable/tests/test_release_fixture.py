@@ -14,7 +14,8 @@ def test_release_workflow_has_smoke_tests() -> None:
     content = release_yml.read_text(encoding="utf-8")
     assert "smoke-test:" in content, "Release workflow missing smoke-test job"
     assert "--version" in content, "Release workflow missing Lite EXE --version smoke test"
-    assert "--diagnose" in content, "Release workflow missing Lite EXE --diagnose smoke test"
+    assert "--doctor" in content, "Release workflow missing Lite EXE --doctor smoke test"
+    assert "--diagnose" not in content, "Release workflow calls an unsupported launcher argument"
 
 
 def test_release_workflow_has_tag_validation() -> None:
