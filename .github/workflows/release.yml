@@ -4,7 +4,7 @@
 #   2) 构建源码包 (sdist + wheel)
 #   3) 构建 Payload + 契约验证
 #   4) 构建 Windows Lite EXE (PyInstaller)
-#   5) Lite EXE smoke tests (--version / --diagnose / 空目录安装 / 联网安装 / 二次禁网)
+#   5) Lite EXE smoke tests (--version / --doctor / 空目录安装 / 联网安装 / 二次禁网)
 #   6) Full Bundle 离线安装测试
 #   7) 上传到 GitHub Release
 name: Release
@@ -421,12 +421,12 @@ jobs:
           if ($LASTEXITCODE -ne 0) { Write-Error "Lite EXE --version failed (exit=$LASTEXITCODE)"; exit 1 }
         timeout-minutes: 5
 
-      - name: Lite EXE --diagnose
+      - name: Lite EXE --doctor
         shell: pwsh
         run: |
           $exe = Get-ChildItem smoke/lite/*.exe | Select-Object -First 1
-          & $exe.FullName --diagnose 2>&1 | Out-Host
-          if ($LASTEXITCODE -ne 0) { Write-Warning "--diagnose returned non-zero (expected without models)" }
+          & $exe.FullName --doctor 2>&1 | Out-Host
+          if ($LASTEXITCODE -ne 0) { Write-Error "Lite EXE --doctor failed (exit=$LASTEXITCODE)"; exit 1 }
         timeout-minutes: 5
 
       - name: Lite fresh-install to empty directory
