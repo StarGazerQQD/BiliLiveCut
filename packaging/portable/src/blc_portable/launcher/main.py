@@ -307,6 +307,18 @@ def _find_lock_file(venv_python: Path) -> Path:
     raise RuntimeError(f"Lock file not found: {lock_name}\nOnly Python 3.11 and 3.12 are supported.")
 
 
+def _find_local_wheelhouse(app_root: Path) -> Path | None:
+    """Find a non-empty Full Bundle wheelhouse under the application root.
+
+    :param app_root: Portable application root directory.
+    :returns: The local wheelhouse path, or ``None`` when it is unavailable.
+    """
+    wheelhouse = app_root / WHEELS_DIR
+    if wheelhouse.is_dir() and any(wheelhouse.glob("*.whl")):
+        return wheelhouse
+    return None
+
+
 def install_dependencies(venv_python: Path, app_root: Path, req_file: Path | None = None) -> None:
     """Install Python dependencies from ABI-specific lock file.
 
@@ -355,13 +367,19 @@ def install_dependencies(venv_python: Path, app_root: Path, req_file: Path | Non
 
     # Install from lock file with mandatory hash verification
     print(f"  install deps (lock file: {lock_file.name})...")
-    offline_flag = []
-    if os.environ.get("PIP_NO_INDEX") == "1":
-        wheelhouse = Path(__file__).resolve().parent.parent.parent.parent / "vendor" / "wheels"
-        if wheelhouse.exists() and list(wheelhouse.glob("*.whl")):
-            offline_flag = ["--no-index", "--find-links", str(wheelhouse)]
-        else:
-            offline_flag = ["--no-index"]
+    wheelhouse = _find_local_wheelhouse(app_root)
+    if wheelhouse is not None:
+        print(f"  local wheelhouse detected, enforcing offline install: {wheelhouse}")
+        offline_flag = ["--no-index", "--find-links", str(wheelhouse)]
+    elif (app_root / "portable-python" / "python.exe").is_file():
+        raise RuntimeError(
+            "Full Bundle wheelhouse is missing or empty: "
+            f"{app_root / WHEELS_DIR}\nRefusing to download dependencies from the network."
+        )
+    elif os.environ.get("PIP_NO_INDEX") == "1":
+        offline_flag = ["--no-index"]
+    else:
+        offline_flag = []
     subprocess.run(
         [str(venv_python), "-m", "pip", "install", "-r", str(lock_file), "--require-hashes"] + offline_flag,
         check=True,

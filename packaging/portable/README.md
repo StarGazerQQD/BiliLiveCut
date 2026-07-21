@@ -249,7 +249,7 @@ python -m pip install setuptools==83.0.0 wheel==0.46.3
 python scripts/generate_portable_runtime_locks.py
 ```
 
-Release CI 会对两套锁执行 `pip download --require-hashes`，并分别进行 Python 3.11 和 3.12 的全新虚拟环境 `--no-index` 离线安装、`pip check` 与核心模块导入测试。不要通过删除哈希、添加 `--no-deps` 或跳过离线安装来规避锁文件错误。
+Release CI 会对两套锁执行 `pip download --require-hashes`，并分别进行 Python 3.11 和 3.12 的全新虚拟环境 `--no-index` 离线安装、`pip check` 与核心模块导入测试。Full Launcher 会自动发现安装目录下的 `vendor/wheels` 并强制使用 `--no-index --require-hashes`，无需设置 `PIP_NO_INDEX`；若 Full wheelhouse 缺失或为空则直接失败，不会回退到在线镜像。不要通过删除哈希、添加 `--no-deps` 或跳过离线安装来规避锁文件错误。
 
 ### 方式三：开发者手动打包
 
