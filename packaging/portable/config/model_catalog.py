@@ -15,7 +15,6 @@ from __future__ import annotations
 import json
 from dataclasses import dataclass, field
 from pathlib import Path
-from typing import Any
 
 _CATALOG_PATH = Path(__file__).resolve().parent / "model_sources.lock.json"
 _cache: dict | None = None

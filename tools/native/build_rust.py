@@ -36,7 +36,14 @@ def _run(cmd: list[str], cwd: Path) -> subprocess.CompletedProcess:
     :returns: 子进程结果。
     """
     print(f"  [build_rust] {' '.join(cmd)}")
-    return subprocess.run(cmd, cwd=cwd, capture_output=True, text=True)
+    return subprocess.run(
+        cmd,
+        cwd=cwd,
+        capture_output=True,
+        text=True,
+        encoding="utf-8",
+        errors="replace",
+    )
 
 
 def check_rust() -> bool:
@@ -49,6 +56,8 @@ def check_rust() -> bool:
             ["cargo", "--version"],
             capture_output=True,
             text=True,
+            encoding="utf-8",
+            errors="replace",
             timeout=15,
         )
         if r.returncode == 0:
@@ -93,6 +102,8 @@ def build() -> bool:
         cwd=RUST_SRC,
         capture_output=True,
         text=True,
+        encoding="utf-8",
+        errors="replace",
         env=env,
     )
     if result.returncode != 0:

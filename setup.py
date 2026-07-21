@@ -32,31 +32,7 @@ if not _skip_extensions:
         pass
 
 setup(
-    name="bili-live-cut",
-    version="0.1.14.11-alpha",
-    description="AI 直播实时切片系统",
-    packages=find_packages(include=["app", "app.*"]),
+    packages=find_packages(include=["app", "app.*", "config"]),
     ext_modules=_extensions,
-    install_requires=[
-        "httpx>=0.27",
-        "pydantic>=2.7",
-        "pydantic-settings>=2.3",
-        "sqlmodel>=0.0.22",
-        "loguru>=0.7",
-        "typer>=0.12",
-        "rich>=13.7",
-        "websockets>=12.0",
-        "brotli>=1.1",
-        "pyyaml>=6.0",
-        "numpy>=1.26",
-    ],
-    extras_require={
-        "asr": ["faster-whisper>=1.0"],
-        "llm": ["openai>=1.40"],
-        "web": ["fastapi>=0.111", "uvicorn[standard]>=0.30", "jinja2>=3.1"],
-        "dev": ["pytest>=8.2", "pytest-asyncio>=0.23", "pytest-mock>=3.14", "ruff>=0.5"],
-    },
-    entry_points={
-        "console_scripts": ["blc=app.cli:app"],
-    },
+    include_package_data=True,
 )

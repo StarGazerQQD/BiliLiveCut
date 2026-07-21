@@ -169,7 +169,7 @@ def _get_recent_failures() -> list[dict]:
             .where(
                 SegmentTask.last_error.is_not(None),
             )
-            .order_by(SegmentTask.updated_at.desc())
+            .order_by(SegmentTask.created_at.desc())
             .limit(20)
         ).all()
 

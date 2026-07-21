@@ -58,10 +58,10 @@ jobs:
         run: pip install ruff
 
       - name: Ruff check
-        run: ruff check .
+        run: python scripts/run_ruff.py check
 
       - name: Ruff format check
-        run: ruff format --check .
+        run: python scripts/run_ruff.py format
 
       - name: Check version consistency
         run: python scripts/check_version_consistency.py
@@ -158,10 +158,6 @@ jobs:
           python -m pip install --upgrade pip
           pip install -e ".[dev,web]"
 
-      - name: Install test extras
-        shell: bash
-        run: pip install python-multipart
-
       - name: Run pytest with coverage (≥50%)
         shell: bash
         env:
@@ -228,10 +224,6 @@ jobs:
           python -m pip install --upgrade pip
           pip install -e ".[dev,web]"
 
-      - name: Install test extras
-        shell: bash
-        run: pip install python-multipart
-
       - name: Run pytest with coverage (>=50%)
         shell: bash
         env:
@@ -294,14 +286,15 @@ jobs:
       - name: Build Payload
         run: |
           cd packaging/portable
-          python build_payload.py --skip-reproducible
+          python build_payload.py
         timeout-minutes: 10
 
       - name: Run Portable + Engine Pack tests
         run: |
           python -m pytest packaging/portable/tests/ \
             --tb=short -v \
-            --timeout=120
+            --timeout=120 \
+            --fail-on-skip
         timeout-minutes: 10
 
       - name: Ruff check portable modules

@@ -115,6 +115,7 @@ def run_pytest() -> int:
         "--cov-report=term-missing",
         "--cov-report=xml",
         "--cov-fail-under=50",
+        "--fail-on-skip",
     ]
 
     print(f"Running: {' '.join(cmd)}")

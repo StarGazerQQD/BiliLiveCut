@@ -125,14 +125,9 @@ class TestMonitorRoutes:
         """GET /api/health returns response."""
         from app.web.main import app
 
-        try:
-            with TestClient(app) as client:
-                r = client.get("/api/monitor")
-                assert r.status_code in (200, 404)
-        except Exception as exc:
-            if "updated_at" in str(exc):
-                pytest.skip(f"Pre-existing monitor route issue: {exc}")
-            raise
+        with TestClient(app) as client:
+            r = client.get("/api/monitor")
+            assert r.status_code == 200
 
 
 # ── Media routes ───────────────────────────────────────

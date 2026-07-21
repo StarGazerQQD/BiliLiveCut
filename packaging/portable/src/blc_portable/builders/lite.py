@@ -11,6 +11,7 @@ CI 环境:
 
 from __future__ import annotations
 
+import argparse
 import json
 import os
 import subprocess
@@ -184,9 +185,10 @@ def _generate_default_engine_pack_info() -> dict:
     }
 
 
-def build_exe() -> Path:
+def build_exe(*, without_engine_pack: bool = False) -> Path:
     """Build Portable Lite EXE.
 
+    :param without_engine_pack: Build without embedded Engine Pack metadata.
     :returns: Path to generated EXE.
     """
     DIST_DIR.mkdir(parents=True, exist_ok=True)
@@ -198,8 +200,11 @@ def build_exe() -> Path:
     # Build Payload
     build_payload_if_needed()
 
-    # Validate Engine Pack info
-    check_engine_pack_info()
+    # Official GitHub releases do not distribute the multi-gigabyte Engine Pack.
+    if without_engine_pack:
+        print("  Engine Pack metadata: omitted (user-supplied pack or online model download)")
+    else:
+        check_engine_pack_info()
 
     # Validate Manifest
     manifest = json.loads(MANIFEST_PATH.read_text(encoding="utf-8"))
@@ -207,7 +212,7 @@ def build_exe() -> Path:
     print(f"  Source: {manifest['source_commit_short']}")
 
     # Read Engine Pack info
-    if ENGINE_PACK_INFO_PATH.exists():
+    if not without_engine_pack and ENGINE_PACK_INFO_PATH.exists():
         ep_info = json.loads(ENGINE_PACK_INFO_PATH.read_text(encoding="utf-8"))
         print(f"  Engine Pack: {ep_info.get('filename', 'N/A')} CRC32={ep_info.get('crc32', 'N/A')}")
 
@@ -224,7 +229,12 @@ def build_exe() -> Path:
     ]
 
     print("\n  PyInstaller compiling ...")
-    result = subprocess.run(cmd, cwd=str(PORTABLE_DIR))
+    build_env = os.environ.copy()
+    if without_engine_pack:
+        build_env["BLC_OMIT_ENGINE_PACK_INFO"] = "1"
+    else:
+        build_env.pop("BLC_OMIT_ENGINE_PACK_INFO", None)
+    result = subprocess.run(cmd, cwd=str(PORTABLE_DIR), env=build_env)
 
     if result.returncode != 0:
         print(f"\n[Error] PyInstaller failed (exit code {result.returncode})")
@@ -247,10 +257,11 @@ def build_exe() -> Path:
         "payload_sha256": manifest["payload_sha256"],
         "artifact_sha256": "",
         "ci_build": is_fixture,
+        "engine_pack_metadata": "omitted" if without_engine_pack else "embedded",
     }
 
     # 如果 Engine Pack 信息存在，添加 CRC32
-    if ENGINE_PACK_INFO_PATH.exists():
+    if not without_engine_pack and ENGINE_PACK_INFO_PATH.exists():
         ep_info = json.loads(ENGINE_PACK_INFO_PATH.read_text(encoding="utf-8"))
         build_manifest["engine_pack_crc32"] = ep_info.get("crc32", "")
 
@@ -285,13 +296,21 @@ def build_exe() -> Path:
     return exe_path
 
 
-def main() -> int:
+def main(argv: list[str] | None = None) -> int:
     """入口 — 供薄入口调用。
 
     :returns: 0 成功, 1 失败。
     """
+    parser = argparse.ArgumentParser(description="Build the BiliLiveCut Portable Lite executable")
+    parser.add_argument(
+        "--without-engine-pack",
+        action="store_true",
+        help="omit Engine Pack metadata (official GitHub Release mode)",
+    )
+    args = parser.parse_args(argv)
+
     try:
-        build_exe()
+        build_exe(without_engine_pack=args.without_engine_pack)
         return 0
     except SystemExit as e:
         return int(str(e)) if str(e) else 0
@@ -305,4 +324,4 @@ def main() -> int:
 
 
 if __name__ == "__main__":
-    build_exe()
+    raise SystemExit(main())

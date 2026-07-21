@@ -1,0 +1,23 @@
+include .env.example
+include CHANGELOG.md
+include conftest.py
+include README.md
+include pyproject.toml
+include setup.py
+include setup_c.py
+include packaging/docker/Dockerfile
+
+recursive-include app *.py *.html *.css *.js *.txt
+recursive-include config *.yaml *.txt
+recursive-include docs *.md
+recursive-include packaging *.py *.json *.yaml *.ini *.lock *.spec *.md *.example
+recursive-include scripts *.py *.json *.sh *.bat
+recursive-include tests *.py *.json
+recursive-include tools *.py *.pyx *.c *.rs *.toml *.lock
+
+global-exclude __pycache__ *.py[cod] *.pyd *.so
+exclude tools/native/cython/_speedups_round2.c
+prune packaging/portable/.model_cache
+prune packaging/portable/build
+prune packaging/portable/dist
+prune tools/native/rust/target

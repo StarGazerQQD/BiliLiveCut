@@ -13,8 +13,6 @@
 
 用法:
     python scripts/release_gate.py
-    python scripts/release_gate.py --skip-portable   # 跳过 Portable 构建/测试
-    python scripts/release_gate.py --skip-payload    # 跳过 Payload 构建
 """
 
 from __future__ import annotations
@@ -52,13 +50,13 @@ def _run(cmd: list[str], cwd: str | None = None, desc: str = "") -> bool:
 
 def _pytest(path: str, desc: str = "") -> bool:
     """Run pytest on a path."""
-    return _run([sys.executable, "-m", "pytest", path, "-q", "--timeout=120"], desc=desc or f"pytest {path}")
+    return _run(
+        [sys.executable, "-m", "pytest", path, "-q", "--timeout=120", "--fail-on-skip"],
+        desc=desc or f"pytest {path}",
+    )
 
 
 def main() -> int:  # noqa: D103
-    skip_portable = "--skip-portable" in sys.argv
-    skip_payload = "--skip-payload" in sys.argv
-
     print("=" * 60)
     print("  BiliLiveCut Release Gate")
     print("=" * 60)
@@ -72,48 +70,52 @@ def main() -> int:  # noqa: D103
     all_ok &= _run([sys.executable, "scripts/check_version_consistency.py"], desc="2/7 version_consistency")
 
     # ── Step 3: Ruff ──
-    all_ok &= _run(
-        ["ruff", "check", "app/", "tests/", "packaging/portable/src/", "packaging/portable/tests/"],
-        desc="3/7 ruff check",
-    )
-    all_ok &= _run(
-        ["ruff", "format", "--check", "app/", "tests/", "packaging/portable/src/", "packaging/portable/tests/"],
-        desc="3/7 ruff format check",
-    )
+    all_ok &= _run([sys.executable, "scripts/run_ruff.py", "check"], desc="3/7 ruff check")
+    all_ok &= _run([sys.executable, "scripts/run_ruff.py", "format"], desc="3/7 ruff format check")
 
     # ── Step 4: Payload 构建 + 契约验证 ──
-    if not skip_payload:
-        all_ok &= _run(
-            [sys.executable, "packaging/portable/build_payload.py", "--skip-reproducible"], desc="4/7 build_payload"
-        )
+    all_ok &= _run([sys.executable, "packaging/portable/build_payload.py"], desc="4/7 build_payload")
 
-        # Payload contract cross-verify
-        payload_ok = True
-        try:
-            import json
-            import zipfile
+    # Payload contract cross-verify
+    payload_ok = True
+    try:
+        import hashlib
+        import json
+        import zipfile
 
-            m = json.loads((REPO_ROOT / "packaging/portable/dist/payload/payload_manifest.json").read_text("utf-8"))
-            with zipfile.ZipFile(REPO_ROOT / "packaging/portable/dist/payload/source_payload.zip") as zf:
-                zf_cnt = sum(1 for n in zf.namelist() if not n.endswith("/"))
-            mf_cnt = m["file_count"]
-            mf_entries = len(m["files"])
-            if zf_cnt != mf_cnt or zf_cnt != mf_entries:
-                print(f"{RED}  4/7 Payload contract FAIL: ZIP={zf_cnt} MF={mf_cnt} files={mf_entries}{RESET}")
-                payload_ok = False
-            else:
-                print(f"{GREEN}  4/7 Payload contract OK: {zf_cnt} files{RESET}")
-        except Exception as exc:
-            print(f"{RED}  4/7 Payload contract FAIL: {exc}{RESET}")
+        payload_dir = REPO_ROOT / "packaging/portable/dist/payload"
+        m = json.loads((payload_dir / "payload_manifest.json").read_text("utf-8"))
+        with zipfile.ZipFile(payload_dir / "source_payload.zip") as zf:
+            zf_cnt = sum(1 for n in zf.namelist() if not n.endswith("/"))
+        mf_cnt = m["file_count"]
+        mf_entries = len(m["files"])
+        if zf_cnt != mf_cnt or zf_cnt != mf_entries:
+            print(f"{RED}  4/7 Payload contract FAIL: ZIP={zf_cnt} MF={mf_cnt} files={mf_entries}{RESET}")
             payload_ok = False
-        all_ok &= payload_ok
+
+        sums_lines = (payload_dir / "SHA256SUMS.txt").read_text(encoding="utf-8").splitlines()
+        for line in sums_lines:
+            expected, filename = line.split(maxsplit=1)
+            if filename == "SHA256SUMS.txt":
+                print(f"{RED}  4/7 Payload checksum FAIL: checksum file lists itself{RESET}")
+                payload_ok = False
+                continue
+            actual = hashlib.sha256((payload_dir / filename).read_bytes()).hexdigest()
+            if actual != expected:
+                print(f"{RED}  4/7 Payload checksum FAIL: {filename}{RESET}")
+                payload_ok = False
+        if payload_ok:
+            print(f"{GREEN}  4/7 Payload contract OK: {zf_cnt} files{RESET}")
+    except Exception as exc:
+        print(f"{RED}  4/7 Payload contract FAIL: {exc}{RESET}")
+        payload_ok = False
+    all_ok &= payload_ok
 
     # ── Step 5: 主线测试 ──
     all_ok &= _pytest("tests/", desc="5/7 main tests")
 
     # ── Step 6: Portable 测试 ──
-    if not skip_portable:
-        all_ok &= _pytest("packaging/portable/tests/", desc="6/7 portable tests")
+    all_ok &= _pytest("packaging/portable/tests/", desc="6/7 portable tests")
 
     # ── Step 7: 最终判断 ──
     print(f"\n{'=' * 60}")
