@@ -48,7 +48,9 @@ def test_release_full_smoke_resolves_bundle_root() -> None:
     release_yml = _PROJ_ROOT / ".github" / "workflows" / "release.yml"
     content = release_yml.read_text(encoding="utf-8")
     assert "$bundleRoot" in content
-    assert 'Test-Path "$root\\portable-python\\python.exe"' in content
+    assert '"$root\\portable-python\\python.exe"' in content
+    assert '& "$root\\portable-python\\python.exe" -m venv $venv' in content
+    assert "Full bundle offline installation OK" in content
 
 
 def test_release_workflow_has_release_audit() -> None:

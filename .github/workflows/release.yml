@@ -266,7 +266,18 @@ jobs:
 
       - uses: actions/setup-python@v5
         with:
-          python-version: "3.12"
+          python-version: "3.12.8"
+
+      - name: Prepare relocatable Python 3.12 runtime
+        shell: pwsh
+        run: |
+          $pythonExe = (Get-Command python).Source
+          $pythonRoot = Split-Path -Parent $pythonExe
+          New-Item -ItemType Directory -Path portable-python -Force | Out-Null
+          Get-ChildItem -LiteralPath $pythonRoot -Force | Copy-Item -Destination portable-python -Recurse -Force
+          & portable-python\python.exe -c "import sys, venv; print(sys.version); print('venv module OK')"
+          if ($LASTEXITCODE -ne 0) { Write-Error "Relocated Python runtime is not executable"; exit 1 }
+        timeout-minutes: 5
 
       - name: Download Payload
         uses: actions/download-artifact@v4
@@ -277,7 +288,7 @@ jobs:
       - name: Install dependencies
         run: |
           python -m pip install --upgrade pip
-          pip install pyinstaller
+          pip install pyinstaller setuptools==83.0.0 wheel==0.46.3
           pip install -e ".[dev,web]"
         timeout-minutes: 10
 
@@ -286,17 +297,6 @@ jobs:
           cd packaging/portable
           python build_exe.py --without-engine-pack
         timeout-minutes: 15
-
-      - name: Download embeddable Python 3.12
-        shell: pwsh
-        run: |
-          Write-Output "::group::Downloading embeddable Python 3.12"
-          Invoke-WebRequest -Uri "https://www.python.org/ftp/python/3.12.8/python-3.12.8-embed-amd64.zip" `
-            -OutFile "$env:RUNNER_TEMP\python-embed.zip"
-          New-Item -ItemType Directory -Path portable-python -Force
-          Expand-Archive -Path "$env:RUNNER_TEMP\python-embed.zip" -DestinationPath portable-python -Force
-          Write-Output "::endgroup::"
-        timeout-minutes: 5
 
       - name: Download FFmpeg static binaries
         shell: pwsh
@@ -315,22 +315,59 @@ jobs:
       - name: Download Windows wheels from lock files
         shell: pwsh
         run: |
-          New-Item -ItemType Directory -Path vendor\wheels -Force
-          python -m pip download -r packaging/portable/locks/requirements-runtime-py311-win-x64.lock -d vendor\wheels --only-binary=:all: --platform win_amd64 --python-version 3.11
-          python -m pip download -r packaging/portable/locks/requirements-runtime-py312-win-x64.lock -d vendor\wheels --only-binary=:all: --platform win_amd64 --python-version 3.12
+          New-Item -ItemType Directory -Path vendor\wheels -Force | Out-Null
+          $sourceWheels = Join-Path $env:RUNNER_TEMP "blc-source-wheels"
+          python scripts/build_portable_runtime_wheels.py `
+            --output-dir $sourceWheels `
+            --cache-dir (Join-Path $env:RUNNER_TEMP "blc-runtime-sdists")
+          if ($LASTEXITCODE -ne 0) { Write-Error "Source-only wheel build failed"; exit 1 }
+
+          python -m pip download --require-hashes `
+            -r packaging/portable/locks/requirements-runtime-py311-win-x64.lock `
+            -d vendor\wheels --only-binary=:all: --platform win_amd64 `
+            --python-version 3.11 --implementation cp --abi cp311 --find-links $sourceWheels
+          if ($LASTEXITCODE -ne 0) { Write-Error "Python 3.11 locked wheel download failed"; exit 1 }
+
+          python -m pip download --require-hashes `
+            -r packaging/portable/locks/requirements-runtime-py312-win-x64.lock `
+            -d vendor\wheels --only-binary=:all: --platform win_amd64 `
+            --python-version 3.12 --implementation cp --abi cp312 --find-links $sourceWheels
+          if ($LASTEXITCODE -ne 0) { Write-Error "Python 3.12 locked wheel download failed"; exit 1 }
+
           $wheelCount = @(Get-ChildItem vendor\wheels\*.whl -ErrorAction SilentlyContinue).Count
           Write-Output "Wheels downloaded: $wheelCount"
-          if ($wheelCount -eq 0) {
-            Write-Error "FATAL: No wheels downloaded"
+          if ($wheelCount -lt 108) {
+            Write-Error "FATAL: Incomplete wheelhouse ($wheelCount wheels, expected at least 108)"
             exit 1
           }
-        timeout-minutes: 15
+        timeout-minutes: 20
 
       - name: Build Full Bundle
         run: |
           cd packaging/portable
           python build_full_bundle.py
         timeout-minutes: 5
+
+      - name: Set up Python 3.11 for offline validation
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+
+      - name: Validate Python 3.11 offline installation
+        shell: pwsh
+        run: |
+          $venv = Join-Path $env:RUNNER_TEMP "blc-offline-py311"
+          python -m venv $venv
+          if ($LASTEXITCODE -ne 0) { Write-Error "Python 3.11 venv creation failed"; exit 1 }
+          $venvPython = Join-Path $venv "Scripts\python.exe"
+          & $venvPython -m pip install --no-index --find-links vendor\wheels --require-hashes `
+            -r packaging/portable/locks/requirements-runtime-py311-win-x64.lock
+          if ($LASTEXITCODE -ne 0) { Write-Error "Python 3.11 offline install failed"; exit 1 }
+          & $venvPython -m pip check
+          if ($LASTEXITCODE -ne 0) { Write-Error "Python 3.11 pip check failed"; exit 1 }
+          & $venvPython -c "import brotli, fastapi, funasr, loguru, modelscope, pydantic_settings, sqlmodel, torch, torchaudio, uvicorn"
+          if ($LASTEXITCODE -ne 0) { Write-Error "Python 3.11 runtime import smoke failed"; exit 1 }
+        timeout-minutes: 15
 
       - name: Upload Lite EXE
         uses: actions/upload-artifact@v4
@@ -415,33 +452,47 @@ jobs:
       - name: Full Bundle offline install test
         shell: pwsh
         run: |
+          $ErrorActionPreference = "Stop"
           $tmpDir = Join-Path $env:RUNNER_TEMP "blc-full-test-$(Get-Random)"
           New-Item -ItemType Directory -Path $tmpDir -Force
-          $fullZip = Get-ChildItem smoke/full/*.zip | Select-Object -First 1
-          if (-not $fullZip) { Write-Error "Full ZIP not found"; exit 1 }
-          Expand-Archive -Path $fullZip.FullName -DestinationPath $tmpDir -Force
-          Write-Output "Full bundle extracted to $tmpDir"
-          Get-ChildItem $tmpDir -Recurse -Depth 1 | ForEach-Object { $_.Name }
-          $bundleRoot = Get-ChildItem $tmpDir -Directory | Where-Object {
-            $_.Name -like "BiliLiveCut-Portable-Full-*"
-          } | Select-Object -First 1
-          if (-not $bundleRoot) { Write-Error "Full ZIP missing bundle root directory"; exit 1 }
-          # Verify key components exist
-          $root = $bundleRoot.FullName
-          $hasExe = Test-Path "$root\BiliLiveCut-Portable.exe"
-          $hasPython = (Test-Path "$root\portable-python\python.exe") -or (Test-Path "$root\python\python.exe")
-          $hasWheels = (Get-ChildItem "$root\vendor\wheels\*.whl" -ErrorAction SilentlyContinue).Count -gt 0
-          $hasFfmpeg = Test-Path "$root\bin\ffmpeg.exe"
-          $hasFfprobe = Test-Path "$root\bin\ffprobe.exe"
-          Write-Output "EXE=$hasExe Python=$hasPython Wheels=$hasWheels FFmpeg=$hasFfmpeg FFprobe=$hasFfprobe"
-          if (-not $hasExe) { Write-Error "Full ZIP missing Lite EXE"; exit 1 }
-          if (-not $hasPython) { Write-Error "Full ZIP missing embedded Python"; exit 1 }
-          if (-not $hasWheels) { Write-Error "Full ZIP missing vendor/wheels"; exit 1 }
-          if (-not $hasFfmpeg) { Write-Error "Full ZIP missing ffmpeg.exe"; exit 1 }
-          if (-not $hasFfprobe) { Write-Error "Full ZIP missing ffprobe.exe"; exit 1 }
-          Write-Output "Full bundle structure OK"
-          Remove-Item -Recurse -Force $tmpDir -ErrorAction SilentlyContinue
-        timeout-minutes: 5
+          try {
+            $fullZip = Get-ChildItem smoke/full/*.zip | Select-Object -First 1
+            if (-not $fullZip) { throw "Full ZIP not found" }
+            Expand-Archive -Path $fullZip.FullName -DestinationPath $tmpDir -Force
+            $bundleRoot = Get-ChildItem $tmpDir -Directory | Where-Object {
+              $_.Name -like "BiliLiveCut-Portable-Full-*"
+            } | Select-Object -First 1
+            if (-not $bundleRoot) { throw "Full ZIP missing bundle root directory" }
+
+            $root = $bundleRoot.FullName
+            foreach ($required in @(
+              "$root\BiliLiveCut-Portable.exe",
+              "$root\portable-python\python.exe",
+              "$root\bin\ffmpeg.exe",
+              "$root\bin\ffprobe.exe"
+            )) {
+              if (-not (Test-Path $required)) { throw "Full ZIP missing $required" }
+            }
+            $wheelCount = @(Get-ChildItem "$root\vendor\wheels\*.whl" -ErrorAction SilentlyContinue).Count
+            if ($wheelCount -lt 108) { throw "Full ZIP wheelhouse incomplete: $wheelCount" }
+
+            $venv = "$root\runtime\venv-smoke"
+            & "$root\portable-python\python.exe" -m venv $venv
+            if ($LASTEXITCODE -ne 0) { throw "Bundled Python cannot create a venv" }
+            $venvPython = "$venv\Scripts\python.exe"
+            & $venvPython -m pip install --no-index --find-links "$root\vendor\wheels" --require-hashes `
+              -r packaging/portable/locks/requirements-runtime-py312-win-x64.lock
+            if ($LASTEXITCODE -ne 0) { throw "Full Bundle offline dependency install failed" }
+            & $venvPython -m pip check
+            if ($LASTEXITCODE -ne 0) { throw "Full Bundle pip check failed" }
+            & $venvPython -c "import brotli, fastapi, funasr, loguru, modelscope, pydantic_settings, sqlmodel, torch, torchaudio, uvicorn"
+            if ($LASTEXITCODE -ne 0) { throw "Full Bundle runtime import smoke failed" }
+            Write-Output "Full bundle offline installation OK ($wheelCount wheels)"
+          }
+          finally {
+            Remove-Item -Recurse -Force $tmpDir -ErrorAction SilentlyContinue
+          }
+        timeout-minutes: 15
 
       - name: app.cli import smoke test
         shell: pwsh

@@ -82,6 +82,32 @@ def test_install_dep_callable() -> None:
     assert callable(install_dependencies)
 
 
+def test_install_dependencies_recognizes_strict_hash_lock_versions(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """An installed hashed requirement must not trigger a redundant reinstall."""
+    from blc_portable.launcher import main  # noqa: E402
+
+    lock_file = tmp_path / "requirements-runtime-py312-win-x64.lock"
+    lock_file.write_text(
+        "pydantic-settings==2.14.2 --hash=sha256:" + "0" * 64 + "  # wheel.whl\n",
+        encoding="utf-8",
+    )
+    calls: list[list[str]] = []
+
+    def _fake_run(args, **kwargs):
+        calls.append(args)
+        assert args[-2:] == ["pip", "freeze"]
+        return _sp.CompletedProcess(args, 0, stdout="Pydantic_Settings==2.14.2\n", stderr="")
+
+    monkeypatch.setattr(main, "_find_lock_file", lambda _python: lock_file)
+    monkeypatch.setattr(main.subprocess, "run", _fake_run)
+
+    main.install_dependencies(Path(sys.executable), tmp_path)
+
+    assert len(calls) == 1
+
+
 def test_lock_files_exist_in_disk() -> None:
     """Both py311 and py312 lock files must exist on disk."""
     assert (_lock_dir / "requirements-runtime-py311-win-x64.lock").exists()

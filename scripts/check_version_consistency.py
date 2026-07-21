@@ -42,6 +42,48 @@ def check_pyproject_toml(expected: str) -> None:
         print(f"  [OK] pyproject.toml: {actual}")
 
 
+def check_cargo_version(expected: str) -> None:
+    """Check the Rust crate version using a SemVer-safe app-version mapping."""
+    match = re.fullmatch(
+        r"(?P<major>\d+)\.(?P<minor>\d+)\.(?P<patch>\d+)"
+        r"(?:\.(?P<build>\d+))?(?:-(?P<pre>[0-9A-Za-z.-]+))?",
+        expected,
+    )
+    if not match:
+        errors.append(f"Cargo.toml: cannot map app version {expected!r} to SemVer")
+        return
+
+    cargo_expected = ".".join(match.group("major", "minor", "patch"))
+    build = match.group("build")
+    prerelease = match.group("pre")
+    if prerelease and build:
+        cargo_expected += f"-{prerelease}.{build}"
+    elif prerelease:
+        cargo_expected += f"-{prerelease}"
+    elif build:
+        cargo_expected += f"+build.{build}"
+
+    files = {
+        "Cargo.toml": ROOT / "tools" / "native" / "rust" / "Cargo.toml",
+        "Cargo.lock": ROOT / "tools" / "native" / "rust" / "Cargo.lock",
+    }
+    patterns = {
+        "Cargo.toml": r'^version\s*=\s*"([^"]+)"',
+        "Cargo.lock": (
+            r'\[\[package\]\]\s+name\s*=\s*"bili-live-cut-rust"\s+'
+            r'version\s*=\s*"([^"]+)"'
+        ),
+    }
+    for label, path in files.items():
+        version_match = re.search(patterns[label], path.read_text(encoding="utf-8"), re.MULTILINE)
+        if not version_match:
+            errors.append(f"{label}: Rust crate version not found")
+        elif version_match.group(1) != cargo_expected:
+            errors.append(f"{label}: version={version_match.group(1)!r}, expected={cargo_expected!r}")
+        else:
+            print(f"  [OK] {label}: {cargo_expected}")
+
+
 def check_readme(expected: str) -> None:
     """检查 README.md 的版本。"""
     path = ROOT / "README.md"
@@ -112,6 +154,7 @@ def main() -> int:
     print()
 
     check_pyproject_toml(expected)
+    check_cargo_version(expected)
     check_readme(expected)
     check_changelog(expected)
     check_runtime(expected)

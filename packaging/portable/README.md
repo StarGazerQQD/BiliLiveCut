@@ -240,6 +240,17 @@ resources/engine_pack_info.json (本地 Engine Pack 构建后可供 Lite/Full EX
 
 拿到 `BiliLiveCut-Portable-Full-*.zip`，解压到任意目录，双击 `BiliLiveCut-Portable.exe`。启动器自动检测同目录下的 `portable-python/`、`vendor/wheels/`、`bin/ffmpeg.exe`，安装过程无需从互联网拉取任何额外组件。
 
+### 运行依赖锁维护
+
+Portable 使用 Python 3.11 / 3.12 两套 Windows x64 完整依赖锁。锁文件覆盖直接依赖和全部传递依赖，每个条目都固定为 `==` 版本并校验所选 wheel 的 SHA-256。PyPI 没有提供 wheel 的五个纯 Python 包由受控脚本从固定 SHA-256 的源码构建，构建工具版本和时间戳同样固定。
+
+```powershell
+python -m pip install setuptools==83.0.0 wheel==0.46.3
+python scripts/generate_portable_runtime_locks.py
+```
+
+Release CI 会对两套锁执行 `pip download --require-hashes`，并分别进行 Python 3.11 和 3.12 的全新虚拟环境 `--no-index` 离线安装、`pip check` 与核心模块导入测试。不要通过删除哈希、添加 `--no-deps` 或跳过离线安装来规避锁文件错误。
+
 ### 方式三：开发者手动打包
 
 在一台**能联网**的机器上执行：
