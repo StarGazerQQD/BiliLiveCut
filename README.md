@@ -2,10 +2,10 @@
 
 [![CI](https://github.com/StarGazerQQD/BiliLiveCut/actions/workflows/ci.yml/badge.svg)](https://github.com/StarGazerQQD/BiliLiveCut/actions/workflows/ci.yml)
 
-**当前版本：V0.1.15 Alpha** (`0.1.15-alpha`)
+**当前版本：V0.1.15.1 Alpha** (`0.1.15.1-alpha`)
 
 面向 Bilibili 直播的全自动工作流：实时录制 → 转写 → 识别高光 → 生成切片 → 生成文案 → (可选)上传。
-阶段 1–5 全链路已可用；即插即用分发包见 [`packaging/portable/`](packaging/portable/README.md)。
+阶段 1–5 全链路已可用；即插即用分发包见 [`packaging/portable/`](packaging/portable/README.md)。普通 Windows 用户可直接阅读 [Portable 小白使用说明](packaging/portable/USER_GUIDE_ZH.md)。
 
 > ⚠️ **合规声明**：本项目仅调用 Bilibili 网页播放器自身使用的公开接口，不做任何逆向、破解或绕过平台安全策略的行为。请**仅录制你拥有授权的内容**，遵守平台服务条款与合理访问频率。自动上传默认采用 `manual` 模式（只产出成品与元数据，不调用任何平台接口），零封号风险。
 
@@ -28,7 +28,7 @@
 
 | 特性 | 说明 |
 |------|------|
-| **Source 固定** | 源码来自当前发布基线 `4bdaa13`，通过 `git archive` 提取，不混入工作区未提交改动 |
+| **Source 固定** | 源码来自当前发布基线 `1b47a09`，通过 `git archive` 提取，不混入工作区未提交改动 |
 | **零 GitHub 请求** | 首次启动完全从 EXE 内置 Payload 释放源码，不访问 GitHub |
 | **可复现 Payload** | 相同输入构建两次 SHA-256 完全一致，并在发布门禁中自动验证 |
 | **原子 Runtime 安装** | `staging → rename` 原子切换，`current.json` 原子更新 |

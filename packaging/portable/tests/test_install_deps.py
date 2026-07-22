@@ -136,6 +136,7 @@ def test_install_dependencies_auto_uses_full_bundle_wheelhouse(tmp_path: Path, m
     assert "--no-index" in install_call
     assert install_call[install_call.index("--find-links") + 1] == str(wheelhouse)
     assert not any("aliyun" in arg or "tsinghua" in arg for arg in install_call)
+    assert any("import playwright" in arg for args in calls for arg in args)
 
 
 def test_install_dependencies_rejects_full_bundle_without_wheelhouse(

@@ -26,9 +26,9 @@ from typing import Any
 
 # -- Constants ──────────────────────────────────────────────────
 APP_NAME = "BiliLiveCut"
-VERSION = "V0.1.15 Alpha"
-RELEASE_VERSION = "0.1.15-alpha"
-SOURCE_COMMIT_SHORT = "4bdaa13"
+VERSION = "V0.1.15.1 Alpha"
+RELEASE_VERSION = "0.1.15.1-alpha"
+SOURCE_COMMIT_SHORT = "1b47a09"
 # NOTE: RELEASE_ID 将在获得 Payload SHA-256 后动态生成 (内容寻址)
 
 VENV_DIR = ".venv"
@@ -388,7 +388,7 @@ def install_dependencies(venv_python: Path, app_root: Path, req_file: Path | Non
 
     # Import smoke check
     print("  import smoke check...")
-    for mod in ("fastapi", "uvicorn", "sqlmodel", "pydantic", "app.cli"):
+    for mod in ("fastapi", "uvicorn", "sqlmodel", "pydantic", "playwright", "app.cli"):
         subprocess.run(
             [str(venv_python), "-c", f"import {mod}; print('  ok: {mod}')"],
             check=True,
@@ -417,7 +417,7 @@ def prepare_models(app_root: Path, user_engine_pack_path: str | None = None) -> 
     """
     from ..engine_pack.installer import check_installed_models, find_local_engine_pack, install_from_engine_pack
 
-    MODEL_ENGINE_PACK_VERSION = "0.1.15-alpha"
+    MODEL_ENGINE_PACK_VERSION = "0.1.15.1-alpha"
 
     # Read embedded Engine Pack info
     pack_info = get_engine_pack_info()

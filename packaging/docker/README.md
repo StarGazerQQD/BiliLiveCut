@@ -23,8 +23,8 @@ docker compose -f packaging/docker/compose.yaml up --build
 项目根目录提供了便捷启动脚本：
 
 ```bash
-# Windows PowerShell
-.\scripts\docker-up.ps1
+# Windows PowerShell / CMD
+.\scripts\docker-up.bat
 
 # Linux/macOS
 bash scripts/docker-up.sh
@@ -34,6 +34,16 @@ bash scripts/docker-up.sh
 
 ```bash
 docker compose -f packaging/docker/compose.yaml down
+```
+
+也可以使用仓库已有的停止脚本：
+
+```bash
+# Windows PowerShell / CMD
+.\scripts\docker-down.bat
+
+# Linux/macOS
+bash scripts/docker-down.sh
 ```
 
 ### 镜像说明
@@ -71,4 +81,4 @@ cp .env.example .env
 
 ## 版本
 
-当前 Docker 发行对应 BiliLiveCut `v0.1.15-alpha`。
+当前 Docker 发行对应 BiliLiveCut `v0.1.15.1-alpha`。

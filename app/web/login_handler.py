@@ -3,43 +3,100 @@
 打开一个无预存登录态的浏览器窗口,用户手动扫码/手机号/密码登录后,
 自动检测登录成功并提取 Cookie 持久化到运行时设置。
 
-Playwright 是可选依赖:首次调用时会提示安装。
+优先使用系统已安装的 Google Chrome；没有可用 Chrome 时自动安装并使用
+Playwright 托管的 Chromium。
 """
 
 from __future__ import annotations
 
+import os
 import re
 import subprocess
 import sys
 import threading
 import time
+from pathlib import Path
+from typing import TYPE_CHECKING, TypedDict
 
 from loguru import logger
 
-_RUNNING_LOGINS: dict[int, dict] = {}  # task_id -> {status, cookie, error, room?}
+if TYPE_CHECKING:
+    from playwright.sync_api import BrowserContext, Playwright
+
+
+class LoginResult(TypedDict, total=False):
+    """浏览器登录后台任务的可观察状态。"""
+
+    status: str
+    cookie: str
+    error: str
+
+
+_RUNNING_LOGINS: dict[int, LoginResult] = {}
 _next_task_id = 1
+_BROWSER_INSTALL_LOCK = threading.Lock()
 
 # 登录完成所需的 cookie key
 _LOGIN_MARKER = "DedeUserID"
 
 
-def _ensure_playwright() -> str:
-    """确保 playwright 已安装,否则抛出可读错误。"""
+def _playwright_environment() -> dict[str, str]:
+    """返回浏览器进程环境，并将 Portable 浏览器固定到程序目录。"""
+    if os.environ.get("BLC_PORTABLE") == "1" and not os.environ.get("PLAYWRIGHT_BROWSERS_PATH"):
+        browser_dir = (Path.cwd() / "vendor" / "playwright-browsers").resolve()
+        os.environ["PLAYWRIGHT_BROWSERS_PATH"] = str(browser_dir)
+    return os.environ.copy()
+
+
+def _install_playwright_chromium(result_store: LoginResult) -> None:
+    """使用当前运行环境的 Python 安装 Playwright Chromium。"""
+    result_store["status"] = "installing_browser"
+    command = [sys.executable, "-m", "playwright", "install", "chromium"]
+    logger.info("未找到可用的 Chrome，正在下载 Playwright Chromium。")
+    with _BROWSER_INSTALL_LOCK:
+        try:
+            subprocess.run(command, check=True, timeout=900, env=_playwright_environment())
+        except subprocess.TimeoutExpired as exc:
+            raise RuntimeError("Playwright Chromium 下载超过 15 分钟，请检查网络后重试。") from exc
+        except subprocess.CalledProcessError as exc:
+            raise RuntimeError(
+                f"Playwright Chromium 下载失败（退出码 {exc.returncode}），请检查网络和磁盘空间后重试。"
+            ) from exc
+        except OSError as exc:
+            raise RuntimeError(f"无法启动 Chromium 下载程序：{exc}") from exc
+    result_store["status"] = "starting"
+
+
+def _launch_login_context(
+    playwright: Playwright,
+    result_store: LoginResult,
+    browser_error: type[Exception],
+) -> BrowserContext:
+    """优先启动系统 Chrome，不可用时安装并启动托管 Chromium。"""
+    launch_options = {
+        "user_data_dir": "",
+        "headless": False,
+        "args": ["--no-first-run", "--no-default-browser-check"],
+        "viewport": {"width": 480, "height": 720},
+        "locale": "zh-CN",
+    }
     try:
-        import playwright  # noqa: F401
-    except ImportError as err:
-        raise RuntimeError("请先安装 Playwright: pip install playwright && playwright install chromium") from err
-    # 检查浏览器是否已安装
+        context = playwright.chromium.launch_persistent_context(channel="chrome", **launch_options)
+        logger.info("使用系统 Google Chrome 打开 Bilibili 登录页。")
+        return context
+    except browser_error as exc:
+        logger.info("系统 Google Chrome 不可用，将回退到 Playwright Chromium：{}", exc)
+
+    managed_executable = Path(playwright.chromium.executable_path)
+    if not managed_executable.is_file():
+        _install_playwright_chromium(result_store)
+
     try:
-        _result = subprocess.run(
-            [sys.executable, "-m", "playwright", "install", "--dry-run", "chromium"],
-            capture_output=True,
-            text=True,
-            timeout=30,
-        )
-    except Exception:
-        pass
-    return "ok"
+        context = playwright.chromium.launch_persistent_context(**launch_options)
+    except browser_error as exc:
+        raise RuntimeError(f"Playwright Chromium 启动失败：{exc}") from exc
+    logger.info("使用 Playwright Chromium 打开 Bilibili 登录页。")
+    return context
 
 
 def _extract_cookie_string(page) -> str:
@@ -72,28 +129,24 @@ def _save_cookie(cookie_string: str) -> None:
     logger.info("Bilibili Cookie saved: {} kv pairs, keys=[{}]", kv_count, key_list)
 
 
-def _login_task(result_store: dict) -> None:
+def _login_task(result_store: LoginResult) -> None:
     """在后台线程中执行浏览器登录流程。
 
     :param result_store: 外部注入的字典,用于回传结果。
     """
     try:
+        from playwright.sync_api import Error as PlaywrightError
         from playwright.sync_api import sync_playwright
     except ImportError:
-        result_store["error"] = "Playwright 未安装。请运行: pip install playwright && playwright install chromium"
+        result_store["error"] = (
+            "当前运行环境缺少 Playwright。Portable 用户请执行 --repair；源码环境请安装 Web 依赖：pip install '.[web]'。"
+        )
         return
 
     try:
-        _ensure_playwright()
+        _playwright_environment()
         with sync_playwright() as p:
-            # 启动无痕 Chromium,不携带任何预存 cookie
-            context = p.chromium.launch_persistent_context(
-                user_data_dir="",  # 空 = 临时内存目录,无痕
-                headless=False,
-                args=["--no-first-run", "--no-default-browser-check"],
-                viewport={"width": 480, "height": 720},
-                locale="zh-CN",
-            )
+            context = _launch_login_context(p, result_store, PlaywrightError)
             page = context.pages[0]
             # 先清除所有 cookie（确保无残留）
             context.clear_cookies()

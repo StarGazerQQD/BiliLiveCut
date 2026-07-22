@@ -1,5 +1,14 @@
 # Changelog
 
+## V0.1.15.1 Alpha (2026-07-22)
+
+### 变更
+
+- **portable**: 账号登录优先调用系统已安装的 Google Chrome；不可用时复用或按需安装 Playwright Chromium，并补充相应状态提示与回归测试。
+- **portable**: Full/Lite 运行时锁补齐 Playwright 依赖与安装导入冒烟检查，离线 wheelhouse 最低数量同步更新为 110。
+- **docs**: 新增面向普通 Windows 用户的 Portable 从零使用说明，并同步下载、校验、浏览器和故障排查步骤。
+- **repository**: 完善 Docker 构建上下文忽略项，修正 Docker 文档中的启动与停止脚本名称。
+
 ## V0.1.15 Alpha (2026-07-21)
 
 ### 变更
