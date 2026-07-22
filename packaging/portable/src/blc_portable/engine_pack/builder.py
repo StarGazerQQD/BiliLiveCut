@@ -4,10 +4,10 @@
     python build_engine_pack.py              # 真实下载四引擎模型
     python build_engine_pack.py --fixture    # 生成测试用 Fixture (小体积)
 
-两阶段构建流程:
-    1. 下载模型 → staging → 第一次打包 (无 Manifest) → 计算 CRC32/SHA256
-    2. 写入完整 Manifest 到 staging → 第二次打包 (含 Manifest)
-    3. 生成 dist/ 输出文件 → 自校验
+构建流程:
+    1. 下载模型并准备 staging
+    2. 生成不自引用、且不包含归档哈希的内容 Manifest
+    3. 一次性打包，计算外部 CRC32/SHA256，生成输出并自校验
 
 输出:
     dist/engine-pack/
@@ -497,7 +497,7 @@ def write_output_files(
     sha256_val: str,
     archive_path: Path,
     source_commit: str,
-    file_list: dict[str, dict[str, object]],
+    content_manifest_path: Path,
     is_fixture: bool,
 ) -> dict[str, Any]:
     """写入 dist/ 下的所有输出文件。
@@ -506,43 +506,21 @@ def write_output_files(
     :param sha256_val: SHA-256 值。
     :param archive_path: ZIP 文件路径。
     :param source_commit: 当前发布基线的完整 Hash。
-    :param file_list: 逐文件清单。
+    :param content_manifest_path: 已写入 ZIP 的内容 Manifest 路径。
     :param is_fixture: 是否为 Fixture。
     :returns: build_manifest 字典。
     """
     DIST_DIR.mkdir(parents=True, exist_ok=True)
 
-    manifest: dict[str, Any] = {
-        "schema_version": 4,
-        "engine_pack_version": ENGINE_PACK_VERSION,
-        "portable_release_version": ENGINE_PACK_VERSION,
-        "source_commit": source_commit,
-        "source_commit_short": SOURCE_COMMIT_SHORT,
-        "archive_filename": archive_path.name,
-        "archive_crc32": crc32_val,
-        "archive_sha256": sha256_val,
-        "total_files": len(file_list),
-        "fixture": is_fixture,
-        "engines": [
-            {
-                "engine_id": e["engine_id"],
-                "engine_name": e["engine_name"],
-                "model_id": e["model_id"],
-                "hub": e["hub"],
-                "revision": e.get("revision"),
-                "target_path": e["target_path"],
-                "license": e["license"],
-                "model_repo": e.get("repo_id"),
-                "sub_models": e.get("sub_models", []),
-                "third_party_components": e.get("third_party_components", []),
-            }
-            for e in _get_engines_for_build()
-        ],
-        "files": file_list,
-    }
-
     manifest_path = DIST_DIR / "engine-pack-manifest.json"
-    manifest_path.write_text(json.dumps(manifest, ensure_ascii=False, indent=2), encoding="utf-8")
+    manifest_bytes = content_manifest_path.read_bytes()
+    manifest = json.loads(manifest_bytes)
+    file_count = int(manifest.get("total_files", 0))
+    if file_count != len(manifest.get("files", {})):
+        raise RuntimeError(
+            f"Content Manifest file count mismatch: declared={file_count} actual={len(manifest.get('files', {}))}"
+        )
+    manifest_path.write_bytes(manifest_bytes)
 
     (DIST_DIR / "CRC32SUMS.txt").write_text(f"{crc32_val}  {archive_path.name}\n", encoding="utf-8")
     (DIST_DIR / "SHA256SUMS.txt").write_text(f"{sha256_val}  {archive_path.name}\n", encoding="utf-8")
@@ -556,7 +534,7 @@ def write_output_files(
         "fixture": is_fixture,
         "archive_crc32": crc32_val,
         "archive_sha256": sha256_val,
-        "file_count": len(file_list),
+        "file_count": file_count,
         "built_at": datetime.datetime.now().strftime("%Y-%m-%dT%H:%M:%S"),
     }
     (DIST_DIR / "build-manifest.json").write_text(
@@ -634,7 +612,7 @@ def write_output_files(
     print(f"\n  Manifest:     {manifest_path}")
     print(f"  CRC32:        {crc32_val}")
     print(f"  SHA-256:      {sha256_val[:32]}...")
-    print(f"  Total files:  {len(file_list)}")
+    print(f"  Total files:  {file_count}")
     print(f"  Size:         {total_size / (1024**3):.2f} GB")
 
     if total_size > 4 * 1024**3:
@@ -696,9 +674,9 @@ def build_engine_pack(fixture: bool = False, from_cache: bool = False) -> dict[s
     - 默认: 直接下载模型到 staging
     - --fixture: 生成测试用 Fixture
     - --from-cache: 从 .model_cache/ 复制已下载的模型 (需先运行 download_engines.py)
-    1. 下载模型 → staging → 第一次打包 → 计算 CRC32/SHA256
-    2. 写入完整 Manifest 到 staging → 第二次打包 (含 Manifest)
-    3. 生成 dist/ 输出 → 自校验
+    1. 下载模型并准备 staging
+    2. 写入不自引用的内容 Manifest
+    3. 一次性打包并生成外部哈希 → 自校验
 
     :param fixture: True 生成测试 Fixture，False 真实下载。
     :param from_cache: 从缓存复制。
@@ -810,24 +788,12 @@ def build_engine_pack(fixture: bool = False, from_cache: bool = False) -> dict[s
     # ── 生成输出文件 ──
     print("\n  生成输出文件 ...")
 
-    manifest_data["archive_crc32"] = final_crc32
-    manifest_data["archive_sha256"] = final_sha256
-
-    (DIST_DIR / "engine-pack-manifest.json").write_text(
-        json.dumps(manifest_data, ensure_ascii=False, indent=2), encoding="utf-8"
-    )
-
-    file_list["engine-pack-manifest.json"] = {
-        "size": (staging / "engine-pack-manifest.json").stat().st_size,
-        "sha256": compute_sha256(staging / "engine-pack-manifest.json"),
-    }
-
     build_result = write_output_files(
         crc32_val=final_crc32,
         sha256_val=final_sha256,
         archive_path=archive_path,
         source_commit=source_commit,
-        file_list=file_list,
+        content_manifest_path=staging / "engine-pack-manifest.json",
         is_fixture=fixture,
     )
 
