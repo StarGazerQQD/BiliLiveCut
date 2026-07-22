@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import os
 import subprocess as _sp
 import sys
 from pathlib import Path
@@ -97,15 +98,17 @@ def test_install_dependencies_recognizes_strict_hash_lock_versions(
 
     def _fake_run(args, **kwargs):
         calls.append(args)
-        assert args[-2:] == ["pip", "freeze"]
-        return _sp.CompletedProcess(args, 0, stdout="Pydantic_Settings==2.14.2\n", stderr="")
+        if args[-2:] == ["pip", "freeze"]:
+            return _sp.CompletedProcess(args, 0, stdout="Pydantic_Settings==2.14.2\n", stderr="")
+        return _sp.CompletedProcess(args, 0, stdout="import OK\n", stderr="")
 
     monkeypatch.setattr(main, "_find_lock_file", lambda _python: lock_file)
     monkeypatch.setattr(main.subprocess, "run", _fake_run)
 
     main.install_dependencies(Path(sys.executable), tmp_path)
 
-    assert len(calls) == 1
+    assert not any("install" in args for args in calls)
+    assert any("import playwright" in arg for args in calls for arg in args)
 
 
 def test_install_dependencies_auto_uses_full_bundle_wheelhouse(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
@@ -137,6 +140,59 @@ def test_install_dependencies_auto_uses_full_bundle_wheelhouse(tmp_path: Path, m
     assert install_call[install_call.index("--find-links") + 1] == str(wheelhouse)
     assert not any("aliyun" in arg or "tsinghua" in arg for arg in install_call)
     assert any("import playwright" in arg for args in calls for arg in args)
+
+
+def test_app_cli_smoke_uses_installed_runtime_source(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    """app.cli smoke must resolve from the installed Runtime, not the checkout."""
+    from blc_portable.launcher import main  # noqa: E402
+
+    source_dir = tmp_path / "runtime" / "releases" / "release-id"
+    cli_path = source_dir / "app" / "cli.py"
+    cli_path.parent.mkdir(parents=True)
+    cli_path.write_text("app = object()\n", encoding="utf-8")
+    calls: list[tuple[list[str], dict[str, object]]] = []
+
+    def _fake_run(args: list[str], **kwargs: object) -> _sp.CompletedProcess[str]:
+        calls.append((args, kwargs))
+        return _sp.CompletedProcess(args, 0, stdout="  ok: app.cli\n", stderr="")
+
+    monkeypatch.setenv("PYTHONPATH", "ambient-checkout")
+    monkeypatch.setattr(main.subprocess, "run", _fake_run)
+
+    main._run_import_smoke(Path(sys.executable), "app.cli", source_dir)
+
+    args, kwargs = calls[0]
+    assert "import app.cli" in args[-1]
+    assert kwargs["cwd"] == str(source_dir.resolve())
+    env = kwargs["env"]
+    assert isinstance(env, dict)
+    assert env["PYTHONPATH"].split(os.pathsep) == [str(source_dir.resolve()), "ambient-checkout"]
+    assert kwargs["text"] is True
+
+
+def test_import_smoke_reports_original_stderr(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    """Launcher errors must include the captured Python import failure."""
+    from blc_portable.launcher import main  # noqa: E402
+
+    source_dir = tmp_path / "runtime-source"
+    cli_path = source_dir / "app" / "cli.py"
+    cli_path.parent.mkdir(parents=True)
+    cli_path.write_text("app = object()\n", encoding="utf-8")
+
+    def _fail(args: list[str], **_kwargs: object) -> _sp.CompletedProcess[str]:
+        raise _sp.CalledProcessError(
+            1,
+            args,
+            output="",
+            stderr="ModuleNotFoundError: No module named 'app'",
+        )
+
+    monkeypatch.setattr(main.subprocess, "run", _fail)
+
+    with pytest.raises(RuntimeError, match="ModuleNotFoundError: No module named 'app'") as exc_info:
+        main._run_import_smoke(Path(sys.executable), "app.cli", source_dir)
+
+    assert isinstance(exc_info.value.__cause__, _sp.CalledProcessError)
 
 
 def test_install_dependencies_rejects_full_bundle_without_wheelhouse(

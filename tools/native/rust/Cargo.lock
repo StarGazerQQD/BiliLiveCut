@@ -10,7 +10,7 @@ checksum = "f2032f911046de80f0a198e0901378627c33f59ea0ac00e363d481118bd70a53"
 
 [[package]]
 name = "bili-live-cut-rust"
-version = "0.1.15-alpha.1"
+version = "0.1.15-alpha.2"
 dependencies = [
  "pyo3",
  "rayon",

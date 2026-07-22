@@ -207,8 +207,8 @@ class TestEnginePackInfoFields:
         monkeypatch.setattr(builder, "RESOURCES_DIR", resources_dir)
 
         content_manifest = {
-            "schema_version": 4,
-            "engine_pack_version": "0.1.15.1-alpha",
+            "format_version": 4,
+            "engine_pack_version": "0.1.15.2-alpha",
             "total_files": 1,
             "fixture": True,
             "engines": [],
@@ -229,8 +229,43 @@ class TestEnginePackInfoFields:
         )
 
         assert (dist_dir / "engine-pack-manifest.json").read_bytes() == content_manifest_path.read_bytes()
+        assert (dist_dir / "engine-pack-info.json").read_bytes() == (
+            resources_dir / "engine_pack_info.json"
+        ).read_bytes()
         assert result["file_count"] == 1
         assert "engine-pack-manifest.json" not in content_manifest["files"]
+
+    def test_content_manifest_uses_installer_contract(self, tmp_path: Path) -> None:
+        """生产构建器的内部 Manifest 必须能被实际安装器加载。"""
+        from blc_portable.engine_pack.manifest import load_manifest
+
+        content_manifest = {
+            "format_version": 4,
+            "engine_pack_version": "0.1.15.2-alpha",
+            "portable_release_version": "0.1.15.2-alpha",
+            "source_commit": "1b47a0942b04efc1c11b11e1f74bc970f843f4c4",
+            "source_commit_short": "1b47a09",
+            "engines": [
+                {
+                    "engine_id": engine_id,
+                    "engine_name": engine_id,
+                    "model_id": f"fixture/{engine_id}",
+                    "hub": "huggingface",
+                    "revision": "fixture",
+                    "target_path": f"models/{engine_id}",
+                }
+                for engine_id in ("whisper", "paraformer", "sensevoice", "funasr_nano")
+            ],
+            "total_files": 0,
+            "files": {},
+        }
+        manifest_path = tmp_path / "engine-pack-manifest.json"
+        manifest_path.write_text(json.dumps(content_manifest), encoding="utf-8")
+
+        manifest = load_manifest(manifest_path)
+
+        assert manifest.format_version == 4
+        assert manifest.archive_crc32 == ""
 
 
 # ── 版本/API 兼容性 ────────────────────────────────────

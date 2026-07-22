@@ -1,4 +1,4 @@
-"""Release fixture isolation tests (V0.1.15.1)."""
+"""Release fixture isolation tests (V0.1.15.2)."""
 
 from __future__ import annotations
 
@@ -59,11 +59,31 @@ def test_release_full_cli_smoke_uses_offline_venv() -> None:
     release_yml = _PROJ_ROOT / ".github" / "workflows" / "release.yml"
     content = release_yml.read_text(encoding="utf-8")
     full_smoke_start = content.index("- name: Full Bundle offline install test")
-    cleanup_start = content.index("finally {", full_smoke_start)
-    cli_import = '& $venvPython -c "from app.cli import app;'
+    full_smoke_end = content.index("timeout-minutes: 25", full_smoke_start)
+    cli_import = '& $venvPython -c "from pathlib import Path; from app.cli import app;'
 
-    assert cli_import in content[full_smoke_start:cleanup_start]
+    assert cli_import in content[full_smoke_start:full_smoke_end]
     assert 'python -c "from app.cli import app;' not in content
+    assert "Download Payload" in content
+    assert "$runtimeSource\\app\\cli.py" in content
+    assert "source_dir=Path(os.environ['BLC_SMOKE_SOURCE_DIR'])" in content
+    assert "actual.is_relative_to(source)" in content
+    assert "Push-Location $root" in content[full_smoke_start:full_smoke_end]
+
+
+def test_release_runs_frozen_full_launcher_through_model_preparation() -> None:
+    """Release smoke must execute the frozen Full launcher with a non-distributed Fixture pack."""
+    release_yml = _PROJ_ROOT / ".github" / "workflows" / "release.yml"
+    content = release_yml.read_text(encoding="utf-8")
+    full_smoke_start = content.index("- name: Full Bundle offline install test")
+    full_smoke_end = content.index("timeout-minutes: 25", full_smoke_start)
+    smoke = content[full_smoke_start:full_smoke_end]
+
+    assert "build_engine_pack.py --fixture" in smoke
+    assert 'Start-Process -FilePath "$root\\BiliLiveCut-Portable.exe"' in smoke
+    assert '"--offline", "--engine-pack"' in smoke
+    assert "$root\\models\\engine-pack-installed.json" in smoke
+    assert "Frozen Full launcher model preparation OK" in smoke
 
 
 def test_release_workflow_has_release_audit() -> None:

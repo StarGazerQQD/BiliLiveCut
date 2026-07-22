@@ -4,7 +4,7 @@
 Manifest 只描述 ZIP 内实际存在的文件，不包含未入包的文件。
 
 字段语义:
-- portable_release_version: Portable 发布版本 (如 0.1.15.1-alpha)
+- portable_release_version: Portable 发布版本 (如 0.1.15.2-alpha)
 - core_source_commit / core_source_commit_short: 固定业务源码基线 1b47a09
 - core_api_level: 业务源码的 schema version
 - builder_commit: 构建工具 commit
@@ -30,7 +30,7 @@ from typing import Any
 
 SOURCE_COMMIT_SHORT = "1b47a09"
 SOURCE_COMMIT_FULL = "1b47a0942b04efc1c11b11e1f74bc970f843f4c4"
-RELEASE_VERSION = "0.1.15.1-alpha"
+RELEASE_VERSION = "0.1.15.2-alpha"
 MANIFEST_FORMAT_VERSION = 5
 
 # Cached version.json values

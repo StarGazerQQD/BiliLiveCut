@@ -37,3 +37,7 @@ for cmd_name, cmd_func, _help in ALL_COMMANDS:
 def version() -> None:
     """显示当前版本号。"""
     print(f"BiliLiveCut {__version__}")
+
+
+if __name__ == "__main__":
+    app()

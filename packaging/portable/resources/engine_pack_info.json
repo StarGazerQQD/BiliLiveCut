@@ -1,20 +1,27 @@
 {
-    "format_version": 4,
-    "engine_pack_version": "0.1.15.1-alpha",
-    "engine_pack_api_version": 4,
-    "model_set_version": 4,
-    "payload_schema_version": 4,
-    "compatible_app": {"min": "0.1.15.1-alpha", "max_exclusive": "0.1.16"},
-    "filename": "BiliLiveCut-EnginePack-0.1.15.1-alpha.zip",
-    "size_bytes": 4265,
-    "crc32": "6BFE5DC7",
-    "sha256": "2d3b19fef2cb00b0adc0056a42573334751c56efad758f78d84d9c6512629562",
-    "content_manifest_sha256": "36d634ab3c4ccfc87693aafb014e73d0392cd1b4b1d8a85b8de0d60cfee1713d",
-    "model_lock_sha256": "93e12f11251fc77c8ac61b8ab477515e5d44f1bf44d36379c2b2aef610c64dd4",
-    "source_commit": "1b47a0942b04efc1c11b11e1f74bc970f843f4c4",
-    "builder_commit": "8301b37185697ffbb90e31768103ac98ad5b9b91",
-    "build_timestamp": "2026-07-17T09:57:17",
-    "expected_engine_ids": ["whisper", "paraformer", "sensevoice", "funasr_nano"],
-    "artifact_class": "fixture",
-    "_note": "This is a test fixture (4KB placeholder). Production builds auto-generate this file with real model hashes. Do NOT manually set artifact_class=production on a fixture."
+  "format_version": 4,
+  "artifact_class": "fixture",
+  "engine_pack_version": "0.1.15.2-alpha",
+  "engine_pack_api_version": 4,
+  "model_set_version": 4,
+  "payload_schema_version": 4,
+  "compatible_app": {
+    "min": "0.1.15.2-alpha",
+    "max_exclusive": "0.1.16"
+  },
+  "filename": "BiliLiveCut-EnginePack-0.1.15.2-alpha.zip",
+  "size_bytes": 11271,
+  "crc32": "14020422",
+  "sha256": "3200d1126c2f9006c32501b7aad962051666892a082a117dbbdd8e08f2500052",
+  "content_manifest_sha256": "198ed89e798953a6e6d9974334ddb2ce7a12059a5b106e764836081c81db06be",
+  "model_lock_sha256": "ac858d2fbd39ed94507f5285bada1fc9355e4292f87ca79a57cec81f52830da0",
+  "source_commit": "1b47a0942b04efc1c11b11e1f74bc970f843f4c4",
+  "builder_commit": "347242a423005e804b803c7601d552a760fd68c3",
+  "build_timestamp": "2026-07-22T21:10:43",
+  "expected_engine_ids": [
+    "whisper",
+    "paraformer",
+    "sensevoice",
+    "funasr_nano"
+  ]
 }

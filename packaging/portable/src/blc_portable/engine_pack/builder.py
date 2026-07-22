@@ -11,7 +11,7 @@
 
 输出:
     dist/engine-pack/
-    ├── BiliLiveCut-EnginePack-0.1.15.1-alpha.zip
+    ├── BiliLiveCut-EnginePack-0.1.15.2-alpha.zip
     ├── engine-pack-manifest.json
     ├── CRC32SUMS.txt
     ├── SHA256SUMS.txt
@@ -45,7 +45,7 @@ DIST_DIR = PORTABLE_DIR / "dist" / "engine-pack"
 RESOURCES_DIR = PORTABLE_DIR / "resources"
 LICENSES_DIR = PORTABLE_DIR / "licenses"
 
-ENGINE_PACK_VERSION = "0.1.15.1-alpha"
+ENGINE_PACK_VERSION = "0.1.15.2-alpha"
 SOURCE_COMMIT_SHORT = "1b47a09"
 ARCHIVE_NAME = f"BiliLiveCut-EnginePack-{ENGINE_PACK_VERSION}"
 
@@ -450,7 +450,10 @@ def self_verify(archive_path: Path, manifest: dict[str, Any]) -> bool:
 
         _safe_extract(archive_path, verify_dir)
 
+        from .manifest import load_manifest
         from .verifier import verify_extracted_tree
+
+        load_manifest(verify_dir / "engine-pack-manifest.json")
 
         errors = verify_extracted_tree(verify_dir, manifest)
         if errors:
@@ -605,9 +608,9 @@ def write_output_files(
         )
         if errors:
             raise RuntimeError("Engine Pack production metadata validation FAILED:\n  " + "\n  ".join(errors))
-    (RESOURCES_DIR / "engine_pack_info.json").write_text(
-        json.dumps(engine_pack_info, ensure_ascii=False, indent=2), encoding="utf-8"
-    )
+    engine_pack_info_text = json.dumps(engine_pack_info, ensure_ascii=False, indent=2)
+    (RESOURCES_DIR / "engine_pack_info.json").write_text(engine_pack_info_text, encoding="utf-8")
+    (DIST_DIR / "engine-pack-info.json").write_text(engine_pack_info_text, encoding="utf-8")
 
     print(f"\n  Manifest:     {manifest_path}")
     print(f"  CRC32:        {crc32_val}")
@@ -745,8 +748,9 @@ def build_engine_pack(fixture: bool = False, from_cache: bool = False) -> dict[s
     file_list = build_file_list(staging)
 
     manifest_data: dict[str, Any] = {
-        "schema_version": 4,
+        "format_version": 4,
         "engine_pack_version": ENGINE_PACK_VERSION,
+        "portable_release_version": ENGINE_PACK_VERSION,
         "compatible_app": {"min": ENGINE_PACK_VERSION, "max_exclusive": "0.1.16"},
         "source_commit": source_commit,
         "source_commit_short": SOURCE_COMMIT_SHORT,

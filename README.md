@@ -2,7 +2,7 @@
 
 [![CI](https://github.com/StarGazerQQD/BiliLiveCut/actions/workflows/ci.yml/badge.svg)](https://github.com/StarGazerQQD/BiliLiveCut/actions/workflows/ci.yml)
 
-**当前版本：V0.1.15.1 Alpha** (`0.1.15.1-alpha`)
+**当前版本：V0.1.15.2 Alpha** (`0.1.15.2-alpha`)
 
 面向 Bilibili 直播的全自动工作流：实时录制 → 转写 → 识别高光 → 生成切片 → 生成文案 → (可选)上传。
 阶段 1–5 全链路已可用；即插即用分发包见 [`packaging/portable/`](packaging/portable/README.md)。普通 Windows 用户可直接阅读 [Portable 小白使用说明](packaging/portable/USER_GUIDE_ZH.md)。
@@ -21,7 +21,7 @@
 
 ## V0.1.15 新特性：V0.1.14 稳定性收口与 Portable 发布
 
-**V0.1.15 是对 V0.1.14 架构重构与稳定性治理的发布收口。** V0.1.14 完成了模块拆分、状态恢复、数据一致性和发布安全基础；V0.1.15 将这些能力收敛为可复现、可离线安装、可供普通 Windows 用户直接测试的 Portable 发行链路。当前补丁版本为 `V0.1.15.1 Alpha`。
+**V0.1.15 是对 V0.1.14 架构重构与稳定性治理的发布收口。** V0.1.14 完成了模块拆分、状态恢复、数据一致性和发布安全基础；V0.1.15 将这些能力收敛为可复现、可离线安装、可供普通 Windows 用户直接测试的 Portable 发行链路。当前补丁版本为 `V0.1.15.2 Alpha`。
 
 ### Portable 发布闭环
 
@@ -57,7 +57,7 @@
 | **Chrome 优先登录** | 优先使用系统 Chrome，不可用时自动安装 Playwright Chromium |
 | **安全解压** | 解压拒绝绝对路径、`..`、盘符路径和符号链接 |
 
-> `V0.1.15.1 Alpha` 已通过当前 `main` 全矩阵 CI，适合小规模、受控分发测试；它仍是 Alpha 版本，不等同于面向所有用户的稳定正式版。
+> `V0.1.15.2 Alpha` 修复 Full 首次启动的 Runtime 导入与冻结 Launcher 模型准备问题；通过完整发布门禁和实际 Full 制品验证后，可用于小规模、受控分发测试。它仍是 Alpha 版本，不等同于面向所有用户的稳定正式版。
 
 详见 [`packaging/portable/README.md`](packaging/portable/README.md)。
 

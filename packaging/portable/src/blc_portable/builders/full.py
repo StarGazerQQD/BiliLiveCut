@@ -14,6 +14,7 @@ import os
 import shutil
 import tempfile
 import zipfile
+import zlib
 from pathlib import Path
 
 PORTABLE_DIR = Path(__file__).resolve().parent.parent.parent.parent
@@ -23,8 +24,36 @@ LITE_DIR = PORTABLE_DIR / "dist" / "lite"
 PAYLOAD_DIR = PORTABLE_DIR / "dist" / "payload"
 RESOURCES_DIR = PORTABLE_DIR / "resources"
 
-RELEASE_VERSION = "0.1.15.1-alpha"
+RELEASE_VERSION = "0.1.15.2-alpha"
 FULL_NAME = f"BiliLiveCut-Portable-Full-{RELEASE_VERSION}-x64"
+
+
+def _compute_archive_hashes(path: Path) -> tuple[str, str]:
+    """流式计算发布制品的 SHA-256 和 CRC32，避免将大文件整体读入内存。"""
+    import hashlib
+
+    sha256 = hashlib.sha256()
+    crc32 = 0
+    with path.open("rb") as stream:
+        for chunk in iter(lambda: stream.read(1024 * 1024), b""):
+            sha256.update(chunk)
+            crc32 = zlib.crc32(chunk, crc32)
+    return sha256.hexdigest(), f"{crc32 & 0xFFFFFFFF:08X}"
+
+
+def _load_production_engine_pack_crc32(info_path: Path) -> str:
+    """Return the CRC32 only when metadata describes a production Engine Pack."""
+    if not info_path.exists():
+        return ""
+
+    info = json.loads(info_path.read_text(encoding="utf-8"))
+    if info.get("artifact_class") != "production":
+        return ""
+
+    crc32 = str(info.get("crc32", "")).strip().upper()
+    if not crc32:
+        raise RuntimeError("Production Engine Pack metadata is missing crc32")
+    return crc32
 
 
 def build_full_bundle() -> Path:
@@ -35,7 +64,7 @@ def build_full_bundle() -> Path:
     - portable-python/ (relocatable Python runtime with venv support)
     - vendor/wheels/ (offline dependency packages)
     - bin/ffmpeg.exe, bin/ffprobe.exe
-    - README.txt, checksums.json, SHA256SUMS.txt
+    - README.txt, checksums.json, SHA256SUMS.txt, CRC32SUMS.txt
 
     Note: Full does NOT include engine models. Models are provided
     by a separate Engine Pack.
@@ -104,12 +133,12 @@ def build_full_bundle() -> Path:
             )
 
     # 读取 Engine Pack 信息 (如有)
-    engine_pack_crc32 = ""
     ep_info_path = RESOURCES_DIR / "engine_pack_info.json"
-    if ep_info_path.exists():
-        ep_info = json.loads(ep_info_path.read_text(encoding="utf-8"))
-        engine_pack_crc32 = ep_info.get("crc32", "")
+    engine_pack_crc32 = _load_production_engine_pack_crc32(ep_info_path)
+    if engine_pack_crc32:
         print(f"  Engine Pack CRC32: {engine_pack_crc32 or '(empty)'}")
+    elif ep_info_path.exists():
+        print("  Engine Pack CRC32: omitted (non-production metadata)")
 
     with tempfile.TemporaryDirectory() as tmpdir:
         tmp = Path(tmpdir)
@@ -254,7 +283,7 @@ Source:
                     zf.write(p, rel)
 
         # 生成 build-manifest.json 和 SHA256SUMS
-        zip_sha256 = hashlib.sha256(zip_path.read_bytes()).hexdigest()
+        zip_sha256, zip_crc32 = _compute_archive_hashes(zip_path)
         build_manifest = {
             "release_version": RELEASE_VERSION,
             "source_commit": manifest["source_commit"],
@@ -264,6 +293,7 @@ Source:
             "artifact_type": "full",
             "payload_sha256": manifest["payload_sha256"],
             "artifact_sha256": zip_sha256,
+            "artifact_crc32": zip_crc32,
             "engine_pack_crc32": engine_pack_crc32,
         }
 
@@ -271,9 +301,11 @@ Source:
             json.dumps(build_manifest, ensure_ascii=False, indent=2), encoding="utf-8"
         )
         (DIST_DIR / "SHA256SUMS.txt").write_text(f"{zip_sha256}  {FULL_NAME}.zip\n", encoding="utf-8")
+        (DIST_DIR / "CRC32SUMS.txt").write_text(f"{zip_crc32}  {FULL_NAME}.zip\n", encoding="utf-8")
 
         print(f"\n  [OK] {zip_path.name} ({zip_path.stat().st_size / 1024 / 1024:.1f} MB)")
         print(f"  SHA256: {zip_sha256[:32]}")
+        print(f"  CRC32: {zip_crc32}")
 
     return zip_path
 

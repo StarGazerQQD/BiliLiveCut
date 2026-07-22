@@ -167,8 +167,18 @@ def check_ci_bypass(audit: AuditResult) -> None:
         )
         audit.check(
             "release.yml CLI smoke 导入真实入口",
-            "from app.cli import app" in content and "from app.cli import main" not in content,
-            "CLI smoke test 必须导入 Typer app，而不是不存在的 main",
+            "from app.cli import app" in content
+            and "from app.cli import main" not in content
+            and "source_dir=Path(os.environ['BLC_SMOKE_SOURCE_DIR'])" in content
+            and "actual.is_relative_to(source)" in content,
+            "CLI smoke test 必须使用已安装 Runtime 源码导入 Typer app",
+        )
+        audit.check(
+            "release.yml 冻结 Launcher 模型准备 smoke",
+            "Frozen Full launcher model preparation OK" in content
+            and '"--offline", "--engine-pack"' in content
+            and "$root\\models\\engine-pack-installed.json" in content,
+            "Full smoke 必须让冻结 EXE 完成 Fixture Engine Pack 模型准备",
         )
         audit.check(
             "release.yml Full ZIP 定位顶层目录",
@@ -179,6 +189,22 @@ def check_ci_bypass(audit: AuditResult) -> None:
             "release.yml 显式省略未分发 Engine Pack",
             "python build_exe.py --without-engine-pack" in content,
             "GitHub Release 不分发 Engine Pack，不得嵌入仓库 fixture 元数据",
+        )
+    launcher_spec = REPO_ROOT / "packaging" / "portable" / "specs" / "portable_launcher.spec"
+    if launcher_spec.exists():
+        spec_content = launcher_spec.read_text(encoding="utf-8")
+        audit.check(
+            "冻结 Launcher 收集 Engine Pack 配置依赖",
+            all(
+                token in spec_content
+                for token in (
+                    '"model_catalog"',
+                    '"version_loader"',
+                    '(_version_config, ".")',
+                    '(_model_sources_lock, ".")',
+                )
+            ),
+            "PyInstaller 必须收集 Engine Pack 配置模块和 JSON 数据",
         )
 
 
