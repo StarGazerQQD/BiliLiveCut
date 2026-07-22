@@ -122,8 +122,8 @@
       "display_name": "SenseVoice-Small (辅助特征引擎)",
       "hub": "modelscope",
       "repository": "iic/SenseVoiceSmall",
-      "requested_revision": "",
-      "resolved_revision": "v1.0.0",
+      "requested_revision": "master",
+      "resolved_revision": "7bf452403abd7353a300cd760f7adae7701c92c1",
       "target_path": "models/sensevoice",
       "required_files": [
         "model.pt",
@@ -149,8 +149,8 @@
       "display_name": "Fun-ASR-Nano (低置信度复核引擎)",
       "hub": "modelscope",
       "repository": "FunAudioLLM/Fun-ASR-Nano-2512",
-      "requested_revision": "",
-      "resolved_revision": "v1.0.0",
+      "requested_revision": "master",
+      "resolved_revision": "05201c46f1c38592b1567f857c0d56eab3d0d8ef",
       "target_path": "models/funasr_nano",
       "required_files": [
         "model.pt",
@@ -164,7 +164,7 @@
           "component_id": "qwen3_0_6b",
           "display_name": "Qwen3-0.6B 随附组件",
           "repository": "Qwen/Qwen3-0.6B",
-          "revision": "included-in-funasr-nano-v1.0.0",
+          "revision": "included-in-funasr-nano-05201c46f1c38592b1567f857c0d56eab3d0d8ef",
           "target_subdir": "Qwen3-0.6B",
           "license": {
             "name": "Apache-2.0",

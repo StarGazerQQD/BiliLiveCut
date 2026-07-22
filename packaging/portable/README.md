@@ -152,8 +152,8 @@ Lite 和 Full 均不携带 ASR 模型。四个引擎模型统一由独立的 **E
 |------|---------|------|------|
 | Whisper (兜底) | faster-whisper-large-v3-turbo | Hugging Face (dropbox-dash/) | 0a363e9161cb |
 | Paraformer-zh (主引擎) | paraformer-zh | ModelScope | v2.0.4 |
-| SenseVoice-Small (辅助特征) | iic/SenseVoiceSmall | ModelScope | v1.0.0 |
-| Fun-ASR-Nano (低置信复核) | FunAudioLLM/Fun-ASR-Nano-2512 | ModelScope | v1.0.0 |
+| SenseVoice-Small (辅助特征) | iic/SenseVoiceSmall | ModelScope | 7bf452403abd |
+| Fun-ASR-Nano (低置信复核) | FunAudioLLM/Fun-ASR-Nano-2512 | ModelScope | 05201c46f1c3 |
 
 > Paraformer 额外需要 `fsmn-vad` / `ct-punc` / `campplus` 三个子模型（自动下载）。
 

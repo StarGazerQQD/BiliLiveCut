@@ -12,9 +12,9 @@
 | FSMN-VAD | https://modelscope.cn/models/iic/speech_fsmn_vad_zh-cn-16k-common-pytorch | `v2.0.4` | Apache-2.0 |
 | CT-Transformer 标点模型 | https://modelscope.cn/models/iic/punc_ct-transformer_zh-cn-common-vocab272727-pytorch | `v2.0.4` | Apache-2.0 |
 | CAM++ 说话人模型 | https://modelscope.cn/models/iic/speech_campplus_sv_zh-cn_16k-common | `v1.0.0` | Apache-2.0 |
-| SenseVoiceSmall | https://modelscope.cn/models/iic/SenseVoiceSmall | `v1.0.0` | Apache-2.0 |
-| Fun-ASR-Nano-2512 | https://modelscope.cn/models/FunAudioLLM/Fun-ASR-Nano-2512 | `v1.0.0` | Apache-2.0 |
-| Qwen3-0.6B 随附组件 | https://huggingface.co/Qwen/Qwen3-0.6B | 随 Fun-ASR-Nano `v1.0.0` 固定 | Apache-2.0 |
+| SenseVoiceSmall | https://modelscope.cn/models/iic/SenseVoiceSmall | `7bf452403abd7353a300cd760f7adae7701c92c1` | Apache-2.0 |
+| Fun-ASR-Nano-2512 | https://modelscope.cn/models/FunAudioLLM/Fun-ASR-Nano-2512 | `05201c46f1c38592b1567f857c0d56eab3d0d8ef` | Apache-2.0 |
+| Qwen3-0.6B 随附组件 | https://huggingface.co/Qwen/Qwen3-0.6B | 随 Fun-ASR-Nano `05201c46f1c38592b1567f857c0d56eab3d0d8ef` 固定 | Apache-2.0 |
 
 ## 许可证文件
 

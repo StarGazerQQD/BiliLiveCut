@@ -30,10 +30,19 @@ class TestModelCatalogSingleSource:
             rev = engine.get("resolved_revision", "")
             assert rev, f"Engine {engine['engine_id']}: resolved_revision empty"
             assert rev not in ("main", "master"), f"Engine {engine['engine_id']}: floating revision {rev}"
-            if engine["hub"] == "huggingface":
+            if engine["hub"] == "huggingface" or not rev.startswith("v"):
                 assert len(rev) == 40 and all(char in "0123456789abcdef" for char in rev), (
-                    f"Engine {engine['engine_id']}: Hugging Face revision must be a full commit: {rev}"
+                    f"Engine {engine['engine_id']}: revision must be a full commit or version tag: {rev}"
                 )
+
+    def test_master_only_modelscope_repositories_use_resolved_commits(self) -> None:
+        catalog = _load_lock()
+        expected = {
+            "sensevoice": "7bf452403abd7353a300cd760f7adae7701c92c1",
+            "funasr_nano": "05201c46f1c38592b1567f857c0d56eab3d0d8ef",
+        }
+        actual = {engine["engine_id"]: engine["resolved_revision"] for engine in catalog["engines"]}
+        assert {engine_id: actual[engine_id] for engine_id in expected} == expected
 
     def test_no_legacy_funasr_repo(self) -> None:
         catalog = _load_lock()
