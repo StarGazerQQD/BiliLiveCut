@@ -13,7 +13,7 @@ async function approveCand(id) {
 
 async function rejectCand(id) {
   try {
-    await api("POST", `/api/candidates/${id}/reject");
+    await api("POST", `/api/candidates/${id}/reject`);
     toast("\u5df2\u62d2\u7edd");
     const { loadCandidates } = await import("./candidates.js");
     loadCandidates();

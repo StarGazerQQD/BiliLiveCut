@@ -4,6 +4,7 @@
 
 ### 修复
 
+- **web**: 修复候选片段拒绝请求的模板字符串未闭合导致前端 ES Module 初始化中断、页面按钮全部失效，并增加全量静态 JavaScript 语法回归检查。
 - **portable**: Full 首次安装完成依赖后，`app.cli` 导入检查改为显式使用已安装的内容寻址 Runtime 源码，并在失败时保留原始 stdout/stderr。
 - **portable**: 冻结 Launcher 的 Engine Pack、在线模型下载和模型校验入口改用绝对导入，修复 PyInstaller 顶层脚本缺少包上下文导致的模型准备崩溃。
 - **release**: Full 离线 smoke 从实际 Payload 解压源码，在干净工作目录中使用 Full venv 导入 `app.cli`，并让冻结 EXE 使用 Fixture Engine Pack 完成模型准备。
