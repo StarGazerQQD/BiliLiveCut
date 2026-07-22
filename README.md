@@ -17,10 +17,31 @@
 > python build_engine_pack.py --from-cache  # 构建 Engine Pack ZIP
 > ```
 > 生成的 ZIP 放在便携版同目录下，首次启动时自动校验 CRC32/SHA-256 并安装模型。
+> 正式构建会校验每个主模型、子模型和随附组件的固定 revision、目录契约及再分发许可证；包内附带 MIT、Apache-2.0 原文和[第三方模型声明](packaging/portable/licenses/THIRD_PARTY_NOTICES.md)。
 
-## V0.1.14.7 新特性：发行结构重构
+## V0.1.15 新特性：V0.1.14 稳定性收口与 Portable 发布
 
-解决中国大陆 GitHub 不稳定问题，建立从固定 Git Commit 提取源码、嵌入 Portable EXE 的发行链路。彻底摆脱首发时对 GitHub 的依赖。
+**V0.1.15 是对 V0.1.14 架构重构与稳定性治理的发布收口。** V0.1.14 完成了模块拆分、状态恢复、数据一致性和发布安全基础；V0.1.15 将这些能力收敛为可复现、可离线安装、可供普通 Windows 用户直接测试的 Portable 发行链路。当前补丁版本为 `V0.1.15.1 Alpha`。
+
+### Portable 发布闭环
+
+- **固定业务源码**：Payload 从提交 `1b47a09` 通过 `git archive` 提取，不混入构建机工作区内容。
+- **Lite / Full 双发行**：Lite 保持单 EXE；Full 自带 Python 3.12、严格哈希锁定的离线 wheelhouse、FFmpeg 和 FFprobe。
+- **离线依赖可验证**：Full 安装强制使用本地 wheelhouse，安装后执行 `pip check`、核心模块和 `app.cli` 导入冒烟测试。
+- **原子 Runtime 安装**：使用内容寻址 Release ID、staging 原子切换和 `current.json`，升级失败不会破坏已安装版本。
+- **完整性与解压安全**：Payload 和 Engine Pack 使用 SHA-256/CRC32、逐文件 Manifest，并拒绝绝对路径、`..`、盘符路径和符号链接。
+
+### 首次使用与账号登录
+
+- 登录窗口优先调用电脑已安装的 Google Chrome；找不到时复用或按需下载 Playwright Chromium。
+- Playwright 已进入 Portable 运行时锁和安装导入检查，不再要求用户预先手工安装浏览器组件。
+- 新增 [Portable 小白使用说明](packaging/portable/USER_GUIDE_ZH.md)，覆盖下载、校验、解压、启动、配置、首次录制和常见故障排查。
+
+### 发布质量收口
+
+- 版本号、Portable 元数据、Rust SemVer、构建脚本、工作流和说明文档统一由发布检查交叉验证。
+- `main` CI 覆盖 Ubuntu、Windows、macOS、Python 3.11–3.13、Portable、依赖审计、覆盖率和 CodeQL。
+- 完整发布门禁验证可复现 Payload、主项目测试、Portable 测试、Ruff 和版本一致性；原生扩展不可用时保留经过测试的纯 Python 回退。
 
 ```text
 用户取得 Portable EXE → 双击运行 → 读取内置 Payload → 不访问 GitHub → 校验 SHA-256 → 释放源码 → 启动
@@ -32,10 +53,11 @@
 | **零 GitHub 请求** | 首次启动完全从 EXE 内置 Payload 释放源码，不访问 GitHub |
 | **可复现 Payload** | 相同输入构建两次 SHA-256 完全一致，并在发布门禁中自动验证 |
 | **原子 Runtime 安装** | `staging → rename` 原子切换，`current.json` 原子更新 |
-| **Lite / Full 双发行** | Lite: 轻量化单 EXE，安装时联网下载依赖；Full: 预置 Portable Python + Wheels + FFmpeg，安装无需额外下载 |
-| **Zip Slip 防护** | 解压拒绝绝对路径、`..` 和盘符路径 |
+| **Lite / Full 双发行** | Lite：轻量单 EXE，安装时联网下载依赖；Full：预置 Portable Python、离线 Wheels 和 FFmpeg |
+| **Chrome 优先登录** | 优先使用系统 Chrome，不可用时自动安装 Playwright Chromium |
+| **安全解压** | 解压拒绝绝对路径、`..`、盘符路径和符号链接 |
 
-测试: 19 项 Portable 测试 + 308 项主项目测试全部通过，Ruff 零错误。
+> `V0.1.15.1 Alpha` 已通过当前 `main` 全矩阵 CI，适合小规模、受控分发测试；它仍是 Alpha 版本，不等同于面向所有用户的稳定正式版。
 
 详见 [`packaging/portable/README.md`](packaging/portable/README.md)。
 

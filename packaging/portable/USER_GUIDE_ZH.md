@@ -41,7 +41,7 @@ Full 版不要求系统安装 Python、FFmpeg、Visual Studio、Git 或其他编
 
 ## 2. 下载正确的文件
 
-打开项目的 [GitHub Releases 页面](https://github.com/StarGazerQQD/BiliLiveCut/releases)，进入 `v0.1.15.1-Alpha`，下载：
+打开项目的 [GitHub Releases 页面](https://github.com/StarGazerQQD/BiliLiveCut/releases)，进入 `v0.1.15.1-alpha`，下载：
 
 1. `BiliLiveCut-Portable-Full-0.1.15.1-alpha-x64.zip`
 2. `SHA256SUMS.txt`

@@ -132,6 +132,20 @@ class TestFixtureImpersonationDetection:
         meta = ExternalMetadata()
         assert meta.artifact_class == "", "artifact_class default must be empty, not 'production'"
 
+    def test_builder_rejects_tiny_production_archive(self) -> None:
+        """正式构建器必须拒绝小体积占位包。"""
+        from blc_portable.engine_pack.builder import validate_production_metadata
+
+        errors = validate_production_metadata(
+            "ABCDEF01",
+            "a" * 64,
+            "b" * 64,
+            "c" * 64,
+            "d" * 40,
+            1024,
+        )
+        assert any("too small" in error for error in errors)
+
 
 # ── engine_pack_info.json 必需字段 ──────────────────────
 
@@ -180,6 +194,43 @@ class TestEnginePackInfoFields:
             pytest.skip("engine_pack_info.json not present")
         info = json.loads(_EP_INFO_PATH.read_text(encoding="utf-8"))
         assert set(info["expected_engine_ids"]) == {"whisper", "paraformer", "sensevoice", "funasr_nano"}
+
+    def test_external_manifest_matches_packaged_content_manifest(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """外部内容 Manifest 必须与写入 ZIP 的版本逐字一致，且不得把自身加入文件清单。"""
+        from blc_portable.engine_pack import builder
+
+        dist_dir = tmp_path / "dist"
+        resources_dir = tmp_path / "resources"
+        monkeypatch.setattr(builder, "DIST_DIR", dist_dir)
+        monkeypatch.setattr(builder, "RESOURCES_DIR", resources_dir)
+
+        content_manifest = {
+            "schema_version": 4,
+            "engine_pack_version": "0.1.15.1-alpha",
+            "total_files": 1,
+            "fixture": True,
+            "engines": [],
+            "files": {"models/fixture/model.bin": {"size": 4, "sha256": "0" * 64}},
+        }
+        content_manifest_path = tmp_path / "engine-pack-manifest.json"
+        content_manifest_path.write_text(json.dumps(content_manifest, ensure_ascii=False, indent=2), encoding="utf-8")
+        archive_path = tmp_path / "fixture.zip"
+        archive_path.write_bytes(b"fixture")
+
+        result = builder.write_output_files(
+            crc32_val="1234ABCD",
+            sha256_val="a" * 64,
+            archive_path=archive_path,
+            source_commit="1b47a0942b04efc1c11b11e1f74bc970f843f4c4",
+            content_manifest_path=content_manifest_path,
+            is_fixture=True,
+        )
+
+        assert (dist_dir / "engine-pack-manifest.json").read_bytes() == content_manifest_path.read_bytes()
+        assert result["file_count"] == 1
+        assert "engine-pack-manifest.json" not in content_manifest["files"]
 
 
 # ── 版本/API 兼容性 ────────────────────────────────────

@@ -21,6 +21,19 @@ _cache: dict | None = None
 
 
 @dataclass
+class LicenseDef:
+    """模型或随附组件的再分发许可证信息。"""
+
+    name: str = ""
+    spdx: str = ""
+    source: str = ""
+    evidence_url: str = ""
+    license_file: str = ""
+    verified_at: str = ""
+    redistribution_verified: bool = False
+
+
+@dataclass
 class SubModelDef:
     """子模型定义（如 Paraformer 的 VAD/标点/声纹）。"""
 
@@ -31,6 +44,19 @@ class SubModelDef:
     requested_revision: str
     resolved_revision: str
     target_subdir: str
+    license: LicenseDef = field(default_factory=LicenseDef)
+
+
+@dataclass
+class ThirdPartyComponentDef:
+    """模型快照内随附、但由另一上游维护的组件。"""
+
+    component_id: str
+    display_name: str
+    repository: str
+    revision: str
+    target_subdir: str
+    license: LicenseDef = field(default_factory=LicenseDef)
 
 
 @dataclass
@@ -46,10 +72,37 @@ class EngineDef:
     target_path: str
     required_files: list[str]
     sub_models: list[SubModelDef] = field(default_factory=list)
+    third_party_components: list[ThirdPartyComponentDef] = field(default_factory=list)
     repo_id: str = ""  # huggingface specific
-    license_name: str = ""
-    license_source: str = ""
-    redistribution_verified: bool = False
+    license: LicenseDef = field(default_factory=LicenseDef)
+
+    @property
+    def license_name(self) -> str:
+        """兼容旧调用方的许可证名称属性。"""
+        return self.license.name
+
+    @property
+    def license_source(self) -> str:
+        """兼容旧调用方的许可证来源属性。"""
+        return self.license.source
+
+    @property
+    def redistribution_verified(self) -> bool:
+        """兼容旧调用方的再分发验证属性。"""
+        return self.license.redistribution_verified
+
+
+def _parse_license(raw: dict) -> LicenseDef:
+    """解析许可证元数据。"""
+    return LicenseDef(
+        name=raw.get("name", ""),
+        spdx=raw.get("spdx", raw.get("name", "")),
+        source=raw.get("source", ""),
+        evidence_url=raw.get("evidence_url", raw.get("source", "")),
+        license_file=raw.get("license_file", ""),
+        verified_at=raw.get("verified_at", ""),
+        redistribution_verified=raw.get("redistribution_verified", False),
+    )
 
 
 def _load_raw_catalog() -> dict:
@@ -85,10 +138,23 @@ def _parse_engine(raw: dict) -> EngineDef:
                 requested_revision=sub.get("requested_revision", ""),
                 resolved_revision=sub.get("resolved_revision", ""),
                 target_subdir=sub["target_subdir"],
+                license=_parse_license(sub.get("license", {})),
             )
         )
 
-    license_info = raw.get("license", {})
+    third_party_components = []
+    for component in raw.get("third_party_components", []):
+        third_party_components.append(
+            ThirdPartyComponentDef(
+                component_id=component["component_id"],
+                display_name=component["display_name"],
+                repository=component["repository"],
+                revision=component.get("revision", ""),
+                target_subdir=component["target_subdir"],
+                license=_parse_license(component.get("license", {})),
+            )
+        )
+
     return EngineDef(
         engine_id=raw["engine_id"],
         display_name=raw["display_name"],
@@ -99,10 +165,9 @@ def _parse_engine(raw: dict) -> EngineDef:
         target_path=raw["target_path"],
         required_files=raw.get("required_files", []),
         sub_models=sub_models,
+        third_party_components=third_party_components,
         repo_id=raw.get("repository", "") if raw["hub"] == "huggingface" else "",
-        license_name=license_info.get("name", ""),
-        license_source=license_info.get("source", ""),
-        redistribution_verified=license_info.get("redistribution_verified", False),
+        license=_parse_license(raw.get("license", {})),
     )
 
 
@@ -166,6 +231,20 @@ def validate_catalog() -> list[str]:
     errors: list[str] = []
     catalog = _load_raw_catalog()
 
+    def validate_license(owner: str, license_info: dict) -> None:
+        required = ("name", "spdx", "source", "evidence_url", "license_file", "verified_at")
+        for key in required:
+            if not license_info.get(key):
+                errors.append(f"{owner}: license.{key} 为空")
+        if license_info.get("redistribution_verified") is not True:
+            errors.append(f"{owner}: redistribution_verified 未通过")
+
+        relative_file = Path(str(license_info.get("license_file", "")))
+        if relative_file.is_absolute() or ".." in relative_file.parts:
+            errors.append(f"{owner}: license_file 路径无效")
+        elif relative_file.parts and not (_CATALOG_PATH.parent.parent / relative_file).is_file():
+            errors.append(f"{owner}: license_file 不存在 '{relative_file.as_posix()}'")
+
     seen_ids: set[str] = set()
     seen_paths: set[str] = set()
     for engine in catalog["engines"]:
@@ -185,6 +264,8 @@ def validate_catalog() -> list[str]:
         if not engine.get("required_files"):
             errors.append(f"引擎 {eid}: required_files 为空")
 
+        validate_license(f"引擎 {eid}", engine.get("license", {}))
+
         repo = engine.get("repository", "")
         if not repo or "/" not in repo:
             errors.append(f"引擎 {eid}: repository 格式无效 '{repo}'")
@@ -197,5 +278,23 @@ def validate_catalog() -> list[str]:
             sub_repo = sub.get("repository", "")
             if not sub_repo or "/" not in sub_repo:
                 errors.append(f"引擎 {eid} 子模型 {sub.get('engine_id')}: repository 格式无效")
+            if not sub.get("resolved_revision"):
+                errors.append(f"引擎 {eid} 子模型 {sub.get('engine_id')}: resolved_revision 为空")
+            validate_license(
+                f"引擎 {eid} 子模型 {sub.get('engine_id')}",
+                sub.get("license", {}),
+            )
+
+        for component in engine.get("third_party_components", []):
+            component_id = component.get("component_id")
+            component_repo = component.get("repository", "")
+            if not component_repo or "/" not in component_repo:
+                errors.append(f"引擎 {eid} 随附组件 {component_id}: repository 格式无效")
+            if not component.get("revision"):
+                errors.append(f"引擎 {eid} 随附组件 {component_id}: revision 为空")
+            validate_license(
+                f"引擎 {eid} 随附组件 {component_id}",
+                component.get("license", {}),
+            )
 
     return errors
