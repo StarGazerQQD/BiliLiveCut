@@ -28,7 +28,7 @@ from typing import Any
 APP_NAME = "BiliLiveCut"
 VERSION = "V0.1.15.2 Alpha"
 RELEASE_VERSION = "0.1.15.2-alpha"
-SOURCE_COMMIT_SHORT = "1b47a09"
+SOURCE_COMMIT_SHORT = "7c2764b"
 # NOTE: RELEASE_ID 将在获得 Payload SHA-256 后动态生成 (内容寻址)
 
 VENV_DIR = ".venv"

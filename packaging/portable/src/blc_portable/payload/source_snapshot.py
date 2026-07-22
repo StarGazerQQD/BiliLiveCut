@@ -292,6 +292,7 @@ def verify_source_origin(
         "app/analysis/transcription/backends.py",
         "app/analysis/transcription/pipeline.py",
         "app/web/main.py",
+        "app/web/static/js/review.js",
         "app/pipeline/workers/analyze.py",
         "app/pipeline/workers/render.py",
         "app/pipeline/workers/publish.py",
