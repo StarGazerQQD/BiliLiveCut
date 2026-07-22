@@ -13,7 +13,7 @@ from typing import Any
 
 _logger = logging.getLogger(__name__)
 
-RELEASE_VERSION = "0.1.15-alpha"
+RELEASE_VERSION = "0.1.15.1-alpha"
 SOURCE_COMMIT_SHORT = "4bdaa13"
 RELEASE_ID = f"{RELEASE_VERSION}+{SOURCE_COMMIT_SHORT}"
 

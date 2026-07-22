@@ -1,6 +1,10 @@
 # Docker 构建忽略规则 — Build Context 为仓库根目录
 # 此文件必须位于仓库根目录，不得移动到 packaging/docker/
 
+# 版本控制 / 本地编辑器
+.git/
+*.code-workspace
+
 # Python
 __pycache__/
 *.py[cod]
@@ -29,7 +33,9 @@ storage/
 .ruff_cache/
 .mypy_cache/
 .coverage
+coverage.xml
 htmlcov/
+.git_msg.txt
 
 # Rust 编译产物
 tools/native/rust/target/
@@ -70,6 +76,8 @@ logs_*.zip
 # 审计工具缓存
 .audit_cache/
 
-# 测试基线文件
-/tests-before-v0146.txt
-/tests-after-v0146.txt
+# Portable 本地运行时
+/runtime/
+
+# 临时测试列表快照
+/tests-*.txt

@@ -131,7 +131,11 @@ async function doLogin() {
     _loginPolling = setInterval(async () => {
       try {
         const s = await api("GET", `/api/login/status?task_id=${taskId}`);
-        status.textContent = { starting: "\u6b63\u5728\u542f\u52a8\u6d4f\u89c8\u5668\u2026", waiting: "\u8bf7\u5728\u5f39\u51fa\u7a97\u53e3\u4e2d\u5b8c\u6210\u767b\u5f55\u2026" }[s.status] || s.status;
+        status.textContent = {
+          starting: "\u6b63\u5728\u542f\u52a8\u6d4f\u89c8\u5668\u2026",
+          installing_browser: "\u672a\u627e\u5230 Chrome\uff0c\u6b63\u5728\u4e0b\u8f7d Playwright Chromium\u2026",
+          waiting: "\u8bf7\u5728\u5f39\u51fa\u7a97\u53e3\u4e2d\u5b8c\u6210\u767b\u5f55\u2026",
+        }[s.status] || s.status;
         if (s.status === "done") {
           clearInterval(_loginPolling);
           _loginPolling = null;

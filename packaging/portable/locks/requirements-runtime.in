@@ -13,6 +13,7 @@ python-multipart==0.0.18
 websockets==14.1
 aiofiles==24.1.0
 python-dotenv==1.0.1
+playwright==1.61.0
 httpx==0.28.1
 orjson==3.10.15
 jinja2==3.1.5

@@ -1,6 +1,6 @@
 [project]
 name = "bili-live-cut"
-version = "0.1.15-alpha"
+version = "0.1.15.1-alpha"
 description = "AI 直播实时切片系统:监听 Bilibili 直播,自动录制、转写、识别高光、生成切片与文案"
 readme = "README.md"
 requires-python = ">=3.11"
@@ -51,6 +51,7 @@ web = [
     "uvicorn[standard]>=0.30",
     "jinja2>=3.1",
     "python-multipart>=0.0.18",
+    "playwright>=1.61,<1.62",
 ]
 # 开发与测试工具。
 dev = [
@@ -89,6 +90,12 @@ include = ["app", "app.*", "config"]
     "static/js/*.txt",
 ]
 "config" = ["*.yaml", "*.txt"]
+
+[tool.check-manifest]
+ignore = [
+    ".cursor/rules/commit-language.mdc",
+    ".dockerignore",
+]
 
 [tool.ruff]
 line-length = 120
