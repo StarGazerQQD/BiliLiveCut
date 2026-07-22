@@ -17,11 +17,14 @@ _here = Path(SPECPATH).parent  # spec 在 specs/ 下，上溯一级到 packaging
 # 入口脚本
 _entry = str(_here / "src" / "blc_portable" / "launcher" / "main.py")
 # 模块搜索路径
-_pathex = [str(_here / "src")]
+_config_dir = _here / "config"
+_pathex = [str(_here / "src"), str(_config_dir)]
 
 # Payload 资源
 _payload_zip = str(_here / "dist" / "payload" / "source_payload.zip")
 _manifest = str(_here / "dist" / "payload" / "payload_manifest.json")
+_version_config = str(_config_dir / "version.json")
+_model_sources_lock = str(_config_dir / "model_sources.lock.json")
 
 # Engine Pack 信息
 _engine_pack_info = str(_here / "resources" / "engine_pack_info.json")
@@ -35,6 +38,8 @@ for _lf in sorted(Path(_lock_dir).glob("requirements-runtime-*-win-x64.lock")):
 _datas = [
     (_payload_zip, "."),
     (_manifest, "."),
+    (_version_config, "."),
+    (_model_sources_lock, "."),
 ] + _lock_files
 
 # engine_pack_info.json 存在则嵌入, 不存在则不嵌入 (此-时 CRC32 为空)
@@ -46,7 +51,15 @@ a = Analysis(
     pathex=_pathex,
     binaries=[],
     datas=_datas,
-    hiddenimports=["sqlmodel", "sqlalchemy", "pydantic", "uvicorn", "fastapi"],
+    hiddenimports=[
+        "sqlmodel",
+        "sqlalchemy",
+        "pydantic",
+        "uvicorn",
+        "fastapi",
+        "model_catalog",
+        "version_loader",
+    ],
     hookspath=[],
     hooksconfig={},
     runtime_hooks=[],
@@ -63,7 +76,7 @@ exe = EXE(
     a.binaries,
     a.datas,
     [],
-    name="BiliLiveCut-Portable-Lite-v0.1.15.1-alpha-x64",
+    name="BiliLiveCut-Portable-Lite-v0.1.15.2-alpha-x64",
     debug=False,
     bootloader_ignore_signals=False,
     strip=False,

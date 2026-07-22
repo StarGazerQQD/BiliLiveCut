@@ -1,5 +1,23 @@
 # Changelog
 
+## V0.1.15.2 Alpha (2026-07-22)
+
+### 修复
+
+- **portable**: Full 首次安装完成依赖后，`app.cli` 导入检查改为显式使用已安装的内容寻址 Runtime 源码，并在失败时保留原始 stdout/stderr。
+- **portable**: 冻结 Launcher 的 Engine Pack、在线模型下载和模型校验入口改用绝对导入，修复 PyInstaller 顶层脚本缺少包上下文导致的模型准备崩溃。
+- **release**: Full 离线 smoke 从实际 Payload 解压源码，在干净工作目录中使用 Full venv 导入 `app.cli`，并让冻结 EXE 使用 Fixture Engine Pack 完成模型准备。
+
+- **portable**: PyInstaller 显式收集 Engine Pack Manifest 运行期依赖的 `model_catalog`、`version_loader` 及两份 JSON 配置，修复冻结 EXE 解压模型包后报 `ModuleNotFoundError`。
+- **release**: Engine Pack 构建器同步生成 dist `engine-pack-info.json`，防止外部元数据残留旧版本；Full 构建清单补充 CRC32 并改为流式计算大文件哈希。
+- **portable**: Engine Pack 内部 Manifest 统一使用安装器契约的 `format_version`，并让构建自校验调用真实 `load_manifest()`，避免“构建自检通过但首次安装失败”。
+
+- **release**: Full 发布清单仅写入 `artifact_class=production` 的 Engine Pack CRC32，防止 CI 无模型构建误引用 Fixture 元数据。
+
+- **cli**: 补齐 `python -m app.cli` 模块入口，修复 Portable Launcher 到达启动阶段后 Web 服务静默退出。
+
+- **portable**: Launcher 显式调用 Typer `app.cli:app` 启动服务，不再依赖锁定 Payload 是否实现 `python -m app.cli`。
+
 ## V0.1.15.1 Alpha (2026-07-22)
 
 ### 变更

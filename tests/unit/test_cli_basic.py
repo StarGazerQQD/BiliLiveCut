@@ -2,6 +2,9 @@
 
 from __future__ import annotations
 
+import subprocess
+import sys
+
 import typer
 
 
@@ -20,6 +23,19 @@ def test_cli_app_version_present() -> None:
     from app import __version__
 
     assert __version__.startswith("0.1")
+
+
+def test_cli_module_entrypoint_dispatches_commands() -> None:
+    """``python -m app.cli`` 必须执行 Typer，而不是静默退出。"""
+    result = subprocess.run(
+        [sys.executable, "-m", "app.cli", "version"],
+        check=False,
+        capture_output=True,
+        text=True,
+    )
+
+    assert result.returncode == 0, result.stderr
+    assert "BiliLiveCut 0.1.15.2-alpha" in result.stdout
 
 
 def test_record_pipeline_persists_scheduler_switches(temp_db: None, monkeypatch) -> None:  # noqa: ANN001

@@ -26,8 +26,8 @@ from typing import Any
 
 # -- Constants ──────────────────────────────────────────────────
 APP_NAME = "BiliLiveCut"
-VERSION = "V0.1.15.1 Alpha"
-RELEASE_VERSION = "0.1.15.1-alpha"
+VERSION = "V0.1.15.2 Alpha"
+RELEASE_VERSION = "0.1.15.2-alpha"
 SOURCE_COMMIT_SHORT = "1b47a09"
 # NOTE: RELEASE_ID 将在获得 Payload SHA-256 后动态生成 (内容寻址)
 
@@ -319,14 +319,90 @@ def _find_local_wheelhouse(app_root: Path) -> Path | None:
     return None
 
 
-def install_dependencies(venv_python: Path, app_root: Path, req_file: Path | None = None) -> None:
+def _run_import_smoke(venv_python: Path, module: str, source_dir: Path | None = None) -> None:
+    """Import one runtime module and expose the original failure details.
+
+    ``app.cli`` must be imported from the installed content-addressed Runtime,
+    never from the checkout or another ambient ``PYTHONPATH`` entry.
+
+    :param venv_python: Python executable from the prepared virtual environment.
+    :param module: Module name to import.
+    :param source_dir: Installed Runtime source directory, required for ``app.cli``.
+    :raises RuntimeError: If the import fails or resolves outside ``source_dir``.
+    """
+    env: dict[str, str] | None = None
+    cwd: str | None = None
+    script = f"import {module}; print('  ok: {module}')"
+
+    if module == "app.cli":
+        if source_dir is None:
+            raise RuntimeError("app.cli import smoke requires the installed Runtime source directory")
+        resolved_source = source_dir.resolve()
+        if not (resolved_source / "app" / "cli.py").is_file():
+            raise RuntimeError(f"Installed Runtime is missing app/cli.py: {resolved_source}")
+        env = os.environ.copy()
+        existing_pythonpath = env.get("PYTHONPATH", "")
+        env["PYTHONPATH"] = str(resolved_source) + (os.pathsep + existing_pythonpath if existing_pythonpath else "")
+        cwd = str(resolved_source)
+        script = (
+            "from pathlib import Path; import app.cli; "
+            f"_expected = Path({str(resolved_source)!r}); "
+            "_actual = Path(app.cli.__file__).resolve(); "
+            "assert _actual.is_relative_to(_expected), "
+            "f'app.cli loaded from unexpected path: {_actual}'; "
+            "print('  ok: app.cli', _actual)"
+        )
+
+    try:
+        result = subprocess.run(
+            [str(venv_python), "-c", script],
+            check=True,
+            capture_output=True,
+            text=True,
+            timeout=30,
+            cwd=cwd,
+            env=env,
+        )
+    except subprocess.CalledProcessError as exc:
+        details = "\n".join(part.strip() for part in (exc.stdout or "", exc.stderr or "") if part and part.strip())
+        if not details:
+            details = f"process exited with code {exc.returncode}"
+        raise RuntimeError(f"Import smoke check failed for {module}:\n{details}") from exc
+
+    output = (result.stdout or "").strip()
+    print(output or f"  ok: {module}")
+
+
+def _build_service_command(venv_python: Path) -> list[str]:
+    """Build the service command without relying on ``app.cli`` module execution."""
+    return [
+        str(venv_python),
+        "-c",
+        "from app.cli import app; app()",
+        "serve",
+        "--host",
+        "127.0.0.1",
+        "--port",
+        "8000",
+    ]
+
+
+def install_dependencies(
+    venv_python: Path,
+    app_root: Path,
+    req_file: Path | None = None,
+    *,
+    source_dir: Path | None = None,
+) -> None:
     """Install Python dependencies from ABI-specific lock file.
 
     :param venv_python: venv python path.
     :param app_root: app root dir.
     :param req_file: [deprecated] requirements file path, no longer used.
+    :param source_dir: Installed Runtime source used for the ``app.cli`` smoke check.
     """
     lock_file = _find_lock_file(venv_python)
+    needs_install = True
 
     # Check if pip freeze output matches lock (skip full hash comparison, do version check)
     try:
@@ -360,41 +436,40 @@ def install_dependencies(venv_python: Path, app_root: Path, req_file: Path | Non
                     missing.append(f"{raw_pkg}: expected {raw_ver}, got {actual_ver}")
         if not missing:
             print("  dependencies already installed (version match)")
-            return
-        print(f"  dependencies outdated or missing ({len(missing)}), re-installing...")
+            needs_install = False
+        else:
+            print(f"  dependencies outdated or missing ({len(missing)}), re-installing...")
     except (subprocess.CalledProcessError, OSError):
         pass
 
-    # Install from lock file with mandatory hash verification
-    print(f"  install deps (lock file: {lock_file.name})...")
-    wheelhouse = _find_local_wheelhouse(app_root)
-    if wheelhouse is not None:
-        print(f"  local wheelhouse detected, enforcing offline install: {wheelhouse}")
-        offline_flag = ["--no-index", "--find-links", str(wheelhouse)]
-    elif (app_root / "portable-python" / "python.exe").is_file():
-        raise RuntimeError(
-            "Full Bundle wheelhouse is missing or empty: "
-            f"{app_root / WHEELS_DIR}\nRefusing to download dependencies from the network."
-        )
-    elif os.environ.get("PIP_NO_INDEX") == "1":
-        offline_flag = ["--no-index"]
-    else:
-        offline_flag = []
-    subprocess.run(
-        [str(venv_python), "-m", "pip", "install", "-r", str(lock_file), "--require-hashes"] + offline_flag,
-        check=True,
-        timeout=600,
-    )
-
-    # Import smoke check
-    print("  import smoke check...")
-    for mod in ("fastapi", "uvicorn", "sqlmodel", "pydantic", "playwright", "app.cli"):
+    if needs_install:
+        # Install from lock file with mandatory hash verification
+        print(f"  install deps (lock file: {lock_file.name})...")
+        wheelhouse = _find_local_wheelhouse(app_root)
+        if wheelhouse is not None:
+            print(f"  local wheelhouse detected, enforcing offline install: {wheelhouse}")
+            offline_flag = ["--no-index", "--find-links", str(wheelhouse)]
+        elif (app_root / "portable-python" / "python.exe").is_file():
+            raise RuntimeError(
+                "Full Bundle wheelhouse is missing or empty: "
+                f"{app_root / WHEELS_DIR}\nRefusing to download dependencies from the network."
+            )
+        elif os.environ.get("PIP_NO_INDEX") == "1":
+            offline_flag = ["--no-index"]
+        else:
+            offline_flag = []
         subprocess.run(
-            [str(venv_python), "-c", f"import {mod}; print('  ok: {mod}')"],
+            [str(venv_python), "-m", "pip", "install", "-r", str(lock_file), "--require-hashes"] + offline_flag,
             check=True,
-            capture_output=True,
-            timeout=30,
+            timeout=600,
         )
+
+    # Always run import checks, including on subsequent launches where versions match.
+    print("  import smoke check...")
+    for mod in ("fastapi", "uvicorn", "sqlmodel", "pydantic", "playwright"):
+        _run_import_smoke(venv_python, mod)
+    if source_dir is not None:
+        _run_import_smoke(venv_python, "app.cli", source_dir)
     print("  deps install complete")
 
 
@@ -415,9 +490,13 @@ def prepare_models(app_root: Path, user_engine_pack_path: str | None = None) -> 
     :param user_engine_pack_path: 用户通过 --engine-pack 指定的路径。
     :returns: 模型准备信息字典。
     """
-    from ..engine_pack.installer import check_installed_models, find_local_engine_pack, install_from_engine_pack
+    from blc_portable.engine_pack.installer import (
+        check_installed_models,
+        find_local_engine_pack,
+        install_from_engine_pack,
+    )
 
-    MODEL_ENGINE_PACK_VERSION = "0.1.15.1-alpha"
+    MODEL_ENGINE_PACK_VERSION = "0.1.15.2-alpha"
 
     # Read embedded Engine Pack info
     pack_info = get_engine_pack_info()
@@ -466,7 +545,7 @@ def prepare_models(app_root: Path, user_engine_pack_path: str | None = None) -> 
 
     print("  downloading all 4 engine models online...")
     try:
-        from .model_downloader import download_all_engines
+        from blc_portable.launcher.model_downloader import download_all_engines
 
         return download_all_engines(app_root)
     except ImportError as exc:
@@ -609,7 +688,7 @@ def _verify_installed_models(app_root: Path) -> None:
     """
     import hashlib
 
-    from ..engine_pack.installer import _read_installed_manifest
+    from blc_portable.engine_pack.installer import _read_installed_manifest
 
     models_dir = app_root / "models"
     installed = _read_installed_manifest(models_dir)
@@ -826,7 +905,7 @@ def run_launcher(args: argparse.Namespace) -> int:
 
         # 5. Dependency install (from ABI-specific lock file)
         print("[4/6] Dependency install...")
-        install_dependencies(venv_python, app_root)
+        install_dependencies(venv_python, app_root, source_dir=source_dir)
         print()
 
         # 6. 模型准备
@@ -865,20 +944,7 @@ def run_launcher(args: argparse.Namespace) -> int:
         if models_dir.exists():
             env["BLC_MODELS_DIR"] = str(models_dir)
 
-        result = subprocess.run(
-            [
-                str(venv_python),
-                "-m",
-                "app.cli",
-                "serve",
-                "--host",
-                "127.0.0.1",
-                "--port",
-                "8000",
-            ],
-            env=env,
-            cwd=str(app_root),
-        )
+        result = subprocess.run(_build_service_command(venv_python), env=env, cwd=str(app_root))
         return result.returncode
 
     except KeyboardInterrupt:

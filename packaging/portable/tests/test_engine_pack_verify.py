@@ -135,8 +135,9 @@ class TestNoArchiveSelfHash:
         """Manifest 内部 schema_version 为 3，外部 manifest (DIST) 允许有 archive_hashes。"""
         builder_py = _portable_dir / "src" / "blc_portable" / "engine_pack" / "builder.py"
         content = builder_py.read_text(encoding="utf-8")
-        # staging manifest section must use schema_version: 3
-        assert '"schema_version": 4' in content
+        # Staging manifest must use the installer's format_version contract.
+        assert '"format_version": 4' in content
+        assert '"schema_version": 4' not in content
         # Note comment confirms staging manifest has no archive self-hash
         assert (
             "避免自引用问题" in content or "archive_crc32" in content.split("schema_version")[0]

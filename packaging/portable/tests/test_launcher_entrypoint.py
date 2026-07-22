@@ -2,12 +2,15 @@
 
 from __future__ import annotations
 
+import ast
+import runpy
 import sys
 from pathlib import Path
 from typing import TYPE_CHECKING
 
 if TYPE_CHECKING:
     from _pytest.capture import CaptureFixture
+    from _pytest.monkeypatch import MonkeyPatch
 
 # 添加 portable 模块到路径 (与 test_engine_pack.py / test_portable.py 一致)
 _portable_dir = Path(__file__).resolve().parent.parent  # portable/
@@ -21,6 +24,18 @@ def test_launcher_exports_callable_main() -> None:
     from blc_portable.launcher.main import main  # noqa: E402
 
     assert callable(main), "main must be callable"
+
+
+def test_service_command_calls_typer_app_explicitly(tmp_path: Path) -> None:
+    """服务启动不能依赖锁定 Payload 是否实现 ``python -m app.cli``。"""
+    from blc_portable.launcher.main import _build_service_command
+
+    venv_python = tmp_path / ".venv" / "Scripts" / "python.exe"
+    command = _build_service_command(venv_python)
+
+    assert command[:3] == [str(venv_python), "-c", "from app.cli import app; app()"]
+    assert command[3:] == ["serve", "--host", "127.0.0.1", "--port", "8000"]
+    assert "-m" not in command
 
 
 def test_launcher_version_python_entrypoint() -> None:
@@ -73,3 +88,39 @@ def test_run_launcher_accepts_namespace() -> None:
     from blc_portable.launcher.main import run_launcher  # noqa: E402
 
     assert callable(run_launcher)
+
+
+def test_frozen_entry_prepare_models_uses_package_safe_imports(tmp_path: Path, monkeypatch: MonkeyPatch) -> None:
+    """PyInstaller executes main.py without package context; model preparation must still import."""
+    from blc_portable.engine_pack import installer  # noqa: E402
+
+    monkeypatch.setattr(installer, "check_installed_models", lambda _models, _version: (True, []))
+    entry_path = _src_dir / "blc_portable" / "launcher" / "main.py"
+    namespace = runpy.run_path(str(entry_path), run_name="main")
+
+    assert namespace["__package__"] == ""
+    assert namespace["prepare_models"](tmp_path) == {
+        "source": "already_installed",
+        "network_requests": 0,
+    }
+
+
+def test_frozen_entry_script_has_no_relative_imports() -> None:
+    """The PyInstaller entry script cannot contain package-relative imports."""
+    entry_path = _src_dir / "blc_portable" / "launcher" / "main.py"
+    tree = ast.parse(entry_path.read_text(encoding="utf-8"))
+    relative_imports = [node.lineno for node in ast.walk(tree) if isinstance(node, ast.ImportFrom) and node.level > 0]
+
+    assert relative_imports == []
+
+
+def test_frozen_entry_collects_engine_pack_config_dependencies() -> None:
+    """Engine Pack manifest 的顶层配置模块及其 JSON 数据必须进入冻结 EXE。"""
+    spec_path = _portable_dir / "specs" / "portable_launcher.spec"
+    content = spec_path.read_text(encoding="utf-8")
+
+    assert "str(_config_dir)" in content
+    assert '"model_catalog"' in content
+    assert '"version_loader"' in content
+    assert '(_version_config, ".")' in content
+    assert '(_model_sources_lock, ".")' in content

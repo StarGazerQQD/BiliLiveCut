@@ -1,5 +1,5 @@
-# BiliLiveCut Release 工作流 (V0.1.15.1)
-# 触发: 推送 v* 标签 (如 v0.1.15.1-alpha)
+# BiliLiveCut Release 工作流 (V0.1.15.2)
+# 触发: 推送 v* 标签 (如 v0.1.15.2-alpha)
 #   1) 全量测试 + release_audit
 #   2) 构建源码包 (sdist + wheel)
 #   3) 构建 Payload + 契约验证
@@ -16,7 +16,7 @@ on:
   workflow_dispatch:
     inputs:
       tag:
-        description: "发布 tag 名称 (如 v0.1.15.1-alpha, 必须 v* 格式且指向当前 SHA)"
+        description: "发布 tag 名称 (如 v0.1.15.2-alpha, 必须 v* 格式且指向当前 SHA)"
         required: true
         type: string
 
@@ -48,7 +48,7 @@ jobs:
           # Must match v* pattern
           if [[ ! "$TAG_INPUT" =~ ^v[0-9]+\.[0-9]+\.[0-9]+ ]]; then
             echo "FAIL: tag '$TAG_INPUT' does not match vX.Y.Z pattern"
-            echo "Example: v0.1.15.1-alpha"
+            echo "Example: v0.1.15.2-alpha"
             exit 1
           fi
 
@@ -390,6 +390,7 @@ jobs:
             packaging/portable/dist/full/*.zip
             packaging/portable/dist/full/build-manifest.json
             packaging/portable/dist/full/SHA256SUMS.txt
+            packaging/portable/dist/full/CRC32SUMS.txt
           retention-days: 1
 
   # ═══════════════════════════════════════════════════════════════════
@@ -413,6 +414,12 @@ jobs:
         with:
           name: windows-full
           path: smoke/full/
+
+      - name: Download Payload
+        uses: actions/download-artifact@v4
+        with:
+          name: payload
+          path: smoke/payload/
 
       - name: Lite EXE --version
         shell: pwsh
@@ -457,9 +464,12 @@ jobs:
           $ErrorActionPreference = "Stop"
           $tmpDir = Join-Path $env:RUNNER_TEMP "blc-full-test-$(Get-Random)"
           New-Item -ItemType Directory -Path $tmpDir -Force
+          $launcherProcess = $null
           try {
             $fullZip = Get-ChildItem smoke/full/*.zip | Select-Object -First 1
             if (-not $fullZip) { throw "Full ZIP not found" }
+            $payloadZip = Get-ChildItem smoke/payload/source_payload.zip | Select-Object -First 1
+            if (-not $payloadZip) { throw "Payload ZIP not found" }
             Expand-Archive -Path $fullZip.FullName -DestinationPath $tmpDir -Force
             $bundleRoot = Get-ChildItem $tmpDir -Directory | Where-Object {
               $_.Name -like "BiliLiveCut-Portable-Full-*"
@@ -478,27 +488,80 @@ jobs:
             $wheelCount = @(Get-ChildItem "$root\vendor\wheels\*.whl" -ErrorAction SilentlyContinue).Count
             if ($wheelCount -lt 110) { throw "Full ZIP wheelhouse incomplete: $wheelCount" }
 
-            $venv = "$root\runtime\venv-smoke"
+            $runtimeSource = "$root\runtime\smoke-source"
+            Expand-Archive -Path $payloadZip.FullName -DestinationPath $runtimeSource -Force
+            if (-not (Test-Path "$runtimeSource\app\cli.py")) { throw "Payload missing app/cli.py" }
+
+            $venv = "$root\.venv"
             & "$root\portable-python\python.exe" -m venv $venv
             if ($LASTEXITCODE -ne 0) { throw "Bundled Python cannot create a venv" }
             $venvPython = "$venv\Scripts\python.exe"
-            $env:PYTHONPATH = (Resolve-Path "packaging/portable/src").Path
+            $launcherSource = (Resolve-Path "packaging/portable/src").Path
+            $env:PYTHONPATH = $launcherSource
             $env:BLC_SMOKE_VENV_PYTHON = $venvPython
             $env:BLC_SMOKE_APP_ROOT = $root
-            & $venvPython -c "import os; from pathlib import Path; from blc_portable.launcher.main import install_dependencies; install_dependencies(Path(os.environ['BLC_SMOKE_VENV_PYTHON']), Path(os.environ['BLC_SMOKE_APP_ROOT']))"
+            $env:BLC_SMOKE_SOURCE_DIR = $runtimeSource
+            Push-Location $root
+            try {
+              & $venvPython -c "import os; from pathlib import Path; from blc_portable.launcher.main import install_dependencies; install_dependencies(Path(os.environ['BLC_SMOKE_VENV_PYTHON']), Path(os.environ['BLC_SMOKE_APP_ROOT']), source_dir=Path(os.environ['BLC_SMOKE_SOURCE_DIR']))"
+            }
+            finally {
+              Pop-Location
+            }
             if ($LASTEXITCODE -ne 0) { throw "Full Bundle launcher dependency install failed" }
             & $venvPython -m pip check
             if ($LASTEXITCODE -ne 0) { throw "Full Bundle pip check failed" }
             & $venvPython -c "import brotli, fastapi, funasr, loguru, modelscope, playwright, pydantic_settings, sqlmodel, torch, torchaudio, uvicorn"
             if ($LASTEXITCODE -ne 0) { throw "Full Bundle runtime import smoke failed" }
-            & $venvPython -c "from app.cli import app; print('app.cli import OK:', app.info.name)"
+            $env:PYTHONPATH = "$runtimeSource$([System.IO.Path]::PathSeparator)$launcherSource"
+            Push-Location $root
+            try {
+              & $venvPython -c "from pathlib import Path; from app.cli import app; import app.cli; source = Path(r'$runtimeSource').resolve(); actual = Path(app.cli.__file__).resolve(); assert actual.is_relative_to(source), f'app.cli loaded from {actual}'; print('app.cli import OK:', actual)"
+            }
+            finally {
+              Pop-Location
+            }
             if ($LASTEXITCODE -ne 0) { throw "Full Bundle app.cli import failed" }
             Write-Output "Full bundle offline installation OK ($wheelCount wheels)"
+
+            Remove-Item Env:PYTHONPATH -ErrorAction SilentlyContinue
+            & python packaging/portable/build_engine_pack.py --fixture
+            if ($LASTEXITCODE -ne 0) { throw "Fixture Engine Pack build failed" }
+            $fixturePack = Get-ChildItem packaging/portable/dist/engine-pack/BiliLiveCut-EnginePack-*.zip |
+              Sort-Object LastWriteTime -Descending | Select-Object -First 1
+            if (-not $fixturePack) { throw "Fixture Engine Pack not found" }
+
+            $stdoutLog = "$root\frozen-launcher.stdout.log"
+            $stderrLog = "$root\frozen-launcher.stderr.log"
+            $launcherProcess = Start-Process -FilePath "$root\BiliLiveCut-Portable.exe" `
+              -ArgumentList @("--offline", "--engine-pack", $fixturePack.FullName) `
+              -WorkingDirectory $root -RedirectStandardOutput $stdoutLog -RedirectStandardError $stderrLog `
+              -PassThru -WindowStyle Hidden
+            $installedManifest = "$root\models\engine-pack-installed.json"
+            $deadline = (Get-Date).AddMinutes(5)
+            while ((Get-Date) -lt $deadline -and -not (Test-Path $installedManifest) -and -not $launcherProcess.HasExited) {
+              Start-Sleep -Seconds 2
+              $launcherProcess.Refresh()
+            }
+            Get-Content $stdoutLog -ErrorAction SilentlyContinue | Out-Host
+            Get-Content $stderrLog -ErrorAction SilentlyContinue | Out-Host
+            if (-not (Test-Path $installedManifest)) {
+              throw "Frozen Full launcher did not complete Fixture Engine Pack preparation"
+            }
+            Write-Output "Frozen Full launcher model preparation OK"
           }
           finally {
+            if ($launcherProcess -and -not $launcherProcess.HasExited) {
+              Get-CimInstance Win32_Process | Where-Object {
+                $_.ParentProcessId -eq $launcherProcess.Id
+              } | ForEach-Object {
+                Stop-Process -Id $_.ProcessId -Force -ErrorAction SilentlyContinue
+              }
+              Stop-Process -Id $launcherProcess.Id -Force -ErrorAction SilentlyContinue
+            }
             Remove-Item -Recurse -Force $tmpDir -ErrorAction SilentlyContinue
           }
-        timeout-minutes: 15
+        timeout-minutes: 25
 
   # ═══════════════════════════════════════════════════════════════════
   # Job 6: 创建 GitHub Release

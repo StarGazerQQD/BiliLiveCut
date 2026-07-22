@@ -1,6 +1,6 @@
 # BiliLiveCut Engine Pack 第三方模型声明
 
-适用产物：`BiliLiveCut-EnginePack-0.1.15.1-alpha.zip`
+适用产物：`BiliLiveCut-EnginePack-0.1.15.2-alpha.zip`
 
 本 Engine Pack 包含来自下列上游项目的模型权重、配置、词表和示例文件。模型来源、固定 revision、许可证证据和验证日期同时记录在 `model_sources.lock.json` 与包内 `engine-pack-manifest.json` 中。构建器保留固定模型快照中已有的 README、NOTICE、LICENSE 和归属信息，并额外随包提供本声明及完整许可证文本。
 

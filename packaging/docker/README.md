@@ -81,4 +81,4 @@ cp .env.example .env
 
 ## 版本
 
-当前 Docker 发行对应 BiliLiveCut `v0.1.15.1-alpha`。
+当前 Docker 发行对应 BiliLiveCut `v0.1.15.2-alpha`。

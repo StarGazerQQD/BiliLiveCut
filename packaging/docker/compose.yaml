@@ -1,4 +1,4 @@
-# BiliLiveCut 容器编排 (V0.1.15.1 Alpha)
+# BiliLiveCut 容器编排 (V0.1.15.2 Alpha)
 # 用法:
 #   docker compose -f packaging/docker/compose.yaml up --build
 #   打开 http://localhost:8000

@@ -262,10 +262,15 @@ def create_manifest(
     )
 
 
-def validate_manifest(manifest: EnginePackManifest) -> list[str]:
+def validate_manifest(
+    manifest: EnginePackManifest,
+    *,
+    require_archive_metadata: bool = True,
+) -> list[str]:
     """校验 Manifest 完整性。
 
     :param manifest: EnginePackManifest 实例。
+    :param require_archive_metadata: 是否要求外部归档的文件名、CRC32 和 SHA-256。
     :returns: 错误列表，空表示通过。
     """
     errors: list[str] = []
@@ -287,6 +292,11 @@ def validate_manifest(manifest: EnginePackManifest) -> list[str]:
 
     if not manifest.archive_sha256 or len(manifest.archive_sha256) != 64:
         errors.append("archive_sha256 无效")
+
+    if not require_archive_metadata:
+        errors = [
+            error for error in errors if not error.startswith(("archive_filename", "archive_crc32", "archive_sha256"))
+        ]
 
     if not manifest.engines:
         errors.append("engines 列表为空")
@@ -321,8 +331,22 @@ def load_manifest(path: Path) -> EnginePackManifest:
     :raises ValueError: 解析或校验失败时。
     """
     data = json.loads(path.read_text(encoding="utf-8"))
+    archive_metadata_fields = ("archive_filename", "archive_crc32", "archive_sha256")
+    archive_metadata_present = all(key in data for key in archive_metadata_fields)
+    if any(key in data for key in archive_metadata_fields) and not archive_metadata_present:
+        raise ValueError("Manifest 归档元数据不完整")
+    if not archive_metadata_present:
+        required_content_fields = ("format_version", "engine_pack_version", "source_commit", "engines")
+        missing = [key for key in required_content_fields if key not in data]
+        if missing:
+            raise ValueError(f"Manifest 缺少必需字段: {', '.join(missing)}")
+        data = dict(data)
+        data.setdefault("portable_release_version", data["engine_pack_version"])
+        data.setdefault("archive_filename", "")
+        data.setdefault("archive_crc32", "")
+        data.setdefault("archive_sha256", "")
     manifest = EnginePackManifest.from_dict(data)
-    errors = validate_manifest(manifest)
+    errors = validate_manifest(manifest, require_archive_metadata=archive_metadata_present)
     if errors:
         raise ValueError("Manifest 校验失败:\n" + "\n".join(f"  - {e}" for e in errors))
     return manifest
