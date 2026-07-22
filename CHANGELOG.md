@@ -4,6 +4,7 @@
 
 ### 修复
 
+- **login**: 系统 Chrome 与托管 Chromium 登录均显式启用 sandbox，并改为从独立 Playwright 上下文读取全部 Cookie 后按 Bilibili 域名边界筛选，修复新版 Chrome 下登录完成但无法捕获 Cookie 的问题。
 - **web**: 修复候选片段拒绝请求的模板字符串未闭合导致前端 ES Module 初始化中断、页面按钮全部失效，并增加全量静态 JavaScript 语法回归检查。
 - **portable**: Full 首次安装完成依赖后，`app.cli` 导入检查改为显式使用已安装的内容寻址 Runtime 源码，并在失败时保留原始 stdout/stderr。
 - **portable**: 冻结 Launcher 的 Engine Pack、在线模型下载和模型校验入口改用绝对导入，修复 PyInstaller 顶层脚本缺少包上下文导致的模型准备崩溃。

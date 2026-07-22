@@ -4,7 +4,8 @@
 自动检测登录成功并提取 Cookie 持久化到运行时设置。
 
 优先使用系统已安装的 Google Chrome；没有可用 Chrome 时自动安装并使用
-Playwright 托管的 Chromium。
+Playwright 托管的 Chromium。浏览器始终使用独立临时资料目录并启用 sandbox，
+Cookie 仅从本次 Playwright 受控上下文中读取。
 """
 
 from __future__ import annotations
@@ -21,7 +22,7 @@ from typing import TYPE_CHECKING, TypedDict
 from loguru import logger
 
 if TYPE_CHECKING:
-    from playwright.sync_api import BrowserContext, Playwright
+    from playwright.sync_api import BrowserContext, Cookie, Playwright
 
 
 class LoginResult(TypedDict, total=False):
@@ -38,6 +39,7 @@ _BROWSER_INSTALL_LOCK = threading.Lock()
 
 # 登录完成所需的 cookie key
 _LOGIN_MARKER = "DedeUserID"
+_BILIBILI_COOKIE_DOMAIN = "bilibili.com"
 
 
 def _playwright_environment() -> dict[str, str]:
@@ -77,6 +79,7 @@ def _launch_login_context(
         "user_data_dir": "",
         "headless": False,
         "args": ["--no-first-run", "--no-default-browser-check"],
+        "chromium_sandbox": True,
         "viewport": {"width": 480, "height": 720},
         "locale": "zh-CN",
     }
@@ -99,12 +102,24 @@ def _launch_login_context(
     return context
 
 
-def _extract_cookie_string(page) -> str:
-    """从 Playwright page 提取 Bilibili 域下全部 Cookie,拼接为标准字符串。"""
+def _get_bilibili_cookies(context: BrowserContext) -> list[Cookie]:
+    """读取受控浏览器上下文中的 Cookie，并严格筛选 Bilibili 域。"""
     try:
-        cookies = page.context.cookies([".bilibili.com", "live.bilibili.com"])
-    except Exception:
-        cookies = []
+        cookies = context.cookies()
+    except Exception as exc:
+        raise RuntimeError(f"无法从登录浏览器读取 Cookie：{exc}") from exc
+
+    matched: list[Cookie] = []
+    for cookie in cookies:
+        domain = str(cookie.get("domain", "")).lower().lstrip(".")
+        if domain == _BILIBILI_COOKIE_DOMAIN or domain.endswith(f".{_BILIBILI_COOKIE_DOMAIN}"):
+            matched.append(cookie)
+    return matched
+
+
+def _extract_cookie_string(context: BrowserContext) -> str:
+    """从 Playwright 上下文提取 Bilibili Cookie 并拼接为标准字符串。"""
+    cookies = _get_bilibili_cookies(context)
     if not cookies:
         return ""
     parts = [f"{c['name']}={c['value']}" for c in cookies]
@@ -159,14 +174,11 @@ def _login_task(result_store: LoginResult) -> None:
             logged_in = False
             deadline = time.time() + 120  # 最多等 2 分钟
             while time.time() < deadline:
-                try:
-                    cookies = context.cookies([".bilibili.com"])
-                    for c in cookies:
-                        if c["name"] == _LOGIN_MARKER and c["value"]:
-                            logged_in = True
-                            break
-                except Exception:
-                    pass
+                cookies = _get_bilibili_cookies(context)
+                for c in cookies:
+                    if c["name"] == _LOGIN_MARKER and c["value"]:
+                        logged_in = True
+                        break
                 if logged_in:
                     break
                 time.sleep(1.5)
@@ -179,7 +191,7 @@ def _login_task(result_store: LoginResult) -> None:
             # 等待页面稳定,确保所有 cookie 写入完毕
             time.sleep(2)
 
-            cookie_str = _extract_cookie_string(page)
+            cookie_str = _extract_cookie_string(context)
             if cookie_str and _LOGIN_MARKER.lower() in cookie_str.lower():
                 _save_cookie(cookie_str)
                 result_store["status"] = "done"

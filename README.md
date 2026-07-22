@@ -33,7 +33,7 @@
 
 ### 首次使用与账号登录
 
-- 登录窗口优先调用电脑已安装的 Google Chrome；找不到时复用或按需下载 Playwright Chromium。
+- 登录窗口优先调用电脑已安装的 Google Chrome，并在独立临时资料目录中启用浏览器 sandbox；找不到时复用或按需下载 Playwright Chromium。
 - Playwright 已进入 Portable 运行时锁和安装导入检查，不再要求用户预先手工安装浏览器组件。
 - 新增 [Portable 小白使用说明](packaging/portable/USER_GUIDE_ZH.md)，覆盖下载、校验、解压、启动、配置、首次录制和常见故障排查。
 
