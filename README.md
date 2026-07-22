@@ -28,7 +28,7 @@
 
 | 特性 | 说明 |
 |------|------|
-| **Source 固定** | 源码来自当前发布基线 `4bdaa13`，通过 `git archive` 提取，不混入工作区未提交改动 |
+| **Source 固定** | 源码来自当前发布基线 `1b47a09`，通过 `git archive` 提取，不混入工作区未提交改动 |
 | **零 GitHub 请求** | 首次启动完全从 EXE 内置 Payload 释放源码，不访问 GitHub |
 | **可复现 Payload** | 相同输入构建两次 SHA-256 完全一致，并在发布门禁中自动验证 |
 | **原子 Runtime 安装** | `staging → rename` 原子切换，`current.json` 原子更新 |

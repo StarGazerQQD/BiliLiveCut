@@ -11,7 +11,7 @@
     "sha256": "2d3b19fef2cb00b0adc0056a42573334751c56efad758f78d84d9c6512629562",
     "content_manifest_sha256": "36d634ab3c4ccfc87693aafb014e73d0392cd1b4b1d8a85b8de0d60cfee1713d",
     "model_lock_sha256": "93e12f11251fc77c8ac61b8ab477515e5d44f1bf44d36379c2b2aef610c64dd4",
-    "source_commit": "4bdaa13b8b406ee8048885f123a0c969724a61ae",
+    "source_commit": "1b47a0942b04efc1c11b11e1f74bc970f843f4c4",
     "builder_commit": "8301b37185697ffbb90e31768103ac98ad5b9b91",
     "build_timestamp": "2026-07-17T09:57:17",
     "expected_engine_ids": ["whisper", "paraformer", "sensevoice", "funasr_nano"],
