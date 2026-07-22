@@ -132,6 +132,20 @@ class TestFixtureImpersonationDetection:
         meta = ExternalMetadata()
         assert meta.artifact_class == "", "artifact_class default must be empty, not 'production'"
 
+    def test_builder_rejects_tiny_production_archive(self) -> None:
+        """正式构建器必须拒绝小体积占位包。"""
+        from blc_portable.engine_pack.builder import validate_production_metadata
+
+        errors = validate_production_metadata(
+            "ABCDEF01",
+            "a" * 64,
+            "b" * 64,
+            "c" * 64,
+            "d" * 40,
+            1024,
+        )
+        assert any("too small" in error for error in errors)
+
 
 # ── engine_pack_info.json 必需字段 ──────────────────────
 

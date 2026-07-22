@@ -150,12 +150,12 @@ Lite 和 Full 均不携带 ASR 模型。四个引擎模型统一由独立的 **E
 
 | 引擎 | 模型 ID | 来源 | 版本 |
 |------|---------|------|------|
-| Whisper (兜底) | large-v3-turbo | HuggingFace (mobiuslabsgmbh/) | — |
+| Whisper (兜底) | faster-whisper-large-v3-turbo | Hugging Face (dropbox-dash/) | e4b9645 |
 | Paraformer-zh (主引擎) | paraformer-zh | ModelScope | v2.0.4 |
-| SenseVoice-Small (辅助特征) | iic/SenseVoiceSmall | ModelScope | v2.0.4 |
-| Fun-ASR-Nano (低置信复核) | iic/Fun-ASR-Nano | ModelScope | v2.0.4 |
+| SenseVoice-Small (辅助特征) | iic/SenseVoiceSmall | ModelScope | v1.0.0 |
+| Fun-ASR-Nano (低置信复核) | FunAudioLLM/Fun-ASR-Nano-2512 | ModelScope | v1.0.0 |
 
-> Paraformer 额外需要 smn-vad / ct-punc / cam++ 三个子模型 (自动下载)。
+> Paraformer 额外需要 `fsmn-vad` / `ct-punc` / `campplus` 三个子模型（自动下载）。
 
 ### 使用方式
 
@@ -177,7 +177,7 @@ Lite 和 Full 均不携带 ASR 模型。四个引擎模型统一由独立的 **E
 
 ### 模型安装目录
 
-`
+```text
 <程序根目录>/
 ├── BiliLiveCut-Portable.exe
 ├── models/
@@ -186,25 +186,31 @@ Lite 和 Full 均不携带 ASR 模型。四个引擎模型统一由独立的 **E
 │   ├── sensevoice/                 # SenseVoice-Small
 │   ├── funasr_nano/                # Fun-ASR-Nano
 │   └── engine-pack-installed.json  # 安装清单 (自动生成)
-`
+```
 
 模型安装在程序 Portable 根目录的 models/ 下，不写入用户主目录缓存。
 
 ### 构建 Engine Pack
 
-`powershell
+```powershell
 cd packaging\portable
 python build_engine_pack.py           # 真实下载四引擎模型并打包
 python build_engine_pack.py --fixture # 生成测试用小型 Fixture
-`
+python download_engines.py            # 可选：按锁定 revision 建立本地缓存
+python build_engine_pack.py --from-cache  # 从已验证缓存构建
+```
 
 输出:
+
 - dist/engine-pack/BiliLiveCut-EnginePack-0.1.15.1-alpha.zip
 - dist/engine-pack/engine-pack-manifest.json
 - dist/engine-pack/CRC32SUMS.txt
 - dist/engine-pack/SHA256SUMS.txt
+- 包内 licenses/THIRD_PARTY_NOTICES.md、MIT.txt、Apache-2.0.txt
 
 resources/engine_pack_info.json (本地 Engine Pack 构建后可供 Lite/Full EXE 嵌入；GitHub Release 不嵌入 fixture)
+
+正式构建会执行再分发门禁：主模型、Paraformer 子模型及 Fun-ASR-Nano 随附的 Qwen3 组件必须具有固定来源、许可证证据、验证日期和随包许可证文件；任一项缺失都会终止构建。完整归属见 [`licenses/THIRD_PARTY_NOTICES.md`](licenses/THIRD_PARTY_NOTICES.md)。
 
 ### 注意事项
 

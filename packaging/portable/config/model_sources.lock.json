@@ -26,8 +26,12 @@
       "files": {},
       "license": {
         "name": "MIT",
+        "spdx": "MIT",
         "source": "https://huggingface.co/mobiuslabsgmbh/faster-whisper-large-v3-turbo",
-        "redistribution_verified": false
+        "evidence_url": "https://huggingface.co/dropbox-dash/faster-whisper-large-v3-turbo",
+        "license_file": "licenses/MIT.txt",
+        "verified_at": "2026-07-22",
+        "redistribution_verified": true
       }
     },
     {
@@ -54,7 +58,16 @@
           "repository": "iic/speech_fsmn_vad_zh-cn-16k-common-pytorch",
           "requested_revision": "v2.0.4",
           "resolved_revision": "v2.0.4",
-          "target_subdir": "fsmn-vad"
+          "target_subdir": "fsmn-vad",
+          "license": {
+            "name": "Apache-2.0",
+            "spdx": "Apache-2.0",
+            "source": "https://modelscope.cn/models/iic/speech_fsmn_vad_zh-cn-16k-common-pytorch",
+            "evidence_url": "https://modelscope.cn/models/iic/speech_fsmn_vad_zh-cn-16k-common-pytorch/summary",
+            "license_file": "licenses/Apache-2.0.txt",
+            "verified_at": "2026-07-22",
+            "redistribution_verified": true
+          }
         },
         {
           "engine_id": "paraformer_punc",
@@ -63,7 +76,16 @@
           "repository": "iic/punc_ct-transformer_zh-cn-common-vocab272727-pytorch",
           "requested_revision": "v2.0.4",
           "resolved_revision": "v2.0.4",
-          "target_subdir": "ct-punc"
+          "target_subdir": "ct-punc",
+          "license": {
+            "name": "Apache-2.0",
+            "spdx": "Apache-2.0",
+            "source": "https://modelscope.cn/models/iic/punc_ct-transformer_zh-cn-common-vocab272727-pytorch",
+            "evidence_url": "https://modelscope.cn/models/iic/punc_ct-transformer_zh-cn-common-vocab272727-pytorch",
+            "license_file": "licenses/Apache-2.0.txt",
+            "verified_at": "2026-07-22",
+            "redistribution_verified": true
+          }
         },
         {
           "engine_id": "paraformer_campplus",
@@ -72,14 +94,27 @@
           "repository": "iic/speech_campplus_sv_zh-cn_16k-common",
           "requested_revision": "v1.0.0",
           "resolved_revision": "v1.0.0",
-          "target_subdir": "campplus"
+          "target_subdir": "campplus",
+          "license": {
+            "name": "Apache-2.0",
+            "spdx": "Apache-2.0",
+            "source": "https://modelscope.cn/models/iic/speech_campplus_sv_zh-cn_16k-common",
+            "evidence_url": "https://modelscope.cn/models/iic/speech_campplus_sv_zh-cn_16k-common",
+            "license_file": "licenses/Apache-2.0.txt",
+            "verified_at": "2026-07-22",
+            "redistribution_verified": true
+          }
         }
       ],
       "files": {},
       "license": {
         "name": "Apache-2.0",
+        "spdx": "Apache-2.0",
         "source": "https://modelscope.cn/models/iic/speech_paraformer-large-vad-punc_asr_nat-zh-cn-16k-common-vocab8404-pytorch",
-        "redistribution_verified": false
+        "evidence_url": "https://modelscope.cn/models/iic/speech_paraformer-large-vad-punc_asr_nat-zh-cn-16k-common-vocab8404-pytorch",
+        "license_file": "licenses/Apache-2.0.txt",
+        "verified_at": "2026-07-22",
+        "redistribution_verified": true
       }
     },
     {
@@ -101,8 +136,12 @@
       "files": {},
       "license": {
         "name": "Apache-2.0",
+        "spdx": "Apache-2.0",
         "source": "https://modelscope.cn/models/iic/SenseVoiceSmall",
-        "redistribution_verified": false
+        "evidence_url": "https://modelscope.cn/models/iic/SenseVoiceSmall",
+        "license_file": "licenses/Apache-2.0.txt",
+        "verified_at": "2026-07-22",
+        "redistribution_verified": true
       }
     },
     {
@@ -120,10 +159,32 @@
         "multilingual.tiktoken"
       ],
       "files": {},
+      "third_party_components": [
+        {
+          "component_id": "qwen3_0_6b",
+          "display_name": "Qwen3-0.6B 随附组件",
+          "repository": "Qwen/Qwen3-0.6B",
+          "revision": "included-in-funasr-nano-v1.0.0",
+          "target_subdir": "Qwen3-0.6B",
+          "license": {
+            "name": "Apache-2.0",
+            "spdx": "Apache-2.0",
+            "source": "https://huggingface.co/Qwen/Qwen3-0.6B",
+            "evidence_url": "https://huggingface.co/Qwen/Qwen3-0.6B/blob/main/LICENSE",
+            "license_file": "licenses/Apache-2.0.txt",
+            "verified_at": "2026-07-22",
+            "redistribution_verified": true
+          }
+        }
+      ],
       "license": {
         "name": "Apache-2.0",
+        "spdx": "Apache-2.0",
         "source": "https://modelscope.cn/models/FunAudioLLM/Fun-ASR-Nano-2512",
-        "redistribution_verified": false
+        "evidence_url": "https://huggingface.co/FunAudioLLM/Fun-ASR-Nano-2512",
+        "license_file": "licenses/Apache-2.0.txt",
+        "verified_at": "2026-07-22",
+        "redistribution_verified": true
       }
     }
   ]

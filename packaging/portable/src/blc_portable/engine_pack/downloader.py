@@ -1,6 +1,6 @@
 """独立引擎模型缓存下载脚本。
 
-每个引擎独立下载到持久缓存目录 (build/model_cache/)。
+每个引擎独立下载到持久缓存目录 (.model_cache/)。
 支持断点续传，引擎间互不影响。完成后由 build_engine_pack.py 读取缓存构建 ZIP。
 
 用法:
@@ -51,6 +51,7 @@ def _load_engine_defs() -> list[dict[str, Any]]:
             "revision": e.resolved_revision if e.resolved_revision else None,
             "cache_dir": _engine_id_to_cache_dir(e.engine_id),
             "target_path": e.target_path,
+            "required_files": e.required_files,
             "size_hint": "N/A",
         }
         if e.sub_models:
@@ -61,6 +62,14 @@ def _load_engine_defs() -> list[dict[str, Any]]:
                     "name": s.target_subdir if s.target_subdir else s.repository.rsplit("/", 1)[-1],
                 }
                 for s in e.sub_models
+            ]
+        if e.third_party_components:
+            d["third_party_components"] = [
+                {
+                    "component_id": component.component_id,
+                    "target_subdir": component.target_subdir,
+                }
+                for component in e.third_party_components
             ]
         engines.append(d)
     return engines
@@ -103,6 +112,32 @@ def get_engine_size(engine_dir: Path) -> tuple[int, float]:
     return fc, ts / (1024**3)
 
 
+def validate_engine_cache(engine: dict[str, Any]) -> list[str]:
+    """校验单个引擎缓存是否符合当前锁文件。"""
+    errors: list[str] = []
+    engine_dir = get_engine_dir(engine)
+    if not engine_dir.is_dir():
+        return [f"缓存目录不存在: {engine_dir}"]
+
+    for required_file in engine.get("required_files", []):
+        required_path = engine_dir / str(required_file)
+        if not required_path.is_file() or required_path.stat().st_size == 0:
+            errors.append(f"必需文件缺失或为空: {required_file}")
+
+    for sub_model in engine.get("sub_models", []):
+        target_subdir = str(sub_model.get("name", ""))
+        subdir = engine_dir / target_subdir
+        if not subdir.is_dir() or not any(path.is_file() for path in subdir.rglob("*")):
+            errors.append(f"子模型目录缺失或为空: {target_subdir}")
+
+    for component in engine.get("third_party_components", []):
+        target_subdir = str(component.get("target_subdir", ""))
+        component_dir = engine_dir / target_subdir
+        if not component_dir.is_dir() or not any(path.is_file() for path in component_dir.rglob("*")):
+            errors.append(f"随附组件目录缺失或为空: {target_subdir}")
+    return errors
+
+
 def show_status() -> None:
     """显示所有引擎下载状态。"""
     print("=" * 60)
@@ -115,7 +150,8 @@ def show_status() -> None:
         fc, gb = get_engine_size(engine_dir)
         total_files += fc
         total_gb += gb
-        status = "[OK]" if fc > 0 and gb > 0.01 else "[--]"
+        cache_errors = validate_engine_cache(engine)
+        status = "[OK]" if not cache_errors else "[--]"
         extra = engine.get("size_hint", "")
         print(f"  [{status}] {engine['engine_name']}")
         print(f"         目录: {engine_dir}")
@@ -129,8 +165,6 @@ def download_engine(engine: dict[str, Any]) -> bool:
     :param engine: 引擎定义。
     :returns: True 成功。
     """
-    from modelscope.hub.snapshot_download import snapshot_download
-
     engine_dir = get_engine_dir(engine)
     engine_dir.mkdir(parents=True, exist_ok=True)
 
@@ -139,7 +173,7 @@ def download_engine(engine: dict[str, Any]) -> bool:
     hub = engine.get("hub", "modelscope")
 
     print(f"\n  [{engine['engine_id']}] {engine['engine_name']}")
-    print(f"  ModelScope ID: {model_id}")
+    print(f"  Model ID: {model_id}")
     if revision:
         print(f"  Revision: {revision}")
     print(f"  目标目录: {engine_dir}")
@@ -152,7 +186,20 @@ def download_engine(engine: dict[str, Any]) -> bool:
             kwargs["revision"] = str(revision)
 
         if hub == "modelscope":
+            from modelscope.hub.snapshot_download import snapshot_download
+
             snapshot_download(**kwargs)
+        elif hub == "huggingface":
+            from huggingface_hub import snapshot_download as hf_snapshot_download
+
+            hf_snapshot_download(
+                repo_id=model_id,
+                local_dir=str(engine_dir),
+                local_dir_use_symlinks=False,
+                revision=str(revision) if revision else None,
+            )
+        else:
+            raise ValueError(f"不支持的模型仓库类型: {hub}")
 
         # 子模型下载 (Paraformer)
         for sub in engine.get("sub_models", []):
@@ -174,6 +221,12 @@ def download_engine(engine: dict[str, Any]) -> bool:
 
     elapsed = time.time() - start
     fc, gb = get_engine_size(engine_dir)
+    cache_errors = validate_engine_cache(engine)
+    if cache_errors:
+        print(f"\n  [FAIL] 缓存校验失败 ({elapsed:.0f}s):")
+        for error in cache_errors:
+            print(f"    - {error}")
+        return False
     print(f"  [OK] 完成 ({elapsed:.0f}s): {fc} 文件, {gb:.2f} GB")
 
     # 更新状态
@@ -202,7 +255,7 @@ def main() -> None:
     print("  BiliLiveCut Engine Pack — 模型缓存下载")
     print(f"  目标引擎: {', '.join(targets)}")
     print(f"  缓存目录: {CACHE_DIR}")
-    print("  下载源: ModelScope (国内加速)")
+    print("  下载源: ModelScope + Hugging Face（固定 revision）")
     print("=" * 60)
 
     failed: list[str] = []
@@ -215,11 +268,14 @@ def main() -> None:
         state = load_state()
         if eid in state.get("downloaded", []):
             fc, gb = get_engine_size(get_engine_dir(engine))
-            if fc > 0 and gb > 0.01:
+            cache_errors = validate_engine_cache(engine)
+            if not cache_errors:
                 print(f"\n  [{eid}] 已缓存，跳过 ({fc} 文件, {gb:.2f} GB)")
                 continue
             else:
-                # 状态文件显示已下载但实际文件不存在，重置状态
+                print(f"\n  [{eid}] 缓存与当前锁文件不一致，将重新同步:")
+                for error in cache_errors:
+                    print(f"    - {error}")
                 state["downloaded"].remove(eid)
                 save_state(state)
 

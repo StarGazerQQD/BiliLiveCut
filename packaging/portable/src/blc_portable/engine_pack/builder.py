@@ -43,12 +43,14 @@ PROJECT_ROOT = PORTABLE_DIR.parent.parent
 BUILD_DIR = PORTABLE_DIR / "build" / "engine-pack"
 DIST_DIR = PORTABLE_DIR / "dist" / "engine-pack"
 RESOURCES_DIR = PORTABLE_DIR / "resources"
+LICENSES_DIR = PORTABLE_DIR / "licenses"
 
 ENGINE_PACK_VERSION = "0.1.15.1-alpha"
 SOURCE_COMMIT_SHORT = "1b47a09"
 ARCHIVE_NAME = f"BiliLiveCut-EnginePack-{ENGINE_PACK_VERSION}"
 
 CHUNK_SIZE = 8 * 1024 * 1024
+MIN_PRODUCTION_ARCHIVE_BYTES = 500 * 1024 * 1024
 
 HF_MIRROR = "https://hf-mirror.com"
 
@@ -65,6 +67,19 @@ if _CONFIG_DIR not in _sys.path:
     _sys.path.insert(0, _CONFIG_DIR)
 
 from model_catalog import load_engines
+
+
+def _license_to_dict(license_def: Any) -> dict[str, object]:
+    """将许可证定义转换为可写入 Manifest 的字典。"""
+    return {
+        "name": license_def.name,
+        "spdx": license_def.spdx,
+        "source": license_def.source,
+        "evidence_url": license_def.evidence_url,
+        "license_file": license_def.license_file,
+        "verified_at": license_def.verified_at,
+        "redistribution_verified": license_def.redistribution_verified,
+    }
 
 
 def _get_engines_for_build() -> list[dict[str, Any]]:
@@ -84,6 +99,8 @@ def _get_engines_for_build() -> list[dict[str, Any]]:
             "hub": e.hub,
             "revision": e.resolved_revision if e.resolved_revision else None,
             "target_path": e.target_path,
+            "required_files": e.required_files,
+            "license": _license_to_dict(e.license),
         }
         if e.hub == "huggingface":
             d["repo_id"] = e.repository
@@ -93,8 +110,21 @@ def _get_engines_for_build() -> list[dict[str, Any]]:
                     "model_id": s.repository,
                     "revision": s.resolved_revision if s.resolved_revision else None,
                     "target_subdir": s.target_subdir if s.target_subdir else s.repository.rsplit("/", 1)[-1],
+                    "license": _license_to_dict(s.license),
                 }
                 for s in e.sub_models
+            ]
+        if e.third_party_components:
+            d["third_party_components"] = [
+                {
+                    "component_id": component.component_id,
+                    "display_name": component.display_name,
+                    "repository": component.repository,
+                    "revision": component.revision,
+                    "target_subdir": component.target_subdir,
+                    "license": _license_to_dict(component.license),
+                }
+                for component in e.third_party_components
             ]
         raw.append(d)
     return raw
@@ -165,6 +195,81 @@ def build_file_list(staging: Path) -> dict[str, dict[str, object]]:
                 "sha256": compute_sha256(p),
             }
     return file_list
+
+
+def validate_redistribution_readiness() -> list[str]:
+    """校验所有主模型、子模型和随附组件的再分发证据。"""
+    errors: list[str] = []
+
+    def validate_license(owner: str, license_data: dict[str, object]) -> None:
+        required = ("name", "spdx", "source", "evidence_url", "license_file", "verified_at")
+        for key in required:
+            if not license_data.get(key):
+                errors.append(f"{owner}: license.{key} missing")
+        if license_data.get("redistribution_verified") is not True:
+            errors.append(f"{owner}: redistribution_verified=false")
+
+        relative_path = Path(str(license_data.get("license_file", "")))
+        if relative_path.is_absolute() or ".." in relative_path.parts:
+            errors.append(f"{owner}: invalid license_file path")
+        elif relative_path.parts and not (PORTABLE_DIR / relative_path).is_file():
+            errors.append(f"{owner}: license_file not found: {relative_path.as_posix()}")
+
+    for engine in _get_engines_for_build():
+        engine_id = str(engine["engine_id"])
+        validate_license(f"engine {engine_id}", dict(engine.get("license", {})))
+        for sub_model in engine.get("sub_models", []):
+            validate_license(
+                f"engine {engine_id} sub-model {sub_model.get('model_id', '?')}",
+                dict(sub_model.get("license", {})),
+            )
+        for component in engine.get("third_party_components", []):
+            validate_license(
+                f"engine {engine_id} component {component.get('component_id', '?')}",
+                dict(component.get("license", {})),
+            )
+
+    notice_path = LICENSES_DIR / "THIRD_PARTY_NOTICES.md"
+    if not notice_path.is_file():
+        errors.append(f"third-party notice not found: {notice_path}")
+    return errors
+
+
+def copy_license_materials(staging: Path) -> None:
+    """将第三方许可证与归属声明复制到 Engine Pack。"""
+    if not LICENSES_DIR.is_dir():
+        raise FileNotFoundError(f"许可证目录不存在: {LICENSES_DIR}")
+    shutil.copytree(LICENSES_DIR, staging / "licenses", dirs_exist_ok=True)
+
+
+def validate_prepared_models(staging: Path) -> list[str]:
+    """校验已下载模型是否符合当前锁文件的文件和目录契约。"""
+    errors: list[str] = []
+    for engine in _get_engines_for_build():
+        engine_id = str(engine["engine_id"])
+        target = staging / str(engine["target_path"])
+        if not target.is_dir():
+            errors.append(f"engine {engine_id}: target directory missing: {target}")
+            continue
+
+        for required_file in engine.get("required_files", []):
+            required_path = target / str(required_file)
+            if not required_path.is_file() or required_path.stat().st_size == 0:
+                errors.append(f"engine {engine_id}: required file missing or empty: {required_file}")
+
+        for sub_model in engine.get("sub_models", []):
+            target_subdir = str(sub_model.get("target_subdir", ""))
+            subdir = target / target_subdir
+            if not subdir.is_dir() or not any(path.is_file() for path in subdir.rglob("*")):
+                errors.append(f"engine {engine_id}: sub-model directory missing or empty: {target_subdir}")
+
+        for component in engine.get("third_party_components", []):
+            target_subdir = str(component.get("target_subdir", ""))
+            component_dir = target / target_subdir
+            if not component_dir.is_dir() or not any(path.is_file() for path in component_dir.rglob("*")):
+                errors.append(f"engine {engine_id}: component directory missing or empty: {target_subdir}")
+
+    return errors
 
 
 # ── 真实下载 ──────────────────────────────────────────────
@@ -269,11 +374,27 @@ def build_fixture(staging: Path) -> None:
         # Paraformer 子模型占位
         for sub in engine.get("sub_models", []):
             sub_id = str(sub["model_id"])
-            sub_name = sub_id.rsplit("/", 1)[-1]
+            sub_name = str(sub.get("target_subdir") or sub_id.rsplit("/", 1)[-1])
             sub_dir = target / sub_name
             sub_dir.mkdir(parents=True, exist_ok=True)
             (sub_dir / "model_metadata.json").write_text(
                 json.dumps({"model_id": sub_id, "_fixture": True}, ensure_ascii=False, indent=2),
+                encoding="utf-8",
+            )
+        for component in engine.get("third_party_components", []):
+            component_dir = target / str(component["target_subdir"])
+            component_dir.mkdir(parents=True, exist_ok=True)
+            (component_dir / "component_metadata.json").write_text(
+                json.dumps(
+                    {
+                        "component_id": component["component_id"],
+                        "repository": component["repository"],
+                        "revision": component["revision"],
+                        "_fixture": True,
+                    },
+                    ensure_ascii=False,
+                    indent=2,
+                ),
                 encoding="utf-8",
             )
 
@@ -343,6 +464,31 @@ def self_verify(archive_path: Path, manifest: dict[str, Any]) -> bool:
         shutil.rmtree(str(verify_dir), ignore_errors=True)
 
 
+def validate_production_metadata(
+    crc32_val: str,
+    sha256_val: str,
+    manifest_sha: str,
+    model_lock_sha: str,
+    builder_head: str,
+    total_size: int,
+) -> list[str]:
+    """校验正式 Engine Pack 外部元数据和最小体积。"""
+    errors: list[str] = []
+    if not crc32_val or len(crc32_val) != 8:
+        errors.append(f"CRC32 invalid: {crc32_val}")
+    if not sha256_val or len(sha256_val) != 64:
+        errors.append(f"SHA-256 invalid: {sha256_val}")
+    if not manifest_sha or len(manifest_sha) != 64:
+        errors.append(f"content_manifest_sha256 invalid: {manifest_sha}")
+    if not model_lock_sha or len(model_lock_sha) != 64:
+        errors.append(f"model_lock_sha256 invalid: {model_lock_sha}")
+    if not builder_head or len(builder_head) != 40:
+        errors.append(f"builder_commit invalid: {builder_head}")
+    if total_size < MIN_PRODUCTION_ARCHIVE_BYTES:
+        errors.append(f"production archive too small: {total_size} bytes (minimum {MIN_PRODUCTION_ARCHIVE_BYTES})")
+    return errors
+
+
 # ── 输出文件 ──────────────────────────────────────────────
 
 
@@ -385,8 +531,10 @@ def write_output_files(
                 "hub": e["hub"],
                 "revision": e.get("revision"),
                 "target_path": e["target_path"],
+                "license": e["license"],
                 "model_repo": e.get("repo_id"),
                 "sub_models": e.get("sub_models", []),
+                "third_party_components": e.get("third_party_components", []),
             }
             for e in _get_engines_for_build()
         ],
@@ -469,17 +617,14 @@ def write_output_files(
 
     # Production validation: reject empty hash fields
     if not is_fixture:
-        errors = []
-        if not crc32_val or len(crc32_val) != 8:
-            errors.append(f"CRC32 invalid: {crc32_val}")
-        if not sha256_val or len(sha256_val) != 64:
-            errors.append(f"SHA-256 invalid: {sha256_val}")
-        if not manifest_sha or len(manifest_sha) != 64:
-            errors.append(f"content_manifest_sha256 invalid: {manifest_sha}")
-        if not model_lock_sha or len(model_lock_sha) != 64:
-            errors.append(f"model_lock_sha256 invalid: {model_lock_sha}")
-        if not builder_head or len(builder_head) != 40:
-            errors.append(f"builder_commit invalid: {builder_head}")
+        errors = validate_production_metadata(
+            crc32_val,
+            sha256_val,
+            manifest_sha,
+            model_lock_sha,
+            builder_head,
+            total_size,
+        )
         if errors:
             raise RuntimeError("Engine Pack production metadata validation FAILED:\n  " + "\n  ".join(errors))
     (RESOURCES_DIR / "engine_pack_info.json").write_text(
@@ -499,7 +644,7 @@ def write_output_files(
 
 
 def copy_from_cache(staging: Path) -> None:
-    """从持久模型缓存 (build/model_cache/) 复制引擎到 staging 目录。
+    """从持久模型缓存 (.model_cache/) 复制引擎到 staging 目录。
 
     :param staging: staging 根目录。
     :raises FileNotFoundError: 缓存目录缺失时。
@@ -550,7 +695,7 @@ def build_engine_pack(fixture: bool = False, from_cache: bool = False) -> dict[s
     支持三种模式:
     - 默认: 直接下载模型到 staging
     - --fixture: 生成测试用 Fixture
-    - --from-cache: 从 build/model_cache/ 复制已下载的模型 (需先运行 download_engines.py)
+    - --from-cache: 从 .model_cache/ 复制已下载的模型 (需先运行 download_engines.py)
     1. 下载模型 → staging → 第一次打包 → 计算 CRC32/SHA256
     2. 写入完整 Manifest 到 staging → 第二次打包 (含 Manifest)
     3. 生成 dist/ 输出 → 自校验
@@ -571,20 +716,10 @@ def build_engine_pack(fixture: bool = False, from_cache: bool = False) -> dict[s
 
     # ── Production redistribution gate ──
     if not fixture:
-        unverified = []
-        for e in _get_engines_for_build():
-            eid = e.get("engine_id", "?")
-            from model_catalog import get_engine_by_id
-
-            eng_def = get_engine_by_id(eid)
-            if eng_def and not eng_def.redistribution_verified:
-                unverified.append(eid)
-        if unverified:
+        redistribution_errors = validate_redistribution_readiness()
+        if redistribution_errors:
             raise RuntimeError(
-                f"Production build blocked: {len(unverified)} engine(s) have "
-                f"redistribution_verified=false: {', '.join(unverified)}\n"
-                "All engines must have redistribution_verified=true for production builds.\n"
-                "Use --fixture for test builds without redistribution verification."
+                "Production build blocked by redistribution validation:\n  " + "\n  ".join(redistribution_errors)
             )
 
     # 解析 Commit
@@ -619,6 +754,13 @@ def build_engine_pack(fixture: bool = False, from_cache: bool = False) -> dict[s
     else:
         download_real_models(staging)
 
+    if not fixture:
+        model_errors = validate_prepared_models(staging)
+        if model_errors:
+            raise RuntimeError("Prepared model validation FAILED:\n  " + "\n  ".join(model_errors))
+
+    copy_license_materials(staging)
+
     # ── 阶段 2: 构建文件清单 → 写入 Manifest (不含自身归档哈希) ──
     print("\n  [阶段 2/3] 构建文件清单 → 写入 Manifest ...")
 
@@ -641,8 +783,10 @@ def build_engine_pack(fixture: bool = False, from_cache: bool = False) -> dict[s
                 "hub": e["hub"],
                 "revision": e.get("revision"),
                 "target_path": e["target_path"],
+                "license": e["license"],
                 "model_repo": e.get("repo_id"),
                 "sub_models": e.get("sub_models", []),
+                "third_party_components": e.get("third_party_components", []),
             }
             for e in _get_engines_for_build()
         ],
