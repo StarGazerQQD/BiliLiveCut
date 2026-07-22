@@ -291,6 +291,7 @@ def verify_source_origin(
         "app/cli.py",
         "app/analysis/transcription/backends.py",
         "app/analysis/transcription/pipeline.py",
+        "app/web/login_handler.py",
         "app/web/main.py",
         "app/web/static/js/review.js",
         "app/pipeline/workers/analyze.py",

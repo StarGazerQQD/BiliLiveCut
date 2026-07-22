@@ -1,7 +1,7 @@
 """Payload 构建器 — 构建 source_payload.zip 和完整 Manifest。
 
 流程:
-1. 从固定的当前发布基线 7c2764b 提取源码 → staging/
+1. 从固定的当前发布基线 0fe24a5 提取源码 → staging/
 2. 应用受控版本 Overlay → 0.1.15.2-alpha
 3. 构建 ZIP (收集 included_files 集合)
 4. 基于 included_files 生成 Manifest (文件数/Hash 与 ZIP 严格一致)
