@@ -12,9 +12,9 @@
       "engine_id": "whisper",
       "display_name": "Whisper (faster-whisper large-v3-turbo)",
       "hub": "huggingface",
-      "repository": "mobiuslabsgmbh/faster-whisper-large-v3-turbo",
+      "repository": "dropbox-dash/faster-whisper-large-v3-turbo",
       "requested_revision": "",
-      "resolved_revision": "e4b9645",
+      "resolved_revision": "0a363e9161cbc7ed1431c9597a8ceaf0c4f78fcf",
       "target_path": "models/whisper",
       "required_files": [
         "model.bin",
@@ -27,7 +27,7 @@
       "license": {
         "name": "MIT",
         "spdx": "MIT",
-        "source": "https://huggingface.co/mobiuslabsgmbh/faster-whisper-large-v3-turbo",
+        "source": "https://huggingface.co/dropbox-dash/faster-whisper-large-v3-turbo",
         "evidence_url": "https://huggingface.co/dropbox-dash/faster-whisper-large-v3-turbo",
         "license_file": "licenses/MIT.txt",
         "verified_at": "2026-07-22",

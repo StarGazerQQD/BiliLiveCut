@@ -6,7 +6,7 @@
 
 | 组件 | 上游来源 | 固定 revision | 许可证 |
 | --- | --- | --- | --- |
-| Whisper large-v3-turbo（CTranslate2 转换） | https://huggingface.co/dropbox-dash/faster-whisper-large-v3-turbo | `e4b9645` | MIT |
+| Whisper large-v3-turbo（CTranslate2 转换） | https://huggingface.co/dropbox-dash/faster-whisper-large-v3-turbo | `0a363e9161cbc7ed1431c9597a8ceaf0c4f78fcf` | MIT |
 | OpenAI Whisper 原始权重 | https://github.com/openai/whisper | `large-v3-turbo` 上游模型 | MIT |
 | Paraformer-zh | https://modelscope.cn/models/iic/speech_paraformer-large-vad-punc_asr_nat-zh-cn-16k-common-vocab8404-pytorch | `v2.0.4` | Apache-2.0 |
 | FSMN-VAD | https://modelscope.cn/models/iic/speech_fsmn_vad_zh-cn-16k-common-pytorch | `v2.0.4` | Apache-2.0 |

@@ -58,12 +58,12 @@ class TestModelCatalogIsSingleSource:
         assert "/" in engine.repository
 
     def test_whisper_uses_correct_repository(self) -> None:
-        """Whisper 仓库不可变。"""
+        """Whisper 必须使用迁移后的规范仓库。"""
         from model_catalog import get_engine_by_id
 
         engine = get_engine_by_id("whisper")
         assert engine is not None
-        assert "mobiuslabsgmbh/faster-whisper-large-v3-turbo" in engine.repository
+        assert engine.repository == "dropbox-dash/faster-whisper-large-v3-turbo"
 
     def test_all_engines_have_resolved_revision(self) -> None:
         """所有引擎必须有 resolved_revision。"""

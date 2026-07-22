@@ -30,6 +30,10 @@ class TestModelCatalogSingleSource:
             rev = engine.get("resolved_revision", "")
             assert rev, f"Engine {engine['engine_id']}: resolved_revision empty"
             assert rev not in ("main", "master"), f"Engine {engine['engine_id']}: floating revision {rev}"
+            if engine["hub"] == "huggingface":
+                assert len(rev) == 40 and all(char in "0123456789abcdef" for char in rev), (
+                    f"Engine {engine['engine_id']}: Hugging Face revision must be a full commit: {rev}"
+                )
 
     def test_no_legacy_funasr_repo(self) -> None:
         catalog = _load_lock()
