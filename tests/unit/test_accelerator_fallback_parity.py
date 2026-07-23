@@ -581,6 +581,14 @@ class TestGroupSrtBlocks:
         assert "1\n" in result
         assert "2\n" in result
 
+    def test_line_gap_splits_subtitle_blocks(self) -> None:
+        """超过行间隔阈值的停顿会强制断句。"""
+        words = [(0.0, 0.2, "你"), (0.5, 0.7, "好")]
+        result = fb2.group_srt_blocks(words, max_chars=20, line_gap_ms=200)
+        assert "1\n" in result
+        assert "2\n" in result
+        assert "你好" not in result
+
     def test_fmt_time_hours(self) -> None:
         """_fmt_time handles hour+ durations."""
         result = fb2._fmt_time(3661.5)  # 1h 1m 1.5s

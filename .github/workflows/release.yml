@@ -101,6 +101,7 @@ jobs:
             --extra-index-url https://pypi.tuna.tsinghua.edu.cn/simple \
             --trusted-host mirrors.aliyun.com \
             --trusted-host pypi.tuna.tsinghua.edu.cn
+          python setup.py build_ext --inplace
       - name: Ruff lint
         run: python scripts/run_ruff.py check
 
@@ -202,7 +203,7 @@ jobs:
   build-payload:
     name: "Build Payload + verify"
     needs: test
-    runs-on: ubuntu-latest
+    runs-on: windows-latest
     steps:
       - uses: actions/checkout@v4
         with:
@@ -214,23 +215,25 @@ jobs:
 
       - name: Build source payload
         run: |
-          pip install setuptools
+          python -m pip install --upgrade pip
+          pip install setuptools Cython==3.2.8
           cd packaging/portable
           python build_payload.py
-        timeout-minutes: 10
+        timeout-minutes: 20
 
       - name: Verify Payload Manifest/ZIP contract
+        shell: pwsh
         run: |
-          cd packaging/portable
-          python - <<'PY'
+          @'
           import json
           import zipfile
 
-          manifest = json.load(open("dist/payload/payload_manifest.json"))
-          version_config = json.load(open("config/version.json"))
-          zip_path = "dist/payload/source_payload.zip"
+          manifest = json.load(open("packaging/portable/dist/payload/payload_manifest.json"))
+          version_config = json.load(open("packaging/portable/config/version.json"))
+          zip_path = "packaging/portable/dist/payload/source_payload.zip"
           with zipfile.ZipFile(zip_path) as zip_file:
-              zip_count = sum(1 for name in zip_file.namelist() if not name.endswith("/"))
+              entries = set(zip_file.namelist())
+              zip_count = sum(1 for name in entries if not name.endswith("/"))
           manifest_count = manifest["file_count"]
           manifest_files = len(manifest["files"])
           assert zip_count == manifest_count == manifest_files, (
@@ -241,8 +244,18 @@ jobs:
           assert manifest["core_source_commit_short"] == version_config["source_commit_short"]
           assert manifest["target_platform"] == "win_x64"
           assert "generated_at" not in manifest, "manifest has generated_at (breaks reproducibility)"
+          abi = manifest["python_abi"]
+          required_native = {
+              f"app/analysis/_c_speedups.{abi}-win_amd64.pyd",
+              f"app/analysis/_speedups_round2.{abi}-win_amd64.pyd",
+              "app/analysis/_rust_cluster.pyd",
+          }
+          missing_native = sorted(required_native - entries)
+          assert not missing_native, f"Missing Windows native modules: {missing_native}"
+          foreign_native = sorted(name for name in entries if name.endswith((".so", ".dll")))
+          assert not foreign_native, f"Foreign native modules in Windows Payload: {foreign_native}"
           print(f"Payload contract OK: {manifest_count} files, SHA={manifest['payload_sha256'][:16]}...")
-          PY
+          '@ | python -
         timeout-minutes: 2
 
       - name: Upload Payload artifacts
@@ -517,11 +530,13 @@ jobs:
             Push-Location $root
             try {
               & $venvPython -c "from pathlib import Path; from app.cli import app; import app.cli; source = Path(r'$runtimeSource').resolve(); actual = Path(app.cli.__file__).resolve(); assert actual.is_relative_to(source), f'app.cli loaded from {actual}'; print('app.cli import OK:', actual)"
+              if ($LASTEXITCODE -ne 0) { throw "Full Bundle app.cli import failed" }
+              & $venvPython -c "from app.accelerators import dispatcher as d; assert d.get_backend() == 'C', d.get_backend(); assert d.get_cluster_backend() == 'Rust+rayon', d.get_cluster_backend(); assert d.danmaku_baseline_rate.__module__ == 'app.analysis._speedups_round2', d.danmaku_baseline_rate.__module__; assert d.group_srt_blocks.__module__ == 'app.analysis._speedups_round2', d.group_srt_blocks.__module__; print('Full Bundle native acceleration OK')"
             }
             finally {
               Pop-Location
             }
-            if ($LASTEXITCODE -ne 0) { throw "Full Bundle app.cli import failed" }
+            if ($LASTEXITCODE -ne 0) { throw "Full Bundle native acceleration import failed" }
             Write-Output "Full bundle offline installation OK ($wheelCount wheels)"
 
             Remove-Item Env:PYTHONPATH -ErrorAction SilentlyContinue

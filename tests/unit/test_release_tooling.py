@@ -2,12 +2,20 @@
 
 from __future__ import annotations
 
+import sys
+from pathlib import Path
 from types import SimpleNamespace
+from typing import TYPE_CHECKING
 
 import pytest
+import yaml
 
 import conftest as release_pytest
 from scripts import run_ruff
+
+if TYPE_CHECKING:
+    from _pytest.capture import CaptureFixture
+    from _pytest.monkeypatch import MonkeyPatch
 
 
 def test_tracked_ruff_scope_includes_previously_missed_files() -> None:
@@ -50,3 +58,69 @@ def test_rust_build_uses_current_python_interpreter() -> None:
     """PyO3 构建必须显式使用当前虚拟环境的 Python。"""
     source = (run_ruff.REPO_ROOT / "tools" / "native" / "build_rust.py").read_text(encoding="utf-8")
     assert 'env.setdefault("PYO3_PYTHON", sys.executable)' in source
+
+
+def test_rust_build_streams_cargo_output(monkeypatch: MonkeyPatch, tmp_path: Path) -> None:
+    """Cargo 构建继承控制台输出，不再缓存到进程结束。"""
+    from tools.native import build_rust
+
+    rust_source = tmp_path / "rust"
+    release_dir = rust_source / "target" / "release"
+    release_dir.mkdir(parents=True)
+    (rust_source / "Cargo.toml").write_text("[package]\nname='fixture'\n", encoding="utf-8")
+    source_suffix = ".dll" if sys.platform == "win32" else ".so"
+    destination_suffix = ".pyd" if sys.platform == "win32" else ".so"
+    (release_dir / f"_rust_cluster{source_suffix}").write_bytes(b"native")
+    target_dir = tmp_path / "analysis"
+
+    observed_kwargs: dict[str, object] = {}
+
+    def fake_run(*_args: object, **kwargs: object) -> SimpleNamespace:
+        observed_kwargs.update(kwargs)
+        return SimpleNamespace(returncode=0)
+
+    monkeypatch.setattr(build_rust, "RUST_SRC", rust_source)
+    monkeypatch.setattr(build_rust, "TARGET_DIR", target_dir)
+    monkeypatch.setattr(build_rust.subprocess, "run", fake_run)
+
+    assert build_rust.build() is True
+    assert "capture_output" not in observed_kwargs
+    assert observed_kwargs["env"]["PYO3_PYTHON"] == sys.executable  # type: ignore[index]
+    assert (target_dir / f"_rust_cluster{destination_suffix}").read_bytes() == b"native"
+
+
+def test_windows_payload_jobs_run_on_windows_and_verify_native_modules() -> None:
+    """CI 和 Release 必须在 Windows 构建目标平台原生模块。"""
+    release_workflow = yaml.safe_load(
+        (run_ruff.REPO_ROOT / ".github/workflows/release.yml").read_text(encoding="utf-8")
+    )
+    ci_workflow = yaml.safe_load((run_ruff.REPO_ROOT / ".github/workflows/ci.yml").read_text(encoding="utf-8"))
+
+    assert release_workflow["jobs"]["build-payload"]["runs-on"] == "windows-latest"
+    assert ci_workflow["jobs"]["portable-test"]["runs-on"] == "windows-latest"
+
+    release_source = (run_ruff.REPO_ROOT / ".github/workflows/release.yml").read_text(encoding="utf-8")
+    assert "Missing Windows native modules" in release_source
+    assert "Foreign native modules in Windows Payload" in release_source
+    assert "Full Bundle native acceleration OK" in release_source
+
+
+def test_windows_c_extension_compiles_utf8_source() -> None:
+    """Windows 扩展必须按 UTF-8 编译并启用确定性链接。"""
+    for build_script in ("setup.py", "setup_c.py"):
+        source = (run_ruff.REPO_ROOT / build_script).read_text(encoding="utf-8")
+        assert '"/utf-8"' in source
+        assert 'extra_link_args=(["/Brepro"] if sys.platform == "win32" else [])' in source
+
+
+def test_release_gate_rejects_stale_payload_after_build_failure(
+    monkeypatch: MonkeyPatch, capsys: CaptureFixture[str]
+) -> None:
+    """Payload 构建失败后不得继续把已有旧产物报告为有效。"""
+    from scripts import release_gate
+
+    monkeypatch.setattr(release_gate, "_run", lambda *_args, **_kwargs: False)
+    monkeypatch.setattr(release_gate, "_pytest", lambda *_args, **_kwargs: False)
+
+    assert release_gate.main() == 1
+    assert "Payload 构建失败；拒绝校验已有产物" in capsys.readouterr().out
