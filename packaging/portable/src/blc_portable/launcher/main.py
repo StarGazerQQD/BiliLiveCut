@@ -46,6 +46,19 @@ FFMPEG_WIN_URL = "https://github.com/BtbN/FFmpeg-Builds/releases/download/latest
 # -- Resource paths ──────────────────────────────────────────────
 
 
+def _configure_console_encoding() -> None:
+    """将 Launcher 输出切换为 UTF-8，避免旧版 Windows 代码页无法输出中文。"""
+    for stream in (sys.stdout, sys.stderr):
+        reconfigure = getattr(stream, "reconfigure", None)
+        if not callable(reconfigure):
+            continue
+        try:
+            reconfigure(encoding="utf-8", errors="backslashreplace")
+        except (OSError, TypeError, ValueError):
+            # 测试捕获器或嵌入式宿主可能不允许修改流配置；此时保留宿主设置。
+            continue
+
+
 def get_bundled_resource_path(rel: str) -> Path | None:
     """Get bundled resource path, compatible with PyInstaller and normal run。
 
@@ -965,6 +978,7 @@ def main(argv: Sequence[str] | None = None) -> int:
     :param argv: 命令行参数列表 (None 使用 sys.argv)。
     :returns: 退出码 (0 成功, 非零失败)。
     """
+    _configure_console_encoding()
     parser = build_parser()
 
     try:

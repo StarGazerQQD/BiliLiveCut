@@ -4,6 +4,7 @@
 
 ### 修复
 
+- **portable**: 冻结 Launcher 入口统一将 stdout/stderr 切换为 UTF-8，并为不可编码字符保留回退表示，修复 Windows `cp1252` 控制台在 Engine Pack 安装进度输出中文时崩溃。
 - **portable/native**: Windows Payload 改为在 Windows runner 构建，并以当前 Python ABI 的实际 `.pyd` 文件作为成功条件；禁止将 Linux `.so` 或旧 ABI 模块装入 Windows Portable，Full 离线冒烟会验证 C、Cython 与 Rust 后端均已加载。
 - **native**: Cython 第二轮加速的时间戳和长度/索引统一使用双精度与 `Py_ssize_t`，修复 Unix epoch 分桶及长时间轴 SRT 与 Python fallback 不一致；Rust 构建改为实时显示 Cargo 输出。
 - **subtitle**: `line_gap_ms` 现在按词间停顿阈值执行字幕断句，修复字幕模板配置已保存但不生效。

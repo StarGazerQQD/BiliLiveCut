@@ -2,7 +2,9 @@
 
 from __future__ import annotations
 
+import argparse
 import ast
+import io
 import runpy
 import sys
 from pathlib import Path
@@ -44,6 +46,31 @@ def test_launcher_version_python_entrypoint() -> None:
 
     result = main(["--version"])
     assert result == 0, f"main(['--version']) should return 0, got {result}"
+
+
+def test_launcher_reconfigures_legacy_console_before_run(monkeypatch: MonkeyPatch) -> None:
+    """冻结入口必须先切换输出编码，再进入可能打印中文的 Launcher 流程。"""
+    from blc_portable.launcher import main as launcher_module  # noqa: E402
+
+    stdout_bytes = io.BytesIO()
+    stderr_bytes = io.BytesIO()
+    stdout = io.TextIOWrapper(stdout_bytes, encoding="cp1252", errors="strict")
+    stderr = io.TextIOWrapper(stderr_bytes, encoding="cp1252", errors="strict")
+    monkeypatch.setattr(sys, "stdout", stdout)
+    monkeypatch.setattr(sys, "stderr", stderr)
+
+    def fake_run_launcher(_args: argparse.Namespace) -> int:
+        print("Engine Pack 校验通过")
+        return 0
+
+    monkeypatch.setattr(launcher_module, "run_launcher", fake_run_launcher)
+
+    assert launcher_module.main([]) == 0
+    stdout.flush()
+    stderr.flush()
+    assert stdout.encoding.lower().replace("-", "") == "utf8"
+    assert stderr.encoding.lower().replace("-", "") == "utf8"
+    assert "Engine Pack 校验通过" in stdout_bytes.getvalue().decode("utf-8")
 
 
 def test_launcher_help_python_entrypoint() -> None:
