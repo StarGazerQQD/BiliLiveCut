@@ -14,7 +14,7 @@ from typing import Any
 _logger = logging.getLogger(__name__)
 
 RELEASE_VERSION = "0.1.15.2-alpha"
-SOURCE_COMMIT_SHORT = "1b47a09"
+SOURCE_COMMIT_SHORT = "0fe24a5"
 RELEASE_ID = f"{RELEASE_VERSION}+{SOURCE_COMMIT_SHORT}"
 
 # 持久数据目录（不随 Release 删除）

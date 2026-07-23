@@ -20,8 +20,8 @@ if str(SRC_DIR) not in sys.path:
 PAYLOAD_ZIP = PORTABLE_DIR / "dist" / "payload" / "source_payload.zip"
 MANIFEST_PATH = PORTABLE_DIR / "dist" / "payload" / "payload_manifest.json"
 BACKPORTS_JSON = PORTABLE_DIR / "backports" / "backports.json"
-SOURCE_COMMIT_FULL = "1b47a0942b04efc1c11b11e1f74bc970f843f4c4"
-SOURCE_COMMIT_SHORT = "1b47a09"
+SOURCE_COMMIT_FULL = "0fe24a5f050c7110b2214570ac165d828f5f363c"
+SOURCE_COMMIT_SHORT = "0fe24a5"
 
 
 def _load_json(path: Path) -> dict[str, Any]:
@@ -121,7 +121,9 @@ class TestLatestBaselineBehavior:
             "app/cli.py",
             "app/analysis/transcription/backends.py",
             "app/analysis/transcription/pipeline.py",
+            "app/web/login_handler.py",
             "app/web/main.py",
+            "app/web/static/js/review.js",
         )
         with zipfile.ZipFile(PAYLOAD_ZIP, "r") as zf:
             for path in business_files:

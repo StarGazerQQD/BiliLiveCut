@@ -25,12 +25,14 @@ class FakeChromium:
         self.executable_path = str(executable)
         self.chrome_available = chrome_available
         self.calls: list[str | None] = []
+        self.launch_options: list[dict[str, object]] = []
         self.context = object()
 
     def launch_persistent_context(self, **options: object) -> object:
         channel = options.get("channel")
         assert channel is None or isinstance(channel, str)
         self.calls.append(channel)
+        self.launch_options.append(options)
         if channel == "chrome" and not self.chrome_available:
             raise FakeBrowserError("Chrome executable does not exist")
         if channel is None and not Path(self.executable_path).is_file():
@@ -57,6 +59,10 @@ def test_launch_prefers_installed_chrome(monkeypatch: MonkeyPatch, tmp_path: Pat
 
     assert context is chromium.context
     assert chromium.calls == ["chrome"]
+    launch_options = chromium.launch_options[0]
+    assert launch_options["chromium_sandbox"] is True
+    assert "--no-sandbox" not in launch_options["args"]
+    assert launch_options["user_data_dir"] == ""
 
 
 def test_launch_reuses_existing_chromium_when_chrome_is_missing(monkeypatch: MonkeyPatch, tmp_path: Path) -> None:
@@ -143,3 +149,42 @@ def test_non_portable_environment_preserves_playwright_browser_path(monkeypatch:
     env = login_handler._playwright_environment()
 
     assert env["PLAYWRIGHT_BROWSERS_PATH"] == "D:/shared/playwright"
+
+
+class FakeCookieContext:
+    """提供 Cookie 读取所需的最小 BrowserContext 接口。"""
+
+    def __init__(self, cookies: list[dict[str, str]]) -> None:
+        self._cookies = cookies
+        self.calls = 0
+
+    def cookies(self) -> list[dict[str, str]]:
+        self.calls += 1
+        return self._cookies
+
+
+def test_extract_cookie_reads_context_and_filters_domain_boundaries() -> None:
+    context = FakeCookieContext(
+        [
+            {"name": "SESSDATA", "value": "session", "domain": ".bilibili.com"},
+            {"name": "DedeUserID", "value": "123", "domain": "passport.bilibili.com"},
+            {"name": "ignored", "value": "outside", "domain": "evilbilibili.com"},
+            {"name": "ignored2", "value": "outside", "domain": "example.com"},
+        ]
+    )
+
+    cookie_string = login_handler._extract_cookie_string(context)  # type: ignore[arg-type]
+
+    assert context.calls == 1
+    assert cookie_string == "SESSDATA=session; DedeUserID=123"
+
+
+def test_cookie_read_failure_keeps_original_exception() -> None:
+    class FailingCookieContext:
+        def cookies(self) -> list[dict[str, str]]:
+            raise OSError("context closed")
+
+    with pytest.raises(RuntimeError, match="无法从登录浏览器读取 Cookie") as exc_info:
+        login_handler._get_bilibili_cookies(FailingCookieContext())  # type: ignore[arg-type]
+
+    assert isinstance(exc_info.value.__cause__, OSError)
