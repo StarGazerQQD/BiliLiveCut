@@ -20,6 +20,7 @@ import shutil
 import subprocess
 import sys
 from pathlib import Path
+from typing import TextIO
 
 _HERE = Path(__file__).resolve().parent
 # tools/native/ → 仓库根目录
@@ -28,22 +29,28 @@ RUST_SRC = _REPO_ROOT / "tools" / "native" / "rust"
 TARGET_DIR = _REPO_ROOT / "app" / "analysis"
 
 
-def _run(cmd: list[str], cwd: Path) -> subprocess.CompletedProcess:
-    """运行命令并打印输出。
+def _configure_stream_encoding(stream: TextIO) -> None:
+    """将可重配置文本流切换为 UTF-8，并为不可编码字符保留转义回退。"""
+    reconfigure = getattr(stream, "reconfigure", None)
+    if not callable(reconfigure):
+        return
+    try:
+        reconfigure(encoding="utf-8", errors="backslashreplace")
+    except (OSError, TypeError, ValueError):
+        # pytest 捕获器或嵌入式宿主可能不允许修改流配置，此时保留宿主设置。
+        return
 
-    :param cmd: 命令行。
-    :param cwd: 工作目录。
-    :returns: 子进程结果。
-    """
-    print(f"  [build_rust] {' '.join(cmd)}")
-    return subprocess.run(
-        cmd,
-        cwd=cwd,
-        capture_output=True,
-        text=True,
-        encoding="utf-8",
-        errors="replace",
-    )
+
+def _configure_console_encoding() -> None:
+    """统一 Rust 构建 CLI 的控制台编码，兼容 Windows runner 的 cp1252。"""
+    for stream in (sys.stdout, sys.stderr):
+        _configure_stream_encoding(stream)
+
+
+def _extension_suffix(platform: str | None = None) -> str:
+    """返回目标平台的 Python 原生扩展后缀。"""
+    current_platform = sys.platform if platform is None else platform
+    return ".pyd" if current_platform == "win32" else ".so"
 
 
 def check_rust() -> bool:
@@ -96,25 +103,22 @@ def build() -> bool:
     env.setdefault("PYO3_PYTHON", sys.executable)
 
     # cargo build --release (带 Python 3.14 兼容性)
-    import subprocess as _sp
-
-    result = _sp.run(
+    result = subprocess.run(
         ["cargo", "build", "--release"],
         cwd=RUST_SRC,
-        capture_output=True,
         text=True,
         encoding="utf-8",
         errors="replace",
         env=env,
     )
     if result.returncode != 0:
-        print(f"  [build_rust] 编译失败:\n{result.stderr}")
+        print(f"  [build_rust] 编译失败 (cargo exit={result.returncode})")
         return False
 
-    print(f"  [build_rust] 编译成功\n{result.stdout.strip()}")
+    print("  [build_rust] 编译成功")
 
     # 查找产物 (.pyd, .so, .dll)
-    ext = ".pyd" if "win" in sys.platform else ".so"
+    ext = _extension_suffix()
     build_dir = RUST_SRC / "target" / "release"
     candidates = list(build_dir.glob(f"_rust_cluster*{ext}"))
     # 也匹配 .dll (Windows Rust 默认输出)
@@ -142,6 +146,7 @@ def main() -> int:
 
     :returns: 0 = 成功, 1 = 失败。
     """
+    _configure_console_encoding()
     print("=" * 60)
     print("  BiliLiveCut Rust 加速模块编译")
     print(f"  仓库根目录: {_REPO_ROOT}")

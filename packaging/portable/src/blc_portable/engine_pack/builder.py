@@ -36,6 +36,8 @@ import zlib
 from pathlib import Path
 from typing import Any
 
+from blc_portable.console import configure_console_encoding
+
 # ── 常量 ───────────────────────────────────────────────────
 
 PORTABLE_DIR = Path(__file__).resolve().parent.parent.parent.parent
@@ -46,7 +48,7 @@ RESOURCES_DIR = PORTABLE_DIR / "resources"
 LICENSES_DIR = PORTABLE_DIR / "licenses"
 
 ENGINE_PACK_VERSION = "0.1.15.2-alpha"
-SOURCE_COMMIT_SHORT = "1b47a09"
+SOURCE_COMMIT_SHORT = "f2c291d"
 ARCHIVE_NAME = f"BiliLiveCut-EnginePack-{ENGINE_PACK_VERSION}"
 
 CHUNK_SIZE = 8 * 1024 * 1024
@@ -823,6 +825,7 @@ def main() -> int:
 
     :returns: 0 成功, 1 失败。
     """
+    configure_console_encoding()
     try:
         fixture_mode = "--fixture" in sys.argv
         cache_mode = "--from-cache" in sys.argv
@@ -836,6 +839,4 @@ def main() -> int:
 
 
 if __name__ == "__main__":
-    fixture_mode = "--fixture" in sys.argv
-    cache_mode = "--from-cache" in sys.argv
-    build_engine_pack(fixture=fixture_mode, from_cache=cache_mode)
+    raise SystemExit(main())

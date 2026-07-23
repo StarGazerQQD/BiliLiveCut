@@ -28,7 +28,7 @@ def cluster_similarity_matrix(list items):
     :param items: list[dict], 每个 dict 含 asr_text/keywords/start_ts。
     :returns: list[list[float]], N×N 相似度矩阵。
     """
-    cdef int n = len(items)
+    cdef Py_ssize_t n = len(items)
     if n < 2:
         return [[0.0] * n for _ in range(n)]
 
@@ -38,7 +38,7 @@ def cluster_similarity_matrix(list items):
     cdef list texts = []
     cdef list tss = []
 
-    cdef int i, j
+    cdef Py_ssize_t i, j
     cdef dict item
     cdef str text
     cdef object ts
@@ -56,7 +56,7 @@ def cluster_similarity_matrix(list items):
 
     # 构建矩阵
     cdef list matrix = [[0.0] * n for _ in range(n)]
-    cdef float sim
+    cdef double sim
     for i in range(n):
         matrix[i][i] = 1.0
         for j in range(i + 1, n):
@@ -70,12 +70,12 @@ def cluster_similarity_matrix(list items):
     return matrix
 
 
-cdef float _event_sim_fast(
+cdef double _event_sim_fast(
     str text_a, object vec_a, object kw_a, object ts_a,
     str text_b, object vec_b, object kw_b, object ts_b,
 ):
     """快速事件相似度 — 复用已预计算的 bigram/kw,避免重复构造。"""
-    cdef float sim_text, sim_kw, time_sim, score
+    cdef double sim_text, sim_kw, time_sim, score
 
     # 文本相似度 (Counter A + Counter B → fast_cosine_similarity 已用 C 重写)
     from app.analysis.speedups import fast_cosine_similarity
@@ -127,33 +127,33 @@ cdef float _event_sim_fast(
 # 2. 弹幕基线分桶 + 中位数计算
 # ============================================================================
 
-def danmaku_baseline_rate(list timestamps_seconds, float bucket_s=10.0):
+def danmaku_baseline_rate(list timestamps_seconds, double bucket_s=10.0):
     """对时间戳列表(已排序)按 bucket_s 秒分桶,返回中位数速率和总数。
 
     :param timestamps_seconds: float 列表(Unix epoch 秒或相对秒)。
     :param bucket_s: 分桶粒度(秒)。
     :returns: (median_rate, total_count)。
     """
-    cdef int n = len(timestamps_seconds)
+    cdef Py_ssize_t n = len(timestamps_seconds)
     if n < 10:
         return 0.0, 0
 
-    cdef float t0 = PyFloat_AsDouble(timestamps_seconds[0])
+    cdef double t0 = PyFloat_AsDouble(timestamps_seconds[0])
     cdef dict buckets = {}
-    cdef float t, idx_float
-    cdef int idx
-    cdef int i
+    cdef double t
+    cdef Py_ssize_t idx
+    cdef Py_ssize_t i
 
     for i in range(n):
         t = PyFloat_AsDouble(timestamps_seconds[i])
-        idx = <int>((t - t0) / bucket_s)
+        idx = <Py_ssize_t>((t - t0) / bucket_s)
         buckets[idx] = buckets.get(idx, 0) + 1
 
     cdef list rates = [float(v) / bucket_s for v in buckets.values()]
     rates.sort()
 
-    cdef int nr = len(rates)
-    cdef float median
+    cdef Py_ssize_t nr = len(rates)
+    cdef double median
     if nr % 2 == 1:
         median = rates[nr // 2]
     else:
@@ -180,7 +180,7 @@ def group_srt_blocks(
     :param words: (start: float, end: float, text: str) 列表。
     :returns: SRT 文本字符串。
     """
-    cdef int n = len(words)
+    cdef Py_ssize_t n = len(words)
     if n == 0:
         return ""
 
@@ -189,9 +189,10 @@ def group_srt_blocks(
     cdef list blocks_end = []
     cdef list blocks_text = []
 
-    cdef float cur_start, cur_end, start, end, dur_ms
+    cdef double cur_start, cur_end, start, end, dur_ms
     cdef str cur_text_str, word_text
-    cdef int i
+    cdef Py_ssize_t i
+    cdef double line_gap_s = line_gap_ms / 1000.0
 
     cur_start = PyFloat_AsDouble(words[0][0])
     cur_end = PyFloat_AsDouble(words[0][1])
@@ -203,7 +204,10 @@ def group_srt_blocks(
         end = PyFloat_AsDouble(item[1])
         word_text = <str>item[2]
 
-        if cur_text_str and len(cur_text_str) + len(word_text) > max_chars:
+        if cur_text_str and (
+            len(cur_text_str) + len(word_text) > max_chars
+            or start - cur_end >= line_gap_s
+        ):
             blocks_start.append(cur_start)
             blocks_end.append(cur_end)
             blocks_text.append(cur_text_str)
@@ -219,16 +223,14 @@ def group_srt_blocks(
 
     # 第二遍: 格式化 SRT
     cdef list lines = []
-    cdef int block_count = len(blocks_start)
-    cdef int h, m, ms
-    cdef float s, fstart, fend
-    cdef str time_str
+    cdef Py_ssize_t block_count = len(blocks_start)
+    cdef double fstart, fend
     cdef str fstart_str, fend_str
     cdef str block_text
 
     for i in range(block_count):
-        fstart = <float>blocks_start[i]
-        fend = <float>blocks_end[i]
+        fstart = <double>blocks_start[i]
+        fend = <double>blocks_end[i]
 
         # 应用最短/最长显示时长
         dur_ms = (fend - fstart) * 1000.0
@@ -247,7 +249,7 @@ def group_srt_blocks(
     return "\n".join(lines)
 
 
-cdef str _fmt_time(float t):
+cdef str _fmt_time(double t):
     """浮点秒 → SRT 时间格式 HH:MM:SS,mmm (纯 C 实现,避免 Python 热点)。"""
     cdef int h = <int>(t / 3600.0)
     t -= h * 3600.0

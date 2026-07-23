@@ -24,11 +24,13 @@ from collections.abc import Sequence
 from pathlib import Path
 from typing import Any
 
+from blc_portable.console import configure_console_encoding
+
 # -- Constants ──────────────────────────────────────────────────
 APP_NAME = "BiliLiveCut"
 VERSION = "V0.1.15.2 Alpha"
 RELEASE_VERSION = "0.1.15.2-alpha"
-SOURCE_COMMIT_SHORT = "1b47a09"
+SOURCE_COMMIT_SHORT = "f2c291d"
 # NOTE: RELEASE_ID 将在获得 Payload SHA-256 后动态生成 (内容寻址)
 
 VENV_DIR = ".venv"
@@ -965,6 +967,7 @@ def main(argv: Sequence[str] | None = None) -> int:
     :param argv: 命令行参数列表 (None 使用 sys.argv)。
     :returns: 退出码 (0 成功, 非零失败)。
     """
+    configure_console_encoding()
     parser = build_parser()
 
     try:

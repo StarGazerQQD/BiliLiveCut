@@ -1,7 +1,7 @@
 """Payload 构建器 — 构建 source_payload.zip 和完整 Manifest。
 
 流程:
-1. 从固定的当前发布基线 1b47a09 提取源码 → staging/
+1. 从固定的当前发布基线 f2c291d 提取源码 → staging/
 2. 应用受控版本 Overlay → 0.1.15.2-alpha
 3. 构建 ZIP (收集 included_files 集合)
 4. 基于 included_files 生成 Manifest (文件数/Hash 与 ZIP 严格一致)
@@ -11,12 +11,16 @@
 
 from __future__ import annotations
 
+import importlib.util
 import json
 import logging
 import shutil
 import sys
+import sysconfig
 import zipfile
 from pathlib import Path
+
+from blc_portable.console import configure_console_encoding
 
 from .manifest import (
     RELEASE_VERSION,
@@ -158,112 +162,115 @@ def _safe_extract_zip(zip_path: Path, dest: Path) -> list[str]:
 # ── 原生加速模块编译与注入 ─────────────────────────────────
 
 
+def _windows_extension_suffix() -> str:
+    """返回当前解释器的 Windows 扩展后缀，非 Windows 构建环境直接失败。"""
+    suffix = sysconfig.get_config_var("EXT_SUFFIX")
+    if not isinstance(suffix, str) or not suffix.endswith(".pyd"):
+        raise RuntimeError(f"无法为 {TARGET_PLATFORM} 生成扩展：当前 EXT_SUFFIX={suffix!r}")
+    return suffix
+
+
+def _expected_windows_native_modules(analysis_dir: Path) -> dict[str, Path]:
+    """返回当前 Python ABI 对应的 Windows 原生模块路径。"""
+    suffix = _windows_extension_suffix()
+    return {
+        "c": analysis_dir / f"_c_speedups{suffix}",
+        "cython": analysis_dir / f"_speedups_round2{suffix}",
+        "rust": analysis_dir / "_rust_cluster.pyd",
+    }
+
+
 def _compile_and_copy_native_modules(staging_dir: Path) -> dict[str, bool]:
     """编译 C/Cython/Rust 原生加速模块并复制到 staging 目录。"""
-    import os as _os
     import subprocess as _sp
 
     repo_root = PORTABLE_ROOT.parent.parent
     analysis_dir = repo_root / "app" / "analysis"
     staging_analysis = staging_dir / "app" / "analysis"
     staging_analysis.mkdir(parents=True, exist_ok=True)
-    results: dict[str, bool] = {}
+    results = {"c": False, "cython": False, "rust": False}
+
+    if TARGET_PLATFORM != "win_x64":
+        raise RuntimeError(f"不支持的 Payload 目标平台：{TARGET_PLATFORM}")
+    if sys.platform != "win32":
+        raise RuntimeError(f"{TARGET_PLATFORM} Payload 必须在 Windows 构建，当前平台为 {sys.platform}")
+
+    expected = _expected_windows_native_modules(analysis_dir)
+
+    def _run_build(name: str, command: list[str], timeout: int) -> bool:
+        """运行单个原生构建，并以目标文件实际存在作为成功条件。"""
+        try:
+            completed = _sp.run(
+                command,
+                capture_output=True,
+                text=True,
+                encoding="utf-8",
+                errors="replace",
+                cwd=str(repo_root),
+                timeout=timeout,
+            )
+        except (OSError, _sp.SubprocessError) as exc:
+            _logger.warning("%s extension compilation exception: %s", name, exc)
+            return False
+
+        if completed.returncode != 0:
+            diagnostic = "\n".join(part.strip() for part in (completed.stdout, completed.stderr) if part.strip())
+            _logger.warning(
+                "%s extension compilation failed (exit=%d): %s",
+                name,
+                completed.returncode,
+                diagnostic[-2000:],
+            )
+            return False
+        if not expected[name].is_file():
+            _logger.warning(
+                "%s extension command succeeded but expected artifact is missing: %s",
+                name,
+                expected[name],
+            )
+            return False
+
+        _logger.info("%s extension compiled: %s", name, expected[name].name)
+        return True
 
     # ── C 扩展 ──
-    try:
-        _logger.info("Compiling C extension...")
-        r = _sp.run(
-            [sys.executable, str(repo_root / "setup_c.py"), "build_ext", "--inplace"],
-            capture_output=True,
-            text=True,
-            encoding="utf-8",
-            errors="replace",
-            cwd=str(repo_root),
-            timeout=120,
-        )
-        if r.returncode == 0:
-            results["c"] = True
-            _logger.info("C extension compiled successfully")
-        else:
-            _logger.warning("C extension compilation failed: %s", r.stderr[-300:])
-            results["c"] = False
-    except Exception as exc:
-        _logger.warning("C extension compilation exception: %s", exc)
-        results["c"] = False
+    _logger.info("Compiling C extension...")
+    results["c"] = _run_build(
+        "c",
+        [sys.executable, str(repo_root / "setup_c.py"), "build_ext", "--inplace", "--force"],
+        120,
+    )
 
     # ── Cython 扩展 ──
-    try:
+    if importlib.util.find_spec("Cython") is None:
+        _logger.warning("Cython extension compilation skipped: Cython is not installed")
+    else:
         _logger.info("Compiling Cython extension...")
-        r = _sp.run(
-            [sys.executable, str(repo_root / "setup.py"), "build_ext", "--inplace"],
-            capture_output=True,
-            text=True,
-            encoding="utf-8",
-            errors="replace",
-            cwd=str(repo_root),
-            timeout=300,
+        results["cython"] = _run_build(
+            "cython",
+            [sys.executable, str(repo_root / "setup.py"), "build_ext", "--inplace", "--force"],
+            300,
         )
-        if r.returncode == 0:
-            results["cython"] = True
-            _logger.info("Cython extension compiled successfully")
-        else:
-            _logger.warning("Cython extension compilation failed: %s", r.stderr[-300:])
-            results["cython"] = False
-    except Exception as exc:
-        _logger.warning("Cython extension compilation exception: %s", exc)
-        results["cython"] = False
 
     # ── Rust 扩展 ──
-    try:
-        _logger.info("Compiling Rust extension...")
-        r = _sp.run(
-            [sys.executable, str(repo_root / "tools" / "native" / "build_rust.py")],
-            capture_output=True,
-            text=True,
-            encoding="utf-8",
-            errors="replace",
-            cwd=str(repo_root),
-            timeout=300,
-        )
-        if r.returncode == 0:
-            results["rust"] = True
-            _logger.info("Rust extension compiled successfully")
-        else:
-            # 输出可诊断原因
-            _logger.warning("Rust extension compilation failed (exit=%d)", r.returncode)
-            if r.stdout.strip():
-                _logger.warning("Rust stdout: %s", r.stdout.strip()[-500:])
-            if r.stderr.strip():
-                _logger.warning("Rust stderr: %s", r.stderr.strip()[-500:])
-            results["rust"] = False
-    except Exception as exc:
-        _logger.error("Rust extension compilation exception: %s", exc)
-        results["rust"] = False
+    _logger.info("Compiling Rust extension...")
+    results["rust"] = _run_build(
+        "rust",
+        [sys.executable, str(repo_root / "tools" / "native" / "build_rust.py")],
+        300,
+    )
 
-    # ── 复制编译产物 → staging (仅复制目标平台产物) ──
-    # Windows Payload 不得包含 Linux .so
-    # C: 必需, Cython: 必需, Rust: 允许 fallback
-    TARGET_EXTENSIONS = ("*.pyd",) if _os.name == "nt" else ("*.so",)
-    ALLOWED_FALLBACK_EXTENSIONS = ("*.dll",) if _os.name == "nt" else ("*.dll", "*.pyd")
-    copied = 0
-    for ext in TARGET_EXTENSIONS:
-        for src in analysis_dir.glob(ext):
-            dst = staging_analysis / src.name
-            shutil.copy2(str(src), str(dst))
-            _logger.info("Copied native module: %s (%d bytes)", src.name, dst.stat().st_size)
-            copied += 1
-    # Allow non-target fallback DLLs but log them
-    for ext in ALLOWED_FALLBACK_EXTENSIONS:
-        for src in analysis_dir.glob(ext):
-            dst = staging_analysis / src.name
-            shutil.copy2(str(src), str(dst))
-            _logger.info("Copied fallback module: %s (%d bytes)", src.name, dst.stat().st_size)
-            copied += 1
+    missing_required = [name for name in ("c", "cython", "rust") if not results[name]]
+    if missing_required:
+        raise RuntimeError(f"Windows Payload 缺少必需原生模块：{', '.join(missing_required)}")
 
-    if copied:
-        _logger.info("Injected %d native modules into Payload", copied)
-    else:
-        _logger.warning("No native modules generated — Portable will use Python fallback")
+    # 只复制当前 ABI 的已验证 Windows 产物；禁止混入旧 ABI 或其他平台文件。
+    for name, source in expected.items():
+        if not results[name]:
+            continue
+        destination = staging_analysis / source.name
+        shutil.copy2(source, destination)
+        _logger.info("Copied native module: %s (%d bytes)", source.name, destination.stat().st_size)
 
     return results
 
@@ -433,6 +440,7 @@ def build_payload(
 
 def _run_build_payload_main() -> None:
     """CLI entry point."""
+    configure_console_encoding()
     logging.basicConfig(level=logging.INFO, format="[%(name)s] %(message)s")
 
     try:
@@ -453,6 +461,8 @@ def main() -> int:
 
     :returns: 0 success, 1 failure.
     """
+    configure_console_encoding()
+
     import argparse as _argparse
 
     parser = _argparse.ArgumentParser(description="Build Payload")

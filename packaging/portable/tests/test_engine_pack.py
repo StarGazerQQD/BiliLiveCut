@@ -14,6 +14,7 @@
 
 from __future__ import annotations
 
+import io
 import json
 import shutil
 import sys
@@ -27,7 +28,7 @@ from typing import TYPE_CHECKING, Any
 import pytest
 
 if TYPE_CHECKING:
-    pass
+    from pytest import MonkeyPatch
 
 # 添加 portable 模块到路径 (与 test_portable.py 一致)
 _portable_dir = Path(__file__).resolve().parent.parent  # portable/
@@ -72,8 +73,8 @@ def fixture_engine_pack() -> Generator[Path, None, None]:
             "format_version": MANIFEST_FORMAT_VERSION,
             "engine_pack_version": _EP_RELEASE_VERSION,
             "portable_release_version": _EP_RELEASE_VERSION,
-            "source_commit": "1b47a0942b04efc1c11b11e1f74bc970f843f4c4",
-            "source_commit_short": "1b47a09",
+            "source_commit": "f2c291df2409bdf83dbf8f8a30d6b3ee1d44e8e0",
+            "source_commit_short": "f2c291d",
             "archive_filename": "test.engine.pack.zip",
             "archive_crc32": "",
             "archive_sha256": "",
@@ -139,6 +140,41 @@ def fixture_engine_pack() -> Generator[Path, None, None]:
         yield zip_path
 
 
+class TestEnginePackConsole:
+    """Engine Pack CLI 控制台兼容性回归测试。"""
+
+    def test_main_reconfigures_legacy_console_before_output(self, monkeypatch: MonkeyPatch) -> None:
+        """cp1252 重定向流不得因中文状态或错误信息崩溃。"""
+        from blc_portable.engine_pack import builder
+
+        stdout_bytes = io.BytesIO()
+        stderr_bytes = io.BytesIO()
+        stdout = io.TextIOWrapper(stdout_bytes, encoding="cp1252", errors="strict")
+        stderr = io.TextIOWrapper(stderr_bytes, encoding="cp1252", errors="strict")
+
+        monkeypatch.setattr(sys, "stdout", stdout)
+        monkeypatch.setattr(sys, "stderr", stderr)
+        monkeypatch.setattr(sys, "argv", ["build_engine_pack.py", "--fixture"])
+
+        def fail_build_engine_pack(*, fixture: bool, from_cache: bool) -> dict[str, Any]:
+            assert fixture is True
+            assert from_cache is False
+            print("Fixture 模式")
+            raise RuntimeError("构建错误")
+
+        monkeypatch.setattr(builder, "build_engine_pack", fail_build_engine_pack)
+
+        assert builder.main() == 1
+        stdout.flush()
+        stderr.flush()
+
+        assert stdout.encoding.lower().replace("_", "-") == "utf-8"
+        assert stderr.encoding.lower().replace("_", "-") == "utf-8"
+        output = stdout_bytes.getvalue().decode("utf-8")
+        assert "Fixture 模式" in output
+        assert "[错误] 构建错误" in output
+
+
 # ── Manifest 测试 ────────────────────────────────────────────
 
 
@@ -172,7 +208,7 @@ class TestEnginePackManifest:
         from blc_portable.engine_pack.manifest import create_manifest
 
         m = create_manifest(
-            source_commit="1b47a0942b04efc1c11b11e1f74bc970f843f4c4",
+            source_commit="f2c291df2409bdf83dbf8f8a30d6b3ee1d44e8e0",
             archive_crc32="1234ABCD",
             archive_sha256="a" * 64,
             file_list={},
@@ -189,7 +225,7 @@ class TestEnginePackManifest:
         from blc_portable.engine_pack.manifest import create_manifest, validate_manifest
 
         m = create_manifest(
-            source_commit="1b47a0942b04efc1c11b11e1f74bc970f843f4c4",
+            source_commit="f2c291df2409bdf83dbf8f8a30d6b3ee1d44e8e0",
             archive_crc32="1234ABCD",
             archive_sha256="a" * 64,
             file_list={},
@@ -205,8 +241,8 @@ class TestEnginePackManifest:
             format_version=MANIFEST_FORMAT_VERSION,
             engine_pack_version=_EP_RELEASE_VERSION,
             portable_release_version=_EP_RELEASE_VERSION,
-            source_commit="1b47a0942b04efc1c11b11e1f74bc970f843f4c4",
-            source_commit_short="1b47a09",
+            source_commit="f2c291df2409bdf83dbf8f8a30d6b3ee1d44e8e0",
+            source_commit_short="f2c291d",
             archive_filename="test.zip",
             archive_crc32="1234ABCD",
             archive_sha256="a" * 64,
@@ -223,8 +259,8 @@ class TestEnginePackManifest:
             format_version=MANIFEST_FORMAT_VERSION,
             engine_pack_version=_EP_RELEASE_VERSION,
             portable_release_version=_EP_RELEASE_VERSION,
-            source_commit="1b47a0942b04efc1c11b11e1f74bc970f843f4c4",
-            source_commit_short="1b47a09",
+            source_commit="f2c291df2409bdf83dbf8f8a30d6b3ee1d44e8e0",
+            source_commit_short="f2c291d",
             archive_filename="test.zip",
             archive_crc32="123",
             archive_sha256="a" * 64,

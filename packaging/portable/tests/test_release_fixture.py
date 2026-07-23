@@ -4,6 +4,8 @@ from __future__ import annotations
 
 from pathlib import Path
 
+import yaml
+
 _PORTABLE_DIR = Path(__file__).resolve().parent.parent
 _PROJ_ROOT = _PORTABLE_DIR.parent.parent
 
@@ -16,6 +18,17 @@ def test_release_workflow_has_smoke_tests() -> None:
     assert "--version" in content, "Release workflow missing Lite EXE --version smoke test"
     assert "--doctor" in content, "Release workflow missing Lite EXE --doctor smoke test"
     assert "--diagnose" not in content, "Release workflow calls an unsupported launcher argument"
+
+
+def test_release_smoke_checkout_includes_source_baseline_history() -> None:
+    """Fixture Engine Pack 构建前必须拉取固定源码基线所在的完整历史。"""
+    release_yml = _PROJ_ROOT / ".github" / "workflows" / "release.yml"
+    workflow = yaml.safe_load(release_yml.read_text(encoding="utf-8"))
+    checkout = next(
+        step for step in workflow["jobs"]["smoke-test"]["steps"] if step.get("uses") == "actions/checkout@v4"
+    )
+
+    assert checkout.get("with", {}).get("fetch-depth") == 0
 
 
 def test_release_workflow_has_tag_validation() -> None:
@@ -106,7 +119,7 @@ def test_release_payload_contract_uses_version_config_source_baseline() -> None:
     """Release workflow 的 Payload 基线校验必须引用版本配置真源。"""
     release_yml = _PROJ_ROOT / ".github" / "workflows" / "release.yml"
     content = release_yml.read_text(encoding="utf-8")
-    assert 'version_config = json.load(open("config/version.json"))' in content
+    assert 'version_config = json.load(open("packaging/portable/config/version.json"))' in content
     assert 'manifest["core_source_commit"] == version_config["source_commit_full"]' in content
     assert 'manifest["core_source_commit_short"] == version_config["source_commit_short"]' in content
 

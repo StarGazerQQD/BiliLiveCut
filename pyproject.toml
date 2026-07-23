@@ -59,6 +59,7 @@ web = [
 ]
 # 开发与测试工具。
 dev = [
+    "Cython==3.2.8",
     "pytest>=8.2",
     "pytest-asyncio>=0.23",
     "pytest-mock>=3.14",
@@ -76,7 +77,7 @@ dev = [
 blc = "app.cli:app"
 
 [build-system]
-requires = ["setuptools>=69"]
+requires = ["setuptools>=69", "Cython==3.2.8"]
 build-backend = "setuptools.build_meta"
 
 [tool.setuptools]

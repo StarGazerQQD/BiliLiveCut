@@ -222,7 +222,8 @@ storage\raw\session_<数字>\
 Cookie 不是公开直播首次录制的必需项，但部分清晰度、弹幕或鉴权接口可能需要登录态。
 
 - 首次测试建议保持 `COLLECT_DANMAKU=false`。
-- 点击“账号管理”→“登录”后，程序会优先打开电脑已安装的 Google Chrome。
+- 点击“账号管理”→“登录”后，程序会优先在独立临时资料目录中打开电脑已安装的 Google Chrome，并保持浏览器 sandbox 开启；它不会读取你的日常 Chrome Profile。
+- 在这个由程序打开的独立登录窗口中完成 Bilibili 登录，程序会直接从本次受控浏览器上下文保存 Cookie；不要改用原先已经打开的普通 Chrome 窗口登录。
 - 如果没有找到可用的 Chrome，页面会显示“正在下载 Playwright Chromium”。程序会联网下载浏览器到 `vendor\playwright-browsers\`，完成后自动打开登录页；下载大小和耗时以 Playwright 当前版本为准。
 - 下载期间不要关闭 Launcher。失败时先检查网络、磁盘空间和安全软件，然后再次点击“登录”；已经完整下载的 Chromium 会被后续启动复用。
 - 如果电脑只有 Edge，仍可用 Edge 访问 Web 控制台；账号登录窗口会按上述规则下载 Playwright Chromium。
