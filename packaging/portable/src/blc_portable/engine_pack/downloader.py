@@ -20,6 +20,8 @@ import time
 from pathlib import Path
 from typing import Any
 
+from blc_portable.console import configure_console_encoding
+
 PORTABLE_DIR = Path(__file__).resolve().parent.parent.parent.parent
 CACHE_DIR = PORTABLE_DIR / ".model_cache"
 CACHE_DIR.mkdir(parents=True, exist_ok=True)
@@ -241,6 +243,7 @@ def download_engine(engine: dict[str, Any]) -> bool:
 
 def main() -> None:
     """主入口。"""
+    configure_console_encoding()
     if "--status" in sys.argv or "-s" in sys.argv:
         show_status()
         return

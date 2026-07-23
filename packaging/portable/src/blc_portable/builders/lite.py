@@ -18,6 +18,8 @@ import subprocess
 import sys
 from pathlib import Path
 
+from blc_portable.console import configure_console_encoding
+
 PORTABLE_DIR = Path(__file__).resolve().parent.parent.parent.parent
 PROJECT_ROOT = PORTABLE_DIR.parent.parent
 SPEC_FILE = PORTABLE_DIR / "specs" / "portable_launcher.spec"
@@ -301,6 +303,7 @@ def main(argv: list[str] | None = None) -> int:
 
     :returns: 0 成功, 1 失败。
     """
+    configure_console_encoding()
     parser = argparse.ArgumentParser(description="Build the BiliLiveCut Portable Lite executable")
     parser.add_argument(
         "--without-engine-pack",

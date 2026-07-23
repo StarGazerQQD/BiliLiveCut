@@ -20,6 +20,8 @@ import sysconfig
 import zipfile
 from pathlib import Path
 
+from blc_portable.console import configure_console_encoding
+
 from .manifest import (
     RELEASE_VERSION,
     SOURCE_COMMIT_FULL,
@@ -438,6 +440,7 @@ def build_payload(
 
 def _run_build_payload_main() -> None:
     """CLI entry point."""
+    configure_console_encoding()
     logging.basicConfig(level=logging.INFO, format="[%(name)s] %(message)s")
 
     try:
@@ -458,6 +461,8 @@ def main() -> int:
 
     :returns: 0 success, 1 failure.
     """
+    configure_console_encoding()
+
     import argparse as _argparse
 
     parser = _argparse.ArgumentParser(description="Build Payload")

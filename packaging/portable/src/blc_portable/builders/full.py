@@ -17,6 +17,8 @@ import zipfile
 import zlib
 from pathlib import Path
 
+from blc_portable.console import configure_console_encoding
+
 PORTABLE_DIR = Path(__file__).resolve().parent.parent.parent.parent
 PROJECT_ROOT = PORTABLE_DIR.parent.parent
 DIST_DIR = PORTABLE_DIR / "dist" / "full"
@@ -315,6 +317,7 @@ def main() -> int:
 
     :returns: 0 on success, 1 on failure.
     """
+    configure_console_encoding()
     try:
         build_full_bundle()
         return 0
@@ -329,4 +332,4 @@ def main() -> int:
 
 
 if __name__ == "__main__":
-    build_full_bundle()
+    raise SystemExit(main())
