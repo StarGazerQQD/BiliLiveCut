@@ -36,6 +36,8 @@ import zipfile
 from datetime import UTC, datetime
 from pathlib import Path
 
+from blc_portable.console import configure_console_encoding
+
 # faster-whisper 的 large-v3-turbo(CTranslate2 转换版)。
 # 该别名在 faster-whisper 的 _MODELS 中映射到此仓库。
 MODEL_REPO = "mobiuslabsgmbh/faster-whisper-large-v3-turbo"
@@ -654,6 +656,7 @@ def run_check(is_build: bool = False) -> bool:
 
 def main() -> None:
     """解析参数并按需执行打包步骤。"""
+    configure_console_encoding()
     parser = argparse.ArgumentParser(description="BiliLiveCut 即插即用版打包器")
     parser.add_argument("--skip-model", action="store_true", help="跳过模型下载")
     parser.add_argument("--skip-wheels", action="store_true", help="跳过依赖封装")

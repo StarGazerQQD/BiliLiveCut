@@ -36,6 +36,8 @@ import zlib
 from pathlib import Path
 from typing import Any
 
+from blc_portable.console import configure_console_encoding
+
 # ── 常量 ───────────────────────────────────────────────────
 
 PORTABLE_DIR = Path(__file__).resolve().parent.parent.parent.parent
@@ -53,19 +55,6 @@ CHUNK_SIZE = 8 * 1024 * 1024
 MIN_PRODUCTION_ARCHIVE_BYTES = 500 * 1024 * 1024
 
 HF_MIRROR = "https://hf-mirror.com"
-
-
-def _configure_console_encoding() -> None:
-    """将 CLI 输出切换到 UTF-8，避免旧版 Windows 代码页无法输出中文。"""
-    for stream in (sys.stdout, sys.stderr):
-        reconfigure = getattr(stream, "reconfigure", None)
-        if not callable(reconfigure):
-            continue
-        try:
-            reconfigure(encoding="utf-8", errors="backslashreplace")
-        except (OSError, TypeError, ValueError):
-            # 测试捕获器或嵌入式宿主可能不允许修改流配置；此时保留宿主设置。
-            continue
 
 
 # ── 四引擎定义 — 来自统一模型目录 ──────────────────────────
@@ -836,7 +825,7 @@ def main() -> int:
 
     :returns: 0 成功, 1 失败。
     """
-    _configure_console_encoding()
+    configure_console_encoding()
     try:
         fixture_mode = "--fixture" in sys.argv
         cache_mode = "--from-cache" in sys.argv
