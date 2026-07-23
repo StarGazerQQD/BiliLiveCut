@@ -258,7 +258,7 @@ def _compile_and_copy_native_modules(staging_dir: Path) -> dict[str, bool]:
         300,
     )
 
-    missing_required = [name for name in ("c", "cython") if not results[name]]
+    missing_required = [name for name in ("c", "cython", "rust") if not results[name]]
     if missing_required:
         raise RuntimeError(f"Windows Payload 缺少必需原生模块：{', '.join(missing_required)}")
 

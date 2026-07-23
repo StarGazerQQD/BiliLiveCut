@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import io
 import sys
 from pathlib import Path
 from types import SimpleNamespace
@@ -60,6 +61,29 @@ def test_rust_build_uses_current_python_interpreter() -> None:
     assert 'env.setdefault("PYO3_PYTHON", sys.executable)' in source
 
 
+def test_rust_build_uses_exact_windows_platform_match() -> None:
+    """darwin 不得因名称包含 win 而被误判为 Windows。"""
+    from tools.native import build_rust
+
+    assert build_rust._extension_suffix("win32") == ".pyd"
+    assert build_rust._extension_suffix("darwin") == ".so"
+    assert build_rust._extension_suffix("linux") == ".so"
+
+
+def test_rust_build_reconfigures_console_to_utf8() -> None:
+    """Windows runner 的 cp1252 文本流必须能安全输出中文日志。"""
+    from tools.native import build_rust
+
+    output = io.BytesIO()
+    stream = io.TextIOWrapper(output, encoding="cp1252", errors="strict")
+    build_rust._configure_stream_encoding(stream)
+    stream.write("Rust 加速模块编译")
+    stream.flush()
+
+    assert stream.encoding.lower() == "utf-8"
+    assert output.getvalue().decode("utf-8") == "Rust 加速模块编译"
+
+
 def test_rust_build_streams_cargo_output(monkeypatch: MonkeyPatch, tmp_path: Path) -> None:
     """Cargo 构建继承控制台输出，不再缓存到进程结束。"""
     from tools.native import build_rust
@@ -103,6 +127,20 @@ def test_windows_payload_jobs_run_on_windows_and_verify_native_modules() -> None
     assert "Missing Windows native modules" in release_source
     assert "Foreign native modules in Windows Payload" in release_source
     assert "Full Bundle native acceleration OK" in release_source
+
+
+def test_source_manifest_job_installs_pinned_cython() -> None:
+    """禁用构建隔离的 source manifest 校验必须预装固定版本 Cython。"""
+    release_workflow = yaml.safe_load(
+        (run_ruff.REPO_ROOT / ".github/workflows/release.yml").read_text(encoding="utf-8")
+    )
+    steps = release_workflow["jobs"]["build-sdist"]["steps"]
+    install_step = next(step for step in steps if step.get("name") == "Install build tools")
+
+    assert "Cython==3.2.8" in install_step["run"]
+    assert "--no-build-isolation" in next(
+        step["run"] for step in steps if step.get("name") == "Validate source manifest"
+    )
 
 
 def test_windows_c_extension_compiles_utf8_source() -> None:

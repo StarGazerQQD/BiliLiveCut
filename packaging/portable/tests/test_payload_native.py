@@ -50,7 +50,24 @@ def test_payload_native_build_rejects_false_success(monkeypatch: MonkeyPatch, tm
         return SimpleNamespace(returncode=0, stdout="", stderr="")
 
     monkeypatch.setattr(subprocess, "run", fake_run)
-    with pytest.raises(RuntimeError, match="缺少必需原生模块：c, cython"):
+    with pytest.raises(RuntimeError, match="缺少必需原生模块：c, cython, rust"):
+        builder._compile_and_copy_native_modules(tmp_path / "staging")
+
+
+def test_payload_native_build_requires_rust(monkeypatch: MonkeyPatch, tmp_path: Path) -> None:
+    """Release 契约要求 Rust 时，构建器不得把 Rust 编译失败当作成功。"""
+    builder, analysis_dir = _prepare_builder(monkeypatch, tmp_path)
+
+    def fake_run(command: list[str], **_kwargs: object) -> SimpleNamespace:
+        script_name = Path(command[1]).name
+        if script_name == "setup_c.py":
+            (analysis_dir / "_c_speedups.cp312-win_amd64.pyd").write_bytes(b"c")
+        elif script_name == "setup.py":
+            (analysis_dir / "_speedups_round2.cp312-win_amd64.pyd").write_bytes(b"cython")
+        return SimpleNamespace(returncode=0, stdout="", stderr="")
+
+    monkeypatch.setattr(subprocess, "run", fake_run)
+    with pytest.raises(RuntimeError, match="缺少必需原生模块：rust"):
         builder._compile_and_copy_native_modules(tmp_path / "staging")
 
 

@@ -138,7 +138,7 @@ jobs:
 
       - name: Install build tools
         run: |
-          python -m pip install --upgrade pip build wheel check-manifest twine
+          python -m pip install --upgrade pip build wheel check-manifest twine Cython==3.2.8
 
       - name: Validate source manifest
         run: check-manifest --no-build-isolation --ignore ".cursor/*,.cursor/rules/*,.dockerignore"
