@@ -14,6 +14,7 @@ import conftest as release_pytest
 from scripts import run_ruff
 
 if TYPE_CHECKING:
+    from _pytest.capture import CaptureFixture
     from _pytest.monkeypatch import MonkeyPatch
 
 
@@ -102,3 +103,24 @@ def test_windows_payload_jobs_run_on_windows_and_verify_native_modules() -> None
     assert "Missing Windows native modules" in release_source
     assert "Foreign native modules in Windows Payload" in release_source
     assert "Full Bundle native acceleration OK" in release_source
+
+
+def test_windows_c_extension_compiles_utf8_source() -> None:
+    """Windows 扩展必须按 UTF-8 编译并启用确定性链接。"""
+    for build_script in ("setup.py", "setup_c.py"):
+        source = (run_ruff.REPO_ROOT / build_script).read_text(encoding="utf-8")
+        assert '"/utf-8"' in source
+        assert 'extra_link_args=(["/Brepro"] if sys.platform == "win32" else [])' in source
+
+
+def test_release_gate_rejects_stale_payload_after_build_failure(
+    monkeypatch: MonkeyPatch, capsys: CaptureFixture[str]
+) -> None:
+    """Payload 构建失败后不得继续把已有旧产物报告为有效。"""
+    from scripts import release_gate
+
+    monkeypatch.setattr(release_gate, "_run", lambda *_args, **_kwargs: False)
+    monkeypatch.setattr(release_gate, "_pytest", lambda *_args, **_kwargs: False)
+
+    assert release_gate.main() == 1
+    assert "Payload 构建失败；拒绝校验已有产物" in capsys.readouterr().out

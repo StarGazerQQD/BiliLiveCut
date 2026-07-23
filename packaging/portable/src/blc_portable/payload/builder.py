@@ -1,7 +1,7 @@
 """Payload 构建器 — 构建 source_payload.zip 和完整 Manifest。
 
 流程:
-1. 从固定的当前发布基线 0fe24a5 提取源码 → staging/
+1. 从固定的当前发布基线 9235ae0 提取源码 → staging/
 2. 应用受控版本 Overlay → 0.1.15.2-alpha
 3. 构建 ZIP (收集 included_files 集合)
 4. 基于 included_files 生成 Manifest (文件数/Hash 与 ZIP 严格一致)
@@ -212,11 +212,12 @@ def _compile_and_copy_native_modules(staging_dir: Path) -> dict[str, bool]:
             return False
 
         if completed.returncode != 0:
+            diagnostic = "\n".join(part.strip() for part in (completed.stdout, completed.stderr) if part.strip())
             _logger.warning(
                 "%s extension compilation failed (exit=%d): %s",
                 name,
                 completed.returncode,
-                completed.stderr.strip()[-500:],
+                diagnostic[-2000:],
             )
             return False
         if not expected[name].is_file():

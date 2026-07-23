@@ -74,11 +74,15 @@ def main() -> int:  # noqa: D103
     all_ok &= _run([sys.executable, "scripts/run_ruff.py", "format"], desc="3/7 ruff format check")
 
     # ── Step 4: Payload 构建 + 契约验证 ──
-    all_ok &= _run([sys.executable, "packaging/portable/build_payload.py"], desc="4/7 build_payload")
+    payload_built = _run([sys.executable, "packaging/portable/build_payload.py"], desc="4/7 build_payload")
+    all_ok &= payload_built
 
     # Payload contract cross-verify
     payload_ok = True
     try:
+        if not payload_built:
+            raise RuntimeError("Payload 构建失败；拒绝校验已有产物")
+
         import hashlib
         import json
         import zipfile
