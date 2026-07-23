@@ -11,6 +11,8 @@ Coverage:
 
 from __future__ import annotations
 
+from types import ModuleType
+
 import pytest
 
 # ── Helpers ─────────────────────────────────────────────
@@ -274,3 +276,47 @@ class TestDanmakuBaseline:
 
         result = danmaku_baseline_rate([])
         assert result == (0.0, 0)
+
+
+class TestCythonRound2Parity:
+    """当前环境生成 Cython 扩展时，必须与 Python 参考实现保持一致。"""
+
+    @staticmethod
+    def _native_module() -> ModuleType | None:
+        try:
+            from app.analysis import _speedups_round2
+        except ImportError:
+            return None
+        return _speedups_round2
+
+    def test_epoch_danmaku_buckets_match_fallback(self) -> None:
+        """Unix epoch 秒不得因 float32 收窄破坏十秒分桶。"""
+        native = self._native_module()
+        if native is None:
+            return
+        from app.accelerators.python_fallback import speedups_round2 as fallback
+
+        timestamps = [1_700_000_000.0 + i for i in range(100)]
+        assert native.danmaku_baseline_rate(timestamps) == fallback.danmaku_baseline_rate(timestamps)
+
+    def test_long_srt_timestamps_match_fallback(self) -> None:
+        """较长时间轴仍应保持毫秒级格式一致。"""
+        native = self._native_module()
+        if native is None:
+            return
+        from app.accelerators.python_fallback import speedups_round2 as fallback
+
+        words = [(36_000.1234, 36_001.3579, "测试")]
+        assert native.group_srt_blocks(words) == fallback.group_srt_blocks(words)
+
+    def test_line_gap_matches_fallback(self) -> None:
+        """Cython 和 Python 实现使用相同的停顿断句阈值。"""
+        native = self._native_module()
+        if native is None:
+            return
+        from app.accelerators.python_fallback import speedups_round2 as fallback
+
+        words = [(0.0, 0.2, "你"), (0.5, 0.7, "好")]
+        assert native.group_srt_blocks(words, max_chars=20, line_gap_ms=200) == fallback.group_srt_blocks(
+            words, max_chars=20, line_gap_ms=200
+        )

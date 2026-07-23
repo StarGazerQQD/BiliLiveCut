@@ -417,8 +417,9 @@ def _group_srt(
     cur_text = ""
     cur_start = words[0][0]
     cur_end = words[0][1]
+    line_gap_s = line_gap_ms / 1000.0
     for start, end, text in words:
-        if cur_text and len(cur_text) + len(text) > max_chars:
+        if cur_text and (len(cur_text) + len(text) > max_chars or start - cur_end >= line_gap_s):
             blocks.append((cur_start, cur_end, cur_text))
             cur_text, cur_start = "", start
         cur_text += text

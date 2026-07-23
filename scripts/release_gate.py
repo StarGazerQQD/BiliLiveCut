@@ -86,11 +86,27 @@ def main() -> int:  # noqa: D103
         payload_dir = REPO_ROOT / "packaging/portable/dist/payload"
         m = json.loads((payload_dir / "payload_manifest.json").read_text("utf-8"))
         with zipfile.ZipFile(payload_dir / "source_payload.zip") as zf:
-            zf_cnt = sum(1 for n in zf.namelist() if not n.endswith("/"))
+            entries = set(zf.namelist())
+            zf_cnt = sum(1 for name in entries if not name.endswith("/"))
         mf_cnt = m["file_count"]
         mf_entries = len(m["files"])
         if zf_cnt != mf_cnt or zf_cnt != mf_entries:
             print(f"{RED}  4/7 Payload contract FAIL: ZIP={zf_cnt} MF={mf_cnt} files={mf_entries}{RESET}")
+            payload_ok = False
+
+        abi = m["python_abi"]
+        required_native = {
+            f"app/analysis/_c_speedups.{abi}-win_amd64.pyd",
+            f"app/analysis/_speedups_round2.{abi}-win_amd64.pyd",
+            "app/analysis/_rust_cluster.pyd",
+        }
+        missing_native = sorted(required_native - entries)
+        if missing_native:
+            print(f"{RED}  4/7 Payload native contract FAIL: missing={missing_native}{RESET}")
+            payload_ok = False
+        foreign_native = sorted(name for name in entries if name.endswith((".so", ".dll")))
+        if foreign_native:
+            print(f"{RED}  4/7 Payload native contract FAIL: foreign={foreign_native}{RESET}")
             payload_ok = False
 
         sums_lines = (payload_dir / "SHA256SUMS.txt").read_text(encoding="utf-8").splitlines()

@@ -54,6 +54,15 @@ def test_group_srt_format() -> None:
     assert "你好" in srt
 
 
+def test_group_srt_respects_line_gap() -> None:
+    """兼容实现按字幕模板的停顿阈值断句。"""
+    words = [(0.0, 0.2, "你"), (0.5, 0.7, "好")]
+    srt = _group_srt(words, max_chars=20, line_gap_ms=200)
+    assert "1\n" in srt
+    assert "2\n" in srt
+    assert "你好" not in srt
+
+
 def test_decide_status() -> None:
     """auto_* 开关的状态决策符合预期。"""
     # auto_approve=on, worth, score >= threshold → READY

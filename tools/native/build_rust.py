@@ -28,24 +28,6 @@ RUST_SRC = _REPO_ROOT / "tools" / "native" / "rust"
 TARGET_DIR = _REPO_ROOT / "app" / "analysis"
 
 
-def _run(cmd: list[str], cwd: Path) -> subprocess.CompletedProcess:
-    """运行命令并打印输出。
-
-    :param cmd: 命令行。
-    :param cwd: 工作目录。
-    :returns: 子进程结果。
-    """
-    print(f"  [build_rust] {' '.join(cmd)}")
-    return subprocess.run(
-        cmd,
-        cwd=cwd,
-        capture_output=True,
-        text=True,
-        encoding="utf-8",
-        errors="replace",
-    )
-
-
 def check_rust() -> bool:
     """检查 Rust/cargo 是否可用。
 
@@ -96,22 +78,19 @@ def build() -> bool:
     env.setdefault("PYO3_PYTHON", sys.executable)
 
     # cargo build --release (带 Python 3.14 兼容性)
-    import subprocess as _sp
-
-    result = _sp.run(
+    result = subprocess.run(
         ["cargo", "build", "--release"],
         cwd=RUST_SRC,
-        capture_output=True,
         text=True,
         encoding="utf-8",
         errors="replace",
         env=env,
     )
     if result.returncode != 0:
-        print(f"  [build_rust] 编译失败:\n{result.stderr}")
+        print(f"  [build_rust] 编译失败 (cargo exit={result.returncode})")
         return False
 
-    print(f"  [build_rust] 编译成功\n{result.stdout.strip()}")
+    print("  [build_rust] 编译成功")
 
     # 查找产物 (.pyd, .so, .dll)
     ext = ".pyd" if "win" in sys.platform else ".so"
