@@ -25,7 +25,7 @@
 
 ### Portable 发布闭环
 
-- **固定业务源码**：Payload 从提交 `0fe24a5` 通过 `git archive` 提取，不混入构建机工作区内容。
+- **固定业务源码**：Payload 从提交 `f2c291d` 通过 `git archive` 提取，不混入构建机工作区内容。
 - **Lite / Full 双发行**：Lite 保持单 EXE；Full 自带 Python 3.12、严格哈希锁定的离线 wheelhouse、FFmpeg 和 FFprobe。
 - **离线依赖可验证**：Full 安装强制使用本地 wheelhouse，安装后执行 `pip check`、核心模块和 `app.cli` 导入冒烟测试。
 - **原子 Runtime 安装**：使用内容寻址 Release ID、staging 原子切换和 `current.json`，升级失败不会破坏已安装版本。
@@ -49,7 +49,7 @@
 
 | 特性 | 说明 |
 |------|------|
-| **Source 固定** | 源码来自当前发布基线 `0fe24a5`，通过 `git archive` 提取，不混入工作区未提交改动 |
+| **Source 固定** | 源码来自当前发布基线 `f2c291d`，通过 `git archive` 提取，不混入工作区未提交改动 |
 | **零 GitHub 请求** | 首次启动完全从 EXE 内置 Payload 释放源码，不访问 GitHub |
 | **可复现 Payload** | 相同输入构建两次 SHA-256 完全一致，并在发布门禁中自动验证 |
 | **原子 Runtime 安装** | `staging → rename` 原子切换，`current.json` 原子更新 |

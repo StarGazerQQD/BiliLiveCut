@@ -2,7 +2,7 @@
 """PyInstaller spec for BiliLiveCut Portable Launcher.
 
 内嵌资源:
-- source_payload.zip (0fe24a5 业务源码)
+- source_payload.zip (f2c291d 业务源码)
 - payload_manifest.json
 - engine_pack_info.json (四引擎模型包信息, 含 CRC32)
 - app_icon.ico (如有)
