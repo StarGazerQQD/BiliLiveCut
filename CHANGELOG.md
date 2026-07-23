@@ -4,6 +4,7 @@
 
 ### 修复
 
+- **release**: Engine Pack CLI 在入口统一配置 UTF-8 输出并保留不可编码字符的回退表示，修复 Windows runner 使用 `cp1252` 代码页时 Fixture 构建因中文日志触发 `UnicodeEncodeError`。
 - **login**: 系统 Chrome 与托管 Chromium 登录均显式启用 sandbox，并改为从独立 Playwright 上下文读取全部 Cookie 后按 Bilibili 域名边界筛选，修复新版 Chrome 下登录完成但无法捕获 Cookie 的问题。
 - **web**: 修复候选片段拒绝请求的模板字符串未闭合导致前端 ES Module 初始化中断、页面按钮全部失效，并增加全量静态 JavaScript 语法回归检查。
 - **portable**: Full 首次安装完成依赖后，`app.cli` 导入检查改为显式使用已安装的内容寻址 Runtime 源码，并在失败时保留原始 stdout/stderr。
