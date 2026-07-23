@@ -42,6 +42,8 @@ def test_launcher_version_python_entrypoint() -> None:
         [sys.executable, "-c", code],
         capture_output=True,
         text=True,
+        encoding="utf-8",
+        errors="strict",
         timeout=15,
     )
     assert result.returncode == 0, f"--version 应返回 0，实际 {result.returncode}: {result.stderr}"
@@ -57,6 +59,8 @@ def test_launcher_help_python_entrypoint() -> None:
         [sys.executable, "-c", code],
         capture_output=True,
         text=True,
+        encoding="utf-8",
+        errors="strict",
         timeout=15,
     )
     assert result.returncode == 0, f"--help 应返回 0，实际 {result.returncode}: {result.stderr}"
@@ -73,6 +77,8 @@ def test_launcher_invalid_args_return_nonzero() -> None:
         [sys.executable, "-c", code],
         capture_output=True,
         text=True,
+        encoding="utf-8",
+        errors="strict",
         timeout=15,
     )
     # argparse recognizes unknown args and exits with 2
