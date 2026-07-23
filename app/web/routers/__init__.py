@@ -6,6 +6,7 @@ from app.web.routers.candidates import router as candidates_router  # noqa: F401
 from app.web.routers.clips import router as clips_router  # noqa: F401
 from app.web.routers.container import router as container_router  # noqa: F401
 from app.web.routers.dashboard import router as dashboard_router  # noqa: F401
+from app.web.routers.jobs import router as jobs_router  # noqa: F401
 from app.web.routers.llm import router as llm_router  # noqa: F401
 from app.web.routers.logs import router as logs_router  # noqa: F401
 from app.web.routers.media import router as media_router  # noqa: F401

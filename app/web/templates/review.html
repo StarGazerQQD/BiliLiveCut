@@ -4,93 +4,21 @@
   <meta charset="UTF-8" />
   <meta name="viewport" content="width=device-width, initial-scale=1.0" />
   <title>横屏审片工作台 — BiliLiveCut</title>
-  <link rel="stylesheet" href="/static/style.css" />
-  <style>
-    :root { --bg: #0d0d1a; --surface: #16162a; --border: #2a2a4a; --accent: #5b9cf5; --green: #34d399; --yellow: #fbbf24; --red: #f87171; --text: #e2e2f0; --muted: #8888aa; }
-    * { box-sizing:border-box; margin:0; padding:0; }
-    body { background:var(--bg); color:var(--text); font-family: -apple-system, "Segoe UI", sans-serif; height:100vh; display:flex; flex-direction:column; overflow:hidden; }
-    .topbar { background:var(--surface); border-bottom:1px solid var(--border); padding:8px 20px; display:flex; align-items:center; gap:16px; z-index:10; min-height:48px; }
-    .topbar .brand { font-weight:700; font-size:15px; }
-    .topbar .muted { color:var(--muted); font-size:12px; }
-    .topbar .stats { margin-left:auto; display:flex; gap:14px; font-size:12px; }
-    .topbar .stat b { color:var(--accent); }
-    .shortcut-hint { font-size:11px; color:var(--muted); background:var(--surface); padding:2px 8px; border-radius:4px; border:1px solid var(--border); }
-    .main { display:flex; flex:1; overflow:hidden; }
-    /* 左侧播放器区域 */
-    .player-col { flex:2; display:flex; flex-direction:column; min-width:0; border-right:1px solid var(--border); }
-    .player-area { flex:1; display:flex; align-items:center; justify-content:center; background:#000; position:relative; min-height:300px; }
-    .player-area video { width:100%; height:100%; max-height:60vh; object-fit:contain; }
-    .player-placeholder { color:var(--muted); font-size:14px; text-align:center; }
-    .player-placeholder p { margin:4px 0; }
-    .player-placeholder .msg { font-size:13px; color:var(--yellow); }
-    /* 时间轴控制条 */
-    .timeline-bar { background:var(--surface); padding:10px 16px; display:flex; align-items:center; gap:10px; border-top:1px solid var(--border); flex-wrap:wrap; }
-    .timeline-bar label { font-size:11px; color:var(--muted); }
-    .timeline-bar .time-input { width:90px; padding:4px 6px; background:var(--bg); color:var(--text); border:1px solid var(--border); border-radius:4px; font-family:monospace; font-size:13px; text-align:center; }
-    .timeline-bar .btn-group { display:flex; gap:2px; }
-    .timeline-bar button { padding:4px 8px; font-size:11px; background:var(--surface); color:var(--text); border:1px solid var(--border); border-radius:3px; cursor:pointer; white-space:nowrap; }
-    .timeline-bar button:hover { background:var(--accent); color:#fff; }
-    .timeline-bar button.active { background:var(--accent); color:#fff; }
-    .spacer { flex:1; }
-    /* 弹幕密度图 */
-    .danmaku-chart { background:var(--surface); border-bottom:1px solid var(--border); padding:8px 16px; }
-    .danmaku-chart canvas { width:100%; height:80px; display:block; }
-    .danmaku-chart .legend { font-size:10px; color:var(--muted); display:flex; gap:12px; margin-top:2px; }
-    /* 右侧信息面板 */
-    .info-col { flex:1; display:flex; flex-direction:column; overflow-y:auto; min-width:350px; max-width:480px; }
-    .info-col .card { background:var(--surface); border:1px solid var(--border); border-radius:6px; padding:14px; margin:8px; }
-    .info-col .card h3 { font-size:14px; margin-bottom:8px; color:var(--accent); }
-    .info-col .score-bar { height:6px; background:var(--border); border-radius:3px; margin:6px 0; overflow:hidden; }
-    .info-col .score-fill { height:100%; background:linear-gradient(90deg, var(--accent), var(--green)); border-radius:3px; transition:width .3s; }
-    .score-grid { display:grid; grid-template-columns:1fr 1fr; gap:6px; font-size:12px; }
-    .score-item { display:flex; justify-content:space-between; padding:3px 6px; background:var(--bg); border-radius:3px; }
-    .score-item .val { font-weight:600; }
-    .dim-bars { margin:8px 0; }
-    .dim-row { display:flex; align-items:center; gap:8px; margin:3px 0; font-size:11px; }
-    .dim-row .dim-label { width:70px; text-align:right; color:var(--muted); }
-    .dim-row .dim-bar-wrap { flex:1; height:10px; background:var(--border); border-radius:3px; overflow:hidden; }
-    .dim-row .dim-bar-fill { height:100%; border-radius:3px; }
-    .dim-row .dim-val { width:40px; font-family:monospace; font-size:10px; }
-    .explain-text { font-size:12px; color:var(--yellow); margin-top:6px; }
-    .review-actions { display:flex; flex-wrap:wrap; gap:6px; margin-top:10px; }
-    .review-actions button { padding:6px 12px; font-size:12px; border-radius:4px; border:1px solid var(--border); cursor:pointer; background:var(--surface); color:var(--text); }
-    .review-actions button:hover { opacity:0.85; }
-    .btn-approve { background:var(--green) !important; color:#000 !important; }
-    .btn-reject { background:var(--red) !important; color:#fff !important; }
-    .btn-hold { background:var(--yellow) !important; color:#000 !important; }
-    .review-reason { width:100%; margin-top:8px; padding:6px; background:var(--bg); color:var(--text); border:1px solid var(--border); border-radius:4px; font-size:12px; min-height:50px; }
-    .nav-row { display:flex; gap:4px; }
-    .nav-row button { flex:1; padding:8px; font-size:12px; background:var(--surface); color:var(--text); border:1px solid var(--border); border-radius:4px; cursor:pointer; }
-    .nav-row button:hover { background:var(--accent); color:#fff; }
-    .badge { font-size:10px; padding:1px 6px; border-radius:3px; }
-    .badge-approved { background:var(--green); color:#000; }
-    .badge-rejected { background:var(--red); color:#fff; }
-    .badge-pending { background:var(--yellow); color:#000; }
-    /* 音频波形 */
-    .waveform-chart { background:var(--surface); border-bottom:1px solid var(--border); padding:6px 16px; }
-    .waveform-chart canvas { width:100%; height:60px; display:block; }
-    .waveform-chart .legend { font-size:10px; color:var(--muted); display:flex; gap:12px; margin-top:2px; }
-    /* 字幕时间轴 */
-    .subtitle-card { max-height:200px; overflow-y:auto; }
-    .sub-word { display:inline-block; padding:1px 3px; margin:1px; border-radius:2px; font-size:12px; cursor:pointer; color:var(--muted); transition:background .15s; }
-    .sub-word:hover { color:var(--text); background:var(--border); }
-    .sub-word.active { color:#fff; background:var(--accent); font-weight:600; }
-    .sub-line { display:flex; flex-wrap:wrap; align-items:baseline; padding:2px 0; border-bottom:1px solid var(--border); }
-    .sub-line.active { background:rgba(91,156,245,0.1); }
-    .sub-time { font-size:10px; color:var(--muted); font-family:monospace; min-width:60px; margin-right:6px; flex-shrink:0; }
-  </style>
+  <link rel="stylesheet" href="/static/style.css?v=2" />
 </head>
-<body>
+<body class="review-shell">
 <div class="topbar">
-  <div class="brand">🎬 审片工作台</div>
-  <span class="muted">候选 #<span id="cand-id">-</span></span>
-  <span class="stat">总分 <b id="cand-score">-</b></span>
-  <span class="stat">规则 <b id="rule-score">-</b></span>
-  <span class="stat">LLM <b id="llm-score">-</b></span>
-  <span class="stat">状态 <b id="cand-status">-</b></span>
-  <span class="shortcut-hint">Space 播放/暂停</span>
-  <span class="shortcut-hint">I/O 设入/出点</span>
-  <span class="shortcut-hint">J/K/L ← →</span>
+  <div class="brand"><span class="brand-mark" aria-hidden="true">B</span>审片工作台</div>
+  <a href="/review/queue" class="shortcut-hint review-back">审核队列</a>
+  <div class="review-meta">
+    <span class="muted">候选 #<span id="cand-id">-</span></span>
+    <span class="stat">总分 <b id="cand-score">-</b></span>
+    <span class="stat">规则 <b id="rule-score">-</b></span>
+    <span class="stat">LLM <b id="llm-score">-</b></span>
+    <span class="stat">状态 <b id="cand-status">-</b></span>
+    <span class="shortcut-hint">Space 播放 · I/O 入出点 · J/K/L 定位</span>
+    <span class="muted" id="workflow-state">-</span>
+  </div>
 </div>
 
 <div class="main">
@@ -146,7 +74,9 @@
         <button onclick="adjust('end',+10)" class="active">+10s</button>
         <button onclick="adjust('end',+30)">+30s</button>
       </div>
-      <button onclick="doRerender()" style="background:var(--accent);color:#fff;font-weight:600;">🔄 重新渲染</button>
+      <button onclick="doRerender()" class="primary">重新渲染</button>
+      <button id="btn-cancel-render" onclick="cancelRenderJob()" style="display:none">停止渲染</button>
+      <span class="muted" id="render-job-status"></span>
     </div>
   </div>
 
@@ -181,6 +111,12 @@
 
     <div class="card">
       <h3>审核决断</h3>
+      <div class="review-actions">
+        <button id="btn-claim" onclick="claimCurrent(this.dataset.force === 'true')">领取</button>
+        <button id="btn-release" onclick="releaseCurrent()">释放</button>
+        <button id="btn-draft" onclick="saveDraft()">保存草稿</button>
+        <button id="btn-undo" onclick="undoLast()">撤销上一步</button>
+      </div>
       <div class="review-actions">
         <button class="btn-approve" onclick="submitReview('approved_solo')">✅ 独立成片</button>
         <button class="btn-approve" onclick="submitReview('approved_collection')">📦 合集候选</button>
@@ -218,6 +154,7 @@ let reviewData = null;
 let adjustedStart = null;
 let adjustedEnd = null;
 let eventId = null;
+let renderJobId = null;
 
 // ===== 工具函数 =====
 const $ = (s) => document.querySelector(s);
@@ -283,25 +220,44 @@ function renderReview() {
   const c = d.candidate;
 
   $("#cand-id").textContent = c.id;
-  $("#cand-score").textContent = c.highlight_score.toFixed(3);
-  $("#rule-score").textContent = c.rule_score.toFixed(2);
-  $("#llm-score").textContent = c.llm_score.toFixed(2);
+  const hidden = d.viewer?.blinded;
+  $("#cand-score").textContent = hidden ? "盲审" : c.highlight_score.toFixed(3);
+  $("#rule-score").textContent = hidden ? "-" : c.rule_score.toFixed(2);
+  $("#llm-score").textContent = hidden ? "-" : c.llm_score.toFixed(2);
   $("#cand-status").textContent = c.status;
 
-  $("#score-fill").style.width = Math.round(c.highlight_score * 100) + "%";
-  $("#rule-val").textContent = c.rule_score.toFixed(3);
-  $("#llm-val").textContent = c.llm_score.toFixed(3);
-  $("#total-val").textContent = c.highlight_score.toFixed(3);
+  $("#score-fill").style.width = hidden ? "0%" : Math.round(c.highlight_score * 100) + "%";
+  $("#rule-val").textContent = hidden ? "已隐藏" : c.rule_score.toFixed(3);
+  $("#llm-val").textContent = hidden ? "已隐藏" : c.llm_score.toFixed(3);
+  $("#total-val").textContent = hidden ? "已隐藏" : c.highlight_score.toFixed(3);
   $("#status-val").textContent = c.status;
   $("#reason-val").textContent = c.reason || "(无)";
 
-  // 入/出点。
-  const dur = durationSec(c.start_ts, c.end_ts);
-  $("#in-point").value = secToHHMMSS(0);
-  $("#out-point").value = secToHHMMSS(dur);
+  const claim = d.workflow?.claim || {};
+  const ownClaim = claim.active && claim.claimed_by === d.viewer?.actor;
+  const adminCanEdit = d.viewer?.role === "admin" && (!claim.active || ownClaim);
+  const canModify = adminCanEdit || ownClaim;
+  $("#workflow-state").textContent = claim.active ? `由 ${claim.claimed_by} 审核` : "尚未领取";
+  $("#btn-claim").dataset.force = String(d.viewer?.role === "admin" && claim.active && !ownClaim);
+  $("#btn-claim").textContent = $("#btn-claim").dataset.force === "true" ? "强制接管" : "领取";
+  $("#btn-claim").disabled = canModify;
+  $("#btn-release").disabled = !claim.active || (!ownClaim && d.viewer?.role !== "admin");
+  $("#btn-draft").disabled = !canModify;
+  $("#btn-undo").disabled = !canModify || !d.workflow?.can_undo;
+  $$(".timeline-bar button, .review-actions button").forEach(button => {
+    if (!["btn-claim", "btn-release"].includes(button.id)) button.disabled = !canModify;
+  });
+  if (d.workflow?.draft && document.activeElement !== $("#review-reason")) {
+    $("#review-reason").value = d.workflow.draft.reason || "";
+  }
 
-  adjustedStart = c.start_ts;
-  adjustedEnd = c.end_ts;
+  // 入/出点。
+  adjustedStart = d.boundary?.adjusted_start_ts || c.start_ts;
+  adjustedEnd = d.boundary?.adjusted_end_ts || c.end_ts;
+  eventId = d.boundary?.event_id || null;
+  const origStart = new Date(c.start_ts).getTime() / 1000;
+  $("#in-point").value = secToHHMMSS(new Date(adjustedStart).getTime() / 1000 - origStart);
+  $("#out-point").value = secToHHMMSS(new Date(adjustedEnd).getTime() / 1000 - origStart);
 
   // 评分维度贡献。
   let barsHtml = "";
@@ -337,7 +293,7 @@ function renderReview() {
   // 视频播放器。
   if (d.existing_clips && d.existing_clips.length > 0) {
     const clip = d.existing_clips[0];
-    $("#player-src").src = clip.file_path;
+    $("#player-src").src = clip.video_url;
     $("#player").style.display = "";
     $("#player-placeholder").style.display = "none";
     $("#player").load();
@@ -446,16 +402,43 @@ async function adjust(side, secs) {
 }
 
 async function doRerender() {
-  toast("正在重新渲染,请稍候…");
+  toast("正在提交后台渲染作业…");
   try {
     const res = await api("POST", `/review/api/${CAND_ID}/rerender`);
-    toast("渲染完成! clip #" + res.clip_id);
-    // 重新加载以获取新 clip。
-    reviewData = await api("GET", `/review/api/${CAND_ID}`);
-    renderReview();
+    renderJobId = res.job.id;
+    $("#btn-cancel-render").style.display = "";
+    toast("渲染已在后台开始");
+    await watchRenderJob(renderJobId);
   } catch (e) {
     toast("渲染失败:" + e.message);
   }
+}
+
+async function watchRenderJob(jobId) {
+  for (;;) {
+    const job = await api("GET", `/api/jobs/${jobId}`);
+    $("#render-job-status").textContent = `${job.progress || 0}% · ${job.message || job.status}`;
+    if (["succeeded", "failed", "cancelled"].includes(job.status)) {
+      $("#btn-cancel-render").style.display = "none";
+      renderJobId = null;
+      if (job.status === "succeeded") {
+        toast("审核版本渲染完成");
+        await loadReviewData();
+      } else {
+        toast(job.status === "cancelled" ? "渲染已取消" : `渲染失败:${job.error || "未知错误"}`);
+      }
+      return;
+    }
+    await new Promise(resolve => setTimeout(resolve, 1500));
+  }
+}
+
+async function cancelRenderJob() {
+  if (!renderJobId) return;
+  try {
+    await api("POST", `/api/jobs/${renderJobId}/cancel`);
+    $("#render-job-status").textContent = "正在停止…";
+  } catch (e) { toast("停止失败:" + e.message); }
 }
 
 async function submitReview(decision) {
@@ -463,11 +446,41 @@ async function submitReview(decision) {
   try {
     await api("POST", `/review/api/${CAND_ID}/review`, { decision, reason });
     toast("审核已提交:" + decision);
-    reviewData.candidate.status = decision.startsWith("approved") ? "approved" : (decision === "rejected" ? "rejected" : "pending");
-    renderReview();
+    await loadReviewData();
   } catch (e) {
     toast("审核失败:" + e.message);
   }
+}
+
+async function claimCurrent(force = false) {
+  try {
+    await api("POST", `/review/api/${CAND_ID}/claim`, { force });
+    toast("已领取当前候选");
+    await loadReviewData();
+  } catch (e) { toast("领取失败:" + e.message); }
+}
+
+async function releaseCurrent() {
+  try {
+    await api("POST", `/review/api/${CAND_ID}/release`);
+    toast("已释放当前候选");
+    await loadReviewData();
+  } catch (e) { toast("释放失败:" + e.message); }
+}
+
+async function saveDraft(silent = false) {
+  try {
+    await api("PUT", `/review/api/${CAND_ID}/draft`, { reason: $("#review-reason").value });
+    if (!silent) toast("草稿已保存");
+  } catch (e) { if (!silent) toast("草稿保存失败:" + e.message); }
+}
+
+async function undoLast() {
+  try {
+    await api("POST", `/review/api/${CAND_ID}/undo`);
+    toast("已撤销上一步");
+    await loadReviewData();
+  } catch (e) { toast("撤销失败:" + e.message); }
 }
 
 async function navCandidate(direction) {

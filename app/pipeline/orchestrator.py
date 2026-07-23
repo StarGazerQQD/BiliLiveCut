@@ -8,6 +8,9 @@ V0.1.11-alpha:
 
 from __future__ import annotations
 
+from collections.abc import Callable
+from datetime import datetime
+
 from loguru import logger
 
 from app.analysis.highlight import score_segment
@@ -73,23 +76,52 @@ def _read_room_config(room_id: int | None) -> dict:
         }
 
 
-def produce_clip(candidate_id: int, auto_upload: bool = False) -> FinalClip | None:
+def produce_clip(
+    candidate_id: int,
+    auto_upload: bool = False,
+    *,
+    start_ts: datetime | None = None,
+    end_ts: datetime | None = None,
+    output_suffix: str | None = None,
+    progress_callback: Callable[[int, str], None] | None = None,
+    cancel_check: Callable[[], bool] | None = None,
+    render_variants: bool = True,
+) -> FinalClip | None:
     """把一个高光候选生成成品切片并配上文案。
 
     :param candidate_id: highlight_candidates 主键。
     :param auto_upload: 是否在 ready 后自动入队上传。
+    :param start_ts: 可选的显式剪辑起点。
+    :param end_ts: 可选的显式剪辑终点。
+    :param output_suffix: 可选的版本化输出文件名后缀。
+    :param progress_callback: 可选的后台作业进度回调。
+    :param cancel_check: 可选的协作取消检查。
+    :param render_variants: 是否生成派生版本。
     """
     from app.clipping.clipper import produce_clip as _cut_clip
+    from app.core.process_control import ProcessCancelledError
     from app.publishing.copywriter import generate_copy
 
     try:
-        clip = _cut_clip(candidate_id)
+        clip = _cut_clip(
+            candidate_id,
+            start_ts=start_ts,
+            end_ts=end_ts,
+            output_suffix=output_suffix,
+            progress_callback=progress_callback,
+            cancel_check=cancel_check,
+            render_variants=render_variants,
+        )
+    except ProcessCancelledError:
+        raise
     except Exception as exc:  # noqa: BLE001
         logger.error("候选 {} 切片失败: {}", candidate_id, exc)
         return None
 
     if clip.id is None:
         return clip
+    if progress_callback is not None:
+        progress_callback(92, "正在生成文案")
     try:
         clip = generate_copy(clip.id)
     except Exception as exc:  # noqa: BLE001

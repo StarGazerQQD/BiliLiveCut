@@ -42,6 +42,13 @@ class Settings(BaseSettings):
     app_env: Literal["dev", "prod"] = "dev"
     log_level: str = "INFO"
     admin_password: str = Field(default="", repr=False)  # V0.1.8.2: Web 管理后台认证密码(空则无认证)
+    reviewer_accounts_json: str = Field(
+        default="",
+        repr=False,
+        description='审核员账号 JSON，例如 {"reviewer":"password"}',
+    )
+    review_claim_ttl_s: int = Field(default=900, ge=60, le=86400)
+    review_blind_mode: bool = True
 
     # ---------- 存储 ----------
     storage_root: str = "./storage"
@@ -147,6 +154,9 @@ class Settings(BaseSettings):
     highlight_init_threshold: float = Field(default=0.5, ge=0.0, le=1.0)
     highlight_threshold: float = Field(default=0.65, ge=0.0, le=1.0)
     auto_publish_threshold: float = Field(default=0.85, ge=0.0, le=1.0)
+    # 机器学习评分默认关闭；shadow 只记录，champion 才改变主评分。
+    highlight_ml_mode: Literal["off", "shadow", "champion"] = "off"
+    highlight_ml_registry_root: str = Field(default="./storage/highlight_models", min_length=1)
 
     # ---------- 切片后处理 ----------
     clip_loudnorm: bool = True  # 响度标准化(EBU R128)

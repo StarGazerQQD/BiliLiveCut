@@ -2,10 +2,10 @@
 import { api, toast } from "./common.js";
 
 async function approveCand(id) {
-  toast("\u51fa\u7247\u4e2d,\u8bf7\u7a0d\u5019\u2026");
+  toast("\u6b63\u5728\u63d0\u4ea4\u540e\u53f0\u51fa\u7247\u4f5c\u4e1a\u2026");
   try {
     const r = await api("POST", `/api/candidates/${id}/approve`);
-    toast("\u5df2\u51fa\u7247 clip #" + r.clip_id);
+    toast("\u51fa\u7247\u4f5c\u4e1a\u5df2\u63d0\u4ea4:" + r.job.id.substring(0, 8));
     const { loadCandidates } = await import("./candidates.js");
     loadCandidates();
   } catch (e) { toast("\u51fa\u7247\u5931\u8d25:" + e.message); }
@@ -13,7 +13,7 @@ async function approveCand(id) {
 
 async function rejectCand(id) {
   try {
-    await api("POST", `/api/candidates/${id}/reject");
+    await api("POST", `/api/candidates/${id}/reject`);
     toast("\u5df2\u62d2\u7edd");
     const { loadCandidates } = await import("./candidates.js");
     loadCandidates();

@@ -45,6 +45,10 @@ asr = [
 llm = [
     "openai>=1.40",
 ]
+# 高光模型高级树模型。默认 NumPy Logistic 无额外依赖；3.3 起不再支持 Python 3.11。
+highlight-ml = [
+    "xgboost>=3.2,<3.3",
+]
 # 阶段4+:Web 后台。
 web = [
     "fastapi>=0.111",

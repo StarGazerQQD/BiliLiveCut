@@ -28,7 +28,24 @@ async function loadMonitor() {
         <div style="color:var(--red);font-size:11px">${esc(f.error||"")}</div>
       </div>`
     ).join("") : "<span class='muted'>\u65e0\u5931\u8d25\u4efb\u52a1 \u2705</span>";
+    await loadHighlightModelDrift();
   } catch (e) { console.warn("\u52a0\u8f7d\u5931\u8d25:", e); }
+}
+
+async function loadHighlightModelDrift() {
+  const summary = $("#mon-highlight-drift");
+  const details = $("#mon-highlight-features");
+  if (!summary || !details) return;
+  try {
+    const report = await api("GET", "/api/highlight-ml/drift");
+    summary.textContent = `Champion v${report.champion_version} · ${report.status} · 最近 ${report.n_recent} 条 · 概率 PSI ${report.probability_psi.toFixed(3)}`;
+    details.innerHTML = (report.shifted_features || []).slice(0, 8).map((item) =>
+      `<span class="score-chip">${esc(item.name)} PSI=${item.psi.toFixed(3)}</span>`
+    ).join(" ") || '<span class="muted">未发现显著特征漂移</span>';
+  } catch (e) {
+    summary.textContent = `暂不可检查: ${e.message}`;
+    details.innerHTML = "";
+  }
 }
 
 async function triggerMaintenance() {

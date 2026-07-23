@@ -15,9 +15,11 @@ from __future__ import annotations
 
 import hashlib
 import json
+import re
 import subprocess
 import tempfile
-from datetime import datetime
+from collections.abc import Callable
+from datetime import UTC, datetime
 from pathlib import Path
 
 from loguru import logger
@@ -28,6 +30,7 @@ from app.clipping.models import ClipOptions
 from app.core.config import settings
 from app.core.ffmpeg_errors import classify_ffmpeg_error
 from app.core.paths import clips_dir
+from app.core.process_control import ProcessCancelledError, run_cancellable
 from app.db.models import (
     CandidateStatus,
     ClipStatus,
@@ -46,6 +49,13 @@ from app.db.session import get_session
 _VERT_W, _VERT_H = 1080, 1920
 
 
+def _as_utc_naive(value: datetime) -> datetime:
+    """把时间统一为 SQLite 使用的 UTC-naive 表示。"""
+    if value.tzinfo is None:
+        return value
+    return value.astimezone(UTC).replace(tzinfo=None)
+
+
 def select_covering_segments(
     session_id: int,
     start_ts: datetime,
@@ -58,6 +68,8 @@ def select_covering_segments(
     :param end_ts: 候选终点。
     :returns: 覆盖该区间的片段列表(按 ``seq`` 升序)。
     """
+    normalized_start = _as_utc_naive(start_ts)
+    normalized_end = _as_utc_naive(end_ts)
     with get_session() as db:
         rows = db.exec(
             select(RawSegment).where(RawSegment.session_id == session_id).order_by(RawSegment.seq)  # type: ignore[arg-type]
@@ -65,9 +77,78 @@ def select_covering_segments(
     covering = [
         s
         for s in rows
-        if s.start_ts is not None and s.end_ts is not None and s.end_ts > start_ts and s.start_ts < end_ts
+        if s.start_ts is not None
+        and s.end_ts is not None
+        and _as_utc_naive(s.end_ts) > normalized_start
+        and _as_utc_naive(s.start_ts) < normalized_end
     ]
     return covering
+
+
+def validate_clip_boundary(
+    session_id: int,
+    start_ts: datetime,
+    end_ts: datetime,
+    *,
+    max_duration_s: float,
+    min_duration_s: float = 2.0,
+    gap_tolerance_s: float = 1.0,
+) -> list[RawSegment]:
+    """校验剪辑边界并返回完整覆盖该区间的原始片段。
+
+    :param session_id: 录像会话 id。
+    :param start_ts: 剪辑起点。
+    :param end_ts: 剪辑终点。
+    :param max_duration_s: 允许的最大时长。
+    :param min_duration_s: 允许的最小时长。
+    :param gap_tolerance_s: 相邻录像片段间允许的时间戳误差。
+    :returns: 按录制顺序排列的覆盖片段。
+    :raises ValueError: 边界非法、越界或录像存在缺口时。
+    """
+    start_ts = _as_utc_naive(start_ts)
+    end_ts = _as_utc_naive(end_ts)
+    duration_s = (end_ts - start_ts).total_seconds()
+    if duration_s <= 0:
+        raise ValueError("剪辑起点必须早于终点。")
+    if duration_s < min_duration_s:
+        raise ValueError(f"剪辑时长不能少于 {min_duration_s:g} 秒。")
+    if duration_s > max_duration_s:
+        raise ValueError(f"剪辑时长不能超过 {max_duration_s:g} 秒。")
+
+    segments = select_covering_segments(session_id, start_ts, end_ts)
+    if not segments:
+        raise ValueError("所选时间范围没有可用的原始录像。")
+
+    ordered = sorted(segments, key=lambda segment: (segment.start_ts, segment.seq))
+    first_start = ordered[0].start_ts
+    if first_start is None or _as_utc_naive(first_start) > start_ts:
+        raise ValueError("剪辑起点早于现有录像范围。")
+
+    covered_until = start_ts
+    for segment in ordered:
+        if segment.start_ts is None or segment.end_ts is None:
+            continue
+        segment_start = _as_utc_naive(segment.start_ts)
+        segment_end = _as_utc_naive(segment.end_ts)
+        if (segment_start - covered_until).total_seconds() > gap_tolerance_s:
+            raise ValueError("所选时间范围跨越了录像缺口。")
+        if segment_end > covered_until:
+            covered_until = segment_end
+        if covered_until >= end_ts:
+            break
+    if end_ts > covered_until:
+        raise ValueError("剪辑终点晚于现有录像范围。")
+    return ordered
+
+
+def _normalize_output_suffix(output_suffix: str | None) -> str:
+    """把可选渲染版本标识规范化为安全的文件名后缀。"""
+    if output_suffix is None:
+        return ""
+    normalized = re.sub(r"[^A-Za-z0-9_-]+", "-", output_suffix.strip()).strip("-_")
+    if not normalized:
+        raise ValueError("渲染版本标识不能为空。")
+    return f"_{normalized[:64]}"
 
 
 def probe_media(path: str) -> tuple[float, int, int]:
@@ -537,40 +618,65 @@ def render_clip_to_file(
     }
 
 
-def produce_clip(candidate_id: int, options: ClipOptions | None = None) -> FinalClip:
+def produce_clip(
+    candidate_id: int,
+    options: ClipOptions | None = None,
+    *,
+    start_ts: datetime | None = None,
+    end_ts: datetime | None = None,
+    output_suffix: str | None = None,
+    progress_callback: Callable[[int, str], None] | None = None,
+    cancel_check: Callable[[], bool] | None = None,
+    render_variants: bool = True,
+) -> FinalClip:
     """把一个高光候选生成为成品 MP4 并入库。
 
     :param candidate_id: ``highlight_candidates`` 主键。
     :param options: 切片选项;默认取自配置。
+    :param start_ts: 显式剪辑起点;必须与 ``end_ts`` 同时提供。
+    :param end_ts: 显式剪辑终点;必须与 ``start_ts`` 同时提供。
+    :param output_suffix: 可选的安全文件名后缀,用于保留多次渲染版本。
+    :param progress_callback: 可选的进度回调。
+    :param cancel_check: 可选的协作取消检查。
+    :param render_variants: 是否继续生成派生版本。
     :returns: 新建的 :class:`FinalClip`。
     :raises ValueError: 候选不存在或找不到覆盖片段时。
     :raises RuntimeError: FFmpeg 执行失败时。
     """
     options = options or ClipOptions.from_settings()
+    _report_progress(progress_callback, 8, "正在校验录像范围")
+    _raise_if_cancelled(cancel_check)
 
     with get_session() as db:
         cand = db.get(HighlightCandidate, candidate_id)
         if cand is None:
             raise ValueError(f"候选不存在: id={candidate_id}")
         session_id = cand.session_id
-        start_ts = cand.start_ts
-        end_ts = cand.end_ts
-        peak_ts = cand.peak_ts
+        if (start_ts is None) != (end_ts is None):
+            raise ValueError("显式剪辑起点和终点必须同时提供。")
+        resolved_start_ts = _as_utc_naive(start_ts or cand.start_ts)
+        resolved_end_ts = _as_utc_naive(end_ts or cand.end_ts)
+        peak_ts = _as_utc_naive(cand.peak_ts)
 
-    segments = select_covering_segments(session_id, start_ts, end_ts)
-    if not segments:
-        raise ValueError(f"候选 {candidate_id} 找不到覆盖的原始片段。")
+    segments = validate_clip_boundary(
+        session_id,
+        resolved_start_ts,
+        resolved_end_ts,
+        max_duration_s=float(options.max_duration_s),
+    )
+    _report_progress(progress_callback, 15, "正在准备剪辑素材")
+    _raise_if_cancelled(cancel_check)
 
     base_ts = segments[0].start_ts
     if base_ts is None:
         raise ValueError(f"原始片段 {segments[0].id} 缺少 start_ts,无法计算裁剪偏移。")
-    cut_offset = max(0.0, (start_ts - base_ts).total_seconds())
-    raw_duration = (end_ts - start_ts).total_seconds()
-    duration = max(2.0, min(raw_duration, float(options.max_duration_s)))
-    peak_rel = max(0.0, (peak_ts - start_ts).total_seconds())
+    cut_offset = max(0.0, (resolved_start_ts - _as_utc_naive(base_ts)).total_seconds())
+    duration = (resolved_end_ts - resolved_start_ts).total_seconds()
+    peak_rel = max(0.0, (peak_ts - resolved_start_ts).total_seconds())
 
-    out_path = clips_dir() / f"clip_{candidate_id}.mp4"
-    cover_path = clips_dir() / f"clip_{candidate_id}.jpg"
+    output_stem = f"clip_{candidate_id}{_normalize_output_suffix(output_suffix)}"
+    out_path = clips_dir() / f"{output_stem}.mp4"
+    cover_path = clips_dir() / f"{output_stem}.jpg"
 
     with tempfile.TemporaryDirectory(prefix="blc_clip_") as tmp:
         work_dir = Path(tmp)
@@ -594,12 +700,31 @@ def produce_clip(candidate_id: int, options: ClipOptions | None = None) -> Final
                 srt_path = work_dir / "sub.srt"
                 srt_path.write_text(srt_text, encoding="utf-8")
 
-        _run_ffmpeg_clip(concat_list, out_path, cut_offset, duration, options, srt_path)
+        _report_progress(progress_callback, 25, "正在渲染主视频")
+        try:
+            _run_ffmpeg_clip(
+                concat_list,
+                out_path,
+                cut_offset,
+                duration,
+                options,
+                srt_path,
+                cancel_check=cancel_check,
+            )
+        except ProcessCancelledError:
+            out_path.unlink(missing_ok=True)
+            raise
 
         # V0.1.8.2: 提前保存临时文件内容,供 with 块外部重建使用(临时目录退出后会清理)。
         _concat_content = concat_list.read_text(encoding="utf-8")
         _srt_content = srt_path.read_text(encoding="utf-8") if srt_path else None
 
+    _report_progress(progress_callback, 55, "主视频完成，正在检查媒体")
+    try:
+        _raise_if_cancelled(cancel_check)
+    except ProcessCancelledError:
+        out_path.unlink(missing_ok=True)
+        raise
     real_duration, width, height = probe_media(str(out_path))
     try:
         _grab_cover(out_path, cover_path, min(peak_rel, max(0.5, real_duration / 2)))
@@ -626,6 +751,7 @@ def produce_clip(candidate_id: int, options: ClipOptions | None = None) -> Final
             cand.status = CandidateStatus.CLIPPED
             db.add(cand)
         clip_id = clip.id
+    _report_progress(progress_callback, 65, "主视频已保存")
 
     logger.success(
         "切片完成 clip={} candidate={} 时长={:.1f}s 分辨率={}x{} -> {}",
@@ -637,19 +763,30 @@ def produce_clip(candidate_id: int, options: ClipOptions | None = None) -> Final
         out_path.name,
     )
 
-    # V0.1.8: 生成多版本 ClipVariant 记录。
-    _create_clip_variants(clip, options, segments, cut_offset)
+    if render_variants:
+        # V0.1.8: 生成多版本 ClipVariant 记录。
+        _create_clip_variants(clip, options, segments, cut_offset)
 
-    # V0.1.8.2: 在持久化目录中重建 concat 清单和 SRT,供变体渲染使用。
-    _recon_dir = Path(clip.file_path).parent
-    _recon_concat = _recon_dir / f"clip_{candidate_id}_concat.txt"
-    _recon_concat.write_text(_concat_content, encoding="utf-8")
-    _recon_srt: Path | None = None
-    if _srt_content:
-        _recon_srt = _recon_dir / f"clip_{candidate_id}.srt"
-        _recon_srt.write_text(_srt_content, encoding="utf-8")
-    # V0.1.8 P1.1: 渲染多版本出片(归档版+压制版+互补字幕版)。
-    _render_variants(clip, options, _recon_concat, cut_offset, duration, _recon_srt)
+        # 在持久化目录中重建 concat 清单和 SRT,供变体渲染使用。
+        _recon_dir = Path(clip.file_path).parent
+        _recon_concat = _recon_dir / f"{output_stem}_concat.txt"
+        _recon_concat.write_text(_concat_content, encoding="utf-8")
+        _recon_srt: Path | None = None
+        if _srt_content:
+            _recon_srt = _recon_dir / f"{output_stem}.srt"
+            _recon_srt.write_text(_srt_content, encoding="utf-8")
+        _render_variants(
+            clip,
+            options,
+            _recon_concat,
+            cut_offset,
+            duration,
+            _recon_srt,
+            progress_callback=progress_callback,
+            cancel_check=cancel_check,
+        )
+    else:
+        _report_progress(progress_callback, 90, "审核版本已完成")
 
     # V0.1.8 P2:切片完成通知。
     from app.notify.webhook import notify_clip_complete
@@ -794,6 +931,8 @@ def _run_ffmpeg_clip(
     duration: float,
     options: ClipOptions,
     srt_path: Path | None,
+    *,
+    cancel_check: Callable[[], bool] | None = None,
 ) -> None:
     """执行精剪 + 后处理的 FFmpeg 命令。
 
@@ -813,6 +952,7 @@ def _run_ffmpeg_clip(
     :param duration: 时长(秒)。
     :param options: 切片选项。
     :param srt_path: 字幕文件(可空)。
+    :param cancel_check: 可选的取消检查。
     :raises RuntimeError: FFmpeg 失败时。
     """
     af = _build_audio_filter(options)
@@ -856,7 +996,7 @@ def _run_ffmpeg_clip(
     ]
 
     logger.debug("切片 FFmpeg 命令: {}", " ".join(cmd))
-    result = subprocess.run(cmd, capture_output=True, timeout=600)
+    result = run_cancellable(cmd, capture_output=True, timeout=600, cancel_check=cancel_check)
     if result.returncode != 0:
         stderr = result.stderr.decode("utf-8", errors="ignore")
         error_type = classify_ffmpeg_error(result.returncode, stderr)
@@ -900,6 +1040,9 @@ def _render_variants(
     cut_offset: float,
     duration: float,
     srt_path: Path | None,
+    *,
+    progress_callback: Callable[[int, str], None] | None = None,
+    cancel_check: Callable[[], bool] | None = None,
 ) -> None:
     """渲染多版本出片(V0.1.8 P1.1)。
 
@@ -916,9 +1059,13 @@ def _render_variants(
     :param cut_offset: 裁剪偏移(秒)。
     :param duration: 时长(秒)。
     :param srt_path: 字幕文件(可空)。
+    :param progress_callback: 可选的进度回调。
+    :param cancel_check: 可选的取消检查。
     """
     variants_dir = Path(clip.file_path).parent
 
+    _report_progress(progress_callback, 70, "正在生成高码率版本")
+    _raise_if_cancelled(cancel_check)
     # --- ARCHIVE:高码率归档 ---
     archive_path = variants_dir / f"clip_{clip.candidate_id}_archive.mp4"
     _render_single_variant(
@@ -933,8 +1080,11 @@ def _render_variants(
         srt_path=srt_path,
         variant_type=ClipVariantType.ARCHIVE,
         clip=clip,
+        cancel_check=cancel_check,
     )
 
+    _report_progress(progress_callback, 77, "正在生成压制版本")
+    _raise_if_cancelled(cancel_check)
     # --- COMPRESSED:投稿压制 ---
     compressed_path = variants_dir / f"clip_{clip.candidate_id}_compressed.mp4"
     _render_single_variant(
@@ -949,8 +1099,11 @@ def _render_variants(
         srt_path=srt_path,
         variant_type=ClipVariantType.COMPRESSED,
         clip=clip,
+        cancel_check=cancel_check,
     )
 
+    _report_progress(progress_callback, 84, "正在生成字幕互补版本")
+    _raise_if_cancelled(cancel_check)
     # --- 互补字幕版 ---
     counterpart_subtitle = not options.subtitle
     if counterpart_subtitle:
@@ -981,6 +1134,7 @@ def _render_variants(
             srt_path=counterpart_srt,
             variant_type=ClipVariantType.SUBTITLED,
             clip=clip,
+            cancel_check=cancel_check,
         )
         # 清理临时字幕
         if counterpart_srt and counterpart_srt.exists():
@@ -1003,7 +1157,9 @@ def _render_variants(
             srt_path=None,
             variant_type=ClipVariantType.NO_SUBTITLES,
             clip=clip,
+            cancel_check=cancel_check,
         )
+    _report_progress(progress_callback, 90, "派生版本已完成")
 
 
 def _render_single_variant(
@@ -1019,6 +1175,7 @@ def _render_single_variant(
     srt_path: Path | None,
     variant_type: str,
     clip: FinalClip,
+    cancel_check: Callable[[], bool] | None = None,
 ) -> None:
     """执行单个变体的 FFmpeg 渲染并更新数据库。
 
@@ -1033,6 +1190,7 @@ def _render_single_variant(
     :param srt_path: SRT 字幕路径(可空)。
     :param variant_type: 变体类型。
     :param clip: 关联的 FinalClip。
+    :param cancel_check: 可选的取消检查。
     """
     # 构建简化的 ClipOptions 用于滤镜构建
     from dataclasses import replace
@@ -1085,7 +1243,12 @@ def _render_single_variant(
     ]
 
     logger.info("渲染变体 {} {} -> {} (CRF={} preset={})", variant_type, clip.candidate_id, out_path.name, crf, preset)
-    result = subprocess.run(cmd, capture_output=True, timeout=1800)
+    try:
+        result = run_cancellable(cmd, capture_output=True, timeout=1800, cancel_check=cancel_check)
+    except ProcessCancelledError:
+        _mark_variant_failed(clip.candidate_id, variant_type)
+        out_path.unlink(missing_ok=True)
+        raise
 
     with get_session() as db:
         event_id = _resolve_event_id(db, clip.candidate_id)
@@ -1117,6 +1280,33 @@ def _render_single_variant(
                 )
             db.add(variant)
             db.commit()
+
+
+def _mark_variant_failed(candidate_id: int, variant_type: str) -> None:
+    """取消渲染时把当前派生版本标记为失败。"""
+    with get_session() as db:
+        event_id = _resolve_event_id(db, candidate_id)
+        variant = db.exec(
+            select(ClipVariant).where(
+                ClipVariant.event_id == event_id,
+                ClipVariant.variant_type == variant_type,
+            )
+        ).first()
+        if variant is not None:
+            variant.render_status = RenderStatus.FAILED
+            db.add(variant)
+
+
+def _report_progress(callback: Callable[[int, str], None] | None, progress: int, message: str) -> None:
+    """安全调用可选的作业进度回调。"""
+    if callback is not None:
+        callback(progress, message)
+
+
+def _raise_if_cancelled(cancel_check: Callable[[], bool] | None) -> None:
+    """在阶段边界响应协作取消。"""
+    if cancel_check is not None and cancel_check():
+        raise ProcessCancelledError("用户取消了剪辑任务")
 
 
 def _file_sha1(path: Path) -> str:

@@ -115,8 +115,10 @@ async def lifespan(_app: FastAPI) -> AsyncIterator[None]:
 
     # V0.1.6:启动持久化任务队列 Worker。
     from app.pipeline.task_worker import task_worker
+    from app.web.services.background_jobs import web_job_manager
 
     await task_worker.start()
+    await web_job_manager.start()
 
     # V0.1.2:自动恢复中断的录制会话。
     try:
@@ -146,6 +148,7 @@ async def lifespan(_app: FastAPI) -> AsyncIterator[None]:
         await trend_scheduler.stop()
         await live_monitor.stop()
         await service.recorder_manager.stop_all()
+        await web_job_manager.stop()
         await task_worker.stop()
         logger.info("Web 后台已关闭,所有录制已停止。")
 
@@ -217,6 +220,7 @@ app = FastAPI(
 # 页面浏览(GET /)和静态资源不受影响。
 # 请求头格式: Authorization: Basic <base64(admin:<密码>)>
 import base64 as _base64  # noqa: E402
+import json as _json  # noqa: E402
 import secrets as _secrets  # noqa: E402
 
 from starlette.middleware.base import BaseHTTPMiddleware as _BaseMiddleware  # noqa: E402
@@ -225,6 +229,35 @@ from starlette.responses import JSONResponse as _JSONResponse  # noqa: E402
 from app.core.config import settings as _cfg  # noqa: E402
 
 _ADMIN_PASSWORD = _cfg.admin_password
+
+
+def _load_reviewer_passwords(raw: str) -> dict[str, str]:
+    """解析审核员账号配置，拒绝空账号、空密码和非字符串值。"""
+    if not raw.strip():
+        return {}
+    try:
+        value = _json.loads(raw)
+    except _json.JSONDecodeError:
+        logger.error("REVIEWER_ACCOUNTS_JSON 不是有效 JSON，审核员登录已禁用")
+        return {}
+    if not isinstance(value, dict):
+        logger.error("REVIEWER_ACCOUNTS_JSON 必须是账号到密码的 JSON 对象")
+        return {}
+    accounts = {
+        username: password
+        for username, password in value.items()
+        if isinstance(username, str)
+        and isinstance(password, str)
+        and username.strip()
+        and password
+        and username != "admin"
+    }
+    if len(accounts) != len(value):
+        logger.error("REVIEWER_ACCOUNTS_JSON 含无效账号，相关条目已忽略")
+    return accounts
+
+
+_REVIEWER_PASSWORDS = _load_reviewer_passwords(_cfg.reviewer_accounts_json)
 
 _AUTH_PROTECTED_PREFIXES = ("/api/", "/review/", "/collection/")
 _AUTH_WHITE_LIST = tuple()  # 未来可扩展公开端点
@@ -387,6 +420,8 @@ class _AuthMiddleware(_BaseMiddleware):
 
     async def dispatch(self, request: Request, call_next):
         path = request.url.path
+        request.state.auth_user = "anonymous"
+        request.state.auth_role = "anonymous"
         protected = any(path.startswith(p) for p in _AUTH_PROTECTED_PREFIXES)
         if not protected:
             return await call_next(request)
@@ -409,6 +444,8 @@ class _AuthMiddleware(_BaseMiddleware):
                     "csrf_blocked: {} {} Origin={}", request.method, path, request.headers.get("Origin", "-")
                 )
                 return _JSONResponse({"detail": "跨站请求被拒绝"}, status_code=403)
+            request.state.auth_user = "local-admin"
+            request.state.auth_role = "admin"
             return await call_next(request)
 
         auth = request.headers.get("Authorization", "")
@@ -427,9 +464,8 @@ class _AuthMiddleware(_BaseMiddleware):
         try:
             decoded = _base64.b64decode(auth[6:]).decode("utf-8", errors="ignore")
             username, _, password = decoded.partition(":")
-            if not username or username != "admin":
-                return _JSONResponse({"detail": "认证失败"}, status_code=403)
-            if not _secrets.compare_digest(password, _ADMIN_PASSWORD):
+            expected_password = _ADMIN_PASSWORD if username == "admin" else _REVIEWER_PASSWORDS.get(username)
+            if not username or expected_password is None or not _secrets.compare_digest(password, expected_password):
                 ip = request.client.host if request.client else "unknown"
                 _record_login_failure(ip)
                 if not _check_login_rate(ip):
@@ -438,6 +474,11 @@ class _AuthMiddleware(_BaseMiddleware):
                         status_code=429,
                     )
                 return _JSONResponse({"detail": "认证失败"}, status_code=403)
+            role = "admin" if username == "admin" else "reviewer"
+            if role == "reviewer" and not self._reviewer_path_allowed(path):
+                return _JSONResponse({"detail": "审核员无权访问该管理接口"}, status_code=403)
+            request.state.auth_user = username
+            request.state.auth_role = role
         except Exception:
             return _JSONResponse({"detail": "认证格式错误"}, status_code=400)
         # Basic Auth 通过后,修改请求仍须校验 CSRF
@@ -447,6 +488,16 @@ class _AuthMiddleware(_BaseMiddleware):
             )
             return _JSONResponse({"detail": "跨站请求被拒绝"}, status_code=403)
         return await call_next(request)
+
+    @staticmethod
+    def _reviewer_path_allowed(path: str) -> bool:
+        """限制审核员只能进入审核工作台和读取审核所需媒体。"""
+        if path.startswith("/review/"):
+            return True
+        parts = path.strip("/").split("/")
+        if len(parts) >= 2 and parts[:2] == ["api", "jobs"]:
+            return True
+        return len(parts) == 4 and parts[0] == "api" and parts[1] == "clips" and parts[3] in {"video", "cover"}
 
 
 app.add_middleware(_AuthMiddleware)

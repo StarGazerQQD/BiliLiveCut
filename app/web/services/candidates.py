@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import asyncio
 import json
+from collections.abc import Callable
 from typing import Any
 
 from loguru import logger
@@ -47,13 +48,20 @@ def set_candidate_status(candidate_id: int, status: str) -> None:
             logger.warning("阈值自学习反馈记录失败: {}", exc)
 
 
-async def approve_candidate(candidate_id: int) -> int | None:
-    """批准候选并出片(切片+文案); V0.1.12.8: 传入外层 db 消除事务割裂。
+def approve_candidate_sync(
+    candidate_id: int,
+    *,
+    progress_callback: Callable[[int, str], None] | None = None,
+    cancel_check: Callable[[], bool] | None = None,
+) -> int | None:
+    """同步批准候选并出片，供后台作业线程调用。
 
     在同一个 session 中完成审批 + produce_clip,
     fallback 路径也同步更新 Task 状态。
 
     :param candidate_id: 候选 id。
+    :param progress_callback: 可选的作业进度回调。
+    :param cancel_check: 可选的取消检查。
     :returns: 生成的 clip_id;失败返回 ``None``。
     """
     from app.db.models import HighlightEvent, SegmentTask
@@ -95,8 +103,17 @@ async def approve_candidate(candidate_id: int) -> int | None:
 
     from app.pipeline.orchestrator import produce_clip
 
-    clip = await asyncio.to_thread(produce_clip, candidate_id)
+    clip = produce_clip(
+        candidate_id,
+        progress_callback=progress_callback,
+        cancel_check=cancel_check,
+    )
     return clip.id if clip else None
+
+
+async def approve_candidate(candidate_id: int) -> int | None:
+    """向后兼容的异步批准入口。"""
+    return await asyncio.to_thread(approve_candidate_sync, candidate_id)
 
 
 def delete_candidate(candidate_id: int) -> None:

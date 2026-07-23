@@ -1,0 +1,67 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>人工审核队列 — BiliLiveCut</title>
+  <link rel="stylesheet" href="/static/style.css?v=2" />
+</head>
+<body class="standalone-shell queue-shell">
+<div class="page-wrap">
+  <header class="page-head">
+    <div>
+      <div class="page-kicker">Human review</div>
+      <h1>人工审核队列</h1>
+      <p class="hint" id="viewer">正在载入身份…</p>
+    </div>
+    <a class="back-link" href="/">返回控制台</a>
+  </header>
+  <div class="queue-filters">
+    <button data-status="pending" class="active">待领取 <span id="count-pending">0</span></button>
+    <button data-status="claimed">审核中 <span id="count-claimed">0</span></button>
+    <button data-status="reviewed">已完成 <span id="count-reviewed">0</span></button>
+    <button data-status="all">全部</button>
+    <label class="chk"><input type="checkbox" id="mine" /> 只看我的</label>
+    <button id="refresh">刷新</button>
+  </div>
+  <main id="queue" class="queue-grid"></main>
+</div>
+  <script>
+    let currentStatus = "pending";
+    const esc = value => String(value ?? "").replace(/[&<>"']/g, c => ({"&":"&amp;","<":"&lt;",">":"&gt;",'"':"&quot;","'":"&#39;"})[c]);
+    async function api(url, options = {}) {
+      const response = await fetch(url, {headers:{"Content-Type":"application/json"}, ...options});
+      const data = await response.json();
+      if (!response.ok) throw new Error(data.detail || `HTTP ${response.status}`);
+      return data;
+    }
+    async function loadQueue() {
+      const mine = document.querySelector("#mine").checked ? "&mine=true" : "";
+      const data = await api(`/review/api/queue?status=${currentStatus}${mine}`);
+      document.querySelector("#viewer").textContent = `${data.actor} · ${data.role}${data.blind_mode ? " · 已启用盲审" : ""}`;
+      for (const key of ["pending","claimed","reviewed"]) document.querySelector(`#count-${key}`).textContent = data.counts[key];
+      const root = document.querySelector("#queue");
+      if (!data.items.length) { root.innerHTML = '<div class="card empty">当前筛选下没有候选</div>'; return; }
+      root.innerHTML = data.items.map(item => `<article class="card queue-item">
+        <div><strong>#${item.id}</strong><div class="meta">会话 ${item.session_id}</div></div>
+        <div><strong>${item.blinded ? "评分已隐藏" : `评分 ${Number(item.score || 0).toFixed(3)}`}</strong><div class="meta">${esc(item.reason || "等待人工判断")}</div></div>
+        <div class="meta">${item.claim.active ? `由 ${esc(item.claim.claimed_by)} 领取` : "尚未领取"}<br>${esc(item.review_status)}</div>
+        <button onclick="openItem(${item.id}, ${!item.claim.active})">${item.status === "reviewed" ? "查看" : "进入审核"}</button>
+      </article>`).join("");
+    }
+    async function openItem(id, shouldClaim) {
+      try {
+        if (shouldClaim) await api(`/review/api/${id}/claim`, {method:"POST", body:JSON.stringify({force:false})});
+        location.href = `/review/${id}`;
+      } catch (error) { alert(error.message); await loadQueue(); }
+    }
+    document.querySelectorAll("[data-status]").forEach(button => button.addEventListener("click", () => {
+      document.querySelectorAll("[data-status]").forEach(item => item.classList.remove("active"));
+      button.classList.add("active"); currentStatus = button.dataset.status; loadQueue();
+    }));
+    document.querySelector("#mine").addEventListener("change", loadQueue);
+    document.querySelector("#refresh").addEventListener("click", loadQueue);
+    loadQueue().catch(error => document.querySelector("#queue").innerHTML = `<div class="card empty">${esc(error.message)}</div>`);
+  </script>
+</body>
+</html>

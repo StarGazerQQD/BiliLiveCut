@@ -15,6 +15,7 @@ import asyncio
 from loguru import logger
 from sqlmodel import select
 
+from app.analysis.room_config import load_room_config
 from app.core.config import settings
 from app.core.cookie import get_bilibili_cookie
 from app.db.models import LiveRoom
@@ -101,7 +102,13 @@ class LiveMonitor:
             ).all()
             # V0.1.8.2: 在 session 内提取标量属性,避免 session 关闭后懒加载触发 DetachedInstanceError。
             room_info: list[dict[str, object]] = [
-                {"db_id": r.id, "room_id": r.room_id, "auto_analyze": r.auto_analyze, "auto_render": r.auto_render}
+                {
+                    "db_id": r.id,
+                    "room_id": r.room_id,
+                    "auto_analyze": r.auto_analyze,
+                    "auto_render": r.auto_render,
+                    "recording_paused": load_room_config(r).get("recording_paused", False),
+                }
                 for r in rooms
             ]
 
@@ -115,6 +122,8 @@ class LiveMonitor:
                 room_id: int = info["room_id"]
                 auto_analyze: bool = info["auto_analyze"]
                 auto_render: bool = info["auto_render"]
+                if info["recording_paused"]:
+                    continue
                 self._last_check_at[db_id] = asyncio.get_event_loop().time()
 
                 if db_id in self._starting:

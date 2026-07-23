@@ -10,8 +10,8 @@ import hashlib
 import json
 import logging
 import time
-from dataclasses import dataclass
-from datetime import timedelta
+from dataclasses import asdict, dataclass
+from datetime import datetime, timedelta
 from enum import StrEnum
 from typing import Any
 
@@ -19,6 +19,13 @@ from sqlalchemy.exc import IntegrityError as _IntegrityError
 from sqlmodel import select
 
 from app.analysis import audio as audio_mod
+from app.analysis.highlight_ml.online import (
+    OnlinePrediction,
+    add_prediction_log,
+    effective_primary_score,
+    merge_prediction_metadata,
+    predict_online,
+)
 from app.analysis.keywords import match_keywords
 from app.core.config import settings
 from app.db.models import (
@@ -55,20 +62,26 @@ class HighlightDraft:
     """纯计算产物 — 不包含任何 ORM 对象, 不可变。"""
 
     segment_id: int
-    session_id: int
+    session_id: int | None
+    room_id: int | None
     decision: HighlightDecision
     score: float | None
     rule_score: float
     llm_score: float
     highlight_score: float
-    start_ts: str | None
-    end_ts: str | None
-    peak_ts: str | None
+    start_ts: datetime | None
+    end_ts: datetime | None
+    peak_ts: datetime | None
     reason: str | None
     dedup_hash: str | None
     features_json: str
     initial_status: str
     config_hash: str
+    ml_prediction: OnlinePrediction
+
+    def to_dict(self) -> dict[str, Any]:
+        """返回 Worker commit 阶段可直接消费的稳定字典。"""
+        return asdict(self)
 
 
 def analyze_compute(task_id: int) -> dict[str, Any]:
@@ -90,11 +103,7 @@ def analyze_compute(task_id: int) -> dict[str, Any]:
     except ValueError as exc:
         return {"error": str(exc), "decision": HighlightDecision.SKIPPED, "segment_id": segment_id}
 
-    if draft is None:
-        return {"decision": HighlightDecision.BELOW_THRESHOLD, "segment_id": segment_id}
-
-    # draft 包含 decision 字段 (CANDIDATE / DUPLICATE)
-    return draft
+    return draft.to_dict()
 
 
 def commit_highlight(lease: TaskLease, compute_result: dict[str, Any], ms: int) -> None:
@@ -121,6 +130,19 @@ def commit_highlight(lease: TaskLease, compute_result: dict[str, Any], ms: int) 
             task = db.get(SegmentTask, lease.task_id)
             if task is None:
                 return
+
+            prediction_payload = compute_result.get("ml_prediction")
+            if isinstance(prediction_payload, dict):
+                prediction = OnlinePrediction(**prediction_payload)
+                add_prediction_log(
+                    db,
+                    prediction=prediction,
+                    segment_id=segment_id,
+                    session_id=compute_result.get("session_id"),
+                    room_id=compute_result.get("room_id"),
+                    rule_score=float(compute_result.get("rule_score", 0.0)),
+                    final_score=compute_result.get("highlight_score"),
+                )
 
             # ── BELOW_THRESHOLD ──────────────────────────
             if decision == HighlightDecision.BELOW_THRESHOLD:
@@ -372,16 +394,14 @@ def run_analyze(lease: TaskLease) -> None:
 # ══════════════════════════════════════════
 
 
-def _score_segment_draft(segment_id: int) -> dict[str, Any] | None:
+def _score_segment_draft(segment_id: int) -> HighlightDraft:
     """纯评分计算, 不写 DB, 不创建 Candidate。
 
-    返回 dict 包含 decision 字段:
+    返回不可变 ``HighlightDraft``，其中 decision 字段取值:
     - CANDIDATE: 通过评分, 应创建候选
     - DUPLICATE: 去重命中
-    返回 None: 初筛未过或终分不足 (由调用方转为 BELOW_THRESHOLD)
-
     :param segment_id: RawSegment ID。
-    :returns: draft dict 含 decision 字段, 或 None (分数不足)。
+    :returns: 显式决策及其完整评分上下文。
     """
     from app.analysis import llm as llm_mod
     from app.analysis.highlight import (  # noqa: PLC0415
@@ -413,7 +433,25 @@ def _score_segment_draft(segment_id: int) -> dict[str, Any] | None:
         seg_start_ts = segment.start_ts
         seg_end_ts = segment.end_ts
         if seg_start_ts is None or seg_end_ts is None:
-            return None
+            return HighlightDraft(
+                segment_id=segment_id,
+                session_id=segment.session_id,
+                room_id=room.id if room else None,
+                decision=HighlightDecision.SKIPPED,
+                score=None,
+                rule_score=0.0,
+                llm_score=0.0,
+                highlight_score=0.0,
+                start_ts=None,
+                end_ts=None,
+                peak_ts=None,
+                reason="片段缺少时间边界",
+                dedup_hash=None,
+                features_json="{}",
+                initial_status=CandidateStatus.REJECTED,
+                config_hash=cfg.model_dump_json() if hasattr(cfg, "model_dump_json") else "",
+                ml_prediction=OnlinePrediction(requested_mode="off", effective_mode="off"),
+            )
         duration = segment.duration_s or float(settings.segment_duration_s)
         session_id = segment.session_id
         threshold = room.highlight_threshold if room else settings.highlight_threshold
@@ -421,6 +459,8 @@ def _score_segment_draft(segment_id: int) -> dict[str, Any] | None:
         text = transcript.text if transcript else ""
         words_json = transcript.words_json if transcript else None
         file_path = segment.file_path
+        room_id = room.id if room else None
+        room_config_json = room.room_config_json if room else None
         room_auto_approve = bool(room.auto_approve) if room else False
         room_auto_approve_threshold = room.auto_approve_threshold if room else 0.82
         room_review_threshold = room.review_threshold if room else 0.50
@@ -454,6 +494,12 @@ def _score_segment_draft(segment_id: int) -> dict[str, Any] | None:
         trend_score, trend_hits = _trend_score(text)
         features["trend"] = trend_score
     rule_score = weighted_rule_score(features, cfg.weights)
+    ml_prediction = predict_online(
+        segment_id,
+        audio_features=feats,
+        room_config_json=room_config_json,
+    )
+    primary_score = effective_primary_score(rule_score, ml_prediction)
 
     _logger.info(
         "score_draft segment=%s rule=%.3f features=%s kw_hits=%s trend_hits=%s",
@@ -464,19 +510,55 @@ def _score_segment_draft(segment_id: int) -> dict[str, Any] | None:
         trend_hits,
     )
 
-    # 2) 初筛 — 不写 DB, 直接返回 None
-    if rule_score < settings.highlight_init_threshold:
-        return None
+    # 2) 初筛 — 不写 DB，返回显式 BELOW_THRESHOLD
+    if primary_score < settings.highlight_init_threshold:
+        return HighlightDraft(
+            segment_id=segment_id,
+            session_id=session_id,
+            room_id=room_id,
+            decision=HighlightDecision.BELOW_THRESHOLD,
+            score=primary_score,
+            rule_score=rule_score,
+            llm_score=0.0,
+            highlight_score=primary_score,
+            start_ts=None,
+            end_ts=None,
+            peak_ts=None,
+            reason="低于初筛阈值",
+            dedup_hash=None,
+            features_json=merge_prediction_metadata("{}", ml_prediction),
+            initial_status=CandidateStatus.REJECTED,
+            config_hash=cfg.model_dump_json() if hasattr(cfg, "model_dump_json") else "",
+            ml_prediction=ml_prediction,
+        )
 
     # 3) LLM 复核
     judgement = llm_mod.judge_highlight(text, features)
     llm_score = judgement.score if judgement else None
     reason = judgement.reason if judgement else "规则命中(未启用/未触发 LLM)"
-    highlight_score = fuse_scores(rule_score, llm_score, cfg.alpha, cfg.beta)
+    highlight_score = fuse_scores(primary_score, llm_score, cfg.alpha, cfg.beta)
 
-    # 终分不足 — 不写 DB, 直接返回 None
+    # 终分不足 — 不写 DB，返回显式 BELOW_THRESHOLD
     if highlight_score < threshold:
-        return None
+        return HighlightDraft(
+            segment_id=segment_id,
+            session_id=session_id,
+            room_id=room_id,
+            decision=HighlightDecision.BELOW_THRESHOLD,
+            score=highlight_score,
+            rule_score=rule_score,
+            llm_score=llm_score or 0.0,
+            highlight_score=highlight_score,
+            start_ts=None,
+            end_ts=None,
+            peak_ts=None,
+            reason="低于候选阈值",
+            dedup_hash=None,
+            features_json=merge_prediction_metadata("{}", ml_prediction),
+            initial_status=CandidateStatus.REJECTED,
+            config_hash=cfg.model_dump_json() if hasattr(cfg, "model_dump_json") else "",
+            ml_prediction=ml_prediction,
+        )
 
     # 4) 边界吸附
     peak_off = feats.peak_offset()
@@ -501,23 +583,25 @@ def _score_segment_draft(segment_id: int) -> dict[str, Any] | None:
         dedup_hash_val = hashlib.sha1(
             f"{session_id}:{start_ts.timestamp():.1f}:{end_ts.timestamp():.1f}".encode()
         ).hexdigest()
-        return {
-            "decision": HighlightDecision.DUPLICATE,
-            "segment_id": segment_id,
-            "session_id": session_id,
-            "dedup_hash": dedup_hash_val,
-            "score": highlight_score,
-            "rule_score": rule_score,
-            "llm_score": llm_score or 0.0,
-            "highlight_score": highlight_score,
-            "start_ts": start_ts.isoformat(),
-            "end_ts": end_ts.isoformat(),
-            "peak_ts": peak_ts.isoformat(),
-            "reason": "去重: IoU over threshold",
-            "features_json": "{}",
-            "initial_status": CandidateStatus.REJECTED,
-            "config_hash": cfg.model_dump_json() if hasattr(cfg, "model_dump_json") else "",
-        }
+        return HighlightDraft(
+            segment_id=segment_id,
+            session_id=session_id,
+            room_id=room_id,
+            decision=HighlightDecision.DUPLICATE,
+            score=highlight_score,
+            rule_score=rule_score,
+            llm_score=llm_score or 0.0,
+            highlight_score=highlight_score,
+            start_ts=start_ts,
+            end_ts=end_ts,
+            peak_ts=peak_ts,
+            reason="去重: IoU over threshold",
+            dedup_hash=dedup_hash_val,
+            features_json=merge_prediction_metadata("{}", ml_prediction),
+            initial_status=CandidateStatus.REJECTED,
+            config_hash=cfg.model_dump_json() if hasattr(cfg, "model_dump_json") else "",
+            ml_prediction=ml_prediction,
+        )
 
     # 6) 审核状态
     if room_auto_approve and highlight_score >= room_auto_approve_threshold:
@@ -529,37 +613,42 @@ def _score_segment_draft(segment_id: int) -> dict[str, Any] | None:
 
     danmaku_explain = danmaku_score_explain(session_id, seg_start_ts, seg_end_ts)
 
-    features_json = json.dumps(
-        {
-            "features": features,
-            "keyword_hits": kw_hits,
-            "audio": _audio_meta(feats),
-            "danmaku_explain": danmaku_explain,
-        },
-        ensure_ascii=False,
+    features_json = merge_prediction_metadata(
+        json.dumps(
+            {
+                "features": features,
+                "keyword_hits": kw_hits,
+                "audio": _audio_meta(feats),
+                "danmaku_explain": danmaku_explain,
+            },
+            ensure_ascii=False,
+        ),
+        ml_prediction,
     )
 
     dedup_hash_val = hashlib.sha1(
         f"{session_id}:{start_ts.timestamp():.1f}:{end_ts.timestamp():.1f}".encode()
     ).hexdigest()
 
-    return {
-        "decision": HighlightDecision.CANDIDATE,
-        "segment_id": segment_id,
-        "session_id": session_id,
-        "peak_ts": peak_ts,
-        "start_ts": start_ts,
-        "end_ts": end_ts,
-        "rule_score": rule_score,
-        "llm_score": llm_score or 0.0,
-        "highlight_score": highlight_score,
-        "features_json": features_json,
-        "reason": reason,
-        "initial_status": initial_status,
-        "dedup_hash": dedup_hash_val,
-        "score": highlight_score,
-        "config_hash": cfg.model_dump_json() if hasattr(cfg, "model_dump_json") else "",
-    }
+    return HighlightDraft(
+        segment_id=segment_id,
+        session_id=session_id,
+        room_id=room_id,
+        decision=HighlightDecision.CANDIDATE,
+        score=highlight_score,
+        rule_score=rule_score,
+        llm_score=llm_score or 0.0,
+        highlight_score=highlight_score,
+        start_ts=start_ts,
+        end_ts=end_ts,
+        peak_ts=peak_ts,
+        reason=reason,
+        dedup_hash=dedup_hash_val,
+        features_json=features_json,
+        initial_status=initial_status,
+        config_hash=cfg.model_dump_json() if hasattr(cfg, "model_dump_json") else "",
+        ml_prediction=ml_prediction,
+    )
 
 
 # 兼容导出: _ensure_event 供 task_worker 和测试使用

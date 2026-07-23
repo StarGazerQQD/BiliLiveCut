@@ -4,7 +4,7 @@ from __future__ import annotations
 
 from typing import Any
 
-from fastapi import APIRouter, HTTPException
+from fastapi import APIRouter, HTTPException, Request
 from pydantic import BaseModel
 
 from app.web import service
@@ -54,15 +54,49 @@ def get_uploads(limit: int = 50) -> list[dict[str, Any]]:
 
 
 @router.post("/clips/{clip_id}/enqueue")
-async def enqueue_upload(clip_id: int) -> dict[str, Any]:
-    """把成品加入上传队列并执行。"""
-    return await service.enqueue_clip_upload(clip_id)
+async def enqueue_upload(clip_id: int, request: Request) -> dict[str, Any]:
+    """把成品上传提交到后台作业。"""
+    from app.db.models import FinalClip
+    from app.db.session import get_session
+    from app.web.services.background_jobs import web_job_manager
+    from app.web.services.review_workflow import review_actor
+
+    with get_session() as db:
+        if db.get(FinalClip, clip_id) is None:
+            raise HTTPException(status_code=404, detail="成片不存在")
+    actor, _ = review_actor(request)
+    job = await web_job_manager.enqueue(
+        "clip_upload",
+        {"clip_id": clip_id},
+        label=f"成片 #{clip_id} 上传",
+        owner=actor,
+        dedup_key=f"clip-upload:{clip_id}",
+        cancellable_while_running=False,
+    )
+    return {"status": "accepted", "job": job}
 
 
 @router.post("/uploads/{task_id}/retry")
-async def retry_upload(task_id: int) -> dict[str, Any]:
-    """重试一个上传任务。"""
-    return await service.retry_upload(task_id)
+async def retry_upload(task_id: int, request: Request) -> dict[str, Any]:
+    """把上传重试提交到后台作业。"""
+    from app.db.models import UploadTask
+    from app.db.session import get_session
+    from app.web.services.background_jobs import web_job_manager
+    from app.web.services.review_workflow import review_actor
+
+    with get_session() as db:
+        if db.get(UploadTask, task_id) is None:
+            raise HTTPException(status_code=404, detail="上传任务不存在")
+    actor, _ = review_actor(request)
+    job = await web_job_manager.enqueue(
+        "upload_retry",
+        {"upload_task_id": task_id},
+        label=f"上传任务 #{task_id} 重试",
+        owner=actor,
+        dedup_key=f"upload-retry:{task_id}",
+        cancellable_while_running=False,
+    )
+    return {"status": "accepted", "job": job}
 
 
 @router.get("/notifications")

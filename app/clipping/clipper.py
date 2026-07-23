@@ -20,4 +20,5 @@ from app.clipping.core import (  # noqa: F401
     probe_media,
     produce_clip,
     select_covering_segments,
+    validate_clip_boundary,
 )

@@ -5,6 +5,7 @@
 - aliases: 专有名词替换映射(如 {"thp":"审判"} )。
 - highlight_keywords: 规则评分额外关键词。
 - blocked_topics: 不适合生成切片的屏蔽话题模式。
+- recording_paused: 人工暂停自动录制,恢复时创建新会话。
 
 配置存储在 ``LiveRoom.room_config_json`` 中。
 """
@@ -14,6 +15,7 @@ from __future__ import annotations
 import json
 import re
 from collections.abc import Sequence
+from copy import deepcopy
 
 from app.db.models import LiveRoom
 
@@ -22,7 +24,11 @@ _DEFAULT_CONFIG: dict = {
     "aliases": {},
     "highlight_keywords": [],
     "blocked_topics": [],
+    "highlight_ml_mode": "inherit",
+    "recording_paused": False,
 }
+
+_HIGHLIGHT_ML_MODES = frozenset({"inherit", "off", "shadow", "champion"})
 
 
 def load_room_config(room: LiveRoom | None) -> dict:
@@ -32,15 +38,30 @@ def load_room_config(room: LiveRoom | None) -> dict:
     :returns: 配置字典。
     """
     if room is None or not room.room_config_json:
-        return dict(_DEFAULT_CONFIG)
+        return deepcopy(_DEFAULT_CONFIG)
     try:
         parsed = json.loads(room.room_config_json)
         # 确保所有预期键存在。
-        cfg = dict(_DEFAULT_CONFIG)
+        cfg = deepcopy(_DEFAULT_CONFIG)
         cfg.update(parsed)
         return cfg
     except (json.JSONDecodeError, TypeError):
-        return dict(_DEFAULT_CONFIG)
+        return deepcopy(_DEFAULT_CONFIG)
+
+
+def merge_room_config(room: LiveRoom, updates: dict[str, object]) -> dict[str, object]:
+    """合并并校验房间配置，避免局部更新清除未知设置。"""
+    merged: dict[str, object] = load_room_config(room)
+    merged.update(updates)
+    mode = merged.get("highlight_ml_mode", "inherit")
+    if not isinstance(mode, str) or mode not in _HIGHLIGHT_ML_MODES:
+        raise ValueError("highlight_ml_mode 必须是 inherit/off/shadow/champion")
+    merged["highlight_ml_mode"] = mode
+    paused = merged.get("recording_paused", False)
+    if not isinstance(paused, bool):
+        raise ValueError("recording_paused 必须是布尔值")
+    merged["recording_paused"] = paused
+    return merged
 
 
 def apply_aliases(text: str, aliases: dict[str, str]) -> str:

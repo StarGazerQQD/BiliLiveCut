@@ -3,7 +3,17 @@ import { $, api, toast, esc, badge } from "./common.js";
 
 // ----------------------------- 渲染:直播间 ----------------------------- //
 async function loadRooms() {
-  const data = await api("GET", "/api/dashboard");
+  const [data, mlStatus] = await Promise.all([
+    api("GET", "/api/dashboard"),
+    api("GET", "/api/highlight-ml/status"),
+  ]);
+  const mlStatusEl = $("#highlight-ml-status");
+  if (mlStatusEl) {
+    const roles = mlStatus.available
+      ? `Champion v${mlStatus.champion_version}${mlStatus.shadow_version ? ` · Shadow v${mlStatus.shadow_version}` : ""}`
+      : "尚无 Champion";
+    mlStatusEl.textContent = `全局模式: ${mlStatus.mode} · ${roles} · Schema ${mlStatus.schema_version}`;
+  }
   $("#stat-candidates").textContent = data.counts.candidates;
   $("#stat-clips").textContent = data.counts.clips;
   $("#stat-sessions").textContent = data.counts.active_sessions;
@@ -13,13 +23,17 @@ async function loadRooms() {
     <div class="item">
       <div class="head">
         <div>
-          <div class="title">${esc(r.title || r.input_url)} ${badge(r.running ? "running" : "stopped")}</div>
-          <div class="sub">db_id=${r.id} \u00b7 room_id=${r.room_id ?? "-"} \u00b7 \u6388\u6743:${r.authorized ? "\u662f" : "\u5426"}</div>
+          <div class="title">${esc(r.title || r.input_url)} ${badge(r.recording_state || (r.running ? "running" : "stopped"))}</div>
+          <div class="sub">db_id=${r.id} \u00b7 room_id=${r.room_id ?? "-"} \u00b7 \u6388\u6743:${r.authorized ? "\u662f" : "\u5426"}${r.active_session_id ? ` · 会话 #${r.active_session_id}` : ""}</div>
         </div>
         <div class="actions">
           ${r.running
-            ? `<button class="danger" onclick="stopRoom(${r.id})">\u505c\u6b62\u5f55\u5236</button>`
-            : `<button class="ok" onclick="startRoom(${r.id})">\u5f00\u59cb\u5f55\u5236</button>`}
+            ? `<button class="ok" onclick="markHighlight(${r.id})">高光打点</button>
+               <button class="danger" onclick="stopRoom(${r.id})">停止并收尾</button>
+               <button onclick="stopRoom(${r.id}, true)">强制停止</button>`
+            : r.room_config.recording_paused
+              ? `<button class="ok" onclick="resumeRoom(${r.id})">恢复录制</button>`
+              : `<button class="ok" onclick="startRoom(${r.id})">\u5f00\u59cb\u5f55\u5236</button>`}
         </div>
       </div>
       <div class="thresholds">
@@ -48,6 +62,13 @@ async function loadRooms() {
         <label class="switch-row">
           <input type="checkbox" id="sw-ds-${r.id}" ${r.danmaku_sentiment_enabled ? "checked" : ""} ${r.running ? "disabled" : ""} />
           \u5f39\u5e55\u60c5\u7eea
+        </label>
+        <label>高光模型
+          <select id="ml-${r.id}">
+            ${["inherit", "off", "shadow", "champion"].map((mode) =>
+              `<option value="${mode}" ${mode === (r.room_config.highlight_ml_mode || "inherit") ? "selected" : ""}>${mode}</option>`
+            ).join("")}
+          </select>
         </label>
         ${r.running ? '<span class="muted">(\u5f55\u5236\u4e2d\u9501\u5b9a)</span>' : ""}
       </div>
@@ -99,7 +120,8 @@ async function saveRoomConfig(id) {
     const hk = ($(`#hk-${id}`).value || "").split("\n").map(s => s.trim()).filter(Boolean);
     const al = {}; ($(`#al-${id}`).value || "").split("\n").forEach(line => { const eq = line.indexOf("="); if (eq > 0) al[line.slice(0, eq).trim()] = line.slice(eq + 1).trim(); });
     const bt = ($(`#bt-${id}`).value || "").split("\n").map(s => s.trim()).filter(Boolean);
-    await api("PATCH", `/api/rooms/${id}`, { room_config: { hotwords: hw, aliases: al, highlight_keywords: hk, blocked_topics: bt } });
+    const highlightMlMode = $(`#ml-${id}`).value || "inherit";
+    await api("PATCH", `/api/rooms/${id}`, { room_config: { hotwords: hw, aliases: al, highlight_keywords: hk, blocked_topics: bt, highlight_ml_mode: highlightMlMode } });
     toast("\u623f\u95f4\u914d\u7f6e\u5df2\u4fdd\u5b58");
   } catch (e) { toast("\u4fdd\u5b58\u5931\u8d25:" + e.message); }
 }

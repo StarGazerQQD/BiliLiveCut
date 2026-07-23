@@ -4,11 +4,14 @@
   <meta charset="UTF-8" />
   <meta name="viewport" content="width=device-width, initial-scale=1.0" />
   <title>BiliLiveCut 控制台</title>
-  <link rel="stylesheet" href="/static/style.css" />
+  <link rel="stylesheet" href="/static/style.css?v=2" />
 </head>
-<body>
+<body class="dashboard-shell">
   <header class="topbar">
-    <div class="brand">🎬 BiliLiveCut <span class="muted">实时切片控制台</span></div>
+    <div class="brand">
+      <span class="brand-mark" aria-hidden="true">B</span>
+      <span class="brand-copy">BiliLiveCut <small>实时高光工作台</small></span>
+    </div>
     <div class="stats" id="stats">
       <span class="stat">候选 <b id="stat-candidates">-</b></span>
       <span class="stat">成品 <b id="stat-clips">-</b></span>
@@ -17,30 +20,46 @@
     </div>
   </header>
 
-  <nav class="tabs">
-    <button class="tab active" data-tab="rooms">直播间</button>
-    <button class="tab" data-tab="recording">录制状态</button>
-    <button class="tab" data-tab="schedules">录制预约</button>
-    <button class="tab" data-tab="transcripts">实时转写</button>
-    <button class="tab" data-tab="danmaku">弹幕热度</button>
-    <button class="tab" data-tab="trends">网感资料库</button>
-    <button class="tab" data-tab="candidates">候选审核</button>
-    <button class="tab" data-tab="topics">主题管理</button>
-    <button class="tab" data-tab="clips">成品切片</button>
-    <button class="tab" data-tab="uploads">上传 / 设置</button>
-    <button class="tab" data-tab="models">模型</button>
-    <button class="tab" data-tab="login">账号管理</button>
-    <button class="tab" data-tab="tasks">任务队列</button>
-    <button class="tab" data-tab="templates">字幕模板</button>
-    <button class="tab" data-tab="intro-templates">片头片尾</button>
-    <button class="tab" data-tab="analytics">数据分析</button>
-    <button class="tab" data-tab="monitor">运维面板</button>
-    <button class="tab" data-tab="logs">错误日志</button>
+  <nav class="tabs" aria-label="工作台导航">
+    <div class="tabs-group">
+      <span class="tabs-label">录制</span>
+      <button class="tab active" data-tab="rooms">直播间</button>
+      <button class="tab" data-tab="recording">录制状态</button>
+      <button class="tab" data-tab="schedules">录制预约</button>
+      <button class="tab" data-tab="transcripts">实时转写</button>
+      <button class="tab" data-tab="danmaku">弹幕热度</button>
+    </div>
+    <div class="tabs-group">
+      <span class="tabs-label">制作</span>
+      <button class="tab" data-tab="trends">网感资料库</button>
+      <button class="tab" data-tab="candidates">候选审核</button>
+      <button class="tab" data-tab="topics">主题管理</button>
+      <button class="tab" data-tab="clips">成品切片</button>
+      <button class="tab" data-tab="uploads">上传与发布</button>
+    </div>
+    <div class="tabs-group">
+      <span class="tabs-label">配置</span>
+      <button class="tab" data-tab="models">模型</button>
+      <button class="tab" data-tab="login">账号管理</button>
+      <button class="tab" data-tab="templates">字幕模板</button>
+      <button class="tab" data-tab="intro-templates">片头片尾</button>
+    </div>
+    <div class="tabs-group">
+      <span class="tabs-label">系统</span>
+      <button class="tab" data-tab="tasks">任务队列</button>
+      <button class="tab" data-tab="analytics">数据分析</button>
+      <button class="tab" data-tab="monitor">运维面板</button>
+      <button class="tab" data-tab="logs">错误日志</button>
+    </div>
   </nav>
 
-  <main>
+  <main class="dashboard-main">
     <!-- 直播间 -->
     <section id="tab-rooms" class="panel active">
+      <div class="card">
+        <h3>高光模型</h3>
+        <p class="hint" id="highlight-ml-status">载入中…</p>
+      </div>
       <div class="card add-room">
         <h3>添加直播间</h3>
         <div class="row">
@@ -238,6 +257,11 @@
     <!-- 任务队列(V0.1.6) -->
     <section id="tab-tasks" class="panel">
       <div class="card">
+        <h3>用户操作作业</h3>
+        <p class="hint">批准出片、审核重渲染、合集和上传在后台执行；关闭页面后进度仍会保留。</p>
+        <div id="web-jobs-list"></div>
+      </div>
+      <div class="card">
         <h3>持久化任务队列</h3>
         <div class="row" id="task-stats-bar">
           <span class="stat">总计 <b id="task-stat-total">-</b></span>
@@ -340,6 +364,11 @@
         <p>运行中房间: <b id="mon-running">-</b> | 监控状态: <b id="mon-monitor">-</b></p>
       </div>
       <div class="card">
+        <h3>高光模型漂移</h3>
+        <p id="mon-highlight-drift" class="hint">载入中…</p>
+        <div id="mon-highlight-features" style="font-size:12px"></div>
+      </div>
+      <div class="card">
         <h3>最近失败任务</h3>
         <div id="mon-failures" style="max-height:300px;overflow-y:auto;font-size:12px">
           <span class="muted">加载中…</span>
@@ -358,6 +387,6 @@
   </main>
 
   <div id="toast" class="toast"></div>
-  <script type="module" src="/static/app.js"></script>
+  <script type="module" src="/static/app.js?v=2"></script>
 </body>
 </html>

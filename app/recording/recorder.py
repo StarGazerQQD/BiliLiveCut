@@ -44,6 +44,7 @@ from app.sources.bilibili.client import (
 SegmentCallback = Callable[[RawSegment], Awaitable[None]]
 # 会话结束回调签名:接收结束的 session_id。
 SessionEndCallback = Callable[[int], Awaitable[None]]
+StateCallback = Callable[[str, int | None], None]
 
 _SEGMENT_LIST_NAME = "segments.csv"
 
@@ -65,21 +66,41 @@ class Recorder:
         db_room_id: int,
         on_segment: SegmentCallback | None = None,
         on_end: SessionEndCallback | None = None,
+        on_state: StateCallback | None = None,
     ) -> None:
         self.room_id = room_id
         self.db_room_id = db_room_id
         self.on_segment = on_segment
         self.on_end = on_end
+        self.on_state = on_state
         self._stop = asyncio.Event()
         self._session_id: int | None = None
         self._seq = 0  # 跨重连累加的全局片段序号
         self._paths: set[str] = set()  # 已登记片段路径缓存(避免每次查全表)
         self._danmaku = None  # type: ignore[var-annotated]  # DanmakuClient(可选)
         self._danmaku_task: asyncio.Task[None] | None = None
+        self._active_process: asyncio.subprocess.Process | None = None
+
+    @property
+    def session_id(self) -> int | None:
+        """返回当前录制会话 id;会话尚未创建时为 ``None``。"""
+        return self._session_id
 
     def stop(self) -> None:
         """请求停止录制(优雅退出当前循环)。"""
+        self._update_session(status=SessionStatus.STOPPING)
         self._stop.set()
+
+    def force_stop(self) -> None:
+        """立即终止当前 FFmpeg,随后仍由主循环执行数据库和回调收尾。"""
+        self.stop()
+        if self._active_process is not None and self._active_process.returncode is None:
+            logger.warning("强制终止 FFmpeg room={} session={}", self.room_id, self._session_id)
+            self._active_process.kill()
+
+    def fail(self, message: str) -> None:
+        """记录无法由主循环自行收尾的录制异常。"""
+        self._update_session(status=SessionStatus.ERROR, error_message=message, ended=True)
 
     # ------------------------------------------------------------------ #
     # 弹幕采集(与录制并行,贯穿整个会话)
@@ -130,6 +151,7 @@ class Recorder:
           避免稳定录制后再次断流时无谓等待 30s。
         """
         self._session_id = self._create_session()
+        self._emit_state(SessionStatus.STARTING)
         self._seq = 0  # 每次 run() 重新开始片段计数
         self._paths = set()  # 重置路径缓存
         out_dir = session_raw_dir(self._session_id)
@@ -217,6 +239,7 @@ class Recorder:
                 await self._sleep_or_stop(backoff)
                 backoff = min(backoff * 2, settings.reconnect_max_backoff_s)
 
+        self._update_session(status=SessionStatus.FINALIZING)
         await self._stop_danmaku()
         self._update_session(status=SessionStatus.STOPPED, ended=True)
         logger.info("录制已停止 room={} session={}", self.room_id, self._session_id)
@@ -266,21 +289,25 @@ class Recorder:
             stderr=asyncio.subprocess.PIPE,
         )
 
+        self._active_process = proc
         # 并发:监听片段清单 + 转储 ffmpeg stderr 到日志。
         watcher = asyncio.create_task(self._watch_segments(segment_list, out_dir))
         stderr_task = asyncio.create_task(self._drain_stderr(proc))
         # 监听停止信号,主动终止 ffmpeg。
         stopper = asyncio.create_task(self._terminate_on_stop(proc))
 
-        return_code = await proc.wait()
-
-        # 收尾:停止子任务。
-        for task in (watcher, stderr_task, stopper):
-            task.cancel()
-        await asyncio.gather(watcher, stderr_task, stopper, return_exceptions=True)
-        # 兜底:登记可能尚未从清单读到的最后片段。
-        await self._scan_orphan_segments(segment_list, out_dir)
-        return return_code
+        try:
+            return await proc.wait()
+        finally:
+            if proc.returncode is None:
+                proc.kill()
+                await proc.wait()
+            for task in (watcher, stderr_task, stopper):
+                task.cancel()
+            await asyncio.gather(watcher, stderr_task, stopper, return_exceptions=True)
+            # 兜底:登记可能尚未从清单读到的最后片段。
+            await self._scan_orphan_segments(segment_list, out_dir)
+            self._active_process = None
 
     def _build_ffmpeg_cmd(
         self,
@@ -570,6 +597,13 @@ class Recorder:
             if reconnected:
                 session.last_reconnected_at = utcnow()
             db.add(session)
+        if status is not None:
+            self._emit_state(status)
+
+    def _emit_state(self, status: str) -> None:
+        """向管理器同步录制运行状态。"""
+        if self.on_state is not None:
+            self.on_state(status, self._session_id)
 
     def _increment_reconnect(self) -> None:
         """重连计数 +1。"""

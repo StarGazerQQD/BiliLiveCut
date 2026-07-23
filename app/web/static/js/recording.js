@@ -11,11 +11,37 @@ async function startRoom(id) {
   } catch (e) { toast("\u542f\u52a8\u5931\u8d25:" + e.message); }
 }
 
-async function stopRoom(id) {
-  try { await api("POST", `/api/rooms/${id}/stop`); toast("\u5df2\u505c\u6b62");
+async function stopRoom(id, force = false) {
+  const label = force ? "强制停止" : "停止录制";
+  if (!window.confirm(`${label}？已完成的片段会保留并继续处理。`)) return;
+  try {
+    const result = await api("POST", `/api/rooms/${id}/stop`, { mode: force ? "force" : "graceful", cancel_pending: false });
+    toast(result.forced ? "已强制停止，末尾片段可能不完整" : "录制已停止并完成收尾");
     const { loadRooms } = await import("./rooms.js");
     loadRooms();
   } catch (e) { toast("\u505c\u6b62\u5931\u8d25:" + e.message); }
+}
+
+async function resumeRoom(id) {
+  try {
+    await api("POST", `/api/rooms/${id}/resume`, { pipeline: true, produce: false });
+    toast("已恢复录制；本次会创建新会话并保留暂停缺口");
+    const { loadRooms } = await import("./rooms.js");
+    loadRooms();
+  } catch (e) { toast("恢复失败:" + e.message); }
+}
+
+async function markHighlight(id) {
+  const note = window.prompt("给这个高光点加一句备注（可留空）：", "");
+  if (note === null) return;
+  try {
+    const result = await api("POST", `/api/rooms/${id}/markers`, {
+      pre_roll_s: 20,
+      post_roll_s: 40,
+      note: note.trim() || null,
+    });
+    toast(`已打点：候选 #${result.candidate_id}（前 20 秒 / 后 40 秒）`);
+  } catch (e) { toast("打点失败:" + e.message); }
 }
 
 // ----------------------------- \u6e32\u67d3:\u5f55\u5236\u72b6\u6001 ----------------------------- //
@@ -70,4 +96,4 @@ async function loadDanmaku() {
     </div>`).join("") : `<div class="empty">\u6682\u65e0\u5f39\u5e55\u8bb0\u5f55\u3002</div>`;
 }
 
-export { startRoom, stopRoom, loadRecording, loadTranscripts, loadDanmaku };
+export { startRoom, stopRoom, resumeRoom, markHighlight, loadRecording, loadTranscripts, loadDanmaku };

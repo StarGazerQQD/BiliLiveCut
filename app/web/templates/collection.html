@@ -2,50 +2,27 @@
 <html lang="zh-CN">
 <head>
   <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
   <title>合集编辑器 — BiliLiveCut</title>
-  <link rel="stylesheet" href="/static/style.css" />
-  <style>
-    :root{--bg:#0d0d1a;--surface:#16162a;--border:#2a2a4a;--accent:#5b9cf5;--green:#34d399;--yellow:#fbbf24;--red:#f87171;--text:#e2e2f0;--muted:#8888aa}
-    *{box-sizing:border-box;margin:0;padding:0}
-    body{background:var(--bg);color:var(--text);font-family:-apple-system,"Segoe UI",sans-serif;padding:20px;max-width:900px;margin:0 auto}
-    h2{margin-bottom:12px;color:var(--accent)}
-    .hint{font-size:12px;color:var(--muted);margin:8px 0}
-    .card{background:var(--surface);border:1px solid var(--border);border-radius:6px;padding:14px;margin-bottom:12px}
-    .summary{display:flex;gap:16px;font-size:13px;margin-bottom:12px}
-    .summary b{color:var(--accent)}
-    .event-list{list-style:none}
-    .event-item{display:flex;align-items:center;gap:10px;padding:8px;margin:4px 0;background:var(--bg);border:1px solid var(--border);border-radius:4px;cursor:grab;transition:background .15s}
-    .event-item:hover{background:var(--surface)}
-    .event-item.dragover{border-color:var(--accent);background:rgba(91,156,245,0.1)}
-    .event-item .drag{color:var(--muted);font-size:14px;cursor:grab;min-width:20px}
-    .event-item .num{min-width:24px;font-weight:700;color:var(--accent)}
-    .event-item .info{flex:1;min-width:0}
-    .event-item .title{font-size:13px;font-weight:600}
-    .event-item .sub{font-size:11px;color:var(--muted)}
-    .event-item .dur{font-size:12px;color:var(--green);font-family:monospace;min-width:50px;text-align:right}
-    .event-item .ch-title{width:120px;padding:3px 6px;font-size:11px;background:var(--bg);color:var(--text);border:1px solid var(--border);border-radius:3px}
-    .overlap-warn{font-size:11px;color:var(--yellow);margin-left:8px}
-    .row{display:flex;gap:10px;align-items:center;margin-top:12px}
-    button{padding:8px 16px;font-size:13px;border-radius:4px;border:1px solid var(--border);cursor:pointer;background:var(--surface);color:var(--text)}
-    button:hover{opacity:.85}
-    .btn-primary{background:var(--accent);color:#fff;font-weight:600}
-    .btn-danger{background:var(--red);color:#fff}
-    input[type=checkbox]{margin-right:4px}
-    label{font-size:12px;color:var(--muted)}
-    .toast{position:fixed;bottom:20px;left:50%;transform:translateX(-50%);background:var(--surface);color:var(--text);padding:10px 24px;border-radius:6px;border:1px solid var(--accent);font-size:13px;z-index:999;display:none}
-    .toast.show{display:block}
-  </style>
+  <link rel="stylesheet" href="/static/style.css?v=2" />
 </head>
-<body>
-<h2>📦 合集编辑器 — <span id="topic-title">加载中…</span></h2>
-<p class="hint" id="topic-summary"></p>
+<body class="standalone-shell collection-shell">
+<div class="page-wrap">
+<header class="page-head">
+  <div>
+    <div class="page-kicker">Collection builder</div>
+    <h1>合集编辑器</h1>
+    <p class="hint"><span id="topic-title">加载中…</span> · <span id="topic-summary"></span></p>
+  </div>
+  <a class="back-link" href="/">返回控制台</a>
+</header>
 
 <div class="card" id="summary-card">
-  <div class="summary">
-    <span>事件数 <b id="sum-count">-</b></span>
-    <span>总时长 <b id="sum-dur">-</b></span>
-    <span>置信度 <b id="sum-conf">-</b></span>
-    <span class="overlap-warn" id="overlap-warn"></span>
+  <div class="collection-summary">
+    <div class="summary-metric"><span>事件数</span><b id="sum-count">-</b></div>
+    <div class="summary-metric"><span>总时长</span><b id="sum-dur">-</b></div>
+    <div class="summary-metric"><span>置信度</span><b id="sum-conf">-</b></div>
+    <div class="summary-metric"><span>片段检查</span><b class="overlap-warn" id="overlap-warn">-</b></div>
   </div>
 </div>
 
@@ -57,17 +34,20 @@
 <div class="card">
   <h3>合集设置</h3>
   <label><input type="checkbox" id="ch-cards" checked /> 插入章节标题卡(2秒)</label>
-  <div class="row">
-    <button class="btn-primary" id="btn-render" onclick="doRender()">🎬 渲染合集</button>
-    <button onclick="saveOrder()">💾 保存顺序</button>
-    <button onclick="generateCopywriter()">📝 生成文案</button>
+  <div class="row collection-actions">
+    <button class="primary" id="btn-render" onclick="doRender()">渲染合集</button>
+    <button id="btn-cancel-render" onclick="cancelCollectionRender()" style="display:none">停止渲染</button>
+    <button onclick="saveOrder()">保存顺序</button>
+    <button onclick="generateCopywriter()">生成文案</button>
   </div>
   <p class="hint" id="render-status"></p>
 </div>
 
 <div class="card" id="copywriter-card" style="display:none">
   <h3>生成文案</h3>
-  <div id="copywriter-output"></div>
+  <div id="copywriter-output" class="copywriter-output"></div>
+</div>
+
 </div>
 
 <div id="toast" class="toast"></div>
@@ -150,16 +130,40 @@ async function doRender(){
   const titles=[];
   $$(".ch-title").forEach(el=>titles.push(el.value||""));
   const cards=$("#ch-cards").checked;
-  toast("渲染中,请稍候…");
+  toast("正在提交后台渲染作业…");
   try{
     const res=await api("POST",`/collection/api/${TOPIC_ID}/render`,{
       event_ids:eventOrder,
       chapter_titles:titles,
       include_chapter_cards:cards,
     });
-    toast("合集渲染完成! "+res.file_path);
-    $("#render-status").textContent="渲染完成:"+res.file_path;
+    collectionJobId=res.job.id;
+    $("#btn-cancel-render").style.display="";
+    toast("合集已在后台渲染");
+    await watchCollectionJob(collectionJobId);
   }catch(e){toast("渲染失败:"+e.message)}
+}
+
+let collectionJobId=null;
+async function watchCollectionJob(jobId){
+  for(;;){
+    const job=await api("GET",`/api/jobs/${jobId}`);
+    $("#render-status").textContent=`${job.progress||0}% · ${job.message||job.status}`;
+    if(["succeeded","failed","cancelled"].includes(job.status)){
+      $("#btn-cancel-render").style.display="none";
+      collectionJobId=null;
+      if(job.status==="succeeded") toast("合集渲染完成:"+(job.result?.file_path||""));
+      else toast(job.status==="cancelled"?"合集渲染已取消":"合集渲染失败:"+(job.error||"未知错误"));
+      return;
+    }
+    await new Promise(resolve=>setTimeout(resolve,1500));
+  }
+}
+
+async function cancelCollectionRender(){
+  if(!collectionJobId)return;
+  try{await api("POST",`/api/jobs/${collectionJobId}/cancel`);$("#render-status").textContent="正在停止…"}
+  catch(e){toast("停止失败:"+e.message)}
 }
 
 async function generateCopywriter(){

@@ -30,6 +30,7 @@ function badge(status) {
   const map = {
     running: "green", recording: "green", ready: "green", approved: "green",
     pending: "yellow", reviewing: "yellow", reconnecting: "yellow", reconnected: "green",
+    starting: "yellow", stopping: "yellow", finalizing: "yellow", paused: "gray", force_stopped: "red",
     rejected: "red", error: "red",
   };
   return `<span class="badge ${map[status] || "gray"}">${esc(status)}</span>`;

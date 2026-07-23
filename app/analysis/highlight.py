@@ -22,6 +22,13 @@ from sqlmodel import select
 
 from app.analysis import audio as audio_mod
 from app.analysis import llm as llm_mod
+from app.analysis.highlight_ml.online import (
+    OnlinePrediction,
+    add_prediction_log,
+    effective_primary_score,
+    merge_prediction_metadata,
+    predict_online,
+)
 from app.analysis.keywords import match_keywords
 from app.analysis.scoring_config import get_scoring_config
 from app.core.config import settings
@@ -372,6 +379,8 @@ def score_segment(segment_id: int) -> HighlightCandidate | None:
             return None
         duration = segment.duration_s or float(settings.segment_duration_s)
         session_id = segment.session_id
+        room_id = room.id if room else None
+        room_config_json = room.room_config_json if room else None
         threshold = room.highlight_threshold if room else settings.highlight_threshold
         has_transcript = transcript is not None
         text = transcript.text if transcript else ""
@@ -415,6 +424,12 @@ def score_segment(segment_id: int) -> HighlightCandidate | None:
         trend_score, trend_hits = _trend_score(text)
         features["trend"] = trend_score
     rule_score = weighted_rule_score(features, cfg.weights)
+    ml_prediction = predict_online(
+        segment_id,
+        audio_features=feats,
+        room_config_json=room_config_json,
+    )
+    primary_score = effective_primary_score(rule_score, ml_prediction)
     logger.info(
         "片段 {} 规则分={:.3f} 特征={} 命中词={} 网感词={}",
         segment_id,
@@ -425,7 +440,15 @@ def score_segment(segment_id: int) -> HighlightCandidate | None:
     )
 
     # ---- 2) 初筛:不够分就不调 LLM(省钱) ----
-    if rule_score < settings.highlight_init_threshold:
+    if primary_score < settings.highlight_init_threshold:
+        _persist_ml_prediction(
+            ml_prediction,
+            segment_id=segment_id,
+            session_id=session_id,
+            room_id=room_id,
+            rule_score=rule_score,
+            final_score=primary_score,
+        )
         _mark_scored(segment_id)
         logger.debug("片段 {} 低于初筛阈值,跳过 LLM。", segment_id)
         return None
@@ -435,7 +458,7 @@ def score_segment(segment_id: int) -> HighlightCandidate | None:
     llm_score = judgement.score if judgement else None
     reason = judgement.reason if judgement else "规则命中(未启用/未触发 LLM)"
 
-    highlight_score = fuse_scores(rule_score, llm_score, cfg.alpha, cfg.beta)
+    highlight_score = fuse_scores(primary_score, llm_score, cfg.alpha, cfg.beta)
     logger.info(
         "片段 {} 综合分={:.3f}(rule={:.3f} llm={}) 阈值={:.2f}",
         segment_id,
@@ -446,6 +469,14 @@ def score_segment(segment_id: int) -> HighlightCandidate | None:
     )
 
     if highlight_score < threshold:
+        _persist_ml_prediction(
+            ml_prediction,
+            segment_id=segment_id,
+            session_id=session_id,
+            room_id=room_id,
+            rule_score=rule_score,
+            final_score=highlight_score,
+        )
         _mark_scored(segment_id)
         return None
 
@@ -470,6 +501,14 @@ def score_segment(segment_id: int) -> HighlightCandidate | None:
 
     # ---- 5) 去重:与本会话既有候选做时间 IoU 比较 ----
     if _is_duplicate(session_id, (start_ts.timestamp(), end_ts.timestamp()), cfg.iou_threshold):
+        _persist_ml_prediction(
+            ml_prediction,
+            segment_id=segment_id,
+            session_id=session_id,
+            room_id=room_id,
+            rule_score=rule_score,
+            final_score=highlight_score,
+        )
         _mark_scored(segment_id)
         logger.info("片段 {} 候选与既有候选重叠,跳过。", segment_id)
         return None
@@ -505,14 +544,17 @@ def score_segment(segment_id: int) -> HighlightCandidate | None:
         rule_score=rule_score,
         llm_score=llm_score or 0.0,
         highlight_score=highlight_score,
-        features_json=json.dumps(
-            {
-                "features": features,
-                "keyword_hits": kw_hits,
-                "audio": _audio_meta(feats),
-                "danmaku_explain": danmaku_explain,
-            },
-            ensure_ascii=False,
+        features_json=merge_prediction_metadata(
+            json.dumps(
+                {
+                    "features": features,
+                    "keyword_hits": kw_hits,
+                    "audio": _audio_meta(feats),
+                    "danmaku_explain": danmaku_explain,
+                },
+                ensure_ascii=False,
+            ),
+            ml_prediction,
         ),
         reason=reason,
         status=initial_status,
@@ -520,6 +562,15 @@ def score_segment(segment_id: int) -> HighlightCandidate | None:
     )
     with get_session() as db:
         db.add(candidate)
+        add_prediction_log(
+            db,
+            prediction=ml_prediction,
+            segment_id=segment_id,
+            session_id=session_id,
+            room_id=room_id,
+            rule_score=rule_score,
+            final_score=highlight_score,
+        )
         db.flush()
         db.refresh(candidate)
         cid = candidate.id
@@ -539,6 +590,28 @@ def score_segment(segment_id: int) -> HighlightCandidate | None:
 # --------------------------------------------------------------------------- #
 # 辅助
 # --------------------------------------------------------------------------- #
+def _persist_ml_prediction(
+    prediction: OnlinePrediction,
+    *,
+    segment_id: int,
+    session_id: int,
+    room_id: int | None,
+    rule_score: float,
+    final_score: float,
+) -> None:
+    """为旧同步评分入口持久化一次模型预测。"""
+    with get_session() as db:
+        add_prediction_log(
+            db,
+            prediction=prediction,
+            segment_id=segment_id,
+            session_id=session_id,
+            room_id=room_id,
+            rule_score=rule_score,
+            final_score=final_score,
+        )
+
+
 def _audio_meta(feats: audio_mod.AudioFeatures) -> dict:
     """提取用于落库的精简音频元信息。
 

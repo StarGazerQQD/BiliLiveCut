@@ -54,6 +54,8 @@ _VALID_TRANSITIONS: dict[str, set[str]] = {
 
 def can_transition(current: str, target: str) -> bool:
     """判断状态转换是否合法。"""
+    if target == TaskStatus.CANCELLED:
+        return current not in {TaskStatus.COMPLETED, TaskStatus.CANCELLED, TaskStatus.FAILED}
     return target in _VALID_TRANSITIONS.get(current, set())
 
 
@@ -74,6 +76,14 @@ def active_stage(queued_stage: str) -> str:
 
 def _now() -> datetime:
     return datetime.now(UTC)
+
+
+def _elapsed_ms(since: datetime) -> int:
+    """计算 SQLite UTC 时间戳到当前时刻的毫秒数。"""
+    normalized = since
+    if normalized.tzinfo is None:
+        normalized = normalized.replace(tzinfo=UTC)
+    return int((_now() - normalized).total_seconds() * 1000)
 
 
 def make_pipeline_key(segment_id: int) -> str:
@@ -116,7 +126,7 @@ def mark_heartbeat(task: SegmentTask) -> None:
 def mark_completed(task: SegmentTask, processing_ms: int | None = None) -> None:
     """标记任务完成,记录总耗时。"""
     if processing_ms is None and task.started_at is not None:
-        processing_ms = int((_now() - task.started_at).total_seconds() * 1000)
+        processing_ms = _elapsed_ms(task.started_at)
     task.processing_time_ms = processing_ms
     task.completed_at = _now()
     task.heartbeat_at = None
@@ -172,7 +182,7 @@ def enqueue_next(
     if next_stage in (TaskStatus.COMPLETED, TaskStatus.CANCELLED, TaskStatus.FAILED):
         task.completed_at = _now()
         if task.created_at:
-            task.total_elapsed_ms = int((_now() - task.created_at).total_seconds() * 1000)
+            task.total_elapsed_ms = _elapsed_ms(task.created_at)
     if candidate_id is not None:
         task.candidate_id = candidate_id
     if event_id is not None:

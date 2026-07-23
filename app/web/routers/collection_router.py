@@ -34,8 +34,9 @@ _TEMPLATES = Jinja2Templates(directory=str(Path(__file__).resolve().parent.paren
 async def collection_page(request: Request, topic_id: int) -> HTMLResponse:
     """合集编辑器页面。"""
     return _TEMPLATES.TemplateResponse(
+        request,
         "collection.html",
-        {"request": request, "topic_id": topic_id},
+        {"topic_id": topic_id},
     )
 
 
@@ -72,27 +73,30 @@ def reorder_events(topic_id: int, req: ReorderEventsRequest) -> dict:
 @collection_router.post("/api/{topic_id}/render")
 async def render_collection(
     topic_id: int,
+    request: Request,
     req: RenderCollectionRequest,
 ) -> dict:
-    """渲染合集 MP4(异步)。"""
-    import asyncio
+    """把合集 MP4 渲染提交到后台作业。"""
+    from app.analysis.topic_cluster import get_topic
+    from app.web.services.background_jobs import web_job_manager
+    from app.web.services.review_workflow import review_actor
 
-    from app.pipeline.collection import render_collection as _rc
-
-    result = await asyncio.to_thread(
-        _rc,
-        topic_id,
-        req.event_ids,
-        req.chapter_titles,
-        req.include_chapter_cards,
+    if get_topic(topic_id) is None:
+        raise HTTPException(status_code=404, detail="主题不存在")
+    actor, _ = review_actor(request)
+    job = await web_job_manager.enqueue(
+        "collection_render",
+        {
+            "topic_id": topic_id,
+            "event_ids": req.event_ids,
+            "chapter_titles": req.chapter_titles,
+            "include_chapter_cards": req.include_chapter_cards,
+        },
+        label=f"主题 #{topic_id} 合集渲染",
+        owner=actor,
+        dedup_key=f"collection-render:{topic_id}",
     )
-    if result is None:
-        raise HTTPException(status_code=500, detail="合集渲染失败(需至少2个可用成品)")
-    return {
-        "status": "rendered",
-        "file_path": result.file_path,
-        "duration_s": result.duration_s,
-    }
+    return {"status": "accepted", "job": job}
 
 
 @collection_router.post("/api/{topic_id}/copywriter")

@@ -1,14 +1,15 @@
 // BiliLiveCut 控制台入口:导入模块、初始化标签切换与轮询
 import { $ } from "./js/common.js";
 import { loadRooms, saveRoom, saveRoomConfig, loadThresholdLearning, loadSchedules, delSchedule, loadTopics, toggleCollection } from "./js/rooms.js";
-import { startRoom, stopRoom, loadRecording, loadTranscripts, loadDanmaku } from "./js/recording.js";
+import { startRoom, stopRoom, resumeRoom, markHighlight, loadRecording, loadTranscripts, loadDanmaku } from "./js/recording.js";
 import { loadCandidates } from "./js/candidates.js";
-import { approveCand, rejectCand, delCand } from "./js/review.js";
+import { approveCand, rejectCand, delCand } from "./js/review.js?v=2";
 import { loadClips, publishClip, enqueueClip, rejectClip } from "./js/clips.js";
 import { loadUploads, retryUpload, pollNotifications } from "./js/publishing.js";
 import { loadTrends, loadAnalytics } from "./js/dashboard.js";
 import { loadLLM, loadLogs, loadTasks, retryTask, cancelTask, loadCookieStatus, loadTemplates, exportTemplate, detTempl, loadIntroTemplates, detIntro } from "./js/settings.js";
 import { loadMonitor, triggerMaintenance } from "./js/monitor.js";
+import { loadJobs, cancelJob, retryJob } from "./js/jobs.js";
 
 // 挂载全局函数:供 HTML 内联 onclick 使用
 window.saveRoom = saveRoom;
@@ -17,6 +18,8 @@ window.delSchedule = delSchedule;
 window.toggleCollection = toggleCollection;
 window.startRoom = startRoom;
 window.stopRoom = stopRoom;
+window.resumeRoom = resumeRoom;
+window.markHighlight = markHighlight;
 window.approveCand = approveCand;
 window.rejectCand = rejectCand;
 window.delCand = delCand;
@@ -30,6 +33,8 @@ window.exportTemplate = exportTemplate;
 window.detTempl = detTempl;
 window.detIntro = detIntro;
 window.triggerMaintenance = triggerMaintenance;
+window.cancelJob = cancelJob;
+window.retryJob = retryJob;
 
 // ----------------------------- 标签切换 ----------------------------- //
 let activeTab = "rooms";
@@ -51,7 +56,7 @@ const loaders = {
   rooms: loadRooms, recording: loadRecording, transcripts: loadTranscripts,
   danmaku: loadDanmaku, trends: loadTrends, candidates: loadCandidates,
   clips: loadClips, uploads: loadUploads, models: loadLLM, logs: loadLogs,
-  schedules: loadSchedules, login: loadCookieStatus, tasks: loadTasks,
+  schedules: loadSchedules, login: loadCookieStatus, tasks: async () => Promise.all([loadTasks(), loadJobs()]),
   topics: loadTopics, monitor: loadMonitor, templates: loadTemplates,
   introTemplates: loadIntroTemplates, analytics: loadAnalytics,
 };

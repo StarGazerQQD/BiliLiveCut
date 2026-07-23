@@ -6,7 +6,7 @@ import asyncio
 import json
 import time
 from collections import deque
-from typing import Any
+from typing import TYPE_CHECKING, Any
 
 from loguru import logger
 from sqlmodel import select
@@ -34,11 +34,20 @@ from app.db.models import (
     UploadTask,
 )
 from app.db.session import get_session
-from app.recording.recorder import Recorder
 from app.sources.bilibili.client import BilibiliLiveClient
+
+if TYPE_CHECKING:
+    from app.web.services.rooms import RecorderManager
 
 _NOTIFICATIONS: deque[dict[str, Any]] = deque(maxlen=50)
 _notify_seq = 0
+
+
+def _recording_manager() -> RecorderManager:
+    """延迟获取唯一的录制管理器,避免通知模块与房间服务循环导入。"""
+    from app.web.services.rooms import recorder_manager
+
+    return recorder_manager
 
 
 def push_notification(message: str, kind: str = "info", data: dict[str, Any] | None = None) -> None:
@@ -68,135 +77,6 @@ def get_notifications(since_id: int = 0) -> list[dict[str, Any]]:
     :returns: 新通知列表。
     """
     return [n for n in _NOTIFICATIONS if n["id"] > since_id]
-
-
-async def _on_session_end(session_id: int) -> None:
-    """录制会话结束时的处理:上传模块关闭则弹出切片目录。
-
-    :param session_id: 结束的会话 id。
-    """
-    clips_path = str(clips_dir())
-    if settings_store.upload_active():
-        push_notification(
-            f"会话 #{session_id} 已结束。上传模块开启,成品将自动进入上传队列。",
-            kind="success",
-        )
-        return
-    # 上传模块关闭:弹出(在本机文件管理器打开)切片所在目录,并通知前端。
-    open_path(clips_path)
-    push_notification(
-        f"本场直播(会话 #{session_id})已结束,上传模块未开启。切片已保存到:{clips_path}",
-        kind="success",
-        data={"clips_dir": clips_path, "ready_dir": str(ready_to_upload_dir())},
-    )
-    logger.info("会话 {} 结束,上传关闭,已弹出切片目录: {}", session_id, clips_path)
-
-
-class RecorderManager:
-    """管理多个直播间的并发录制任务(asyncio)。
-
-    每个直播间对应一个 :class:`~app.recording.recorder.Recorder` 与一个 asyncio 任务。
-    必须在事件循环内使用(由 FastAPI/uvicorn 提供)。
-    """
-
-    def __init__(self) -> None:
-        self._recorders: dict[int, Recorder] = {}
-        self._tasks: dict[int, asyncio.Task[None]] = {}
-
-    def is_running(self, db_id: int) -> bool:
-        """指定直播间是否正在录制。
-
-        :param db_id: ``live_rooms`` 主键。
-        :returns: 正在录制返回 ``True``。
-        """
-        task = self._tasks.get(db_id)
-        return task is not None and not task.done()
-
-    def running_ids(self) -> list[int]:
-        """返回当前正在录制的直播间 db_id 列表。"""
-        return [rid for rid in self._tasks if self.is_running(rid)]
-
-    async def start(self, db_id: int, pipeline: bool = True, produce: bool = False) -> None:
-        """启动某直播间的录制(幂等:已在录制则忽略)。
-
-        :param db_id: ``live_rooms`` 主键。
-        :param pipeline: 是否启用实时转写+高光分析。
-        :param produce: 是否在产生候选后自动切片+文案。
-        :raises ValueError: 房间不存在、未授权或缺少 room_id 时。
-        """
-        if self.is_running(db_id):
-            logger.info("房间 {} 已在录制,忽略重复启动。", db_id)
-            return
-
-        with get_session() as db:
-            room = db.get(LiveRoom, db_id)
-            if room is None:
-                raise ValueError(f"房间不存在: db_id={db_id}")
-            if settings.require_authorization and not room.authorized:
-                raise ValueError("该直播间未确认授权,拒绝录制。")
-            if room.room_id is None:
-                raise ValueError("该直播间缺少 room_id。")
-            room.enabled = True
-            db.add(room)
-            room_id = room.room_id
-
-        on_segment = None
-        if pipeline:
-            from app.pipeline.orchestrator import make_pipeline_callback
-
-            on_segment = make_pipeline_callback(produce=produce, room_id=db_id)
-
-        recorder = Recorder(
-            room_id=room_id,
-            db_room_id=db_id,
-            on_segment=on_segment,
-            on_end=_on_session_end,
-        )
-        self._recorders[db_id] = recorder
-        self._tasks[db_id] = asyncio.create_task(recorder.run())
-        # 录制/分析开始 -> 立即暂停网感定时采集。
-        from app.trends.scheduler import trend_scheduler
-
-        trend_scheduler.pause_for_recording()
-        logger.info("已启动录制任务 db_id={} pipeline={} produce={}", db_id, pipeline, produce)
-
-    async def stop(self, db_id: int) -> None:
-        """停止某直播间的录制并等待任务收尾。
-
-        :param db_id: ``live_rooms`` 主键。
-        """
-        recorder = self._recorders.get(db_id)
-        task = self._tasks.get(db_id)
-        if recorder is not None:
-            recorder.stop()
-        if task is not None:
-            try:
-                await asyncio.wait_for(task, timeout=30)
-            except (TimeoutError, asyncio.CancelledError):
-                task.cancel()
-        self._recorders.pop(db_id, None)
-        self._tasks.pop(db_id, None)
-
-        with get_session() as db:
-            room = db.get(LiveRoom, db_id)
-            if room is not None:
-                room.enabled = False
-                db.add(room)
-        # 若已无任何录制在跑,恢复网感定时采集。
-        if not self.running_ids():
-            from app.trends.scheduler import trend_scheduler
-
-            trend_scheduler.resume_after_recording()
-        logger.info("已停止录制任务 db_id={}", db_id)
-
-    async def stop_all(self) -> None:
-        """停止所有录制任务(应用关闭时调用)。"""
-        for db_id in list(self._tasks):
-            await self.stop(db_id)
-
-
-# 模块级单例:整个 Web 进程共享一个录制管理器。
-recorder_manager = RecorderManager()
 
 
 # --------------------------------------------------------------------------- #
@@ -272,7 +152,7 @@ def update_room(db_id: int, fields: dict[str, Any]) -> LiveRoom:
         if room is None:
             raise ValueError(f"房间不存在: db_id={db_id}")
         # 录制中不允许修改功能开关(锁定保护)。
-        if recorder_manager.is_running(db_id):
+        if _recording_manager().is_running(db_id):
             for key in ("schedule_enabled", "auto_threshold_enabled", "danmaku_sentiment_enabled"):
                 if key in fields:
                     raise ValueError(f"直播间正在录制,无法修改「{key}」开关。请先停止录制。")
@@ -568,7 +448,7 @@ def dashboard_state() -> dict[str, Any]:
             )
         ).all()
 
-    running = set(recorder_manager.running_ids())
+    running = set(_recording_manager().running_ids())
     return {
         "rooms": [_room_dict(r, r.id in running) for r in rooms],
         "counts": {"candidates": n_candidates, "clips": n_clips, "active_sessions": len(sessions)},
@@ -1048,7 +928,7 @@ async def auto_recover_interrupted_sessions() -> list[int]:
     recovered: list[int] = []
     for sess in sessions:
         room_id = sess.room_id
-        if recorder_manager.is_running(room_id):
+        if _recording_manager().is_running(room_id):
             continue
         try:
             with get_session() as db:
@@ -1057,7 +937,7 @@ async def auto_recover_interrupted_sessions() -> list[int]:
                     continue
             # 标记旧会话为中断。
             _mark_session_interrupted(sess.id)
-            await recorder_manager.start(room_id, pipeline=True, produce=False)
+            await _recording_manager().start(room_id, pipeline=True, produce=False)
             recovered.append(room_id)
             logger.info("自动恢复录制:房间 #{} (会话 {})", room_id, sess.id)
             push_notification(

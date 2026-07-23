@@ -4,7 +4,7 @@ from __future__ import annotations
 
 from typing import Any, Literal
 
-from fastapi import APIRouter, HTTPException
+from fastapi import APIRouter, HTTPException, Request
 from pydantic import BaseModel, field_validator
 
 from app.db.models import CandidateStatus
@@ -45,13 +45,25 @@ def get_candidates(limit: int = 50, status: str | None = None) -> list[dict[str,
 
 
 @router.post("/candidates/{candidate_id}/approve")
-async def approve_candidate(candidate_id: int) -> dict[str, Any]:
-    """批准候选并出片(切片+文案)。"""
-    try:
-        clip_id = await service.approve_candidate(candidate_id)
-    except ValueError as exc:
-        raise HTTPException(status_code=404, detail=str(exc)) from exc
-    return {"status": "approved", "clip_id": clip_id}
+async def approve_candidate(candidate_id: int, request: Request) -> dict[str, Any]:
+    """把候选批准出片提交到后台作业。"""
+    from app.db.models import HighlightCandidate
+    from app.db.session import get_session
+    from app.web.services.background_jobs import web_job_manager
+    from app.web.services.review_workflow import review_actor
+
+    with get_session() as db:
+        if db.get(HighlightCandidate, candidate_id) is None:
+            raise HTTPException(status_code=404, detail="候选不存在")
+    actor, _ = review_actor(request)
+    job = await web_job_manager.enqueue(
+        "candidate_render",
+        {"candidate_id": candidate_id},
+        label=f"候选 #{candidate_id} 批准出片",
+        owner=actor,
+        dedup_key=f"candidate-render:{candidate_id}",
+    )
+    return {"status": "accepted", "job": job}
 
 
 @router.post("/candidates/{candidate_id}/reject")
@@ -72,7 +84,7 @@ def remove_candidate(candidate_id: int) -> dict[str, str]:
 
 
 @router.post("/candidates/batch")
-async def batch_candidates(request: BatchRequest) -> dict[str, Any]:
+async def batch_candidates(request: BatchRequest, http_request: Request) -> dict[str, Any]:
     """批量审核/发布/删除候选(V0.1.8 P0)。
 
     :param request: 包含 candidate_ids 和 action。
@@ -83,8 +95,18 @@ async def batch_candidates(request: BatchRequest) -> dict[str, Any]:
     for cid in request.candidate_ids:
         try:
             if request.action == "approve":
-                clip_id = await service.approve_candidate(cid)
-                results.append({"candidate_id": cid, "status": "approved", "clip_id": clip_id})
+                from app.web.services.background_jobs import web_job_manager
+                from app.web.services.review_workflow import review_actor
+
+                actor, _ = review_actor(http_request)
+                job = await web_job_manager.enqueue(
+                    "candidate_render",
+                    {"candidate_id": cid},
+                    label=f"候选 #{cid} 批准出片",
+                    owner=actor,
+                    dedup_key=f"candidate-render:{cid}",
+                )
+                results.append({"candidate_id": cid, "status": "accepted", "job_id": job["id"]})
             elif request.action == "reject":
                 service.set_candidate_status(cid, CandidateStatus.REJECTED)
                 results.append({"candidate_id": cid, "status": "rejected"})
