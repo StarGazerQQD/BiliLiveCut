@@ -6,6 +6,7 @@ import subprocess
 import sys
 
 import typer
+from typer.testing import CliRunner
 
 
 def test_all_commands_count_and_structure() -> None:
@@ -35,7 +36,19 @@ def test_cli_module_entrypoint_dispatches_commands() -> None:
     )
 
     assert result.returncode == 0, result.stderr
-    assert "BiliLiveCut 0.1.15.2-alpha" in result.stdout
+    assert "BiliLiveCut 0.1.15.3-alpha" in result.stdout
+
+
+def test_cli_help_preserves_dependency_hints_and_current_doctor_text() -> None:
+    """Typer/Rich 不得吞掉可选依赖名称或显示过期 Doctor 版本。"""
+    from app.cli import app
+
+    result = CliRunner().invoke(app, ["--help"])
+
+    assert result.exit_code == 0, result.output
+    assert "asr 可选依赖" in result.output
+    assert "web 可选依赖" in result.output
+    assert "V0.1.13" not in result.output
 
 
 def test_record_pipeline_persists_scheduler_switches(temp_db: None, monkeypatch) -> None:  # noqa: ANN001

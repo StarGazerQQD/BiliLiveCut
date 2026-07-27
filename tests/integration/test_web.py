@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import re
 from datetime import UTC, datetime, timedelta
 from typing import TYPE_CHECKING
 
@@ -142,6 +143,27 @@ def test_dashboard_page_renders(temp_db: None) -> None:
         r = client.get("/")
         assert r.status_code == 200
         assert "BiliLiveCut" in r.text
+
+
+def test_dashboard_serves_complete_javascript_module_graph(temp_db: None) -> None:
+    """主页引用的入口脚本及其所有直接 ES Module 依赖必须可访问。"""
+    from app.web.main import app
+
+    with TestClient(app) as client:
+        dashboard = client.get("/")
+        assert dashboard.status_code == 200
+        assert '<script type="module" src="/static/app.js"></script>' in dashboard.text
+
+        entrypoint = client.get("/static/app.js")
+        assert entrypoint.status_code == 200
+        assert "javascript" in entrypoint.headers["content-type"]
+
+        imports = re.findall(r'from\s+"(\./js/[^"]+\.js)"', entrypoint.text)
+        assert imports
+        for module_path in imports:
+            response = client.get(f"/static/{module_path.removeprefix('./')}")
+            assert response.status_code == 200, module_path
+            assert response.content, module_path
 
 
 def test_settings_toggle_and_uploads(temp_db: None, monkeypatch: MonkeyPatch) -> None:

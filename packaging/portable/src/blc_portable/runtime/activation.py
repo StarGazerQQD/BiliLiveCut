@@ -3,10 +3,11 @@
 from __future__ import annotations
 
 import json
-import os
 import sys
 from pathlib import Path
 from typing import Any
+
+from blc_portable.atomic_fs import replace_with_retry
 
 
 def write_current_json(
@@ -19,7 +20,7 @@ def write_current_json(
     payload_sha256: str,
     manifest_sha256: str,
 ) -> None:
-    """原子写入 current.json（先 .tmp 再 os.replace）。"""
+    """原子写入 current.json（先 .tmp 再有限重试替换）。"""
     from . import get_runtime_dir
 
     current_info: dict[str, Any] = {
@@ -40,7 +41,7 @@ def write_current_json(
     target = get_runtime_dir() / "current.json"
     target.parent.mkdir(parents=True, exist_ok=True)
     tmp.write_text(json.dumps(current_info, ensure_ascii=False, indent=2), encoding="utf-8")
-    os.replace(str(tmp), str(target))
+    replace_with_retry(tmp, target)
 
 
 def read_current_json(app_root: Path) -> dict[str, Any] | None:

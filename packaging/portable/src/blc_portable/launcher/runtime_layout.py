@@ -4,17 +4,18 @@ from __future__ import annotations
 
 import json
 import logging
-import os
 import shutil
 import sys
 from datetime import UTC, datetime
 from pathlib import Path
 from typing import Any
 
+from blc_portable.atomic_fs import replace_with_retry
+
 _logger = logging.getLogger(__name__)
 
-RELEASE_VERSION = "0.1.15.2-alpha"
-SOURCE_COMMIT_SHORT = "f2c291d"
+RELEASE_VERSION = "0.1.15.3-alpha"
+SOURCE_COMMIT_SHORT = "6a42f4a"
 RELEASE_ID = f"{RELEASE_VERSION}+{SOURCE_COMMIT_SHORT}"
 
 # 持久数据目录（不随 Release 删除）
@@ -110,7 +111,7 @@ def write_current(info: dict[str, Any], app_root: Path | None = None) -> None:
     content = json.dumps(info, ensure_ascii=False, indent=2)
     tmp.write_text(content, encoding="utf-8")
     # flush + fsync
-    os.replace(str(tmp), str(path))
+    replace_with_retry(tmp, path)
 
 
 def get_active_source_dir(app_root: Path | None = None) -> Path | None:
@@ -208,7 +209,7 @@ def install_release(
         release.parent.mkdir(parents=True, exist_ok=True)
         if release.exists():
             shutil.rmtree(release)
-        os.replace(str(staging), str(release))
+        replace_with_retry(staging, release)
 
         # Step 5: 写入 current.json
         current_info: dict[str, Any] = {

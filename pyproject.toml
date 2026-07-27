@@ -1,8 +1,10 @@
 [project]
 name = "bili-live-cut"
-version = "0.1.15.2-alpha"
+version = "0.1.15.3-alpha"
 description = "AI 直播实时切片系统:监听 Bilibili 直播,自动录制、转写、识别高光、生成切片与文案"
 readme = "README.md"
+license = "MIT"
+license-files = ["LICENSE"]
 requires-python = ">=3.11"
 
 # 阶段1(本地录制 MVP)所需的核心运行依赖。
@@ -73,7 +75,7 @@ dev = [
 blc = "app.cli:app"
 
 [build-system]
-requires = ["setuptools>=69", "Cython==3.2.8"]
+requires = ["setuptools>=77", "Cython==3.2.8"]
 build-backend = "setuptools.build_meta"
 
 [tool.setuptools]

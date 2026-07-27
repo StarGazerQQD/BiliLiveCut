@@ -208,7 +208,7 @@ class TestEnginePackInfoFields:
 
         content_manifest = {
             "format_version": 4,
-            "engine_pack_version": "0.1.15.2-alpha",
+            "engine_pack_version": "0.1.15.3-alpha",
             "total_files": 1,
             "fixture": True,
             "engines": [],
@@ -223,7 +223,7 @@ class TestEnginePackInfoFields:
             crc32_val="1234ABCD",
             sha256_val="a" * 64,
             archive_path=archive_path,
-            source_commit="f2c291df2409bdf83dbf8f8a30d6b3ee1d44e8e0",
+            source_commit="6a42f4afd08e03fe536e3a26fd85e69217032986",
             content_manifest_path=content_manifest_path,
             is_fixture=True,
         )
@@ -241,10 +241,10 @@ class TestEnginePackInfoFields:
 
         content_manifest = {
             "format_version": 4,
-            "engine_pack_version": "0.1.15.2-alpha",
-            "portable_release_version": "0.1.15.2-alpha",
-            "source_commit": "f2c291df2409bdf83dbf8f8a30d6b3ee1d44e8e0",
-            "source_commit_short": "f2c291d",
+            "engine_pack_version": "0.1.15.3-alpha",
+            "portable_release_version": "0.1.15.3-alpha",
+            "source_commit": "6a42f4afd08e03fe536e3a26fd85e69217032986",
+            "source_commit_short": "6a42f4a",
             "engines": [
                 {
                     "engine_id": engine_id,
@@ -300,6 +300,18 @@ class TestVersionAPICompatibility:
         info = json.loads(_EP_INFO_PATH.read_text(encoding="utf-8"))
         ms_ver = info.get("model_set_version", 0)
         assert ms_ver >= 1, f"model_set_version={ms_ver}"
+
+    def test_committed_info_matches_current_model_lock(self) -> None:
+        """仓库内嵌 Fixture 元数据必须来自当前模型锁。"""
+        if not _EP_INFO_PATH.exists():
+            pytest.skip("engine_pack_info.json not present")
+        info = json.loads(_EP_INFO_PATH.read_text(encoding="utf-8"))
+        model_lock_path = _portable_dir / "config" / "model_sources.lock.json"
+        from blc_portable.model_lock import compute_model_lock_sha256
+
+        expected = compute_model_lock_sha256(model_lock_path)
+
+        assert info.get("model_lock_sha256") == expected
 
 
 # ── ZIP 损坏检测 ──────────────────────────────────────

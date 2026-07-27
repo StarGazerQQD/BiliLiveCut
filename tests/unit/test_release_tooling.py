@@ -55,6 +55,75 @@ def test_release_gate_cannot_disable_payload_or_portable_checks() -> None:
     assert "--skip-reproducible" not in source
 
 
+def test_ci_gate_runs_ruff_with_current_python(monkeypatch: MonkeyPatch) -> None:
+    """本地 CI 门禁不得依赖 PATH 中的裸 ``ruff`` 可执行文件。"""
+    from scripts import ci_gate
+
+    commands: list[list[str]] = []
+
+    def capture_run(command: list[str], **_kwargs: object) -> bool:
+        commands.append(command)
+        return True
+
+    monkeypatch.setattr(ci_gate, "_run", capture_run)
+    monkeypatch.setattr(ci_gate, "_pytest", lambda *_args, **_kwargs: True)
+    monkeypatch.setattr(ci_gate.sys, "argv", ["ci_gate.py", "--skip-audit"])
+
+    assert ci_gate.main() == 0
+    assert commands[:2] == [
+        [sys.executable, "scripts/run_ruff.py", "check"],
+        [sys.executable, "scripts/run_ruff.py", "format"],
+    ]
+
+
+def test_ci_gate_uses_workspace_local_pytest_directories(monkeypatch: MonkeyPatch) -> None:
+    """受限 Windows 环境不得要求访问用户级 pytest 临时目录。"""
+    from scripts import ci_gate
+
+    captured: list[str] = []
+
+    def capture_run(command: list[str], **_kwargs: object) -> bool:
+        captured.extend(command)
+        return True
+
+    monkeypatch.setattr(ci_gate, "_run", capture_run)
+
+    assert ci_gate._pytest("tests/") is True
+    expected_root = ci_gate.REPO_ROOT / "packaging" / "portable" / "build" / "ci-gate"
+    assert expected_root.is_dir()
+    basetemp = Path(next(arg.removeprefix("--basetemp=") for arg in captured if arg.startswith("--basetemp=")))
+    cache_dir = Path(next(arg.removeprefix("cache_dir=") for arg in captured if arg.startswith("cache_dir=")))
+    assert basetemp.name == "pytest"
+    assert cache_dir.name == "cache"
+    assert basetemp.parent.parent == expected_root
+    assert cache_dir.parent == basetemp.parent
+    assert not basetemp.parent.exists()
+
+
+def test_release_gate_uses_workspace_local_pytest_directories(monkeypatch: MonkeyPatch) -> None:
+    """本地发布门禁与 CI 门禁必须使用相同的受控临时目录策略。"""
+    from scripts import release_gate
+
+    captured: list[str] = []
+
+    def capture_run(command: list[str], **_kwargs: object) -> bool:
+        captured.extend(command)
+        return True
+
+    monkeypatch.setattr(release_gate, "_run", capture_run)
+
+    assert release_gate._pytest("packaging/portable/tests/") is True
+    expected_root = release_gate.REPO_ROOT / "packaging" / "portable" / "build" / "release-gate-local"
+    assert expected_root.is_dir()
+    basetemp = Path(next(arg.removeprefix("--basetemp=") for arg in captured if arg.startswith("--basetemp=")))
+    cache_dir = Path(next(arg.removeprefix("cache_dir=") for arg in captured if arg.startswith("cache_dir=")))
+    assert basetemp.name == "pytest"
+    assert cache_dir.name == "cache"
+    assert basetemp.parent.parent == expected_root
+    assert cache_dir.parent == basetemp.parent
+    assert not basetemp.parent.exists()
+
+
 def test_rust_build_uses_current_python_interpreter() -> None:
     """PyO3 构建必须显式使用当前虚拟环境的 Python。"""
     source = (run_ruff.REPO_ROOT / "tools" / "native" / "build_rust.py").read_text(encoding="utf-8")
@@ -129,6 +198,12 @@ def test_windows_payload_jobs_run_on_windows_and_verify_native_modules() -> None
     assert "Full Bundle native acceleration OK" in release_source
 
 
+def test_release_gate_audits_portable_runtime_locks() -> None:
+    source = (run_ruff.REPO_ROOT / "scripts" / "release_gate.py").read_text(encoding="utf-8")
+
+    assert '"scripts/audit_portable_runtime_locks.py"' in source
+
+
 def test_source_manifest_job_installs_pinned_cython() -> None:
     """禁用构建隔离的 source manifest 校验必须预装固定版本 Cython。"""
     release_workflow = yaml.safe_load(
@@ -141,6 +216,24 @@ def test_source_manifest_job_installs_pinned_cython() -> None:
     assert "--no-build-isolation" in next(
         step["run"] for step in steps if step.get("name") == "Validate source manifest"
     )
+
+
+def test_direct_setup_builds_install_declared_backend_requirements() -> None:
+    """Direct setup.py calls must not depend on a runner's ambient setuptools."""
+    matched_commands: list[str] = []
+    for workflow_name in ("ci.yml", "release.yml"):
+        workflow = yaml.safe_load(
+            (run_ruff.REPO_ROOT / ".github" / "workflows" / workflow_name).read_text(encoding="utf-8")
+        )
+        for job in workflow["jobs"].values():
+            for step in job.get("steps", []):
+                command = step.get("run", "")
+                if "python setup.py build_ext --inplace" in command:
+                    matched_commands.append(command)
+                    assert '"setuptools>=77"' in command
+                    assert '"Cython==3.2.8"' in command
+
+    assert len(matched_commands) == 2
 
 
 def test_windows_c_extension_compiles_utf8_source() -> None:

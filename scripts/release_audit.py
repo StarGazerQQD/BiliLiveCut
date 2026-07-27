@@ -38,6 +38,12 @@ from pathlib import Path
 from typing import Any
 
 REPO_ROOT = Path(__file__).resolve().parent.parent
+PORTABLE_SRC = REPO_ROOT / "packaging" / "portable" / "src"
+if str(PORTABLE_SRC) not in sys.path:
+    sys.path.insert(0, str(PORTABLE_SRC))
+
+from blc_portable.model_lock import compute_model_lock_sha256  # noqa: E402
+
 EXIT_OK = 0
 EXIT_WARN = 1
 EXIT_FAIL = 2
@@ -138,6 +144,7 @@ def check_ci_bypass(audit: AuditResult) -> None:
     """检查是否使用 production-incompatible CI bypass。"""
     lite_py = REPO_ROOT / "packaging" / "portable" / "src" / "blc_portable" / "builders" / "lite.py"
     release_yml = REPO_ROOT / ".github" / "workflows" / "release.yml"
+    lite_smoke_py = REPO_ROOT / "scripts" / "smoke_portable_lite.py"
 
     if lite_py.exists():
         content = lite_py.read_text(encoding="utf-8")
@@ -154,6 +161,7 @@ def check_ci_bypass(audit: AuditResult) -> None:
 
     if release_yml.exists():
         content = release_yml.read_text(encoding="utf-8")
+        lite_smoke = lite_smoke_py.read_text(encoding="utf-8") if lite_smoke_py.is_file() else ""
         audit.check("release.yml 无 BLC_CI_BUILD", "BLC_CI_BUILD" not in content)
         audit.check(
             "release.yml 无 BLC_FIXTURE_BUILD",
@@ -190,6 +198,26 @@ def check_ci_bypass(audit: AuditResult) -> None:
             "python build_exe.py --without-engine-pack" in content,
             "GitHub Release 不分发 Engine Pack，不得嵌入仓库 fixture 元数据",
         )
+        audit.check(
+            "release.yml Lite 真实首次安装与二次离线启动",
+            "scripts/smoke_portable_lite.py" in content
+            and "Lite fresh online installation and second offline launch OK" in lite_smoke
+            and "_wait_ready" in lite_smoke
+            and '["--offline", "--engine-pack"' in lite_smoke,
+            "Lite smoke 必须完成空目录安装、Web 就绪和二次断网复用",
+        )
+        audit.check(
+            "release.yml 跨制品身份校验",
+            "scripts/verify_release_artifacts.py" in content and "--expected-builder-commit" in content,
+            "发布前必须交叉校验 Payload/Lite/Full 的版本、基线、构建提交和哈希",
+        )
+        audit.check(
+            "release.yml tag 与项目版本严格匹配",
+            "PROJECT_VERSION=" in content
+            and 'if [ "${TAG_INPUT#v}" != "$PROJECT_VERSION" ]' in content
+            and "complete release version pattern" in content,
+            "tag 必须完整匹配版本语法并等于项目版本真源",
+        )
     launcher_spec = REPO_ROOT / "packaging" / "portable" / "specs" / "portable_launcher.spec"
     if launcher_spec.exists():
         spec_content = launcher_spec.read_text(encoding="utf-8")
@@ -212,7 +240,12 @@ def check_distribution_config(audit: AuditResult) -> None:
     """Check wheel/sdist runtime content and fail-closed release tooling."""
     pyproject_path = REPO_ROOT / "pyproject.toml"
     manifest_path = REPO_ROOT / "MANIFEST.in"
+    license_path = REPO_ROOT / "LICENSE"
     release_gate_path = REPO_ROOT / "scripts" / "release_gate.py"
+    ci_path = REPO_ROOT / ".github" / "workflows" / "ci.yml"
+    release_path = REPO_ROOT / ".github" / "workflows" / "release.yml"
+    frontend_check_path = REPO_ROOT / "scripts" / "check_frontend_interactions.mjs"
+    portable_spec_path = REPO_ROOT / "packaging" / "portable" / "specs" / "portable_launcher.spec"
 
     pyproject = tomllib.loads(pyproject_path.read_text(encoding="utf-8"))
     optional = pyproject["project"]["optional-dependencies"]
@@ -220,6 +253,38 @@ def check_distribution_config(audit: AuditResult) -> None:
     dev = {requirement.split(">=", 1)[0].lower() for requirement in optional["dev"]}
     setuptools_config = pyproject["tool"]["setuptools"]
     package_data = set(setuptools_config["package-data"]["app.web"])
+    license_text = license_path.read_text(encoding="utf-8") if license_path.is_file() else ""
+
+    audit.check(
+        "项目采用规范 MIT License",
+        all(
+            marker in license_text
+            for marker in (
+                "MIT License",
+                "Copyright (c) 2026 StarGazerQQD",
+                "Permission is hereby granted",
+                'THE SOFTWARE IS PROVIDED "AS IS"',
+            )
+        ),
+        "仓库根 LICENSE 缺失或内容不完整",
+    )
+    audit.check(
+        "Python 包元数据声明项目 LICENSE",
+        pyproject["project"].get("license") == "MIT" and pyproject["project"].get("license-files") == ["LICENSE"],
+    )
+    audit.check(
+        "构建后端支持 SPDX 许可证元数据",
+        "setuptools>=77" in pyproject["build-system"].get("requires", []),
+    )
+    direct_build_requirements = 'python -m pip install --upgrade pip "setuptools>=77" "Cython==3.2.8"'
+    audit.check(
+        "直接 setup.py 构建显式安装声明的构建后端",
+        all(
+            direct_build_requirements in workflow_path.read_text(encoding="utf-8")
+            for workflow_path in (ci_path, release_path)
+        ),
+        "CI/Release 不得依赖 runner 自带的旧版 setuptools",
+    )
 
     audit.check("web extra 包含 python-multipart", "python-multipart" in web)
     audit.check("dev extra 覆盖 Pillow", "pillow" in dev)
@@ -234,7 +299,16 @@ def check_distribution_config(audit: AuditResult) -> None:
     )
     audit.check("sdist MANIFEST.in 存在", manifest_path.is_file())
     manifest = manifest_path.read_text(encoding="utf-8") if manifest_path.is_file() else ""
+    audit.check("sdist 包含项目 LICENSE", "include LICENSE" in manifest)
+    audit.check(
+        "sdist 包含前端交互检查脚本",
+        "recursive-include scripts *.py *.json *.mjs *.sh *.bat" in manifest,
+    )
     audit.check("sdist 包含 Dockerfile", "include packaging/docker/Dockerfile" in manifest)
+    audit.check(
+        "sdist 包含第三方许可证与声明",
+        "recursive-include packaging/portable/licenses *.txt *.md" in manifest,
+    )
     audit.check("sdist 排除 Cython 生成文件", "exclude tools/native/cython/_speedups_round2.c" in manifest)
 
     release_gate = release_gate_path.read_text(encoding="utf-8")
@@ -243,6 +317,45 @@ def check_distribution_config(audit: AuditResult) -> None:
     )
     audit.check("release gate 强制可复现构建", "--skip-reproducible" not in release_gate)
     audit.check("release gate 拒绝 pytest skip", "--fail-on-skip" in release_gate)
+
+    ci = ci_path.read_text(encoding="utf-8")
+    release = release_path.read_text(encoding="utf-8")
+    portable_spec = portable_spec_path.read_text(encoding="utf-8")
+    audit.check(
+        "GitHub Release 发布并校验项目 LICENSE",
+        "cp LICENSE release-assets/LICENSE" in release and "sha256sum LICENSE *.tar.gz" in release,
+    )
+    audit.check(
+        "Portable Lite 内嵌项目 LICENSE",
+        '(str(_project_license), ".")' in portable_spec,
+    )
+    frontend_check = frontend_check_path.read_text(encoding="utf-8") if frontend_check_path.is_file() else ""
+    audit.check(
+        "CI 执行前端模块与交互检查",
+        "node scripts/check_frontend_interactions.mjs" in ci,
+    )
+    audit.check(
+        "前端交互检查覆盖模块、刷新与标签切换",
+        all(
+            token in frontend_check
+            for token in (
+                "frontend module graph, bindings, initial refresh and tab interaction",
+                'await import(`${pathToFileURL(join(copiedStatic, "app.js"))',
+                'await candidatesTab.emit("click")',
+            )
+        ),
+    )
+
+    readme = (REPO_ROOT / "README.md").read_text(encoding="utf-8")
+    portable_readme = (REPO_ROOT / "packaging" / "portable" / "README.md").read_text(encoding="utf-8")
+    audit.check(
+        "文档区分项目代码与第三方许可证",
+        all(
+            "Copyright (c) 2026 StarGazerQQD" in content and "项目代码采用" in content
+            for content in (readme, portable_readme)
+        )
+        and "项目许可证不改变任何第三方条款" in portable_readme,
+    )
 
 
 def check_model_single_source(audit: AuditResult) -> None:
@@ -348,6 +461,13 @@ def check_engine_pack_metadata(audit: AuditResult) -> None:
         "engine_pack_info.format_version >= 4",
         info.get("format_version", 0) >= 4,
         f"format_version={info.get('format_version', 0)} — 需 >= 4",
+    )
+    model_lock_path = REPO_ROOT / "packaging" / "portable" / "config" / "model_sources.lock.json"
+    expected_model_lock_sha = compute_model_lock_sha256(model_lock_path) if model_lock_path.is_file() else ""
+    audit.check(
+        "engine_pack_info.model_lock_sha256 匹配当前模型锁",
+        bool(expected_model_lock_sha) and info.get("model_lock_sha256") == expected_model_lock_sha,
+        "内嵌 Engine Pack 元数据必须在模型锁更新后重新生成",
     )
 
 

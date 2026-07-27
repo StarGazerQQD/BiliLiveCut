@@ -52,7 +52,7 @@ def test_runtime_locks_are_complete_and_strict() -> None:
     py311 = _load_lock("py311")
     py312 = _load_lock("py312")
 
-    assert len(py311) == len(py312) == 110
+    assert len(py311) == len(py312) == 111
     assert set(py311) == set(py312)
     assert _direct_requirement_names() <= set(py311)
 
@@ -74,6 +74,25 @@ def test_runtime_locks_cover_core_application_imports() -> None:
         "uvicorn",
     }
     assert required <= _direct_requirement_names()
+
+
+def test_runtime_locks_keep_security_upgrades_pinned() -> None:
+    expected = {
+        "fastapi": "0.139.2",
+        "jinja2": "3.1.6",
+        "modelscope": "1.38.1",
+        "orjson": "3.11.9",
+        "python-dotenv": "1.2.2",
+        "python-multipart": "0.0.32",
+        "starlette": "1.3.1",
+        "torch": "2.13.0",
+        "torchaudio": "2.11.0",
+    }
+    py311 = _load_lock("py311")
+    py312 = _load_lock("py312")
+
+    assert {name: py311[name][0] for name in expected} == expected
+    assert {name: py312[name][0] for name in expected} == expected
 
 
 def test_runtime_locks_do_not_cross_contaminate_cpython_abis() -> None:

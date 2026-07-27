@@ -1,7 +1,7 @@
 """Portable 构建系统完整测试套件。
 
 覆盖:
-- Source Snapshot (f2c291d 解析/提取/Overlay)
+- Source Snapshot (6a42f4a 解析/提取/Overlay)
 - Payload (构建/ZIP/Manifest/可复现性)
 - Runtime 安装 (原子安装/staging/current.json)
 - 用户数据保护 (.env/数据库/storage)
@@ -14,8 +14,13 @@ import json
 import sys
 import tempfile
 from pathlib import Path
+from types import SimpleNamespace
+from typing import TYPE_CHECKING
 
 import pytest
+
+if TYPE_CHECKING:
+    from pytest import MonkeyPatch
 
 # 添加 portable 模块到路径
 _portable_dir = Path(__file__).resolve().parent.parent  # portable/
@@ -76,9 +81,27 @@ class TestSourceSnapshot:
         """验证当前 Portable 源码基线可解析。"""
         from blc_portable.payload.source_snapshot import resolve_commit
 
-        full = resolve_commit("f2c291d")
+        full = resolve_commit("6a42f4a")
         assert len(full) == 40
-        assert full == "f2c291df2409bdf83dbf8f8a30d6b3ee1d44e8e0"
+        assert full == "6a42f4afd08e03fe536e3a26fd85e69217032986"
+
+    def test_git_operations_are_independent_of_current_directory(
+        self,
+        tmp_path: Path,
+        monkeypatch: MonkeyPatch,
+    ) -> None:
+        """验证源码提取和来源校验不依赖调用者的当前工作目录。"""
+        from blc_portable.payload.manifest import SOURCE_COMMIT_FULL
+        from blc_portable.payload.source_snapshot import extract_source, verify_source_origin
+
+        staging = tmp_path / "staging"
+        staging.mkdir()
+        monkeypatch.chdir(tmp_path)
+
+        report = extract_source(SOURCE_COMMIT_FULL, staging)
+        verify_source_origin(staging, SOURCE_COMMIT_FULL)
+
+        assert report["source_commit_full"] == SOURCE_COMMIT_FULL
 
     def test_extract_contains_app_cli(self, tmp_worktree: str) -> None:
         """验证提取内容包含关键业务文件。"""
@@ -86,8 +109,8 @@ class TestSourceSnapshot:
 
         staging = Path(tmp_worktree) / "test_staging"
         staging.mkdir(parents=True)
-        report = extract_source("f2c291d", staging)
-        assert report["source_commit_short"] == "f2c291d"
+        report = extract_source("6a42f4a", staging)
+        assert report["source_commit_short"] == "6a42f4a"
         assert (staging / "app" / "cli.py").exists()
         assert (staging / "pyproject.toml").exists()
 
@@ -97,7 +120,7 @@ class TestSourceSnapshot:
 
         staging = Path(tmp_worktree) / "test_clean"
         staging.mkdir(parents=True)
-        extract_source("f2c291d", staging)
+        extract_source("6a42f4a", staging)
 
         # 确认不包含构建产物
         assert not (staging / ".venv").exists()
@@ -111,7 +134,7 @@ class TestSourceSnapshot:
 
         staging = Path(tmp_worktree) / "test_overlay"
         staging.mkdir(parents=True)
-        extract_source("f2c291d", staging)
+        extract_source("6a42f4a", staging)
         modified = apply_version_overlay(
             staging,
             source_commit_full=SOURCE_COMMIT_FULL,
@@ -127,6 +150,7 @@ class TestSourceSnapshot:
                 "CHANGELOG.md",
                 "setup.py",
                 "setup_c.py",
+                "LICENSE",
             ]
 
         # 验证版本已更新
@@ -135,6 +159,7 @@ class TestSourceSnapshot:
         release_content = (staging / "app" / "_portable_release.py").read_text(encoding="utf-8")
         assert f'SOURCE_COMMIT: str = "{SOURCE_COMMIT_FULL}"' in release_content
         assert f'BUILDER_COMMIT: str = "{SOURCE_COMMIT_FULL}"' in release_content
+        assert (staging / "LICENSE").read_bytes() == (_portable_dir.parent.parent / "LICENSE").read_bytes()
 
     def test_source_origin_rejects_business_file_tampering(self, tmp_worktree: str) -> None:
         """验证关键业务文件偏离固定 Commit 时构建失败。"""
@@ -149,6 +174,33 @@ class TestSourceSnapshot:
 
         with pytest.raises(RuntimeError, match="backends.py.*不一致"):
             verify_source_origin(staging, SOURCE_COMMIT_FULL)
+
+    def test_workspace_baseline_rejects_business_source_drift(self, monkeypatch: MonkeyPatch) -> None:
+        """固定基线不得静默漏掉当前业务源码修复。"""
+        from blc_portable.payload import source_snapshot
+
+        outputs = iter(["app/cli.py\napp/_portable_release.py\n", ""])
+
+        def fake_run(*_args: object, **_kwargs: object) -> SimpleNamespace:
+            return SimpleNamespace(returncode=0, stdout=next(outputs), stderr="")
+
+        monkeypatch.setattr(source_snapshot.subprocess, "run", fake_run)
+
+        with pytest.raises(RuntimeError, match="app/cli.py.*更新 source_commit"):
+            source_snapshot.verify_workspace_source_baseline("a" * 40)
+
+    def test_workspace_baseline_allows_release_metadata_overlay(self, monkeypatch: MonkeyPatch) -> None:
+        """版本与构建身份 Overlay 可以位于业务源码基线之后。"""
+        from blc_portable.payload import source_snapshot
+
+        outputs = iter(["app/_portable_release.py\npyproject.toml\nsetup.py\n", ""])
+
+        def fake_run(*_args: object, **_kwargs: object) -> SimpleNamespace:
+            return SimpleNamespace(returncode=0, stdout=next(outputs), stderr="")
+
+        monkeypatch.setattr(source_snapshot.subprocess, "run", fake_run)
+
+        source_snapshot.verify_workspace_source_baseline("a" * 40)
 
 
 # ── Payload 测试 ──────────────────────────────────────────────────
@@ -191,6 +243,17 @@ class TestPayload:
         actual = compute_payload_sha256(payload_zip)
         expected = payload_manifest["payload_sha256"]
         assert actual == expected
+
+    def test_payload_contains_canonical_project_license(self, payload_manifest: dict, payload_zip: Path) -> None:
+        """Payload 必须携带与仓库根目录完全一致的项目 LICENSE。"""
+        import hashlib
+        import zipfile
+
+        expected = (_portable_dir.parent.parent / "LICENSE").read_bytes()
+        with zipfile.ZipFile(payload_zip) as zf:
+            assert zf.read("LICENSE") == expected
+        assert payload_manifest["project_license"] == "MIT"
+        assert payload_manifest["project_license_sha256"] == hashlib.sha256(expected).hexdigest()
 
     def test_payload_no_sensitive_files(self) -> None:
         """验证 Payload 不包含敏感文件。"""
@@ -289,7 +352,7 @@ class TestRuntimeInstall:
         current = read_current(app_root)
         assert current is not None
         assert current["release_version"] == RELEASE_VERSION
-        assert current["source_commit_short"] == "f2c291d"
+        assert current["source_commit_short"] == "6a42f4a"
         assert "payload_sha256" in current
 
     def test_staging_not_left_behind(self, payload_zip: Path, payload_manifest: dict, tmp_worktree: str) -> None:

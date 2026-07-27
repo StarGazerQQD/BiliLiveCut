@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+import hashlib
+import json
 import sys
 from pathlib import Path
 
@@ -16,7 +18,7 @@ class TestLiteBuilder:
     def test_lite_has_release_version(self) -> None:
         from blc_portable.builders.lite import RELEASE_VERSION, build_exe  # noqa: E402
 
-        assert RELEASE_VERSION == "0.1.15.2-alpha"
+        assert RELEASE_VERSION == "0.1.15.3-alpha"
         assert callable(build_exe)
 
     def test_lite_rejects_everything_empty(self) -> None:
@@ -38,6 +40,39 @@ class TestLiteBuilder:
         # Should not raise
         check_engine_pack_info()
 
+    def test_lite_rejects_stale_model_lock_hash(self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+        """生产元数据不得继续引用旧模型锁摘要。"""
+        from blc_portable.builders import lite
+
+        resources_dir = tmp_path / "resources"
+        config_dir = tmp_path / "config"
+        resources_dir.mkdir()
+        config_dir.mkdir()
+        (config_dir / "model_sources.lock.json").write_bytes(b'{"current": true}\n')
+        (resources_dir / "engine_pack_info.json").write_text(
+            json.dumps(
+                {
+                    "format_version": 4,
+                    "artifact_class": "production",
+                    "engine_pack_version": lite.RELEASE_VERSION,
+                    "engine_pack_api_version": 4,
+                    "model_set_version": 4,
+                    "filename": "BiliLiveCut-EnginePack.zip",
+                    "size_bytes": 500_000_000,
+                    "crc32": "1234ABCD",
+                    "sha256": "a" * 64,
+                    "content_manifest_sha256": "b" * 64,
+                    "model_lock_sha256": "c" * 64,
+                    "expected_engine_ids": ["whisper", "paraformer", "sensevoice", "funasr_nano"],
+                }
+            ),
+            encoding="utf-8",
+        )
+        monkeypatch.setattr(lite, "PORTABLE_DIR", tmp_path)
+
+        with pytest.raises(RuntimeError, match="model_lock_sha256 mismatch"):
+            lite.check_engine_pack_info()
+
     def test_official_release_mode_is_explicit(self, monkeypatch: pytest.MonkeyPatch) -> None:
         """The no-pack release mode must be selected by an explicit CLI flag."""
         from blc_portable.builders import lite
@@ -52,18 +87,95 @@ class TestLiteBuilder:
         assert lite.main(["--without-engine-pack"]) == 0
         assert calls == [True]
 
+    def test_lite_documented_commands_match_supported_modes(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        """Lite usage documentation must not advertise rejected CLI flags."""
+        from blc_portable.builders import lite
+
+        calls: list[bool] = []
+
+        def fake_build_exe(*, without_engine_pack: bool = False) -> Path:
+            calls.append(without_engine_pack)
+            return Path("BiliLiveCut.exe")
+
+        monkeypatch.setattr(lite, "build_exe", fake_build_exe)
+        documentation = lite.__doc__ or ""
+
+        assert "--skip-payload" not in documentation
+        assert "--without-engine-pack" in documentation
+        assert lite.main([]) == 0
+        assert lite.main(["--without-engine-pack"]) == 0
+        assert calls == [False, True]
+
     def test_lite_version_in_manifest(self) -> None:
         from blc_portable.builders.lite import RELEASE_VERSION as LITE_VERSION  # noqa: E402
         from blc_portable.payload.manifest import RELEASE_VERSION as MANIFEST_VERSION  # noqa: E402
 
         assert LITE_VERSION == MANIFEST_VERSION
 
+    def test_lite_bootstrap_wheels_are_hash_verified(self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+        from blc_portable.builders import lite
+
+        wheel = tmp_path / "fixture-1.0-py3-none-any.whl"
+        wheel.write_bytes(b"audited wheel")
+        config = tmp_path / "bootstrap-wheels.json"
+        config.write_text(
+            json.dumps(
+                [
+                    {
+                        "wheel_filename": wheel.name,
+                        "wheel_sha256": hashlib.sha256(wheel.read_bytes()).hexdigest(),
+                    }
+                ]
+            ),
+            encoding="utf-8",
+        )
+        monkeypatch.setattr(lite, "BOOTSTRAP_WHEELS_CONFIG", config)
+
+        lite.check_bootstrap_wheels(tmp_path)
+        wheel.write_bytes(b"tampered")
+        with pytest.raises(RuntimeError, match="hash mismatch"):
+            lite.check_bootstrap_wheels(tmp_path)
+
+    def test_pyinstaller_spec_embeds_bootstrap_wheels(self) -> None:
+        spec = (_portable_dir / "specs" / "portable_launcher.spec").read_text(encoding="utf-8")
+
+        assert '"bootstrap-wheels"' in spec
+        assert "Lite bootstrap wheels are missing" in spec
+
+    def test_pyinstaller_spec_embeds_project_license(self) -> None:
+        """Lite EXE 必须内嵌仓库根目录的项目 LICENSE。"""
+        spec = (_portable_dir / "specs" / "portable_launcher.spec").read_text(encoding="utf-8")
+
+        assert '_project_license = _here.parent.parent / "LICENSE"' in spec
+        assert '(str(_project_license), ".")' in spec
+
+    def test_project_license_is_canonical_and_hashable(self) -> None:
+        """Portable 构建器只接受带指定版权人的规范 MIT License。"""
+        from blc_portable.project_license import PROJECT_LICENSE_ID, PROJECT_LICENSE_PATH, project_license_sha256
+
+        assert PROJECT_LICENSE_ID == "MIT"
+        assert "Copyright (c) 2026 StarGazerQQD" in PROJECT_LICENSE_PATH.read_text(encoding="utf-8")
+        assert project_license_sha256() == hashlib.sha256(PROJECT_LICENSE_PATH.read_bytes()).hexdigest()
+
+    def test_project_license_rejects_wrong_holder(self, tmp_path: Path) -> None:
+        """错误版权声明不得进入 Portable 发布制品。"""
+        from blc_portable.project_license import load_project_license
+
+        invalid = tmp_path / "LICENSE"
+        invalid.write_text(
+            'MIT License\nCopyright (c) 2026 Someone Else\nPermission is hereby granted\nTHE SOFTWARE IS PROVIDED "AS IS"',
+            encoding="utf-8",
+        )
+
+        with pytest.raises(RuntimeError, match="Project license is invalid"):
+            load_project_license(invalid)
+
 
 class TestFullBuilder:
     def test_full_has_release_version(self) -> None:
         from blc_portable.builders.full import RELEASE_VERSION  # noqa: E402
 
-        assert RELEASE_VERSION == "0.1.15.2-alpha"
+        assert RELEASE_VERSION == "0.1.15.3-alpha"
 
     def test_full_check_missing_components(self) -> None:
         """Full build without portable-python or wheels must raise RuntimeError."""

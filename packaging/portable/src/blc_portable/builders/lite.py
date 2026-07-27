@@ -1,8 +1,8 @@
 """Portable Lite 构建脚本 — 将 Launcher + Payload + Engine Pack Info 编译为单个 EXE。
 
 用法:
-    python build_exe.py            # 先构建 Payload，再编译 EXE
-    python build_exe.py --skip-payload  # 仅编译 (已有 Payload)
+    python build_exe.py  # 复用已有 Payload；缺失时自动构建
+    python build_exe.py --without-engine-pack  # 官方 GitHub Release 模式
 
 CI 环境:
     设置 BLC_FIXTURE_BUILD=1 可跳过 Engine Pack 校验 (仅 PR/CI 快速测试)。
@@ -12,6 +12,7 @@ CI 环境:
 from __future__ import annotations
 
 import argparse
+import hashlib
 import json
 import os
 import subprocess
@@ -19,6 +20,8 @@ import sys
 from pathlib import Path
 
 from blc_portable.console import configure_console_encoding
+from blc_portable.model_lock import compute_model_lock_sha256
+from blc_portable.project_license import PROJECT_LICENSE_ID, project_license_sha256
 
 PORTABLE_DIR = Path(__file__).resolve().parent.parent.parent.parent
 PROJECT_ROOT = PORTABLE_DIR.parent.parent
@@ -28,8 +31,31 @@ PAYLOAD_DIR = PORTABLE_DIR / "dist" / "payload"
 MANIFEST_PATH = PAYLOAD_DIR / "payload_manifest.json"
 RESOURCES_DIR = PORTABLE_DIR / "resources"
 ENGINE_PACK_INFO_PATH = RESOURCES_DIR / "engine_pack_info.json"
+BOOTSTRAP_WHEELS_DIR = PORTABLE_DIR / "dist" / "bootstrap-wheels"
+BOOTSTRAP_WHEELS_CONFIG = PORTABLE_DIR / "locks" / "bootstrap-wheels.json"
 
-RELEASE_VERSION = "0.1.15.2-alpha"
+RELEASE_VERSION = "0.1.15.3-alpha"
+
+
+def check_bootstrap_wheels(wheel_dir: Path = BOOTSTRAP_WHEELS_DIR) -> dict[str, str]:
+    """Verify and return the minimal wheel set embedded for Lite installation."""
+    entries = json.loads(BOOTSTRAP_WHEELS_CONFIG.read_text(encoding="utf-8"))
+    expected = {str(entry["wheel_filename"]): str(entry["wheel_sha256"]) for entry in entries}
+    actual = {path.name: path for path in wheel_dir.glob("*.whl")} if wheel_dir.is_dir() else {}
+    if set(actual) != set(expected):
+        missing = sorted(set(expected) - set(actual))
+        extra = sorted(set(actual) - set(expected))
+        raise RuntimeError(f"Lite bootstrap wheel set mismatch: missing={missing}, extra={extra}")
+
+    for filename, expected_hash in expected.items():
+        digest = hashlib.sha256(actual[filename].read_bytes()).hexdigest()
+        if digest != expected_hash:
+            raise RuntimeError(
+                f"Lite bootstrap wheel hash mismatch for {filename}: expected {expected_hash}, got {digest}"
+            )
+
+    print(f"  Lite bootstrap wheels OK: {len(expected)} files")
+    return expected
 
 
 def build_payload_if_needed() -> None:
@@ -134,6 +160,16 @@ def check_engine_pack_info() -> None:
         errors.append("model_lock_sha256 is empty")
     elif len(model_lock_sha) != 64:
         errors.append(f"model_lock_sha256 invalid length: {len(model_lock_sha)} (expect 64)")
+    else:
+        model_lock_path = PORTABLE_DIR / "config" / "model_sources.lock.json"
+        if not model_lock_path.is_file():
+            errors.append(f"model lock missing: {model_lock_path}")
+        else:
+            expected_model_lock_sha = compute_model_lock_sha256(model_lock_path)
+            if model_lock_sha != expected_model_lock_sha:
+                errors.append(
+                    f"model_lock_sha256 mismatch: metadata={model_lock_sha} current={expected_model_lock_sha}"
+                )
 
     # 9. Expected engine IDs
     required_ids = {"whisper", "paraformer", "sensevoice", "funasr_nano"}
@@ -199,6 +235,9 @@ def build_exe(*, without_engine_pack: bool = False) -> Path:
     print(f"  BiliLiveCut Portable Lite {RELEASE_VERSION}")
     print("=" * 60)
 
+    license_sha256 = project_license_sha256()
+    bootstrap_wheels = check_bootstrap_wheels()
+
     # Build Payload
     build_payload_if_needed()
 
@@ -260,6 +299,9 @@ def build_exe(*, without_engine_pack: bool = False) -> Path:
         "artifact_sha256": "",
         "ci_build": is_fixture,
         "engine_pack_metadata": "omitted" if without_engine_pack else "embedded",
+        "bootstrap_wheels": bootstrap_wheels,
+        "project_license": PROJECT_LICENSE_ID,
+        "project_license_sha256": license_sha256,
     }
 
     # 如果 Engine Pack 信息存在，添加 CRC32

@@ -16,6 +16,7 @@ PAYLOAD_ITEMS = [
     "setup.py",
     "setup_c.py",
     ".env.example",
+    "LICENSE",
 ]
 
 # 禁止进入 Payload 的路径
@@ -57,6 +58,7 @@ ALLOWED_OVERLAY_FILES = [
     "pyproject.toml",
     "README.md",
     "CHANGELOG.md",
+    "LICENSE",
     "payload_manifest.json",
 ]
 

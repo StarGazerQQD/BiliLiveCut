@@ -6,12 +6,13 @@
 from __future__ import annotations
 
 import hashlib
-import os
 import shutil
 import uuid
 import zipfile
 from pathlib import Path
 from typing import Any
+
+from blc_portable.atomic_fs import replace_with_retry
 
 
 def compute_payload_hash(zip_path: Path) -> str:
@@ -131,7 +132,7 @@ def install_from_payload(
             releases_dir.mkdir(parents=True, exist_ok=True)
             if release_dir.exists():
                 shutil.rmtree(release_dir)
-            os.replace(str(staging), str(release_dir))
+            replace_with_retry(staging, release_dir)
 
             # 写入 current.json
             from .verifier import write_current_json
