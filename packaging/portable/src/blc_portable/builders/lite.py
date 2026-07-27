@@ -1,8 +1,8 @@
 """Portable Lite 构建脚本 — 将 Launcher + Payload + Engine Pack Info 编译为单个 EXE。
 
 用法:
-    python build_exe.py            # 先构建 Payload，再编译 EXE
-    python build_exe.py --skip-payload  # 仅编译 (已有 Payload)
+    python build_exe.py  # 复用已有 Payload；缺失时自动构建
+    python build_exe.py --without-engine-pack  # 官方 GitHub Release 模式
 
 CI 环境:
     设置 BLC_FIXTURE_BUILD=1 可跳过 Engine Pack 校验 (仅 PR/CI 快速测试)。

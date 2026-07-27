@@ -54,6 +54,25 @@ class TestLiteBuilder:
         assert lite.main(["--without-engine-pack"]) == 0
         assert calls == [True]
 
+    def test_lite_documented_commands_match_supported_modes(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        """Lite usage documentation must not advertise rejected CLI flags."""
+        from blc_portable.builders import lite
+
+        calls: list[bool] = []
+
+        def fake_build_exe(*, without_engine_pack: bool = False) -> Path:
+            calls.append(without_engine_pack)
+            return Path("BiliLiveCut.exe")
+
+        monkeypatch.setattr(lite, "build_exe", fake_build_exe)
+        documentation = lite.__doc__ or ""
+
+        assert "--skip-payload" not in documentation
+        assert "--without-engine-pack" in documentation
+        assert lite.main([]) == 0
+        assert lite.main(["--without-engine-pack"]) == 0
+        assert calls == [False, True]
+
     def test_lite_version_in_manifest(self) -> None:
         from blc_portable.builders.lite import RELEASE_VERSION as LITE_VERSION  # noqa: E402
         from blc_portable.payload.manifest import RELEASE_VERSION as MANIFEST_VERSION  # noqa: E402
