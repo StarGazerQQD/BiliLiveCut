@@ -12,6 +12,7 @@ CI 环境:
 from __future__ import annotations
 
 import argparse
+import hashlib
 import json
 import os
 import subprocess
@@ -28,8 +29,31 @@ PAYLOAD_DIR = PORTABLE_DIR / "dist" / "payload"
 MANIFEST_PATH = PAYLOAD_DIR / "payload_manifest.json"
 RESOURCES_DIR = PORTABLE_DIR / "resources"
 ENGINE_PACK_INFO_PATH = RESOURCES_DIR / "engine_pack_info.json"
+BOOTSTRAP_WHEELS_DIR = PORTABLE_DIR / "dist" / "bootstrap-wheels"
+BOOTSTRAP_WHEELS_CONFIG = PORTABLE_DIR / "locks" / "bootstrap-wheels.json"
 
 RELEASE_VERSION = "0.1.15.2-alpha"
+
+
+def check_bootstrap_wheels(wheel_dir: Path = BOOTSTRAP_WHEELS_DIR) -> dict[str, str]:
+    """Verify and return the minimal wheel set embedded for Lite installation."""
+    entries = json.loads(BOOTSTRAP_WHEELS_CONFIG.read_text(encoding="utf-8"))
+    expected = {str(entry["wheel_filename"]): str(entry["wheel_sha256"]) for entry in entries}
+    actual = {path.name: path for path in wheel_dir.glob("*.whl")} if wheel_dir.is_dir() else {}
+    if set(actual) != set(expected):
+        missing = sorted(set(expected) - set(actual))
+        extra = sorted(set(actual) - set(expected))
+        raise RuntimeError(f"Lite bootstrap wheel set mismatch: missing={missing}, extra={extra}")
+
+    for filename, expected_hash in expected.items():
+        digest = hashlib.sha256(actual[filename].read_bytes()).hexdigest()
+        if digest != expected_hash:
+            raise RuntimeError(
+                f"Lite bootstrap wheel hash mismatch for {filename}: expected {expected_hash}, got {digest}"
+            )
+
+    print(f"  Lite bootstrap wheels OK: {len(expected)} files")
+    return expected
 
 
 def build_payload_if_needed() -> None:
@@ -199,6 +223,8 @@ def build_exe(*, without_engine_pack: bool = False) -> Path:
     print(f"  BiliLiveCut Portable Lite {RELEASE_VERSION}")
     print("=" * 60)
 
+    bootstrap_wheels = check_bootstrap_wheels()
+
     # Build Payload
     build_payload_if_needed()
 
@@ -260,6 +286,7 @@ def build_exe(*, without_engine_pack: bool = False) -> Path:
         "artifact_sha256": "",
         "ci_build": is_fixture,
         "engine_pack_metadata": "omitted" if without_engine_pack else "embedded",
+        "bootstrap_wheels": bootstrap_wheels,
     }
 
     # 如果 Engine Pack 信息存在，添加 CRC32

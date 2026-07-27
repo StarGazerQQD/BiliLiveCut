@@ -18,6 +18,42 @@ def test_release_workflow_has_smoke_tests() -> None:
     assert "--version" in content, "Release workflow missing Lite EXE --version smoke test"
     assert "--doctor" in content, "Release workflow missing Lite EXE --doctor smoke test"
     assert "--diagnose" not in content, "Release workflow calls an unsupported launcher argument"
+    assert "$doctorExit -eq 0" in content, "Release workflow must reject a false-success Doctor result"
+    assert "scripts/smoke_portable_lite.py" in content
+
+    smoke_script = (_PROJ_ROOT / "scripts" / "smoke_portable_lite.py").read_text(encoding="utf-8")
+    assert "Lite fresh online installation and second offline launch OK" in smoke_script
+    assert "_wait_ready" in smoke_script
+    assert '["--offline", "--engine-pack"' in smoke_script
+
+
+def test_release_workflow_builds_and_embeds_lite_bootstrap_wheels() -> None:
+    """Lite 必须携带无法从索引直接获得的确定性 wheel。"""
+    release_yml = _PROJ_ROOT / ".github" / "workflows" / "release.yml"
+    content = release_yml.read_text(encoding="utf-8")
+
+    assert "Build audited Lite bootstrap wheels" in content
+    assert "packaging/portable/dist/bootstrap-wheels" in content
+    assert content.index("Build audited Lite bootstrap wheels") < content.index("Build Lite EXE")
+
+
+def test_release_workflow_cross_verifies_artifact_identity() -> None:
+    """正式发布前必须交叉验证 Payload、Lite 和 Full 的身份及校验和。"""
+    release_yml = _PROJ_ROOT / ".github" / "workflows" / "release.yml"
+    content = release_yml.read_text(encoding="utf-8")
+
+    assert "scripts/verify_release_artifacts.py" in content
+    assert "--expected-builder-commit $env:GITHUB_SHA" in content
+
+
+def test_release_tag_is_exact_and_matches_project_version() -> None:
+    """Release tag 不得只匹配前缀，也不得偏离版本真源。"""
+    release_yml = _PROJ_ROOT / ".github" / "workflows" / "release.yml"
+    content = release_yml.read_text(encoding="utf-8")
+
+    assert "complete release version pattern" in content
+    assert "PROJECT_VERSION=" in content
+    assert 'if [ "${TAG_INPUT#v}" != "$PROJECT_VERSION" ]' in content
 
 
 def test_release_smoke_checkout_includes_source_baseline_history() -> None:
@@ -92,7 +128,9 @@ def test_release_runs_frozen_full_launcher_through_model_preparation() -> None:
     full_smoke_end = content.index("timeout-minutes: 25", full_smoke_start)
     smoke = content[full_smoke_start:full_smoke_end]
 
-    assert "build_engine_pack.py --fixture" in smoke
+    assert "Build Fixture Engine Pack for smoke tests" in content
+    assert "build_engine_pack.py --fixture" in content
+    assert "$fixturePack" in smoke
     assert 'Start-Process -FilePath "$root\\BiliLiveCut-Portable.exe"' in smoke
     assert '"--offline", "--engine-pack"' in smoke
     assert "$root\\models\\engine-pack-installed.json" in smoke

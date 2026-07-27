@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import shutil
 import subprocess
+from html.parser import HTMLParser
 from pathlib import Path
 
 import pytest
@@ -11,6 +12,22 @@ import pytest
 PROJECT_ROOT = Path(__file__).resolve().parents[2]
 STATIC_ROOT = PROJECT_ROOT / "app" / "web" / "static"
 JAVASCRIPT_FILES = tuple(sorted(STATIC_ROOT.rglob("*.js")))
+TEMPLATE_FILES = tuple(sorted((PROJECT_ROOT / "app" / "web" / "templates").glob("*.html")))
+INTERACTION_CHECK = PROJECT_ROOT / "scripts" / "check_frontend_interactions.mjs"
+
+
+class _ElementIdCollector(HTMLParser):
+    """收集 HTML 元素 ID，用于防止选择器命中错误元素。"""
+
+    def __init__(self) -> None:
+        super().__init__()
+        self.ids: list[str] = []
+
+    def handle_starttag(self, _tag: str, attrs: list[tuple[str, str | None]]) -> None:
+        """记录当前开始标签的 ID。"""
+        for name, value in attrs:
+            if name == "id" and value is not None:
+                self.ids.append(value)
 
 
 @pytest.mark.parametrize(
@@ -36,3 +53,36 @@ def test_static_javascript_has_valid_module_syntax(javascript_path: Path) -> Non
 
     relative_path = javascript_path.relative_to(PROJECT_ROOT).as_posix()
     assert result.returncode == 0, f"{relative_path} 不是有效的 ES Module:\n{result.stderr}"
+
+
+@pytest.mark.parametrize(
+    "template_path",
+    TEMPLATE_FILES,
+    ids=lambda path: path.relative_to(PROJECT_ROOT).as_posix(),
+)
+def test_html_template_element_ids_are_unique(template_path: Path) -> None:
+    """同一页面重复 ID 会使交互代码更新到错误元素。"""
+    parser = _ElementIdCollector()
+    parser.feed(template_path.read_text(encoding="utf-8"))
+    duplicates = sorted({element_id for element_id in parser.ids if parser.ids.count(element_id) > 1})
+
+    assert duplicates == [], f"{template_path.name} 存在重复 ID: {duplicates}"
+
+
+def test_frontend_module_graph_and_tab_interaction() -> None:
+    """真实加载全部 ES Module，并验证初始刷新、事件绑定和标签切换。"""
+    node = shutil.which("node")
+    assert node is not None, "前端交互检查需要 Node.js"
+
+    result = subprocess.run(
+        [node, str(INTERACTION_CHECK)],
+        capture_output=True,
+        text=True,
+        encoding="utf-8",
+        errors="replace",
+        timeout=30,
+        check=False,
+    )
+
+    assert result.returncode == 0, result.stdout + result.stderr
+    assert "PASS: frontend module graph" in result.stdout

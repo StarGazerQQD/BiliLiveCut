@@ -14,8 +14,13 @@ import json
 import sys
 import tempfile
 from pathlib import Path
+from types import SimpleNamespace
+from typing import TYPE_CHECKING
 
 import pytest
+
+if TYPE_CHECKING:
+    from pytest import MonkeyPatch
 
 # 添加 portable 模块到路径
 _portable_dir = Path(__file__).resolve().parent.parent  # portable/
@@ -79,6 +84,24 @@ class TestSourceSnapshot:
         full = resolve_commit("f2c291d")
         assert len(full) == 40
         assert full == "f2c291df2409bdf83dbf8f8a30d6b3ee1d44e8e0"
+
+    def test_git_operations_are_independent_of_current_directory(
+        self,
+        tmp_path: Path,
+        monkeypatch: MonkeyPatch,
+    ) -> None:
+        """验证源码提取和来源校验不依赖调用者的当前工作目录。"""
+        from blc_portable.payload.manifest import SOURCE_COMMIT_FULL
+        from blc_portable.payload.source_snapshot import extract_source, verify_source_origin
+
+        staging = tmp_path / "staging"
+        staging.mkdir()
+        monkeypatch.chdir(tmp_path)
+
+        report = extract_source(SOURCE_COMMIT_FULL, staging)
+        verify_source_origin(staging, SOURCE_COMMIT_FULL)
+
+        assert report["source_commit_full"] == SOURCE_COMMIT_FULL
 
     def test_extract_contains_app_cli(self, tmp_worktree: str) -> None:
         """验证提取内容包含关键业务文件。"""
@@ -149,6 +172,33 @@ class TestSourceSnapshot:
 
         with pytest.raises(RuntimeError, match="backends.py.*不一致"):
             verify_source_origin(staging, SOURCE_COMMIT_FULL)
+
+    def test_workspace_baseline_rejects_business_source_drift(self, monkeypatch: MonkeyPatch) -> None:
+        """固定基线不得静默漏掉当前业务源码修复。"""
+        from blc_portable.payload import source_snapshot
+
+        outputs = iter(["app/cli.py\napp/_portable_release.py\n", ""])
+
+        def fake_run(*_args: object, **_kwargs: object) -> SimpleNamespace:
+            return SimpleNamespace(returncode=0, stdout=next(outputs), stderr="")
+
+        monkeypatch.setattr(source_snapshot.subprocess, "run", fake_run)
+
+        with pytest.raises(RuntimeError, match="app/cli.py.*更新 source_commit"):
+            source_snapshot.verify_workspace_source_baseline("a" * 40)
+
+    def test_workspace_baseline_allows_release_metadata_overlay(self, monkeypatch: MonkeyPatch) -> None:
+        """版本与构建身份 Overlay 可以位于业务源码基线之后。"""
+        from blc_portable.payload import source_snapshot
+
+        outputs = iter(["app/_portable_release.py\npyproject.toml\nsetup.py\n", ""])
+
+        def fake_run(*_args: object, **_kwargs: object) -> SimpleNamespace:
+            return SimpleNamespace(returncode=0, stdout=next(outputs), stderr="")
+
+        monkeypatch.setattr(source_snapshot.subprocess, "run", fake_run)
+
+        source_snapshot.verify_workspace_source_baseline("a" * 40)
 
 
 # ── Payload 测试 ──────────────────────────────────────────────────

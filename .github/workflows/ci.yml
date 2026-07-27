@@ -3,7 +3,7 @@
 #
 # Job 结构:
 #   lint       — ruff check + format + version + release_audit + JS syntax
-#   audit      — pip-audit (不阻塞, 漏洞豁免为机器可读)
+#   audit      — Portable Windows runtime lock pip-audit (阻断式)
 #   test       — Linux/Windows 多 Python → pytest + coverage (≥50%)
 #   test-macos — main 推送时运行 macOS py3.12
 #   portable   — Payload 构建 + Portable 全部测试
@@ -76,14 +76,16 @@ jobs:
           done
           node --check app/web/static/app.js
 
+      - name: JavaScript module and interaction check
+        run: node scripts/check_frontend_interactions.mjs
+
 # ═══════════════════════════════════════════════════════════════════
-# Job 2: Audit — pip-audit (不阻塞, 漏洞豁免为机器可读)
+# Job 2: Audit — Portable Windows runtime locks (fail-closed)
 # ═══════════════════════════════════════════════════════════════════
   audit:
     name: "audit"
     needs: lint
     runs-on: ubuntu-latest
-    continue-on-error: true
     steps:
       - uses: actions/checkout@v4
 
@@ -91,33 +93,11 @@ jobs:
         with:
           python-version: "3.12"
 
-      - name: Install project + pip-audit
-        run: |
-          pip install --upgrade pip
-          pip install -e ".[dev,web]"
-          pip install pip-audit
+      - name: Install pip-audit
+        run: python -m pip install --upgrade pip pip-audit
 
-      - name: pip-audit vulnerability scan
-        id: audit
-        run: |
-          pip-audit --strict --skip-editable -r <(pip freeze) 2>&1 | tee /tmp/pip-audit.log
-          AUDIT_EXIT=$?
-          if [ $AUDIT_EXIT -ne 0 ]; then
-            echo "pip-audit found vulnerabilities (exit=$AUDIT_EXIT)"
-            # Check if vulnerability exemptions file exists
-            if [ -f "scripts/pip-audit-exemptions.json" ]; then
-              echo "Exemptions file found — evaluating..."
-              python scripts/check_pip_audit_exemptions.py /tmp/pip-audit.log || {
-                echo "::warning::pip-audit vulnerabilities NOT covered by exemptions"
-                exit $AUDIT_EXIT
-              }
-              echo "All vulnerabilities covered by exemptions"
-            else
-              echo "::warning::pip-audit found vulnerabilities (evaluate risk and add to scripts/pip-audit-exemptions.json)"
-              exit $AUDIT_EXIT
-            fi
-          fi
-        continue-on-error: true
+      - name: Audit Portable runtime locks
+        run: python scripts/audit_portable_runtime_locks.py
 
 # ═══════════════════════════════════════════════════════════════════
 # Job 3: Test — 全矩阵 pytest + coverage ≥ 50%

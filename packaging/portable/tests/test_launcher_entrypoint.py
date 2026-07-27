@@ -5,10 +5,13 @@ from __future__ import annotations
 import argparse
 import ast
 import io
+import json
 import runpy
 import sys
 from pathlib import Path
 from typing import TYPE_CHECKING
+
+import pytest
 
 if TYPE_CHECKING:
     from _pytest.capture import CaptureFixture
@@ -115,6 +118,108 @@ def test_run_launcher_accepts_namespace() -> None:
     from blc_portable.launcher.main import run_launcher  # noqa: E402
 
     assert callable(run_launcher)
+
+
+def test_system_python_detection_rejects_unsupported_version(tmp_path: Path, monkeypatch: MonkeyPatch) -> None:
+    from blc_portable.launcher import main as launcher_module
+
+    executable = tmp_path / "python.exe"
+    executable.write_bytes(b"fixture")
+
+    def fake_run(args: list[str], **_kwargs: object):
+        payload = {"executable": str(executable), "version": [3, 14]}
+        return launcher_module.subprocess.CompletedProcess(args, 0, stdout=json.dumps(payload), stderr="")
+
+    monkeypatch.setattr(launcher_module.subprocess, "run", fake_run)
+
+    assert launcher_module._find_system_python() is None
+
+
+def test_system_python_detection_returns_real_supported_interpreter(tmp_path: Path, monkeypatch: MonkeyPatch) -> None:
+    from blc_portable.launcher import main as launcher_module
+
+    executable = tmp_path / "python.exe"
+    executable.write_bytes(b"fixture")
+
+    def fake_run(args: list[str], **_kwargs: object):
+        payload = {"executable": str(executable), "version": [3, 12]}
+        return launcher_module.subprocess.CompletedProcess(args, 0, stdout=json.dumps(payload), stderr="")
+
+    monkeypatch.setattr(launcher_module.subprocess, "run", fake_run)
+
+    assert launcher_module._find_system_python() == executable.resolve()
+
+
+def test_prepare_venv_rejects_existing_unsupported_python(tmp_path: Path, monkeypatch: MonkeyPatch) -> None:
+    from blc_portable.launcher import main as launcher_module
+
+    venv_python = tmp_path / ".venv" / "Scripts" / "python.exe"
+    venv_python.parent.mkdir(parents=True)
+    venv_python.write_bytes(b"fixture")
+    monkeypatch.setattr(launcher_module, "_python_version", lambda _python: (3, 14))
+
+    with pytest.raises(RuntimeError, match="unsupported Python 3.14"):
+        launcher_module.prepare_venv(tmp_path)
+
+
+def test_doctor_returns_nonzero_when_checks_fail(tmp_path: Path, monkeypatch: MonkeyPatch) -> None:
+    from blc_portable.launcher import main as launcher_module
+
+    monkeypatch.setattr(launcher_module, "get_current_release_dir", lambda: None)
+    monkeypatch.setattr(launcher_module, "get_payload_manifest", lambda: (_ for _ in ()).throw(RuntimeError()))
+    monkeypatch.setattr(launcher_module, "get_engine_pack_info", lambda: None)
+    monkeypatch.setattr(launcher_module, "_find_portable_python", lambda _root: None)
+    monkeypatch.setattr(launcher_module, "_find_system_python", lambda: None)
+
+    assert launcher_module._run_doctor(tmp_path) == 1
+
+
+def test_doctor_returns_zero_when_required_checks_pass(tmp_path: Path, monkeypatch: MonkeyPatch) -> None:
+    from blc_portable.launcher import main as launcher_module
+
+    release = tmp_path / "runtime" / "releases" / "current"
+    release.mkdir(parents=True)
+    portable_python = tmp_path / "portable-python" / "python.exe"
+    portable_python.parent.mkdir(parents=True)
+    portable_python.write_bytes(b"fixture")
+    for engine_id in ("whisper", "paraformer", "sensevoice", "funasr_nano"):
+        engine_dir = tmp_path / "models" / engine_id
+        engine_dir.mkdir(parents=True)
+        (engine_dir / "model.bin").write_bytes(b"fixture")
+    ffmpeg = tmp_path / "bin" / "ffmpeg.exe"
+    ffmpeg.parent.mkdir(parents=True)
+    ffmpeg.write_bytes(b"fixture")
+
+    monkeypatch.setattr(launcher_module, "get_current_release_dir", lambda: release)
+    monkeypatch.setattr(launcher_module, "get_payload_manifest", lambda: {"release_version": "test"})
+    monkeypatch.setattr(launcher_module, "get_engine_pack_info", lambda: {"crc32": "ABCD", "sha256": "a" * 64})
+    monkeypatch.setattr(launcher_module, "_find_portable_python", lambda _root: portable_python)
+    monkeypatch.setattr(launcher_module, "_python_version", lambda _python: (3, 12))
+    monkeypatch.setattr(launcher_module, "_find_system_python", lambda: None)
+
+    assert launcher_module._run_doctor(tmp_path) == 0
+
+
+def test_run_launcher_propagates_doctor_failure(tmp_path: Path, monkeypatch: MonkeyPatch) -> None:
+    from blc_portable.launcher import main as launcher_module
+
+    args = launcher_module.build_parser().parse_args(["--doctor"])
+    monkeypatch.setattr(launcher_module, "get_app_root", lambda: tmp_path)
+    monkeypatch.setattr(launcher_module, "_run_doctor", lambda _root: 1)
+
+    assert launcher_module.run_launcher(args) == 1
+
+
+def test_exit_pause_ignores_eof_from_interactive_stdin(monkeypatch: MonkeyPatch) -> None:
+    from blc_portable.launcher import main as launcher_module
+
+    class InteractiveEmptyInput(io.StringIO):
+        def isatty(self) -> bool:
+            return True
+
+    monkeypatch.setattr(launcher_module.sys, "stdin", InteractiveEmptyInput())
+
+    launcher_module._pause_before_exit()
 
 
 def test_frozen_entry_prepare_models_uses_package_safe_imports(tmp_path: Path, monkeypatch: MonkeyPatch) -> None:

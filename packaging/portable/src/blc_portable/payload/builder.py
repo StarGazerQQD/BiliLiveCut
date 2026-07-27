@@ -33,6 +33,7 @@ from .source_snapshot import (
     apply_version_overlay,
     extract_source,
     verify_source_origin,
+    verify_workspace_source_baseline,
 )
 
 _logger = logging.getLogger(__name__)
@@ -295,6 +296,8 @@ def build_payload(
     if builder_commit is None:
         result = subprocess.run(["git", "rev-parse", "HEAD"], capture_output=True, text=True, check=True)
         builder_commit = result.stdout.strip()
+
+    verify_workspace_source_baseline(SOURCE_COMMIT_FULL)
 
     # 清理并创建输出目录
     staging_dir = BUILD_DIR / "payload_staging"

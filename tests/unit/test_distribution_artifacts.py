@@ -48,6 +48,7 @@ def test_sdist_manifest_contains_runtime_and_audit_inputs() -> None:
         "recursive-include app *.py *.html *.css *.js *.txt",
         "recursive-include config *.yaml *.txt",
         "recursive-include packaging *.py *.json *.yaml *.ini *.lock *.in *.spec *.md *.example",
+        "recursive-include packaging/portable/licenses *.txt *.md",
         "recursive-include scripts",
         "recursive-include tests",
         "recursive-include tools",
@@ -65,3 +66,21 @@ def test_sdist_manifest_contains_runtime_and_audit_inputs() -> None:
 
     release_workflow = (REPO_ROOT / ".github" / "workflows" / "release.yml").read_text(encoding="utf-8")
     assert ".cursor/rules/*" in release_workflow
+
+
+def test_local_runtime_and_tool_outputs_are_ignored() -> None:
+    """本地 Runtime、覆盖率报告和 IDE 工作区不得进入提交范围。"""
+    gitignore = (REPO_ROOT / ".gitignore").read_text(encoding="utf-8")
+
+    for pattern in ("coverage.xml", "/runtime/", "*.code-workspace"):
+        assert pattern in gitignore
+
+
+def test_readme_distinguishes_project_code_from_third_party_licenses() -> None:
+    """第三方模型许可证不得被误述为项目代码许可证。"""
+    readme = (REPO_ROOT / "README.md").read_text(encoding="utf-8")
+    portable_readme = (REPO_ROOT / "packaging" / "portable" / "README.md").read_text(encoding="utf-8")
+
+    for content in (readme, portable_readme):
+        assert "不构成 BiliLiveCut 项目代码的开源许可" in content
+        assert "未声明" in content and "独立开源许可证" in content

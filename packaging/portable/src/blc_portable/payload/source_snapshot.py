@@ -18,6 +18,7 @@ from .manifest import (
 )
 
 _logger = logging.getLogger(__name__)
+_REPOSITORY_ROOT = Path(__file__).resolve().parents[5]
 
 # 需要从 Commit 中提取的文件/目录
 PAYLOAD_ITEMS = [
@@ -70,6 +71,79 @@ ALLOWED_OVERLAY_FILES = [
     "payload_manifest.json",
 ]
 
+_BASELINE_ALLOWED_DIFFERENCES = frozenset(
+    [
+        *ALLOWED_OVERLAY_FILES,
+        "setup.py",
+        "setup_c.py",
+    ]
+)
+
+
+def _git_path_list(command: list[str]) -> list[str]:
+    """运行只读 Git 路径查询并返回规范化的相对路径。"""
+    try:
+        result = subprocess.run(
+            command,
+            capture_output=True,
+            text=True,
+            encoding="utf-8",
+            errors="replace",
+            timeout=30,
+            cwd=str(_REPOSITORY_ROOT),
+        )
+    except (OSError, subprocess.SubprocessError) as exc:
+        raise RuntimeError(f"无法核对 Payload 源码基线: {exc}") from exc
+
+    if result.returncode != 0:
+        diagnostic = result.stderr.strip() or result.stdout.strip() or f"exit={result.returncode}"
+        raise RuntimeError(f"无法核对 Payload 源码基线: {diagnostic}")
+
+    return sorted({line.strip().replace("\\", "/") for line in result.stdout.splitlines() if line.strip()})
+
+
+def verify_workspace_source_baseline(source_commit: str) -> None:
+    """拒绝构建落后于当前业务源码的 Payload 基线。
+
+    构建工具和发布元数据可以位于源码基线之后，但任何会进入 Payload
+    的业务文件都必须与固定提交一致；否则 ``git archive`` 会静默丢失
+    已提交或未提交的修复。
+
+    :param source_commit: 当前配置的业务源码完整 Commit Hash。
+    :raises RuntimeError: Git 查询失败或业务源码与固定基线不一致。
+    """
+    changed = _git_path_list(
+        [
+            "git",
+            "-c",
+            "core.autocrlf=false",
+            "diff",
+            "--name-only",
+            "--diff-filter=ACDMRTUXB",
+            source_commit,
+            "--",
+            *PAYLOAD_ITEMS,
+        ]
+    )
+    untracked = _git_path_list(
+        [
+            "git",
+            "ls-files",
+            "--others",
+            "--exclude-standard",
+            "--",
+            *PAYLOAD_ITEMS,
+        ]
+    )
+    stale_paths = sorted((set(changed) | set(untracked)) - _BASELINE_ALLOWED_DIFFERENCES)
+    if stale_paths:
+        preview = ", ".join(stale_paths[:12])
+        suffix = f" 等 {len(stale_paths)} 个文件" if len(stale_paths) > 12 else ""
+        raise RuntimeError(
+            f"Payload 源码基线 {source_commit[:7]} 已落后于当前业务源码: {preview}{suffix}；"
+            "请先提交业务修复并更新 source_commit"
+        )
+
 
 def resolve_commit(commit_ref: str) -> str:
     """解析 Commit 引用的完整 40 字符 Hash。
@@ -85,6 +159,7 @@ def resolve_commit(commit_ref: str) -> str:
             text=True,
             check=True,
             timeout=10,
+            cwd=str(_REPOSITORY_ROOT),
         )
         full_hash = result.stdout.strip()
         if len(full_hash) != 40:
@@ -125,6 +200,7 @@ def extract_source(commit_ref: str, output_dir: Path) -> dict:
         capture_output=True,
         text=True,
         timeout=10,
+        cwd=str(_REPOSITORY_ROOT),
     )
     if repo_root_result.returncode != 0:
         raise RuntimeError("无法确定 Git 仓库根目录")
@@ -314,6 +390,7 @@ def verify_source_origin(
                 capture_output=True,
                 check=True,
                 timeout=10,
+                cwd=str(_REPOSITORY_ROOT),
             )
         except (subprocess.CalledProcessError, subprocess.TimeoutExpired, OSError) as exc:
             raise RuntimeError(f"无法从 Commit {source_commit[:8]} 读取业务文件: {rel_path}") from exc

@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+import hashlib
+import json
 import sys
 from pathlib import Path
 
@@ -57,6 +59,36 @@ class TestLiteBuilder:
         from blc_portable.payload.manifest import RELEASE_VERSION as MANIFEST_VERSION  # noqa: E402
 
         assert LITE_VERSION == MANIFEST_VERSION
+
+    def test_lite_bootstrap_wheels_are_hash_verified(self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+        from blc_portable.builders import lite
+
+        wheel = tmp_path / "fixture-1.0-py3-none-any.whl"
+        wheel.write_bytes(b"audited wheel")
+        config = tmp_path / "bootstrap-wheels.json"
+        config.write_text(
+            json.dumps(
+                [
+                    {
+                        "wheel_filename": wheel.name,
+                        "wheel_sha256": hashlib.sha256(wheel.read_bytes()).hexdigest(),
+                    }
+                ]
+            ),
+            encoding="utf-8",
+        )
+        monkeypatch.setattr(lite, "BOOTSTRAP_WHEELS_CONFIG", config)
+
+        lite.check_bootstrap_wheels(tmp_path)
+        wheel.write_bytes(b"tampered")
+        with pytest.raises(RuntimeError, match="hash mismatch"):
+            lite.check_bootstrap_wheels(tmp_path)
+
+    def test_pyinstaller_spec_embeds_bootstrap_wheels(self) -> None:
+        spec = (_portable_dir / "specs" / "portable_launcher.spec").read_text(encoding="utf-8")
+
+        assert '"bootstrap-wheels"' in spec
+        assert "Lite bootstrap wheels are missing" in spec
 
 
 class TestFullBuilder:

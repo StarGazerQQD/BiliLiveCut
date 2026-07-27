@@ -48,7 +48,7 @@ BiliLiveCut 是一个**全自动 AI 直播切片系统**：监听 Bilibili 直�
 | | Portable Lite | Portable Full |
 |---|---|---|
 | **定位** | 轻量化，方便下载分发 | 完整包，开箱即用 |
-| **当前发行大小** | ~40 MB (EXE) | ~1 GB (ZIP，解压后更大) |
+| **当前发行大小** | 约 80 MB (EXE) | 约 1 GB (ZIP，解压后更大) |
 | **内含** | EXE + 业务源码 Payload | EXE + Portable Python + Wheels + FFmpeg |
 | **安装过程** | 首次安装时在线下载 Python 依赖；FFmpeg 需另行准备 | 预置 Python、依赖和 FFmpeg，组件安装无需额外下载 |
 | **模型** | 不含模型，通过独立 **Engine Pack** 或在线下载安装 | 不含模型，通过独立 **Engine Pack** 或在线下载安装 |
@@ -92,8 +92,8 @@ BiliLiveCut 是一个**全自动 AI 直播切片系统**：监听 Bilibili 直�
 - **Bilibili 风控熔断**: `CircuitBreaker` 房间级熔断，403/412 触发后退避
 - **弹幕分级采样**: SC/互动 100% 采集，普通 30%，高密度 10%
 - **Schema v1 系统**: 轻量 schema_meta 元信息表 + SHA-256 指纹，不兼容数据库拒绝启动
-- **`bililivecut doctor`**: 15 项自检命令 (PASS/WARN/FAIL)
-- **CI 增强**: pip-audit + pytest-cov 覆盖率门禁 + macOS 矩阵
+- **`bililivecut doctor`**: 15 项自检命令 (PASS/WARN/FAIL)，存在 FAIL 时返回非零退出码
+- **CI 增强**: Portable Windows 运行时锁的阻断式 pip-audit + pytest-cov 覆盖率门禁 + macOS 矩阵
 - **290/290 测试通过**
 
 ---
@@ -212,6 +212,8 @@ resources/engine_pack_info.json (本地 Engine Pack 构建后可供 Lite/Full EX
 
 正式构建会执行再分发门禁：主模型、Paraformer 子模型及 Fun-ASR-Nano 随附的 Qwen3 组件必须具有固定来源、许可证证据、验证日期和随包许可证文件；任一项缺失都会终止构建。完整归属见 [`licenses/THIRD_PARTY_NOTICES.md`](licenses/THIRD_PARTY_NOTICES.md)。
 
+> 上述 MIT / Apache-2.0 文件仅用于所列第三方模型及组件，不构成 BiliLiveCut 项目代码的开源许可。项目代码当前未声明独立开源许可证，对外分发源码或派生作品前应先取得权利人明确授权。
+
 ### 注意事项
 
 - Engine Pack 预计体积 ≥ 4 GB，请使用 **NTFS** 或 **exFAT** 文件系统 (FAT32 不支持单文件 >4GB)
@@ -232,7 +234,7 @@ resources/engine_pack_info.json (本地 Engine Pack 构建后可供 Lite/Full EX
 |------|------|------|------|
 | ① | 释放源码 Payload | ~426 KB | 从 EXE 内置 Payload 释放 `app/` `config/` `pyproject.toml` `setup.py` 等，**无需 GitHub** |
 | ② | 创建虚拟环境 | — | `.venv` 隔离 Python 依赖 |
-| ③ | 安装依赖 | ~500 MB | 阿里云镜像 + 清华镜像（备用） |
+| ③ | 安装依赖 | ~500 MB | 内嵌 5 个经哈希校验的 bootstrap wheel，其余依赖从用户配置的 Python 包索引下载且只接受二进制 wheel |
 | ④ | 模型准备 | — | 检查 Engine Pack → CRC32 校验安装 → 无本地包则在线下载四引擎模型 |
 | ⑤ | 检查 FFmpeg | — | Lite 当前不内置 FFmpeg；需要系统 PATH 可用，或在 `bin/` 提供 `ffmpeg.exe`/`ffprobe.exe` |
 | ⑥ | 生成 `.env` 配置 | — | 含合理默认值 |
@@ -250,14 +252,15 @@ resources/engine_pack_info.json (本地 Engine Pack 构建后可供 Lite/Full EX
 
 ### 运行依赖锁维护
 
-Portable 使用 Python 3.11 / 3.12 两套 Windows x64 完整依赖锁。锁文件覆盖直接依赖和全部传递依赖，每个条目都固定为 `==` 版本并校验所选 wheel 的 SHA-256。PyPI 没有提供 wheel 的五个纯 Python 包由受控脚本从固定 SHA-256 的源码构建，构建工具版本和时间戳同样固定。
+Portable 使用 Python 3.11 / 3.12 两套 Windows x64 完整依赖锁。锁文件覆盖直接依赖和全部传递依赖，每个条目都固定为 `==` 版本并校验所选 wheel 的 SHA-256。PyPI 没有提供 wheel 的五个纯 Python 包由受控脚本从固定 SHA-256 的源码构建，构建工具版本和时间戳同样固定；这 5 个 wheel 会作为最小 bootstrap 集内嵌进 Lite EXE，避免包索引返回源码包时触发哈希不匹配。Lite 联网安装其余依赖时使用 `--only-binary=:all: --require-hashes`，不会静默回退到 sdist。
 
 ```powershell
 python -m pip install setuptools==83.0.0 wheel==0.46.3
+python scripts/build_portable_runtime_wheels.py --output-dir packaging/portable/dist/bootstrap-wheels
 python scripts/generate_portable_runtime_locks.py
 ```
 
-Release CI 会对两套锁执行 `pip download --require-hashes`，并分别进行 Python 3.11 和 3.12 的全新虚拟环境 `--no-index` 离线安装、`pip check` 与核心模块导入测试。Full Launcher 会自动发现安装目录下的 `vendor/wheels` 并强制使用 `--no-index --require-hashes`，无需设置 `PIP_NO_INDEX`；若 Full wheelhouse 缺失或为空则直接失败，不会回退到在线镜像。不要通过删除哈希、添加 `--no-deps` 或跳过离线安装来规避锁文件错误。
+Release CI 会对两套锁执行 `pip download --require-hashes`，并分别进行 Python 3.11 和 3.12 的全新虚拟环境 `--no-index` 离线安装、`pip check` 与核心模块导入测试。它还会让 Lite 在空目录完成首次联网安装、Web 就绪与二次断网启动。Full Launcher 会自动发现安装目录下的 `vendor/wheels` 并强制使用 `--no-index --require-hashes`，无需设置 `PIP_NO_INDEX`；若 Full wheelhouse 缺失或为空则直接失败，不会回退到在线镜像。发布前还会交叉核对 Payload、Lite、Full 的版本、源码基线、构建提交与实际 SHA-256/CRC32。不要通过删除哈希、添加 `--no-deps` 或跳过离线安装来规避锁文件错误。
 
 ### 方式三：开发者手动打包
 
@@ -288,7 +291,7 @@ packaging/portable/                     # ★ 即插即用分发版根目录 (�
 ├── pip.ini                          # pip 镜像源配置（阿里云 + 清华备用）
 ├── .env.example                     # 配置模板（launcher.exe 自动生成 .env）
 ├── .gitignore                       # Git 忽略规则
-├── tests/                           # 19 项 Portable 专项测试
+├── tests/                           # Portable 构建、安装、安全与制品测试
 ├── build/                           # 构建临时文件（gitignore 忽略）
 ├── dist/                            # 构建产物
 │   ├── payload/                     #   source_payload.zip + manifest

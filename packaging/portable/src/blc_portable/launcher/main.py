@@ -32,6 +32,7 @@ VERSION = "V0.1.15.2 Alpha"
 RELEASE_VERSION = "0.1.15.2-alpha"
 SOURCE_COMMIT_SHORT = "f2c291d"
 # NOTE: RELEASE_ID 将在获得 Payload SHA-256 后动态生成 (内容寻址)
+SUPPORTED_PYTHON_VERSIONS = frozenset({(3, 11), (3, 12)})
 
 VENV_DIR = ".venv"
 WHEELS_DIR = os.path.join("vendor", "wheels")
@@ -182,31 +183,52 @@ def ensure_env(app_root: Path, source_dir: Path) -> None:
 # -- Environment prep ──────────────────────────────────────────────
 
 
+def _inspect_python(command: Sequence[str]) -> tuple[Path, tuple[int, int]] | None:
+    """Return the real interpreter path and version for one command."""
+    probe = "import json,sys; print(json.dumps({'executable': sys.executable, 'version': list(sys.version_info[:2])}))"
+    try:
+        result = subprocess.run(
+            [*command, "-c", probe],
+            capture_output=True,
+            text=True,
+            timeout=10,
+        )
+        if result.returncode != 0:
+            return None
+        payload = json.loads(result.stdout.strip())
+        executable = Path(str(payload["executable"]))
+        version_raw = payload["version"]
+        if (
+            not executable.is_file()
+            or not isinstance(version_raw, list)
+            or len(version_raw) != 2
+            or not all(isinstance(part, int) for part in version_raw)
+        ):
+            return None
+        return executable.resolve(), (version_raw[0], version_raw[1])
+    except (OSError, subprocess.SubprocessError, json.JSONDecodeError, KeyError, TypeError, ValueError):
+        return None
+
+
+def _python_version(python: Path) -> tuple[int, int] | None:
+    """Return a Python executable's major/minor version when it is runnable."""
+    inspected = _inspect_python((str(python),))
+    return inspected[1] if inspected else None
+
+
 def _find_system_python() -> Path | None:
-    """查找System Python 3.11+。"""
-    candidates = ["python", "python3", "py"]
-    for name in candidates:
+    """Find a system Python interpreter supported by Portable locks."""
+    candidates: list[tuple[str, ...]]
+    if sys.platform == "win32":
+        candidates = [("py", "-3.12"), ("py", "-3.11"), ("python",), ("python3",)]
+    else:
+        candidates = [("python3",), ("python",)]
+    for command in candidates:
         try:
-            result = subprocess.run(
-                [name, "-c", "import sys; print(sys.version_info[:2])"],
-                capture_output=True,
-                text=True,
-                timeout=10,
-            )
-            v = tuple(int(x) for x in result.stdout.strip().strip("()").split(","))
-            if v >= (3, 11):
-                full = subprocess.run(
-                    ["where", name] if sys.platform == "win32" else ["which", name],
-                    capture_output=True,
-                    text=True,
-                    timeout=10,
-                )
-                lines = full.stdout.strip().splitlines()
-                for line in lines:
-                    p = Path(line.strip())
-                    if p.exists() and ".venv" not in str(p):
-                        return p
-        except Exception:
+            inspected = _inspect_python(command)
+            if inspected and inspected[1] in SUPPORTED_PYTHON_VERSIONS and ".venv" not in str(inspected[0]):
+                return inspected[0]
+        except (OSError, subprocess.SubprocessError):
             continue
     return None
 
@@ -242,34 +264,30 @@ def prepare_venv(app_root: Path) -> Path:
         venv_python = app_root / VENV_DIR / "bin" / "python"
 
     if venv_python.exists():
-        return venv_python
+        existing_version = _python_version(venv_python)
+        if existing_version in SUPPORTED_PYTHON_VERSIONS:
+            return venv_python
+        version_text = ".".join(str(part) for part in existing_version) if existing_version else "unknown"
+        raise RuntimeError(
+            f"Existing virtual environment uses unsupported Python {version_text}. "
+            "Only Python 3.11 and 3.12 are supported. Back up and remove .venv, then retry."
+        )
 
-    system_py = _find_portable_python(app_root) or _find_system_python()
+    portable_py = _find_portable_python(app_root)
+    system_py = portable_py if portable_py and _python_version(portable_py) in SUPPORTED_PYTHON_VERSIONS else None
+    system_py = system_py or _find_system_python()
     if system_py is None:
         raise RuntimeError(
-            "Python 3.11+ not found. Install Python or place Portable Python in portable-python/.\n"
+            "Compatible Python 3.11/3.12 not found. Install Python or place Portable Python in portable-python/.\n"
             "Portable Python download: https://www.python.org/downloads/windows/"
         )
 
-    # Validate Python version (only 3.11 and 3.12 supported)
-    r = subprocess.run(
-        [str(system_py), "-c", "import sys; v=sys.version_info[:2]; print(f'{v[0]}.{v[1]}')"],
-        capture_output=True,
-        text=True,
-        timeout=10,
-    )
-    py_ver = r.stdout.strip()
-    parts = py_ver.split(".")
-    major, minor = int(parts[0]), int(parts[1])
-    if major > 3 or (major == 3 and minor >= 13):
-        raise RuntimeError(
-            f"Python {py_ver} is not supported. Only Python 3.11 and 3.12.\n"
-            "Download: https://www.python.org/downloads/windows/"
-        )
+    version = _python_version(system_py)
+    if version not in SUPPORTED_PYTHON_VERSIONS:
+        raise RuntimeError("Selected Python changed during detection. Only Python 3.11 and 3.12 are supported.")
+    py_ver = ".".join(str(part) for part in version)
 
     print(f"  Python: {system_py} ({py_ver})")
-
-    print(f"  Python: {system_py}")
     print("  creating venv...")
     subprocess.run(
         [str(system_py), "-m", "venv", str(app_root / VENV_DIR)],
@@ -316,6 +334,18 @@ def _find_local_wheelhouse(app_root: Path) -> Path | None:
     :returns: The local wheelhouse path, or ``None`` when it is unavailable.
     """
     wheelhouse = app_root / WHEELS_DIR
+    if wheelhouse.is_dir() and any(wheelhouse.glob("*.whl")):
+        return wheelhouse
+    return None
+
+
+def _find_bootstrap_wheelhouse() -> Path | None:
+    """Find the minimal wheel set embedded in Lite for online installation."""
+    if getattr(sys, "frozen", False):
+        base = Path(sys._MEIPASS)  # type: ignore[attr-defined]
+    else:
+        base = Path(__file__).resolve().parent.parent.parent.parent / "dist"
+    wheelhouse = base / "bootstrap-wheels"
     if wheelhouse.is_dir() and any(wheelhouse.glob("*.whl")):
         return wheelhouse
     return None
@@ -450,18 +480,35 @@ def install_dependencies(
         wheelhouse = _find_local_wheelhouse(app_root)
         if wheelhouse is not None:
             print(f"  local wheelhouse detected, enforcing offline install: {wheelhouse}")
-            offline_flag = ["--no-index", "--find-links", str(wheelhouse)]
+            install_source_flags = ["--no-index", "--find-links", str(wheelhouse)]
         elif (app_root / "portable-python" / "python.exe").is_file():
             raise RuntimeError(
                 "Full Bundle wheelhouse is missing or empty: "
                 f"{app_root / WHEELS_DIR}\nRefusing to download dependencies from the network."
             )
         elif os.environ.get("PIP_NO_INDEX") == "1":
-            offline_flag = ["--no-index"]
+            install_source_flags = ["--no-index"]
         else:
-            offline_flag = []
+            bootstrap_wheelhouse = _find_bootstrap_wheelhouse()
+            if bootstrap_wheelhouse is None:
+                raise RuntimeError(
+                    "Lite bootstrap wheelhouse is missing. Re-download the official Lite executable; "
+                    "source-only dependencies cannot be installed safely from PyPI sdists."
+                )
+            print(f"  embedded Lite bootstrap wheels: {bootstrap_wheelhouse}")
+            install_source_flags = ["--find-links", str(bootstrap_wheelhouse)]
         subprocess.run(
-            [str(venv_python), "-m", "pip", "install", "-r", str(lock_file), "--require-hashes"] + offline_flag,
+            [
+                str(venv_python),
+                "-m",
+                "pip",
+                "install",
+                "-r",
+                str(lock_file),
+                "--require-hashes",
+                "--only-binary=:all:",
+            ]
+            + install_source_flags,
             check=True,
             timeout=600,
         )
@@ -563,6 +610,17 @@ def prepare_models(app_root: Path, user_engine_pack_path: str | None = None) -> 
 # -- Launch ──────────────────────────────────────────────────
 
 
+def _pause_before_exit() -> None:
+    """Pause for an interactive console without failing on closed stdin."""
+    if sys.stdin is None or not sys.stdin.isatty():
+        return
+    print("Press Enter to exit...")
+    try:
+        input()
+    except EOFError:
+        pass
+
+
 def _fail(msg: str) -> None:
     """Print error and exit。
 
@@ -574,12 +632,11 @@ def _fail(msg: str) -> None:
         print(f"  [Error] {line}")
     print("*" * 60)
     print()
-    print("Press Enter to exit...")
-    input()
+    _pause_before_exit()
     sys.exit(1)
 
 
-def _run_doctor(app_root: Path) -> None:
+def _run_doctor(app_root: Path) -> int:
     """Run System Diagnostics check。
 
     检查项:
@@ -641,8 +698,10 @@ def _run_doctor(app_root: Path) -> None:
 
     # 3. Engine Pack 信息
     ep = get_engine_pack_info()
-    _check("Engine Pack info embedded", ep is not None)
-    if ep:
+    if ep is None:
+        _warn("Engine Pack info embedded", "not embedded; an externally verified Engine Pack is supported")
+    else:
+        _check("Engine Pack info embedded", True)
         _check("Engine Pack CRC32 non-empty", bool(ep.get("crc32")), str(ep.get("crc32"))[:12])
         _check(
             "Engine Pack SHA-256 non-empty",
@@ -651,10 +710,30 @@ def _run_doctor(app_root: Path) -> None:
         )
 
     # 4. Python 可用
-    py = _find_system_python()
-    _check("System Python 3.11+", py is not None, str(py) if py else "not found")
     pp = _find_portable_python(app_root)
-    _check("Portable Python", pp is not None, str(pp) if pp else "not found")
+    pp_version = _python_version(pp) if pp else None
+    if pp is None:
+        _warn("Portable Python", "not bundled (expected for Lite mode)")
+    else:
+        version_text = ".".join(str(part) for part in pp_version) if pp_version else "unreadable"
+        _check(
+            "Portable Python 3.11/3.12",
+            pp_version in SUPPORTED_PYTHON_VERSIONS,
+            f"{pp} ({version_text})",
+        )
+
+    py = _find_system_python()
+    if py is None:
+        _warn("System Python 3.11/3.12", "not found or unsupported")
+    else:
+        _check("System Python 3.11/3.12", True, str(py))
+
+    compatible_python = pp if pp_version in SUPPORTED_PYTHON_VERSIONS else py
+    _check(
+        "Compatible Python runtime",
+        compatible_python is not None,
+        str(compatible_python) if compatible_python else "not found",
+    )
 
     # 5. Models
     models_dir = app_root / "models"
@@ -681,6 +760,7 @@ def _run_doctor(app_root: Path) -> None:
 
     print()
     print(f"  Diagnostics complete: {checks_passed} PASS, {checks_warned} WARN, {checks_failed} FAIL")
+    return 0 if checks_failed == 0 else 1
 
 
 def _verify_installed_models(app_root: Path) -> None:
@@ -849,8 +929,7 @@ def run_launcher(args: argparse.Namespace) -> int:
 
         # --doctor 模式
         if args.doctor:
-            _run_doctor(app_root)
-            return 0
+            return _run_doctor(app_root)
 
         # --verify-runtime 模式
         if args.verify_runtime:
@@ -955,9 +1034,8 @@ def run_launcher(args: argparse.Namespace) -> int:
     except Exception:
         print("\nService exited with error:")
         traceback.print_exc()
-        if sys.stdin.isatty():
-            print("\nPress Enter to exit...")
-            input()
+        print()
+        _pause_before_exit()
         return 1
 
 

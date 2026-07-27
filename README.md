@@ -19,6 +19,8 @@
 > 生成的 ZIP 放在便携版同目录下，首次启动时自动校验 CRC32/SHA-256 并安装模型。
 > 正式构建会校验每个主模型、子模型和随附组件的固定 revision、目录契约及再分发许可证；包内附带 MIT、Apache-2.0 原文和[第三方模型声明](packaging/portable/licenses/THIRD_PARTY_NOTICES.md)。
 
+> ⚖️ **许可证边界**：上述 MIT / Apache-2.0 文件仅适用于第三方模型及其组件，不构成 BiliLiveCut 项目代码的开源许可。本仓库当前未声明项目代码的独立开源许可证；未经权利人明确授权，不得将第三方许可证视为对本项目代码的授权。
+
 ## V0.1.15 新特性：V0.1.14 稳定性收口与 Portable 发布
 
 **V0.1.15 是对 V0.1.14 架构重构与稳定性治理的发布收口。** V0.1.14 完成了模块拆分、状态恢复、数据一致性和发布安全基础；V0.1.15 将这些能力收敛为可复现、可离线安装、可供普通 Windows 用户直接测试的 Portable 发行链路。当前补丁版本为 `V0.1.15.2 Alpha`。
@@ -27,6 +29,7 @@
 
 - **固定业务源码**：Payload 从提交 `f2c291d` 通过 `git archive` 提取，不混入构建机工作区内容。
 - **Lite / Full 双发行**：Lite 保持单 EXE；Full 自带 Python 3.12、严格哈希锁定的离线 wheelhouse、FFmpeg 和 FFprobe。
+- **Lite 首次安装可验证**：Lite 内嵌 PyPI 不提供 wheel 的 5 个确定性 bootstrap wheel，其余依赖只接受锁文件指定的二进制 wheel，避免镜像返回 sdist 时产生哈希不匹配。
 - **离线依赖可验证**：Full 安装强制使用本地 wheelhouse，安装后执行 `pip check`、核心模块和 `app.cli` 导入冒烟测试。
 - **原子 Runtime 安装**：使用内容寻址 Release ID、staging 原子切换和 `current.json`，升级失败不会破坏已安装版本。
 - **完整性与解压安全**：Payload 和 Engine Pack 使用 SHA-256/CRC32、逐文件 Manifest，并拒绝绝对路径、`..`、盘符路径和符号链接。
@@ -42,6 +45,7 @@
 - 版本号、Portable 元数据、Rust SemVer、构建脚本、工作流和说明文档统一由发布检查交叉验证。
 - `main` CI 覆盖 Ubuntu、Windows、macOS、Python 3.11–3.13、Portable、依赖审计、覆盖率和 CodeQL。
 - 完整发布门禁验证可复现 Payload、主项目测试、Portable 测试、Ruff 和版本一致性；原生扩展不可用时保留经过测试的纯 Python 回退。
+- Release 在发布前执行 Lite 空目录首次联网安装、二次断网复用和 Web 就绪检查，并交叉核对 Payload、Lite、Full 的版本、源码基线、构建提交及 SHA-256/CRC32。
 
 ```text
 用户取得 Portable EXE → 双击运行 → 读取内置 Payload → 不访问 GitHub → 校验 SHA-256 → 释放源码 → 启动
@@ -92,8 +96,8 @@
 
 - **Web loopback guard**: 非本机监听 + 空密码 → 拒绝启动，认证用 `secrets.compare_digest`
 - **敏感信息脱敏**: Cookie/SESSDATA/API Key/Token 统一脱敏器
-- **`bililivecut doctor`**: 15 项自检命令 (PASS/WARN/FAIL)
-- **CI 增强**: pip-audit + pytest-cov 覆盖率门禁，macOS 矩阵
+- **`bililivecut doctor`**: 15 项自检命令 (PASS/WARN/FAIL)，存在 FAIL 时返回非零退出码
+- **CI 增强**: Portable Windows 运行时锁的阻断式 pip-audit + pytest-cov 覆盖率门禁，macOS 矩阵
 - **290/290 测试通过**
 
 ## V0.1.12 新特性：多引擎 ASR 流水线
@@ -301,14 +305,27 @@ bash scripts/docker-up.sh
 
 详情参见 [packaging/docker/README.md](packaging/docker/README.md)。
 
-## 测试
+## 测试与发布验证
 
 ```powershell
-pip install -e ".[dev]" `
+pip install -e ".[dev,web]" `
   --index-url https://mirrors.aliyun.com/pypi/simple/ `
   --extra-index-url https://pypi.tuna.tsinghua.edu.cn/simple/
+
+# 常规测试（主线 + Portable）
 pytest -q
+
+# 前端 ES Module、初始刷新、事件绑定与标签切换（需 Node.js）
+node scripts/check_frontend_interactions.mjs
+
+# 提交前完整 CI 门禁（含覆盖率）
+python scripts/ci_gate.py
+
+# 发布前严格门禁（含联网依赖审计和 Payload 构建）
+python scripts/release_gate.py
 ```
+
+`release_gate.py` 是 fail-closed 的：依赖审计无有效 JSON、出现未豁免漏洞、测试 skip 或构建不完整都会返回非零退出码。
 
 ## 排错
 
@@ -325,7 +342,7 @@ pytest -q
 ```
 ├── app/                     # 后端主包 (sources / recording / analysis / clipping / publishing / pipeline / web)
 ├── config/                  # 权重与关键词 YAML
-├── tests/                   # 测试 (308 项)
+├── tests/                   # 主线单元、集成与故障注入测试
 ├── storage/                 # 运行产物 (.gitignore)
 ├── packaging/portable/      # 即插即用分发版 (原 Publish-PnP)
 ├── pyproject.toml           # 项目配置

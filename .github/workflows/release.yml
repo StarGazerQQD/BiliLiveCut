@@ -45,10 +45,16 @@ jobs:
           fi
           echo "Validating tag: $TAG_INPUT"
 
-          # Must match v* pattern
-          if [[ ! "$TAG_INPUT" =~ ^v[0-9]+\.[0-9]+\.[0-9]+ ]]; then
-            echo "FAIL: tag '$TAG_INPUT' does not match vX.Y.Z pattern"
+          # Must match the complete release version syntax.
+          if [[ ! "$TAG_INPUT" =~ ^v[0-9]+\.[0-9]+\.[0-9]+(\.[0-9]+)?(-(alpha|beta|rc)(\.[0-9]+)?)?$ ]]; then
+            echo "FAIL: tag '$TAG_INPUT' does not match the complete release version pattern"
             echo "Example: v0.1.15.2-alpha"
+            exit 1
+          fi
+
+          PROJECT_VERSION=$(python -c "import json; print(json.load(open('packaging/portable/config/version.json', encoding='utf-8'))['release_version'])")
+          if [ "${TAG_INPUT#v}" != "$PROJECT_VERSION" ]; then
+            echo "FAIL: tag version '${TAG_INPUT#v}' does not match project version '$PROJECT_VERSION'"
             exit 1
           fi
 
@@ -307,6 +313,15 @@ jobs:
           pip install -e ".[dev,web]"
         timeout-minutes: 10
 
+      - name: Build audited Lite bootstrap wheels
+        shell: pwsh
+        run: |
+          python scripts/build_portable_runtime_wheels.py `
+            --output-dir packaging/portable/dist/bootstrap-wheels `
+            --cache-dir (Join-Path $env:RUNNER_TEMP "blc-runtime-sdists")
+          if ($LASTEXITCODE -ne 0) { Write-Error "Lite bootstrap wheel build failed"; exit 1 }
+        timeout-minutes: 10
+
       - name: Build Lite EXE
         run: |
           cd packaging/portable
@@ -331,11 +346,7 @@ jobs:
         shell: pwsh
         run: |
           New-Item -ItemType Directory -Path vendor\wheels -Force | Out-Null
-          $sourceWheels = Join-Path $env:RUNNER_TEMP "blc-source-wheels"
-          python scripts/build_portable_runtime_wheels.py `
-            --output-dir $sourceWheels `
-            --cache-dir (Join-Path $env:RUNNER_TEMP "blc-runtime-sdists")
-          if ($LASTEXITCODE -ne 0) { Write-Error "Source-only wheel build failed"; exit 1 }
+          $sourceWheels = (Resolve-Path packaging/portable/dist/bootstrap-wheels).Path
 
           python -m pip download --require-hashes `
             -r packaging/portable/locks/requirements-runtime-py311-win-x64.lock `
@@ -418,6 +429,19 @@ jobs:
         with:
           fetch-depth: 0
 
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12.8"
+
+      - name: Build Fixture Engine Pack for smoke tests
+        shell: pwsh
+        run: |
+          python packaging/portable/build_engine_pack.py --fixture
+          if ($LASTEXITCODE -ne 0) { Write-Error "Fixture Engine Pack build failed"; exit 1 }
+          $fixturePack = Get-ChildItem packaging/portable/dist/engine-pack/BiliLiveCut-EnginePack-*.zip |
+            Sort-Object LastWriteTime -Descending | Select-Object -First 1
+          if (-not $fixturePack) { Write-Error "Fixture Engine Pack not found"; exit 1 }
+
       - name: Download Lite EXE
         uses: actions/download-artifact@v4
         with:
@@ -436,6 +460,16 @@ jobs:
           name: payload
           path: smoke/payload/
 
+      - name: Cross-verify release artifact identities
+        shell: pwsh
+        run: |
+          python scripts/verify_release_artifacts.py `
+            --payload-dir smoke/payload `
+            --lite-dir smoke/lite `
+            --full-dir smoke/full `
+            --expected-builder-commit $env:GITHUB_SHA
+          if ($LASTEXITCODE -ne 0) { Write-Error "Release artifact identity verification failed"; exit 1 }
+
       - name: Lite EXE --version
         shell: pwsh
         run: |
@@ -445,33 +479,32 @@ jobs:
           if ($LASTEXITCODE -ne 0) { Write-Error "Lite EXE --version failed (exit=$LASTEXITCODE)"; exit 1 }
         timeout-minutes: 5
 
-      - name: Lite EXE --doctor
+      - name: Lite EXE --doctor rejects incomplete environment
         shell: pwsh
         run: |
           $exe = Get-ChildItem smoke/lite/*.exe | Select-Object -First 1
-          & $exe.FullName --doctor 2>&1 | Out-Host
-          if ($LASTEXITCODE -ne 0) { Write-Error "Lite EXE --doctor failed (exit=$LASTEXITCODE)"; exit 1 }
+          $doctorOutput = @(& $exe.FullName --doctor 2>&1)
+          $doctorExit = $LASTEXITCODE
+          $doctorOutput | Out-Host
+          if ($doctorExit -eq 0) {
+            Write-Error "Lite EXE --doctor accepted an incomplete environment"
+            exit 1
+          }
+          if (-not ($doctorOutput -match "Diagnostics complete: .* FAIL")) {
+            Write-Error "Lite EXE --doctor did not emit a verifiable failure summary"
+            exit 1
+          }
         timeout-minutes: 5
 
       - name: Lite fresh-install to empty directory
         shell: pwsh
         run: |
-          $tmpDir = Join-Path $env:RUNNER_TEMP "blc-lite-test-$(Get-Random)"
-          New-Item -ItemType Directory -Path $tmpDir -Force
-          $exe = Get-ChildItem smoke/lite/*.exe | Select-Object -First 1
-          Copy-Item $exe.FullName "$tmpDir\BiliLiveCut.exe"
-          Push-Location $tmpDir
-          try {
-            & ".\BiliLiveCut.exe" --version 2>&1 | Out-Host
-            if ($LASTEXITCODE -ne 0) {
-              Write-Warning "Lite version check in empty dir returned $LASTEXITCODE"
-            }
-          }
-          finally {
-            Pop-Location
-            Remove-Item -Recurse -Force $tmpDir -ErrorAction SilentlyContinue
-          }
-        timeout-minutes: 5
+          python scripts/smoke_portable_lite.py `
+            --lite-dir smoke/lite `
+            --engine-pack-dir packaging/portable/dist/engine-pack `
+            --work-parent $env:RUNNER_TEMP
+          if ($LASTEXITCODE -ne 0) { Write-Error "Lite real installation smoke failed"; exit 1 }
+        timeout-minutes: 25
 
       - name: Full Bundle offline install test
         shell: pwsh
@@ -542,8 +575,6 @@ jobs:
             Write-Output "Full bundle offline installation OK ($wheelCount wheels)"
 
             Remove-Item Env:PYTHONPATH -ErrorAction SilentlyContinue
-            & python packaging/portable/build_engine_pack.py --fixture
-            if ($LASTEXITCODE -ne 0) { throw "Fixture Engine Pack build failed" }
             $fixturePack = Get-ChildItem packaging/portable/dist/engine-pack/BiliLiveCut-EnginePack-*.zip |
               Sort-Object LastWriteTime -Descending | Select-Object -First 1
             if (-not $fixturePack) { throw "Fixture Engine Pack not found" }

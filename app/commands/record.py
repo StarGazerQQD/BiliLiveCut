@@ -127,7 +127,7 @@ def cmd_record(
     pipeline: bool = typer.Option(
         False,
         "--pipeline",
-        help="录制的同时实时转写并做高光评分(阶段2);需安装 .[asr]",
+        help="录制的同时实时转写并做高光评分(阶段2)；需安装 asr 可选依赖",
     ),
     produce: bool = typer.Option(
         False,

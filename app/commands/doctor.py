@@ -11,7 +11,7 @@ console = Console()
 def cmd_doctor(
     yes: bool = typer.Option(False, "--yes", help="跳过交互确认"),
 ) -> None:
-    """自检命令 — 检查系统环境与依赖是否满足运行要求 (V0.1.13)。
+    """自检命令 — 检查系统环境与依赖是否满足运行要求。
 
     检查项:
     - Python 版本、FFmpeg/FFprobe

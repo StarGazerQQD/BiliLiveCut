@@ -25,6 +25,7 @@ _payload_zip = str(_here / "dist" / "payload" / "source_payload.zip")
 _manifest = str(_here / "dist" / "payload" / "payload_manifest.json")
 _version_config = str(_config_dir / "version.json")
 _model_sources_lock = str(_config_dir / "model_sources.lock.json")
+_bootstrap_wheels_dir = _here / "dist" / "bootstrap-wheels"
 
 # Engine Pack 信息
 _engine_pack_info = str(_here / "resources" / "engine_pack_info.json")
@@ -35,12 +36,18 @@ _lock_files = []
 for _lf in sorted(Path(_lock_dir).glob("requirements-runtime-*-win-x64.lock")):
     _lock_files.append((str(_lf), "locks"))
 
+_bootstrap_wheels = []
+for _wheel in sorted(_bootstrap_wheels_dir.glob("*.whl")):
+    _bootstrap_wheels.append((str(_wheel), "bootstrap-wheels"))
+if not _bootstrap_wheels:
+    raise RuntimeError(f"Lite bootstrap wheels are missing: {_bootstrap_wheels_dir}")
+
 _datas = [
     (_payload_zip, "."),
     (_manifest, "."),
     (_version_config, "."),
     (_model_sources_lock, "."),
-] + _lock_files
+] + _lock_files + _bootstrap_wheels
 
 # engine_pack_info.json 存在则嵌入, 不存在则不嵌入 (此-时 CRC32 为空)
 if os.environ.get("BLC_OMIT_ENGINE_PACK_INFO") != "1" and Path(_engine_pack_info).exists():
