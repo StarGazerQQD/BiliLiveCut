@@ -7,6 +7,7 @@
 - **license/release**: 项目代码正式采用 MIT License（Copyright (c) 2026 StarGazerQQD），并将许可证纳入 Python 包、Payload、Portable Lite/Full、GitHub Release 与发布完整性门禁。
 - **release**: sdist 明确收录前端 ES Module 交互检查脚本，消除源码包与版本控制文件集合不一致。
 - **release**: Full 跨制品校验仅匹配发行根目录直属许可证，避免将 Portable Python 随附的第三方 `LICENSE.txt` 误判为重复项目许可证。
+- **release**: Engine Pack 内嵌元数据现在必须与当前模型锁 SHA-256 完全一致，避免版本升级后继续携带旧锁摘要。
 - **docs**: 修正 Portable Lite 构建命令示例，并增加禁止文档重新引入过期命令的回归测试。
 
 ## V0.1.15.2 Alpha (2026-07-22)

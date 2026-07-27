@@ -40,6 +40,39 @@ class TestLiteBuilder:
         # Should not raise
         check_engine_pack_info()
 
+    def test_lite_rejects_stale_model_lock_hash(self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+        """生产元数据不得继续引用旧模型锁摘要。"""
+        from blc_portable.builders import lite
+
+        resources_dir = tmp_path / "resources"
+        config_dir = tmp_path / "config"
+        resources_dir.mkdir()
+        config_dir.mkdir()
+        (config_dir / "model_sources.lock.json").write_bytes(b'{"current": true}\n')
+        (resources_dir / "engine_pack_info.json").write_text(
+            json.dumps(
+                {
+                    "format_version": 4,
+                    "artifact_class": "production",
+                    "engine_pack_version": lite.RELEASE_VERSION,
+                    "engine_pack_api_version": 4,
+                    "model_set_version": 4,
+                    "filename": "BiliLiveCut-EnginePack.zip",
+                    "size_bytes": 500_000_000,
+                    "crc32": "1234ABCD",
+                    "sha256": "a" * 64,
+                    "content_manifest_sha256": "b" * 64,
+                    "model_lock_sha256": "c" * 64,
+                    "expected_engine_ids": ["whisper", "paraformer", "sensevoice", "funasr_nano"],
+                }
+            ),
+            encoding="utf-8",
+        )
+        monkeypatch.setattr(lite, "PORTABLE_DIR", tmp_path)
+
+        with pytest.raises(RuntimeError, match="model_lock_sha256 mismatch"):
+            lite.check_engine_pack_info()
+
     def test_official_release_mode_is_explicit(self, monkeypatch: pytest.MonkeyPatch) -> None:
         """The no-pack release mode must be selected by an explicit CLI flag."""
         from blc_portable.builders import lite

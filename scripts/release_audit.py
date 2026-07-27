@@ -31,6 +31,7 @@
 from __future__ import annotations
 
 import ast
+import hashlib
 import json
 import sys
 import tomllib
@@ -446,6 +447,15 @@ def check_engine_pack_metadata(audit: AuditResult) -> None:
         "engine_pack_info.format_version >= 4",
         info.get("format_version", 0) >= 4,
         f"format_version={info.get('format_version', 0)} — 需 >= 4",
+    )
+    model_lock_path = REPO_ROOT / "packaging" / "portable" / "config" / "model_sources.lock.json"
+    expected_model_lock_sha = (
+        hashlib.sha256(model_lock_path.read_bytes()).hexdigest() if model_lock_path.is_file() else ""
+    )
+    audit.check(
+        "engine_pack_info.model_lock_sha256 匹配当前模型锁",
+        bool(expected_model_lock_sha) and info.get("model_lock_sha256") == expected_model_lock_sha,
+        "内嵌 Engine Pack 元数据必须在模型锁更新后重新生成",
     )
 
 

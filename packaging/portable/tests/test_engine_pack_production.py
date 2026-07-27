@@ -301,6 +301,16 @@ class TestVersionAPICompatibility:
         ms_ver = info.get("model_set_version", 0)
         assert ms_ver >= 1, f"model_set_version={ms_ver}"
 
+    def test_committed_info_matches_current_model_lock(self) -> None:
+        """仓库内嵌 Fixture 元数据必须来自当前模型锁。"""
+        if not _EP_INFO_PATH.exists():
+            pytest.skip("engine_pack_info.json not present")
+        info = json.loads(_EP_INFO_PATH.read_text(encoding="utf-8"))
+        model_lock_path = _portable_dir / "config" / "model_sources.lock.json"
+        expected = hashlib.sha256(model_lock_path.read_bytes()).hexdigest()
+
+        assert info.get("model_lock_sha256") == expected
+
 
 # ── ZIP 损坏检测 ──────────────────────────────────────
 

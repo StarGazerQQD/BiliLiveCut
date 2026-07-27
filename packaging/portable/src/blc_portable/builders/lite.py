@@ -85,6 +85,7 @@ def check_engine_pack_info() -> None:
 
     :raises RuntimeError: Engine Pack 信息不完整 (非 Fixture 模式)。
     """
+    import hashlib
     import json
     import os
 
@@ -159,6 +160,16 @@ def check_engine_pack_info() -> None:
         errors.append("model_lock_sha256 is empty")
     elif len(model_lock_sha) != 64:
         errors.append(f"model_lock_sha256 invalid length: {len(model_lock_sha)} (expect 64)")
+    else:
+        model_lock_path = PORTABLE_DIR / "config" / "model_sources.lock.json"
+        if not model_lock_path.is_file():
+            errors.append(f"model lock missing: {model_lock_path}")
+        else:
+            expected_model_lock_sha = hashlib.sha256(model_lock_path.read_bytes()).hexdigest()
+            if model_lock_sha != expected_model_lock_sha:
+                errors.append(
+                    f"model_lock_sha256 mismatch: metadata={model_lock_sha} current={expected_model_lock_sha}"
+                )
 
     # 9. Expected engine IDs
     required_ids = {"whisper", "paraformer", "sensevoice", "funasr_nano"}
