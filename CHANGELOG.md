@@ -4,6 +4,7 @@
 
 ### 修复
 
+- **release**: Lite 首次安装 smoke 驱动在入口将 stdout/stderr 切换为 UTF-8，修复 Windows runner 使用 `cp1252` 回显中文 Launcher 日志时触发 `UnicodeEncodeError`。
 - **release**: Lite Doctor 冒烟在验证预期失败摘要后显式返回成功，避免 PowerShell 保留原生命令的预期非零退出码而误判整个 Release step 失败。
 - **release**: Release 标签校验与 GitHub prerelease 判定统一使用小写规范化版本，兼容已有的 `-Alpha` 标签并避免被误判为正式版。
 - **ci/package**: CI 与 Release 在直接执行 `setup.py build_ext` 前显式安装 `setuptools>=77` 和固定版 Cython，修复 Windows Python 3.11 runner 使用旧构建后端时拒绝 SPDX `license = "MIT"` 的问题。
