@@ -4,6 +4,7 @@
 
 ### 修复
 
+- **release**: Lite Doctor 冒烟在验证预期失败摘要后显式返回成功，避免 PowerShell 保留原生命令的预期非零退出码而误判整个 Release step 失败。
 - **release**: Release 标签校验与 GitHub prerelease 判定统一使用小写规范化版本，兼容已有的 `-Alpha` 标签并避免被误判为正式版。
 - **ci/package**: CI 与 Release 在直接执行 `setup.py build_ext` 前显式安装 `setuptools>=77` 和固定版 Cython，修复 Windows Python 3.11 runner 使用旧构建后端时拒绝 SPDX `license = "MIT"` 的问题。
 - **portable/release**: Engine Pack 模型锁摘要统一按 LF 规范化换行后计算，消除同一 JSON 在 Windows CRLF 与 GitHub Actions LF checkout 下产生不同 SHA-256 的跨平台失败。

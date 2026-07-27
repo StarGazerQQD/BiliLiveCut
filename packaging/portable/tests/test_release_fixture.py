@@ -19,6 +19,15 @@ def test_release_workflow_has_smoke_tests() -> None:
     assert "--doctor" in content, "Release workflow missing Lite EXE --doctor smoke test"
     assert "--diagnose" not in content, "Release workflow calls an unsupported launcher argument"
     assert "$doctorExit -eq 0" in content, "Release workflow must reject a false-success Doctor result"
+    workflow = yaml.safe_load(content)
+    doctor_step = next(
+        step
+        for step in workflow["jobs"]["smoke-test"]["steps"]
+        if step.get("name") == "Lite EXE --doctor rejects incomplete environment"
+    )
+    assert doctor_step["run"].rstrip().endswith("exit 0"), (
+        "Expected Doctor failure must be normalized to a successful smoke step"
+    )
     assert "scripts/smoke_portable_lite.py" in content
 
     smoke_script = (_PROJ_ROOT / "scripts" / "smoke_portable_lite.py").read_text(encoding="utf-8")
