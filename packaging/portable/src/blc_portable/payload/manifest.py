@@ -5,7 +5,7 @@ Manifest 只描述 ZIP 内实际存在的文件，不包含未入包的文件。
 
 字段语义:
 - portable_release_version: Portable 发布版本 (如 0.1.15.2-alpha)
-- core_source_commit / core_source_commit_short: 固定业务源码基线 f2c291d
+- core_source_commit / core_source_commit_short: 固定业务源码基线 6a42f4a
 - core_api_level: 业务源码的 schema version
 - builder_commit: 构建工具 commit
 - payload_schema: Manifest 格式版本 (本文件)
@@ -28,8 +28,8 @@ import sys
 from pathlib import Path
 from typing import Any
 
-SOURCE_COMMIT_SHORT = "f2c291d"
-SOURCE_COMMIT_FULL = "f2c291df2409bdf83dbf8f8a30d6b3ee1d44e8e0"
+SOURCE_COMMIT_SHORT = "6a42f4a"
+SOURCE_COMMIT_FULL = "6a42f4afd08e03fe536e3a26fd85e69217032986"
 RELEASE_VERSION = "0.1.15.2-alpha"
 MANIFEST_FORMAT_VERSION = 5
 
