@@ -1,5 +1,5 @@
-# BiliLiveCut Release 工作流 (V0.1.15.2)
-# 触发: 推送 v* 标签 (如 v0.1.15.2-alpha)
+# BiliLiveCut Release 工作流 (V0.1.15.3)
+# 触发: 推送 v* 标签 (如 v0.1.15.3-alpha)
 #   1) 全量测试 + release_audit
 #   2) 构建源码包 (sdist + wheel)
 #   3) 构建 Payload + 契约验证
@@ -16,7 +16,7 @@ on:
   workflow_dispatch:
     inputs:
       tag:
-        description: "发布 tag 名称 (如 v0.1.15.2-alpha, 必须 v* 格式且指向当前 SHA)"
+        description: "发布 tag 名称 (如 v0.1.15.3-alpha, 必须 v* 格式且指向当前 SHA)"
         required: true
         type: string
 
@@ -48,7 +48,7 @@ jobs:
           # Must match the complete release version syntax.
           if [[ ! "$TAG_INPUT" =~ ^v[0-9]+\.[0-9]+\.[0-9]+(\.[0-9]+)?(-(alpha|beta|rc)(\.[0-9]+)?)?$ ]]; then
             echo "FAIL: tag '$TAG_INPUT' does not match the complete release version pattern"
-            echo "Example: v0.1.15.2-alpha"
+            echo "Example: v0.1.15.3-alpha"
             exit 1
           fi
 

@@ -1,12 +1,18 @@
 # Changelog
 
-## V0.1.15.2 Alpha (2026-07-22)
+## V0.1.15.3 Alpha (2026-07-27)
 
 ### 修复
 
 - **license/release**: 项目代码正式采用 MIT License（Copyright (c) 2026 StarGazerQQD），并将许可证纳入 Python 包、Payload、Portable Lite/Full、GitHub Release 与发布完整性门禁。
 - **release**: sdist 明确收录前端 ES Module 交互检查脚本，消除源码包与版本控制文件集合不一致。
 - **release**: Full 跨制品校验仅匹配发行根目录直属许可证，避免将 Portable Python 随附的第三方 `LICENSE.txt` 误判为重复项目许可证。
+- **docs**: 修正 Portable Lite 构建命令示例，并增加禁止文档重新引入过期命令的回归测试。
+
+## V0.1.15.2 Alpha (2026-07-22)
+
+### 修复
+
 - **portable**: Launcher、Engine Pack 构建/下载、Lite/Full、Payload 与旧版 Bundle 等全部 Portable CLI 入口统一将 stdout/stderr 切换为 UTF-8，并为不可编码字符保留回退表示，修复 Windows `cp1252` 控制台输出中文时直接崩溃或误报构建失败。
 - **portable/native**: Windows Payload 改为在 Windows runner 构建，并以当前 Python ABI 的实际 `.pyd` 文件作为成功条件；禁止将 Linux `.so` 或旧 ABI 模块装入 Windows Portable，Full 离线冒烟会验证 C、Cython 与 Rust 后端均已加载。
 - **native**: Cython 第二轮加速的时间戳和长度/索引统一使用双精度与 `Py_ssize_t`，修复 Unix epoch 分桶及长时间轴 SRT 与 Python fallback 不一致；Rust 构建改为实时显示 Cargo 输出。
