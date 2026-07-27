@@ -162,6 +162,9 @@ def check_ci_bypass(audit: AuditResult) -> None:
     if release_yml.exists():
         content = release_yml.read_text(encoding="utf-8")
         lite_smoke = lite_smoke_py.read_text(encoding="utf-8") if lite_smoke_py.is_file() else ""
+        doctor_start = content.find("- name: Lite EXE --doctor rejects incomplete environment")
+        doctor_end = content.find("- name: Lite fresh-install to empty directory", doctor_start)
+        doctor_smoke = content[doctor_start:doctor_end] if doctor_start >= 0 and doctor_end > doctor_start else ""
         audit.check("release.yml 无 BLC_CI_BUILD", "BLC_CI_BUILD" not in content)
         audit.check(
             "release.yml 无 BLC_FIXTURE_BUILD",
@@ -205,6 +208,13 @@ def check_ci_bypass(audit: AuditResult) -> None:
             and "_wait_ready" in lite_smoke
             and '["--offline", "--engine-pack"' in lite_smoke,
             "Lite smoke 必须完成空目录安装、Web 就绪和二次断网复用",
+        )
+        audit.check(
+            "release.yml Doctor 预期失败退出码归一化",
+            "$doctorExit -eq 0" in doctor_smoke
+            and "Diagnostics complete: .* FAIL" in doctor_smoke
+            and "exit 0" in doctor_smoke,
+            "Doctor 按设计返回非零后，验证成功路径必须显式清除原生命令退出码",
         )
         audit.check(
             "release.yml 跨制品身份校验",

@@ -497,6 +497,7 @@ jobs:
             Write-Error "Lite EXE --doctor did not emit a verifiable failure summary"
             exit 1
           }
+          exit 0
         timeout-minutes: 5
 
       - name: Lite fresh-install to empty directory
