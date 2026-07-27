@@ -14,7 +14,7 @@
   "crc32": "FA9B04B0",
   "sha256": "0bf252ca1daf4a543e080d516ad75dd38f49efc4d74b8a3ea8139739546a1389",
   "content_manifest_sha256": "d1551e26e3d62266c24b938d3eccb5b090d05921fdf369edfe242e272258d4c6",
-  "model_lock_sha256": "3529d45257a29da10afad2fee23b00c859f11f36c2dab05bc5cc9a27e4d3d282",
+  "model_lock_sha256": "f1db9ba014283c23064b81e2887ee08f4b37119d45cd0a9b8aa3cb0db970c07c",
   "source_commit": "6a42f4afd08e03fe536e3a26fd85e69217032986",
   "builder_commit": "62d1f9ca64a29a435f4b51166bd75dd95bcd3b7b",
   "build_timestamp": "2026-07-27T17:06:32",

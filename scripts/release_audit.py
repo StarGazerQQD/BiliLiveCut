@@ -31,7 +31,6 @@
 from __future__ import annotations
 
 import ast
-import hashlib
 import json
 import sys
 import tomllib
@@ -39,6 +38,12 @@ from pathlib import Path
 from typing import Any
 
 REPO_ROOT = Path(__file__).resolve().parent.parent
+PORTABLE_SRC = REPO_ROOT / "packaging" / "portable" / "src"
+if str(PORTABLE_SRC) not in sys.path:
+    sys.path.insert(0, str(PORTABLE_SRC))
+
+from blc_portable.model_lock import compute_model_lock_sha256  # noqa: E402
+
 EXIT_OK = 0
 EXIT_WARN = 1
 EXIT_FAIL = 2
@@ -271,6 +276,15 @@ def check_distribution_config(audit: AuditResult) -> None:
         "构建后端支持 SPDX 许可证元数据",
         "setuptools>=77" in pyproject["build-system"].get("requires", []),
     )
+    direct_build_requirements = 'python -m pip install --upgrade pip "setuptools>=77" "Cython==3.2.8"'
+    audit.check(
+        "直接 setup.py 构建显式安装声明的构建后端",
+        all(
+            direct_build_requirements in workflow_path.read_text(encoding="utf-8")
+            for workflow_path in (ci_path, release_path)
+        ),
+        "CI/Release 不得依赖 runner 自带的旧版 setuptools",
+    )
 
     audit.check("web extra 包含 python-multipart", "python-multipart" in web)
     audit.check("dev extra 覆盖 Pillow", "pillow" in dev)
@@ -449,9 +463,7 @@ def check_engine_pack_metadata(audit: AuditResult) -> None:
         f"format_version={info.get('format_version', 0)} — 需 >= 4",
     )
     model_lock_path = REPO_ROOT / "packaging" / "portable" / "config" / "model_sources.lock.json"
-    expected_model_lock_sha = (
-        hashlib.sha256(model_lock_path.read_bytes()).hexdigest() if model_lock_path.is_file() else ""
-    )
+    expected_model_lock_sha = compute_model_lock_sha256(model_lock_path) if model_lock_path.is_file() else ""
     audit.check(
         "engine_pack_info.model_lock_sha256 匹配当前模型锁",
         bool(expected_model_lock_sha) and info.get("model_lock_sha256") == expected_model_lock_sha,

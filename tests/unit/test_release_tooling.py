@@ -218,6 +218,24 @@ def test_source_manifest_job_installs_pinned_cython() -> None:
     )
 
 
+def test_direct_setup_builds_install_declared_backend_requirements() -> None:
+    """Direct setup.py calls must not depend on a runner's ambient setuptools."""
+    matched_commands: list[str] = []
+    for workflow_name in ("ci.yml", "release.yml"):
+        workflow = yaml.safe_load(
+            (run_ruff.REPO_ROOT / ".github" / "workflows" / workflow_name).read_text(encoding="utf-8")
+        )
+        for job in workflow["jobs"].values():
+            for step in job.get("steps", []):
+                command = step.get("run", "")
+                if "python setup.py build_ext --inplace" in command:
+                    matched_commands.append(command)
+                    assert '"setuptools>=77"' in command
+                    assert '"Cython==3.2.8"' in command
+
+    assert len(matched_commands) == 2
+
+
 def test_windows_c_extension_compiles_utf8_source() -> None:
     """Windows 扩展必须按 UTF-8 编译并启用确定性链接。"""
     for build_script in ("setup.py", "setup_c.py"):

@@ -307,7 +307,9 @@ class TestVersionAPICompatibility:
             pytest.skip("engine_pack_info.json not present")
         info = json.loads(_EP_INFO_PATH.read_text(encoding="utf-8"))
         model_lock_path = _portable_dir / "config" / "model_sources.lock.json"
-        expected = hashlib.sha256(model_lock_path.read_bytes()).hexdigest()
+        from blc_portable.model_lock import compute_model_lock_sha256
+
+        expected = compute_model_lock_sha256(model_lock_path)
 
         assert info.get("model_lock_sha256") == expected
 

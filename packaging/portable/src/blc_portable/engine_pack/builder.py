@@ -37,6 +37,7 @@ from pathlib import Path
 from typing import Any
 
 from blc_portable.console import configure_console_encoding
+from blc_portable.model_lock import compute_model_lock_sha256
 
 # ── 常量 ───────────────────────────────────────────────────
 
@@ -562,7 +563,7 @@ def write_output_files(
         pass
 
     model_lock_path = PORTABLE_DIR / "config" / "model_sources.lock.json"
-    model_lock_sha = compute_sha256(model_lock_path) if model_lock_path.exists() else ""
+    model_lock_sha = compute_model_lock_sha256(model_lock_path) if model_lock_path.exists() else ""
 
     # Load version.json for schema version cross-references
     version_json_path = PORTABLE_DIR / "config" / "version.json"

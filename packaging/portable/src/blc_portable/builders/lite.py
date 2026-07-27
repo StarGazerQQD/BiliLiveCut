@@ -20,6 +20,7 @@ import sys
 from pathlib import Path
 
 from blc_portable.console import configure_console_encoding
+from blc_portable.model_lock import compute_model_lock_sha256
 from blc_portable.project_license import PROJECT_LICENSE_ID, project_license_sha256
 
 PORTABLE_DIR = Path(__file__).resolve().parent.parent.parent.parent
@@ -85,7 +86,6 @@ def check_engine_pack_info() -> None:
 
     :raises RuntimeError: Engine Pack 信息不完整 (非 Fixture 模式)。
     """
-    import hashlib
     import json
     import os
 
@@ -165,7 +165,7 @@ def check_engine_pack_info() -> None:
         if not model_lock_path.is_file():
             errors.append(f"model lock missing: {model_lock_path}")
         else:
-            expected_model_lock_sha = hashlib.sha256(model_lock_path.read_bytes()).hexdigest()
+            expected_model_lock_sha = compute_model_lock_sha256(model_lock_path)
             if model_lock_sha != expected_model_lock_sha:
                 errors.append(
                     f"model_lock_sha256 mismatch: metadata={model_lock_sha} current={expected_model_lock_sha}"
