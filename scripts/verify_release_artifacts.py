@@ -185,20 +185,25 @@ def verify_release_artifacts(
 
     with zipfile.ZipFile(full_artifact) as archive:
         names = archive.namelist()
-        embedded_exe = [name for name in names if name.endswith("/BiliLiveCut-Portable.exe")]
-        embedded_checksums = [name for name in names if name.endswith("/checksums.json")]
-        embedded_licenses = [name for name in names if name.endswith("/LICENSE.txt")]
-        if len(embedded_exe) != 1 or len(embedded_checksums) != 1 or len(embedded_licenses) != 1:
+        roots = {name.split("/", 1)[0] for name in names if name and "/" in name}
+        if len(roots) != 1:
+            raise RuntimeError(f"Full ZIP must contain exactly one top-level directory, got {sorted(roots)!r}")
+        bundle_root = roots.pop()
+        embedded_exe = f"{bundle_root}/BiliLiveCut-Portable.exe"
+        embedded_checksums = f"{bundle_root}/checksums.json"
+        embedded_license = f"{bundle_root}/LICENSE.txt"
+        required_entries = (embedded_exe, embedded_checksums, embedded_license)
+        if any(names.count(entry) != 1 for entry in required_entries):
             raise RuntimeError("Full ZIP must contain exactly one launcher, checksums.json, and LICENSE.txt")
-        embedded_exe_sha256 = hashlib.sha256(archive.read(embedded_exe[0])).hexdigest()
-        embedded_license = archive.read(embedded_licenses[0])
-        checksums = json.loads(archive.read(embedded_checksums[0]).decode("utf-8"))
+        embedded_exe_sha256 = hashlib.sha256(archive.read(embedded_exe)).hexdigest()
+        embedded_license_content = archive.read(embedded_license)
+        checksums = json.loads(archive.read(embedded_checksums).decode("utf-8"))
     lite_sha256, _ = _hashes(lite_artifact)
     _require_equal("full embedded Lite SHA-256", embedded_exe_sha256, lite_sha256)
     _require_equal("full checksums.exe_sha256", checksums.get("exe_sha256"), lite_sha256)
     _require_equal("full checksums.release_version", checksums.get("release_version"), version)
     _require_equal("full checksums.source_commit", checksums.get("source_commit"), source_commit)
-    _require_equal("full embedded LICENSE", embedded_license, license_content)
+    _require_equal("full embedded LICENSE", embedded_license_content, license_content)
     _require_equal("full checksums.project_license", checksums.get("project_license"), PROJECT_LICENSE_ID)
     _require_equal("full checksums.project_license_sha256", checksums.get("project_license_sha256"), license_sha256)
 

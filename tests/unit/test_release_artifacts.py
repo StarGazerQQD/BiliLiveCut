@@ -80,6 +80,7 @@ def _build_release_fixture(tmp_path: Path) -> tuple[Path, Path, Path, str]:
     with zipfile.ZipFile(full, "w") as archive:
         archive.writestr(f"{root}/BiliLiveCut-Portable.exe", lite.read_bytes())
         archive.writestr(f"{root}/LICENSE.txt", license_content)
+        archive.writestr(f"{root}/portable-python/LICENSE.txt", b"Python runtime license")
         archive.writestr(
             f"{root}/checksums.json",
             json.dumps(
