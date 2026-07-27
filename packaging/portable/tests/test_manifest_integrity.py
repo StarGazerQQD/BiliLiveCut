@@ -172,6 +172,8 @@ class TestIdentityFields:
         "model_set_version",
         "target_platform",
         "python_abi",
+        "project_license",
+        "project_license_sha256",
     ]
 
     COMPAT_FIELDS = [
@@ -218,6 +220,16 @@ class TestIdentityFields:
     def test_no_generated_at(self, manifest: dict) -> None:
         """验证不包含 generated_at (破坏可复现性)。"""
         assert "generated_at" not in manifest, "generated_at should NOT be in manifest (breaks reproducibility)"
+
+    def test_project_license_identity_matches_payload(self, manifest: dict, payload_zip: Path) -> None:
+        """Manifest 的许可证身份和哈希必须匹配 Payload 内文件。"""
+        expected = (_portable_dir.parent.parent / "LICENSE").read_bytes()
+        with zipfile.ZipFile(payload_zip) as zf:
+            embedded = zf.read("LICENSE")
+
+        assert embedded == expected
+        assert manifest["project_license"] == "MIT"
+        assert manifest["project_license_sha256"] == hashlib.sha256(expected).hexdigest()
 
     def test_engine_pack_contract_fields(self, manifest: dict) -> None:
         """验证 Engine Pack API 版本字段。"""

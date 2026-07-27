@@ -11,6 +11,8 @@ import subprocess
 from datetime import UTC, datetime
 from pathlib import Path
 
+from blc_portable.project_license import load_project_license
+
 from .manifest import (
     RELEASE_VERSION,
     SOURCE_COMMIT_FULL,
@@ -28,6 +30,7 @@ PAYLOAD_ITEMS = [
     "setup.py",
     "setup_c.py",
     ".env.example",
+    "LICENSE",
 ]
 
 # 禁止进入 Payload 的路径模式
@@ -68,6 +71,7 @@ ALLOWED_OVERLAY_FILES = [
     "app/_portable_release.py",
     "app/__init__.py",
     "pyproject.toml",
+    "LICENSE",
     "payload_manifest.json",
 ]
 
@@ -279,6 +283,7 @@ def apply_version_overlay(
     - README.md: 版本展示
     - CHANGELOG.md: 添加版本条目
     - setup.py / setup_c.py: version
+    - LICENSE: 当前仓库的规范项目许可证
 
     :param staging_dir: Payload staging 目录。
     :param source_commit_full: 写入 Payload 的业务源码完整 Commit Hash。
@@ -340,6 +345,12 @@ def apply_version_overlay(
         if new_content != content:
             file_path.write_text(new_content, encoding="utf-8")
             modified.append(rel_path)
+
+    license_path = staging_dir / "LICENSE"
+    license_content = load_project_license()
+    if not license_path.is_file() or license_path.read_bytes() != license_content:
+        license_path.write_bytes(license_content)
+        modified.append("LICENSE")
 
     # 验证只修改了允许的文件
     for f in modified:

@@ -109,6 +109,34 @@ class TestLiteBuilder:
         assert '"bootstrap-wheels"' in spec
         assert "Lite bootstrap wheels are missing" in spec
 
+    def test_pyinstaller_spec_embeds_project_license(self) -> None:
+        """Lite EXE 必须内嵌仓库根目录的项目 LICENSE。"""
+        spec = (_portable_dir / "specs" / "portable_launcher.spec").read_text(encoding="utf-8")
+
+        assert '_project_license = _here.parent.parent / "LICENSE"' in spec
+        assert '(str(_project_license), ".")' in spec
+
+    def test_project_license_is_canonical_and_hashable(self) -> None:
+        """Portable 构建器只接受带指定版权人的规范 MIT License。"""
+        from blc_portable.project_license import PROJECT_LICENSE_ID, PROJECT_LICENSE_PATH, project_license_sha256
+
+        assert PROJECT_LICENSE_ID == "MIT"
+        assert "Copyright (c) 2026 StarGazerQQD" in PROJECT_LICENSE_PATH.read_text(encoding="utf-8")
+        assert project_license_sha256() == hashlib.sha256(PROJECT_LICENSE_PATH.read_bytes()).hexdigest()
+
+    def test_project_license_rejects_wrong_holder(self, tmp_path: Path) -> None:
+        """错误版权声明不得进入 Portable 发布制品。"""
+        from blc_portable.project_license import load_project_license
+
+        invalid = tmp_path / "LICENSE"
+        invalid.write_text(
+            'MIT License\nCopyright (c) 2026 Someone Else\nPermission is hereby granted\nTHE SOFTWARE IS PROVIDED "AS IS"',
+            encoding="utf-8",
+        )
+
+        with pytest.raises(RuntimeError, match="Project license is invalid"):
+            load_project_license(invalid)
+
 
 class TestFullBuilder:
     def test_full_has_release_version(self) -> None:

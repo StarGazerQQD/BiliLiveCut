@@ -18,6 +18,7 @@ import zlib
 from pathlib import Path
 
 from blc_portable.console import configure_console_encoding
+from blc_portable.project_license import PROJECT_LICENSE_ID, PROJECT_LICENSE_PATH, project_license_sha256
 
 PORTABLE_DIR = Path(__file__).resolve().parent.parent.parent.parent
 PROJECT_ROOT = PORTABLE_DIR.parent.parent
@@ -66,7 +67,7 @@ def build_full_bundle() -> Path:
     - portable-python/ (relocatable Python runtime with venv support)
     - vendor/wheels/ (offline dependency packages)
     - bin/ffmpeg.exe, bin/ffprobe.exe
-    - README.txt, checksums.json, SHA256SUMS.txt, CRC32SUMS.txt
+    - README.txt, LICENSE.txt, checksums.json, SHA256SUMS.txt, CRC32SUMS.txt
 
     Note: Full does NOT include engine models. Models are provided
     by a separate Engine Pack.
@@ -79,6 +80,8 @@ def build_full_bundle() -> Path:
     print("=" * 60)
     print(f"  BiliLiveCut Portable Full {RELEASE_VERSION}")
     print("=" * 60)
+
+    license_sha256 = project_license_sha256()
 
     # 确保 Lite EXE 存在
     lite_exe_name = f"BiliLiveCut-Portable-Lite-v{RELEASE_VERSION}-x64.exe"
@@ -150,6 +153,9 @@ def build_full_bundle() -> Path:
         # 复制 EXE
         shutil.copy2(lite_path, bundle / "BiliLiveCut-Portable.exe")
         print("  [OK] Copied EXE")
+
+        shutil.copy2(PROJECT_LICENSE_PATH, bundle / "LICENSE.txt")
+        print("  [OK] Copied project LICENSE.txt")
 
         # 复制 portable-python (如果存在)
         pp_src = None
@@ -233,6 +239,7 @@ File structure:
   portable-python/            # Relocatable Python runtime with venv support
   vendor/wheels/              # Offline dependency packages
   bin/                        # FFmpeg/FFprobe
+  LICENSE.txt                 # BiliLiveCut project MIT License
 
 First launch:
   Double-click BiliLiveCut-Portable.exe
@@ -252,6 +259,7 @@ Data directories (generated after run):
 Source:
   Source baseline commit: [see checksums.json]
   Release version: {RELEASE_VERSION}
+  Project license: MIT (Copyright (c) 2026 StarGazerQQD)
   Build time: {datetime.datetime.now().strftime("%Y-%m-%d %H:%M:%S")}
 """,
             encoding="utf-8",
@@ -273,6 +281,8 @@ Source:
             "source_commit": manifest["source_commit"],
             "exe_sha256": exe_sha256.hexdigest(),
             "engine_pack_crc32": engine_pack_crc32,
+            "project_license": PROJECT_LICENSE_ID,
+            "project_license_sha256": license_sha256,
         }
         (bundle / "checksums.json").write_text(json.dumps(checksums, ensure_ascii=False, indent=2), encoding="utf-8")
 
@@ -297,6 +307,8 @@ Source:
             "artifact_sha256": zip_sha256,
             "artifact_crc32": zip_crc32,
             "engine_pack_crc32": engine_pack_crc32,
+            "project_license": PROJECT_LICENSE_ID,
+            "project_license_sha256": license_sha256,
         }
 
         (DIST_DIR / "build-manifest.json").write_text(

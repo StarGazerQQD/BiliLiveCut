@@ -652,9 +652,10 @@ jobs:
           cp dist/lite/build-manifest.json release-assets/lite-build-manifest.json
           cp dist/full/*.zip release-assets/
           cp dist/full/build-manifest.json release-assets/full-build-manifest.json
+          cp LICENSE release-assets/LICENSE
           cd release-assets
           echo "=== SHA256SUMS ==="
-          sha256sum *.tar.gz *.whl *.exe *.zip *-build-manifest.json > SHA256SUMS.txt
+          sha256sum LICENSE *.tar.gz *.whl *.exe *.zip *-build-manifest.json > SHA256SUMS.txt
           cat SHA256SUMS.txt
           sha256sum -c SHA256SUMS.txt
           echo "=== CRC32SUMS ==="

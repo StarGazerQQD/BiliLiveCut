@@ -212,7 +212,7 @@ resources/engine_pack_info.json (本地 Engine Pack 构建后可供 Lite/Full EX
 
 正式构建会执行再分发门禁：主模型、Paraformer 子模型及 Fun-ASR-Nano 随附的 Qwen3 组件必须具有固定来源、许可证证据、验证日期和随包许可证文件；任一项缺失都会终止构建。完整归属见 [`licenses/THIRD_PARTY_NOTICES.md`](licenses/THIRD_PARTY_NOTICES.md)。
 
-> 上述 MIT / Apache-2.0 文件仅用于所列第三方模型及组件，不构成 BiliLiveCut 项目代码的开源许可。项目代码当前未声明独立开源许可证，对外分发源码或派生作品前应先取得权利人明确授权。
+> BiliLiveCut 项目代码采用仓库根目录的 [MIT License](../../LICENSE)，Copyright (c) 2026 StarGazerQQD。上述第三方 MIT / Apache-2.0 文件仅适用于所列模型及组件；项目许可证不改变任何第三方条款。
 
 ### 注意事项
 
@@ -248,7 +248,7 @@ resources/engine_pack_info.json (本地 Engine Pack 构建后可供 Lite/Full EX
 
 ### 方式二：下载 Full 版（完整包，安装无需额外下载）
 
-拿到 `BiliLiveCut-Portable-Full-*.zip`，解压到任意目录，双击 `BiliLiveCut-Portable.exe`。启动器自动检测同目录下的 `portable-python/`、`vendor/wheels/`、`bin/ffmpeg.exe`，安装过程无需从互联网拉取任何额外组件。
+拿到 `BiliLiveCut-Portable-Full-*.zip`，解压到任意目录，双击 `BiliLiveCut-Portable.exe`。启动器自动检测同目录下的 `portable-python/`、`vendor/wheels/`、`bin/ffmpeg.exe`，安装过程无需从互联网拉取任何额外组件；包内 `LICENSE.txt` 是项目代码的 MIT License。
 
 ### 运行依赖锁维护
 

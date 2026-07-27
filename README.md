@@ -19,7 +19,7 @@
 > 生成的 ZIP 放在便携版同目录下，首次启动时自动校验 CRC32/SHA-256 并安装模型。
 > 正式构建会校验每个主模型、子模型和随附组件的固定 revision、目录契约及再分发许可证；包内附带 MIT、Apache-2.0 原文和[第三方模型声明](packaging/portable/licenses/THIRD_PARTY_NOTICES.md)。
 
-> ⚖️ **许可证边界**：上述 MIT / Apache-2.0 文件仅适用于第三方模型及其组件，不构成 BiliLiveCut 项目代码的开源许可。本仓库当前未声明项目代码的独立开源许可证；未经权利人明确授权，不得将第三方许可证视为对本项目代码的授权。
+> ⚖️ **许可证边界**：BiliLiveCut 项目代码采用 [MIT License](LICENSE)，Copyright (c) 2026 StarGazerQQD。随包第三方模型和组件继续适用各自的许可证与归属声明；项目的 MIT License 不改变任何第三方条款。
 
 ## V0.1.15 新特性：V0.1.14 稳定性收口与 Portable 发布
 
@@ -349,3 +349,7 @@ python scripts/release_gate.py
 ├── .env.example             # 配置模板
 └── README.md                # 本文件
 ```
+
+## 许可证
+
+BiliLiveCut 项目代码采用 [MIT License](LICENSE)，Copyright (c) 2026 StarGazerQQD。第三方模型、运行组件及其许可证材料独立列于 [第三方模型声明](packaging/portable/licenses/THIRD_PARTY_NOTICES.md)，不因项目采用 MIT License 而改变。

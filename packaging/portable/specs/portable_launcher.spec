@@ -5,6 +5,7 @@
 - source_payload.zip (6a42f4a 业务源码)
 - payload_manifest.json
 - engine_pack_info.json (四引擎模型包信息, 含 CRC32)
+- LICENSE (BiliLiveCut 项目 MIT License)
 - app_icon.ico (如有)
 """
 
@@ -26,6 +27,9 @@ _manifest = str(_here / "dist" / "payload" / "payload_manifest.json")
 _version_config = str(_config_dir / "version.json")
 _model_sources_lock = str(_config_dir / "model_sources.lock.json")
 _bootstrap_wheels_dir = _here / "dist" / "bootstrap-wheels"
+_project_license = _here.parent.parent / "LICENSE"
+if not _project_license.is_file():
+    raise RuntimeError(f"Project license is missing: {_project_license}")
 
 # Engine Pack 信息
 _engine_pack_info = str(_here / "resources" / "engine_pack_info.json")
@@ -47,6 +51,7 @@ _datas = [
     (_manifest, "."),
     (_version_config, "."),
     (_model_sources_lock, "."),
+    (str(_project_license), "."),
 ] + _lock_files + _bootstrap_wheels
 
 # engine_pack_info.json 存在则嵌入, 不存在则不嵌入 (此-时 CRC32 为空)

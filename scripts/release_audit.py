@@ -234,9 +234,12 @@ def check_distribution_config(audit: AuditResult) -> None:
     """Check wheel/sdist runtime content and fail-closed release tooling."""
     pyproject_path = REPO_ROOT / "pyproject.toml"
     manifest_path = REPO_ROOT / "MANIFEST.in"
+    license_path = REPO_ROOT / "LICENSE"
     release_gate_path = REPO_ROOT / "scripts" / "release_gate.py"
     ci_path = REPO_ROOT / ".github" / "workflows" / "ci.yml"
+    release_path = REPO_ROOT / ".github" / "workflows" / "release.yml"
     frontend_check_path = REPO_ROOT / "scripts" / "check_frontend_interactions.mjs"
+    portable_spec_path = REPO_ROOT / "packaging" / "portable" / "specs" / "portable_launcher.spec"
 
     pyproject = tomllib.loads(pyproject_path.read_text(encoding="utf-8"))
     optional = pyproject["project"]["optional-dependencies"]
@@ -244,6 +247,29 @@ def check_distribution_config(audit: AuditResult) -> None:
     dev = {requirement.split(">=", 1)[0].lower() for requirement in optional["dev"]}
     setuptools_config = pyproject["tool"]["setuptools"]
     package_data = set(setuptools_config["package-data"]["app.web"])
+    license_text = license_path.read_text(encoding="utf-8") if license_path.is_file() else ""
+
+    audit.check(
+        "项目采用规范 MIT License",
+        all(
+            marker in license_text
+            for marker in (
+                "MIT License",
+                "Copyright (c) 2026 StarGazerQQD",
+                "Permission is hereby granted",
+                'THE SOFTWARE IS PROVIDED "AS IS"',
+            )
+        ),
+        "仓库根 LICENSE 缺失或内容不完整",
+    )
+    audit.check(
+        "Python 包元数据声明项目 LICENSE",
+        pyproject["project"].get("license") == "MIT" and pyproject["project"].get("license-files") == ["LICENSE"],
+    )
+    audit.check(
+        "构建后端支持 SPDX 许可证元数据",
+        "setuptools>=77" in pyproject["build-system"].get("requires", []),
+    )
 
     audit.check("web extra 包含 python-multipart", "python-multipart" in web)
     audit.check("dev extra 覆盖 Pillow", "pillow" in dev)
@@ -258,6 +284,11 @@ def check_distribution_config(audit: AuditResult) -> None:
     )
     audit.check("sdist MANIFEST.in 存在", manifest_path.is_file())
     manifest = manifest_path.read_text(encoding="utf-8") if manifest_path.is_file() else ""
+    audit.check("sdist 包含项目 LICENSE", "include LICENSE" in manifest)
+    audit.check(
+        "sdist 包含前端交互检查脚本",
+        "recursive-include scripts *.py *.json *.mjs *.sh *.bat" in manifest,
+    )
     audit.check("sdist 包含 Dockerfile", "include packaging/docker/Dockerfile" in manifest)
     audit.check(
         "sdist 包含第三方许可证与声明",
@@ -273,6 +304,16 @@ def check_distribution_config(audit: AuditResult) -> None:
     audit.check("release gate 拒绝 pytest skip", "--fail-on-skip" in release_gate)
 
     ci = ci_path.read_text(encoding="utf-8")
+    release = release_path.read_text(encoding="utf-8")
+    portable_spec = portable_spec_path.read_text(encoding="utf-8")
+    audit.check(
+        "GitHub Release 发布并校验项目 LICENSE",
+        "cp LICENSE release-assets/LICENSE" in release and "sha256sum LICENSE *.tar.gz" in release,
+    )
+    audit.check(
+        "Portable Lite 内嵌项目 LICENSE",
+        '(str(_project_license), ".")' in portable_spec,
+    )
     frontend_check = frontend_check_path.read_text(encoding="utf-8") if frontend_check_path.is_file() else ""
     audit.check(
         "CI 执行前端模块与交互检查",
@@ -294,7 +335,11 @@ def check_distribution_config(audit: AuditResult) -> None:
     portable_readme = (REPO_ROOT / "packaging" / "portable" / "README.md").read_text(encoding="utf-8")
     audit.check(
         "文档区分项目代码与第三方许可证",
-        all("不构成 BiliLiveCut 项目代码的开源许可" in content for content in (readme, portable_readme)),
+        all(
+            "Copyright (c) 2026 StarGazerQQD" in content and "项目代码采用" in content
+            for content in (readme, portable_readme)
+        )
+        and "项目许可证不改变任何第三方条款" in portable_readme,
     )
 
 

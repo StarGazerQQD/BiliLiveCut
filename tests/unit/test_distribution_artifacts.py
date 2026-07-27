@@ -47,9 +47,10 @@ def test_sdist_manifest_contains_runtime_and_audit_inputs() -> None:
     for rule in (
         "recursive-include app *.py *.html *.css *.js *.txt",
         "recursive-include config *.yaml *.txt",
+        "include LICENSE",
         "recursive-include packaging *.py *.json *.yaml *.ini *.lock *.in *.spec *.md *.example",
         "recursive-include packaging/portable/licenses *.txt *.md",
-        "recursive-include scripts",
+        "recursive-include scripts *.py *.json *.mjs *.sh *.bat",
         "recursive-include tests",
         "recursive-include tools",
         "include packaging/docker/Dockerfile",
@@ -76,11 +77,20 @@ def test_local_runtime_and_tool_outputs_are_ignored() -> None:
         assert pattern in gitignore
 
 
-def test_readme_distinguishes_project_code_from_third_party_licenses() -> None:
-    """第三方模型许可证不得被误述为项目代码许可证。"""
+def test_project_and_third_party_license_boundaries() -> None:
+    """项目 MIT License 与第三方许可证必须分别声明。"""
+    license_text = (REPO_ROOT / "LICENSE").read_text(encoding="utf-8")
+    project = _pyproject()["project"]
     readme = (REPO_ROOT / "README.md").read_text(encoding="utf-8")
     portable_readme = (REPO_ROOT / "packaging" / "portable" / "README.md").read_text(encoding="utf-8")
 
+    assert license_text.startswith("MIT License\n")
+    assert "Copyright (c) 2026 StarGazerQQD" in license_text
+    assert "Permission is hereby granted" in license_text
+    assert project["license"] == "MIT"
+    assert project["license-files"] == ["LICENSE"]
+    assert "setuptools>=77" in _pyproject()["build-system"]["requires"]
     for content in (readme, portable_readme):
-        assert "不构成 BiliLiveCut 项目代码的开源许可" in content
-        assert "未声明" in content and "独立开源许可证" in content
+        assert "Copyright (c) 2026 StarGazerQQD" in content
+        assert "项目代码采用" in content
+    assert "项目许可证不改变任何第三方条款" in portable_readme

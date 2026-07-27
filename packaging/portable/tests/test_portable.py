@@ -150,6 +150,7 @@ class TestSourceSnapshot:
                 "CHANGELOG.md",
                 "setup.py",
                 "setup_c.py",
+                "LICENSE",
             ]
 
         # 验证版本已更新
@@ -158,6 +159,7 @@ class TestSourceSnapshot:
         release_content = (staging / "app" / "_portable_release.py").read_text(encoding="utf-8")
         assert f'SOURCE_COMMIT: str = "{SOURCE_COMMIT_FULL}"' in release_content
         assert f'BUILDER_COMMIT: str = "{SOURCE_COMMIT_FULL}"' in release_content
+        assert (staging / "LICENSE").read_bytes() == (_portable_dir.parent.parent / "LICENSE").read_bytes()
 
     def test_source_origin_rejects_business_file_tampering(self, tmp_worktree: str) -> None:
         """验证关键业务文件偏离固定 Commit 时构建失败。"""
@@ -241,6 +243,17 @@ class TestPayload:
         actual = compute_payload_sha256(payload_zip)
         expected = payload_manifest["payload_sha256"]
         assert actual == expected
+
+    def test_payload_contains_canonical_project_license(self, payload_manifest: dict, payload_zip: Path) -> None:
+        """Payload 必须携带与仓库根目录完全一致的项目 LICENSE。"""
+        import hashlib
+        import zipfile
+
+        expected = (_portable_dir.parent.parent / "LICENSE").read_bytes()
+        with zipfile.ZipFile(payload_zip) as zf:
+            assert zf.read("LICENSE") == expected
+        assert payload_manifest["project_license"] == "MIT"
+        assert payload_manifest["project_license_sha256"] == hashlib.sha256(expected).hexdigest()
 
     def test_payload_no_sensitive_files(self) -> None:
         """验证 Payload 不包含敏感文件。"""

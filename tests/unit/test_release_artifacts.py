@@ -29,6 +29,8 @@ def _build_release_fixture(tmp_path: Path) -> tuple[Path, Path, Path, str]:
     source_commit = version_config["source_commit_full"]
     source_short = version_config["source_commit_short"]
     builder_commit = "a" * 40
+    license_content = verify_release_artifacts.PROJECT_LICENSE.read_bytes()
+    license_sha256 = hashlib.sha256(license_content).hexdigest()
 
     payload_dir = tmp_path / "payload"
     lite_dir = tmp_path / "lite"
@@ -37,7 +39,9 @@ def _build_release_fixture(tmp_path: Path) -> tuple[Path, Path, Path, str]:
         directory.mkdir()
 
     payload_zip = payload_dir / version_config["naming"]["payload_zip"]
-    payload_zip.write_bytes(b"payload")
+    with zipfile.ZipFile(payload_zip, "w") as archive:
+        archive.writestr("LICENSE", license_content)
+        archive.writestr("app/fixture.py", b"payload")
     payload_sha256 = hashlib.sha256(payload_zip.read_bytes()).hexdigest()
     payload_manifest = {
         "release_version": version,
@@ -48,6 +52,8 @@ def _build_release_fixture(tmp_path: Path) -> tuple[Path, Path, Path, str]:
         "core_source_commit_short": source_short,
         "builder_commit": builder_commit,
         "payload_sha256": payload_sha256,
+        "project_license": "MIT",
+        "project_license_sha256": license_sha256,
     }
     (payload_dir / "payload_manifest.json").write_text(json.dumps(payload_manifest), encoding="utf-8")
 
@@ -64,6 +70,8 @@ def _build_release_fixture(tmp_path: Path) -> tuple[Path, Path, Path, str]:
         "artifact_sha256": lite_sha256,
         "artifact_crc32": lite_crc32,
         "bootstrap_wheels": bootstrap_wheels,
+        "project_license": "MIT",
+        "project_license_sha256": license_sha256,
     }
     (lite_dir / "build-manifest.json").write_text(json.dumps(lite_manifest), encoding="utf-8")
 
@@ -71,6 +79,7 @@ def _build_release_fixture(tmp_path: Path) -> tuple[Path, Path, Path, str]:
     root = f"BiliLiveCut-Portable-Full-{version}-x64"
     with zipfile.ZipFile(full, "w") as archive:
         archive.writestr(f"{root}/BiliLiveCut-Portable.exe", lite.read_bytes())
+        archive.writestr(f"{root}/LICENSE.txt", license_content)
         archive.writestr(
             f"{root}/checksums.json",
             json.dumps(
@@ -78,6 +87,8 @@ def _build_release_fixture(tmp_path: Path) -> tuple[Path, Path, Path, str]:
                     "release_version": version,
                     "source_commit": source_commit,
                     "exe_sha256": lite_sha256,
+                    "project_license": "MIT",
+                    "project_license_sha256": license_sha256,
                 }
             ),
         )
@@ -90,6 +101,8 @@ def _build_release_fixture(tmp_path: Path) -> tuple[Path, Path, Path, str]:
         "artifact_type": "full",
         "artifact_sha256": full_sha256,
         "artifact_crc32": full_crc32,
+        "project_license": "MIT",
+        "project_license_sha256": license_sha256,
     }
     (full_dir / "build-manifest.json").write_text(json.dumps(full_manifest), encoding="utf-8")
     return payload_dir, lite_dir, full_dir, builder_commit
@@ -129,4 +142,35 @@ def test_release_artifact_identity_rejects_wrong_builder_commit(tmp_path: Path) 
             lite_dir,
             full_dir,
             expected_builder_commit="b" * 40,
+        )
+
+
+def test_release_artifact_identity_rejects_tampered_full_license(tmp_path: Path) -> None:
+    """Full ZIP 中的 LICENSE.txt 被替换后必须阻止发布。"""
+    payload_dir, lite_dir, full_dir, builder_commit = _build_release_fixture(tmp_path)
+    full = next(full_dir.glob("*.zip"))
+    version_config = json.loads(verify_release_artifacts.VERSION_CONFIG.read_text(encoding="utf-8"))
+    root = f"BiliLiveCut-Portable-Full-{version_config['release_version']}-x64"
+
+    replacement = full.with_name("tampered.zip")
+    with zipfile.ZipFile(full) as source, zipfile.ZipFile(replacement, "w") as target:
+        for entry in source.infolist():
+            content = source.read(entry.filename)
+            if entry.filename == f"{root}/LICENSE.txt":
+                content = b"tampered"
+            target.writestr(entry, content)
+    replacement.replace(full)
+    full_sha256, full_crc32 = _write_sums(full_dir, full)
+    manifest_path = full_dir / "build-manifest.json"
+    manifest = json.loads(manifest_path.read_text(encoding="utf-8"))
+    manifest["artifact_sha256"] = full_sha256
+    manifest["artifact_crc32"] = full_crc32
+    manifest_path.write_text(json.dumps(manifest), encoding="utf-8")
+
+    with pytest.raises(RuntimeError, match="full embedded LICENSE mismatch"):
+        verify_release_artifacts.verify_release_artifacts(
+            payload_dir,
+            lite_dir,
+            full_dir,
+            expected_builder_commit=builder_commit,
         )

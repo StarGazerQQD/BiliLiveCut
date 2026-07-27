@@ -20,6 +20,7 @@ import sys
 from pathlib import Path
 
 from blc_portable.console import configure_console_encoding
+from blc_portable.project_license import PROJECT_LICENSE_ID, project_license_sha256
 
 PORTABLE_DIR = Path(__file__).resolve().parent.parent.parent.parent
 PROJECT_ROOT = PORTABLE_DIR.parent.parent
@@ -223,6 +224,7 @@ def build_exe(*, without_engine_pack: bool = False) -> Path:
     print(f"  BiliLiveCut Portable Lite {RELEASE_VERSION}")
     print("=" * 60)
 
+    license_sha256 = project_license_sha256()
     bootstrap_wheels = check_bootstrap_wheels()
 
     # Build Payload
@@ -287,6 +289,8 @@ def build_exe(*, without_engine_pack: bool = False) -> Path:
         "ci_build": is_fixture,
         "engine_pack_metadata": "omitted" if without_engine_pack else "embedded",
         "bootstrap_wheels": bootstrap_wheels,
+        "project_license": PROJECT_LICENSE_ID,
+        "project_license_sha256": license_sha256,
     }
 
     # 如果 Engine Pack 信息存在，添加 CRC32

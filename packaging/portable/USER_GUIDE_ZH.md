@@ -81,6 +81,7 @@ vendor\wheels\
 bin\ffmpeg.exe
 bin\ffprobe.exe
 README.txt
+LICENSE.txt
 ```
 
 必须保留整个目录结构。不要只把 `BiliLiveCut-Portable.exe` 单独拖到桌面，也不要直接在 ZIP 预览窗口里双击运行。

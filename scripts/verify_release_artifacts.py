@@ -16,6 +16,9 @@ from typing import Any
 REPO_ROOT = Path(__file__).resolve().parent.parent
 VERSION_CONFIG = REPO_ROOT / "packaging" / "portable" / "config" / "version.json"
 BOOTSTRAP_CONFIG = REPO_ROOT / "packaging" / "portable" / "locks" / "bootstrap-wheels.json"
+PROJECT_LICENSE = REPO_ROOT / "LICENSE"
+PROJECT_LICENSE_ID = "MIT"
+PROJECT_COPYRIGHT = "Copyright (c) 2026 StarGazerQQD"
 COMMIT_RE = re.compile(r"[0-9a-f]{40}")
 
 
@@ -61,6 +64,25 @@ def _require_equal(label: str, actual: object, expected: object) -> None:
         raise RuntimeError(f"{label} mismatch: expected {expected!r}, got {actual!r}")
 
 
+def _load_project_license() -> bytes:
+    """Load the canonical MIT license and reject incomplete release metadata."""
+    try:
+        content = PROJECT_LICENSE.read_bytes()
+        text = content.decode("utf-8")
+    except (OSError, UnicodeDecodeError) as exc:
+        raise RuntimeError(f"Project license is missing or unreadable: {PROJECT_LICENSE}") from exc
+    required_markers = (
+        "MIT License",
+        PROJECT_COPYRIGHT,
+        "Permission is hereby granted",
+        'THE SOFTWARE IS PROVIDED "AS IS"',
+    )
+    for marker in required_markers:
+        if marker not in text:
+            raise RuntimeError(f"Project license is invalid: missing {marker!r}")
+    return content
+
+
 def _verify_build_artifact(
     artifact_dir: Path,
     *,
@@ -104,6 +126,8 @@ def verify_release_artifacts(
     version = str(version_config["release_version"])
     source_commit = str(version_config["source_commit_full"])
     source_short = str(version_config["source_commit_short"])
+    license_content = _load_project_license()
+    license_sha256 = hashlib.sha256(license_content).hexdigest()
 
     if not COMMIT_RE.fullmatch(expected_builder_commit):
         raise RuntimeError(f"Expected builder commit is not a full lowercase Git SHA: {expected_builder_commit!r}")
@@ -114,10 +138,17 @@ def verify_release_artifacts(
     for field in ("source_commit_short", "core_source_commit_short"):
         _require_equal(f"payload.{field}", payload.get(field), source_short)
     _require_equal("payload.builder_commit", payload.get("builder_commit"), expected_builder_commit)
+    _require_equal("payload.project_license", payload.get("project_license"), PROJECT_LICENSE_ID)
+    _require_equal("payload.project_license_sha256", payload.get("project_license_sha256"), license_sha256)
 
     payload_zip = payload_dir / str(version_config["naming"]["payload_zip"])
     payload_sha256, _ = _hashes(payload_zip)
     _require_equal("payload.payload_sha256", payload.get("payload_sha256"), payload_sha256)
+    with zipfile.ZipFile(payload_zip) as archive:
+        payload_license_entries = [name for name in archive.namelist() if name == "LICENSE"]
+        if len(payload_license_entries) != 1:
+            raise RuntimeError("Payload ZIP must contain exactly one root LICENSE")
+        _require_equal("payload embedded LICENSE", archive.read("LICENSE"), license_content)
 
     identity = {
         "release_version": version,
@@ -140,6 +171,14 @@ def verify_release_artifacts(
         payload=identity,
     )
 
+    for artifact_type, manifest in (("lite", lite_manifest), ("full", _full_manifest)):
+        _require_equal(f"{artifact_type}.project_license", manifest.get("project_license"), PROJECT_LICENSE_ID)
+        _require_equal(
+            f"{artifact_type}.project_license_sha256",
+            manifest.get("project_license_sha256"),
+            license_sha256,
+        )
+
     bootstrap_entries = json.loads(BOOTSTRAP_CONFIG.read_text(encoding="utf-8"))
     expected_bootstrap = {str(entry["wheel_filename"]): str(entry["wheel_sha256"]) for entry in bootstrap_entries}
     _require_equal("lite.bootstrap_wheels", lite_manifest.get("bootstrap_wheels"), expected_bootstrap)
@@ -148,15 +187,20 @@ def verify_release_artifacts(
         names = archive.namelist()
         embedded_exe = [name for name in names if name.endswith("/BiliLiveCut-Portable.exe")]
         embedded_checksums = [name for name in names if name.endswith("/checksums.json")]
-        if len(embedded_exe) != 1 or len(embedded_checksums) != 1:
-            raise RuntimeError("Full ZIP must contain exactly one launcher and checksums.json")
+        embedded_licenses = [name for name in names if name.endswith("/LICENSE.txt")]
+        if len(embedded_exe) != 1 or len(embedded_checksums) != 1 or len(embedded_licenses) != 1:
+            raise RuntimeError("Full ZIP must contain exactly one launcher, checksums.json, and LICENSE.txt")
         embedded_exe_sha256 = hashlib.sha256(archive.read(embedded_exe[0])).hexdigest()
+        embedded_license = archive.read(embedded_licenses[0])
         checksums = json.loads(archive.read(embedded_checksums[0]).decode("utf-8"))
     lite_sha256, _ = _hashes(lite_artifact)
     _require_equal("full embedded Lite SHA-256", embedded_exe_sha256, lite_sha256)
     _require_equal("full checksums.exe_sha256", checksums.get("exe_sha256"), lite_sha256)
     _require_equal("full checksums.release_version", checksums.get("release_version"), version)
     _require_equal("full checksums.source_commit", checksums.get("source_commit"), source_commit)
+    _require_equal("full embedded LICENSE", embedded_license, license_content)
+    _require_equal("full checksums.project_license", checksums.get("project_license"), PROJECT_LICENSE_ID)
+    _require_equal("full checksums.project_license_sha256", checksums.get("project_license_sha256"), license_sha256)
 
 
 def parse_args(argv: list[str] | None = None) -> argparse.Namespace:

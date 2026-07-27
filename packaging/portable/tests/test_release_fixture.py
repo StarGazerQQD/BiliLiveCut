@@ -169,6 +169,15 @@ def test_release_workflow_uploads_crc32() -> None:
     assert "CRC32SUMS" in content, "Release workflow missing CRC32SUMS upload"
 
 
+def test_release_workflow_publishes_project_license_with_checksum() -> None:
+    """GitHub Release 必须单独发布并校验项目 LICENSE。"""
+    release_yml = _PROJ_ROOT / ".github" / "workflows" / "release.yml"
+    content = release_yml.read_text(encoding="utf-8")
+
+    assert "cp LICENSE release-assets/LICENSE" in content
+    assert "sha256sum LICENSE *.tar.gz" in content
+
+
 def test_ci_has_release_audit() -> None:
     """普通 CI 必须包含 release_audit (--quick)。"""
     ci_yml = _PROJ_ROOT / ".github" / "workflows" / "ci.yml"
