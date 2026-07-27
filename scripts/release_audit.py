@@ -214,9 +214,17 @@ def check_ci_bypass(audit: AuditResult) -> None:
         audit.check(
             "release.yml tag 与项目版本严格匹配",
             "PROJECT_VERSION=" in content
-            and 'if [ "${TAG_INPUT#v}" != "$PROJECT_VERSION" ]' in content
+            and 'NORMALIZED_TAG_VERSION="${TAG_VERSION,,}"' in content
+            and 'if [ "$NORMALIZED_TAG_VERSION" != "${PROJECT_VERSION,,}" ]' in content
             and "complete release version pattern" in content,
             "tag 必须完整匹配版本语法并等于项目版本真源",
+        )
+        audit.check(
+            "release.yml 预发布标签大小写兼容",
+            'if [[ "$NORMALIZED_TAG_VERSION" =~ -(alpha|beta|rc)' in content
+            and 'echo "prerelease=$PRERELEASE"' in content
+            and "prerelease: ${{ steps.tag.outputs.prerelease == 'true' }}" in content,
+            "历史 -Alpha/-Beta/-RC 标签必须保持 GitHub prerelease 属性",
         )
     launcher_spec = REPO_ROOT / "packaging" / "portable" / "specs" / "portable_launcher.spec"
     if launcher_spec.exists():

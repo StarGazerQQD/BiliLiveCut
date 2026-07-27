@@ -53,7 +53,20 @@ def test_release_tag_is_exact_and_matches_project_version() -> None:
 
     assert "complete release version pattern" in content
     assert "PROJECT_VERSION=" in content
-    assert 'if [ "${TAG_INPUT#v}" != "$PROJECT_VERSION" ]' in content
+    assert 'TAG_VERSION="${TAG_INPUT#v}"' in content
+    assert 'NORMALIZED_TAG_VERSION="${TAG_VERSION,,}"' in content
+    assert 'if [ "$NORMALIZED_TAG_VERSION" != "${PROJECT_VERSION,,}" ]' in content
+
+
+def test_release_title_case_prerelease_tag_remains_prerelease() -> None:
+    """历史 -Alpha 标签通过校验后仍必须创建为 GitHub prerelease。"""
+    release_yml = _PROJ_ROOT / ".github" / "workflows" / "release.yml"
+    content = release_yml.read_text(encoding="utf-8")
+
+    assert 'if [[ "$NORMALIZED_TAG_VERSION" =~ -(alpha|beta|rc)' in content
+    assert 'echo "prerelease=$PRERELEASE"' in content
+    assert "prerelease: ${{ steps.tag.outputs.prerelease == 'true' }}" in content
+    assert "contains(steps.tag.outputs.tag, 'alpha')" not in content
 
 
 def test_release_smoke_checkout_includes_source_baseline_history() -> None:
