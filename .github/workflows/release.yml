@@ -45,16 +45,19 @@ jobs:
           fi
           echo "Validating tag: $TAG_INPUT"
 
-          # Must match the complete release version syntax.
-          if [[ ! "$TAG_INPUT" =~ ^v[0-9]+\.[0-9]+\.[0-9]+(\.[0-9]+)?(-(alpha|beta|rc)(\.[0-9]+)?)?$ ]]; then
+          # Accept historical title-cased pre-release labels while keeping the
+          # project version and all comparisons in their canonical lower-case form.
+          TAG_VERSION="${TAG_INPUT#v}"
+          NORMALIZED_TAG_VERSION="${TAG_VERSION,,}"
+          if [[ ! "$NORMALIZED_TAG_VERSION" =~ ^[0-9]+\.[0-9]+\.[0-9]+(\.[0-9]+)?(-(alpha|beta|rc)(\.[0-9]+)?)?$ ]]; then
             echo "FAIL: tag '$TAG_INPUT' does not match the complete release version pattern"
             echo "Example: v0.1.15.3-alpha"
             exit 1
           fi
 
           PROJECT_VERSION=$(python -c "import json; print(json.load(open('packaging/portable/config/version.json', encoding='utf-8'))['release_version'])")
-          if [ "${TAG_INPUT#v}" != "$PROJECT_VERSION" ]; then
-            echo "FAIL: tag version '${TAG_INPUT#v}' does not match project version '$PROJECT_VERSION'"
+          if [ "$NORMALIZED_TAG_VERSION" != "${PROJECT_VERSION,,}" ]; then
+            echo "FAIL: tag version '$TAG_VERSION' does not match project version '$PROJECT_VERSION'"
             exit 1
           fi
 
@@ -681,7 +684,14 @@ jobs:
           else
             TAG="${GITHUB_REF#refs/tags/}"
           fi
+          TAG_VERSION="${TAG#v}"
+          NORMALIZED_TAG_VERSION="${TAG_VERSION,,}"
+          PRERELEASE=false
+          if [[ "$NORMALIZED_TAG_VERSION" =~ -(alpha|beta|rc)(\.[0-9]+)?$ ]]; then
+            PRERELEASE=true
+          fi
           echo "tag=$TAG" >> $GITHUB_OUTPUT
+          echo "prerelease=$PRERELEASE" >> $GITHUB_OUTPUT
 
       - name: Generate release notes from CHANGELOG
         id: changelog
@@ -711,6 +721,6 @@ jobs:
           files: |
             release-assets/*
           draft: false
-          prerelease: ${{ contains(steps.tag.outputs.tag, 'alpha') || contains(steps.tag.outputs.tag, 'beta') || contains(steps.tag.outputs.tag, 'rc') }}
+          prerelease: ${{ steps.tag.outputs.prerelease == 'true' }}
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
