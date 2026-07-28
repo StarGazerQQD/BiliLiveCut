@@ -4,11 +4,14 @@
   <meta charset="UTF-8" />
   <meta name="viewport" content="width=device-width, initial-scale=1.0" />
   <title>BiliLiveCut 控制台</title>
-  <link rel="stylesheet" href="/static/style.css" />
+  <link rel="stylesheet" href="/static/style.css?v=2" />
 </head>
-<body>
+<body class="dashboard-shell">
   <header class="topbar">
-    <div class="brand">🎬 BiliLiveCut <span class="muted">实时切片控制台</span></div>
+    <div class="brand">
+      <span class="brand-mark" aria-hidden="true">B</span>
+      <span class="brand-copy">BiliLiveCut <small>实时切片工作台</small></span>
+    </div>
     <div class="stats" id="stats">
       <span class="stat">候选 <b id="stat-candidates">-</b></span>
       <span class="stat">成品 <b id="stat-clips">-</b></span>
@@ -17,28 +20,41 @@
     </div>
   </header>
 
-  <nav class="tabs">
-    <button class="tab active" data-tab="rooms">直播间</button>
-    <button class="tab" data-tab="recording">录制状态</button>
-    <button class="tab" data-tab="schedules">录制预约</button>
-    <button class="tab" data-tab="transcripts">实时转写</button>
-    <button class="tab" data-tab="danmaku">弹幕热度</button>
-    <button class="tab" data-tab="trends">网感资料库</button>
-    <button class="tab" data-tab="candidates">候选审核</button>
-    <button class="tab" data-tab="topics">主题管理</button>
-    <button class="tab" data-tab="clips">成品切片</button>
-    <button class="tab" data-tab="uploads">上传 / 设置</button>
-    <button class="tab" data-tab="models">模型</button>
-    <button class="tab" data-tab="login">账号管理</button>
-    <button class="tab" data-tab="tasks">任务队列</button>
-    <button class="tab" data-tab="templates">字幕模板</button>
-    <button class="tab" data-tab="intro-templates">片头片尾</button>
-    <button class="tab" data-tab="analytics">数据分析</button>
-    <button class="tab" data-tab="monitor">运维面板</button>
-    <button class="tab" data-tab="logs">错误日志</button>
+  <nav class="tabs" aria-label="工作台导航">
+    <div class="tabs-group">
+      <span class="tabs-label">录制</span>
+      <button class="tab active" data-tab="rooms">直播间</button>
+      <button class="tab" data-tab="recording">录制状态</button>
+      <button class="tab" data-tab="schedules">录制预约</button>
+      <button class="tab" data-tab="transcripts">实时转写</button>
+      <button class="tab" data-tab="danmaku">弹幕热度</button>
+    </div>
+    <div class="tabs-group">
+      <span class="tabs-label">制作</span>
+      <button class="tab" data-tab="trends">网感资料库</button>
+      <button class="tab" data-tab="candidates">候选审核</button>
+      <button class="tab" data-tab="topics">主题管理</button>
+      <button class="tab" data-tab="clips">成品切片</button>
+      <button class="tab" data-tab="uploads">上传与发布</button>
+    </div>
+    <div class="tabs-group">
+      <span class="tabs-label">配置</span>
+      <button class="tab" data-tab="models">模型</button>
+      <button class="tab" data-tab="plugins">插件</button>
+      <button class="tab" data-tab="login">账号管理</button>
+      <button class="tab" data-tab="templates">字幕模板</button>
+      <button class="tab" data-tab="intro-templates">片头片尾</button>
+    </div>
+    <div class="tabs-group">
+      <span class="tabs-label">系统</span>
+      <button class="tab" data-tab="tasks">任务队列</button>
+      <button class="tab" data-tab="analytics">数据分析</button>
+      <button class="tab" data-tab="monitor">运维面板</button>
+      <button class="tab" data-tab="logs">错误日志</button>
+    </div>
   </nav>
 
-  <main>
+  <main class="dashboard-main">
     <!-- 直播间 -->
     <section id="tab-rooms" class="panel active">
       <div class="card add-room">
@@ -138,6 +154,7 @@
           <option value="rejected">已拒绝 rejected</option>
           <option value="clipped">已出片 clipped</option>
         </select>
+        <a class="back-link" href="/review/queue" target="_blank">打开多人审核队列</a>
       </div>
       <div class="row toolbar" id="batch-bar" style="display:none">
         <input type="checkbox" id="select-all-candidates" title="全选" /> <label for="select-all-candidates">全选</label>
@@ -196,6 +213,20 @@
       <div id="uploads-list"></div>
     </section>
 
+    <!-- 插件中心 -->
+    <section id="tab-plugins" class="panel">
+      <div class="card">
+        <div class="head plugin-center-head">
+          <div>
+            <h3>插件中心</h3>
+            <p class="hint">从配置的插件目录读取清单。插件仅在显式启用后执行，请只启用可信来源。</p>
+          </div>
+          <button id="btn-refresh-plugins">重新扫描</button>
+        </div>
+      </div>
+      <div id="plugins-list"></div>
+    </section>
+
     <!-- 模型(多大模型 + 优先级 + 失败回退) -->
     <section id="tab-models" class="panel">
       <div class="card">
@@ -237,6 +268,11 @@
 
     <!-- 任务队列(V0.1.6) -->
     <section id="tab-tasks" class="panel">
+      <div class="card">
+        <h3>用户操作作业</h3>
+        <p class="hint">批准出片、审核重渲染、合集和上传在后台执行；关闭页面后进度仍会保留。</p>
+        <div id="web-jobs-list"></div>
+      </div>
       <div class="card">
         <h3>持久化任务队列</h3>
         <div class="row" id="task-stats-bar">

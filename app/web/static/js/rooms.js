@@ -13,13 +13,17 @@ async function loadRooms() {
     <div class="item">
       <div class="head">
         <div>
-          <div class="title">${esc(r.title || r.input_url)} ${badge(r.running ? "running" : "stopped")}</div>
-          <div class="sub">db_id=${r.id} \u00b7 room_id=${r.room_id ?? "-"} \u00b7 \u6388\u6743:${r.authorized ? "\u662f" : "\u5426"}</div>
+          <div class="title">${esc(r.title || r.input_url)} ${badge(r.recording_state || (r.running ? "running" : "stopped"))}</div>
+          <div class="sub">db_id=${r.id} \u00b7 room_id=${r.room_id ?? "-"} \u00b7 \u6388\u6743:${r.authorized ? "\u662f" : "\u5426"}${r.active_session_id ? ` · 会话 #${r.active_session_id}` : ""}</div>
         </div>
         <div class="actions">
           ${r.running
-            ? `<button class="danger" onclick="stopRoom(${r.id})">\u505c\u6b62\u5f55\u5236</button>`
-            : `<button class="ok" onclick="startRoom(${r.id})">\u5f00\u59cb\u5f55\u5236</button>`}
+            ? `<button class="ok" onclick="markHighlight(${r.id})">高光打点</button>
+               <button class="danger" onclick="stopRoom(${r.id})">停止并收尾</button>
+               <button onclick="stopRoom(${r.id}, true)">强制停止</button>`
+            : r.room_config.recording_paused
+              ? `<button class="ok" onclick="resumeRoom(${r.id})">恢复录制</button>`
+              : `<button class="ok" onclick="startRoom(${r.id})">\u5f00\u59cb\u5f55\u5236</button>`}
         </div>
       </div>
       <div class="thresholds">

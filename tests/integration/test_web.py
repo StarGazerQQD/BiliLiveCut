@@ -136,13 +136,18 @@ def test_danmaku_overview(temp_db: None) -> None:
 
 
 def test_dashboard_page_renders(temp_db: None) -> None:
-    """根路径返回仪表盘 HTML。"""
+    """根路径返回带分组导航和响应式工作台外壳的仪表盘 HTML。"""
     from app.web.main import app
 
     with TestClient(app) as client:
         r = client.get("/")
         assert r.status_code == 200
         assert "BiliLiveCut" in r.text
+        assert '<body class="dashboard-shell">' in r.text
+        assert '<nav class="tabs" aria-label="工作台导航">' in r.text
+        assert r.text.count('class="tabs-group"') == 4
+        assert '<main class="dashboard-main">' in r.text
+        assert "高光模型" not in r.text
 
 
 def test_dashboard_serves_complete_javascript_module_graph(temp_db: None) -> None:

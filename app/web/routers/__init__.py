@@ -10,6 +10,7 @@ from app.web.routers.llm import router as llm_router  # noqa: F401
 from app.web.routers.logs import router as logs_router  # noqa: F401
 from app.web.routers.media import router as media_router  # noqa: F401
 from app.web.routers.metrics import router as metrics_router  # noqa: F401
+from app.web.routers.plugins import api_router as plugins_router  # noqa: F401
 from app.web.routers.progress import router as progress_router  # noqa: F401
 from app.web.routers.rooms import router as rooms_router  # noqa: F401
 from app.web.routers.schedules import router as schedules_router  # noqa: F401

@@ -34,7 +34,7 @@ ENGINE_PACK_INFO_PATH = RESOURCES_DIR / "engine_pack_info.json"
 BOOTSTRAP_WHEELS_DIR = PORTABLE_DIR / "dist" / "bootstrap-wheels"
 BOOTSTRAP_WHEELS_CONFIG = PORTABLE_DIR / "locks" / "bootstrap-wheels.json"
 
-RELEASE_VERSION = "0.1.15.3-alpha"
+RELEASE_VERSION = "0.1.16-alpha"
 
 
 def check_bootstrap_wheels(wheel_dir: Path = BOOTSTRAP_WHEELS_DIR) -> dict[str, str]:
@@ -211,7 +211,7 @@ def _generate_default_engine_pack_info() -> dict:
     return {
         "format_version": 2,
         "engine_pack_version": RELEASE_VERSION,
-        "compatible_app": {"min": RELEASE_VERSION, "max_exclusive": "0.1.16"},
+        "compatible_app": {"min": RELEASE_VERSION, "max_exclusive": "0.1.17"},
         "filename": f"BiliLiveCut-EnginePack-{RELEASE_VERSION}.zip",
         "size_bytes": 0,
         "crc32": "",

@@ -1,0 +1,41 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://github.com/StarGazerQQD/BiliLiveCut/blob/main/plugin/manifest.schema.json",
+  "title": "BiliLiveCut plugin manifest",
+  "type": "object",
+  "additionalProperties": false,
+  "required": ["id", "name", "version", "api_version", "entrypoint"],
+  "properties": {
+    "id": {
+      "type": "string",
+      "pattern": "^[a-z][a-z0-9_-]{0,63}$"
+    },
+    "name": {
+      "type": "string",
+      "minLength": 1,
+      "maxLength": 80
+    },
+    "version": {
+      "type": "string",
+      "minLength": 1,
+      "maxLength": 40
+    },
+    "api_version": {
+      "const": "1"
+    },
+    "entrypoint": {
+      "type": "string",
+      "pattern": "^[^:/\\\\]+(?:[/\\\\][^:/\\\\]+)*\\.py:[A-Za-z_][A-Za-z0-9_]*$",
+      "maxLength": 180
+    },
+    "description": {
+      "type": "string",
+      "maxLength": 500,
+      "default": ""
+    },
+    "settings_page": {
+      "type": "boolean",
+      "default": true
+    }
+  }
+}

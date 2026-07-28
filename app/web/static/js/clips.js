@@ -33,7 +33,7 @@ async function publishClip(id) {
 async function enqueueClip(id) {
   try {
     const r = await api("POST", `/api/clips/${id}/enqueue`);
-    toast("\u4e0a\u4f20\u4efb\u52a1:" + r.status);
+    toast("\u4e0a\u4f20\u4f5c\u4e1a\u5df2\u63d0\u4ea4:" + r.job.id.substring(0, 8));
     const { loadUploads } = await import("./publishing.js");
     loadUploads();
   } catch (e) { toast(e.message); }

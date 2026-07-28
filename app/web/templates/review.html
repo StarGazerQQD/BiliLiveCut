@@ -91,6 +91,7 @@
   <span class="shortcut-hint">Space 播放/暂停</span>
   <span class="shortcut-hint">I/O 设入/出点</span>
   <span class="shortcut-hint">J/K/L ← →</span>
+  <span class="muted" id="workflow-state">-</span>
 </div>
 
 <div class="main">
@@ -147,6 +148,8 @@
         <button onclick="adjust('end',+30)">+30s</button>
       </div>
       <button onclick="doRerender()" style="background:var(--accent);color:#fff;font-weight:600;">🔄 重新渲染</button>
+      <button id="btn-cancel-render" onclick="cancelRenderJob()" style="display:none">停止渲染</button>
+      <span class="muted" id="render-job-status"></span>
     </div>
   </div>
 
@@ -181,6 +184,12 @@
 
     <div class="card">
       <h3>审核决断</h3>
+      <div class="review-actions">
+        <button id="btn-claim" onclick="claimCurrent(this.dataset.force === 'true')">领取</button>
+        <button id="btn-release" onclick="releaseCurrent()">释放</button>
+        <button id="btn-draft" onclick="saveDraft()">保存草稿</button>
+        <button id="btn-undo" onclick="undoLast()">撤销上一步</button>
+      </div>
       <div class="review-actions">
         <button class="btn-approve" onclick="submitReview('approved_solo')">✅ 独立成片</button>
         <button class="btn-approve" onclick="submitReview('approved_collection')">📦 合集候选</button>
@@ -218,6 +227,7 @@ let reviewData = null;
 let adjustedStart = null;
 let adjustedEnd = null;
 let eventId = null;
+let renderJobId = null;
 
 // ===== 工具函数 =====
 const $ = (s) => document.querySelector(s);
@@ -281,27 +291,46 @@ async function loadReviewData() {
 function renderReview() {
   const d = reviewData;
   const c = d.candidate;
+  const hidden = d.viewer?.blinded;
 
   $("#cand-id").textContent = c.id;
-  $("#cand-score").textContent = c.highlight_score.toFixed(3);
-  $("#rule-score").textContent = c.rule_score.toFixed(2);
-  $("#llm-score").textContent = c.llm_score.toFixed(2);
+  $("#cand-score").textContent = hidden ? "盲审" : c.highlight_score.toFixed(3);
+  $("#rule-score").textContent = hidden ? "-" : c.rule_score.toFixed(2);
+  $("#llm-score").textContent = hidden ? "-" : c.llm_score.toFixed(2);
   $("#cand-status").textContent = c.status;
 
-  $("#score-fill").style.width = Math.round(c.highlight_score * 100) + "%";
-  $("#rule-val").textContent = c.rule_score.toFixed(3);
-  $("#llm-val").textContent = c.llm_score.toFixed(3);
-  $("#total-val").textContent = c.highlight_score.toFixed(3);
+  $("#score-fill").style.width = hidden ? "0%" : Math.round(c.highlight_score * 100) + "%";
+  $("#rule-val").textContent = hidden ? "已隐藏" : c.rule_score.toFixed(3);
+  $("#llm-val").textContent = hidden ? "已隐藏" : c.llm_score.toFixed(3);
+  $("#total-val").textContent = hidden ? "已隐藏" : c.highlight_score.toFixed(3);
   $("#status-val").textContent = c.status;
   $("#reason-val").textContent = c.reason || "(无)";
+
+  const claim = d.workflow?.claim || {};
+  const ownClaim = claim.active && claim.claimed_by === d.viewer?.actor;
+  const adminCanEdit = d.viewer?.role === "admin" && (!claim.active || ownClaim);
+  const canModify = adminCanEdit || ownClaim;
+  $("#workflow-state").textContent = claim.active ? `由 ${claim.claimed_by} 审核` : "尚未领取";
+  $("#btn-claim").dataset.force = String(d.viewer?.role === "admin" && claim.active && !ownClaim);
+  $("#btn-claim").textContent = $("#btn-claim").dataset.force === "true" ? "强制接管" : "领取";
+  $("#btn-claim").disabled = canModify;
+  $("#btn-release").disabled = !claim.active || (!ownClaim && d.viewer?.role !== "admin");
+  $("#btn-draft").disabled = !canModify;
+  $("#btn-undo").disabled = !canModify || !d.workflow?.can_undo;
+  $$(".timeline-bar button, .review-actions button").forEach(button => {
+    if (!["btn-claim", "btn-release", "btn-draft", "btn-undo"].includes(button.id)) button.disabled = !canModify;
+  });
+  if (d.workflow?.draft && document.activeElement !== $("#review-reason")) {
+    $("#review-reason").value = d.workflow.draft.reason || "";
+  }
 
   // 入/出点。
   const dur = durationSec(c.start_ts, c.end_ts);
   $("#in-point").value = secToHHMMSS(0);
   $("#out-point").value = secToHHMMSS(dur);
 
-  adjustedStart = c.start_ts;
-  adjustedEnd = c.end_ts;
+  adjustedStart = d.boundary?.adjusted_start_ts || c.start_ts;
+  adjustedEnd = d.boundary?.adjusted_end_ts || c.end_ts;
 
   // 评分维度贡献。
   let barsHtml = "";
@@ -337,7 +366,7 @@ function renderReview() {
   // 视频播放器。
   if (d.existing_clips && d.existing_clips.length > 0) {
     const clip = d.existing_clips[0];
-    $("#player-src").src = clip.file_path;
+    $("#player-src").src = clip.video_url;
     $("#player").style.display = "";
     $("#player-placeholder").style.display = "none";
     $("#player").load();
@@ -345,14 +374,16 @@ function renderReview() {
 
   // 导航按钮。
   if (d.prev_candidates && d.prev_candidates.length > 0) {
-    $("#btn-prev").textContent = `◀ 上一个 (#${d.prev_candidates[d.prev_candidates.length-1].id} ${d.prev_candidates[d.prev_candidates.length-1].score?.toFixed(2)})`;
-    $("#btn-prev").dataset.target = d.prev_candidates[d.prev_candidates.length-1].id;
+    const previous = d.prev_candidates[d.prev_candidates.length-1];
+    $("#btn-prev").textContent = `◀ 上一个 (#${previous.id}${previous.score == null ? "" : ` ${previous.score.toFixed(2)}`})`;
+    $("#btn-prev").dataset.target = previous.id;
   } else {
     $("#btn-prev").disabled = true;
   }
   if (d.next_candidates && d.next_candidates.length > 0) {
-    $("#btn-next").textContent = `下一个 (#${d.next_candidates[0].id} ${d.next_candidates[0].score?.toFixed(2)}) ▶`;
-    $("#btn-next").dataset.target = d.next_candidates[0].id;
+    const next = d.next_candidates[0];
+    $("#btn-next").textContent = `下一个 (#${next.id}${next.score == null ? "" : ` ${next.score.toFixed(2)}`}) ▶`;
+    $("#btn-next").dataset.target = next.id;
   } else {
     $("#btn-next").disabled = true;
   }
@@ -446,16 +477,43 @@ async function adjust(side, secs) {
 }
 
 async function doRerender() {
-  toast("正在重新渲染,请稍候…");
+  toast("正在提交后台渲染作业…");
   try {
     const res = await api("POST", `/review/api/${CAND_ID}/rerender`);
-    toast("渲染完成! clip #" + res.clip_id);
-    // 重新加载以获取新 clip。
-    reviewData = await api("GET", `/review/api/${CAND_ID}`);
-    renderReview();
+    renderJobId = res.job.id;
+    $("#btn-cancel-render").style.display = "";
+    toast("渲染已在后台开始");
+    await watchRenderJob(renderJobId);
   } catch (e) {
     toast("渲染失败:" + e.message);
   }
+}
+
+async function watchRenderJob(jobId) {
+  for (;;) {
+    const job = await api("GET", `/api/jobs/${jobId}`);
+    $("#render-job-status").textContent = `${job.progress || 0}% · ${job.message || job.status}`;
+    if (["succeeded", "failed", "cancelled"].includes(job.status)) {
+      $("#btn-cancel-render").style.display = "none";
+      renderJobId = null;
+      if (job.status === "succeeded") {
+        toast("审核版本渲染完成");
+        await loadReviewData();
+      } else {
+        toast(job.status === "cancelled" ? "渲染已取消" : `渲染失败:${job.error || "未知错误"}`);
+      }
+      return;
+    }
+    await new Promise(resolve => setTimeout(resolve, 1500));
+  }
+}
+
+async function cancelRenderJob() {
+  if (!renderJobId) return;
+  try {
+    await api("POST", `/api/jobs/${renderJobId}/cancel`);
+    $("#render-job-status").textContent = "正在停止…";
+  } catch (e) { toast("停止失败:" + e.message); }
 }
 
 async function submitReview(decision) {
@@ -463,11 +521,41 @@ async function submitReview(decision) {
   try {
     await api("POST", `/review/api/${CAND_ID}/review`, { decision, reason });
     toast("审核已提交:" + decision);
-    reviewData.candidate.status = decision.startsWith("approved") ? "approved" : (decision === "rejected" ? "rejected" : "pending");
-    renderReview();
+    await loadReviewData();
   } catch (e) {
     toast("审核失败:" + e.message);
   }
+}
+
+async function claimCurrent(force = false) {
+  try {
+    await api("POST", `/review/api/${CAND_ID}/claim`, { force });
+    toast(force ? "已强制接管当前候选" : "已领取当前候选");
+    await loadReviewData();
+  } catch (e) { toast("领取失败:" + e.message); }
+}
+
+async function releaseCurrent() {
+  try {
+    await api("POST", `/review/api/${CAND_ID}/release`);
+    toast("已释放当前候选");
+    await loadReviewData();
+  } catch (e) { toast("释放失败:" + e.message); }
+}
+
+async function saveDraft(silent = false) {
+  try {
+    await api("PUT", `/review/api/${CAND_ID}/draft`, { reason: $("#review-reason").value });
+    if (!silent) toast("草稿已保存");
+  } catch (e) { if (!silent) toast("草稿保存失败:" + e.message); }
+}
+
+async function undoLast() {
+  try {
+    await api("POST", `/review/api/${CAND_ID}/undo`);
+    toast("已撤销上一步");
+    await loadReviewData();
+  } catch (e) { toast("撤销失败:" + e.message); }
 }
 
 async function navCandidate(direction) {

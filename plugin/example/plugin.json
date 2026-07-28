@@ -1,0 +1,9 @@
+{
+  "id": "example",
+  "name": "示例插件",
+  "version": "1.0.0",
+  "api_version": "1",
+  "entrypoint": "main.py:Plugin",
+  "description": "演示生命周期与宿主设置页接口，不会被文档目录自动加载。",
+  "settings_page": true
+}

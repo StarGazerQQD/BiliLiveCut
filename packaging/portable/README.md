@@ -1,12 +1,12 @@
 # BiliLiveCut · 即插即用版（`packaging/portable/`，原 Publish-PnP）
 
-**版本：V0.1.15.3 Alpha** (`0.1.15.3-alpha`)
+**版本：V0.1.16 Alpha** (`0.1.16-alpha`)
 
 > **普通用户请先阅读：[Portable 小白使用说明](USER_GUIDE_ZH.md)**。该说明按 Windows 用户从下载、校验、解压、首次启动到第一次录制的顺序编写。
 
 BiliLiveCut 是一个**全自动 AI 直播切片系统**：监听 Bilibili 直播间 → 实时录制 + 转写 → 识别高光爆点 → 生成剪辑成品 + 文案。
 
-这个 `packaging/portable/` 目录是**即插即用分发版**。Launcher 内嵌了当前发布基线的完整业务源码 (Commit `6a42f4a`)，**双击即用，首次启动不需要从 GitHub 下载业务源码**。Full 版自带 Python 3.12、离线依赖和 FFmpeg；Lite 版需要目标电脑已有 Python 3.11/3.12，并自行满足 FFmpeg 等运行组件。
+这个 `packaging/portable/` 目录是**即插即用分发版**。Launcher 内嵌了当前发布基线的完整业务源码 (Commit `0ea5c2a`)，**双击即用，首次启动不需要从 GitHub 下载业务源码**。Full 版自带 Python 3.12、离线依赖和 FFmpeg；Lite 版需要目标电脑已有 Python 3.11/3.12，并自行满足 FFmpeg 等运行组件。
 
 > **与旧版的关键区别**：旧版 PnP 首次启动从 GitHub 下载 `main` 分支源码（不稳定，且国内访问 GitHub 经常失败）。新版源码从 **EXE 内置 Payload** 释放，版本固定、SHA-256 可校验，彻底摆脱 GitHub 依赖。
 
@@ -35,7 +35,7 @@ BiliLiveCut 是一个**全自动 AI 直播切片系统**：监听 Bilibili 直�
 | 旧版 (Publish-PnP) | 新版 (packaging/portable) |
 |---|---|
 | 首次运行从 GitHub 下载 `main` 分支源码 | 首次运行从 **EXE 内置 Payload** 释放固定版本源码 |
-| 源码版本不确定（随 `main` 漂移） | 源码固定于当前发布基线 `6a42f4a`，SHA-256 可校验 |
+| 源码版本不确定（随 `main` 漂移） | 源码固定于当前发布基线 `0ea5c2a`，SHA-256 可校验 |
 | 无 Manifest / 无法校验完整性 | 完整 `payload_manifest.json` 含逐文件 SHA-256 |
 | 无版本 Overlay 机制 | 受控 Release Metadata Overlay (仅 6 个文件可修改) |
 | 无 Runtime 原子安装 | `staging → rename` 原子切换 + `current.json` 原子更新 |
@@ -159,7 +159,7 @@ Lite 和 Full 均不携带 ASR 模型。四个引擎模型统一由独立的 **E
 
 ### 使用方式
 
-1. 下载 BiliLiveCut-EnginePack-0.1.15.3-alpha.zip
+1. 下载 BiliLiveCut-EnginePack-0.1.16-alpha.zip
 2. 放在 Launcher EXE **同级目录** (或 packages/ 子目录)
 3. 双击启动 Launcher → 自动 **CRC32 校验** → 校验通过即离线安装 (网络请求 0)
 4. 无本地包或校验失败 → 自动**全量在线下载**四个引擎模型
@@ -202,7 +202,7 @@ python build_engine_pack.py --from-cache  # 从已验证缓存构建
 
 输出:
 
-- dist/engine-pack/BiliLiveCut-EnginePack-0.1.15.3-alpha.zip
+- dist/engine-pack/BiliLiveCut-EnginePack-0.1.16-alpha.zip
 - dist/engine-pack/engine-pack-manifest.json
 - dist/engine-pack/CRC32SUMS.txt
 - dist/engine-pack/SHA256SUMS.txt
@@ -240,7 +240,7 @@ resources/engine_pack_info.json (本地 Engine Pack 构建后可供 Lite/Full EX
 | ⑥ | 生成 `.env` 配置 | — | 含合理默认值 |
 
 > **断点续跑**：任何一步失败或中断，再次双击自动从断点继续。
-> **源码固定**：本次发布源码来源固定为 Commit `6a42f4a`，不随 GitHub 上游变动。
+> **源码固定**：本次发布源码来源固定为 Commit `0ea5c2a`，不随 GitHub 上游变动。
 
 4. 部署完成后打开 **Web 管理控制台**（默认 `http://127.0.0.1:8000`；未自动弹出时请手动访问）
 
@@ -285,7 +285,7 @@ packaging/portable/                     # ★ 即插即用分发版根目录 (�
 ├── launcher.py                      # launcher.exe 的 Python 源码（可选，便于审查）
 ├── build_exe.py                     # Lite 版构建 (PyInstaller one-file)
 ├── build_full_bundle.py             # Full 完整包构建脚本
-├── build_payload.py                 # Payload 构建器 (6a42f4a → source_payload.zip)
+├── build_payload.py                 # Payload 构建器 (0ea5c2a → source_payload.zip)
 ├── build_bundle.py                  # 兼容旧版预置打包（保留）
 ├── portable_launcher.spec           # PyInstaller 规格文件
 ├── pip.ini                          # pip 镜像源配置（阿里云 + 清华备用）
@@ -301,7 +301,7 @@ packaging/portable/                     # ★ 即插即用分发版根目录 (�
 └── README.md                        # 本文件
 ```
 
-> **源码去哪了？** `app/` `config/` `pyproject.toml` 等业务文件**不在分发目录中**，而是内嵌在 `launcher.exe` 内部作为 **source_payload.zip**（从当前发布基线 Commit `6a42f4a` 提取，SHA-256 可校验）。`launcher.exe` 首次运行时自动将 Payload 解压到 `runtime/releases/` 目录。PnP 目录始终保持最小体积，源码不受工作区未提交内容影响。
+> **源码去哪了？** `app/` `config/` `pyproject.toml` 等业务文件**不在分发目录中**，而是内嵌在 `launcher.exe` 内部作为 **source_payload.zip**（从当前发布基线 Commit `0ea5c2a` 提取，SHA-256 可校验）。`launcher.exe` 首次运行时自动将 Payload 解压到 `runtime/releases/` 目录。PnP 目录始终保持最小体积，源码不受工作区未提交内容影响。
 
 ### 运行时动态生成（首次启动后）
 
@@ -309,7 +309,7 @@ packaging/portable/                     # ★ 即插即用分发版根目录 (�
 ├── runtime/                  # ★ Runtime 版本管理
 │   ├── current.json          #   当前激活的 Release 信息
 │   └── releases/
-│       └── 0.1.15.3-alpha+6a42f4a+<payload-hash>/  # 内容寻址的固定版本源码
+│       └── 0.1.16-alpha+0ea5c2a+<payload-hash>/  # 内容寻址的固定版本源码
 │
 ├── .venv/                    # Python 虚拟环境（launcher.exe 自动创建）
 ├── models/                   # 四引擎 ASR 模型 (由 Engine Pack 或在线下载安装)
@@ -533,7 +533,7 @@ BILIUP_UPLOAD_CMD=                          # 自定义上传命令模板
 
 ## 回主工程
 
-此 `packaging/portable/` 目录是**发布给最终用户的即插即用版本**，源码固定于 `v0.1.15.3-alpha` 的发布基线 Commit。
+此 `packaging/portable/` 目录是**发布给最终用户的即插即用版本**，源码固定于 `v0.1.16-Alpha` 的发布基线 Commit。
 
 - **主仓库**: `D:\Vibe\BiliLiveCut\README.md`
 - **完整变更日志**: `D:\Vibe\BiliLiveCut\CHANGELOG.md`
