@@ -206,8 +206,10 @@ def check_ci_bypass(audit: AuditResult) -> None:
             "scripts/smoke_portable_lite.py" in content
             and "Lite fresh online installation and second offline launch OK" in lite_smoke
             and "_wait_ready" in lite_smoke
-            and '["--offline", "--engine-pack"' in lite_smoke,
-            "Lite smoke 必须完成空目录安装、Web 就绪和二次断网复用",
+            and '["--offline", "--engine-pack"' in lite_smoke
+            and "_configure_console_encoding()" in lite_smoke
+            and 'reconfigure(encoding="utf-8", errors="backslashreplace")' in lite_smoke,
+            "Lite smoke 必须完成空目录安装、Web 就绪、UTF-8 日志回显和二次断网复用",
         )
         audit.check(
             "release.yml Doctor 预期失败退出码归一化",

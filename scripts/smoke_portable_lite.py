@@ -22,6 +22,18 @@ REPO_ROOT = Path(__file__).resolve().parent.parent
 VERSION_CONFIG = REPO_ROOT / "packaging" / "portable" / "config" / "version.json"
 
 
+def _configure_console_encoding() -> None:
+    """Use UTF-8 output when the host console supports stream reconfiguration."""
+    for stream in (sys.stdout, sys.stderr):
+        reconfigure = getattr(stream, "reconfigure", None)
+        if not callable(reconfigure):
+            continue
+        try:
+            reconfigure(encoding="utf-8", errors="backslashreplace")
+        except (OSError, TypeError, ValueError):
+            continue
+
+
 def _required_file(directory: Path, filename: str, label: str) -> Path:
     """Return the exact current-version artifact from a directory."""
     path = directory / filename
@@ -196,6 +208,7 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
 
 def main(argv: list[str] | None = None) -> int:
     """Resolve smoke artifacts, run both phases, and report the result."""
+    _configure_console_encoding()
     args = parse_args(argv)
     try:
         version_config = json.loads(VERSION_CONFIG.read_text(encoding="utf-8"))
