@@ -1,6 +1,7 @@
 include .env.example
 include CHANGELOG.md
 include conftest.py
+include LICENSE
 include README.md
 include pyproject.toml
 include setup.py
@@ -11,8 +12,8 @@ recursive-include app *.py *.html *.css *.js *.txt
 recursive-include config *.yaml *.txt
 recursive-include docs *.md
 recursive-include packaging *.py *.json *.yaml *.ini *.lock *.in *.spec *.md *.example
-recursive-include packaging/portable/licenses *.txt
-recursive-include scripts *.py *.json *.sh *.bat
+recursive-include packaging/portable/licenses *.txt *.md
+recursive-include scripts *.py *.json *.mjs *.sh *.bat
 recursive-include tests *.py *.json
 recursive-include tools *.py *.pyx *.c *.rs *.toml *.lock
 

@@ -52,8 +52,8 @@ async function loadAnalytics() {
   $("#stat-published").textContent = data.overview.published_clips;
   $("#stat-duration").textContent = data.overview.total_duration_h;
   $("#stat-avg-score").textContent = data.overview.avg_highlight_score;
-  $("#stat-candidates").textContent = data.overview.total_candidates;
-  $("#stat-sessions").textContent = data.overview.total_sessions;
+  $("#stat-analytics-candidates").textContent = data.overview.total_candidates;
+  $("#stat-analytics-sessions").textContent = data.overview.total_sessions;
   $("#stat-reconnects").textContent = data.overview.total_reconnects;
   $("#stat-raw-gb").textContent = data.overview.total_raw_gb;
   $("#stat-task-fail").textContent = data.overview.task_failed;

@@ -12,13 +12,14 @@
 from __future__ import annotations
 
 import json
-import os
 import shutil
 import uuid
 import zipfile
 import zlib
 from pathlib import Path
 from typing import Any
+
+from blc_portable.atomic_fs import replace_with_retry
 
 CHUNK_SIZE = 8 * 1024 * 1024  # 8 MB 流式块大小
 INSTALLED_MANIFEST_NAME = "engine-pack-installed.json"
@@ -150,7 +151,7 @@ def _write_installed_manifest(
     tmp = models_dir / f"{INSTALLED_MANIFEST_NAME}.tmp"
     target = models_dir / INSTALLED_MANIFEST_NAME
     tmp.write_text(json.dumps(info, ensure_ascii=False, indent=2), encoding="utf-8")
-    os.replace(str(tmp), str(target))
+    replace_with_retry(tmp, target)
 
 
 def check_installed_models(
@@ -394,7 +395,7 @@ def install_from_engine_pack(
                     shutil.move(str(models_dir), str(backup_dir))
                 elif models_dir.exists():
                     shutil.rmtree(str(models_dir), ignore_errors=True)
-                os.replace(str(models_new), str(models_dir))
+                replace_with_retry(models_new, models_dir)
                 for engine_id in installed_engines:
                     ep = models_dir / engine_id
                     if not ep.exists() or not any(ep.iterdir()):

@@ -1,8 +1,8 @@
 """Payload 构建器 — 构建 source_payload.zip 和完整 Manifest。
 
 流程:
-1. 从固定的当前发布基线 f2c291d 提取源码 → staging/
-2. 应用受控版本 Overlay → 0.1.15.2-alpha
+1. 从固定的当前发布基线 6a42f4a 提取源码 → staging/
+2. 应用受控版本 Overlay → 0.1.15.3-alpha
 3. 构建 ZIP (收集 included_files 集合)
 4. 基于 included_files 生成 Manifest (文件数/Hash 与 ZIP 严格一致)
 5. 逐文件交叉校验 ZIP vs Manifest
@@ -33,6 +33,7 @@ from .source_snapshot import (
     apply_version_overlay,
     extract_source,
     verify_source_origin,
+    verify_workspace_source_baseline,
 )
 
 _logger = logging.getLogger(__name__)
@@ -295,6 +296,8 @@ def build_payload(
     if builder_commit is None:
         result = subprocess.run(["git", "rev-parse", "HEAD"], capture_output=True, text=True, check=True)
         builder_commit = result.stdout.strip()
+
+    verify_workspace_source_baseline(SOURCE_COMMIT_FULL)
 
     # 清理并创建输出目录
     staging_dir = BUILD_DIR / "payload_staging"

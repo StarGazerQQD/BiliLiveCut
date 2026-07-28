@@ -13,7 +13,7 @@ def cmd_serve(
     port: int = typer.Option(8000, help="监听端口"),
     reload: bool = typer.Option(False, "--reload", help="开发热重载"),
 ) -> None:
-    """启动 Web 管理后台(阶段4,需安装 .[web])。
+    """启动 Web 管理后台(阶段4，需安装 web 可选依赖)。
 
     :param host: 监听地址。
     :param port: 监听端口。

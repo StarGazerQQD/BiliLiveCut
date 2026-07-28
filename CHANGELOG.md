@@ -1,5 +1,22 @@
 # Changelog
 
+## V0.1.15.3 Alpha (2026-07-27)
+
+> Highlight_Model 分支继续使用独立的高光模型版本 **V0.1.15.2 HL-Alpha**，不随主程序/Portable 的 `0.1.15.3-alpha` 自动递增。
+
+### 修复
+
+- **release**: Lite 首次安装 smoke 驱动在入口将 stdout/stderr 切换为 UTF-8，修复 Windows runner 使用 `cp1252` 回显中文 Launcher 日志时触发 `UnicodeEncodeError`。
+- **release**: Lite Doctor 冒烟在验证预期失败摘要后显式返回成功，避免 PowerShell 保留原生命令的预期非零退出码而误判整个 Release step 失败。
+- **release**: Release 标签校验与 GitHub prerelease 判定统一使用小写规范化版本，兼容已有的 `-Alpha` 标签并避免被误判为正式版。
+- **ci/package**: CI 与 Release 在直接执行 `setup.py build_ext` 前显式安装 `setuptools>=77` 和固定版 Cython，修复 Windows Python 3.11 runner 使用旧构建后端时拒绝 SPDX `license = "MIT"` 的问题。
+- **portable/release**: Engine Pack 模型锁摘要统一按 LF 规范化换行后计算，消除同一 JSON 在 Windows CRLF 与 GitHub Actions LF checkout 下产生不同 SHA-256 的跨平台失败。
+- **license/release**: 项目代码正式采用 MIT License（Copyright (c) 2026 StarGazerQQD），并将许可证纳入 Python 包、Payload、Portable Lite/Full、GitHub Release 与发布完整性门禁。
+- **release**: sdist 明确收录前端 ES Module 交互检查脚本，消除源码包与版本控制文件集合不一致。
+- **release**: Full 跨制品校验仅匹配发行根目录直属许可证，避免将 Portable Python 随附的第三方 `LICENSE.txt` 误判为重复项目许可证。
+- **release**: Engine Pack 内嵌元数据现在必须与当前模型锁 SHA-256 完全一致，避免版本升级后继续携带旧锁摘要。
+- **docs**: 修正 Portable Lite 构建命令示例，并增加禁止文档重新引入过期命令的回归测试。
+
 ## V0.1.15.2 Alpha (2026-07-22)
 
 > 高光模型独立版本：**V0.1.15.2 HL-Alpha**。该版本与主程序/Portable 的 `0.1.15.2-alpha` 分开管理。

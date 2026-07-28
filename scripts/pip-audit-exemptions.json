@@ -1,7 +1,7 @@
 {
   "format_version": 1,
   "description": "Machine-readable pip-audit vulnerability exemptions.",
-  "last_reviewed": "2026-07-19",
+  "last_reviewed": "2026-07-27",
   "review_owner": "StarGazerQQD",
   "exemptions": [
   ],

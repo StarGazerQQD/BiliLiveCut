@@ -4,8 +4,8 @@
 Manifest 只描述 ZIP 内实际存在的文件，不包含未入包的文件。
 
 字段语义:
-- portable_release_version: Portable 发布版本 (如 0.1.15.2-alpha)
-- core_source_commit / core_source_commit_short: 固定业务源码基线 f2c291d
+- portable_release_version: Portable 发布版本 (如 0.1.15.3-alpha)
+- core_source_commit / core_source_commit_short: 固定业务源码基线 6a42f4a
 - core_api_level: 业务源码的 schema version
 - builder_commit: 构建工具 commit
 - payload_schema: Manifest 格式版本 (本文件)
@@ -28,9 +28,11 @@ import sys
 from pathlib import Path
 from typing import Any
 
-SOURCE_COMMIT_SHORT = "f2c291d"
-SOURCE_COMMIT_FULL = "f2c291df2409bdf83dbf8f8a30d6b3ee1d44e8e0"
-RELEASE_VERSION = "0.1.15.2-alpha"
+from blc_portable.project_license import PROJECT_LICENSE_ID, project_license_sha256
+
+SOURCE_COMMIT_SHORT = "6a42f4a"
+SOURCE_COMMIT_FULL = "6a42f4afd08e03fe536e3a26fd85e69217032986"
+RELEASE_VERSION = "0.1.15.3-alpha"
 MANIFEST_FORMAT_VERSION = 5
 
 # Cached version.json values
@@ -196,6 +198,8 @@ def create_manifest(
         "applied_backports": bp,
         "engine_pack_api_version": _get_engine_pack_api_version(),
         "model_set_version": _get_model_set_version(),
+        "project_license": PROJECT_LICENSE_ID,
+        "project_license_sha256": project_license_sha256(),
         # ── 平台 ──
         "target_platform": target_platform,
         "python_abi": _get_python_abi(),
@@ -247,6 +251,8 @@ def validate_manifest(
         "payload_sha256",
         "files",
         "file_count",
+        "project_license",
+        "project_license_sha256",
     ]
     for field in required:
         if field not in manifest:
@@ -266,6 +272,18 @@ def validate_manifest(
             f"source_commit_short 不匹配: {manifest.get('source_commit_short')} expected={SOURCE_COMMIT_SHORT}"
         )
 
+    if manifest.get("project_license") != PROJECT_LICENSE_ID:
+        errors.append(
+            f"project_license 不匹配: manifest={manifest.get('project_license')} expected={PROJECT_LICENSE_ID}"
+        )
+    expected_license_sha256 = project_license_sha256()
+    if manifest.get("project_license_sha256") != expected_license_sha256:
+        errors.append(
+            "project_license_sha256 不匹配: "
+            f"manifest={str(manifest.get('project_license_sha256', ''))[:16]} "
+            f"expected={expected_license_sha256[:16]}"
+        )
+
     # ── 3. Payload ZIP 哈希 ──
     if not payload_zip_path.exists():
         errors.append(f"Payload ZIP 不存在: {payload_zip_path}")
@@ -281,6 +299,9 @@ def validate_manifest(
     if not isinstance(manifest_files, dict) or not manifest_files:
         errors.append("Manifest 'files' 为空或格式错误")
         return errors
+    license_entry = manifest_files.get("LICENSE", {})
+    if license_entry.get("sha256") != expected_license_sha256:
+        errors.append("Manifest 中的 LICENSE 缺失或 SHA-256 与项目许可证不一致")
 
     # 读取 ZIP 内文件列表 — 处理无效 ZIP
     try:

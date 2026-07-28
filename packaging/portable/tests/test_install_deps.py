@@ -142,6 +142,55 @@ def test_install_dependencies_auto_uses_full_bundle_wheelhouse(tmp_path: Path, m
     assert any("import playwright" in arg for args in calls for arg in args)
 
 
+def test_lite_online_install_uses_embedded_bootstrap_wheels(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    """Lite must combine audited embedded wheels with binary-only index downloads."""
+    from blc_portable.launcher import main  # noqa: E402
+
+    lock_file = tmp_path / "requirements-runtime-py312-win-x64.lock"
+    lock_file.write_text("demo==1.0 --hash=sha256:" + "0" * 64 + "  # demo-1.0-py3-none-any.whl\n")
+    bootstrap = tmp_path / "bootstrap-wheels"
+    bootstrap.mkdir()
+    (bootstrap / "demo-1.0-py3-none-any.whl").write_bytes(b"fixture")
+    calls: list[list[str]] = []
+
+    def _fake_run(args: list[str], **_kwargs: object) -> _sp.CompletedProcess[str]:
+        calls.append(args)
+        return _sp.CompletedProcess(args, 0, stdout="", stderr="")
+
+    monkeypatch.delenv("PIP_NO_INDEX", raising=False)
+    monkeypatch.setattr(main, "_find_lock_file", lambda _python: lock_file)
+    monkeypatch.setattr(main, "_find_bootstrap_wheelhouse", lambda: bootstrap)
+    monkeypatch.setattr(main.subprocess, "run", _fake_run)
+
+    main.install_dependencies(Path(sys.executable), tmp_path)
+
+    install_call = next(args for args in calls if "install" in args)
+    assert "--require-hashes" in install_call
+    assert "--only-binary=:all:" in install_call
+    assert "--no-index" not in install_call
+    assert install_call[install_call.index("--find-links") + 1] == str(bootstrap)
+
+
+def test_lite_online_install_rejects_missing_bootstrap_wheels(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    """Lite must fail closed instead of accepting source archives with different hashes."""
+    from blc_portable.launcher import main  # noqa: E402
+
+    lock_file = tmp_path / "requirements-runtime-py312-win-x64.lock"
+    lock_file.write_text("demo==1.0 --hash=sha256:" + "0" * 64 + "  # demo-1.0-py3-none-any.whl\n")
+
+    def _fake_run(args: list[str], **_kwargs: object) -> _sp.CompletedProcess[str]:
+        assert args[-2:] == ["pip", "freeze"]
+        return _sp.CompletedProcess(args, 0, stdout="", stderr="")
+
+    monkeypatch.delenv("PIP_NO_INDEX", raising=False)
+    monkeypatch.setattr(main, "_find_lock_file", lambda _python: lock_file)
+    monkeypatch.setattr(main, "_find_bootstrap_wheelhouse", lambda: None)
+    monkeypatch.setattr(main.subprocess, "run", _fake_run)
+
+    with pytest.raises(RuntimeError, match="bootstrap wheelhouse is missing"):
+        main.install_dependencies(Path(sys.executable), tmp_path)
+
+
 def test_app_cli_smoke_uses_installed_runtime_source(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
     """app.cli smoke must resolve from the installed Runtime, not the checkout."""
     from blc_portable.launcher import main  # noqa: E402

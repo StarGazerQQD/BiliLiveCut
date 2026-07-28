@@ -12,6 +12,8 @@ import sys
 from pathlib import Path
 from typing import Any
 
+from blc_portable.atomic_fs import replace_with_retry
+
 
 def _streaming_sha256(path: Path, chunk_size: int = 8 * 1024 * 1024) -> str:
     """Streaming SHA-256 of a file."""
@@ -63,9 +65,7 @@ def write_current_json(
     target = get_runtime_dir() / "current.json"
     target.parent.mkdir(parents=True, exist_ok=True)
     tmp.write_text(json.dumps(current_info, ensure_ascii=False, indent=2), encoding="utf-8")
-    import os
-
-    os.replace(str(tmp), str(target))
+    replace_with_retry(tmp, target)
 
 
 def verify_runtime(app_root: Path) -> tuple[bool, list[str]]:

@@ -2,7 +2,7 @@
 """Local CI gate — replicate CI checks from the command line.
 
 按顺序复现 CI lint + audit + test + portable 全部检查。
-任一步骤失败立即停止 (fail-closed)。
+任一步骤失败都会关闭门禁并最终返回非零退出码 (fail-closed)。
 
 用法:
     python scripts/ci_gate.py
@@ -15,6 +15,7 @@ from __future__ import annotations
 
 import subprocess
 import sys
+import tempfile
 from pathlib import Path
 
 REPO_ROOT = Path(__file__).resolve().parent.parent
@@ -52,10 +53,25 @@ def _pytest(path: str, extra_args: list[str] | None = None, desc: str = "") -> b
     :param desc: Description string.
     :returns: True if all tests passed.
     """
-    cmd = [sys.executable, "-m", "pytest", path, "-v", "--timeout=120"]
-    if extra_args:
-        cmd.extend(extra_args)
-    return _run(cmd, desc=desc or f"pytest {path}")
+    suite_name = "portable" if path.startswith("packaging/portable") else "main"
+    temp_root = REPO_ROOT / "packaging" / "portable" / "build" / "ci-gate"
+    temp_root.mkdir(parents=True, exist_ok=True)
+    with tempfile.TemporaryDirectory(prefix=f"{suite_name}-", dir=temp_root, ignore_cleanup_errors=True) as run_dir:
+        run_root = Path(run_dir)
+        cmd = [
+            sys.executable,
+            "-m",
+            "pytest",
+            path,
+            "-v",
+            "--timeout=120",
+            f"--basetemp={run_root / 'pytest'}",
+            "-o",
+            f"cache_dir={run_root / 'cache'}",
+        ]
+        if extra_args:
+            cmd.extend(extra_args)
+        return _run(cmd, desc=desc or f"pytest {path}")
 
 
 def main() -> int:
@@ -77,10 +93,16 @@ def main() -> int:
     all_ok = True
 
     # ── 1. Ruff check ──
-    all_ok &= _run(["ruff", "check", "."], desc="1/8 ruff check")
+    all_ok &= _run(
+        [sys.executable, "scripts/run_ruff.py", "check"],
+        desc="1/8 ruff check",
+    )
 
     # ── 2. Ruff format ──
-    all_ok &= _run(["ruff", "format", "--check", "."], desc="2/8 ruff format check")
+    all_ok &= _run(
+        [sys.executable, "scripts/run_ruff.py", "format"],
+        desc="2/8 ruff format check",
+    )
 
     # ── 3. Version consistency ──
     all_ok &= _run(
@@ -94,39 +116,12 @@ def main() -> int:
         desc="4/8 release audit",
     )
 
-    # ── 5. pip-audit ──
+    # ── 5. Portable runtime lock audit ──
     if not skip_audit:
-        pip_ok = True
-        try:
-            r = subprocess.run(
-                [sys.executable, "-m", "pip_audit", "--strict", "--skip-editable"],
-                capture_output=True,
-                text=True,
-                cwd=str(REPO_ROOT),
-            )
-            if r.returncode != 0:
-                # Check exemptions
-                log_path = REPO_ROOT / "pip-audit.log"
-                log_path.write_text(r.stdout + "\n" + r.stderr, encoding="utf-8")
-                print(f"{YELLOW}  pip-audit found vulnerabilities (exit={r.returncode}){RESET}")
-                r2 = subprocess.run(
-                    [sys.executable, "scripts/check_pip_audit_exemptions.py", str(log_path)],
-                    capture_output=True,
-                    text=True,
-                    cwd=str(REPO_ROOT),
-                )
-                print(r2.stdout.strip())
-                if r2.returncode != 0:
-                    print(f"{RED}  pip-audit: unexempted vulnerabilities{RESET}")
-                    pip_ok = False
-                else:
-                    print(f"{GREEN}  pip-audit: all covered by exemptions{RESET}")
-            else:
-                print(f"{GREEN}  pip-audit: clean{RESET}")
-        except ImportError:
-            print(f"{YELLOW}  pip-audit: not installed (install with: pip install pip-audit){RESET}")
-            pip_ok = True  # skip if not installed
-        all_ok &= pip_ok
+        all_ok &= _run(
+            [sys.executable, "scripts/audit_portable_runtime_locks.py"],
+            desc="5/8 Portable runtime lock audit",
+        )
 
     # ── 6. Main tests + coverage ──
     cov_args = ["--cov=app", "--cov-report=term-missing", "--cov-fail-under=50"]

@@ -16,7 +16,7 @@ console = Console()
 def cmd_transcribe(
     segment_id: int = typer.Argument(..., help="raw_segments 主键"),
 ) -> None:
-    """转写指定片段(阶段2,需安装 .[asr])。
+    """转写指定片段(阶段2，需安装 asr 可选依赖)。
 
     :param segment_id: ``raw_segments`` 主键。
     """

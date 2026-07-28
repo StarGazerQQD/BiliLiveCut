@@ -28,6 +28,7 @@ storage/
 .ruff_cache/
 .mypy_cache/
 .coverage
+coverage.xml
 htmlcov/
 .git_msg.txt
 /tests/*
@@ -69,9 +70,13 @@ build/temp.*/
 # Portable 模型缓存
 packaging/portable/.model_cache/
 
+# Portable 本地运行时（由 Launcher 生成）
+/runtime/
+
 # IDE / OS
 .vscode/
 .idea/
+*.code-workspace
 .DS_Store
 Thumbs.db
 

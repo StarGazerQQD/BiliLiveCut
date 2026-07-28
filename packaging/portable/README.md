@@ -1,12 +1,12 @@
 # BiliLiveCut · 即插即用版（`packaging/portable/`，原 Publish-PnP）
 
-**版本：V0.1.15.2 Alpha** (`0.1.15.2-alpha`)
+**版本：V0.1.15.3 Alpha** (`0.1.15.3-alpha`)
 
 > **普通用户请先阅读：[Portable 小白使用说明](USER_GUIDE_ZH.md)**。该说明按 Windows 用户从下载、校验、解压、首次启动到第一次录制的顺序编写。
 
 BiliLiveCut 是一个**全自动 AI 直播切片系统**：监听 Bilibili 直播间 → 实时录制 + 转写 → 识别高光爆点 → 生成剪辑成品 + 文案。
 
-这个 `packaging/portable/` 目录是**即插即用分发版**。Launcher 内嵌了当前发布基线的完整业务源码 (Commit `f2c291d`)，**双击即用，首次启动不需要从 GitHub 下载业务源码**。Full 版自带 Python 3.12、离线依赖和 FFmpeg；Lite 版需要目标电脑已有 Python 3.11/3.12，并自行满足 FFmpeg 等运行组件。
+这个 `packaging/portable/` 目录是**即插即用分发版**。Launcher 内嵌了当前发布基线的完整业务源码 (Commit `6a42f4a`)，**双击即用，首次启动不需要从 GitHub 下载业务源码**。Full 版自带 Python 3.12、离线依赖和 FFmpeg；Lite 版需要目标电脑已有 Python 3.11/3.12，并自行满足 FFmpeg 等运行组件。
 
 > **与旧版的关键区别**：旧版 PnP 首次启动从 GitHub 下载 `main` 分支源码（不稳定，且国内访问 GitHub 经常失败）。新版源码从 **EXE 内置 Payload** 释放，版本固定、SHA-256 可校验，彻底摆脱 GitHub 依赖。
 
@@ -35,7 +35,7 @@ BiliLiveCut 是一个**全自动 AI 直播切片系统**：监听 Bilibili 直�
 | 旧版 (Publish-PnP) | 新版 (packaging/portable) |
 |---|---|
 | 首次运行从 GitHub 下载 `main` 分支源码 | 首次运行从 **EXE 内置 Payload** 释放固定版本源码 |
-| 源码版本不确定（随 `main` 漂移） | 源码固定于当前发布基线 `f2c291d`，SHA-256 可校验 |
+| 源码版本不确定（随 `main` 漂移） | 源码固定于当前发布基线 `6a42f4a`，SHA-256 可校验 |
 | 无 Manifest / 无法校验完整性 | 完整 `payload_manifest.json` 含逐文件 SHA-256 |
 | 无版本 Overlay 机制 | 受控 Release Metadata Overlay (仅 6 个文件可修改) |
 | 无 Runtime 原子安装 | `staging → rename` 原子切换 + `current.json` 原子更新 |
@@ -48,7 +48,7 @@ BiliLiveCut 是一个**全自动 AI 直播切片系统**：监听 Bilibili 直�
 | | Portable Lite | Portable Full |
 |---|---|---|
 | **定位** | 轻量化，方便下载分发 | 完整包，开箱即用 |
-| **当前发行大小** | ~40 MB (EXE) | ~1 GB (ZIP，解压后更大) |
+| **当前发行大小** | 约 80 MB (EXE) | 约 1 GB (ZIP，解压后更大) |
 | **内含** | EXE + 业务源码 Payload | EXE + Portable Python + Wheels + FFmpeg |
 | **安装过程** | 首次安装时在线下载 Python 依赖；FFmpeg 需另行准备 | 预置 Python、依赖和 FFmpeg，组件安装无需额外下载 |
 | **模型** | 不含模型，通过独立 **Engine Pack** 或在线下载安装 | 不含模型，通过独立 **Engine Pack** 或在线下载安装 |
@@ -92,8 +92,8 @@ BiliLiveCut 是一个**全自动 AI 直播切片系统**：监听 Bilibili 直�
 - **Bilibili 风控熔断**: `CircuitBreaker` 房间级熔断，403/412 触发后退避
 - **弹幕分级采样**: SC/互动 100% 采集，普通 30%，高密度 10%
 - **Schema v1 系统**: 轻量 schema_meta 元信息表 + SHA-256 指纹，不兼容数据库拒绝启动
-- **`bililivecut doctor`**: 15 项自检命令 (PASS/WARN/FAIL)
-- **CI 增强**: pip-audit + pytest-cov 覆盖率门禁 + macOS 矩阵
+- **`bililivecut doctor`**: 15 项自检命令 (PASS/WARN/FAIL)，存在 FAIL 时返回非零退出码
+- **CI 增强**: Portable Windows 运行时锁的阻断式 pip-audit + pytest-cov 覆盖率门禁 + macOS 矩阵
 - **290/290 测试通过**
 
 ---
@@ -159,7 +159,7 @@ Lite 和 Full 均不携带 ASR 模型。四个引擎模型统一由独立的 **E
 
 ### 使用方式
 
-1. 下载 BiliLiveCut-EnginePack-0.1.15.2-alpha.zip
+1. 下载 BiliLiveCut-EnginePack-0.1.15.3-alpha.zip
 2. 放在 Launcher EXE **同级目录** (或 packages/ 子目录)
 3. 双击启动 Launcher → 自动 **CRC32 校验** → 校验通过即离线安装 (网络请求 0)
 4. 无本地包或校验失败 → 自动**全量在线下载**四个引擎模型
@@ -202,7 +202,7 @@ python build_engine_pack.py --from-cache  # 从已验证缓存构建
 
 输出:
 
-- dist/engine-pack/BiliLiveCut-EnginePack-0.1.15.2-alpha.zip
+- dist/engine-pack/BiliLiveCut-EnginePack-0.1.15.3-alpha.zip
 - dist/engine-pack/engine-pack-manifest.json
 - dist/engine-pack/CRC32SUMS.txt
 - dist/engine-pack/SHA256SUMS.txt
@@ -211,6 +211,8 @@ python build_engine_pack.py --from-cache  # 从已验证缓存构建
 resources/engine_pack_info.json (本地 Engine Pack 构建后可供 Lite/Full EXE 嵌入；GitHub Release 不嵌入 fixture)
 
 正式构建会执行再分发门禁：主模型、Paraformer 子模型及 Fun-ASR-Nano 随附的 Qwen3 组件必须具有固定来源、许可证证据、验证日期和随包许可证文件；任一项缺失都会终止构建。完整归属见 [`licenses/THIRD_PARTY_NOTICES.md`](licenses/THIRD_PARTY_NOTICES.md)。
+
+> BiliLiveCut 项目代码采用仓库根目录的 [MIT License](../../LICENSE)，Copyright (c) 2026 StarGazerQQD。上述第三方 MIT / Apache-2.0 文件仅适用于所列模型及组件；项目许可证不改变任何第三方条款。
 
 ### 注意事项
 
@@ -232,13 +234,13 @@ resources/engine_pack_info.json (本地 Engine Pack 构建后可供 Lite/Full EX
 |------|------|------|------|
 | ① | 释放源码 Payload | ~426 KB | 从 EXE 内置 Payload 释放 `app/` `config/` `pyproject.toml` `setup.py` 等，**无需 GitHub** |
 | ② | 创建虚拟环境 | — | `.venv` 隔离 Python 依赖 |
-| ③ | 安装依赖 | ~500 MB | 阿里云镜像 + 清华镜像（备用） |
+| ③ | 安装依赖 | ~500 MB | 内嵌 5 个经哈希校验的 bootstrap wheel，其余依赖从用户配置的 Python 包索引下载且只接受二进制 wheel |
 | ④ | 模型准备 | — | 检查 Engine Pack → CRC32 校验安装 → 无本地包则在线下载四引擎模型 |
 | ⑤ | 检查 FFmpeg | — | Lite 当前不内置 FFmpeg；需要系统 PATH 可用，或在 `bin/` 提供 `ffmpeg.exe`/`ffprobe.exe` |
 | ⑥ | 生成 `.env` 配置 | — | 含合理默认值 |
 
 > **断点续跑**：任何一步失败或中断，再次双击自动从断点继续。
-> **源码固定**：本次发布源码来源固定为 Commit `f2c291d`，不随 GitHub 上游变动。
+> **源码固定**：本次发布源码来源固定为 Commit `6a42f4a`，不随 GitHub 上游变动。
 
 4. 部署完成后打开 **Web 管理控制台**（默认 `http://127.0.0.1:8000`；未自动弹出时请手动访问）
 
@@ -246,18 +248,19 @@ resources/engine_pack_info.json (本地 Engine Pack 构建后可供 Lite/Full EX
 
 ### 方式二：下载 Full 版（完整包，安装无需额外下载）
 
-拿到 `BiliLiveCut-Portable-Full-*.zip`，解压到任意目录，双击 `BiliLiveCut-Portable.exe`。启动器自动检测同目录下的 `portable-python/`、`vendor/wheels/`、`bin/ffmpeg.exe`，安装过程无需从互联网拉取任何额外组件。
+拿到 `BiliLiveCut-Portable-Full-*.zip`，解压到任意目录，双击 `BiliLiveCut-Portable.exe`。启动器自动检测同目录下的 `portable-python/`、`vendor/wheels/`、`bin/ffmpeg.exe`，安装过程无需从互联网拉取任何额外组件；包内 `LICENSE.txt` 是项目代码的 MIT License。
 
 ### 运行依赖锁维护
 
-Portable 使用 Python 3.11 / 3.12 两套 Windows x64 完整依赖锁。锁文件覆盖直接依赖和全部传递依赖，每个条目都固定为 `==` 版本并校验所选 wheel 的 SHA-256。PyPI 没有提供 wheel 的五个纯 Python 包由受控脚本从固定 SHA-256 的源码构建，构建工具版本和时间戳同样固定。
+Portable 使用 Python 3.11 / 3.12 两套 Windows x64 完整依赖锁。锁文件覆盖直接依赖和全部传递依赖，每个条目都固定为 `==` 版本并校验所选 wheel 的 SHA-256。PyPI 没有提供 wheel 的五个纯 Python 包由受控脚本从固定 SHA-256 的源码构建，构建工具版本和时间戳同样固定；这 5 个 wheel 会作为最小 bootstrap 集内嵌进 Lite EXE，避免包索引返回源码包时触发哈希不匹配。Lite 联网安装其余依赖时使用 `--only-binary=:all: --require-hashes`，不会静默回退到 sdist。
 
 ```powershell
 python -m pip install setuptools==83.0.0 wheel==0.46.3
+python scripts/build_portable_runtime_wheels.py --output-dir packaging/portable/dist/bootstrap-wheels
 python scripts/generate_portable_runtime_locks.py
 ```
 
-Release CI 会对两套锁执行 `pip download --require-hashes`，并分别进行 Python 3.11 和 3.12 的全新虚拟环境 `--no-index` 离线安装、`pip check` 与核心模块导入测试。Full Launcher 会自动发现安装目录下的 `vendor/wheels` 并强制使用 `--no-index --require-hashes`，无需设置 `PIP_NO_INDEX`；若 Full wheelhouse 缺失或为空则直接失败，不会回退到在线镜像。不要通过删除哈希、添加 `--no-deps` 或跳过离线安装来规避锁文件错误。
+Release CI 会对两套锁执行 `pip download --require-hashes`，并分别进行 Python 3.11 和 3.12 的全新虚拟环境 `--no-index` 离线安装、`pip check` 与核心模块导入测试。它还会让 Lite 在空目录完成首次联网安装、Web 就绪与二次断网启动。Full Launcher 会自动发现安装目录下的 `vendor/wheels` 并强制使用 `--no-index --require-hashes`，无需设置 `PIP_NO_INDEX`；若 Full wheelhouse 缺失或为空则直接失败，不会回退到在线镜像。发布前还会交叉核对 Payload、Lite、Full 的版本、源码基线、构建提交与实际 SHA-256/CRC32。不要通过删除哈希、添加 `--no-deps` 或跳过离线安装来规避锁文件错误。
 
 ### 方式三：开发者手动打包
 
@@ -282,13 +285,13 @@ packaging/portable/                     # ★ 即插即用分发版根目录 (�
 ├── launcher.py                      # launcher.exe 的 Python 源码（可选，便于审查）
 ├── build_exe.py                     # Lite 版构建 (PyInstaller one-file)
 ├── build_full_bundle.py             # Full 完整包构建脚本
-├── build_payload.py                 # Payload 构建器 (f2c291d → source_payload.zip)
+├── build_payload.py                 # Payload 构建器 (6a42f4a → source_payload.zip)
 ├── build_bundle.py                  # 兼容旧版预置打包（保留）
 ├── portable_launcher.spec           # PyInstaller 规格文件
 ├── pip.ini                          # pip 镜像源配置（阿里云 + 清华备用）
 ├── .env.example                     # 配置模板（launcher.exe 自动生成 .env）
 ├── .gitignore                       # Git 忽略规则
-├── tests/                           # 19 项 Portable 专项测试
+├── tests/                           # Portable 构建、安装、安全与制品测试
 ├── build/                           # 构建临时文件（gitignore 忽略）
 ├── dist/                            # 构建产物
 │   ├── payload/                     #   source_payload.zip + manifest
@@ -298,7 +301,7 @@ packaging/portable/                     # ★ 即插即用分发版根目录 (�
 └── README.md                        # 本文件
 ```
 
-> **源码去哪了？** `app/` `config/` `pyproject.toml` 等业务文件**不在分发目录中**，而是内嵌在 `launcher.exe` 内部作为 **source_payload.zip**（从当前发布基线 Commit `f2c291d` 提取，SHA-256 可校验）。`launcher.exe` 首次运行时自动将 Payload 解压到 `runtime/releases/` 目录。PnP 目录始终保持最小体积，源码不受工作区未提交内容影响。
+> **源码去哪了？** `app/` `config/` `pyproject.toml` 等业务文件**不在分发目录中**，而是内嵌在 `launcher.exe` 内部作为 **source_payload.zip**（从当前发布基线 Commit `6a42f4a` 提取，SHA-256 可校验）。`launcher.exe` 首次运行时自动将 Payload 解压到 `runtime/releases/` 目录。PnP 目录始终保持最小体积，源码不受工作区未提交内容影响。
 
 ### 运行时动态生成（首次启动后）
 
@@ -306,7 +309,7 @@ packaging/portable/                     # ★ 即插即用分发版根目录 (�
 ├── runtime/                  # ★ Runtime 版本管理
 │   ├── current.json          #   当前激活的 Release 信息
 │   └── releases/
-│       └── 0.1.15.2-alpha+f2c291d+<payload-hash>/  # 内容寻址的固定版本源码
+│       └── 0.1.15.3-alpha+6a42f4a+<payload-hash>/  # 内容寻址的固定版本源码
 │
 ├── .venv/                    # Python 虚拟环境（launcher.exe 自动创建）
 ├── models/                   # 四引擎 ASR 模型 (由 Engine Pack 或在线下载安装)
@@ -530,7 +533,7 @@ BILIUP_UPLOAD_CMD=                          # 自定义上传命令模板
 
 ## 回主工程
 
-此 `packaging/portable/` 目录是**发布给最终用户的即插即用版本**，源码固定于 `v0.1.15.2-alpha` 的发布基线 Commit。
+此 `packaging/portable/` 目录是**发布给最终用户的即插即用版本**，源码固定于 `v0.1.15.3-alpha` 的发布基线 Commit。
 
 - **主仓库**: `D:\Vibe\BiliLiveCut\README.md`
 - **完整变更日志**: `D:\Vibe\BiliLiveCut\CHANGELOG.md`

@@ -2,9 +2,10 @@
 """PyInstaller spec for BiliLiveCut Portable Launcher.
 
 内嵌资源:
-- source_payload.zip (f2c291d 业务源码)
+- source_payload.zip (6a42f4a 业务源码)
 - payload_manifest.json
 - engine_pack_info.json (四引擎模型包信息, 含 CRC32)
+- LICENSE (BiliLiveCut 项目 MIT License)
 - app_icon.ico (如有)
 """
 
@@ -25,6 +26,10 @@ _payload_zip = str(_here / "dist" / "payload" / "source_payload.zip")
 _manifest = str(_here / "dist" / "payload" / "payload_manifest.json")
 _version_config = str(_config_dir / "version.json")
 _model_sources_lock = str(_config_dir / "model_sources.lock.json")
+_bootstrap_wheels_dir = _here / "dist" / "bootstrap-wheels"
+_project_license = _here.parent.parent / "LICENSE"
+if not _project_license.is_file():
+    raise RuntimeError(f"Project license is missing: {_project_license}")
 
 # Engine Pack 信息
 _engine_pack_info = str(_here / "resources" / "engine_pack_info.json")
@@ -35,12 +40,19 @@ _lock_files = []
 for _lf in sorted(Path(_lock_dir).glob("requirements-runtime-*-win-x64.lock")):
     _lock_files.append((str(_lf), "locks"))
 
+_bootstrap_wheels = []
+for _wheel in sorted(_bootstrap_wheels_dir.glob("*.whl")):
+    _bootstrap_wheels.append((str(_wheel), "bootstrap-wheels"))
+if not _bootstrap_wheels:
+    raise RuntimeError(f"Lite bootstrap wheels are missing: {_bootstrap_wheels_dir}")
+
 _datas = [
     (_payload_zip, "."),
     (_manifest, "."),
     (_version_config, "."),
     (_model_sources_lock, "."),
-] + _lock_files
+    (str(_project_license), "."),
+] + _lock_files + _bootstrap_wheels
 
 # engine_pack_info.json 存在则嵌入, 不存在则不嵌入 (此-时 CRC32 为空)
 if os.environ.get("BLC_OMIT_ENGINE_PACK_INFO") != "1" and Path(_engine_pack_info).exists():
@@ -76,7 +88,7 @@ exe = EXE(
     a.binaries,
     a.datas,
     [],
-    name="BiliLiveCut-Portable-Lite-v0.1.15.2-alpha-x64",
+    name="BiliLiveCut-Portable-Lite-v0.1.15.3-alpha-x64",
     debug=False,
     bootloader_ignore_signals=False,
     strip=False,
