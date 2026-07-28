@@ -223,7 +223,7 @@ class TestEnginePackInfoFields:
             crc32_val="1234ABCD",
             sha256_val="a" * 64,
             archive_path=archive_path,
-            source_commit="c4c69137f616c75010735a50a68c6ae6a7f1e8fb",
+            source_commit="0ea5c2a764d80f6afa5119febcfeeff60a8019e5",
             content_manifest_path=content_manifest_path,
             is_fixture=True,
         )
@@ -243,8 +243,8 @@ class TestEnginePackInfoFields:
             "format_version": 4,
             "engine_pack_version": "0.1.16-alpha",
             "portable_release_version": "0.1.16-alpha",
-            "source_commit": "c4c69137f616c75010735a50a68c6ae6a7f1e8fb",
-            "source_commit_short": "c4c6913",
+            "source_commit": "0ea5c2a764d80f6afa5119febcfeeff60a8019e5",
+            "source_commit_short": "0ea5c2a",
             "engines": [
                 {
                     "engine_id": engine_id,
