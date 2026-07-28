@@ -28,8 +28,8 @@ from blc_portable.console import configure_console_encoding
 
 # -- Constants ──────────────────────────────────────────────────
 APP_NAME = "BiliLiveCut"
-VERSION = "V0.1.15.3 Alpha"
-RELEASE_VERSION = "0.1.15.3-alpha"
+VERSION = "V0.1.16 Alpha"
+RELEASE_VERSION = "0.1.16-alpha"
 SOURCE_COMMIT_SHORT = "c4c6913"
 # NOTE: RELEASE_ID 将在获得 Payload SHA-256 后动态生成 (内容寻址)
 SUPPORTED_PYTHON_VERSIONS = frozenset({(3, 11), (3, 12)})
@@ -545,7 +545,7 @@ def prepare_models(app_root: Path, user_engine_pack_path: str | None = None) -> 
         install_from_engine_pack,
     )
 
-    MODEL_ENGINE_PACK_VERSION = "0.1.15.3-alpha"
+    MODEL_ENGINE_PACK_VERSION = "0.1.16-alpha"
 
     # Read embedded Engine Pack info
     pack_info = get_engine_pack_info()

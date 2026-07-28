@@ -1,20 +1,20 @@
 {
   "format_version": 4,
   "artifact_class": "fixture",
-  "engine_pack_version": "0.1.15.3-alpha",
+  "engine_pack_version": "0.1.16-alpha",
   "engine_pack_api_version": 4,
   "model_set_version": 4,
   "payload_schema_version": 4,
   "compatible_app": {
-    "min": "0.1.15.3-alpha",
-    "max_exclusive": "0.1.16"
+    "min": "0.1.16-alpha",
+    "max_exclusive": "0.1.17"
   },
-  "filename": "BiliLiveCut-EnginePack-0.1.15.3-alpha.zip",
+  "filename": "BiliLiveCut-EnginePack-0.1.16-alpha.zip",
   "size_bytes": 11301,
   "crc32": "FA9B04B0",
   "sha256": "0bf252ca1daf4a543e080d516ad75dd38f49efc4d74b8a3ea8139739546a1389",
   "content_manifest_sha256": "d1551e26e3d62266c24b938d3eccb5b090d05921fdf369edfe242e272258d4c6",
-  "model_lock_sha256": "f1db9ba014283c23064b81e2887ee08f4b37119d45cd0a9b8aa3cb0db970c07c",
+  "model_lock_sha256": "5c38dc63985af0249c9f54e98194976ceb0d612a64bc912e19e877a9d9c1438d",
   "source_commit": "c4c69137f616c75010735a50a68c6ae6a7f1e8fb",
   "builder_commit": "62d1f9ca64a29a435f4b51166bd75dd95bcd3b7b",
   "build_timestamp": "2026-07-27T17:06:32",

@@ -208,7 +208,7 @@ class TestEnginePackInfoFields:
 
         content_manifest = {
             "format_version": 4,
-            "engine_pack_version": "0.1.15.3-alpha",
+            "engine_pack_version": "0.1.16-alpha",
             "total_files": 1,
             "fixture": True,
             "engines": [],
@@ -241,8 +241,8 @@ class TestEnginePackInfoFields:
 
         content_manifest = {
             "format_version": 4,
-            "engine_pack_version": "0.1.15.3-alpha",
-            "portable_release_version": "0.1.15.3-alpha",
+            "engine_pack_version": "0.1.16-alpha",
+            "portable_release_version": "0.1.16-alpha",
             "source_commit": "c4c69137f616c75010735a50a68c6ae6a7f1e8fb",
             "source_commit_short": "c4c6913",
             "engines": [

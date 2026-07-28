@@ -2,7 +2,7 @@
 
 [![CI](https://github.com/StarGazerQQD/BiliLiveCut/actions/workflows/ci.yml/badge.svg)](https://github.com/StarGazerQQD/BiliLiveCut/actions/workflows/ci.yml)
 
-**当前版本：V0.1.15.3 Alpha** (`0.1.15.3-alpha`)
+**当前版本：V0.1.16 Alpha** (`0.1.16-alpha`)
 
 面向 Bilibili 直播的全自动工作流：实时录制 → 转写 → 识别高光 → 生成切片 → 生成文案 → (可选)上传。
 阶段 1–5 全链路已可用；即插即用分发包见 [`packaging/portable/`](packaging/portable/README.md)。普通 Windows 用户可直接阅读 [Portable 小白使用说明](packaging/portable/USER_GUIDE_ZH.md)。
@@ -21,56 +21,87 @@
 
 > ⚖️ **许可证边界**：BiliLiveCut 项目代码采用 [MIT License](LICENSE)，Copyright (c) 2026 StarGazerQQD。随包第三方模型和组件继续适用各自的许可证与归属声明；项目的 MIT License 不改变任何第三方条款。
 
-## 开发中功能
+## V0.1.16 新特性：生产工作台与插件平台
 
-- 审片边界会先校验录像覆盖范围、时间顺序及最大时长；重新渲染会保留独立版本文件，避免覆盖已有成品。
-- 录制支持“停止并收尾”“强制停止”“恢复录制”和直播高光打点；人工暂停会跨重启保留，避免自动录制监控误拉起。
-- 人工审核支持独立队列、多人领取防冲突、盲审、草稿、撤销和审计；可为审核员配置最小权限账号。
-- 插件中心从本地目录发现插件，支持显式启停和宿主渲染的独立设置页；接口说明与示例见 [`plugin/`](plugin/README.md)。
+**V0.1.16 把录制、审片、渲染与上传从单人同步操作升级为可恢复、可审计、可扩展的生产工作台。** 本次版本同时加入正式的本地插件接口和插件管理界面，并统一重做控制台的信息层级与交互样式。
 
-## V0.1.15 新特性：V0.1.14 稳定性收口与 Portable 发布
+### 审片边界与可追溯渲染
 
-**V0.1.15 是对 V0.1.14 架构重构与稳定性治理的发布收口。** V0.1.14 完成了模块拆分、状态恢复、数据一致性和发布安全基础；V0.1.15 将这些能力收敛为可复现、可离线安装、可供普通 Windows 用户直接测试的 Portable 发行链路。当前补丁版本为 `V0.1.15.3 Alpha`。
+- 审片边界调整改为严格 JSON 请求；服务端会校验起止顺序、最大时长以及边界是否落在真实录像覆盖范围内。
+- 重渲染只使用已经保存的审片边界，不再临时改写候选记录；每次输出独立的版本文件，避免覆盖已有成品。
+- 主剪辑、派生版本与合集 FFmpeg 统一使用可协作取消的子进程执行；取消时终止当前命令并清理未完成输出。
 
-### Portable 发布闭环
+### 录制控制与直播打点
 
-- **固定业务源码**：Payload 从提交 `6a42f4a` 通过 `git archive` 提取，不混入构建机工作区内容。
-- **Lite / Full 双发行**：Lite 保持单 EXE；Full 自带 Python 3.12、严格哈希锁定的离线 wheelhouse、FFmpeg 和 FFprobe。
-- **Lite 首次安装可验证**：Lite 内嵌 PyPI 不提供 wheel 的 5 个确定性 bootstrap wheel，其余依赖只接受锁文件指定的二进制 wheel，避免镜像返回 sdist 时产生哈希不匹配。
-- **离线依赖可验证**：Full 安装强制使用本地 wheelhouse，安装后执行 `pip check`、核心模块和 `app.cli` 导入冒烟测试。
-- **原子 Runtime 安装**：使用内容寻址 Release ID、staging 原子切换和 `current.json`，升级失败不会破坏已安装版本。
-- **完整性与解压安全**：Payload 和 Engine Pack 使用 SHA-256/CRC32、逐文件 Manifest，并拒绝绝对路径、`..`、盘符路径和符号链接。
+- 房间录制增加“停止并收尾”“强制停止”和“恢复录制”，并提供当前录制生命周期查询接口。
+- 人工暂停状态持久化保存，进程重启或自动录制监控轮询时不会误拉起暂停中的房间。
+- 支持直播过程中手动标记高光；会话结束后按真实媒体范围收敛标记窗口，避免生成越界候选。
 
-### 首次使用与账号登录
+### 多人审核与最小权限
 
-- 登录窗口优先调用电脑已安装的 Google Chrome，并在独立临时资料目录中启用浏览器 sandbox；找不到时复用或按需下载 Playwright Chromium。
-- Playwright 已进入 Portable 运行时锁和安装导入检查，不再要求用户预先手工安装浏览器组件。
-- 新增 [Portable 小白使用说明](packaging/portable/USER_GUIDE_ZH.md)，覆盖下载、校验、解压、启动、配置、首次录制和常见故障排查。
+- 新增独立审核队列和审核员角色/账号；审核员只能访问审核页面及其所需媒体，不能进入管理控制台的其他区域。
+- 候选支持领取租约、防并发冲突、管理员强制接管、盲审、私有草稿、单步撤销和结构化审计记录。
+- 审核界面和队列页面同步展示领取状态、边界草稿、处理进度与可执行操作，适配桌面和窄屏设备。
 
-### 发布质量收口
+### 持久化后台作业与发布安全
 
-- 版本号、Portable 元数据、Rust SemVer、构建脚本、工作流和说明文档统一由发布检查交叉验证。
-- `main` CI 覆盖 Ubuntu、Windows、macOS、Python 3.11–3.13、Portable、依赖审计、覆盖率和 CodeQL。
-- 完整发布门禁验证可复现 Payload、主项目测试、Portable 测试、Ruff 和版本一致性；原生扩展不可用时保留经过测试的纯 Python 回退。
-- Release 在发布前执行 Lite 空目录首次联网安装、二次断网复用和 Web 就绪检查，并交叉核对 Payload、Lite、Full 的版本、源码基线、构建提交及 SHA-256/CRC32。
+- 新增持久化后台作业管理器，以及 `/api/jobs` 查询、取消和重试接口；候选出片、审片重渲染、合集渲染与上传均立即返回作业，不再阻塞 Web 请求。
+- 后台作业支持幂等去重、进度、错误详情和重启恢复；控制台任务页可查看、取消或重试对应作业。
+- 已经开始的远程上传禁止不安全取消；服务中断后进入结果核对状态而不自动重放，降低重复投稿风险。
 
-```text
-用户取得 Portable EXE → 双击运行 → 读取内置 Payload → 不访问 GitHub → 校验 SHA-256 → 释放源码 → 启动
-```
+### 插件接口、插件页与控制台重设计
 
-| 特性 | 说明 |
-|------|------|
-| **Source 固定** | 源码来自当前发布基线 `6a42f4a`，通过 `git archive` 提取，不混入工作区未提交改动 |
-| **零 GitHub 请求** | 首次启动完全从 EXE 内置 Payload 释放源码，不访问 GitHub |
-| **可复现 Payload** | 相同输入构建两次 SHA-256 完全一致，并在发布门禁中自动验证 |
-| **原子 Runtime 安装** | `staging → rename` 原子切换，`current.json` 原子更新 |
-| **Lite / Full 双发行** | Lite：轻量单 EXE，安装时联网下载依赖；Full：预置 Portable Python、离线 Wheels 和 FFmpeg |
-| **Chrome 优先登录** | 优先使用系统 Chrome，不可用时自动安装 Playwright Chromium |
-| **安全解压** | 解压拒绝绝对路径、`..`、盘符路径和符号链接 |
+- 新增 `app.plugins` 公共接口，提供类型化宿主上下文、生命周期钩子和命名空间设置存取；插件只在显式启用后导入和启动。
+- 宿主从本地插件目录安全读取 `plugin.json` 清单，发现阶段不执行插件代码；无效清单、重复 ID、越界入口和符号链接会被隔离并报告。
+- 控制台新增“插件”导航项：检测到插件后显示插件名称、启停开关和“设置”按钮；每个插件拥有由宿主渲染的独立设置页面。
+- 根目录 [`plugin/`](plugin/README.md) 提供接口文档、Manifest JSON Schema 和可运行示例，并通过 `MANIFEST.in` 随源码发行包分发。
+- 控制台采用分组侧边导航、统一深色视觉层级、焦点状态和响应式布局；录制、任务、审核与插件功能沿用同一套控件和状态反馈。
 
-> `V0.1.15.3 Alpha` 在 Full 首次启动与模型准备修复基础上补齐 MIT 许可证分发链、源码包清单和跨制品许可证校验；通过完整发布门禁和实际 Full 制品验证后，可用于小规模、受控分发测试。它仍是 Alpha 版本，不等同于面向所有用户的稳定正式版。
+### 版本与发布一致性
 
-详见 [`packaging/portable/README.md`](packaging/portable/README.md)。
+- Python 包、CLI、C/Cython、Rust、Portable、Docker、GitHub Actions、测试和用户文档统一升级为 `0.1.16-alpha`，Engine Pack 兼容区间同步为 `0.1.16-alpha ≤ app < 0.1.17`。
+- 新功能覆盖单元、集成、前端语法和发布回归测试；CI 与 Release 门禁继续校验版本、固定源码、可复现 Payload、原生模块、依赖锁和制品完整性。
+
+## V0.1.15 版本总结：Portable 发布链路完整收口
+
+**V0.1.15 至 V0.1.15.3 将 V0.1.14 的架构与稳定性基础收敛为可复现、可离线安装、可供普通 Windows 用户直接测试的 Portable 发行链路。** 以下按补丁版本汇总这一版本线的全部改动。
+
+### V0.1.15：源码基线与原生构建
+
+- Portable 固定源码基线升级至当时的 `main` 提交 `4bdaa13`，移除已被新基线吸收的历史 Backport，并增加 Payload 业务源码逐文件一致性回归测试。
+- PyO3/Rust 扩展构建显式使用当前虚拟环境的 Python，避免子进程找不到解释器后静默退回纯 Python 实现。
+
+### V0.1.15.1：首次登录、依赖和入门文档
+
+- 登录优先使用系统 Google Chrome；不可用时复用或按需安装 Playwright Chromium，并补齐状态提示和回归测试。
+- Full/Lite 运行时锁加入 Playwright 与安装导入冒烟检查，离线 wheelhouse 最低数量同步更新为 110。
+- 新增面向普通 Windows 用户的 [Portable 从零使用说明](packaging/portable/USER_GUIDE_ZH.md)，覆盖下载、哈希校验、解压、浏览器登录、首次录制和故障排查。
+- 完善 Docker 构建上下文忽略规则，并修正文档中的启动、停止脚本名称。
+
+### V0.1.15.2：Windows Portable 与离线运行修复
+
+- Launcher、Engine Pack、Lite/Full、Payload 和旧版 Bundle 的 CLI 入口统一使用 UTF-8 stdout/stderr，并为不可编码字符保留回退表示，修复 Windows `cp1252` 控制台崩溃和误报。
+- Windows Payload 改为在 Windows runner 构建，并以当前 Python ABI 的 `.pyd` 为成功条件；禁止混入 Linux `.so` 或旧 ABI，Full 离线冒烟会验证 C、Cython、Rust 三种原生后端均已加载。
+- Cython 第二轮加速统一时间戳、长度和索引类型，修复 Unix epoch 分桶及长时间轴 SRT 与 Python fallback 不一致；Rust 构建改为实时输出 Cargo 日志。
+- 字幕模板的 `line_gap_ms` 正式按词间停顿阈值断句；修复“配置已保存但不生效”。
+- 系统 Chrome 与托管 Chromium 登录均启用 sandbox；Cookie 从独立 Playwright 上下文读取并按 Bilibili 域名边界筛选，修复新版 Chrome 登录完成后无法捕获 Cookie。
+- 修复候选拒绝请求中的未闭合模板字符串，并增加全量前端 ES Module 静态语法回归检查。
+- Full 安装后从内容寻址 Runtime 导入 `app.cli` 并保留失败输出；冻结 Launcher 改用绝对导入，PyInstaller 显式收集模型目录、版本加载器和 JSON 配置。
+- Full 离线冒烟改用真实 Payload、Full venv 与 Fixture Engine Pack；Engine Pack 同步生成外部元数据，Full 清单加入流式 CRC32/哈希计算。
+- Engine Pack 内部 Manifest 统一安装器 `format_version` 并使用真实加载器自检；正式清单只接受 `artifact_class=production`，隔离 CI Fixture 元数据。
+- 补齐 `python -m app.cli` 入口，Launcher 显式调用 Typer `app.cli:app`，修复到达启动阶段后 Web 服务静默退出。
+
+### V0.1.15.3：发布门禁、许可证和跨平台一致性
+
+- Lite 首次安装 smoke 强制 UTF-8 输出；Doctor 冒烟在核对预期失败摘要后显式返回成功，避免 PowerShell 把预期非零状态误判为 Release 失败。
+- Release 标签和 GitHub prerelease 判定统一按小写规范化，兼容已有 `-Alpha` 标签且不会误判为正式版。
+- CI/Release 在构建 C/Cython 扩展前固定安装 `setuptools>=77` 与指定 Cython，修复 Windows Python 3.11 的 SPDX 构建兼容问题。
+- Engine Pack 模型锁摘要统一按 LF 规范化换行计算，消除 Windows CRLF 与 Actions LF checkout 的跨平台 SHA-256 差异。
+- 项目代码正式采用 MIT License，并将许可证纳入 Python 包、Payload、Portable Lite/Full、GitHub Release 与完整性门禁；Full 跨制品检查只匹配发行根目录直属许可证。
+- sdist 明确收录前端 ES Module 交互检查脚本；Engine Pack 内嵌元数据必须与当前模型锁 SHA-256 一致。
+- 修正 Portable Lite 构建命令示例，并增加防止文档重新引入过期命令的回归测试。
+
+V0.1.15 最终形成 Lite 单 EXE、Full 离线包、内容寻址 Runtime、安全解压、可复现 Payload、Chrome 优先登录和跨制品哈希/许可证校验的完整闭环。它仍是 Alpha 版本，适合小规模、受控测试；发行细节见 [`packaging/portable/README.md`](packaging/portable/README.md)。
 
 ## V0.1.14 新特性：架构重构 + 稳定性收口
 

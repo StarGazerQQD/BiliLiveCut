@@ -1,6 +1,6 @@
 # BiliLiveCut · 即插即用版（`packaging/portable/`，原 Publish-PnP）
 
-**版本：V0.1.15.3 Alpha** (`0.1.15.3-alpha`)
+**版本：V0.1.16 Alpha** (`0.1.16-alpha`)
 
 > **普通用户请先阅读：[Portable 小白使用说明](USER_GUIDE_ZH.md)**。该说明按 Windows 用户从下载、校验、解压、首次启动到第一次录制的顺序编写。
 
@@ -159,7 +159,7 @@ Lite 和 Full 均不携带 ASR 模型。四个引擎模型统一由独立的 **E
 
 ### 使用方式
 
-1. 下载 BiliLiveCut-EnginePack-0.1.15.3-alpha.zip
+1. 下载 BiliLiveCut-EnginePack-0.1.16-alpha.zip
 2. 放在 Launcher EXE **同级目录** (或 packages/ 子目录)
 3. 双击启动 Launcher → 自动 **CRC32 校验** → 校验通过即离线安装 (网络请求 0)
 4. 无本地包或校验失败 → 自动**全量在线下载**四个引擎模型
@@ -202,7 +202,7 @@ python build_engine_pack.py --from-cache  # 从已验证缓存构建
 
 输出:
 
-- dist/engine-pack/BiliLiveCut-EnginePack-0.1.15.3-alpha.zip
+- dist/engine-pack/BiliLiveCut-EnginePack-0.1.16-alpha.zip
 - dist/engine-pack/engine-pack-manifest.json
 - dist/engine-pack/CRC32SUMS.txt
 - dist/engine-pack/SHA256SUMS.txt
@@ -309,7 +309,7 @@ packaging/portable/                     # ★ 即插即用分发版根目录 (�
 ├── runtime/                  # ★ Runtime 版本管理
 │   ├── current.json          #   当前激活的 Release 信息
 │   └── releases/
-│       └── 0.1.15.3-alpha+c4c6913+<payload-hash>/  # 内容寻址的固定版本源码
+│       └── 0.1.16-alpha+c4c6913+<payload-hash>/  # 内容寻址的固定版本源码
 │
 ├── .venv/                    # Python 虚拟环境（launcher.exe 自动创建）
 ├── models/                   # 四引擎 ASR 模型 (由 Engine Pack 或在线下载安装)
@@ -533,7 +533,7 @@ BILIUP_UPLOAD_CMD=                          # 自定义上传命令模板
 
 ## 回主工程
 
-此 `packaging/portable/` 目录是**发布给最终用户的即插即用版本**，源码固定于 `v0.1.15.3-alpha` 的发布基线 Commit。
+此 `packaging/portable/` 目录是**发布给最终用户的即插即用版本**，源码固定于 `v0.1.16-Alpha` 的发布基线 Commit。
 
 - **主仓库**: `D:\Vibe\BiliLiveCut\README.md`
 - **完整变更日志**: `D:\Vibe\BiliLiveCut\CHANGELOG.md`
