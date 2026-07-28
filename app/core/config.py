@@ -42,10 +42,18 @@ class Settings(BaseSettings):
     app_env: Literal["dev", "prod"] = "dev"
     log_level: str = "INFO"
     admin_password: str = Field(default="", repr=False)  # V0.1.8.2: Web 管理后台认证密码(空则无认证)
+    reviewer_accounts_json: str = Field(
+        default="",
+        repr=False,
+        description='审核员账号 JSON，例如 {"reviewer":"password"}',
+    )
+    review_claim_ttl_s: int = Field(default=900, ge=60, le=86400)
+    review_blind_mode: bool = True
 
     # ---------- 存储 ----------
     storage_root: str = "./storage"
     database_url: str = "sqlite:///./storage/blc.db"
+    plugin_dir: str = "./storage/plugins"
 
     # ---------- FFmpeg ----------
     ffmpeg_path: str = "ffmpeg"

@@ -1,0 +1,32 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>{{ plugin.name }} 设置 — BiliLiveCut</title>
+  <link rel="stylesheet" href="/static/style.css?v=2" />
+</head>
+<body class="standalone-shell plugin-settings-shell">
+  <div class="page-wrap" id="plugin-settings-root" data-plugin-id="{{ plugin.id }}">
+    <header class="page-head">
+      <div>
+        <div class="page-kicker">Plugin settings</div>
+        <h1>{{ plugin.name }}</h1>
+        <p class="hint">版本 {{ plugin.version }} · 插件 API {{ plugin.api_version }}</p>
+      </div>
+      <a class="back-link" href="/?tab=plugins">返回插件中心</a>
+    </header>
+    <section class="card">
+      <div id="plugin-settings-form" class="plugin-settings-form">
+        <div class="empty">正在载入设置…</div>
+      </div>
+      <div class="row plugin-settings-footer">
+        <button class="primary" id="btn-save-plugin-settings">保存设置</button>
+        <span class="hint" id="plugin-settings-status"></span>
+      </div>
+    </section>
+  </div>
+  <div id="toast" class="toast"></div>
+  <script type="module" src="/static/js/plugin_settings.js"></script>
+</body>
+</html>

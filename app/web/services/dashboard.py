@@ -2,7 +2,6 @@
 
 from __future__ import annotations
 
-import json
 from typing import Any
 
 from sqlmodel import select
@@ -41,21 +40,24 @@ def dashboard_state() -> dict[str, Any]:
                         SessionStatus.RECONNECTING,
                         SessionStatus.STARTING,
                         SessionStatus.RECONNECTED,
+                        SessionStatus.STOPPING,
+                        SessionStatus.FINALIZING,
                     ]  # noqa: E501
                 )
             )
         ).all()
 
-    running = set(recorder_manager.running_ids())
     return {
-        "rooms": [_room_dict(r, r.id in running) for r in rooms],
+        "rooms": [_room_dict(r, recorder_manager.status(r.id)) for r in rooms],
         "counts": {"candidates": n_candidates, "clips": n_clips, "active_sessions": len(sessions)},
         "modes": [RoomMode.MANUAL, RoomMode.SEMI, RoomMode.AUTO],
     }
 
 
-def _room_dict(room: LiveRoom, running: bool) -> dict[str, Any]:
+def _room_dict(room: LiveRoom, runtime: dict[str, Any]) -> dict[str, Any]:
     """把房间转为可序列化字典并附带运行状态。"""
+    from app.analysis.room_config import load_room_config
+
     return {
         "id": room.id,
         "room_id": room.room_id,
@@ -75,12 +77,14 @@ def _room_dict(room: LiveRoom, running: bool) -> dict[str, Any]:
         "review_threshold": room.review_threshold,
         "authorized": room.authorized,
         "enabled": room.enabled,
-        "running": running,
+        "running": runtime["running"],
+        "recording_state": runtime["state"],
+        "active_session_id": runtime["session_id"],
         "schedule_enabled": room.schedule_enabled,
         "auto_threshold_enabled": room.auto_threshold_enabled,
         "danmaku_sentiment_enabled": room.danmaku_sentiment_enabled,
         # V0.1.6 P2: 房间配置。
-        "room_config": json.loads(room.room_config_json) if room.room_config_json else {},
+        "room_config": load_room_config(room),
     }
 
 

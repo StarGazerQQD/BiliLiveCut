@@ -28,6 +28,9 @@ class SessionStatus:
     RECORDING = "recording"
     RECONNECTING = "reconnecting"
     RECONNECTED = "reconnected"  # 断流后成功重连(短暂状态,很快切回 RECORDING)
+    STOPPING = "stopping"  # 已收到停止请求,正在结束 FFmpeg
+    FINALIZING = "finalizing"  # 正在登记末尾片段并执行结束回调
+    PAUSED = "paused"  # 人工暂停,后续恢复会创建新会话
     STOPPED = "stopped"
     INTERRUPTED = "interrupted"  # 进程异常退出,可自动恢复
     ERROR = "error"

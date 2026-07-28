@@ -17,15 +17,17 @@ import hashlib
 import json
 import subprocess
 import tempfile
-from collections.abc import Sequence
+from collections.abc import Callable, Sequence
 from datetime import UTC, datetime
 from pathlib import Path
+from uuid import uuid4
 
 from loguru import logger
 from sqlmodel import select
 
 from app.core.config import settings
 from app.core.paths import clips_dir
+from app.core.process_control import ProcessCancelledError, run_cancellable
 from app.db.models import (
     ClipStatus,
     ClipVariant,
@@ -132,6 +134,9 @@ def render_collection(
     event_ids: list[int],
     chapter_titles: list[str] | None = None,
     include_chapter_cards: bool = True,
+    *,
+    progress_callback: Callable[[int, str], None] | None = None,
+    cancel_check: Callable[[], bool] | None = None,
 ) -> ClipVariant | None:
     """将同主题的多个高光拼接为合集 MP4。
 
@@ -146,11 +151,15 @@ def render_collection(
     :param event_ids: 按顺序排列的事件 id 列表。
     :param chapter_titles: 章节标题列表(与 event_ids 一一对应)。
     :param include_chapter_cards: 是否插入章节标题卡。
+    :param progress_callback: 可选的进度回调。
+    :param cancel_check: 可选的取消检查。
     :returns: 新 ClipVariant 对象或 ``None``。
     """
     if len(event_ids) < 2:
         logger.warning("合集至少需要 2 个事件,只有 {} 个。", len(event_ids))
         return None
+    _collection_progress(progress_callback, 8, "正在检查合集素材")
+    _check_collection_cancel(cancel_check)
 
     with get_session() as db:
         topic = db.get(Topic, topic_id)
@@ -191,12 +200,13 @@ def render_collection(
 
     out_dir = clips_dir()
     out_dir.mkdir(parents=True, exist_ok=True)
-    out_file = out_dir / f"collection_{topic_id}_{datetime.now(UTC).strftime('%Y%m%d_%H%M%S')}.mp4"
+    out_file = out_dir / (f"collection_{topic_id}_{datetime.now(UTC).strftime('%Y%m%d_%H%M%S')}_{uuid4().hex[:8]}.mp4")
 
     # 章节标题卡(简单纯色+文字)。
     chapter_videos = []
     if include_chapter_cards and chapter_titles:
         for title in chapter_titles:
+            _check_collection_cancel(cancel_check)
             if title:
                 card_path = _generate_chapter_card(title, out_dir)
                 if card_path:
@@ -211,9 +221,15 @@ def render_collection(
 
         # 1) 响度标准化每个 clip。
         for i, cf in enumerate(clip_files):
+            _check_collection_cancel(cancel_check)
+            _collection_progress(
+                progress_callback,
+                15 + int((i / max(len(clip_files), 1)) * 40),
+                f"正在标准化第 {i + 1}/{len(clip_files)} 个片段",
+            )
             norm_path = tmp_path / f"norm_{i:03d}.mp4"
             try:
-                subprocess.run(
+                run_cancellable(
                     [
                         settings.ffmpeg_path,
                         "-y",
@@ -233,8 +249,11 @@ def render_collection(
                     ],
                     check=True,
                     timeout=120,
+                    cancel_check=cancel_check,
                 )
                 normalized_paths.append(str(norm_path))
+            except ProcessCancelledError:
+                raise
             except subprocess.CalledProcessError:
                 logger.warning("响度标准化失败 clip={},使用原始文件。", cf["path"])
                 normalized_paths.append(cf["path"])
@@ -251,8 +270,10 @@ def render_collection(
                 f.write(f"file '{np}'\n")
 
         # 3) 用 concat demuxer 拼接。
+        _collection_progress(progress_callback, 60, "正在拼接合集")
+        _check_collection_cancel(cancel_check)
         try:
-            subprocess.run(
+            run_cancellable(
                 [
                     settings.ffmpeg_path,
                     "-y",
@@ -282,13 +303,23 @@ def render_collection(
                 ],
                 check=True,
                 timeout=300,
+                cancel_check=cancel_check,
             )
+        except ProcessCancelledError:
+            out_file.unlink(missing_ok=True)
+            raise
         except subprocess.CalledProcessError as exc:
             logger.error("合集渲染失败: {}", exc)
             return None
 
     if not out_file.exists():
         return None
+    _collection_progress(progress_callback, 90, "正在保存合集信息")
+    try:
+        _check_collection_cancel(cancel_check)
+    except ProcessCancelledError:
+        out_file.unlink(missing_ok=True)
+        raise
 
     # 计算文件哈希。
     file_hash = hashlib.sha256(out_file.read_bytes()).hexdigest()[:16]
@@ -348,6 +379,22 @@ def render_collection(
         logger.info("合集渲染完成: {} ({} 个片段,{:.1f}s)", out_file, len(normalized_paths), duration_s)
 
     return variant
+
+
+def _collection_progress(
+    callback: Callable[[int, str], None] | None,
+    progress: int,
+    message: str,
+) -> None:
+    """报告合集渲染进度。"""
+    if callback is not None:
+        callback(progress, message)
+
+
+def _check_collection_cancel(cancel_check: Callable[[], bool] | None) -> None:
+    """在合集阶段边界响应取消。"""
+    if cancel_check is not None and cancel_check():
+        raise ProcessCancelledError("用户取消了合集渲染")
 
 
 def _generate_chapter_card(title: str, out_dir: Path) -> str | None:

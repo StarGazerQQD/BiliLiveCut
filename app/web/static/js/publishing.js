@@ -46,7 +46,7 @@ async function saveSwitch() {
 }
 
 async function retryUpload(id) {
-  try { const r = await api("POST", `/api/uploads/${id}/retry`); toast("\u91cd\u8bd5\u7ed3\u679c:" + r.status); loadUploads(); }
+  try { const r = await api("POST", `/api/uploads/${id}/retry`); toast("\u91cd\u8bd5\u4f5c\u4e1a\u5df2\u63d0\u4ea4:" + r.job.id.substring(0, 8)); loadUploads(); }
   catch (e) { toast(e.message); }
 }
 
