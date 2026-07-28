@@ -1,5 +1,7 @@
 # 高光模型数据与特征契约
 
+当前数据契约属于高光模型 **V0.1.15.2 HL-Alpha**，与主程序/Portable 的 `0.1.15.2-alpha` 独立编号。
+
 当前数据与特征公共层位于 `app.analysis.highlight_ml`。同一 Schema 同时用于离线训练和可选在线评分；在线模式、回退和审计契约见[训练与生命周期](highlight-model-lifecycle.md#主程序在线接入)。
 
 训练、评估、模型注册与漂移契约见 [高光模型训练与生命周期](highlight-model-lifecycle.md)。

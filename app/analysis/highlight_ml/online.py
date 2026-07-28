@@ -19,6 +19,7 @@ from app.analysis.highlight_ml.registry import ModelRegistry
 from app.analysis.highlight_ml.runtime import HotReloadingPredictor
 from app.analysis.highlight_ml.schema import DEFAULT_FEATURE_SCHEMA
 from app.analysis.highlight_ml.types import AudioSnapshot
+from app.analysis.highlight_ml.version import HIGHLIGHT_MODEL_VERSION_LABEL
 from app.core.config import settings
 from app.db.models import SystemLog
 from app.db.session import get_session
@@ -224,6 +225,7 @@ def get_online_status() -> dict[str, object]:
     """返回全局模式与注册表 Champion/Shadow 状态。"""
     root = Path(settings.highlight_ml_registry_root).resolve()
     base: dict[str, object] = {
+        "release_version": HIGHLIGHT_MODEL_VERSION_LABEL,
         "mode": settings.highlight_ml_mode,
         "registry_root": str(root),
         "schema_version": DEFAULT_FEATURE_SCHEMA.version,

@@ -21,6 +21,7 @@ def cmd_highlight_model_status() -> None:
     table.add_column("值")
     for key in (
         "mode",
+        "release_version",
         "available",
         "generation",
         "champion_version",

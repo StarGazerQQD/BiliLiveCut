@@ -2,7 +2,8 @@
 
 [![CI](https://github.com/StarGazerQQD/BiliLiveCut/actions/workflows/ci.yml/badge.svg)](https://github.com/StarGazerQQD/BiliLiveCut/actions/workflows/ci.yml)
 
-**当前版本：V0.1.15.2 Alpha** (`0.1.15.2-alpha`)
+**主程序版本：V0.1.15.2 Alpha** (`0.1.15.2-alpha`)
+**高光模型版本：V0.1.15.2 HL-Alpha** (`0.1.15.2`)
 
 面向 Bilibili 直播的全自动工作流：实时录制 → 转写 → 识别高光 → 生成切片 → 生成文案 → (可选)上传。
 阶段 1–5 全链路已可用；即插即用分发包见 [`packaging/portable/`](packaging/portable/README.md)。普通 Windows 用户可直接阅读 [Portable 小白使用说明](packaging/portable/USER_GUIDE_ZH.md)。
@@ -19,9 +20,65 @@
 > 生成的 ZIP 放在便携版同目录下，首次启动时自动校验 CRC32/SHA-256 并安装模型。
 > 正式构建会校验每个主模型、子模型和随附组件的固定 revision、目录契约及再分发许可证；包内附带 MIT、Apache-2.0 原文和[第三方模型声明](packaging/portable/licenses/THIRD_PARTY_NOTICES.md)。
 
-### 高光模型开发接口
+## 高光模型（Highlight Model）
 
-高光模型的数据、特征、无泄漏训练、评估、原子模型注册、Champion/Shadow、真实回滚、漂移检测和在线适配位于 `app.analysis.highlight_ml`。默认 NumPy Logistic 不增加依赖；可选 XGBoost 使用 `pip install -e ".[highlight-ml]"`。线上默认 `HIGHLIGHT_ML_MODE=off`，可切换为只记录不改分的 `shadow` 或异常自动回退规则分的 `champion`；Web 可按房间覆盖。CLI 提供 `highlight-model-train/status/shadow/promote/rollback/drift` 完整运维链路。数据契约与操作手册见 [高光模型数据与特征契约](docs/highlight-model-data.md) 和 [训练与生命周期](docs/highlight-model-lifecycle.md)。
+当前高光模型独立发布版本为 **V0.1.15.2 HL-Alpha**。它与主程序/Portable 的 `0.1.15.2-alpha` 分开编号；前者表示模型数据契约、训练流程、注册表和在线适配的版本，后者表示应用运行时和发行包版本。
+
+高光模型是规则评分之上的可选学习层，用于学习“哪些片段更值得进入人工审核/制作”。它不会替换原有规则、ASR 或 LLM 流程：模型不可用、版本不匹配或注册文件损坏时，系统会记录原因并自动回退规则分。
+
+### 能力与数据流
+
+- **特征**：从同一段录音复用音频、转写、词时间戳、弹幕和上下文特征，当前 Schema 包含 35 个命名特征及对应的可用性标记，共 70 列输入。
+- **训练**：只使用明确的人工审核反馈；未审核片段不会被伪造为负样本。训练前执行会话时间切分和 Schema 指纹校验，避免时间泄漏与特征语义漂移。
+- **评估**：比较规则基线、NumPy Logistic 和可选 XGBoost，记录 PR-AUC、校准、审核预算和房间宏平均指标。
+- **部署**：模型以带 SHA-256 校验的单一 JSON 产物注册，支持 Champion/Shadow、原子晋升、真实历史回滚和 generation 热加载。
+- **监控**：线上预测写入 `system_logs`，记录模型版本、概率、Schema 和特征可用性；可基于训练分布计算 PSI、均值和缺失率漂移。
+
+实现位于 `app.analysis.highlight_ml`，在线接入点位于 `app/pipeline/workers/analyze.py`。旧的根目录 `Highlight_Model/` 已被主程序模块吸收，不需要单独安装或维护第二套模型代码。
+
+### 运行模式
+
+默认关闭，升级后不会改变现有评分行为：
+
+```dotenv
+HIGHLIGHT_ML_MODE=off
+HIGHLIGHT_ML_REGISTRY_ROOT=./storage/highlight_models
+```
+
+- `off`：完全使用原规则评分；
+- `shadow`：执行模型预测并记录，但不改变候选筛选、LLM 融合或审核阈值；
+- `champion`：使用已晋升 Champion 的校准概率参与评分，推理失败时自动回退规则分。
+
+也可以在房间配置 `room_config_json.highlight_ml_mode` 设置 `inherit/off/shadow/champion`。模型概率不会绕过现有的 `highlight_threshold`、`auto_approve_threshold` 或 `review_threshold`。
+
+### 训练、晋升与回滚
+
+安装主项目即可使用默认 NumPy Logistic；需要比较 XGBoost 时再安装可选依赖：
+
+```powershell
+pip install -e ".[highlight-ml]"
+
+# 从数据库中的人工审核反馈训练并注册新版本
+python -m app.cli highlight-model-train
+
+# 资源有限时跳过 XGBoost，并导出盲审项
+python -m app.cli highlight-model-train --no-xgboost --blind-review-limit 200
+
+# 查看模型、Schema、Champion/Shadow 和 generation
+python -m app.cli highlight-model-status
+
+# 设置/清空 Shadow；人工确认后晋升或回滚
+python -m app.cli highlight-model-shadow 3
+python -m app.cli highlight-model-promote
+python -m app.cli highlight-model-rollback 2
+
+# 检查 Champion 相对训练基线的线上漂移
+python -m app.cli highlight-model-drift --limit 500 --min-recent-samples 20
+```
+
+系统不会根据线上预测自动晋升或重训；必须经过人工审核后再执行 promote。Web 运维接口包括 `/api/highlight-ml/status`、`/api/highlight-ml/predictions` 和 `/api/highlight-ml/drift`。
+
+数据标签、35 个特征的边界和时间查询规则见[高光模型数据与特征契约](docs/highlight-model-data.md)；训练、注册、漂移和回滚流程见[训练与生命周期](docs/highlight-model-lifecycle.md)。
 
 ## V0.1.15 新特性：V0.1.14 稳定性收口与 Portable 发布
 

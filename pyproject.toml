@@ -100,6 +100,7 @@ include = ["app", "app.*", "config"]
 ignore = [
     ".cursor/rules/commit-language.mdc",
     ".dockerignore",
+    "BiliLiveCut_HighLight.code-workspace",
 ]
 
 [tool.ruff]

@@ -2,6 +2,8 @@
 
 ## V0.1.15.2 Alpha (2026-07-22)
 
+> 高光模型独立版本：**V0.1.15.2 HL-Alpha**。该版本与主程序/Portable 的 `0.1.15.2-alpha` 分开管理。
+
 ### 新增
 
 - **highlight-ml**: 新增与主程序实体对齐的数据/特征层、35 个特征及 availability Schema 指纹、按会话时间切分的规则/NumPy Logistic/可选 XGBoost 比较、PR-AUC/校准/审核预算/房间宏指标。

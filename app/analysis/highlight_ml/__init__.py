@@ -12,6 +12,7 @@ from app.analysis.highlight_ml.runtime import HotReloadingPredictor
 from app.analysis.highlight_ml.schema import DEFAULT_FEATURE_SCHEMA, FeatureSchema, FeatureSpec
 from app.analysis.highlight_ml.training import TrainingConfig, train_candidate_models
 from app.analysis.highlight_ml.types import DatasetBundle, SegmentFeatureContext
+from app.analysis.highlight_ml.version import HIGHLIGHT_MODEL_VERSION, HIGHLIGHT_MODEL_VERSION_LABEL
 
 __all__ = [
     "DEFAULT_FEATURE_SCHEMA",
@@ -22,6 +23,8 @@ __all__ = [
     "FeatureSchema",
     "FeatureSpec",
     "HotReloadingPredictor",
+    "HIGHLIGHT_MODEL_VERSION",
+    "HIGHLIGHT_MODEL_VERSION_LABEL",
     "ModelArtifact",
     "ModelRegistry",
     "OnlinePrediction",

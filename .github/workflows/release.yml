@@ -141,7 +141,7 @@ jobs:
           python -m pip install --upgrade pip build wheel check-manifest twine Cython==3.2.8
 
       - name: Validate source manifest
-        run: check-manifest --no-build-isolation --ignore ".cursor/*,.cursor/rules/*,.dockerignore"
+        run: check-manifest --no-build-isolation --ignore ".cursor/*,.cursor/rules/*,.dockerignore,BiliLiveCut_HighLight.code-workspace"
 
       - name: Extract tag version
         id: tag

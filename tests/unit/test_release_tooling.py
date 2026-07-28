@@ -138,9 +138,9 @@ def test_source_manifest_job_installs_pinned_cython() -> None:
     install_step = next(step for step in steps if step.get("name") == "Install build tools")
 
     assert "Cython==3.2.8" in install_step["run"]
-    assert "--no-build-isolation" in next(
-        step["run"] for step in steps if step.get("name") == "Validate source manifest"
-    )
+    manifest_command = next(step["run"] for step in steps if step.get("name") == "Validate source manifest")
+    assert "--no-build-isolation" in manifest_command
+    assert "BiliLiveCut_HighLight.code-workspace" in manifest_command
 
 
 def test_windows_c_extension_compiles_utf8_source() -> None:
