@@ -1,6 +1,6 @@
 # BiliLiveCut Portable 小白使用说明
 
-适用版本：`v0.1.16-Alpha` · 适用系统：Windows 10/11 x64
+适用版本：`v0.1.16.1-Alpha` · 适用系统：Windows 10/11 x64
 
 这份说明面向不懂 Python、Git 或命令行的普通 Windows 用户。按顺序操作即可完成下载安装、首次启动、基础配置、添加直播间和首次录制。
 
@@ -41,9 +41,9 @@ Full 版不要求系统安装 Python、FFmpeg、Visual Studio、Git 或其他编
 
 ## 2. 下载正确的文件
 
-打开项目的 [GitHub Releases 页面](https://github.com/StarGazerQQD/BiliLiveCut/releases)，进入 `v0.1.16-Alpha`，下载：
+打开项目的 [GitHub Releases 页面](https://github.com/StarGazerQQD/BiliLiveCut/releases)，进入 `v0.1.16.1-Alpha`，下载：
 
-1. `BiliLiveCut-Portable-Full-0.1.16-alpha-x64.zip`
+1. `BiliLiveCut-Portable-Full-0.1.16.1-alpha-x64.zip`
 2. `SHA256SUMS.txt`
 
 不要把下面这些文件当成 Windows 小白版：
@@ -61,7 +61,7 @@ Full 版不要求系统安装 Python、FFmpeg、Visual Studio、Git 或其他编
 3. 复制并执行：
 
 ```powershell
-Get-FileHash ".\BiliLiveCut-Portable-Full-0.1.16-alpha-x64.zip" -Algorithm SHA256
+Get-FileHash ".\BiliLiveCut-Portable-Full-0.1.16.1-alpha-x64.zip" -Algorithm SHA256
 ```
 
 4. 将输出的 `Hash` 与 `SHA256SUMS.txt` 中同名文件前面的值比较。英文字母大小写不同不影响结果。
@@ -71,7 +71,7 @@ Get-FileHash ".\BiliLiveCut-Portable-Full-0.1.16-alpha-x64.zip" -Algorithm SHA25
 
 1. 新建目录，例如 `D:\BiliLiveCut`。
 2. 右键 ZIP，选择“全部解压”。
-3. 打开解压出来的 `BiliLiveCut-Portable-Full-0.1.16-alpha-x64` 文件夹。
+3. 打开解压出来的 `BiliLiveCut-Portable-Full-0.1.16.1-alpha-x64` 文件夹。
 4. 确认同一层能看到：
 
 ```text
@@ -99,7 +99,7 @@ Full 版包含运行环境，但不包含四个语音识别模型。
 只接受与应用版本匹配的文件：
 
 ```text
-BiliLiveCut-EnginePack-0.1.16-alpha.zip
+BiliLiveCut-EnginePack-0.1.16.1-alpha.zip
 ```
 
 将这个 ZIP 原样放到 `BiliLiveCut-Portable.exe` 同级目录，不要手动解压。Launcher 会先做完整性校验，再安装到 `models/`。
@@ -205,10 +205,12 @@ https://live.bilibili.com/123456
 
 4. 勾选“我已确认拥有录制授权”。未勾选时系统会拒绝添加。
 5. 点击“添加”。
-6. 在房间卡片中点击“开始录制”。
-7. 打开“录制状态”，确认状态变为 `recording`，片段数量开始增加。
-8. 先录制 2～5 分钟，再回到“直播间”点击“停止录制”。
-9. 在程序目录检查：
+6. 打开“功能开关”，找到刚添加的直播间；首次测试可只开启“自动分析”，确认录制和分析后再逐项开启自动渲染、自动审核与自动上传。
+7. 点击“保存本直播间开关”。预约录制、阈值自学习、弹幕情绪和审核阈值也在这里独立设置。
+8. 在房间卡片中点击“开始录制”。
+9. 打开“录制状态”，确认状态变为 `recording`，片段数量开始增加。
+10. 先录制 2～5 分钟，再回到“直播间”点击“停止录制”。
+11. 在程序目录检查：
 
 ```text
 storage\raw\session_<数字>\
@@ -216,7 +218,7 @@ storage\raw\session_<数字>\
 
 目录中出现 `.ts` 片段，表示从安装到录制的第一条链路已经成功。
 
-> 当前 `v0.1.16-Alpha` 的 Web 页面尚未完整暴露新的 `auto_analyze`、`auto_render` 等房间级自动化开关。页面“开始录制”可以验证原始录制，但不要把“实时转写、候选和成片是否立即出现”作为首次安装是否成功的唯一标准。
+> “功能开关”中的五项流水线设置按直播间独立生效。关闭某一项只会阻止后续自动推进，仍可在对应页面手动处理；房间“自动上传”还必须配合“上传与发布”页的全局上传总开关。
 
 ## 9. Cookie、弹幕和高清访问
 
@@ -241,7 +243,8 @@ Cookie 不是公开直播首次录制的必需项，但部分清晰度、弹幕�
 2. 点击“新增模型”。
 3. 填写服务商名称、`base_url`、模型名和 API Key。
 4. 保持“启用”，设置优先级。
-5. 点击“保存全部”，再点击“测试连通”。
+5. 可先直接点击“测试连通”；它使用当前表单且不会保存配置。页面会保留每个模型的成功响应或错误详情。
+6. 确认连通后点击“保存全部”。
 
 只有显示测试成功后再启用相关功能。不要把真实 API Key 写进公开文档或问题报告。
 
@@ -332,7 +335,7 @@ storage\
 
 ### 出现 `THESE PACKAGES DO NOT MATCH THE HASHES`
 
-新版 Full 应强制使用本地 wheelhouse，不应访问 PyPI 镜像。确认使用的是 `v0.1.16-Alpha` 最新 Full ZIP，并且没有只复制 EXE。不要修改锁文件或添加报错中的 sdist 哈希，直接重新下载并校验 Full ZIP。
+新版 Full 应强制使用本地 wheelhouse，不应访问 PyPI 镜像。确认使用的是 `v0.1.16.1-Alpha` 最新 Full ZIP，并且没有只复制 EXE。不要修改锁文件或添加报错中的 sdist 哈希，直接重新下载并校验 Full ZIP。
 
 ### 模型下载很慢或中断
 
@@ -349,7 +352,7 @@ storage\
 
 ### 能录制但没有实时转写、候选或成片
 
-先检查 `storage\raw\session_<数字>\` 是否已有 `.ts` 文件。当前 Alpha 的 Web 自动化开关尚未完整暴露；原始录制成功与自动分析是否启用是两件事。请在问题报告中注明“原始录制成功，但无转写/候选”，不要反复删除整个程序目录。
+先检查 `storage\raw\session_<数字>\` 是否已有 `.ts` 文件，再打开“功能开关”核对该直播间是否启用了“自动分析”；需要自动成片时还要启用“自动渲染”。原始录制成功与后续自动阶段是否启用是两件事。请在问题报告中注明开关状态，不要反复删除整个程序目录。
 
 ### 修改 `.env` 后没有生效
 
@@ -371,7 +374,7 @@ storage\
 
 - Windows 版本，例如 Windows 11 23H2；
 - 使用 Full 还是 Lite；
-- 程序版本 `v0.1.16-Alpha`；
+- 程序版本 `v0.1.16.1-Alpha`；
 - 解压目录；
 - 问题发生在 `[1/6]`～`[6/6]` 的哪一步；
 - 黑色窗口最后 30 行文字或截图；
@@ -383,7 +386,7 @@ storage\
 
 ## 16. 当前 Alpha 的测试边界
 
-`v0.1.16-Alpha` 适合小规模、受控测试，不等同于稳定正式版。当前应重点验证：
+`v0.1.16.1-Alpha` 适合小规模、受控测试，不等同于稳定正式版。当前应重点验证：
 
 - Full ZIP 下载、校验和解压；
 - 首次离线依赖安装；

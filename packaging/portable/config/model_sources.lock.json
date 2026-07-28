@@ -1,8 +1,8 @@
 {
   "schema_version": 2,
-  "engine_pack_version": "0.1.16-alpha",
+  "engine_pack_version": "0.1.16.1-alpha",
   "compatible_app": {
-    "min": "0.1.16-alpha",
+    "min": "0.1.16.1-alpha",
     "max_exclusive": "0.1.17"
   },
   "source_commit": "0ea5c2a764d80f6afa5119febcfeeff60a8019e5",

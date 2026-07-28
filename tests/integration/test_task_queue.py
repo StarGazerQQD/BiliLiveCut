@@ -232,6 +232,28 @@ class TestRetry:
         assert _resume_stage(TaskStatus.ANALYZING) == TaskStatus.QUEUED_FOR_ANALYSIS
 
 
+def test_recover_orphans_handles_existing_task_ids(temp_db: None) -> None:
+    """孤儿恢复应正确处理标量 segment_id 查询并只补建缺失任务。"""
+    from app.db.models import RawSegment, SegmentStatus, SegmentTask
+    from app.db.session import get_session
+    from app.pipeline.task_worker import _recover_orphans
+
+    with get_session() as db:
+        db.add_all(
+            [
+                RawSegment(id=4101, session_id=5101, seq=0, file_path="existing.ts", status=SegmentStatus.RECORDED),
+                RawSegment(id=4102, session_id=5101, seq=1, file_path="orphan.ts", status=SegmentStatus.RECORDED),
+                SegmentTask(segment_id=4101, session_id=5101, stage=TaskStatus.RECORDED),
+            ]
+        )
+
+    _recover_orphans()
+
+    with get_session() as db:
+        tasks = db.exec(select(SegmentTask).order_by(SegmentTask.segment_id)).all()
+        assert [task.segment_id for task in tasks] == [4101, 4102]
+
+
 # ════════════════════════════════════════════════════
 # V0.1.11-alpha: 模型一致性
 # ════════════════════════════════════════════════════

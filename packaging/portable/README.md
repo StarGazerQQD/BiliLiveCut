@@ -1,6 +1,6 @@
 # BiliLiveCut · 即插即用版（`packaging/portable/`，原 Publish-PnP）
 
-**版本：V0.1.16 Alpha** (`0.1.16-alpha`)
+**版本：V0.1.16.1 Alpha** (`0.1.16.1-alpha`)
 
 > **普通用户请先阅读：[Portable 小白使用说明](USER_GUIDE_ZH.md)**。该说明按 Windows 用户从下载、校验、解压、首次启动到第一次录制的顺序编写。
 
@@ -159,7 +159,7 @@ Lite 和 Full 均不携带 ASR 模型。四个引擎模型统一由独立的 **E
 
 ### 使用方式
 
-1. 下载 BiliLiveCut-EnginePack-0.1.16-alpha.zip
+1. 下载 BiliLiveCut-EnginePack-0.1.16.1-alpha.zip
 2. 放在 Launcher EXE **同级目录** (或 packages/ 子目录)
 3. 双击启动 Launcher → 自动 **CRC32 校验** → 校验通过即离线安装 (网络请求 0)
 4. 无本地包或校验失败 → 自动**全量在线下载**四个引擎模型
@@ -202,7 +202,7 @@ python build_engine_pack.py --from-cache  # 从已验证缓存构建
 
 输出:
 
-- dist/engine-pack/BiliLiveCut-EnginePack-0.1.16-alpha.zip
+- dist/engine-pack/BiliLiveCut-EnginePack-0.1.16.1-alpha.zip
 - dist/engine-pack/engine-pack-manifest.json
 - dist/engine-pack/CRC32SUMS.txt
 - dist/engine-pack/SHA256SUMS.txt
@@ -309,7 +309,7 @@ packaging/portable/                     # ★ 即插即用分发版根目录 (�
 ├── runtime/                  # ★ Runtime 版本管理
 │   ├── current.json          #   当前激活的 Release 信息
 │   └── releases/
-│       └── 0.1.16-alpha+0ea5c2a+<payload-hash>/  # 内容寻址的固定版本源码
+│       └── 0.1.16.1-alpha+0ea5c2a+<payload-hash>/  # 内容寻址的固定版本源码
 │
 ├── .venv/                    # Python 虚拟环境（launcher.exe 自动创建）
 ├── models/                   # 四引擎 ASR 模型 (由 Engine Pack 或在线下载安装)
@@ -345,8 +345,9 @@ packaging/portable/                     # ★ 即插即用分发版根目录 (�
 | **候选审核** | 高光片段候选列表、横屏审片工作台 | 已完成分析 |
 | **成品切片** | 已剪辑的视频、封面、文案（含多版本变体） | 已生成切片 |
 | **主题管理** | 高光话题聚合、合集编辑 | 已有候选数据 |
-| **上传 / 设置** | 上传开关、自动化开关 | — |
-| **模型** | 多 LLM 服务商配置、优先级 | — |
+| **上传与发布** | Biliup 与自动上传全局总开关、上传队列 | — |
+| **功能开关** | 每个直播间的五项流水线开关、辅助开关和审核阈值 | 已添加房间 |
+| **模型** | 多 LLM 服务商配置、优先级、当前表单连通测试 | — |
 | **账号管理** | 扫码登录 Bilibili、自动采集 Cookie | — |
 | **运维面板** | 任务队列监控、Worker 状态、失败重试 | — |
 | **错误日志** | WARNING/ERROR 级别日志 | — |
@@ -435,7 +436,7 @@ LLM_PRICE_OUTPUT_PER_M=0             # 每百万 token 输出价格（0=不计�
 LLM_DAILY_BUDGET=0                   # 每日预算上限（0=不限）
 ```
 
-**多模型配置**：Web 控制台「模型」Tab 可同时添加多个服务商（DeepSeek / 通义千问 / Kimi / 智谱 GLM 等），设置优先级，某个不可用时自动降级到下一个。
+**多模型配置**：Web 控制台「模型」Tab 可同时添加多个服务商（DeepSeek / 通义千问 / Kimi / 智谱 GLM 等），设置优先级，某个不可用时自动降级到下一个。“测试连通”直接测试当前表单且不会保存 API Key；页面会显示每个服务商的响应或错误详情，确认无误后再点击“保存全部”。
 
 ### 网感资料库（可选，用于热点采集）
 
@@ -502,10 +503,11 @@ BILIUP_UPLOAD_CMD=                          # 自定义上传命令模板
 1. **双击发行包中的 Portable EXE** → 等待自动部署完成（Lite 版需联网安装依赖；Full 版依赖离线安装，但两者在没有 Engine Pack 时都需联网下载约 5.5 GB 模型）
 2. 打开 Web 控制台；Cookie 为可选项，首次公开直播录制可跳过「账号管理」
 3. **「直播间」Tab** → 粘贴直播间链接（如 `https://live.bilibili.com/123456`）→ 勾选授权确认 → 添加
-4. 在房间卡片点击「开始录制」，并在「录制状态」确认片段数量增加
-5. 首次测试先在 `storage/raw/session_<id>/` 确认原始片段；当前 Alpha 的房间级自动分析/渲染开关尚未完整暴露在 Web 页面
-6. 已启用分析流水线并产生候选时，可在 **「候选审核」Tab** 点击「批准并出片」，再到 **「成品切片」Tab** 查看
-7. 成品（MP4 + 封面 + 文案）输出在 `storage/clips/` 目录
+4. **「功能开关」Tab** → 为该房间逐项开启所需的自动录制、分析、渲染、审核和上传；首次测试建议只开启到“自动分析”，确认各阶段后再逐步扩大
+5. 在房间卡片点击「开始录制」，并在「录制状态」确认片段数量增加
+6. 首次测试先在 `storage/raw/session_<id>/` 确认原始片段；需要转写或候选时确认该房间“自动分析”已开启
+7. 已产生候选时，可在 **「候选审核」Tab** 点击「批准并出片」，再到 **「成品切片」Tab** 查看
+8. 成品（MP4 + 封面 + 文案）输出在 `storage/clips/` 目录；房间“自动上传”还需配合“上传与发布”页的全局总开关
 
 > **可选增强**：在 `.env` 配置 `LLM_API_KEY` 后，高光复核和文案生成将由大模型辅助（否则走纯规则，同样可用）。
 > **安全建议**：多人共用或暴露在局域网时，设置 `ADMIN_PASSWORD` 启用 Web 后台认证。
@@ -533,7 +535,7 @@ BILIUP_UPLOAD_CMD=                          # 自定义上传命令模板
 
 ## 回主工程
 
-此 `packaging/portable/` 目录是**发布给最终用户的即插即用版本**，源码固定于 `v0.1.16-Alpha` 的发布基线 Commit。
+此 `packaging/portable/` 目录是**发布给最终用户的即插即用版本**，源码固定于 `v0.1.16.1-Alpha` 的发布基线 Commit。
 
 - **主仓库**: `D:\Vibe\BiliLiveCut\README.md`
 - **完整变更日志**: `D:\Vibe\BiliLiveCut\CHANGELOG.md`

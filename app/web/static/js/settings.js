@@ -2,6 +2,16 @@
 import { $, api, toast, esc, badge } from "./common.js";
 
 // ----------------------------- \u591a\u5927\u6a21\u578b\u914d\u7f6e ----------------------------- //
+let _llmDirty = false;
+let _llmRevision = 0;
+
+function markLLMDirty() {
+  _llmDirty = true;
+  _llmRevision += 1;
+  const status = $("#llm-status");
+  if (status && !status.textContent.includes("\u672a\u4fdd\u5b58")) status.textContent += " \u00b7 \u6709\u672a\u4fdd\u5b58\u66f4\u6539";
+}
+
 function llmRow(p) {
   p = p || {};
   const keyPlaceholder = p.api_key_set ? "\u5df2\u914d\u7f6e (\u7559\u7a7a\u4e0d\u6539)" : "\u586b\u5199 API Key";
@@ -23,12 +33,16 @@ function llmRow(p) {
   </div>`;
 }
 
-async function loadLLM() {
+async function loadLLM(force = false) {
+  if (_llmDirty && !force) return;
+  const revision = _llmRevision;
   const data = await api("GET", "/api/llm-providers");
+  if (!force && (_llmDirty || _llmRevision !== revision)) return;
   $("#llm-status").textContent = `\u5df2\u914d\u7f6e ${data.providers.length} \u4e2a \u00b7 \u53ef\u7528 ${data.active_count} \u4e2a(\u6309\u4f18\u5148\u7ea7\u4ece\u5c0f\u5230\u5927\u8c03\u7528)`;
   $("#llm-list").innerHTML = data.providers.length
     ? data.providers.map(llmRow).join("")
     : `<div class="empty">\u5c1a\u672a\u914d\u7f6e\u3002\u70b9\u51fb\u300c+ \u65b0\u589e\u6a21\u578b\u300d,\u6216\u4f7f\u7528 .env \u7684\u5355\u6a21\u578b\u914d\u7f6e\u3002</div>`;
+  _llmDirty = false;
 }
 
 function collectLLM() {
@@ -42,6 +56,19 @@ function collectLLM() {
     priority: parseInt(row.querySelector(".llm-priority").value || "100", 10),
     enabled: row.querySelector(".llm-enabled").checked,
   })).filter((p) => p.base_url && p.model);
+}
+
+function renderLLMTestResults(results) {
+  const target = $("#llm-test-results");
+  if (!results.length) {
+    target.innerHTML = '<span class="warn">\u6ca1\u6709\u53ef\u6d4b\u8bd5\u7684\u6a21\u578b\uff1a\u8bf7\u586b\u5199 base_url\u3001\u6a21\u578b\u548c API Key\uff0c\u5e76\u52fe\u9009\u300c\u542f\u7528\u300d\u3002</span>';
+    return;
+  }
+  target.innerHTML = results.map((item) => `
+    <div class="item" style="margin-top:6px">
+      <b>${esc(item.name)}</b> \u00b7 ${item.ok ? '<span class="ok">\u8fde\u901a\u6210\u529f</span>' : '<span class="warn">\u8fde\u901a\u5931\u8d25</span>'}
+      <div class="sub">${esc(item.detail || (item.ok ? "\u670d\u52a1\u5df2\u54cd\u5e94" : "\u672a\u8fd4\u56de\u9519\u8bef\u8be6\u60c5"))}</div>
+    </div>`).join("");
 }
 
 // ----------------------------- \u6e32\u67d3:\u65e5\u5fd7 ----------------------------- //
@@ -230,26 +257,40 @@ $("#btn-add-llm").addEventListener("click", () => {
   const list = $("#llm-list");
   if (list.querySelector(".empty")) list.innerHTML = "";
   list.insertAdjacentHTML("beforeend", llmRow({ base_url: "https://api.deepseek.com/v1", model: "deepseek-chat", web_search_param: "enable_search", priority: 100 }));
+  markLLMDirty();
 });
 $("#llm-list").addEventListener("click", (e) => {
-  if (e.target.dataset.act === "del-llm") e.target.closest(".llm-row").remove();
+  if (e.target.dataset.act === "del-llm") {
+    e.target.closest(".llm-row").remove();
+    markLLMDirty();
+  }
 });
+$("#llm-list").addEventListener("input", markLLMDirty);
+$("#llm-list").addEventListener("change", markLLMDirty);
 $("#btn-save-llm").addEventListener("click", async () => {
   try {
+    const revision = _llmRevision;
     const r = await api("PUT", "/api/llm-providers", { providers: collectLLM() });
     toast(`\u5df2\u4fdd\u5b58 ${r.providers.length} \u4e2a\u6a21\u578b`);
-    loadLLM();
+    if (_llmRevision === revision) {
+      _llmDirty = false;
+      await loadLLM(true);
+    }
   } catch (e) { toast("\u4fdd\u5b58\u5931\u8d25:" + e.message); }
 });
 $("#btn-test-llm").addEventListener("click", async () => {
   toast("\u6d4b\u8bd5\u4e2d,\u8bf7\u7a0d\u5019\u2026");
   try {
-    const r = await api("POST", "/api/llm-providers/test");
+    const r = await api("POST", "/api/llm-providers/test", { providers: collectLLM() });
+    renderLLMTestResults(r.results);
     if (!r.results.length) return toast("\u65e0\u53ef\u7528\u6a21\u578b(\u9700\u5df2\u542f\u7528\u4e14\u914d\u7f6e key)");
     const ok = r.results.filter((x) => x.ok).map((x) => x.name);
     const bad = r.results.filter((x) => !x.ok).map((x) => x.name);
     toast(`\u53ef\u7528:${ok.join("\u3001") || "\u65e0"}${bad.length ? " \u00b7 \u5931\u8d25:" + bad.join("\u3001") : ""}`);
-  } catch (e) { toast("\u6d4b\u8bd5\u5931\u8d25:" + e.message); }
+  } catch (e) {
+    $("#llm-test-results").innerHTML = `<span class="warn">\u8bf7\u6c42\u5931\u8d25\uff1a${esc(e.message)}</span>`;
+    toast("\u6d4b\u8bd5\u5931\u8d25:" + e.message);
+  }
 });
 
 $("#btn-add-template").addEventListener("click", async () => {

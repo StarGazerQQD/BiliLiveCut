@@ -6,7 +6,7 @@
 
 from __future__ import annotations
 
-RELEASE_VERSION: str = "0.1.16-alpha"
+RELEASE_VERSION: str = "0.1.16.1-alpha"
 SOURCE_COMMIT: str = "0ea5c2a764d80f6afa5119febcfeeff60a8019e5"
 SOURCE_COMMIT_SHORT: str = "0ea5c2a"
 BUILDER_COMMIT: str = ""

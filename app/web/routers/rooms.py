@@ -29,6 +29,13 @@ class UpdateRoomRequest(BaseModel):
     schedule_enabled: bool | None = None
     auto_threshold_enabled: bool | None = None
     danmaku_sentiment_enabled: bool | None = None
+    auto_record: bool | None = None
+    auto_analyze: bool | None = None
+    auto_render: bool | None = None
+    auto_approve: bool | None = None
+    auto_upload: bool | None = None
+    auto_approve_threshold: float | None = Field(default=None, ge=0.0, le=1.0, allow_inf_nan=False)
+    review_threshold: float | None = Field(default=None, ge=0.0, le=1.0, allow_inf_nan=False)
     room_config: dict | None = None
 
 

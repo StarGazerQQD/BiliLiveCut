@@ -101,9 +101,10 @@ def save_llm_providers(items: list[dict[str, Any]]) -> dict[str, Any]:
     return list_llm_providers()
 
 
-async def test_llm_providers() -> dict[str, Any]:
-    """逐个测试已启用 provider 的连通性(各发一次极小请求)。
+async def test_llm_providers(items: list[dict[str, Any]] | None = None) -> dict[str, Any]:
+    """逐个测试当前表单或已保存 provider 的连通性(各发一次极小请求)。
 
+    :param items: 当前表单配置；为 ``None`` 时读取已保存配置。
     :returns: ``{"results": [{"id","name","ok","detail"}, ...]}``。
     """
     from app.analysis import llm as llm_mod
@@ -116,6 +117,7 @@ async def test_llm_providers() -> dict[str, Any]:
         except Exception as exc:  # noqa: BLE001 — 汇总每个 provider 的错误
             return {"id": p.id, "name": p.name, "ok": False, "detail": str(exc)[:200]}
 
-    providers = provs.active_providers()
+    candidates = provs.active_providers() if items is None else provs.merge_providers(items)
+    providers = [p for p in candidates if p.enabled and p.api_key and p.base_url]
     results = await asyncio.to_thread(lambda: [_probe(p) for p in providers])
     return {"results": results}

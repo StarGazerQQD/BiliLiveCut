@@ -2,7 +2,7 @@
 
 [![CI](https://github.com/StarGazerQQD/BiliLiveCut/actions/workflows/ci.yml/badge.svg)](https://github.com/StarGazerQQD/BiliLiveCut/actions/workflows/ci.yml)
 
-**当前版本：V0.1.16 Alpha** (`0.1.16-alpha`)
+**当前版本：V0.1.16.1 Alpha** (`0.1.16.1-alpha`)
 
 面向 Bilibili 直播的全自动工作流：实时录制 → 转写 → 识别高光 → 生成切片 → 生成文案 → (可选)上传。
 阶段 1–5 全链路已可用；即插即用分发包见 [`packaging/portable/`](packaging/portable/README.md)。普通 Windows 用户可直接阅读 [Portable 小白使用说明](packaging/portable/USER_GUIDE_ZH.md)。
@@ -56,10 +56,12 @@
 - 控制台新增“插件”导航项：检测到插件后显示插件名称、启停开关和“设置”按钮；每个插件拥有由宿主渲染的独立设置页面。
 - 根目录 [`plugin/`](plugin/README.md) 提供接口文档、Manifest JSON Schema 和可运行示例，并通过 `MANIFEST.in` 随源码发行包分发。
 - 控制台采用分组侧边导航、统一深色视觉层级、焦点状态和响应式布局；录制、任务、审核与插件功能沿用同一套控件和状态反馈。
+- 控制台新增“功能开关”页，按直播间集中展示五项流水线自动化开关、三个辅助开关和审核阈值，并提供上传、网感、插件及模型全局开关的直达入口。
+- “模型”页可直接用尚未保存的当前表单执行连通测试；测试不会写入配置，并会保留各服务商的成功响应或错误详情。
 
 ### 版本与发布一致性
 
-- Python 包、CLI、C/Cython、Rust、Portable、Docker、GitHub Actions、测试和用户文档统一升级为 `0.1.16-alpha`，Engine Pack 兼容区间同步为 `0.1.16-alpha ≤ app < 0.1.17`。
+- Python 包、CLI、C/Cython、Rust、Portable、Docker、GitHub Actions、测试和用户文档统一升级为 `0.1.16.1-alpha`，Engine Pack 兼容区间同步为 `0.1.16.1-alpha ≤ app < 0.1.17`。
 - 新功能覆盖单元、集成、前端语法和发布回归测试；CI 与 Release 门禁继续校验版本、固定源码、可复现 Payload、原生模块、依赖锁和制品完整性。
 
 ## V0.1.15 版本总结：Portable 发布链路完整收口
@@ -329,6 +331,8 @@ REVIEW_BLIND_MODE=true
 - `auto_upload` — 自动提交上传
 
 每个开关逐阶段独立判断，修改后未完成任务按新配置执行。支持房间级别配置覆盖。
+
+Portable Web 控制台可在“配置 → 功能开关”中按直播间独立修改上述五项开关；预约录制、阈值自学习、弹幕情绪与审核阈值也集中在同一页。房间级 `auto_upload` 仍需配合“上传与发布”页的全局上传总开关。
 
 ## 阶段 5：上传队列 + 部署
 

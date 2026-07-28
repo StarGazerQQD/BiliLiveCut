@@ -52,6 +52,46 @@ def test_dashboard_and_room_crud(temp_db: None, monkeypatch: MonkeyPatch) -> Non
         assert abs(r.json()["highlight_threshold"] - 0.7) < 1e-6
 
 
+def test_room_pipeline_switches_are_independently_configurable(temp_db: None) -> None:
+    """Portable Web API 应完整暴露五个房间级流水线开关。"""
+    from app.db.models import LiveRoom
+    from app.db.session import get_session
+    from app.web.main import app
+
+    with get_session() as db:
+        room = LiveRoom(input_url="switches", room_id=23456, authorized=True)
+        db.add(room)
+        db.flush()
+        room_id = room.id
+    assert room_id is not None
+
+    with TestClient(app) as client:
+        response = client.patch(
+            f"/api/rooms/{room_id}",
+            json={
+                "auto_record": True,
+                "auto_analyze": True,
+                "auto_render": True,
+                "auto_approve": True,
+                "auto_upload": True,
+                "auto_approve_threshold": 0.88,
+                "review_threshold": 0.56,
+            },
+        )
+
+    assert response.status_code == 200
+    with get_session() as db:
+        updated = db.get(LiveRoom, room_id)
+        assert updated is not None
+        assert updated.auto_record is True
+        assert updated.auto_analyze is True
+        assert updated.auto_render is True
+        assert updated.auto_approve is True
+        assert updated.auto_upload is True
+        assert updated.auto_approve_threshold == pytest.approx(0.88)
+        assert updated.review_threshold == pytest.approx(0.56)
+
+
 def test_add_room_requires_authorization(temp_db: None, monkeypatch: MonkeyPatch) -> None:
     """未确认授权时添加直播间返回 400。"""
     from app.web.main import app
@@ -135,6 +175,20 @@ def test_danmaku_overview(temp_db: None) -> None:
         assert "sessions" in data
 
 
+def test_task_listing_returns_worker_stats(temp_db: None) -> None:
+    """任务列表接口应返回可序列化的 Worker 统计，而不是调用属性。"""
+    from app.web.main import app
+
+    with TestClient(app) as client:
+        response = client.get("/api/tasks?limit=40")
+
+    assert response.status_code == 200
+    payload = response.json()
+    assert payload["tasks"] == []
+    assert isinstance(payload["stats"], dict)
+    assert payload["stats"]["worker"]["transcribing"] == 0
+
+
 def test_dashboard_page_renders(temp_db: None) -> None:
     """根路径返回带分组导航和响应式工作台外壳的仪表盘 HTML。"""
     from app.web.main import app
@@ -148,6 +202,53 @@ def test_dashboard_page_renders(temp_db: None) -> None:
         assert r.text.count('class="tabs-group"') == 4
         assert '<main class="dashboard-main">' in r.text
         assert "高光模型" not in r.text
+        assert 'data-tab="features"' in r.text
+        assert "五项流水线自动化开关" in r.text
+        assert 'id="feature-switches-list"' in r.text
+
+
+def test_llm_connectivity_uses_unsaved_form_payload(temp_db: None, monkeypatch: MonkeyPatch) -> None:
+    """模型连通测试应使用当前表单配置，无需先持久化。"""
+    from app.analysis import llm as llm_mod
+    from app.analysis import llm_providers as provs
+    from app.web.main import app
+
+    def fake_complete(
+        provider: provs.LLMProvider,
+        prompt: str,
+        max_tokens: int,
+        extra_body: dict | None = None,
+    ) -> str:
+        assert provider.api_key == "draft-secret"
+        assert prompt == "ping"
+        assert max_tokens == 1
+        assert extra_body is None
+        return "pong"
+
+    monkeypatch.setattr(llm_mod, "_complete", fake_complete)
+
+    with TestClient(app) as client:
+        response = client.post(
+            "/api/llm-providers/test",
+            json={
+                "providers": [
+                    {
+                        "name": "草稿模型",
+                        "base_url": "https://example.invalid/v1",
+                        "model": "draft-model",
+                        "api_key": "draft-secret",
+                        "enabled": True,
+                        "priority": 1,
+                    }
+                ]
+            },
+        )
+
+    assert response.status_code == 200
+    assert response.json()["results"] == [
+        {"id": response.json()["results"][0]["id"], "name": "草稿模型", "ok": True, "detail": "pong"}
+    ]
+    assert provs._read_raw() == []  # noqa: SLF001
 
 
 def test_dashboard_serves_complete_javascript_module_graph(temp_db: None) -> None:

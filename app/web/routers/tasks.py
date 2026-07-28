@@ -25,7 +25,7 @@ def get_tasks(limit: int = 50, stage: str | None = None) -> dict[str, Any]:
     from app.pipeline.task_worker import task_worker
 
     tasks = _list(limit=limit, stage=stage)
-    return {"tasks": tasks, "stats": task_worker.stats()}
+    return {"tasks": tasks, "stats": task_worker.stats}
 
 
 @router.post("/tasks/{task_id}/retry")

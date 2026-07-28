@@ -1,6 +1,6 @@
 // BiliLiveCut 控制台入口:导入模块、初始化标签切换与轮询
 import { $ } from "./js/common.js";
-import { loadRooms, saveRoom, saveRoomConfig, loadThresholdLearning, loadSchedules, delSchedule, loadTopics, toggleCollection } from "./js/rooms.js";
+import { loadRooms, saveRoom, saveRoomConfig, loadFeatureSwitches, saveFeatureSwitches, loadThresholdLearning, loadSchedules, delSchedule, loadTopics, toggleCollection } from "./js/rooms.js";
 import { startRoom, stopRoom, resumeRoom, markHighlight, loadRecording, loadTranscripts, loadDanmaku } from "./js/recording.js";
 import { loadCandidates } from "./js/candidates.js";
 import { approveCand, rejectCand, delCand } from "./js/review.js";
@@ -15,6 +15,7 @@ import { loadPlugins } from "./js/plugins.js";
 // 挂载全局函数:供 HTML 内联 onclick 使用
 window.saveRoom = saveRoom;
 window.saveRoomConfig = saveRoomConfig;
+window.saveFeatureSwitches = saveFeatureSwitches;
 window.delSchedule = delSchedule;
 window.toggleCollection = toggleCollection;
 window.startRoom = startRoom;
@@ -60,7 +61,7 @@ if (requestedButton) requestedButton.click();
 const loaders = {
   rooms: loadRooms, recording: loadRecording, transcripts: loadTranscripts,
   danmaku: loadDanmaku, trends: loadTrends, candidates: loadCandidates,
-  clips: loadClips, uploads: loadUploads, models: loadLLM, logs: loadLogs,
+  clips: loadClips, uploads: loadUploads, features: loadFeatureSwitches, models: loadLLM, logs: loadLogs,
   schedules: loadSchedules, login: loadCookieStatus, tasks: async () => Promise.all([loadTasks(), loadJobs()]),
   topics: loadTopics, monitor: loadMonitor, templates: loadTemplates,
   "intro-templates": loadIntroTemplates, analytics: loadAnalytics, plugins: loadPlugins,

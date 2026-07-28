@@ -72,6 +72,31 @@ def _seed_room_session(tmp_path: Path) -> tuple[int, int, datetime]:
     return room_id, session_id, now
 
 
+def test_dashboard_uses_shared_recording_runtime(temp_db: None) -> None:
+    """仪表盘必须读取录制控制 API 使用的同一份运行时状态。"""
+    from app.db.models import LiveRoom, SessionStatus
+    from app.db.session import get_session
+    from app.web import service
+    from app.web.services.rooms import recorder_manager
+
+    with get_session() as db:
+        room = LiveRoom(input_url="dashboard-runtime", room_id=201, authorized=True)
+        db.add(room)
+        db.flush()
+        room_id = room.id
+    assert room_id is not None
+
+    recorder_manager._set_state(room_id, SessionStatus.RECORDING, session_id=42)  # noqa: SLF001
+    try:
+        payload = service.dashboard_state()
+        room_payload = next(item for item in payload["rooms"] if item["id"] == room_id)
+        assert room_payload["running"] is False
+        assert room_payload["recording_state"] == SessionStatus.RECORDING
+        assert room_payload["active_session_id"] == 42
+    finally:
+        recorder_manager._runtime.pop(room_id, None)  # noqa: SLF001
+
+
 @pytest.mark.asyncio
 async def test_graceful_stop_persists_pause_and_cancels_pending(
     temp_db: None,

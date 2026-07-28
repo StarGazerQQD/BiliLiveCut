@@ -147,7 +147,7 @@ def recover_orphans() -> None:
         if stuck:
             _logger.info("恢复: 回退 %d 个旧格式中间状态任务。", len(stuck))
 
-        existing_ids = {t.segment_id for t in db.exec(select(SegmentTask.segment_id)).all()}
+        existing_ids = set(db.exec(select(SegmentTask.segment_id)).all())
         orphan_segs = db.exec(
             select(RawSegment).where(
                 RawSegment.status == OldStatus.RECORDED,
