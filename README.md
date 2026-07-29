@@ -318,6 +318,13 @@ python -m app.cli serve              # 默认 http://127.0.0.1:8000
 
 人工审核提交后，宿主把明确批准映射为正样本，把 `rejected/not_exciting` 映射为负样本；保留、上下文/边界/字幕/画面问题及撤销不被伪造为负样本，而是通知原插件删除同一 `sample_id` 的旧标签。反馈写入失败不会回滚已经提交的审核。房间级模式可在控制台“配置 → 功能开关 → 高光评分插件”中设为继承、关闭、Shadow 或 Champion。
 
+真实插件联调是跨仓库显式检查，不进入宿主默认测试集，也不会在缺少外部插件时产生跳过项。Windows PowerShell 可执行：
+
+```powershell
+$env:BILILIVECUT_HIGHLIGHT_SOURCE = "D:\path\to\BiliLiveCut_HighLight"
+python -m pytest scripts/external_tests/test_highlight_plugin_external.py
+```
+
 独立参考实现、训练 CLI 和模型注册表位于 [StarGazerQQD/BiliLiveCut_Highlight](https://github.com/StarGazerQQD/BiliLiveCut_Highlight)。
 
 多人审核入口为 `/review/queue`。管理员仍使用 `ADMIN_PASSWORD`；审核员账号、领取租约和盲审开关在 `.env` 中配置：

@@ -1,4 +1,4 @@
-"""可选的真实 BiliLiveCut Highlight 插件加载联调。"""
+"""显式执行的真实 BiliLiveCut Highlight 插件加载联调。"""
 
 from __future__ import annotations
 
@@ -14,19 +14,26 @@ import pytest
 from app.plugins import HighlightFeedback, HighlightScoringRequest
 from app.plugins.manager import PluginManager
 
-_PLUGIN_SOURCE = os.environ.get("BILILIVECUT_HIGHLIGHT_SOURCE")
-pytestmark = pytest.mark.skipif(
-    not _PLUGIN_SOURCE,
-    reason="设置 BILILIVECUT_HIGHLIGHT_SOURCE 后执行真实插件加载联调",
-)
+pytest_plugins = ("tests.conftest",)
+
+_PLUGIN_SOURCE_ENV = "BILILIVECUT_HIGHLIGHT_SOURCE"
+
+
+def _plugin_source() -> Path:
+    """返回显式配置的真实插件源码目录。"""
+    configured = os.environ.get(_PLUGIN_SOURCE_ENV)
+    if not configured:
+        raise RuntimeError(f"请设置 {_PLUGIN_SOURCE_ENV} 后再执行真实插件联调")
+    source = Path(configured).resolve()
+    if not source.is_dir():
+        raise RuntimeError(f"真实插件源码目录不存在: {source}")
+    return source
 
 
 def _copy_plugin(target: Path) -> None:
     """复制用户显式指定的插件源码，排除开发环境和运行时数据。"""
-    if not _PLUGIN_SOURCE:
-        pytest.skip("未设置 BILILIVECUT_HIGHLIGHT_SOURCE")
     shutil.copytree(
-        Path(_PLUGIN_SOURCE).resolve(),
+        _plugin_source(),
         target,
         ignore=shutil.ignore_patterns(
             ".git",
@@ -79,6 +86,7 @@ async def test_plugin_manager_loads_real_v01_plugin_and_delivers_feedback(
     temp_db: None,
     tmp_path: Path,
 ) -> None:
+    """验证真实 v0.1 插件可加载、评分并接收人工审核反馈。"""
     plugin_root = tmp_path / "plugins"
     plugin_directory = plugin_root / "bililivecut-highlight"
     _copy_plugin(plugin_directory)
