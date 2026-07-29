@@ -175,9 +175,11 @@ def ensure_env(app_root: Path, source_dir: Path) -> None:
         return
 
     template = source_dir / ".env.example"
-    if template.exists():
-        env_path.write_text(template.read_text(encoding="utf-8"), encoding="utf-8")
-        print("  .env created from template")
+    if not template.is_file():
+        raise FileNotFoundError(f"Portable source is missing required environment template: {template}")
+
+    env_path.write_text(template.read_text(encoding="utf-8"), encoding="utf-8")
+    print("  .env created from template")
 
 
 # -- Environment prep ──────────────────────────────────────────────

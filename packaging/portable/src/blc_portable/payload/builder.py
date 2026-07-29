@@ -70,17 +70,15 @@ def _should_include(rel_path: str) -> bool:
         elif pattern.startswith("*"):
             if rel_path.endswith(pattern[1:]):
                 return False
-        else:
-            if rel_path == pattern or rel_path.startswith(pattern + "/") or rel_path.startswith(pattern):
-                return False
+        elif rel_path == pattern:
+            return False
 
     for pattern in PAYLOAD_INCLUDE:
         if pattern.endswith("/"):
             if rel_path == pattern.rstrip("/") or rel_path.startswith(pattern):
                 return True
-        else:
-            if rel_path == pattern or rel_path.startswith(pattern):
-                return True
+        elif rel_path == pattern:
+            return True
 
     return False
 
