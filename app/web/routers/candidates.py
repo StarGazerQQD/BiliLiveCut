@@ -58,7 +58,7 @@ async def approve_candidate(candidate_id: int, request: Request) -> dict[str, An
     actor, _ = review_actor(request)
     job = await web_job_manager.enqueue(
         "candidate_render",
-        {"candidate_id": candidate_id},
+        {"candidate_id": candidate_id, "reviewed_by": actor},
         label=f"候选 #{candidate_id} 批准出片",
         owner=actor,
         dedup_key=f"candidate-render:{candidate_id}",
@@ -67,10 +67,13 @@ async def approve_candidate(candidate_id: int, request: Request) -> dict[str, An
 
 
 @router.post("/candidates/{candidate_id}/reject")
-def reject_candidate(candidate_id: int) -> dict[str, str]:
+def reject_candidate(candidate_id: int, request: Request) -> dict[str, str]:
     """拒绝候选。"""
+    from app.web.services.review_workflow import review_actor
+
+    actor, _ = review_actor(request)
     try:
-        service.set_candidate_status(candidate_id, CandidateStatus.REJECTED)
+        service.set_candidate_status(candidate_id, CandidateStatus.REJECTED, reviewed_by=actor)
     except ValueError as exc:
         raise HTTPException(status_code=404, detail=str(exc)) from exc
     return {"status": "rejected"}
@@ -106,14 +109,17 @@ async def batch_candidates(request: BatchRequest, http_request: Request) -> dict
                 actor, _ = review_actor(http_request)
                 job = await web_job_manager.enqueue(
                     "candidate_render",
-                    {"candidate_id": cid},
+                    {"candidate_id": cid, "reviewed_by": actor},
                     label=f"候选 #{cid} 批准出片",
                     owner=actor,
                     dedup_key=f"candidate-render:{cid}",
                 )
                 results.append({"candidate_id": cid, "status": "accepted", "job_id": job["id"]})
             elif request.action == "reject":
-                service.set_candidate_status(cid, CandidateStatus.REJECTED)
+                from app.web.services.review_workflow import review_actor
+
+                actor, _ = review_actor(http_request)
+                service.set_candidate_status(cid, CandidateStatus.REJECTED, reviewed_by=actor)
                 results.append({"candidate_id": cid, "status": "rejected"})
             elif request.action == "publish":
                 result = service.publish_clip(cid)

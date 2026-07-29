@@ -106,10 +106,27 @@ def test_claim_collision_blind_queue_and_draft_privacy(review_client: TestClient
     assert bob_view["workflow"]["draft"] is None
 
 
-def test_review_submission_releases_claim_and_can_be_undone(review_client: TestClient) -> None:
+def test_review_submission_releases_claim_and_can_be_undone(
+    review_client: TestClient,
+    monkeypatch: MonkeyPatch,
+) -> None:
     """提交决策后自动释放，重新领取后可撤销并留下审计记录。"""
     from app.db.models import CandidateStatus, HighlightCandidate, HighlightEvent, ReviewStatus, SystemLog
     from app.db.session import get_session
+    from app.pipeline import highlight_feedback
+
+    feedback_calls: list[tuple[int, str, str]] = []
+
+    def record_feedback(
+        candidate_id: int,
+        *,
+        decision: str,
+        reviewed_by: str,
+        reviewed_at: datetime | None = None,
+    ) -> None:
+        feedback_calls.append((candidate_id, decision, reviewed_by))
+
+    monkeypatch.setattr(highlight_feedback, "record_candidate_review_feedback", record_feedback)
 
     candidate_id = _seed_candidate()
     auth = ("alice", "alice-pass")
@@ -143,6 +160,10 @@ def test_review_submission_releases_claim_and_can_be_undone(review_client: TestC
     assert candidate is not None and candidate.status == CandidateStatus.PENDING
     assert event.review_status == ReviewStatus.PENDING
     assert len(logs) >= 4
+    assert feedback_calls == [
+        (candidate_id, ReviewStatus.REJECTED, "alice"),
+        (candidate_id, ReviewStatus.PENDING, "alice"),
+    ]
 
 
 def test_admin_can_force_take_over_claim(review_client: TestClient) -> None:

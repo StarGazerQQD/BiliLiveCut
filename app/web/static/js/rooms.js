@@ -56,8 +56,14 @@ async function loadRooms() {
         ${r.running ? '<span class="muted">(\u5f55\u5236\u4e2d\u9501\u5b9a)</span>' : ""}
       </div>
       <details class="room-config-detail" style="margin-top:8px">
-        <summary style="font-size:12px;color:var(--muted);cursor:pointer">\u623f\u95f4\u914d\u7f6e(\u70ed\u8bcd/\u522b\u540d/\u5c4f\u853d)</summary>
+        <summary style="font-size:12px;color:var(--muted);cursor:pointer">\u623f\u95f4\u914d\u7f6e(\u9ad8\u5149\u6a21\u578b/\u70ed\u8bcd/\u522b\u540d/\u5c4f\u853d)</summary>
         <div class="thresholds" style="margin-top:6px;flex-direction:column;align-items:stretch">
+          <label>\u9ad8\u5149\u8bc4\u5206\u6a21\u5f0f
+            <select id="hm-${r.id}" style="width:100%">
+              ${["inherit", "off", "shadow", "champion"].map((mode) => `<option value="${mode}" ${mode === (r.room_config.highlight_scorer_mode || "inherit") ? "selected" : ""}>${mode}</option>`).join("")}
+            </select>
+            <span class="muted">inherit \u8ddf\u968f\u63d2\u4ef6\u5168\u5c40\u8bbe\u7f6e\uff1bshadow \u53ea\u89c2\u6d4b\uff1bchampion \u53ef\u66ff\u6362\u89c4\u5219\u4e3b\u8bc4\u5206\u3002</span>
+          </label>
           <label>\u70ed\u8bcd(\u6362\u884c\u5206\u9694)
             <textarea id="hw-${r.id}" rows="2" style="width:100%;font-size:11px">${(r.room_config.hotwords||[]).join("\n")}</textarea>
           </label>
@@ -103,7 +109,8 @@ async function saveRoomConfig(id) {
     const hk = ($(`#hk-${id}`).value || "").split("\n").map(s => s.trim()).filter(Boolean);
     const al = {}; ($(`#al-${id}`).value || "").split("\n").forEach(line => { const eq = line.indexOf("="); if (eq > 0) al[line.slice(0, eq).trim()] = line.slice(eq + 1).trim(); });
     const bt = ($(`#bt-${id}`).value || "").split("\n").map(s => s.trim()).filter(Boolean);
-    await api("PATCH", `/api/rooms/${id}`, { room_config: { hotwords: hw, aliases: al, highlight_keywords: hk, blocked_topics: bt } });
+    const highlightScorerMode = $(`#hm-${id}`).value || "inherit";
+    await api("PATCH", `/api/rooms/${id}`, { room_config: { hotwords: hw, aliases: al, highlight_keywords: hk, blocked_topics: bt, highlight_scorer_mode: highlightScorerMode } });
     toast("\u623f\u95f4\u914d\u7f6e\u5df2\u4fdd\u5b58");
   } catch (e) { toast("\u4fdd\u5b58\u5931\u8d25:" + e.message); }
 }

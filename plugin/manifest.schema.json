@@ -36,6 +36,14 @@
     "settings_page": {
       "type": "boolean",
       "default": true
+    },
+    "capabilities": {
+      "type": "array",
+      "items": {
+        "enum": ["highlight_scorer"]
+      },
+      "uniqueItems": true,
+      "default": []
     }
   }
 }

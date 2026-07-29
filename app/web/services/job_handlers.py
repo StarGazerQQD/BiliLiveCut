@@ -25,6 +25,7 @@ def _render_candidate(context: JobContext, payload: dict[str, Any]) -> dict[str,
     context.report(5, "正在批准候选")
     clip_id = approve_candidate_sync(
         candidate_id,
+        reviewed_by=str(payload.get("reviewed_by", "web_admin")),
         progress_callback=context.report,
         cancel_check=context.cancelled,
     )

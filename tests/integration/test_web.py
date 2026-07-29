@@ -48,6 +48,13 @@ def test_dashboard_and_room_crud(temp_db: None, monkeypatch: MonkeyPatch) -> Non
         # 调整阈值与模式
         r = client.patch(f"/api/rooms/{db_id}", json={"mode": "auto", "highlight_threshold": 0.7})
         assert r.status_code == 200
+        r = client.patch(
+            f"/api/rooms/{db_id}",
+            json={"room_config": {"highlight_scorer_mode": "shadow"}},
+        )
+        assert r.status_code == 200
+        room_payload = next(item for item in client.get("/api/dashboard").json()["rooms"] if item["id"] == db_id)
+        assert room_payload["room_config"]["highlight_scorer_mode"] == "shadow"
         assert r.json()["mode"] == "auto"
         assert abs(r.json()["highlight_threshold"] - 0.7) < 1e-6
 

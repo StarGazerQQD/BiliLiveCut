@@ -6,6 +6,7 @@
 - highlight_keywords: 规则评分额外关键词。
 - blocked_topics: 不适合生成切片的屏蔽话题模式。
 - recording_paused: 人工暂停自动录制,恢复时创建新会话。
+- highlight_scorer_mode: 高光评分插件的房间级模式覆盖。
 
 配置存储在 ``LiveRoom.room_config_json`` 中。
 """
@@ -25,6 +26,7 @@ _DEFAULT_CONFIG: dict = {
     "highlight_keywords": [],
     "blocked_topics": [],
     "recording_paused": False,
+    "highlight_scorer_mode": "inherit",
 }
 
 
@@ -54,6 +56,10 @@ def merge_room_config(room: LiveRoom, updates: dict[str, object]) -> dict[str, o
     if not isinstance(paused, bool):
         raise ValueError("recording_paused 必须是布尔值")
     merged["recording_paused"] = paused
+    scoring_mode = merged.get("highlight_scorer_mode", "inherit")
+    if scoring_mode not in {"inherit", "off", "shadow", "champion"}:
+        raise ValueError("highlight_scorer_mode 必须是 inherit/off/shadow/champion")
+    merged["highlight_scorer_mode"] = scoring_mode
     return merged
 
 
