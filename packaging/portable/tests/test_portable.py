@@ -267,6 +267,7 @@ class TestPayload:
         forbidden_names = [".env"]  # 仅文件名，不含 .env.example
         with zipfile.ZipFile(zip_path) as zf:
             entries = zf.namelist()
+            assert ".env.example" in entries, "Payload 缺少 Full 首次运行所需的 .env.example"
             for entry in entries:
                 lower = entry.lower()
                 for bad in forbidden_paths:
@@ -274,6 +275,44 @@ class TestPayload:
                 name = entry.rsplit("/", 1)[-1]
                 if name in forbidden_names:
                     raise AssertionError(f"Payload 包含禁止文件: {entry}")
+
+    def test_payload_env_template_drives_full_first_run(self, tmp_path: Path) -> None:
+        """Payload 必须保留模板，并让 Full 首次运行生成根目录 .env。"""
+        from blc_portable.launcher.main import ensure_env
+        from blc_portable.payload.builder import _collect_included_files, _safe_extract_zip, _write_zip
+
+        staging_dir = tmp_path / "staging"
+        staging_dir.mkdir()
+        template_content = "APP_ENV=portable-test\n"
+        (staging_dir / ".env.example").write_text(template_content, encoding="utf-8")
+        (staging_dir / ".env").write_text("SECRET=must-not-ship\n", encoding="utf-8")
+
+        included_files = _collect_included_files(staging_dir)
+        assert ".env.example" in included_files
+        assert ".env" not in included_files
+
+        payload_zip = tmp_path / "source_payload.zip"
+        source_dir = tmp_path / "release"
+        app_root = tmp_path / "portable-full"
+        app_root.mkdir()
+        _write_zip(payload_zip, staging_dir, included_files)
+        _safe_extract_zip(payload_zip, source_dir)
+
+        ensure_env(app_root, source_dir)
+
+        assert (app_root / ".env").read_text(encoding="utf-8") == template_content
+
+    def test_full_first_run_rejects_payload_without_env_template(self, tmp_path: Path) -> None:
+        """模板缺失时必须明确失败，禁止静默跳过配置初始化。"""
+        from blc_portable.launcher.main import ensure_env
+
+        app_root = tmp_path / "portable-full"
+        source_dir = tmp_path / "release"
+        app_root.mkdir()
+        source_dir.mkdir()
+
+        with pytest.raises(FileNotFoundError, match=r"\.env\.example"):
+            ensure_env(app_root, source_dir)
 
     def test_payload_reproducible(self) -> None:
         """验证 Payload 构建的可复现性。"""
