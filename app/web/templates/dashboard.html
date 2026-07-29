@@ -39,6 +39,7 @@
     </div>
     <div class="tabs-group">
       <span class="tabs-label">配置</span>
+      <button class="tab" data-tab="features">功能开关</button>
       <button class="tab" data-tab="models">模型</button>
       <button class="tab" data-tab="plugins">插件</button>
       <button class="tab" data-tab="login">账号管理</button>
@@ -213,6 +214,25 @@
       <div id="uploads-list"></div>
     </section>
 
+    <!-- 功能开关 -->
+    <section id="tab-features" class="panel">
+      <div class="card">
+        <h3>五项流水线自动化开关</h3>
+        <p class="hint">
+          每个直播间独立控制「自动录制 → 自动分析 → 自动渲染 → 自动审核 → 自动上传」。
+          开关关闭只会阻止后续自动推进，仍可在对应页面手动执行。
+        </p>
+        <p class="hint">
+          其他全局入口：
+          <a href="/?tab=uploads">上传总开关</a> ·
+          <a href="/?tab=trends">网感定时采集</a> ·
+          <a href="/?tab=plugins">插件启用</a> ·
+          <a href="/?tab=models">大模型启用</a>
+        </p>
+      </div>
+      <div id="feature-switches-list"></div>
+    </section>
+
     <!-- 插件中心 -->
     <section id="tab-plugins" class="panel">
       <div class="card">
@@ -242,6 +262,7 @@
           <button id="btn-save-llm" class="primary">保存全部</button>
           <button id="btn-test-llm">测试连通</button>
         </div>
+        <div id="llm-test-results" class="hint" style="margin-top:10px"></div>
       </div>
       <div id="llm-list"></div>
     </section>

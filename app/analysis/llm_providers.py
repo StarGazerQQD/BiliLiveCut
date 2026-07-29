@@ -204,11 +204,11 @@ def save_providers(items: list[LLMProvider]) -> None:
     logger.info("已保存 {} 个大模型配置。", len(items))
 
 
-def merge_and_save(incoming: list[dict]) -> list[dict]:
-    """合并保存前端提交的配置:未提供新 key 的条目沿用旧 key。
+def merge_providers(incoming: list[dict]) -> list[LLMProvider]:
+    """合并前端配置与已保存密钥，但不写入存储。
 
     :param incoming: 前端提交的 provider 字典列表(``api_key`` 可为空表示不修改)。
-    :returns: 保存后的对外视图列表。
+    :returns: 合并并按优先级排序的 provider 列表。
     """
     existing = {r.get("id"): r for r in _read_raw() if r.get("id")}
     merged: list[LLMProvider] = []
@@ -223,5 +223,15 @@ def merge_and_save(incoming: list[dict]) -> list[dict]:
         prov = _coerce(data)
         if prov is not None:
             merged.append(prov)
+    return sorted(merged, key=lambda p: (p.priority, p.name))
+
+
+def merge_and_save(incoming: list[dict]) -> list[dict]:
+    """合并保存前端提交的配置:未提供新 key 的条目沿用旧 key。
+
+    :param incoming: 前端提交的 provider 字典列表(``api_key`` 可为空表示不修改)。
+    :returns: 保存后的对外视图列表。
+    """
+    merged = merge_providers(incoming)
     save_providers(merged)
     return public_view()

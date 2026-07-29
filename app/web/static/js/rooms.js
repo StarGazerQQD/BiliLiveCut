@@ -108,6 +108,70 @@ async function saveRoomConfig(id) {
   } catch (e) { toast("\u4fdd\u5b58\u5931\u8d25:" + e.message); }
 }
 
+// ----------------------------- 独立功能开关 ----------------------------- //
+function pipelineSwitch(id, key, label, description, checked, disabled = false) {
+  return `
+    <label class="switch-row" style="align-items:flex-start">
+      <input type="checkbox" id="feature-${key}-${id}" ${checked ? "checked" : ""} ${disabled ? "disabled" : ""} />
+      <span><b>${label}</b><br /><span class="muted">${description}</span></span>
+    </label>`;
+}
+
+async function loadFeatureSwitches() {
+  const data = await api("GET", "/api/dashboard");
+  const list = $("#feature-switches-list");
+  list.innerHTML = data.rooms.length ? data.rooms.map((r) => `
+    <div class="item">
+      <div class="head">
+        <div>
+          <div class="title">${esc(r.title || r.input_url)} ${badge(r.recording_state || (r.running ? "running" : "stopped"))}</div>
+          <div class="sub">db_id=${r.id} · room_id=${r.room_id ?? "-"} · 以下设置仅作用于此直播间</div>
+        </div>
+        <button class="primary" onclick="saveFeatureSwitches(${r.id})">保存本直播间开关</button>
+      </div>
+      <div class="thresholds" style="align-items:flex-start;gap:14px;flex-wrap:wrap">
+        ${pipelineSwitch(r.id, "record", "自动录制", "检测到开播后自动开始录制", r.auto_record)}
+        ${pipelineSwitch(r.id, "analyze", "自动分析", "录制分段完成后自动转写并分析", r.auto_analyze)}
+        ${pipelineSwitch(r.id, "render", "自动渲染", "高光事件通过后自动生成视频", r.auto_render)}
+        ${pipelineSwitch(r.id, "approve", "自动审核", "按评分阈值自动通过或进入人工审核", r.auto_approve)}
+        ${pipelineSwitch(r.id, "upload", "自动上传", "成品就绪后自动加入上传流程", r.auto_upload)}
+      </div>
+      <div class="thresholds" style="margin-top:10px;align-items:flex-start;gap:14px;flex-wrap:wrap">
+        ${pipelineSwitch(r.id, "schedule", "预约录制", "允许该直播间的预约任务触发录制", r.schedule_enabled, r.running)}
+        ${pipelineSwitch(r.id, "threshold", "阈值自学习", "根据人工审核结果调整高光阈值", r.auto_threshold_enabled, r.running)}
+        ${pipelineSwitch(r.id, "sentiment", "弹幕情绪", "分析弹幕情绪并计入高光判断", r.danmaku_sentiment_enabled, r.running)}
+      </div>
+      <div class="thresholds" style="margin-top:10px">
+        <label>自动通过阈值
+          <input type="number" step="0.01" min="0" max="1" id="feature-approve-threshold-${r.id}" value="${r.auto_approve_threshold}" />
+        </label>
+        <label>人工复核阈值
+          <input type="number" step="0.01" min="0" max="1" id="feature-review-threshold-${r.id}" value="${r.review_threshold}" />
+        </label>
+        ${r.running ? '<span class="muted">录制中仅锁定预约、阈值学习和弹幕情绪开关</span>' : ""}
+      </div>
+    </div>`).join("") : `<div class="empty">还没有直播间，请先在「直播间」页添加。</div>`;
+}
+
+async function saveFeatureSwitches(id) {
+  try {
+    await api("PATCH", `/api/rooms/${id}`, {
+      auto_record: $(`#feature-record-${id}`).checked,
+      auto_analyze: $(`#feature-analyze-${id}`).checked,
+      auto_render: $(`#feature-render-${id}`).checked,
+      auto_approve: $(`#feature-approve-${id}`).checked,
+      auto_upload: $(`#feature-upload-${id}`).checked,
+      schedule_enabled: $(`#feature-schedule-${id}`).checked,
+      auto_threshold_enabled: $(`#feature-threshold-${id}`).checked,
+      danmaku_sentiment_enabled: $(`#feature-sentiment-${id}`).checked,
+      auto_approve_threshold: parseFloat($(`#feature-approve-threshold-${id}`).value),
+      review_threshold: parseFloat($(`#feature-review-threshold-${id}`).value),
+    });
+    toast("已保存该直播间的独立功能开关");
+    await Promise.all([loadFeatureSwitches(), loadRooms()]);
+  } catch (e) { toast("保存失败:" + e.message); }
+}
+
 // ----------------------------- V0.1.2 \u9608\u503c\u81ea\u5b66\u4e60\u6458\u8981 ----------------------------- //
 async function loadThresholdLearning(roomId) {
   try {
@@ -246,4 +310,4 @@ $("#btn-cluster").addEventListener("click", async () => {
   } catch (e) { toast("\u805a\u7c7b\u5931\u8d25:" + e.message); }
 });
 
-export { loadRooms, saveRoom, saveRoomConfig, loadThresholdLearning, loadSchedules, delSchedule, loadTopics, toggleCollection };
+export { loadRooms, saveRoom, saveRoomConfig, loadFeatureSwitches, saveFeatureSwitches, loadThresholdLearning, loadSchedules, delSchedule, loadTopics, toggleCollection };

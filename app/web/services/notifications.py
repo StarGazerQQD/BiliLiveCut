@@ -1,4 +1,8 @@
-"""n."""
+"""前端通知缓冲。
+
+本模块仍保留部分旧实现以兼容直接导入，但服务门面只能导出通知 API，
+避免旧实现覆盖已经拆分到其他 ``app.web.services`` 模块的正式实现。
+"""
 
 from __future__ import annotations
 
@@ -36,6 +40,8 @@ from app.db.models import (
 from app.db.session import get_session
 from app.recording.recorder import Recorder
 from app.sources.bilibili.client import BilibiliLiveClient
+
+__all__ = ["get_notifications", "push_notification"]
 
 _NOTIFICATIONS: deque[dict[str, Any]] = deque(maxlen=50)
 _notify_seq = 0

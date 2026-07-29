@@ -47,6 +47,7 @@ def put_llm_providers(req: LLMProvidersRequest) -> dict[str, Any]:
 
 
 @router.post("/llm-providers/test")
-async def test_llm_providers() -> dict[str, Any]:
-    """逐个测试已启用大模型的连通性。"""
-    return await service.test_llm_providers()
+async def test_llm_providers(req: LLMProvidersRequest | None = None) -> dict[str, Any]:
+    """逐个测试当前表单或已保存大模型的连通性，不持久化草稿。"""
+    items = None if req is None else [p.model_dump() for p in req.providers]
+    return await service.test_llm_providers(items)

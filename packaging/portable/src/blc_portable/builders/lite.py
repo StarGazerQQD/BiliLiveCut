@@ -34,7 +34,7 @@ ENGINE_PACK_INFO_PATH = RESOURCES_DIR / "engine_pack_info.json"
 BOOTSTRAP_WHEELS_DIR = PORTABLE_DIR / "dist" / "bootstrap-wheels"
 BOOTSTRAP_WHEELS_CONFIG = PORTABLE_DIR / "locks" / "bootstrap-wheels.json"
 
-RELEASE_VERSION = "0.1.16-alpha"
+RELEASE_VERSION = "0.1.16.1-alpha"
 
 
 def check_bootstrap_wheels(wheel_dir: Path = BOOTSTRAP_WHEELS_DIR) -> dict[str, str]:

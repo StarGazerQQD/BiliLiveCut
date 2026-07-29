@@ -11,9 +11,9 @@ from pathlib import Path
 
 # ── 常量 ──────────────────────────────────────────────────
 APP_NAME = "BiliLiveCut"
-VERSION = "V0.1.16 Alpha"
-RELEASE_VERSION = "0.1.16-alpha"
-SOURCE_COMMIT_SHORT = "0ea5c2a"
+VERSION = "V0.1.16.1 Alpha"
+RELEASE_VERSION = "0.1.16.1-alpha"
+SOURCE_COMMIT_SHORT = "7dbd91d"
 
 
 def get_app_root() -> Path:
