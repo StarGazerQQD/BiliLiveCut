@@ -14,6 +14,7 @@ PLUGIN_API_VERSION = "1"
 
 PluginSettingValue: TypeAlias = str | float | bool | None
 PluginSettingKind: TypeAlias = Literal["text", "number", "boolean", "select", "password"]
+PluginCapability: TypeAlias = Literal["highlight_scorer"]
 
 
 class PluginManifest(BaseModel):
@@ -28,6 +29,7 @@ class PluginManifest(BaseModel):
     entrypoint: str = Field(min_length=3, max_length=180)
     description: str = Field(default="", max_length=500)
     settings_page: bool = True
+    capabilities: tuple[PluginCapability, ...] = ()
 
     @model_validator(mode="after")
     def validate_entrypoint(self) -> PluginManifest:
@@ -38,6 +40,8 @@ class PluginManifest(BaseModel):
             raise ValueError("entrypoint 必须使用 relative_file.py:Symbol 格式")
         if relative.is_absolute() or ".." in relative.parts or relative.suffix != ".py":
             raise ValueError("entrypoint 必须是插件目录内的相对 .py 文件")
+        if len(self.capabilities) != len(set(self.capabilities)):
+            raise ValueError("capabilities 不能重复")
         return self
 
 

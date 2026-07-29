@@ -16,7 +16,7 @@ from enum import StrEnum
 from typing import Any
 
 from sqlalchemy.exc import IntegrityError as _IntegrityError
-from sqlmodel import select
+from sqlmodel import Session, select
 
 from app.analysis import audio as audio_mod
 from app.analysis.keywords import match_keywords
@@ -31,12 +31,16 @@ from app.db.models import (
     ReviewStatus,
     SegmentStatus,
     SegmentTask,
+    SystemLog,
     TaskStatus,
     Transcript,
 )
 from app.db.session import get_session
+from app.pipeline.highlight_plugins import build_highlight_scoring_request
 from app.pipeline.lease import LeaseLostError, TaskLease, still_owns_lease
 from app.pipeline.stage_result import enqueue_next, mark_completed
+from app.plugins.highlight import HighlightDispatch
+from app.plugins.manager import plugin_manager
 
 _logger = logging.getLogger(__name__)
 
@@ -56,6 +60,7 @@ class HighlightDraft:
 
     segment_id: int
     session_id: int
+    room_id: int | None
     decision: HighlightDecision
     score: float | None
     rule_score: float
@@ -69,6 +74,72 @@ class HighlightDraft:
     features_json: str
     initial_status: str
     config_hash: str
+    highlight_plugin: dict[str, object] | None
+
+
+def _dispatch_payload(dispatch: HighlightDispatch | None) -> dict[str, object] | None:
+    """把插件调度结果转换为稳定 JSON 元数据。"""
+    if dispatch is None:
+        return None
+    payload: dict[str, object] = {"plugin_id": dispatch.plugin_id}
+    if dispatch.prediction is not None:
+        payload["prediction"] = dispatch.prediction.to_dict()
+    if dispatch.error is not None:
+        payload["error"] = dispatch.error
+    return payload
+
+
+def _effective_primary_score(rule_score: float, dispatch: HighlightDispatch | None) -> float:
+    """仅让成功的 Champion 结果替换规则主评分。"""
+    prediction = dispatch.prediction if dispatch is not None else None
+    if prediction is not None and prediction.uses_champion:
+        assert prediction.champion_probability is not None
+        return prediction.champion_probability
+    return rule_score
+
+
+def _merge_plugin_metadata(features_json: str, plugin_payload: dict[str, object] | None) -> str:
+    """把插件版本、概率和回退原因写入候选特征。"""
+    if plugin_payload is None:
+        return features_json
+    try:
+        payload = json.loads(features_json)
+    except (json.JSONDecodeError, TypeError):
+        payload = {}
+    if not isinstance(payload, dict):
+        payload = {}
+    payload["highlight_plugin"] = plugin_payload
+    return json.dumps(payload, ensure_ascii=False, allow_nan=False)
+
+
+def _record_plugin_dispatch(db: Session, compute_result: dict[str, Any]) -> None:
+    """在 commit 事务中记录一次插件预测或规则回退。"""
+    raw = compute_result.get("highlight_plugin")
+    if not isinstance(raw, dict):
+        return
+    prediction = raw.get("prediction")
+    error = raw.get("error")
+    if isinstance(prediction, dict) and prediction.get("requested_mode") == "off" and error is None:
+        return
+    context = dict(raw)
+    context.update(
+        {
+            "segment_id": compute_result.get("segment_id"),
+            "session_id": compute_result.get("session_id"),
+            "rule_score": compute_result.get("rule_score"),
+            "final_score": compute_result.get("highlight_score"),
+        }
+    )
+    db.add(
+        SystemLog(
+            level="WARNING" if error else "INFO",
+            module="plugins",
+            room_id=compute_result.get("room_id"),
+            event="highlight_scoring_fallback" if error else "highlight_scoring_prediction",
+            message="高光评分插件不可用，已回退规则评分" if error else "高光评分插件预测完成",
+            context_json=json.dumps(context, ensure_ascii=False, allow_nan=False),
+        )
+    )
 
 
 def analyze_compute(task_id: int) -> dict[str, Any]:
@@ -121,6 +192,7 @@ def commit_highlight(lease: TaskLease, compute_result: dict[str, Any], ms: int) 
             task = db.get(SegmentTask, lease.task_id)
             if task is None:
                 return
+            _record_plugin_dispatch(db, compute_result)
 
             # ── BELOW_THRESHOLD ──────────────────────────
             if decision == HighlightDecision.BELOW_THRESHOLD:
@@ -416,6 +488,7 @@ def _score_segment_draft(segment_id: int) -> dict[str, Any] | None:
             return None
         duration = segment.duration_s or float(settings.segment_duration_s)
         session_id = segment.session_id
+        room_id = room.id if room else None
         threshold = room.highlight_threshold if room else settings.highlight_threshold
         has_transcript = transcript is not None
         text = transcript.text if transcript else ""
@@ -454,29 +527,83 @@ def _score_segment_draft(segment_id: int) -> dict[str, Any] | None:
         trend_score, trend_hits = _trend_score(text)
         features["trend"] = trend_score
     rule_score = weighted_rule_score(features, cfg.weights)
+    plugin_dispatch: HighlightDispatch | None = None
+    if plugin_manager.has_capability("highlight_scorer"):
+        try:
+            request = build_highlight_scoring_request(
+                segment_id,
+                audio_features=feats,
+                rule_score=rule_score,
+            )
+            plugin_dispatch = plugin_manager.score_highlight(request)
+        except (OSError, RuntimeError, TypeError, ValueError) as exc:
+            plugin_dispatch = HighlightDispatch(
+                plugin_id="host",
+                error=f"{type(exc).__name__}: {exc}",
+            )
+            _logger.warning("highlight_plugin_context_fallback segment=%s error=%s", segment_id, exc)
+    plugin_payload = _dispatch_payload(plugin_dispatch)
+    primary_score = _effective_primary_score(rule_score, plugin_dispatch)
 
     _logger.info(
-        "score_draft segment=%s rule=%.3f features=%s kw_hits=%s trend_hits=%s",
+        "score_draft segment=%s rule=%.3f primary=%.3f features=%s kw_hits=%s trend_hits=%s",
         segment_id,
         rule_score,
+        primary_score,
         {k: round(v, 3) for k, v in features.items()},
         kw_hits,
         trend_hits,
     )
 
-    # 2) 初筛 — 不写 DB, 直接返回 None
-    if rule_score < settings.highlight_init_threshold:
-        return None
+    # 2) 初筛 — 不写 DB, 返回显式决策以便 commit 留存插件观测。
+    if primary_score < settings.highlight_init_threshold:
+        return {
+            "decision": HighlightDecision.BELOW_THRESHOLD,
+            "segment_id": segment_id,
+            "session_id": session_id,
+            "room_id": room_id,
+            "score": primary_score,
+            "rule_score": rule_score,
+            "llm_score": 0.0,
+            "highlight_score": primary_score,
+            "start_ts": None,
+            "end_ts": None,
+            "peak_ts": None,
+            "reason": "低于初筛阈值",
+            "dedup_hash": None,
+            "features_json": _merge_plugin_metadata("{}", plugin_payload),
+            "initial_status": CandidateStatus.REJECTED,
+            "config_hash": cfg.model_dump_json() if hasattr(cfg, "model_dump_json") else "",
+            "highlight_plugin": plugin_payload,
+        }
 
     # 3) LLM 复核
     judgement = llm_mod.judge_highlight(text, features)
     llm_score = judgement.score if judgement else None
     reason = judgement.reason if judgement else "规则命中(未启用/未触发 LLM)"
-    highlight_score = fuse_scores(rule_score, llm_score, cfg.alpha, cfg.beta)
+    highlight_score = fuse_scores(primary_score, llm_score, cfg.alpha, cfg.beta)
 
-    # 终分不足 — 不写 DB, 直接返回 None
+    # 终分不足 — 不写 DB, 返回显式决策。
     if highlight_score < threshold:
-        return None
+        return {
+            "decision": HighlightDecision.BELOW_THRESHOLD,
+            "segment_id": segment_id,
+            "session_id": session_id,
+            "room_id": room_id,
+            "score": highlight_score,
+            "rule_score": rule_score,
+            "llm_score": llm_score or 0.0,
+            "highlight_score": highlight_score,
+            "start_ts": None,
+            "end_ts": None,
+            "peak_ts": None,
+            "reason": "低于候选阈值",
+            "dedup_hash": None,
+            "features_json": _merge_plugin_metadata("{}", plugin_payload),
+            "initial_status": CandidateStatus.REJECTED,
+            "config_hash": cfg.model_dump_json() if hasattr(cfg, "model_dump_json") else "",
+            "highlight_plugin": plugin_payload,
+        }
 
     # 4) 边界吸附
     peak_off = feats.peak_offset()
@@ -505,6 +632,7 @@ def _score_segment_draft(segment_id: int) -> dict[str, Any] | None:
             "decision": HighlightDecision.DUPLICATE,
             "segment_id": segment_id,
             "session_id": session_id,
+            "room_id": room_id,
             "dedup_hash": dedup_hash_val,
             "score": highlight_score,
             "rule_score": rule_score,
@@ -514,9 +642,10 @@ def _score_segment_draft(segment_id: int) -> dict[str, Any] | None:
             "end_ts": end_ts.isoformat(),
             "peak_ts": peak_ts.isoformat(),
             "reason": "去重: IoU over threshold",
-            "features_json": "{}",
+            "features_json": _merge_plugin_metadata("{}", plugin_payload),
             "initial_status": CandidateStatus.REJECTED,
             "config_hash": cfg.model_dump_json() if hasattr(cfg, "model_dump_json") else "",
+            "highlight_plugin": plugin_payload,
         }
 
     # 6) 审核状态
@@ -529,14 +658,17 @@ def _score_segment_draft(segment_id: int) -> dict[str, Any] | None:
 
     danmaku_explain = danmaku_score_explain(session_id, seg_start_ts, seg_end_ts)
 
-    features_json = json.dumps(
-        {
-            "features": features,
-            "keyword_hits": kw_hits,
-            "audio": _audio_meta(feats),
-            "danmaku_explain": danmaku_explain,
-        },
-        ensure_ascii=False,
+    features_json = _merge_plugin_metadata(
+        json.dumps(
+            {
+                "features": features,
+                "keyword_hits": kw_hits,
+                "audio": _audio_meta(feats),
+                "danmaku_explain": danmaku_explain,
+            },
+            ensure_ascii=False,
+        ),
+        plugin_payload,
     )
 
     dedup_hash_val = hashlib.sha1(
@@ -547,6 +679,7 @@ def _score_segment_draft(segment_id: int) -> dict[str, Any] | None:
         "decision": HighlightDecision.CANDIDATE,
         "segment_id": segment_id,
         "session_id": session_id,
+        "room_id": room_id,
         "peak_ts": peak_ts,
         "start_ts": start_ts,
         "end_ts": end_ts,
@@ -559,6 +692,7 @@ def _score_segment_draft(segment_id: int) -> dict[str, Any] | None:
         "dedup_hash": dedup_hash_val,
         "score": highlight_score,
         "config_hash": cfg.model_dump_json() if hasattr(cfg, "model_dump_json") else "",
+        "highlight_plugin": plugin_payload,
     }
 
 

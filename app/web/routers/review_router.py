@@ -573,11 +573,21 @@ def undo_review_action(candidate_id: int, request: Request) -> dict:
             candidate_id=candidate_id,
             details={"undone_action": snapshot.get("action")},
         )
+        restored_review_status = event.review_status
+        adjusted_start_ts = event.adjusted_start_ts
+        adjusted_end_ts = event.adjusted_end_ts
+    from app.pipeline.highlight_feedback import record_candidate_review_feedback
+
+    record_candidate_review_feedback(
+        candidate_id,
+        decision=restored_review_status,
+        reviewed_by=actor,
+    )
     return {
         "undone": snapshot.get("action"),
-        "review_status": event.review_status,
-        "adjusted_start_ts": event.adjusted_start_ts.isoformat() if event.adjusted_start_ts else None,
-        "adjusted_end_ts": event.adjusted_end_ts.isoformat() if event.adjusted_end_ts else None,
+        "review_status": restored_review_status,
+        "adjusted_start_ts": adjusted_start_ts.isoformat() if adjusted_start_ts else None,
+        "adjusted_end_ts": adjusted_end_ts.isoformat() if adjusted_end_ts else None,
     }
 
 
@@ -777,6 +787,13 @@ def submit_review(
             details={"decision": decision, "reason": reason},
         )
 
+    from app.pipeline.highlight_feedback import record_candidate_review_feedback
+
+    record_candidate_review_feedback(
+        candidate_id,
+        decision=decision,
+        reviewed_by=actor,
+    )
     return {"status": decision, "reason": reason}
 
 

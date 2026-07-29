@@ -25,7 +25,8 @@ storage/plugins/
   "api_version": "1",
   "entrypoint": "main.py:Plugin",
   "description": "插件说明",
-  "settings_page": true
+  "settings_page": true,
+  "capabilities": []
 }
 ```
 
@@ -33,6 +34,7 @@ storage/plugins/
 - `api_version`：必须与 `app.plugins.PLUGIN_API_VERSION` 一致；当前为 `1`。
 - `entrypoint`：插件目录内的相对 Python 文件与零参数工厂/类，格式为 `file.py:Symbol`。绝对路径、`..`、符号链接入口会被拒绝。
 - `settings_page`：是否显示“进入设置”按钮。设置页面由宿主根据插件声明的 Schema 安全渲染。
+- `capabilities`：插件提供的可选业务能力。当前支持 `highlight_scorer`；同一时间只允许启用一个高光评分提供者。
 
 完整 JSON Schema 见 [`manifest.schema.json`](manifest.schema.json)，可运行示例见 [`example/`](example/)。
 
@@ -77,6 +79,54 @@ context.set_setting("last_cursor", "abc123")
 ```
 
 插件不得依赖 `app.plugins.manager` 的私有实现。跨 API 主版本不保证兼容；发布新主版本时插件应更新清单并重新验证。
+
+入口可以导入插件目录中的自有包，例如 `from my_plugin import service`。宿主会在入口执行期间把当前插件目录加入模块搜索路径，并在停用时清理本次加载的插件模块；包名应使用项目专属前缀，避免和其他插件冲突。
+
+## 高光评分能力
+
+高光模型插件在清单中声明 `"capabilities": ["highlight_scorer"]`，并在入口对象上实现同步方法：
+
+```python
+from app.plugins import (
+    BasePlugin,
+    HighlightFeedback,
+    HighlightScoringRequest,
+    HighlightScoringResult,
+)
+
+
+class Plugin(BasePlugin):
+    def score_highlight(self, request: HighlightScoringRequest) -> HighlightScoringResult:
+        return HighlightScoringResult(
+            requested_mode="shadow",
+            effective_mode="shadow",
+            shadow_version=1,
+            shadow_probability=0.75,
+        )
+
+    def record_highlight_feedback(self, feedback: HighlightFeedback) -> None:
+        # 此处省略存储实现：相同 sample_id 必须幂等覆盖，
+        # label=None 表示删除旧训练标签。
+        ...
+```
+
+`HighlightScoringRequest` 只包含无 ORM 的只读数据：片段/会话/房间标识、时间边界、转写、词时间戳、弹幕窗口、聚合音频特征、辅助 ASR 特征、规则分和房间级模式覆盖。插件不得自行读取主程序数据库。
+
+`HighlightScoringResult` 支持 `off`、`shadow` 和 `champion`：
+
+- `off`：不执行模型；
+- `shadow`：记录模型概率，但不改变主评分；
+- `champion`：`champion_probability` 替换规则主评分，再进入原有 LLM 融合和审核阈值；
+- 插件抛出异常、返回错误类型或无效概率时，宿主记录回退信息并继续使用规则分。
+
+声明 `highlight_scorer` 的插件还必须实现 `record_highlight_feedback(feedback)`。宿主在人工审核事务提交后，把产生该预测的插件 ID、稳定 `sample_id`、标签、审核来源、Schema 身份和预测时保存的特征快照传回原插件：
+
+- 明确批准返回 `label=1`；
+- `rejected` 或 `not_exciting` 返回 `label=0`；
+- 保留、素材/边界问题及撤销返回 `label=None`，插件必须删除相同 `sample_id` 的旧训练样本；
+- 插件未启用、特征快照不可审计或反馈写入失败时，不回滚已提交的人工审核，宿主会记录隔离错误。
+
+高光评分是同步 Worker 接口，不得在方法中启动未受控后台任务或执行无超时网络请求。训练、模型下载和大规模数据处理应在评分路径之外完成。
 
 ## 安装、启停与设置
 

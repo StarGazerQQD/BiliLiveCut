@@ -21,10 +21,19 @@ from app.core.settings_store import get_bool, get_setting, set_bool, set_setting
 from app.plugins.contracts import (
     PLUGIN_API_VERSION,
     BiliLiveCutPlugin,
+    PluginCapability,
     PluginContext,
     PluginManifest,
     PluginSetting,
     PluginSettingValue,
+)
+from app.plugins.highlight import (
+    HighlightDispatch,
+    HighlightFeedback,
+    HighlightFeedbackDispatch,
+    HighlightScoringPlugin,
+    HighlightScoringRequest,
+    HighlightScoringResult,
 )
 
 _MAX_MANIFEST_BYTES = 64 * 1024
@@ -55,6 +64,7 @@ class _PluginRecord:
     instance: BiliLiveCutPlugin | None = None
     schema: tuple[PluginSetting, ...] = ()
     module_name: str | None = None
+    module_names: tuple[str, ...] = ()
     error: str | None = None
 
     @property
@@ -194,6 +204,63 @@ class PluginManager:
             self._write_setting(plugin_id, key, value)
         return self.settings_payload(plugin_id)
 
+    def score_highlight(self, request: HighlightScoringRequest) -> HighlightDispatch | None:
+        """调用唯一已启用的高光评分插件，并隔离第三方异常。"""
+        providers = [
+            record
+            for record in self._records.values()
+            if record.loaded and "highlight_scorer" in record.manifest.capabilities
+        ]
+        if not providers:
+            return None
+        record = providers[0]
+        instance = record.instance
+        if instance is None or not isinstance(instance, HighlightScoringPlugin):
+            return HighlightDispatch(plugin_id=record.manifest.id, error="已启用插件不满足高光评分契约")
+        try:
+            prediction = instance.score_highlight(request)
+            if not isinstance(prediction, HighlightScoringResult):
+                raise TypeError("score_highlight 必须返回 HighlightScoringResult")
+            return HighlightDispatch(plugin_id=record.manifest.id, prediction=prediction)
+        except Exception as exc:
+            error = f"{type(exc).__name__}: {exc}"
+            logger.opt(exception=exc).warning(
+                "高光评分插件失败，已回退规则评分: plugin={} segment={}",
+                record.manifest.id,
+                request.segment_id,
+            )
+            return HighlightDispatch(plugin_id=record.manifest.id, error=error)
+
+    def record_highlight_feedback(self, feedback: HighlightFeedback) -> HighlightFeedbackDispatch:
+        """把人工审核反馈投递给产生该预测的已启用插件，并隔离异常。"""
+        record = self._records.get(feedback.plugin_id)
+        if record is None or not record.loaded or "highlight_scorer" not in record.manifest.capabilities:
+            return HighlightFeedbackDispatch(
+                plugin_id=feedback.plugin_id,
+                error="产生该预测的高光评分插件当前未启用",
+            )
+        instance = record.instance
+        if instance is None or not isinstance(instance, HighlightScoringPlugin):
+            return HighlightFeedbackDispatch(
+                plugin_id=feedback.plugin_id,
+                error="已启用插件不满足高光评分反馈契约",
+            )
+        try:
+            instance.record_highlight_feedback(feedback)
+            return HighlightFeedbackDispatch(plugin_id=feedback.plugin_id, delivered=True)
+        except Exception as exc:
+            error = f"{type(exc).__name__}: {exc}"
+            logger.opt(exception=exc).warning(
+                "高光评分插件反馈写入失败: plugin={} candidate={}",
+                feedback.plugin_id,
+                feedback.candidate_id,
+            )
+            return HighlightFeedbackDispatch(plugin_id=feedback.plugin_id, error=error)
+
+    def has_capability(self, capability: PluginCapability) -> bool:
+        """返回当前是否有已加载的指定能力提供者。"""
+        return any(record.loaded and capability in record.manifest.capabilities for record in self._records.values())
+
     def _discover(self) -> _Discovery:
         result = _Discovery()
         root = self.root
@@ -225,9 +292,11 @@ class PluginManager:
 
     async def _activate(self, record: _PluginRecord) -> None:
         module_name: str | None = None
+        module_names: tuple[str, ...] = ()
         instance: BiliLiveCutPlugin | None = None
         try:
-            instance, module_name = self._load_instance(record)
+            instance, module_name, module_names = self._load_instance(record)
+            self._validate_capabilities(record, instance)
             schema = self._validate_schema(instance.settings_schema)
             outcome = instance.on_enable(self._context(record))
             if inspect.isawaitable(outcome):
@@ -235,6 +304,7 @@ class PluginManager:
             record.instance = instance
             record.schema = schema
             record.module_name = module_name
+            record.module_names = module_names
             record.error = None
             logger.info("插件已启用: {} {}", record.manifest.id, record.manifest.version)
         except Exception as exc:
@@ -248,9 +318,10 @@ class PluginManager:
             record.instance = None
             record.schema = ()
             record.error = str(exc)
-            if module_name:
-                sys.modules.pop(module_name, None)
+            for imported_name in module_names:
+                sys.modules.pop(imported_name, None)
             record.module_name = None
+            record.module_names = ()
             if isinstance(exc, PluginError):
                 raise
             raise PluginStateError(f"插件 {record.manifest.id} 启用失败: {exc}") from exc
@@ -268,11 +339,12 @@ class PluginManager:
             record.error = f"停用钩子失败: {exc}"
             logger.error("插件 {} 停用钩子失败: {}", record.manifest.id, exc)
         finally:
-            if record.module_name:
-                sys.modules.pop(record.module_name, None)
-                record.module_name = None
+            for imported_name in record.module_names:
+                sys.modules.pop(imported_name, None)
+            record.module_name = None
+            record.module_names = ()
 
-    def _load_instance(self, record: _PluginRecord) -> tuple[BiliLiveCutPlugin, str]:
+    def _load_instance(self, record: _PluginRecord) -> tuple[BiliLiveCutPlugin, str, tuple[str, ...]]:
         relative_path, _, symbol = record.manifest.entrypoint.partition(":")
         root = record.directory.resolve()
         candidate = root / relative_path
@@ -291,18 +363,67 @@ class PluginManager:
         if spec is None or spec.loader is None:
             raise PluginValidationError("无法创建插件模块加载器")
         module = importlib.util.module_from_spec(spec)
+        previous_modules = set(sys.modules)
         sys.modules[module_name] = module
+        root_entry = str(root)
+        sys.path.insert(0, root_entry)
         try:
             self._execute_module(spec.loader, module)
             factory = getattr(module, symbol)
             instance = factory()
         except Exception:
-            sys.modules.pop(module_name, None)
+            for imported_name in self._module_names_from_root(root, previous_modules):
+                sys.modules.pop(imported_name, None)
             raise
+        finally:
+            if sys.path and sys.path[0] == root_entry:
+                sys.path.pop(0)
+            else:
+                try:
+                    sys.path.remove(root_entry)
+                except ValueError:
+                    pass
+        module_names = self._module_names_from_root(root, previous_modules)
         if not isinstance(instance, BiliLiveCutPlugin):
-            sys.modules.pop(module_name, None)
+            for imported_name in module_names:
+                sys.modules.pop(imported_name, None)
             raise PluginValidationError("入口对象不满足 BiliLiveCutPlugin 契约")
-        return cast(BiliLiveCutPlugin, instance), module_name
+        return cast(BiliLiveCutPlugin, instance), module_name, module_names
+
+    @staticmethod
+    def _module_names_from_root(root: Path, previous_modules: set[str]) -> tuple[str, ...]:
+        """返回本次入口加载中新导入且来源位于插件目录的模块名。"""
+        names: list[str] = []
+        for name in set(sys.modules).difference(previous_modules):
+            module = sys.modules.get(name)
+            raw_path = getattr(module, "__file__", None)
+            if not isinstance(raw_path, str):
+                continue
+            try:
+                Path(raw_path).resolve().relative_to(root)
+            except (OSError, ValueError):
+                continue
+            names.append(name)
+        return tuple(sorted(names))
+
+    def _validate_capabilities(self, record: _PluginRecord, instance: BiliLiveCutPlugin) -> None:
+        """校验声明能力的接口形状及单提供者约束。"""
+        if "highlight_scorer" not in record.manifest.capabilities:
+            return
+        if not isinstance(instance, HighlightScoringPlugin):
+            raise PluginValidationError(
+                "声明 highlight_scorer 的插件必须实现 score_highlight(request) 和 record_highlight_feedback(feedback)"
+            )
+        conflict = next(
+            (
+                other.manifest.id
+                for other in self._records.values()
+                if other is not record and other.loaded and "highlight_scorer" in other.manifest.capabilities
+            ),
+            None,
+        )
+        if conflict is not None:
+            raise PluginStateError(f"高光评分提供者已启用: {conflict}")
 
     @staticmethod
     def _execute_module(loader: object, module: ModuleType) -> None:
@@ -416,6 +537,7 @@ class PluginManager:
             "name": manifest.name,
             "version": manifest.version,
             "api_version": manifest.api_version,
+            "capabilities": list(manifest.capabilities),
             "description": manifest.description,
             "enabled": record.enabled,
             "loaded": record.loaded,

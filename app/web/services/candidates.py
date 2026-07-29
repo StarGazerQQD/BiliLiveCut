@@ -14,15 +14,17 @@ from app.db.models import (
     CandidateStatus,
     HighlightCandidate,
     RecordingSession,
+    ReviewStatus,
 )
 from app.db.session import get_session
 
 
-def set_candidate_status(candidate_id: int, status: str) -> None:
+def set_candidate_status(candidate_id: int, status: str, *, reviewed_by: str = "web_admin") -> None:
     """设置候选状态(审核:批准/拒绝),并记录阈值自学习反馈。
 
     :param candidate_id: 候选 id。
     :param status: 新状态。
+    :param reviewed_by: 发起人工决策的审核者。
     :raises ValueError: 候选不存在时。
     """
     with get_session() as db:
@@ -30,6 +32,7 @@ def set_candidate_status(candidate_id: int, status: str) -> None:
         if cand is None:
             raise ValueError(f"候选不存在: id={candidate_id}")
         cand.status = status
+        session_id = cand.session_id
         db.add(cand)
 
     # V0.1.2:记录阈值自学习反馈。
@@ -39,18 +42,27 @@ def set_candidate_status(candidate_id: int, status: str) -> None:
 
             action = "approved" if status == CandidateStatus.APPROVED else "rejected"
             with get_session() as db:
-                session = db.get(RecordingSession, cand.session_id)
+                session = db.get(RecordingSession, session_id)
                 if session is not None:
                     tl.record_feedback(session.room_id, candidate_id, action)
                     # 尝试自动调整阈值。
                     tl.apply_threshold_if_changed(session.room_id)
         except Exception as exc:  # noqa: BLE001
             logger.warning("阈值自学习反馈记录失败: {}", exc)
+        from app.pipeline.highlight_feedback import record_candidate_review_feedback
+
+        decision = ReviewStatus.APPROVED_SOLO if status == CandidateStatus.APPROVED else ReviewStatus.REJECTED
+        record_candidate_review_feedback(
+            candidate_id,
+            decision=decision,
+            reviewed_by=reviewed_by,
+        )
 
 
 def approve_candidate_sync(
     candidate_id: int,
     *,
+    reviewed_by: str = "web_admin",
     progress_callback: Callable[[int, str], None] | None = None,
     cancel_check: Callable[[], bool] | None = None,
 ) -> int | None:
@@ -60,6 +72,7 @@ def approve_candidate_sync(
     fallback 路径也同步更新 Task 状态。
 
     :param candidate_id: 候选 id。
+    :param reviewed_by: 发起人工批准的审核者。
     :param progress_callback: 可选的作业进度回调。
     :param cancel_check: 可选的取消检查。
     :returns: 生成的 clip_id;失败返回 ``None``。
@@ -67,7 +80,10 @@ def approve_candidate_sync(
     from app.db.models import HighlightEvent, SegmentTask
     from app.db.models import TaskStatus as _Ts
     from app.pipeline.approval import approve_event_and_task
+    from app.pipeline.highlight_feedback import record_candidate_review_feedback
 
+    feedback_recorded = False
+    approved_via_event = False
     with get_session() as db:
         # 查找关联 task 和 event
         task = db.exec(
@@ -85,10 +101,10 @@ def approve_candidate_sync(
 
         # V0.1.12.8: 统一审批, 传入外层 db session
         if task is not None and event is not None:
-            approve_event_and_task(
+            approved_via_event = approve_event_and_task(
                 task_id=task.id,
                 event_id=event.id,
-                approved_by="web_admin",
+                approved_by=reviewed_by,
                 reason=None,
                 source="human",
                 review_decision="approved_solo",
@@ -96,10 +112,18 @@ def approve_candidate_sync(
             )
         else:
             # fallback: 更新 Candidate + Task 状态
-            set_candidate_status(candidate_id, CandidateStatus.APPROVED)
+            set_candidate_status(candidate_id, CandidateStatus.APPROVED, reviewed_by=reviewed_by)
+            feedback_recorded = True
             if task is not None:
                 task.stage = _Ts.APPROVED
                 db.add(task)
+
+    if approved_via_event and not feedback_recorded:
+        record_candidate_review_feedback(
+            candidate_id,
+            decision=ReviewStatus.APPROVED_SOLO,
+            reviewed_by=reviewed_by,
+        )
 
     from app.pipeline.orchestrator import produce_clip
 
