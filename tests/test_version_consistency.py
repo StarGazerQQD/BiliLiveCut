@@ -103,6 +103,33 @@ def test_version_json_is_valid() -> None:
     assert cfg["compatible_python"]["max_validated"] in ("3.12",)
 
 
+def test_portable_source_identity_matches_version_metadata() -> None:
+    """Payload、模型锁与运行时发布元数据必须引用同一源码基线。"""
+    cfg = _load_version_json()
+    source_full = cfg["source_commit_full"]
+    source_short = cfg["source_commit_short"]
+    portable_dir = REPO_ROOT / "packaging" / "portable"
+
+    assert source_short == source_full[:7]
+
+    model_lock = json.loads((portable_dir / "config" / "model_sources.lock.json").read_text(encoding="utf-8"))
+    assert model_lock["source_commit"] == source_full
+
+    backports = json.loads((portable_dir / "backports" / "backports.json").read_text(encoding="utf-8"))
+    assert backports["source_commit"] == source_full
+
+    manifest_content = (portable_dir / "src" / "blc_portable" / "payload" / "manifest.py").read_text(encoding="utf-8")
+    assert f'SOURCE_COMMIT_FULL = "{source_full}"' in manifest_content
+    assert f'SOURCE_COMMIT_SHORT = "{source_short}"' in manifest_content
+
+    release_content = (REPO_ROOT / "app" / "_portable_release.py").read_text(encoding="utf-8")
+    assert f'SOURCE_COMMIT: str = "{source_full}"' in release_content
+    assert f'SOURCE_COMMIT_SHORT: str = "{source_short}"' in release_content
+
+    engine_pack_info = json.loads((portable_dir / "resources" / "engine_pack_info.json").read_text(encoding="utf-8"))
+    assert engine_pack_info["source_commit"] == source_full
+
+
 def test_runtime_release_id_contains_payload_hash() -> None:
     """验证 Runtime installer 支持内容寻址 Release ID。"""
     installer_path = REPO_ROOT / "packaging" / "portable" / "src" / "blc_portable" / "runtime" / "installer.py"
