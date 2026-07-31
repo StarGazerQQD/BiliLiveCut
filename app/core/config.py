@@ -66,6 +66,12 @@ class Settings(BaseSettings):
     reconnect_max_backoff_s: int = Field(default=30, ge=1)
     live_poll_interval_s: int = Field(default=15, ge=5)
     collect_danmaku: bool = True  # 录制期间是否同时采集弹幕
+    # 单场录制使用登录 Cookie 获取弹幕 token 的最大失败次数（首次计入）；0=始终匿名。
+    danmaku_login_retry_max_attempts: int = Field(default=5, ge=0, le=100)
+    # 登录访问失败后，保持匿名采集并按此间隔后台重试登录链路。
+    danmaku_login_retry_interval_s: float = Field(default=60.0, ge=1.0, le=3600.0)
+    # 未显式指定 --pipeline/--no-pipeline 时，录制是否启用实时转写与高光分析。
+    recording_pipeline_enabled: bool = True
 
     # ---------- Bilibili 合规 ----------
     require_authorization: bool = True

@@ -2,6 +2,13 @@
 
 from __future__ import annotations
 
+from typing import TYPE_CHECKING
+
+import pytest
+
+if TYPE_CHECKING:
+    from _pytest.monkeypatch import MonkeyPatch
+
 
 def test_get_cookie_runs_and_returns_str() -> None:
     """get_bilibili_cookie returns a string through the settings chain."""
@@ -38,6 +45,8 @@ def test_settings_fields_boundary_values() -> None:
     assert 5 <= s.segment_duration_s <= 600
     assert s.reconnect_max_backoff_s >= 1
     assert s.live_poll_interval_s >= 5
+    assert s.danmaku_login_retry_max_attempts == 5
+    assert s.danmaku_login_retry_interval_s == 60.0
     assert s.asr_primary_max_concurrency >= 1
     assert s.asr_auxiliary_max_concurrency >= 1
     assert s.asr_review_max_concurrency >= 1
@@ -45,6 +54,41 @@ def test_settings_fields_boundary_values() -> None:
     # Check all devices default to cpu
     for attr in ("asr_primary_device", "asr_auxiliary_device", "asr_review_device", "asr_fallback_device"):
         assert getattr(s, attr) == "cpu"
+
+
+def test_danmaku_login_retry_settings_are_configurable(monkeypatch: MonkeyPatch) -> None:
+    """登录重试次数与间隔应能由环境变量配置并执行字段边界校验。"""
+    from pydantic import ValidationError
+
+    from app.core.config import Settings
+
+    monkeypatch.setenv("DANMAKU_LOGIN_RETRY_MAX_ATTEMPTS", "7")
+    monkeypatch.setenv("DANMAKU_LOGIN_RETRY_INTERVAL_S", "12.5")
+    configured = Settings(_env_file=None)
+
+    assert configured.danmaku_login_retry_max_attempts == 7
+    assert configured.danmaku_login_retry_interval_s == 12.5
+
+    with pytest.raises(ValidationError):
+        Settings(_env_file=None, danmaku_login_retry_max_attempts=-1)
+    with pytest.raises(ValidationError):
+        Settings(_env_file=None, danmaku_login_retry_interval_s=0.5)
+
+
+def test_recording_pipeline_env_and_runtime_override(temp_db: None, monkeypatch: MonkeyPatch) -> None:
+    """实时转写默认值来自环境配置，控制台运行时设置可覆盖。"""
+    from app.core import settings_store
+    from app.core.config import Settings, settings
+
+    monkeypatch.setenv("RECORDING_PIPELINE_ENABLED", "false")
+    configured = Settings(_env_file=None)
+    assert configured.recording_pipeline_enabled is False
+
+    monkeypatch.setattr(settings, "recording_pipeline_enabled", False)
+    assert settings_store.recording_pipeline_enabled() is False
+
+    settings_store.set_bool("recording_pipeline_enabled", True)
+    assert settings_store.recording_pipeline_enabled() is True
 
 
 def test_db_session_context_manager(temp_db: None) -> None:

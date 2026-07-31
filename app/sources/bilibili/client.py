@@ -24,6 +24,8 @@ from enum import Enum
 import httpx
 from loguru import logger
 
+from app.sources.bilibili.wbi import WbiKeys, sign_wbi_params
+
 # B 站要求合理的 Referer;否则部分接口会拒绝或返回受限数据。
 _DEFAULT_HEADERS = {
     "User-Agent": (
@@ -37,6 +39,8 @@ _DEFAULT_HEADERS = {
 _ROOM_INIT_URL = "https://api.live.bilibili.com/room/v1/Room/room_init"
 _PLAY_INFO_URL = "https://api.live.bilibili.com/xlive/web-room/v2/index/getRoomPlayInfo"
 _DANMU_INFO_URL = "https://api.live.bilibili.com/xlive/web-room/v1/index/getDanmuInfo"
+_WBI_NAV_URL = "https://api.bilibili.com/x/web-interface/nav"
+_LIVE_WEB_LOCATION = "444.8"
 
 # 从形如 https://live.bilibili.com/123?xxx 的 URL 中提取房间号。
 _ROOM_ID_RE = re.compile(r"live\.bilibili\.com/(?:h5/)?(\d+)")
@@ -51,6 +55,7 @@ class HttpErrorType(Enum):
 
     RATE_LIMITED = "rate_limited"
     PRECONDITION_FAILED = "precondition_failed"
+    RISK_CONTROL = "risk_control"
     COOKIE_EXPIRED = "cookie_expired"
     ACCOUNT_BANNED = "account_banned"
 
@@ -230,14 +235,14 @@ class BilibiliLiveClient:
         """关闭底层 HTTP 连接。"""
         await self._client.aclose()
 
-    async def _get_json(self, url: str, params: dict[str, object]) -> dict:
-        """发起 GET 请求并校验 B 站统一返回结构 ``{code, message, data}``。
+    async def _request_payload(self, url: str, params: dict[str, object] | None = None) -> dict:
+        """发起 GET 请求并返回 B 站统一响应体。
 
         :param url: 接口地址。
-        :param params: 查询参数。
-        :returns: ``data`` 字段(dict)。
-        :raises BilibiliError: HTTP 错误或业务 ``code != 0`` 时。
-        :raises BilibiliRateLimitError: 触发风控/限流/登录态失效时。
+        :param params: 可选查询参数。
+        :returns: 完整响应体字典。
+        :raises BilibiliError: HTTP 或 JSON 响应无效时。
+        :raises BilibiliRateLimitError: HTTP 层触发风控/限流时。
         """
         try:
             resp = await self._client.get(url, params=params)
@@ -267,7 +272,24 @@ class BilibiliLiveClient:
         except httpx.HTTPError as exc:
             raise BilibiliError(f"请求失败 {url}: {exc}") from exc
 
-        payload = resp.json()
+        try:
+            payload = resp.json()
+        except ValueError as exc:
+            raise BilibiliError(f"接口返回了无效 JSON {url}") from exc
+        if not isinstance(payload, dict):
+            raise BilibiliError(f"接口返回结构无效 {url}")
+        return payload
+
+    async def _get_json(self, url: str, params: dict[str, object]) -> dict:
+        """发起 GET 请求并校验 B 站统一返回结构 ``{code, message, data}``。
+
+        :param url: 接口地址。
+        :param params: 查询参数。
+        :returns: ``data`` 字段(dict)。
+        :raises BilibiliError: HTTP 错误或业务 ``code != 0`` 时。
+        :raises BilibiliRateLimitError: 触发风控/限流/登录态失效时。
+        """
+        payload = await self._request_payload(url, params)
         code = payload.get("code")
 
         # 业务级错误码分类处理。
@@ -276,6 +298,11 @@ class BilibiliLiveClient:
                 HttpErrorType.COOKIE_EXPIRED,
                 f"未登录或 cookie 已过期, code=-101 message={payload.get('message')!r}",
             )
+        if code == -352:
+            raise BilibiliRateLimitError(
+                HttpErrorType.RISK_CONTROL,
+                f"接口触发平台风控, code=-352 message={payload.get('message')!r}",
+            )
         if code == -412:
             raise BilibiliRateLimitError(
                 HttpErrorType.ACCOUNT_BANNED,
@@ -283,7 +310,30 @@ class BilibiliLiveClient:
             )
         if code != 0:
             raise BilibiliError(f"接口返回错误 code={code} message={payload.get('message')!r}")
-        return payload.get("data", {})
+        data = payload.get("data", {})
+        return data if isinstance(data, dict) else {}
+
+    async def _get_wbi_keys(self) -> WbiKeys:
+        """匿名读取网页当前使用的 WBI 图片键。
+
+        导航接口在未登录时会返回 ``code=-101``，但仍会在 ``data.wbi_img``
+        提供公开图片键；这里仅消费该字段，不把未登录视为错误。
+
+        :returns: 当前 WBI 图片键。
+        :raises BilibiliError: 响应缺少或包含无效键时。
+        """
+        payload = await self._request_payload(_WBI_NAV_URL)
+        code = payload.get("code")
+        if code not in {0, -101}:
+            raise BilibiliError(f"WBI 导航接口返回错误 code={code} message={payload.get('message')!r}")
+        data = payload.get("data")
+        wbi_img = data.get("wbi_img") if isinstance(data, dict) else None
+        if not isinstance(wbi_img, dict):
+            raise BilibiliError("WBI 导航响应缺少 wbi_img")
+        try:
+            return WbiKeys.from_urls(str(wbi_img.get("img_url", "")), str(wbi_img.get("sub_url", "")))
+        except ValueError as exc:
+            raise BilibiliError("WBI 导航响应包含无效图片键") from exc
 
     async def get_room_info(self, input_url: str) -> RoomInfo:
         """解析房间号并归一化为真实房间信息。
@@ -342,15 +392,29 @@ class BilibiliLiveClient:
         return streams
 
     async def get_danmaku_server(self, room_id: int) -> DanmakuServer:
-        """获取弹幕长连接服务器与鉴权 token。
+        """按直播网页请求格式获取弹幕服务器与鉴权 token。
+
+        是否携带登录 Cookie 由构造当前客户端时的 ``cookie`` 参数决定；
+        WBI 签名流程在登录与匿名模式下保持一致。
 
         :param room_id: 真实房间号。
         :returns: :class:`DanmakuServer`。
         :raises BilibiliError: 接口调用失败时。
         """
-        data = await self._get_json(_DANMU_INFO_URL, {"id": room_id, "type": 0})
+        keys = await self._get_wbi_keys()
+        params = sign_wbi_params(
+            {"id": room_id, "type": 0, "web_location": _LIVE_WEB_LOCATION},
+            keys,
+        )
+        data = await self._get_json(_DANMU_INFO_URL, params)
         hosts = data.get("host_list") or []
-        return DanmakuServer(token=data.get("token", ""), hosts=hosts)
+        token = str(data.get("token", ""))
+        if not token:
+            raise BilibiliError("弹幕 token 响应缺少 token")
+        return DanmakuServer(
+            token=token,
+            hosts=[host for host in hosts if isinstance(host, dict)],
+        )
 
     @staticmethod
     def _parse_play_info(data: dict) -> list[StreamInfo]:

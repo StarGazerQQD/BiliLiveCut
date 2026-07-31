@@ -36,7 +36,7 @@ def test_cli_module_entrypoint_dispatches_commands() -> None:
     )
 
     assert result.returncode == 0, result.stderr
-    assert "BiliLiveCut 0.1.16.1-alpha" in result.stdout
+    assert "BiliLiveCut 0.1.16.2-alpha" in result.stdout
 
 
 def test_cli_help_preserves_dependency_hints_and_current_doctor_text() -> None:
@@ -51,8 +51,8 @@ def test_cli_help_preserves_dependency_hints_and_current_doctor_text() -> None:
     assert "V0.1.13" not in result.output
 
 
-def test_record_pipeline_persists_scheduler_switches(temp_db: None, monkeypatch) -> None:  # noqa: ANN001
-    """CLI 显式流水线参数应同步房间开关并把 db_id 传给回调。"""
+def test_record_pipeline_default_persists_scheduler_switches(temp_db: None, monkeypatch) -> None:  # noqa: ANN001
+    """CLI 未显式传参时应读取全局默认值并把 db_id 传给回调。"""
     from app.commands import record as record_cmd
     from app.db.models import LiveRoom
     from app.db.session import get_session
@@ -77,9 +77,10 @@ def test_record_pipeline_persists_scheduler_switches(temp_db: None, monkeypatch)
         coro.close()
 
     monkeypatch.setattr("app.pipeline.orchestrator.make_pipeline_callback", fake_callback)
+    monkeypatch.setattr("app.core.settings_store.recording_pipeline_enabled", lambda: True)
     monkeypatch.setattr(record_cmd.asyncio, "run", fake_run)
 
-    record_cmd.cmd_record(db_id, pipeline=True, produce=True)
+    record_cmd.cmd_record(db_id, pipeline=None, produce=True)
 
     with get_session() as db:
         updated = db.get(LiveRoom, db_id)

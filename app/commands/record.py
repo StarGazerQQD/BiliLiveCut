@@ -124,10 +124,10 @@ def cmd_check(url: str = typer.Argument(..., help="直播间 URL 或房间号"))
 
 def cmd_record(
     db_id: int = typer.Argument(..., help="直播间在数据库中的 db_id(见 list-rooms)"),
-    pipeline: bool = typer.Option(
-        False,
-        "--pipeline",
-        help="录制的同时实时转写并做高光评分(阶段2)；需安装 asr 可选依赖",
+    pipeline: bool | None = typer.Option(
+        None,
+        "--pipeline/--no-pipeline",
+        help="覆盖录制实时转写/高光分析默认值；未指定时读取运行时开关或 RECORDING_PIPELINE_ENABLED",
     ),
     produce: bool = typer.Option(
         False,
@@ -138,10 +138,13 @@ def cmd_record(
     """对指定直播间开始录制,直到 Ctrl+C 停止。
 
     :param db_id: ``live_rooms`` 主键。
-    :param pipeline: 是否在录制同时启用转写+高光分析流水线。
+    :param pipeline: 是否在录制同时启用转写+高光分析流水线；``None`` 使用全局默认值。
     :param produce: 是否在产生候选后自动切片与生成文案。
     """
-    if produce and not pipeline:
+    from app.core import settings_store
+
+    pipeline_enabled = settings_store.recording_pipeline_enabled() if pipeline is None else pipeline
+    if produce and not pipeline_enabled:
         console.print("[red]--produce 必须与 --pipeline 一起使用。[/red]")
         raise typer.Exit(code=1)
 
@@ -155,9 +158,9 @@ def cmd_record(
             raise typer.Exit(code=1)
         room_id = room.room_id
         room.enabled = True
-        # 五阶段调度器以房间级开关为唯一真源。CLI 显式参数需要同步到
+        # 五阶段调度器以房间级开关为唯一真源。CLI 的有效 Pipeline 值需要同步到
         # 房间配置，否则 Recorder 虽安装了回调，scheduler 仍会把任务留在 RECORDED。
-        if pipeline:
+        if pipeline_enabled:
             room.auto_analyze = True
         if produce:
             room.auto_render = True
@@ -168,7 +171,7 @@ def cmd_record(
         raise typer.Exit(code=1)
 
     on_segment = None
-    if pipeline:
+    if pipeline_enabled:
         from app.pipeline.orchestrator import make_pipeline_callback
 
         # 传入房间主键，让回调读取刚同步的自动化配置；否则

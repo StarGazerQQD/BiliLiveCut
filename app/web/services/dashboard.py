@@ -80,6 +80,7 @@ def _room_dict(room: LiveRoom, runtime: dict[str, Any]) -> dict[str, Any]:
         "running": runtime["running"],
         "recording_state": runtime["state"],
         "active_session_id": runtime["session_id"],
+        "pipeline_enabled": runtime["pipeline_enabled"],
         "schedule_enabled": room.schedule_enabled,
         "auto_threshold_enabled": room.auto_threshold_enabled,
         "danmaku_sentiment_enabled": room.danmaku_sentiment_enabled,

@@ -2,8 +2,14 @@
 
 ## 未发布
 
+当前暂无未发布变更。
+
+## V0.1.16.2 Alpha (2026-07-31)
+
 ### 变更
 
+- **bilibili/danmaku**: 按直播网页重写弹幕链路：读取公开 WBI 图片键并签名 `getDanmuInfo`；有 Cookie 时优先登录访问，业务错误或鉴权拒绝后立即以 `uid=0` 匿名兜底，并在匿名连接存活期间定时恢复登录。新增可配置的单场登录失败上限与重试间隔，达到上限后本场固定匿名；同时校验鉴权回复、切换候选 WSS 节点，并将 `-352` 明确识别为平台风控而非简单判定 Cookie 过期。
+- **recording/transcription**: 新增 `RECORDING_PIPELINE_ENABLED` 配置真源和控制台“录制实时转写”全局开关；Web 手动录制、预约、恢复及 CLI 默认读取该值，CLI 支持 `--pipeline/--no-pipeline` 单次覆盖，并在录制状态中显示本次会话是否启用实时转写。
 - **plugins/highlight**: 插件 API v1 新增唯一 `highlight_scorer` 能力提供者、无 ORM 评分 DTO、`off/shadow/champion` 模式、房间级覆盖、插件模块清理和规则评分回退。
 - **pipeline/highlight**: 分析 Worker 复用已解码音频并向插件提供转写、弹幕基线/窗口和 ASR 快照；Champion 概率可替换规则主评分，Shadow 仅记录观测，预测身份和错误进入候选元数据与结构化日志。
 - **review/feedback**: 人工审核事务提交后把稳定样本 ID、明确正负标签、Schema 身份和预测时特征快照回传给原评分插件；撤销与非内容质量决策会删除旧标签，插件故障不回滚人工审核。

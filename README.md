@@ -2,7 +2,7 @@
 
 [![CI](https://github.com/StarGazerQQD/BiliLiveCut/actions/workflows/ci.yml/badge.svg)](https://github.com/StarGazerQQD/BiliLiveCut/actions/workflows/ci.yml)
 
-**当前版本：V0.1.16.1 Alpha** (`0.1.16.1-alpha`)
+**当前版本：V0.1.16.2 Alpha** (`0.1.16.2-alpha`)
 
 面向 Bilibili 直播的全自动工作流：实时录制 → 转写 → 识别高光 → 生成切片 → 生成文案 → (可选)上传。
 阶段 1–5 全链路已可用；即插即用分发包见 [`packaging/portable/`](packaging/portable/README.md)。普通 Windows 用户可直接阅读 [Portable 小白使用说明](packaging/portable/USER_GUIDE_ZH.md)。
@@ -24,6 +24,12 @@
 ## V0.1.16 新特性：生产工作台与插件平台
 
 **V0.1.16 把录制、审片、渲染与上传从单人同步操作升级为可恢复、可审计、可扩展的生产工作台。** 本次版本同时加入正式的本地插件接口和插件管理界面，并统一重做控制台的信息层级与交互样式。
+
+### V0.1.16.2 Alpha：弹幕回退与生产开关
+
+- 实时录制新增统一的流水线默认开关，Web 手动录制、预约、恢复和 CLI 会读取同一配置；CLI 仍可按单次录制显式覆盖。
+- 弹幕链路按直播网页的 WBI 请求方式获取 token；登录访问遇到业务错误或鉴权拒绝时立即保持录制并切换匿名采集，同时按可配置间隔尝试恢复登录，达到单场失败上限后不再发送 Cookie。
+- 高光评分插件增加 `off`、`shadow`、`champion` 三种运行模式、房间级覆盖和规则评分回退，并将稳定预测快照与人工审核结果回传插件形成反馈闭环。
 
 ### 审片边界与可追溯渲染
 
@@ -61,7 +67,7 @@
 
 ### 版本与发布一致性
 
-- Python 包、CLI、C/Cython、Rust、Portable、Docker、GitHub Actions、测试和用户文档统一升级为 `0.1.16.1-alpha`，Engine Pack 兼容区间同步为 `0.1.16.1-alpha ≤ app < 0.1.17`。
+- Python 包、CLI、C/Cython、Rust、Portable、Docker、GitHub Actions、测试和用户文档统一升级为 `0.1.16.2-alpha`，Engine Pack 兼容区间同步为 `0.1.16.2-alpha ≤ app < 0.1.17`。
 - 新功能覆盖单元、集成、前端语法和发布回归测试；CI 与 Release 门禁继续校验版本、固定源码、可复现 Payload、原生模块、依赖锁和制品完整性。
 
 ## V0.1.15 版本总结：Portable 发布链路完整收口
@@ -236,7 +242,7 @@ python -m app.cli add-room "https://live.bilibili.com/你的房间号" --authori
 python -m app.cli list-rooms
 python -m app.cli check 你的房间号
 
-# 6) 开始录制（Ctrl+C 停止）
+# 6) 开始录制（Ctrl+C 停止；默认值由 RECORDING_PIPELINE_ENABLED 控制）
 python -m app.cli record <db_id>
 ```
 
@@ -264,9 +270,13 @@ pip install funasr modelscope
 python -m app.cli process <segment_id>
 python -m app.cli list-candidates       # 查看高光候选
 
-# 边录边分析
+# 边录边分析（显式覆盖全局默认值）
 python -m app.cli record <db_id> --pipeline
 ```
+
+`RECORDING_PIPELINE_ENABLED=true` 时，Web 手动开始/恢复、预约、崩溃恢复以及未显式传参的 CLI 录制都会启用实时转写与高光分析。可在控制台“配置 → 功能开关 → 录制实时转写”覆盖该默认值；CLI 可用 `--pipeline` 或 `--no-pipeline` 对单次录制覆盖。开关修改从下一次开始或恢复录制生效。
+
+`COLLECT_DANMAKU=true` 时，录制器会按 Bilibili 直播网页的 WBI 请求格式获取短期弹幕 token。有已保存 Cookie 时优先使用登录请求，并以 Cookie 中的 `DedeUserID` 完成 WebSocket 鉴权；登录接口返回业务错误或登录鉴权被拒绝后，会立即改用不带 Cookie、`uid=0` 的匿名链路，录制和弹幕接收不会因此停止。匿名连接存活期间，程序按 `DANMAKU_LOGIN_RETRY_INTERVAL_S` 定时探测登录链路；单场累计失败达到 `DANMAKU_LOGIN_RETRY_MAX_ATTEMPTS`（默认 5 次，首次计入）后，本场不再发送 Cookie。将最大次数设为 `0` 可始终匿名采集。
 
 默认启用四层 ASR 流水线（`ASR_PRIMARY=paraformer`），也可切回纯 Whisper：
 
@@ -411,6 +421,7 @@ python scripts/release_gate.py
 | `ffmpeg 不是内部或外部命令` | 安装 FFmpeg 或在 `.env` 设置 `FFMPEG_PATH` |
 | `check` 显示未开播 | 主播未直播时无流，属正常 |
 | 取流报错 / 403 | 部分高清晰度需登录态，可在 `.env` 配置 `BILIBILI_COOKIE` |
+| 弹幕 token 返回 `code=-352` | 登录请求失败时会立即匿名兜底并定时重试；匿名请求也被风控时会按配置间隔重试，录制与实时转写继续。无需反复手动登录 |
 | 片段未生成 | 看 `storage/logs/blc.log` 中 `[ffmpeg]` 行 |
 | ASR 主引擎未加载 | 确认 `pip install funasr modelscope` 已执行 |
 

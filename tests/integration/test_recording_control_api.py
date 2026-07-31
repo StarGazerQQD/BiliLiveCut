@@ -14,6 +14,28 @@ if TYPE_CHECKING:
     from _pytest.monkeypatch import MonkeyPatch
 
 
+def test_start_uses_global_pipeline_default_when_request_omits_override(
+    temp_db: None,
+    monkeypatch: MonkeyPatch,
+) -> None:
+    """Web 开始录制未传 pipeline 时应把 ``None`` 交给统一默认值解析。"""
+    from app.web import service
+    from app.web.main import app
+
+    calls: list[dict[str, Any]] = []
+
+    async def fake_start(db_id: int, pipeline: bool | None = None, produce: bool = False) -> None:
+        calls.append({"db_id": db_id, "pipeline": pipeline, "produce": produce})
+
+    monkeypatch.setattr(service.recorder_manager, "start", fake_start)
+
+    with TestClient(app) as client:
+        response = client.post("/api/rooms/3/start", json={"produce": False})
+
+    assert response.status_code == 200
+    assert calls == [{"db_id": 3, "pipeline": None, "produce": False}]
+
+
 def test_stop_and_marker_api_contract(temp_db: None, monkeypatch: MonkeyPatch) -> None:
     """停止模式、取消任务和人工打点参数通过 JSON 正确传给服务层。"""
     from app.web import service

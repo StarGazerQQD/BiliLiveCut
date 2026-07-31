@@ -1,6 +1,8 @@
 // BiliLiveCut 直播间管理:列表、添加、开关、预约、主题、阈值学习
 import { $, api, toast, esc, badge } from "./common.js";
 
+let globalFeatureDirty = false;
+
 // ----------------------------- 渲染:直播间 ----------------------------- //
 async function loadRooms() {
   const data = await api("GET", "/api/dashboard");
@@ -125,7 +127,16 @@ function pipelineSwitch(id, key, label, description, checked, disabled = false) 
 }
 
 async function loadFeatureSwitches() {
-  const data = await api("GET", "/api/dashboard");
+  const [data, settings] = await Promise.all([
+    api("GET", "/api/dashboard"),
+    api("GET", "/api/settings"),
+  ]);
+  if (!globalFeatureDirty) {
+    $("#sw-recording-pipeline").checked = settings.recording_pipeline_enabled !== false;
+    $("#recording-pipeline-hint").textContent = settings.recording_pipeline_overridden
+      ? "当前值来自控制台运行时设置；修改后从下次开始或恢复录制生效。"
+      : `当前值来自 .env：RECORDING_PIPELINE_ENABLED=${settings.recording_pipeline_env_default !== false ? "true" : "false"}。`;
+  }
   const list = $("#feature-switches-list");
   list.innerHTML = data.rooms.length ? data.rooms.map((r) => `
     <div class="item">
@@ -158,6 +169,17 @@ async function loadFeatureSwitches() {
         ${r.running ? '<span class="muted">录制中仅锁定预约、阈值学习和弹幕情绪开关</span>' : ""}
       </div>
     </div>`).join("") : `<div class="empty">还没有直播间，请先在「直播间」页添加。</div>`;
+}
+
+async function saveGlobalFeatureSettings() {
+  try {
+    await api("PATCH", "/api/settings", {
+      recording_pipeline_enabled: $("#sw-recording-pipeline").checked,
+    });
+    globalFeatureDirty = false;
+    toast("已保存录制实时转写开关；下次开始或恢复录制生效");
+    await loadFeatureSwitches();
+  } catch (e) { toast("保存失败:" + e.message); }
 }
 
 async function saveFeatureSwitches(id) {
@@ -317,4 +339,6 @@ $("#btn-cluster").addEventListener("click", async () => {
   } catch (e) { toast("\u805a\u7c7b\u5931\u8d25:" + e.message); }
 });
 
-export { loadRooms, saveRoom, saveRoomConfig, loadFeatureSwitches, saveFeatureSwitches, loadThresholdLearning, loadSchedules, delSchedule, loadTopics, toggleCollection };
+$("#sw-recording-pipeline").addEventListener("change", () => { globalFeatureDirty = true; });
+
+export { loadRooms, saveRoom, saveRoomConfig, loadFeatureSwitches, saveGlobalFeatureSettings, saveFeatureSwitches, loadThresholdLearning, loadSchedules, delSchedule, loadTopics, toggleCollection };

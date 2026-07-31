@@ -105,6 +105,23 @@ def upload_active() -> bool:
     return biliup_enabled()
 
 
+def recording_pipeline_enabled() -> bool:
+    """返回录制实时转写/分析流水线的全局默认开关。
+
+    Web 控制台保存的运行时值优先；尚未保存时回退到
+    ``RECORDING_PIPELINE_ENABLED`` 环境配置。
+
+    :returns: 新录制默认是否安装 Pipeline 回调。
+    """
+    stored = get_setting("recording_pipeline_enabled", "").strip()
+    if stored:
+        return stored.lower() in _TRUE
+
+    from app.core.config import settings
+
+    return settings.recording_pipeline_enabled
+
+
 def all_settings() -> dict[str, str]:
     """返回所有运行时设置(含未覆盖项的默认值)。
 
