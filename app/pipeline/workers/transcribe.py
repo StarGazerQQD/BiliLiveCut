@@ -11,7 +11,6 @@ import logging
 import time
 from typing import Any
 
-from app.core.config import settings
 from app.db.models import RawSegment, SegmentStatus, SegmentTask, TaskStatus, Transcript
 from app.db.session import get_session
 from app.pipeline.lease import LeaseLostError, TaskLease, still_owns_lease
@@ -133,7 +132,6 @@ def transcribe_compute(task_id: int) -> dict[str, Any]:
         "language": result.language,
         "base_text": result.base_text or result.text,
         "final_text": final_text or result.text,
-        "text_version": settings.transcript_version or "v0",
         "primary_backend": result.backend,
         "primary_model_id": result.model_id,
         "primary_model_revision": result.model_revision,

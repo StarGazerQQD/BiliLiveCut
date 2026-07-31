@@ -9,6 +9,7 @@
 
 ### 修复
 
+- **pipeline/transcription**: 移除转写计算结果中无消费者的 `text_version` 陈旧字段，避免 Paraformer 与 SenseVoice 已完成后因读取不存在的 `Settings.transcript_version` 而将任务错误标记为失败；补充真实 compute 成功路径回归测试。
 - **transcription/portable**: Paraformer 本地模型兼容仅含 ModelScope `configuration.json` 的 CAM++ v1.0.0 Engine Pack，显式注册 `CAMPPlus` 架构、`WavFrontend` 与已验证的本地权重；含 `config.yaml` 的新版模型继续使用 FunASR 原生加载，避免模型目录被误作 registry key 而导致实时转写失败。
 - **portable/release**: 同步版本真源、Payload、模型锁与 Fixture Engine Pack 的固定源码身份，补充跨文件一致性回归测试，避免 Release 在 Payload 合约校验阶段因源码 SHA 漂移而中断。
 
