@@ -2,7 +2,10 @@
 
 ## 未发布
 
-当前暂无未发布变更。
+### 变更
+
+- **portable/dependencies**: 将 `pip 26.2` 纳入 Python 3.11/3.12 严格哈希运行时锁，Launcher 使用 `pip freeze --all` 校验并自动升级旧 `.venv`；同步升级 FastAPI、Uvicorn、SQLModel、Pydantic、websockets、aiofiles、faster-whisper、FunASR、ModelScope 及其兼容传递依赖。
+- **build/toolchain**: 构建工具升级至 `wheel 0.47.0` 与 `Cython 3.2.9`；固定源码 bootstrap wheel 已重新构建并确认 SHA-256 保持不变，慢速下载的读取超时提高至 300 秒。
 
 ## V0.1.16.2 Alpha (2026-07-31)
 

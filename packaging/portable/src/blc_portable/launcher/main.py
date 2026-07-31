@@ -438,10 +438,11 @@ def install_dependencies(
     lock_file = _find_lock_file(venv_python)
     needs_install = True
 
-    # Check if pip freeze output matches lock (skip full hash comparison, do version check)
+    # Check if pip freeze output matches lock (skip full hash comparison, do version check).
+    # ``--all`` is required because pip otherwise omits bootstrap tools, including itself.
     try:
         raw_freeze = subprocess.run(
-            [str(venv_python), "-m", "pip", "freeze"],
+            [str(venv_python), "-m", "pip", "freeze", "--all"],
             capture_output=True,
             text=True,
             timeout=30,

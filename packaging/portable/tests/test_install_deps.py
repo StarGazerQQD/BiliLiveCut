@@ -91,6 +91,7 @@ def test_install_dependencies_recognizes_strict_hash_lock_versions(
 
     lock_file = tmp_path / "requirements-runtime-py312-win-x64.lock"
     lock_file.write_text(
+        "pip==26.2 --hash=sha256:" + "0" * 64 + "  # pip.whl\n"
         "pydantic-settings==2.14.2 --hash=sha256:" + "0" * 64 + "  # wheel.whl\n",
         encoding="utf-8",
     )
@@ -98,8 +99,8 @@ def test_install_dependencies_recognizes_strict_hash_lock_versions(
 
     def _fake_run(args, **kwargs):
         calls.append(args)
-        if args[-2:] == ["pip", "freeze"]:
-            return _sp.CompletedProcess(args, 0, stdout="Pydantic_Settings==2.14.2\n", stderr="")
+        if args[-3:] == ["pip", "freeze", "--all"]:
+            return _sp.CompletedProcess(args, 0, stdout="pip==26.2\nPydantic_Settings==2.14.2\n", stderr="")
         return _sp.CompletedProcess(args, 0, stdout="import OK\n", stderr="")
 
     monkeypatch.setattr(main, "_find_lock_file", lambda _python: lock_file)
@@ -108,6 +109,7 @@ def test_install_dependencies_recognizes_strict_hash_lock_versions(
     main.install_dependencies(Path(sys.executable), tmp_path)
 
     assert not any("install" in args for args in calls)
+    assert any(args[-3:] == ["pip", "freeze", "--all"] for args in calls)
     assert any("import playwright" in arg for args in calls for arg in args)
     assert any("import openai" in arg for args in calls for arg in args)
 
@@ -125,7 +127,7 @@ def test_install_dependencies_auto_uses_full_bundle_wheelhouse(tmp_path: Path, m
 
     def _fake_run(args: list[str], **_kwargs: object) -> _sp.CompletedProcess[str]:
         calls.append(args)
-        if args[-2:] == ["pip", "freeze"]:
+        if args[-3:] == ["pip", "freeze", "--all"]:
             return _sp.CompletedProcess(args, 0, stdout="", stderr="")
         return _sp.CompletedProcess(args, 0, stdout="", stderr="")
 
@@ -181,7 +183,7 @@ def test_lite_online_install_rejects_missing_bootstrap_wheels(tmp_path: Path, mo
     lock_file.write_text("demo==1.0 --hash=sha256:" + "0" * 64 + "  # demo-1.0-py3-none-any.whl\n")
 
     def _fake_run(args: list[str], **_kwargs: object) -> _sp.CompletedProcess[str]:
-        assert args[-2:] == ["pip", "freeze"]
+        assert args[-3:] == ["pip", "freeze", "--all"]
         return _sp.CompletedProcess(args, 0, stdout="", stderr="")
 
     monkeypatch.delenv("PIP_NO_INDEX", raising=False)
@@ -259,7 +261,7 @@ def test_install_dependencies_rejects_full_bundle_without_wheelhouse(
     portable_python.write_bytes(b"fixture")
 
     def _fake_run(args: list[str], **_kwargs: object) -> _sp.CompletedProcess[str]:
-        assert args[-2:] == ["pip", "freeze"]
+        assert args[-3:] == ["pip", "freeze", "--all"]
         return _sp.CompletedProcess(args, 0, stdout="", stderr="")
 
     monkeypatch.delenv("PIP_NO_INDEX", raising=False)
