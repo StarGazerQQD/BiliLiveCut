@@ -20,8 +20,8 @@ if str(SRC_DIR) not in sys.path:
 PAYLOAD_ZIP = PORTABLE_DIR / "dist" / "payload" / "source_payload.zip"
 MANIFEST_PATH = PORTABLE_DIR / "dist" / "payload" / "payload_manifest.json"
 BACKPORTS_JSON = PORTABLE_DIR / "backports" / "backports.json"
-SOURCE_COMMIT_FULL = "837a7d9498fef1f42e3aa34d1c6abc313769965b"
-SOURCE_COMMIT_SHORT = "837a7d9"
+SOURCE_COMMIT_FULL = "c677bb2407b3ff54e1d488cfc717d68071566dd7"
+SOURCE_COMMIT_SHORT = "c677bb2"
 
 
 def _load_json(path: Path) -> dict[str, Any]:
