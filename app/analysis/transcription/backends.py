@@ -20,6 +20,7 @@ V0.1.12.2 变更:
 
 from __future__ import annotations
 
+import json
 import re
 import time
 import uuid
@@ -92,6 +93,69 @@ def _probe_audio_duration(audio_path: str) -> float:
         return float(result.stdout.strip())
     except Exception:
         return 0.0
+
+
+def _legacy_campplus_kwargs(model_dir: Path) -> dict[str, object] | None:
+    """Build FunASR arguments for legacy CAM++ Engine Pack metadata.
+
+    CAM++ v1.0.0 only ships ModelScope's ``configuration.json``.  FunASR
+    1.3.30 therefore treats the directory path as a model registry key and
+    rejects it.  Newer snapshots include ``config.yaml`` and can continue to
+    use FunASR's native local-directory loading path.
+    """
+    if (model_dir / "config.yaml").is_file():
+        return None
+
+    metadata_path = model_dir / "configuration.json"
+    try:
+        metadata = json.loads(metadata_path.read_text(encoding="utf-8"))
+    except (OSError, json.JSONDecodeError) as exc:
+        raise RuntimeError(f"CAM++ local model metadata is unavailable or invalid: {metadata_path}") from exc
+    if not isinstance(metadata, dict):
+        raise RuntimeError(f"CAM++ local model metadata must be a JSON object: {metadata_path}")
+
+    model_metadata = metadata.get("model")
+    if not isinstance(model_metadata, dict) or model_metadata.get("type") != "cam++-sv":
+        raise RuntimeError(f"Unsupported legacy CAM++ model metadata: {metadata_path}")
+    model_config = model_metadata.get("model_config")
+    if not isinstance(model_config, dict):
+        raise RuntimeError(f"Legacy CAM++ model_config is missing: {metadata_path}")
+
+    dimensions: dict[str, int] = {}
+    for key in ("sample_rate", "fbank_dim", "emb_size"):
+        value = model_config.get(key)
+        if isinstance(value, bool) or not isinstance(value, int) or value <= 0:
+            raise RuntimeError(f"Legacy CAM++ {key} must be a positive integer: {metadata_path}")
+        dimensions[key] = value
+
+    weight_name = model_metadata.get("pretrained_model")
+    if not isinstance(weight_name, str) or not weight_name.strip():
+        raise RuntimeError(f"Legacy CAM++ pretrained_model is missing: {metadata_path}")
+    model_root = model_dir.resolve()
+    weight_path = (model_root / weight_name).resolve()
+    try:
+        weight_path.relative_to(model_root)
+    except ValueError as exc:
+        raise RuntimeError(f"Legacy CAM++ pretrained_model escapes its model directory: {metadata_path}") from exc
+    if not weight_path.is_file() or weight_path.stat().st_size == 0:
+        raise RuntimeError(f"Legacy CAM++ weight is missing or empty: {weight_path}")
+
+    return {
+        "model_path": str(model_root),
+        "model_conf": {
+            "feat_dim": dimensions["fbank_dim"],
+            "embedding_size": dimensions["emb_size"],
+            "growth_rate": 32,
+            "bn_size": 4,
+            "init_channels": 128,
+            "config_str": "batchnorm-relu",
+            "memory_efficient": True,
+            "output_level": "segment",
+        },
+        "frontend": "WavFrontend",
+        "frontend_conf": {"fs": dimensions["sample_rate"]},
+        "init_param": str(weight_path),
+    }
 
 
 # ═══════════════════════════════════════════════════════════
@@ -183,13 +247,16 @@ class FunASRBackend:
             # Portable mode: use Engine Pack local directories
             vad_path = str(Path(self._models_dir) / "paraformer" / "fsmn-vad")
             punc_path = str(Path(self._models_dir) / "paraformer" / "ct-punc")
-            spk_path = str(Path(self._models_dir) / "paraformer" / "campplus")
+            spk_dir = Path(self._models_dir) / "paraformer" / "campplus"
+            spk_kwargs = _legacy_campplus_kwargs(spk_dir)
+            spk_model = "CAMPPlus" if spk_kwargs is not None else str(spk_dir)
             logger.info("Loading Paraformer from local paths: model=%s vad=%s", self._primary_model_name, vad_path)
             self._primary = AutoModel(
                 model=self._primary_model_name,
                 vad_model=vad_path,
                 punc_model=punc_path,
-                spk_model=spk_path,
+                spk_model=spk_model,
+                spk_kwargs=spk_kwargs,
                 device=device,
                 hub="ms",
                 disable_update=True,
