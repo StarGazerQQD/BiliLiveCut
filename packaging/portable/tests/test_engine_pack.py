@@ -73,8 +73,8 @@ def fixture_engine_pack() -> Generator[Path, None, None]:
             "format_version": MANIFEST_FORMAT_VERSION,
             "engine_pack_version": _EP_RELEASE_VERSION,
             "portable_release_version": _EP_RELEASE_VERSION,
-            "source_commit": "dc3113fd9e1c32507291263d09ca574724198780",
-            "source_commit_short": "dc3113f",
+            "source_commit": "46e157be8508a5e7edba29bebffb46819e47df71",
+            "source_commit_short": "46e157b",
             "archive_filename": "test.engine.pack.zip",
             "archive_crc32": "",
             "archive_sha256": "",
@@ -208,7 +208,7 @@ class TestEnginePackManifest:
         from blc_portable.engine_pack.manifest import create_manifest
 
         m = create_manifest(
-            source_commit="dc3113fd9e1c32507291263d09ca574724198780",
+            source_commit="46e157be8508a5e7edba29bebffb46819e47df71",
             archive_crc32="1234ABCD",
             archive_sha256="a" * 64,
             file_list={},
@@ -225,7 +225,7 @@ class TestEnginePackManifest:
         from blc_portable.engine_pack.manifest import create_manifest, validate_manifest
 
         m = create_manifest(
-            source_commit="dc3113fd9e1c32507291263d09ca574724198780",
+            source_commit="46e157be8508a5e7edba29bebffb46819e47df71",
             archive_crc32="1234ABCD",
             archive_sha256="a" * 64,
             file_list={},
@@ -241,8 +241,8 @@ class TestEnginePackManifest:
             format_version=MANIFEST_FORMAT_VERSION,
             engine_pack_version=_EP_RELEASE_VERSION,
             portable_release_version=_EP_RELEASE_VERSION,
-            source_commit="dc3113fd9e1c32507291263d09ca574724198780",
-            source_commit_short="dc3113f",
+            source_commit="46e157be8508a5e7edba29bebffb46819e47df71",
+            source_commit_short="46e157b",
             archive_filename="test.zip",
             archive_crc32="1234ABCD",
             archive_sha256="a" * 64,
@@ -259,8 +259,8 @@ class TestEnginePackManifest:
             format_version=MANIFEST_FORMAT_VERSION,
             engine_pack_version=_EP_RELEASE_VERSION,
             portable_release_version=_EP_RELEASE_VERSION,
-            source_commit="dc3113fd9e1c32507291263d09ca574724198780",
-            source_commit_short="dc3113f",
+            source_commit="46e157be8508a5e7edba29bebffb46819e47df71",
+            source_commit_short="46e157b",
             archive_filename="test.zip",
             archive_crc32="123",
             archive_sha256="a" * 64,

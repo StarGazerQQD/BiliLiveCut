@@ -2,7 +2,7 @@
 """PyInstaller spec for BiliLiveCut Portable Launcher.
 
 内嵌资源:
-- source_payload.zip (dc3113f 业务源码)
+- source_payload.zip (46e157b 业务源码)
 - payload_manifest.json
 - engine_pack_info.json (四引擎模型包信息, 含 CRC32)
 - LICENSE (BiliLiveCut 项目 MIT License)
