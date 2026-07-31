@@ -2,9 +2,9 @@
 
 架构:
     音频
-    ├─ Paraformer-zh : 中文文本、时间戳、标点 (主引擎)
+    ├─ Fun-ASR-Nano : 中文语音识别 (默认主引擎)
+    ├─ Paraformer-zh : 中文文本、时间戳、标点 (次级回退或可选主引擎)
     ├─ SenseVoice-Small : 情感、笑声、音乐、事件 (辅助特征, 与主引擎并行)
-    └─ Fun-ASR-Nano : 低置信度 / 非中文片段复核
     └─ Whisper large-v3 / turbo : 保留切换开关, 最终兜底
 
 使用方式:
@@ -22,6 +22,7 @@ from __future__ import annotations
 
 import json
 from functools import lru_cache
+from typing import TYPE_CHECKING
 
 from loguru import logger
 
@@ -45,20 +46,25 @@ from app.core.config import settings
 from app.db.models import RawSegment, SegmentStatus, Transcript
 from app.db.session import get_session
 
+if TYPE_CHECKING:
+    from app.analysis.llm import TranscriptRefinement
+
 # ═══════════════════════════════════════════════════════════
-# ASR 流水线 (Paraformer → SenseVoice → FunASR → Whisper)
+# ASR 流水线 (FunASR → Paraformer → Whisper，SenseVoice 辅助)
 # ═══════════════════════════════════════════════════════════
 
 
 class ASRPipeline:
     """多引擎 ASR 流水线 (V0.1.14.11 重构)。
 
-    流程:
-        1. Paraformer-zh 主引擎转写 (中文文本 + 时间戳 + 标点)
-        2. SenseVoice-Small 辅助特征 (情感/笑声/音乐/事件, 已在主引擎内并行调用)
-        3. Fun-ASR-Nano review_risk_score 计算 + 局部复核
-        4. base/review/final 文本合并
-        5. Whisper 兜底 (主引擎失败或无输出时自动切换)
+    默认流程:
+        1. Fun-ASR-Nano 整段转写；SenseVoice-Small 提取辅助特征；
+        2. FunASR 无有效输出时回退 Paraformer-zh；
+        3. 前两级均失败时回退 Whisper。
+
+    兼容流程:
+        ``ASR_PRIMARY=paraformer`` 时保留 Paraformer 主识别、FunASR 局部复核和
+        Whisper 兜底；``ASR_PRIMARY=whisper`` 时直接使用 Whisper。
     """
 
     def __init__(
@@ -96,9 +102,60 @@ class ASRPipeline:
         :param initial_prompt: 热词引导。
         :returns: :class:`ASRTranscriptResult`。
         """
-        use_paraformer = settings.asr_primary == "paraformer"
+        primary_name = settings.asr_primary.strip().lower().replace("-", "_")
 
-        if use_paraformer:
+        if primary_name in {"funasr", "funasr_nano", "nano"}:
+            try:
+                result = self._get_primary().transcribe_funasr(audio_path, initial_prompt)
+            except Exception as exc:
+                logger.error("Fun-ASR-Nano 主引擎转写失败: {}", exc)
+                result = ASRTranscriptResult(
+                    text="",
+                    language="zh",
+                    backend="funasr-nano",
+                    model_id=FunASRBackend.MODEL_ID_NANO,
+                    model_revision=self._get_primary().nano_revision,
+                    primary_backend="funasr-nano",
+                    primary_status="failed",
+                    primary_error_type=type(exc).__name__,
+                    primary_error_message=str(exc)[:500],
+                )
+
+            if result.final_text.strip() or result.text.strip():
+                return result
+
+            logger.info("Fun-ASR-Nano 无有效输出，切换 Paraformer 次级引擎")
+            try:
+                secondary = self._get_primary().transcribe(audio_path, initial_prompt)
+            except Exception as exc:
+                logger.error("Paraformer 次级引擎转写失败: {}", exc)
+            else:
+                if secondary.text.strip():
+                    secondary.base_text = secondary.text
+                    secondary.final_text = secondary.text
+                    secondary.final_text_source = "fallback"
+                    secondary.primary_backend = "funasr-nano"
+                    secondary.primary_status = "failed"
+                    secondary.fallback_backend = "paraformer"
+                    secondary.fallback_trigger_reason = "primary_empty_output"
+                    return secondary
+
+            if self._use_fallback:
+                logger.info("Fun-ASR-Nano 与 Paraformer 均无有效输出，切换 Whisper 兜底")
+                fallback_result = self._get_whisper().transcribe(audio_path, initial_prompt)
+                fallback_result.base_text = fallback_result.text
+                fallback_result.review_text = fallback_result.text
+                fallback_result.final_text = fallback_result.text
+                fallback_result.final_text_source = "fallback"
+                fallback_result.primary_backend = "funasr-nano"
+                fallback_result.primary_status = "failed"
+                fallback_result.fallback_backend = "whisper"
+                fallback_result.fallback_trigger_reason = "primary_empty_output"
+                return fallback_result
+            result.final_text_source = "none"
+            return result
+
+        if primary_name == "paraformer":
             try:
                 result = self._get_primary().transcribe(audio_path, initial_prompt)
             except Exception as exc:
@@ -142,11 +199,11 @@ class ASRPipeline:
             result.primary_status = "failed"
             return result
 
-        # 直接使用 Whisper
-        if self._use_fallback:
+        # 显式选择 Whisper。
+        if primary_name == "whisper" and self._use_fallback:
             return self._get_whisper().transcribe(audio_path, initial_prompt)
 
-        logger.warning("ASR 主引擎未配置且 Whisper 兜底已禁用, 返回空结果")
+        logger.warning("ASR 主引擎配置无效或 Whisper 兜底已禁用: {}, 返回空结果", settings.asr_primary)
         return ASRTranscriptResult(text="", language="zh", backend="none")
 
     def _review_loop(
@@ -351,6 +408,8 @@ def transcribe_segment(
     text = _apply_room_aliases(result.text, segment_id)
     final_text = _apply_room_aliases(result.final_text or result.text, segment_id)
     result.final_text = final_text
+    refinement = _refine_transcript_for_storage(final_text or text)
+    display_text = refinement.clean_text if refinement is not None else (final_text or text)
 
     words_json = json.dumps(
         [{"w": w.word, "start": w.start, "end": w.end} for seg in result.segments for w in seg.words],
@@ -358,9 +417,9 @@ def transcribe_segment(
     )
 
     # V0.1.12.2: 序列化辅助特征 + reviewed_segments
-    auxiliary_json: str | None = None
+    auxiliary_payload: dict[str, object] = {}
     if result.emotions or result.reviewed_segments:
-        auxiliary_json = json.dumps(
+        auxiliary_payload.update(
             {
                 "emotions": [
                     {"type": e.event_type, "start": e.start, "end": e.end, "confidence": e.confidence}
@@ -368,9 +427,14 @@ def transcribe_segment(
                 ],
                 "reviewed_segments": result.reviewed_segments,
                 "engine": result.backend,
-            },
-            ensure_ascii=False,
+            }
         )
+    if refinement is not None:
+        auxiliary_payload["transcript_refinement"] = {
+            "applied": True,
+            "summary": refinement.summary,
+        }
+    auxiliary_json = json.dumps(auxiliary_payload, ensure_ascii=False) if auxiliary_payload else None
 
     # V0.1.12.2: 记录完整 ASR 追踪
     review_reasons_json = (
@@ -393,7 +457,7 @@ def transcribe_segment(
     transcript = Transcript(
         segment_id=segment_id,
         language=result.language,
-        text=final_text or text,
+        text=display_text,
         words_json=words_json,
         avg_logprob=avg_logprob_val,
         auxiliary_json=auxiliary_json,
@@ -425,7 +489,7 @@ def transcribe_segment(
         "转写完成 segment={} transcript={} 字数={} 语言={} 引擎={} review={}",
         segment_id,
         tid,
-        len(final_text or text),
+        len(display_text),
         result.language,
         result.backend,
         result.review_triggered,
@@ -474,3 +538,24 @@ def _apply_room_aliases(text: str, segment_id: int) -> str:
     if not aliases:
         return text
     return apply_aliases(text, aliases)
+
+
+def _refine_transcript_for_storage(text: str) -> TranscriptRefinement | None:
+    """按运行时开关整理单切片转写；失败时安全保留原文。
+
+    :param text: 已应用房间别名的 ASR 文本。
+    :returns: LLM 整理结果；关闭、不可用或失败时返回 ``None``。
+    """
+    from app.analysis import llm
+    from app.core import settings_store
+
+    if not text.strip() or not settings_store.transcript_llm_refine_enabled():
+        return None
+    try:
+        refinement = llm.refine_transcript(text)
+    except Exception as exc:  # noqa: BLE001 - LLM 后处理不得中断转写落库
+        logger.warning("单切片转写 LLM 整理失败，已保留原始 ASR 文本: {}", exc)
+        return None
+    if refinement is None:
+        logger.info("单切片转写未获得可用 LLM 整理结果，已保留原始 ASR 文本。")
+    return refinement

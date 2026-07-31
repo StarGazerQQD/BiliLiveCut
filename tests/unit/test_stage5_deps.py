@@ -10,9 +10,9 @@ def test_settings_has_sensible_defaults() -> None:
     s = Settings()
     assert s.ffmpeg_path
     assert s.ffprobe_path
-    assert s.segment_duration_s >= 5
+    assert s.segment_duration_s == 300
     assert s.require_authorization is True
-    assert s.asr_primary == "paraformer"
+    assert s.asr_primary == "funasr_nano"
     assert s.whisper_model == "small"
     assert s.whisper_compute_type == "int8"
     assert s.asr_model_revision == "v2.0.4"

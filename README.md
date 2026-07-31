@@ -2,7 +2,7 @@
 
 [![CI](https://github.com/StarGazerQQD/BiliLiveCut/actions/workflows/ci.yml/badge.svg)](https://github.com/StarGazerQQD/BiliLiveCut/actions/workflows/ci.yml)
 
-**当前版本：V0.1.16.2 Alpha** (`0.1.16.2-alpha`)
+**当前版本：V0.1.16.3 Alpha** (`0.1.16.3-alpha`)
 
 面向 Bilibili 直播的全自动工作流：实时录制 → 转写 → 识别高光 → 生成切片 → 生成文案 → (可选)上传。
 阶段 1–5 全链路已可用；即插即用分发包见 [`packaging/portable/`](packaging/portable/README.md)。普通 Windows 用户可直接阅读 [Portable 小白使用说明](packaging/portable/USER_GUIDE_ZH.md)。
@@ -24,6 +24,17 @@
 ## V0.1.16 新特性：生产工作台与插件平台
 
 **V0.1.16 把录制、审片、渲染与上传从单人同步操作升级为可恢复、可审计、可扩展的生产工作台。** 本次版本同时加入正式的本地插件接口和插件管理界面，并统一重做控制台的信息层级与交互样式。
+
+### V0.1.16.3 Alpha：五分钟切片、FunASR 与可读转写
+
+- 默认录制分片目标改为约 5 分钟；FFmpeg 仍按实际关键帧完成切分，因此单片时长允许小幅浮动，也可通过 `SEGMENT_DURATION_S` 覆盖。
+- 默认语音主引擎改为本地 Fun-ASR-Nano；无有效输出时依次回退 Paraformer 与 Whisper，保留实际引擎、失败原因及回退来源。
+- 每个切片完成 ASR 后可调用已配置的 OpenAI 兼容大模型补全标点、整理可读正文并生成片段概括；控制台提供独立开关，失败时保留原始 ASR 且不中断分析。
+- 实时转写页同时展示整理正文、片段概括、原始 ASR 和实际语音引擎，后续高光分析默认消费整理后的可读正文。
+- 直播间录制选项及直播间独立功能开关增加未保存状态保护；存在本地草稿时暂停对应列表的五秒自动重绘，保存后恢复。
+- 修复弹幕基线把 SQLModel 标量时间误当元组解包、低分分析无法从 `analyzing` 直接结束、趋势 JSON 截断后整批丢弃，以及高光理由截断后已生成评分丢失的问题。
+- 趋势采集单次最多请求 12 条，并只抢救截断前已完整闭合的 JSON 对象，避免猜测或写入半条数据。
+- Portable 的 CAM++ v1.0.0 旧式 ModelScope 元数据会显式注册为 `CAMPPlus` 并校验本地权重；转写提交不再读取不存在的 `Settings.transcript_version`。
 
 ### V0.1.16.2 Alpha：弹幕回退与生产开关
 
@@ -69,7 +80,7 @@
 
 ### 版本与发布一致性
 
-- Python 包、CLI、C/Cython、Rust、Portable、Docker、GitHub Actions、测试和用户文档统一升级为 `0.1.16.2-alpha`，Engine Pack 兼容区间同步为 `0.1.16.2-alpha ≤ app < 0.1.17`。
+- Python 包、CLI、C/Cython、Rust、Portable、Docker、GitHub Actions、测试和用户文档统一升级为 `0.1.16.3-alpha`，Engine Pack 兼容区间同步为 `0.1.16.3-alpha ≤ app < 0.1.17`。
 - 新功能覆盖单元、集成、前端语法和发布回归测试；CI 与 Release 门禁继续校验版本、固定源码、可复现 Payload、原生模块、依赖锁和制品完整性。
 
 ## V0.1.15 版本总结：Portable 发布链路完整收口
@@ -150,16 +161,16 @@ V0.1.15 最终形成 Lite 单 EXE、Full 离线包、内容寻址 Runtime、安�
 
 ## V0.1.12 新特性：多引擎 ASR 流水线
 
-默认引擎从 Whisper 单引擎升级为**四层流水线**：
+当前默认使用**四层本地 ASR 流水线**：
 
 | 层级 | 引擎 | 功能 |
 |------|------|------|
-| **主引擎** | Paraformer-zh | 中文文本、词级时间戳、标点 |
+| **主引擎** | Fun-ASR-Nano | 中文语音识别与长音频转写 |
 | **辅助特征** | SenseVoice-Small | 情感、笑声、音乐、事件检测 |
-| **低置信复核** | Fun-ASR-Nano | 低分 / 非中文片段复核 |
-| **最终兜底** | Whisper large-v3 / turbo | 保留切换，主引擎失败时自动回退 |
+| **次级回退** | Paraformer-zh | FunASR 无有效输出时补充中文识别、标点与时间戳 |
+| **最终兜底** | Whisper large-v3 / turbo | 前两级失败时自动回退 |
 
-通过 `ASR_PRIMARY=whisper` 可随时切回纯 Whisper 模式。全部模型懒加载，按 flags 独立启用/禁用。
+通过 `ASR_PRIMARY=paraformer` 或 `ASR_PRIMARY=whisper` 可切换主路径。全部模型懒加载，按 flags 独立启用/禁用。
 
 ## V0.1.11 新特性：数据一致性与流水线稳定性
 
@@ -173,7 +184,7 @@ V0.1.15 最终形成 Lite 单 EXE、Full 离线包、内容寻址 Runtime、安�
 
 | 阶段 | 内容 | 状态 |
 |---|---|---|
-| 1 | 取流 + FFmpeg 录制 + 60s 分片 + 入库 | ✅ 可用 |
+| 1 | 取流 + FFmpeg 录制 + 约 5 分钟关键帧对齐分片 + 入库 | ✅ 可用 |
 | 2 | 多引擎 ASR / 规则+LLM 高光判断 | ✅ 可用 |
 | 3 | 自动切片 + 后处理 + 文案 | ✅ 可用 |
 | 4 | Web 管理后台 | ✅ 可用 |
@@ -248,7 +259,7 @@ python -m app.cli check 你的房间号
 python -m app.cli record <db_id>
 ```
 
-录制产物位于 `storage/raw/session_<id>/`，每 60 秒一个 `.ts` 片段。
+录制产物位于 `storage/raw/session_<id>/`。默认以 300 秒为分片目标；FFmpeg 按实际关键帧落盘，因此单片时长会在 5 分钟附近小幅浮动。
 
 ## 阶段 2：多引擎 ASR 转写 + 高光判断
 
@@ -276,15 +287,16 @@ python -m app.cli list-candidates       # 查看高光候选
 python -m app.cli record <db_id> --pipeline
 ```
 
-`RECORDING_PIPELINE_ENABLED=true` 时，Web 手动开始/恢复、预约、崩溃恢复以及未显式传参的 CLI 录制都会启用实时转写与高光分析。可在控制台“配置 → 功能开关 → 录制实时转写”覆盖该默认值；CLI 可用 `--pipeline` 或 `--no-pipeline` 对单次录制覆盖。开关修改从下一次开始或恢复录制生效。
+`RECORDING_PIPELINE_ENABLED=true` 时，Web 手动开始/恢复、预约、崩溃恢复以及未显式传参的 CLI 录制都会启用实时转写与高光分析。可在控制台“配置 → 功能开关 → 录制实时转写”覆盖该默认值；CLI 可用 `--pipeline` 或 `--no-pipeline` 对单次录制覆盖。`TRANSCRIPT_LLM_REFINE_ENABLED=true` 时，每个切片完成本地 ASR 后还会调用已配置的大模型补全标点、整理正文并生成片段概括；调用失败时保留原始 ASR，不阻断流水线。这两个开关都从下一次开始或恢复录制生效。
 
 `COLLECT_DANMAKU=true` 时，录制器会按 Bilibili 直播网页的 WBI 请求格式获取短期弹幕 token。有已保存 Cookie 时优先使用登录请求，并以 Cookie 中的 `DedeUserID` 完成 WebSocket 鉴权；登录接口返回业务错误或登录鉴权被拒绝后，会立即改用不带 Cookie、`uid=0` 的匿名链路，录制和弹幕接收不会因此停止。匿名连接存活期间，程序按 `DANMAKU_LOGIN_RETRY_INTERVAL_S` 定时探测登录链路；单场累计失败达到 `DANMAKU_LOGIN_RETRY_MAX_ATTEMPTS`（默认 5 次，首次计入）后，本场不再发送 Cookie。将最大次数设为 `0` 可始终匿名采集。
 
-默认启用四层 ASR 流水线（`ASR_PRIMARY=paraformer`），也可切回纯 Whisper：
+默认启用以 Fun-ASR-Nano 为首选的四层 ASR 流水线（`ASR_PRIMARY=funasr_nano`），也可切换到 Paraformer 或纯 Whisper：
 
 ```env
-ASR_PRIMARY=whisper           # 回退纯 Whisper 模式
+ASR_PRIMARY=funasr_nano       # 默认；也可设为 paraformer 或 whisper
 ASR_FALLBACK_WHISPER=true     # 主引擎失败时自动兜底
+TRANSCRIPT_LLM_REFINE_ENABLED=true  # 用已配置 LLM 整理正文并生成片段概括
 ```
 
 **工作原理与成本控制**：先用零成本规则特征（音量峰值、关键词、语速突增、音频特征、弹幕热度）算出 `rule_score`；只有超过初筛阈值才调用大模型复核。未配置 `LLM_API_KEY` 时自动走**纯规则模式**，完全可用、零费用。

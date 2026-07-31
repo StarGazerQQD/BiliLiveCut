@@ -12,6 +12,8 @@
 
 from __future__ import annotations
 
+from typing import TYPE_CHECKING
+
 from app.analysis.transcription import (
     ASRPipeline,
     ASRSegmentResult,
@@ -21,6 +23,9 @@ from app.analysis.transcription import (
     _normalize_confidence_sentence,
     _normalize_whisper_logprob,
 )
+
+if TYPE_CHECKING:
+    from _pytest.monkeypatch import MonkeyPatch
 
 
 class TestPipelineIntegration:
@@ -56,6 +61,58 @@ class TestPipelineIntegration:
         """Whisper avg_logprob 映射。"""
         val = _normalize_whisper_logprob(0.0)
         assert 0.0 <= val <= 1.0
+
+    def test_funasr_nano_is_default_primary(self, monkeypatch: MonkeyPatch) -> None:
+        """默认主引擎应直接调用 Fun-ASR-Nano，而不是 Paraformer。"""
+        from app.analysis.transcription import pipeline as pipeline_module
+
+        calls: list[str] = []
+
+        class FakePrimary:
+            nano_revision = "master"
+
+            def transcribe_funasr(self, _audio_path: str, _initial_prompt: str | None = None) -> ASRTranscriptResult:
+                calls.append("funasr")
+                return ASRTranscriptResult(
+                    text="Nano 主引擎文本",
+                    final_text="Nano 主引擎文本",
+                    backend="funasr-nano",
+                )
+
+            def transcribe(self, _audio_path: str, _initial_prompt: str | None = None) -> ASRTranscriptResult:
+                calls.append("paraformer")
+                return ASRTranscriptResult(text="不应调用")
+
+        monkeypatch.setattr(pipeline_module.settings, "asr_primary", "funasr_nano")
+        pipeline = ASRPipeline(primary_backend=FakePrimary())  # type: ignore[arg-type]
+
+        result = pipeline.transcribe("audio.wav")
+
+        assert result.text == "Nano 主引擎文本"
+        assert calls == ["funasr"]
+
+    def test_funasr_empty_falls_back_to_paraformer(self, monkeypatch: MonkeyPatch) -> None:
+        """Fun-ASR-Nano 空输出应先回退 Paraformer，并保留主引擎 provenance。"""
+        from app.analysis.transcription import pipeline as pipeline_module
+
+        class FakePrimary:
+            nano_revision = "master"
+
+            def transcribe_funasr(self, _audio_path: str, _initial_prompt: str | None = None) -> ASRTranscriptResult:
+                return ASRTranscriptResult(text="", backend="funasr-nano")
+
+            def transcribe(self, _audio_path: str, _initial_prompt: str | None = None) -> ASRTranscriptResult:
+                return ASRTranscriptResult(text="Paraformer 回退文本", backend="paraformer")
+
+        monkeypatch.setattr(pipeline_module.settings, "asr_primary", "funasr_nano")
+        pipeline = ASRPipeline(primary_backend=FakePrimary())  # type: ignore[arg-type]
+
+        result = pipeline.transcribe("audio.wav")
+
+        assert result.final_text == "Paraformer 回退文本"
+        assert result.primary_backend == "funasr-nano"
+        assert result.fallback_backend == "paraformer"
+        assert result.final_text_source == "fallback"
 
 
 class TestASRTranscriptResultIntegration:

@@ -1,15 +1,15 @@
 {
   "format_version": 4,
   "artifact_class": "fixture",
-  "engine_pack_version": "0.1.16.2-alpha",
+  "engine_pack_version": "0.1.16.3-alpha",
   "engine_pack_api_version": 4,
   "model_set_version": 4,
   "payload_schema_version": 4,
   "compatible_app": {
-    "min": "0.1.16.2-alpha",
+    "min": "0.1.16.3-alpha",
     "max_exclusive": "0.1.17"
   },
-  "filename": "BiliLiveCut-EnginePack-0.1.16.2-alpha.zip",
+  "filename": "BiliLiveCut-EnginePack-0.1.16.3-alpha.zip",
   "size_bytes": 11275,
   "crc32": "12A573F0",
   "sha256": "e9bc8d9333304c09d45db62a2330fdc3c6bf36a7ce40a5a45a257e257fbdd4ca",

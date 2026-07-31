@@ -1,6 +1,6 @@
 # BiliLiveCut · 即插即用版（`packaging/portable/`，原 Publish-PnP）
 
-**版本：V0.1.16.2 Alpha** (`0.1.16.2-alpha`)
+**版本：V0.1.16.3 Alpha** (`0.1.16.3-alpha`)
 
 > **普通用户请先阅读：[Portable 小白使用说明](USER_GUIDE_ZH.md)**。该说明按 Windows 用户从下载、校验、解压、首次启动到第一次录制的顺序编写。
 
@@ -100,16 +100,16 @@ BiliLiveCut 是一个**全自动 AI 直播切片系统**：监听 Bilibili 直�
 
 ## V0.1.12 新特性：多引擎 ASR 流水线
 
-默认引擎从 Whisper 单引擎升级为四层流水线（全部模型首次运行时自动下载）：
+当前默认使用四层本地 ASR 流水线（全部模型首次运行时自动下载）：
 
 | 层级 | 引擎 | 功能 |
 |------|------|------|
-| 主引擎 | Paraformer-zh | 中文文本、词级时间戳、标点 |
+| 主引擎 | Fun-ASR-Nano | 中文语音识别与长音频转写 |
 | 辅助特征 | SenseVoice-Small | 情感、笑声、音乐、事件检测 |
-| 低置信复核 | Fun-ASR-Nano | 低分 / 非中文片段复核 |
-| 最终兜底 | Whisper large-v3 / turbo | 主引擎失败时自动回退 |
+| 次级回退 | Paraformer-zh | FunASR 无有效输出时补充中文识别、标点与时间戳 |
+| 最终兜底 | Whisper large-v3 / turbo | 前两级失败时自动回退 |
 
-通过 `.env` 中 `ASR_PRIMARY=whisper` 可切回纯 Whisper 模式。详见 `.env.example`。
+通过 `.env` 中 `ASR_PRIMARY=paraformer` 或 `ASR_PRIMARY=whisper` 可切换主路径。详见 `.env.example`。
 
 ---
 
@@ -151,15 +151,15 @@ Lite 和 Full 均不携带 ASR 模型。四个引擎模型统一由独立的 **E
 | 引擎 | 模型 ID | 来源 | 版本 |
 |------|---------|------|------|
 | Whisper (兜底) | faster-whisper-large-v3-turbo | Hugging Face (dropbox-dash/) | 0a363e9161cb |
-| Paraformer-zh (主引擎) | paraformer-zh | ModelScope | v2.0.4 |
+| Paraformer-zh (次级回退) | paraformer-zh | ModelScope | v2.0.4 |
 | SenseVoice-Small (辅助特征) | iic/SenseVoiceSmall | ModelScope | 7bf452403abd |
-| Fun-ASR-Nano (低置信复核) | FunAudioLLM/Fun-ASR-Nano-2512 | ModelScope | 05201c46f1c3 |
+| Fun-ASR-Nano (主引擎) | FunAudioLLM/Fun-ASR-Nano-2512 | ModelScope | 05201c46f1c3 |
 
 > Paraformer 额外需要 `fsmn-vad` / `ct-punc` / `campplus` 三个子模型（自动下载）。
 
 ### 使用方式
 
-1. 下载 BiliLiveCut-EnginePack-0.1.16.2-alpha.zip
+1. 下载 BiliLiveCut-EnginePack-0.1.16.3-alpha.zip
 2. 放在 Launcher EXE **同级目录** (或 packages/ 子目录)
 3. 双击启动 Launcher → 自动 **CRC32 校验** → 校验通过即离线安装 (网络请求 0)
 4. 无本地包或校验失败 → 自动**全量在线下载**四个引擎模型
@@ -202,7 +202,7 @@ python build_engine_pack.py --from-cache  # 从已验证缓存构建
 
 输出:
 
-- dist/engine-pack/BiliLiveCut-EnginePack-0.1.16.2-alpha.zip
+- dist/engine-pack/BiliLiveCut-EnginePack-0.1.16.3-alpha.zip
 - dist/engine-pack/engine-pack-manifest.json
 - dist/engine-pack/CRC32SUMS.txt
 - dist/engine-pack/SHA256SUMS.txt
@@ -309,14 +309,14 @@ packaging/portable/                     # ★ 即插即用分发版根目录 (�
 ├── runtime/                  # ★ Runtime 版本管理
 │   ├── current.json          #   当前激活的 Release 信息
 │   └── releases/
-│       └── 0.1.16.2-alpha+46e157b+<payload-hash>/  # 内容寻址的固定版本源码
+│       └── 0.1.16.3-alpha+<source-sha>+<payload-hash>/  # 内容寻址的固定版本源码
 │
 ├── .venv/                    # Python 虚拟环境（launcher.exe 自动创建）
 ├── models/                   # 四引擎 ASR 模型 (由 Engine Pack 或在线下载安装)
 │   ├── whisper/               #   Whisper large-v3-turbo (兜底引擎)
-│   ├── paraformer/            #   Paraformer-zh (主引擎)
+│   ├── paraformer/            #   Paraformer-zh (次级回退)
 │   ├── sensevoice/            #   SenseVoice-Small (辅助特征)
-│   └── funasr_nano/           #   Fun-ASR-Nano (低置信复核)
+│   └── funasr_nano/           #   Fun-ASR-Nano (主引擎)
 ├── bin/                      # ffmpeg.exe / ffprobe.exe（首次运行下载，约 80 MB）
 │
 ├── vendor/wheels/            # 预置依赖 wheel（build_bundle.py 构建时下载）
@@ -383,7 +383,7 @@ FFPROBE_PATH=ffprobe  # Full 会使用随包 bin/ffprobe.exe；Lite 可使用系
 ### 录制 / 分片
 
 ```ini
-SEGMENT_DURATION_S=60            # 每个原始片段的时长（秒），建议 60
+SEGMENT_DURATION_S=300           # 分片目标 300 秒；按关键帧落盘，实际时长允许小幅浮动
 PREFERRED_STREAM_PROTOCOL=hls    # 取流协议：hls（稳定）或 flv
 STREAM_QUALITY=10000             # 清晰度：10000=原画，400=蓝光，250=超清
 RECONNECT_MAX_BACKOFF_S=30       # 断流后最大重试等待秒数
@@ -410,14 +410,14 @@ BILIBILI_COOKIE=            # 可选登录态 Cookie，用于平台允许的部�
 
 ```ini
 # 主引擎（V0.1.12）
-ASR_PRIMARY=paraformer                  # paraformer=四层流水线（推荐）/ whisper=纯 Whisper 模式
+ASR_PRIMARY=funasr_nano                 # 默认 FunASR；也可设为 paraformer / whisper
 ASR_PRIMARY_DEVICE=cpu                  # 主引擎设备，首次测试保持 cpu
 ASR_AUXILIARY_DEVICE=cpu                # 辅助引擎设备
 ASR_REVIEW_DEVICE=cpu                   # 复核引擎设备
 ASR_FALLBACK_DEVICE=cpu                 # 兜底引擎设备
 # 辅助层
 ASR_SENSEVOICE=true                     # 情感/笑声/音乐/事件检测（需 funasr + modelscope）
-ASR_FUNASR_REVIEW=true                  # 低置信片段复核（需 funasr + modelscope）
+ASR_FUNASR_REVIEW=true                  # Paraformer 主路径下启用低置信片段 FunASR 复核
 ASR_FALLBACK_WHISPER=true               # 主引擎失败时自动回退 Whisper
 ASR_CONFIDENCE_THRESHOLD=-0.6           # 低于此置信度的片段触发复核
 ASR_MODEL_REVISION=v2.0.4               # 模型版本锁定
@@ -426,7 +426,7 @@ WHISPER_DEVICE=cpu                       # Whisper 设备
 WHISPER_COMPUTE_TYPE=int8                # CPU 推荐 int8
 ```
 
-### 大模型（可选，用于高光复核 / 文案 / 网感采集）
+### 大模型（可选，用于转写梳理 / 高光复核 / 文案 / 网感采集）
 
 ```ini
 LLM_PROVIDER=deepseek                # 仅标识，不影响实际连接
@@ -437,9 +437,11 @@ LLM_WEB_SEARCH_PARAM=enable_search   # 联网搜索开关键名（DeepSeek 不�
 LLM_PRICE_INPUT_PER_M=0              # 每百万 token 输入价格（0=不计费）
 LLM_PRICE_OUTPUT_PER_M=0             # 每百万 token 输出价格（0=不计费）
 LLM_DAILY_BUDGET=0                   # 每日预算上限（0=不限）
+TRANSCRIPT_LLM_REFINE_ENABLED=true   # 每个切片 ASR 后整理正文并生成概括；失败保留原始文本
+TRANSCRIPT_LLM_REFINE_MAX_TOKENS=4096  # 覆盖约 5 分钟转写正文与片段概括的最大输出 token
 ```
 
-**多模型配置**：Web 控制台「模型」Tab 可同时添加多个服务商（DeepSeek / 通义千问 / Kimi / 智谱 GLM 等），设置优先级，某个不可用时自动降级到下一个。“测试连通”直接测试当前表单且不会保存 API Key；页面会显示每个服务商的响应或错误详情，确认无误后再点击“保存全部”。
+**多模型配置**：Web 控制台「模型」Tab 可同时添加多个服务商（DeepSeek / 通义千问 / Kimi / 智谱 GLM 等），设置优先级，某个不可用时自动降级到下一个。“测试连通”直接测试当前表单且不会保存 API Key；页面会显示每个服务商的响应或错误详情，确认无误后再点击“保存全部”。转写梳理可在「配置 → 功能开关」独立关闭，关闭后仍保留本地 ASR 原文。
 
 ### 网感资料库（可选，用于热点采集）
 
@@ -450,7 +452,7 @@ TREND_BASE_URL=                  # 趋势采集专用 base_url（留空复用 LL
 TREND_MODEL=                     # 趋势采集专用模型（留空复用 LLM_MODEL）
 TREND_WEB_SEARCH=true            # 是否开启联网搜索（时效性强）
 TREND_MAX_SEARCHES=5             # 单次采集联网搜索次数上限
-TREND_MAX_ITEMS=40               # 单次采集入库条目上限
+TREND_MAX_ITEMS=12               # 单次采集入库条目上限（避免模型输出被截断）
 TREND_RETENTION_DAYS=14          # 资料库保留天数
 TREND_MATCH_DAYS=7               # 高光评分参考"近期"窗口（天）
 ```
@@ -538,7 +540,7 @@ BILIUP_UPLOAD_CMD=                          # 自定义上传命令模板
 
 ## 回主工程
 
-此 `packaging/portable/` 目录是**发布给最终用户的即插即用版本**，源码固定于 `v0.1.16.2-Alpha` 的发布基线 Commit。
+此 `packaging/portable/` 目录是**发布给最终用户的即插即用版本**，源码固定于 `v0.1.16.3-Alpha` 的发布基线 Commit。
 
 - **主仓库**: `D:\Vibe\BiliLiveCut\README.md`
 - **完整变更日志**: `D:\Vibe\BiliLiveCut\CHANGELOG.md`

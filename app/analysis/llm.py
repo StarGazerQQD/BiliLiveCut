@@ -19,6 +19,7 @@ Moonshot Kimi / 智谱 GLM 等)——只需在 ``.env`` 配置 ``LLM_BASE_URL`` 
 from __future__ import annotations
 
 import json
+import re
 from dataclasses import dataclass
 from datetime import date
 from pathlib import Path
@@ -54,6 +55,18 @@ class HighlightJudgement:
     reason: str
     suggested_start_offset: float | None = None
     suggested_end_offset: float | None = None
+
+
+@dataclass(slots=True, frozen=True)
+class TranscriptRefinement:
+    """LLM 对单个录制片段转写的整理结果。
+
+    :param clean_text: 保留原意、补全标点和段落后的可读文本。
+    :param summary: 对该片段内容的简短概括。
+    """
+
+    clean_text: str
+    summary: str
 
 
 def is_llm_enabled() -> bool:
@@ -323,7 +336,7 @@ def call_trend_search(
     return call_web_search(prompt, max_tokens, max_searches)
 
 
-def extract_json_array(raw: str) -> list | None:
+def extract_json_array(raw: str) -> list[object] | None:
     """从模型输出中鲁棒地抽取首个 JSON 数组。
 
     :param raw: 模型原始输出。
@@ -332,14 +345,34 @@ def extract_json_array(raw: str) -> list | None:
     text = raw.strip()
     if "```" in text:
         text = text.replace("```json", "").replace("```", "").strip()
-    start, end = text.find("["), text.rfind("]")
-    if start == -1 or end == -1:
+    start = text.find("[")
+    if start == -1:
         return None
-    try:
-        data = json.loads(text[start : end + 1])
-    except json.JSONDecodeError:
-        return None
-    return data if isinstance(data, list) else None
+    end = text.rfind("]")
+    if end > start:
+        try:
+            data = json.loads(text[start : end + 1])
+        except json.JSONDecodeError:
+            pass
+        else:
+            return data if isinstance(data, list) else None
+
+    # 模型可能因 token 上限在数组尾部被截断。此处只保留已经完整闭合的元素，
+    # 绝不猜测或修补半个对象，避免把不完整热点写入资料库。
+    decoder = json.JSONDecoder()
+    items: list[object] = []
+    cursor = start + 1
+    while cursor < len(text):
+        while cursor < len(text) and (text[cursor].isspace() or text[cursor] == ","):
+            cursor += 1
+        if cursor >= len(text) or text[cursor] == "]":
+            break
+        try:
+            item, cursor = decoder.raw_decode(text, cursor)
+        except json.JSONDecodeError:
+            break
+        items.append(item)
+    return items or None
 
 
 def extract_json(raw: str) -> dict | None:
@@ -362,6 +395,51 @@ def extract_json(raw: str) -> dict | None:
         return None
 
 
+_TRANSCRIPT_REFINEMENT_PROMPT = """你是一名中文直播内容编辑。请整理下面这一段自动语音识别文本。
+
+要求：
+1. 不删减事实、专有名词、数字和关键语气，不添加原文没有的信息；
+2. 仅在上下文足够明确时修正常见同音字或断句错误；
+3. 补全标点，按语义整理成可读句子和短段落；
+4. 再给出一段不超过 120 个汉字的内容概括；
+5. 只输出 JSON，不要代码围栏或其他说明。
+
+输出格式：
+{{"clean_text":"整理后的完整文本","summary":"本片段概括"}}
+
+原始转写：
+{text}"""
+
+
+def refine_transcript(raw_text: str) -> TranscriptRefinement | None:
+    """用 LLM 整理并概括一个切片的 ASR 文本。
+
+    LLM 不可用、输出不完整或解析失败时返回 ``None``，调用方应保留原始文本。
+
+    :param raw_text: 已完成房间别名替换的原始 ASR 文本。
+    :returns: 可读文本及摘要；无法可靠整理时返回 ``None``。
+    """
+    source = raw_text.strip()
+    if not source:
+        return None
+    raw = call_text(
+        _TRANSCRIPT_REFINEMENT_PROMPT.format(text=source),
+        max_tokens=settings.transcript_llm_refine_max_tokens,
+    )
+    if raw is None:
+        return None
+    data = extract_json(raw)
+    if data is None:
+        logger.warning("转写整理输出无法解析为 JSON: head={!r} tail={!r}", raw[:160], raw[-160:])
+        return None
+    clean_text = str(data.get("clean_text", "")).strip()
+    summary = str(data.get("summary", "")).strip()
+    if not clean_text or not summary:
+        logger.warning("转写整理输出缺少 clean_text 或 summary，已保留原始 ASR 文本。")
+        return None
+    return TranscriptRefinement(clean_text=clean_text, summary=summary[:120])
+
+
 _JUDGE_PROMPT = """你是一名 Bilibili 短视频切片编辑。下面是一段直播录制片段的信息,请判断它是否包含\
 值得单独切片传播的"高光/爆点",并给出建议的切片时间范围(相对本片段起点的秒数)。
 
@@ -374,9 +452,36 @@ _JUDGE_PROMPT = """你是一名 Bilibili 短视频切片编辑。下面是一段
 弹幕摘要:
 {danmaku}
 
-请只输出 JSON,不要任何额外文字,格式:
+请只输出 JSON,不要任何额外文字；reason 不超过 30 个汉字且不得换行。格式:
 {{"is_highlight": true/false, "score": 0~1, "reason": "简短中文理由", \
 "start_offset": 数字或null, "end_offset": 数字或null}}"""
+
+
+def _recover_highlight_json(raw: str) -> dict[str, object] | None:
+    """从被截断的高光 JSON 中恢复已经完整输出的核心字段。
+
+    只有 ``is_highlight`` 和 ``score`` 都完整存在时才返回结果；理由和偏移量
+    属于可选字段，避免截断理由导致已生成的评分被整体丢弃。
+
+    :param raw: LLM 原始输出。
+    :returns: 可供高光判断使用的字段字典，无法可靠恢复时返回 ``None``。
+    """
+    flag_match = re.search(r'"is_highlight"\s*:\s*(true|false)', raw, flags=re.IGNORECASE)
+    score_match = re.search(r'"score"\s*:\s*(-?\d+(?:\.\d+)?)', raw)
+    if flag_match is None or score_match is None:
+        return None
+    data: dict[str, object] = {
+        "is_highlight": flag_match.group(1).lower() == "true",
+        "score": float(score_match.group(1)),
+    }
+    reason_match = re.search(r'"reason"\s*:\s*"([^"\r\n]*)', raw)
+    if reason_match is not None:
+        data["reason"] = reason_match.group(1).strip()[:30]
+    for key in ("start_offset", "end_offset"):
+        match = re.search(rf'"{key}"\s*:\s*(null|-?\d+(?:\.\d+)?)', raw, flags=re.IGNORECASE)
+        if match is not None:
+            data[key] = None if match.group(1).lower() == "null" else float(match.group(1))
+    return data
 
 
 def judge_highlight(
@@ -401,13 +506,21 @@ def judge_highlight(
         return None
     data = extract_json(raw)
     if data is None:
-        logger.warning("LLM 复核输出无法解析为 JSON: {}", raw[:200])
-        return None
+        data = _recover_highlight_json(raw)
+        if data is None:
+            logger.warning("LLM 复核输出无法解析为 JSON: head={!r} tail={!r}", raw[:160], raw[-160:])
+            return None
+        logger.warning("LLM 复核 JSON 被截断，已恢复完整的核心判断字段。")
+
+    score = _opt_float(data.get("score"))
+    score = max(0.0, min(1.0, score if score is not None else 0.0))
+    raw_flag = data.get("is_highlight", False)
+    is_highlight = raw_flag if isinstance(raw_flag, bool) else str(raw_flag).lower() == "true"
 
     return HighlightJudgement(
-        is_highlight=bool(data.get("is_highlight", False)),
-        score=float(data.get("score", 0.0)),
-        reason=str(data.get("reason", "")),
+        is_highlight=is_highlight,
+        score=score,
+        reason=str(data.get("reason", "")).replace("\n", " ").strip()[:30],
         suggested_start_offset=_opt_float(data.get("start_offset")),
         suggested_end_offset=_opt_float(data.get("end_offset")),
     )

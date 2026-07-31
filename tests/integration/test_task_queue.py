@@ -6,37 +6,7 @@ import pytest
 from sqlmodel import select
 
 from app.db.models import TaskStatus
-
-# ---- 状态机 ----
-_VALID_TRANSITIONS: dict[str, set[str]] = {
-    TaskStatus.RECORDED: {TaskStatus.QUEUED_FOR_TRANS},
-    TaskStatus.QUEUED_FOR_TRANS: {TaskStatus.TRANSCRIBING},
-    TaskStatus.TRANSCRIBING: {TaskStatus.TRANSCRIBED, TaskStatus.TRANSIENT_FAILED, TaskStatus.FAILED},
-    TaskStatus.TRANSCRIBED: {TaskStatus.QUEUED_FOR_ANALYSIS},
-    TaskStatus.QUEUED_FOR_ANALYSIS: {TaskStatus.ANALYZING},
-    TaskStatus.ANALYZING: {TaskStatus.CANDIDATE_CREATED, TaskStatus.TRANSIENT_FAILED, TaskStatus.FAILED},
-    TaskStatus.CANDIDATE_CREATED: {TaskStatus.AWAITING_REVIEW, TaskStatus.APPROVED},
-    TaskStatus.AWAITING_REVIEW: {TaskStatus.APPROVED, TaskStatus.COMPLETED, TaskStatus.CANCELLED},
-    TaskStatus.APPROVED: {TaskStatus.APPROVED_WAITING_RENDER, TaskStatus.QUEUED_FOR_RENDER},
-    TaskStatus.APPROVED_WAITING_RENDER: {TaskStatus.QUEUED_FOR_RENDER, TaskStatus.CANCELLED},
-    TaskStatus.QUEUED_FOR_RENDER: {TaskStatus.RENDERING},
-    TaskStatus.RENDERING: {TaskStatus.RENDERED, TaskStatus.TRANSIENT_FAILED, TaskStatus.FAILED},
-    TaskStatus.RENDERED: {TaskStatus.AWAITING_PUBLISH_CONFIRMATION, TaskStatus.QUEUED_FOR_PUBLISH},
-    TaskStatus.AWAITING_PUBLISH_CONFIRMATION: {TaskStatus.QUEUED_FOR_PUBLISH, TaskStatus.CANCELLED},
-    TaskStatus.QUEUED_FOR_PUBLISH: {TaskStatus.PUBLISHING},
-    TaskStatus.PUBLISHING: {TaskStatus.COMPLETED, TaskStatus.TRANSIENT_FAILED, TaskStatus.FAILED},
-    TaskStatus.TRANSIENT_FAILED: {
-        TaskStatus.QUEUED_FOR_TRANS,
-        TaskStatus.QUEUED_FOR_ANALYSIS,
-        TaskStatus.QUEUED_FOR_RENDER,
-        TaskStatus.QUEUED_FOR_PUBLISH,
-        TaskStatus.FAILED,
-    },  # noqa: E501
-}
-
-
-def _can_transition(current: str, target: str) -> bool:
-    return target in _VALID_TRANSITIONS.get(current, set())
+from app.pipeline.stage_result import can_transition as _can_transition
 
 
 class TestStateMachine:
@@ -54,6 +24,7 @@ class TestStateMachine:
             (TaskStatus.TRANSCRIBED, TaskStatus.QUEUED_FOR_ANALYSIS, True),
             (TaskStatus.QUEUED_FOR_ANALYSIS, TaskStatus.ANALYZING, True),
             (TaskStatus.ANALYZING, TaskStatus.CANDIDATE_CREATED, True),
+            (TaskStatus.ANALYZING, TaskStatus.COMPLETED, True),
             (TaskStatus.ANALYZING, TaskStatus.FAILED, True),
             (TaskStatus.CANDIDATE_CREATED, TaskStatus.AWAITING_REVIEW, True),
             (TaskStatus.CANDIDATE_CREATED, TaskStatus.APPROVED, True),

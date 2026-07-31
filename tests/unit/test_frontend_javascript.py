@@ -75,8 +75,20 @@ def test_recording_pipeline_has_visible_switch_and_no_hardcoded_web_override() -
     recording_js = (STATIC_ROOT / "js" / "recording.js").read_text(encoding="utf-8")
 
     assert 'id="sw-recording-pipeline"' in template
+    assert 'id="sw-transcript-llm-refine"' in template
     assert "RECORDING_PIPELINE_ENABLED" in (PROJECT_ROOT / ".env.example").read_text(encoding="utf-8")
+    assert "TRANSCRIPT_LLM_REFINE_ENABLED" in (PROJECT_ROOT / ".env.example").read_text(encoding="utf-8")
     assert "pipeline: true" not in recording_js
+
+
+def test_room_and_feature_forms_pause_refresh_while_dirty() -> None:
+    """直播间录制选项或独立开关存在草稿时，不得被五秒轮询覆盖。"""
+    rooms_js = (STATIC_ROOT / "js" / "rooms.js").read_text(encoding="utf-8")
+
+    assert "dirtyRoomSections.size > 0" in rooms_js
+    assert "data-room-dirty-section" in rooms_js
+    assert "dirtyFeatureRooms.size > 0" in rooms_js
+    assert "data-feature-room-id" in rooms_js
 
 
 def test_frontend_module_graph_and_tab_interaction() -> None:

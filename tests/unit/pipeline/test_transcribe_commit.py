@@ -74,6 +74,7 @@ def test_transcribe_compute_does_not_read_undefined_settings(temp_db: None, monk
 
     task_id, segment_id = _seed_claimed_task()
     monkeypatch.setattr(pipeline_module, "get_default_pipeline", lambda: FakePipeline())
+    monkeypatch.setattr(pipeline_module, "_refine_transcript_for_storage", lambda _text: None)
 
     result = transcribe_compute(task_id)
 
@@ -82,6 +83,44 @@ def test_transcribe_compute_does_not_read_undefined_settings(temp_db: None, monk
     assert result["text"] == "测试转写"
     assert result["primary_backend"] == "paraformer"
     assert "text_version" not in result
+
+
+def test_transcribe_compute_stores_clean_text_summary_and_raw_asr(
+    temp_db: None,
+    monkeypatch: MonkeyPatch,
+) -> None:
+    """LLM 整理正文供分析使用，同时保留原始 ASR 并把摘要写入辅助元数据。"""
+    import json
+
+    from app.analysis import llm
+    from app.analysis.transcription import pipeline as pipeline_module
+    from app.analysis.transcription.models import ASRTranscriptResult
+    from app.pipeline.workers.transcribe import transcribe_compute
+
+    class FakePipeline:
+        def transcribe(self, _audio_path: str, initial_prompt: str | None = None) -> ASRTranscriptResult:
+            assert initial_prompt is None
+            return ASRTranscriptResult(
+                text="原始没有标点的转写",
+                final_text="原始没有标点的转写",
+                base_text="原始没有标点的转写",
+                backend="funasr-nano",
+            )
+
+    task_id, _segment_id = _seed_claimed_task()
+    monkeypatch.setattr(pipeline_module, "get_default_pipeline", lambda: FakePipeline())
+    monkeypatch.setattr(
+        pipeline_module,
+        "_refine_transcript_for_storage",
+        lambda _text: llm.TranscriptRefinement(clean_text="整理后的可读转写。", summary="片段摘要"),
+    )
+
+    result = transcribe_compute(task_id)
+    auxiliary = json.loads(result["auxiliary_json"])
+
+    assert result["text"] == "整理后的可读转写。"
+    assert result["final_text"] == "原始没有标点的转写"
+    assert auxiliary["transcript_refinement"] == {"applied": True, "summary": "片段摘要"}
 
 
 def test_commit_transcript_advances_without_nonexistent_task_field(temp_db: None) -> None:

@@ -172,3 +172,42 @@ def test_call_text_all_fail_returns_none(monkeypatch: MonkeyPatch) -> None:
 
     monkeypatch.setattr(llm_mod, "_complete", boom)
     assert llm_mod.call_text("hi") is None
+
+
+def test_extract_json_array_salvages_complete_items_from_truncated_output() -> None:
+    """数组尾部被截断时应保留此前已经完整闭合的对象。"""
+    raw = '[{"title":"第一条"},{"title":"第二条"},{"title":"未完成"'
+
+    assert llm_mod.extract_json_array(raw) == [{"title": "第一条"}, {"title": "第二条"}]
+
+
+def test_judge_highlight_recovers_score_from_truncated_reason(monkeypatch: MonkeyPatch) -> None:
+    """理由被截断时，已完整生成的高光布尔值和评分不应被丢弃。"""
+    monkeypatch.setattr(
+        llm_mod,
+        "call_text",
+        lambda *_args, **_kwargs: '{"is_highlight": true, "score": 1.4, "reason": "高音量配合',
+    )
+
+    result = llm_mod.judge_highlight("测试", {"volume": 0.9})
+
+    assert result is not None
+    assert result.is_highlight is True
+    assert result.score == 1.0
+    assert result.reason == "高音量配合"
+
+
+def test_refine_transcript_requires_complete_clean_text_and_summary(monkeypatch: MonkeyPatch) -> None:
+    """转写整理仅接受同时包含可读正文与摘要的 JSON。"""
+    monkeypatch.setattr(
+        llm_mod,
+        "call_text",
+        lambda *_args, **_kwargs: '{"clean_text":"整理后的正文。","summary":"本段摘要"}',
+    )
+
+    result = llm_mod.refine_transcript("没有标点的原始转写")
+
+    assert result == llm_mod.TranscriptRefinement(clean_text="整理后的正文。", summary="本段摘要")
+
+    monkeypatch.setattr(llm_mod, "call_text", lambda *_args, **_kwargs: '{"clean_text":"只有正文"}')
+    assert llm_mod.refine_transcript("原始转写") is None

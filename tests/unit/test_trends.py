@@ -161,3 +161,25 @@ def test_collect_trends_parses_mocked_llm(temp_db: None, monkeypatch: MonkeyPatc
 
     # 入库验证。
     assert store.save_trends(recs) == 1
+
+
+def test_collect_trends_caps_request_and_salvages_truncated_array(
+    temp_db: None,
+    monkeypatch: MonkeyPatch,
+) -> None:
+    """单次采集最多请求 12 条，且应保留截断前的完整对象。"""
+    monkeypatch.setattr(collector_mod.settings, "trend_enabled", True, raising=False)
+    monkeypatch.setattr(collector_mod.settings, "trend_web_search", True, raising=False)
+    monkeypatch.setattr(collector_mod.settings, "trend_max_items", 40, raising=False)
+    prompts: list[str] = []
+
+    def fake_search(prompt: str, *_args, **_kwargs) -> str:
+        prompts.append(prompt)
+        return '[{"title":"完整一","source":"web"},{"title":"完整二"},{"title":"截断"'
+
+    monkeypatch.setattr(llm_mod, "call_trend_search", fake_search)
+
+    records = collect_trends()
+
+    assert [record.title for record in records] == ["完整一", "完整二"]
+    assert prompts and "最多 12 条" in prompts[0]

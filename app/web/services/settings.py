@@ -18,10 +18,14 @@ def get_settings_view() -> dict[str, Any]:
     :returns: 设置视图字典。
     """
     pipeline_override = settings_store.get_setting("recording_pipeline_enabled", "").strip()
+    refinement_override = settings_store.get_setting("transcript_llm_refine_enabled", "").strip()
     return {
         "recording_pipeline_enabled": settings_store.recording_pipeline_enabled(),
         "recording_pipeline_env_default": settings.recording_pipeline_enabled,
         "recording_pipeline_overridden": bool(pipeline_override),
+        "transcript_llm_refine_enabled": settings_store.transcript_llm_refine_enabled(),
+        "transcript_llm_refine_env_default": settings.transcript_llm_refine_enabled,
+        "transcript_llm_refine_overridden": bool(refinement_override),
         "biliup_enabled": settings_store.biliup_enabled(),
         "auto_upload": settings_store.auto_upload_enabled(),
         "upload_active": settings_store.upload_active(),
@@ -42,6 +46,10 @@ def update_settings(fields: dict[str, Any]) -> dict[str, Any]:
         enabled = bool(fields["recording_pipeline_enabled"])
         settings_store.set_bool("recording_pipeline_enabled", enabled)
         logger.info("录制实时转写/分析默认开关已设置为 {}，下次启动录制生效。", enabled)
+    if "transcript_llm_refine_enabled" in fields and fields["transcript_llm_refine_enabled"] is not None:
+        enabled = bool(fields["transcript_llm_refine_enabled"])
+        settings_store.set_bool("transcript_llm_refine_enabled", enabled)
+        logger.info("单切片转写 LLM 整理与摘要开关已设置为 {}。", enabled)
     if "biliup_enabled" in fields and fields["biliup_enabled"] is not None:
         settings_store.set_bool("biliup_enabled", bool(fields["biliup_enabled"]))
         logger.warning("biliup 上传开关被设置为 {}(合规风险自负)。", bool(fields["biliup_enabled"]))

@@ -2,7 +2,18 @@
 
 ## 未发布
 
+暂无。
+
+## V0.1.16.3 Alpha (2026-08-01)
+
 ### 变更
+
+- **recording/segments**: 默认分片目标由 60 秒调整为 300 秒；继续由 FFmpeg 在关键帧边界完成切分，因此实际单片时长允许小幅浮动，并保留环境变量覆盖。
+- **transcription/asr**: 默认主引擎调整为 Fun-ASR-Nano；无有效输出时依次回退 Paraformer 与 Whisper，并记录实际引擎、主引擎状态和回退原因。
+- **transcription/llm**: 每个切片完成 ASR 与房间别名纠错后，可调用已配置的 OpenAI 兼容 LLM 补全标点、整理可读正文并生成不超过 120 字的片段概括；分析消费整理正文，原始 ASR 继续保存在现有字段中，失败时安全降级且不改变数据库 Schema。
+- **web/features**: 功能开关页新增“单切片 LLM 转写整理”运行时开关；实时转写页展示整理正文、片段概括、原始 ASR 与实际语音引擎。
+- **trends/collector**: 单次趋势采集最多请求 12 条，解析器可保留被截断数组中此前完整闭合的对象，降低长响应整批丢弃风险。
+- **version/release**: Python、C/Cython、Rust、Portable、Docker、测试与文档统一升级为 `0.1.16.3-alpha`，Engine Pack 兼容区间调整为 `0.1.16.3-alpha ≤ app < 0.1.17`。
 
 - **portable/dependencies**: 将 `pip 26.2` 纳入 Python 3.11/3.12 严格哈希运行时锁，Launcher 使用 `pip freeze --all` 校验并自动升级旧 `.venv`；同步升级 FastAPI、Uvicorn、SQLModel、Pydantic、websockets、aiofiles、faster-whisper、FunASR、ModelScope 及其兼容传递依赖。
 - **build/toolchain**: 构建工具升级至 `wheel 0.47.0` 与 `Cython 3.2.9`；固定源码 bootstrap wheel 已重新构建并确认 SHA-256 保持不变，慢速下载的读取超时提高至 300 秒。
@@ -11,6 +22,10 @@
 
 - **pipeline/transcription**: 移除转写计算结果中无消费者的 `text_version` 陈旧字段，避免 Paraformer 与 SenseVoice 已完成后因读取不存在的 `Settings.transcript_version` 而将任务错误标记为失败；补充真实 compute 成功路径回归测试。
 - **transcription/portable**: Paraformer 本地模型兼容仅含 ModelScope `configuration.json` 的 CAM++ v1.0.0 Engine Pack，显式注册 `CAMPPlus` 架构、`WavFrontend` 与已验证的本地权重；含 `config.yaml` 的新版模型继续使用 FunASR 原生加载，避免模型目录被误作 registry key 而导致实时转写失败。
+- **analysis/danmaku**: 弹幕基线按 SQLModel 实际返回的 datetime 标量处理，修复将时间当作单元素元组解包导致分析任务崩溃。
+- **pipeline/state**: 状态机允许无候选的分析任务从 `analyzing` 直接进入 `completed`，测试改为调用生产状态机而不是维护一份重复矩阵。
+- **analysis/llm**: 高光复核输出在理由字段被截断时可恢复已经完整生成的布尔判断和评分，评分会限制到 0–1；无法恢复时同时记录输出首尾，便于定位服务端截断。
+- **web/rooms**: 直播间录制选项和直播间独立功能开关存在未保存草稿时，暂停对应列表自动重绘并显示提示，保存最后一组草稿后恢复轮询。
 - **portable/release**: 同步版本真源、Payload、模型锁与 Fixture Engine Pack 的固定源码身份，补充跨文件一致性回归测试，避免 Release 在 Payload 合约校验阶段因源码 SHA 漂移而中断。
 
 ## V0.1.16.2 Alpha (2026-07-31)

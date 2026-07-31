@@ -653,12 +653,12 @@ def _danmaku_baseline(
         w_start_n = _n(window_start) if window_start else None  # type: ignore[arg-type]
         w_end_n = _n(window_end) if window_end else None  # type: ignore[arg-type]
         filtered: list[_datetime] = []
-        for (ts,) in all_rows:
+        for ts in all_rows:
             t = _n(ts)  # type: ignore[arg-type]
             if w_start_n is not None and w_end_n is not None and w_start_n <= t <= w_end_n:  # type: ignore[operator]
                 continue
             filtered.append(t)
-        rows = [(t,) for t in filtered]
+        rows = filtered
 
     if not rows or len(rows) < _DANMAKU_MIN_SAMPLES:
         return 0.0, 0
@@ -666,7 +666,9 @@ def _danmaku_baseline(
     # V0.1.10: 使用加速版分桶+中位数 (排序→float 秒→分桶→速率→中位数)。
     from app.analysis.speedups import danmaku_baseline_rate
 
-    times_sorted = sorted((_n(r[0]) - _n(rows[0][0])).total_seconds() for r in rows)  # type: ignore[arg-type]
+    timestamps_sorted = sorted(_n(ts) for ts in rows)  # type: ignore[arg-type]
+    base_ts = timestamps_sorted[0]
+    times_sorted = [(ts - base_ts).total_seconds() for ts in timestamps_sorted]
     return danmaku_baseline_rate(times_sorted, _DANMAKU_BUCKET_S)
 
 

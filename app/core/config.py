@@ -60,7 +60,8 @@ class Settings(BaseSettings):
     ffprobe_path: str = "ffprobe"
 
     # ---------- 录制 / 分片 ----------
-    segment_duration_s: int = Field(default=60, ge=5, le=600)
+    # FFmpeg 按关键帧边界完成分段，因此 300 秒是目标值，实际片长会有小幅浮动。
+    segment_duration_s: int = Field(default=300, ge=5, le=600)
     preferred_stream_protocol: Literal["hls", "flv"] = "hls"
     stream_quality: int = 10000
     reconnect_max_backoff_s: int = Field(default=30, ge=1)
@@ -85,8 +86,8 @@ class Settings(BaseSettings):
     asr_resource_policy: Literal["strict", "warn"] = "warn"
 
     # ---------- AI:多引擎 ASR 流水线 (V0.1.12) ----------
-    # 主引擎: paraformer / whisper, 默认 paraformer-zh
-    asr_primary: str = "paraformer"
+    # 主引擎: funasr_nano / paraformer / whisper, 默认 Fun-ASR-Nano
+    asr_primary: str = "funasr_nano"
     # 辅助特征提取: SenseVoice-Small (情感/笑声/音乐/事件)
     asr_sensevoice: bool = True
     # 低置信度复核: Fun-ASR-Nano
@@ -137,6 +138,9 @@ class Settings(BaseSettings):
     llm_price_input_per_m: float = 0.0
     llm_price_output_per_m: float = 0.0
     llm_daily_budget: float = 0.0
+    # 每个录制切片完成 ASR 后，是否调用 LLM 整理正文并生成摘要。
+    transcript_llm_refine_enabled: bool = True
+    transcript_llm_refine_max_tokens: int = Field(default=4096, ge=128, le=8192)
 
     # 兼容旧配置:若未填 llm_* 而填了 anthropic_*,仍可回退读取(已废弃,仅为兼容保留)。
     anthropic_api_key: str = Field(default="", repr=False)
@@ -153,7 +157,7 @@ class Settings(BaseSettings):
     trend_model: str = ""  # 趋势采集专用模型名(留空则用 llm_model)
     trend_web_search: bool = True  # 是否启用联网搜索工具采集(关闭则仅靠模型知识)
     trend_max_searches: int = Field(default=5, ge=1, le=20)  # 单次采集最多联网搜索次数
-    trend_max_items: int = Field(default=40, ge=1, le=200)  # 单次采集解析条目上限
+    trend_max_items: int = Field(default=12, ge=1, le=200)  # 单次采集解析条目上限
     trend_retention_days: int = Field(default=14, ge=1)  # 资料库保留天数
     trend_match_days: int = Field(default=7, ge=1)  # 高光/文案参考的"近期"窗口(天)
 

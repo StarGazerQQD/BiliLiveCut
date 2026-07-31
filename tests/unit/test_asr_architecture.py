@@ -130,6 +130,7 @@ class TestPerEngineRevision:
 
         source = inspect.getsource(FunASRBackend._load_funasr)  # type: ignore[arg-type]
         assert "_REVISION_NANO" in source, "_load_funasr should use _REVISION_NANO"
+        assert "asr_primary_device if for_primary else settings.asr_review_device" in source
 
 
 # ── provenance 字段 ───────────────────────────────────

@@ -72,11 +72,18 @@ async function loadRecording() {
 // ----------------------------- \u6e32\u67d3:\u5b9e\u65f6\u8f6c\u5199 ----------------------------- //
 async function loadTranscripts() {
   const rows = await api("GET", "/api/transcripts?limit=30");
-  $("#transcripts-list").innerHTML = rows.length ? rows.map((t) => `
+  $("#transcripts-list").innerHTML = rows.length ? rows.map((t) => {
+    const rawDetails = t.llm_refined && t.raw_text && t.raw_text !== t.text
+      ? `<details style="margin-top:8px"><summary class="muted">查看原始 ASR</summary><div class="txt muted">${esc(t.raw_text)}</div></details>`
+      : "";
+    return `
     <div class="item">
-      <div class="sub">\u7247\u6bb5 #${t.segment_id} \u00b7 ${esc(t.language || "")} \u00b7 ${esc(t.created_at || "")}</div>
+      <div class="sub">\u7247\u6bb5 #${t.segment_id} \u00b7 ${esc(t.language || "")} \u00b7 ${esc(t.primary_backend || "")} \u00b7 ${esc(t.created_at || "")}</div>
       <div class="txt">${esc(t.text) || "(\u7a7a)"}</div>
-    </div>`).join("") : `<div class="empty">\u6682\u65e0\u8f6c\u5199\u3002\u8bf7\u5728\u300c\u914d\u7f6e \u2192 \u529f\u80fd\u5f00\u5173\u300d\u542f\u7528\u201c\u5f55\u5236\u5b9e\u65f6\u8f6c\u5199\u201d\uff0c\u6216\u5728 CLI \u4f7f\u7528 --pipeline\u3002</div>`;
+      ${t.summary ? `<div class="sub" style="margin-top:8px"><b>片段概括：</b>${esc(t.summary)}</div>` : ""}
+      ${rawDetails}
+    </div>`;
+  }).join("") : `<div class="empty">\u6682\u65e0\u8f6c\u5199\u3002\u8bf7\u5728\u300c\u914d\u7f6e \u2192 \u529f\u80fd\u5f00\u5173\u300d\u542f\u7528\u201c\u5f55\u5236\u5b9e\u65f6\u8f6c\u5199\u201d\uff0c\u6216\u5728 CLI \u4f7f\u7528 --pipeline\u3002</div>`;
 }
 
 // ----------------------------- \u6e32\u67d3:\u5f39\u5e55\u70ed\u5ea6 ----------------------------- //

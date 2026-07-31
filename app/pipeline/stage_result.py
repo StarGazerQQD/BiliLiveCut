@@ -25,7 +25,12 @@ _VALID_TRANSITIONS: dict[str, set[str]] = {
     TaskStatus.TRANSCRIBING: {TaskStatus.TRANSCRIBED, TaskStatus.TRANSIENT_FAILED, TaskStatus.FAILED},
     TaskStatus.TRANSCRIBED: {TaskStatus.QUEUED_FOR_ANALYSIS},
     TaskStatus.QUEUED_FOR_ANALYSIS: {TaskStatus.ANALYZING},
-    TaskStatus.ANALYZING: {TaskStatus.CANDIDATE_CREATED, TaskStatus.TRANSIENT_FAILED, TaskStatus.FAILED},
+    TaskStatus.ANALYZING: {
+        TaskStatus.CANDIDATE_CREATED,
+        TaskStatus.COMPLETED,
+        TaskStatus.TRANSIENT_FAILED,
+        TaskStatus.FAILED,
+    },
     TaskStatus.CANDIDATE_CREATED: {TaskStatus.AWAITING_REVIEW, TaskStatus.APPROVED},
     TaskStatus.AWAITING_REVIEW: {TaskStatus.APPROVED, TaskStatus.COMPLETED, TaskStatus.CANCELLED},
     TaskStatus.APPROVED: {TaskStatus.APPROVED_WAITING_RENDER, TaskStatus.QUEUED_FOR_RENDER},

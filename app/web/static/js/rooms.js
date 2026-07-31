@@ -2,6 +2,8 @@
 import { $, api, toast, esc, badge } from "./common.js";
 
 let globalFeatureDirty = false;
+const dirtyRoomSections = new Set();
+const dirtyFeatureRooms = new Set();
 
 // ----------------------------- 渲染:直播间 ----------------------------- //
 async function loadRooms() {
@@ -9,6 +11,12 @@ async function loadRooms() {
   $("#stat-candidates").textContent = data.counts.candidates;
   $("#stat-clips").textContent = data.counts.clips;
   $("#stat-sessions").textContent = data.counts.active_sessions;
+
+  if (dirtyRoomSections.size > 0) {
+    $("#rooms-dirty-hint").style.display = "";
+    return;
+  }
+  $("#rooms-dirty-hint").style.display = "none";
 
   const modes = data.modes;
   const html = data.rooms.map((r) => `
@@ -28,7 +36,7 @@ async function loadRooms() {
               : `<button class="ok" onclick="startRoom(${r.id})">\u5f00\u59cb\u5f55\u5236</button>`}
         </div>
       </div>
-      <div class="thresholds">
+      <div class="thresholds" data-room-dirty-section="controls:${r.id}">
         <label>\u5ba1\u6838\u6a21\u5f0f
           <select id="mode-${r.id}">
             ${modes.map((m) => `<option value="${m}" ${m === r.mode ? "selected" : ""}>${m}</option>`).join("")}
@@ -42,7 +50,7 @@ async function loadRooms() {
         </label>
         <button onclick="saveRoom(${r.id})">\u4fdd\u5b58</button>
       </div>
-      <div class="thresholds" style="margin-top: 6px">
+      <div class="thresholds" data-room-dirty-section="controls:${r.id}" style="margin-top: 6px">
         <label class="switch-row">
           <input type="checkbox" id="sw-se-${r.id}" ${r.schedule_enabled ? "checked" : ""} ${r.running ? "disabled" : ""} />
           \u9884\u7ea6\u5f55\u5236
@@ -57,7 +65,7 @@ async function loadRooms() {
         </label>
         ${r.running ? '<span class="muted">(\u5f55\u5236\u4e2d\u9501\u5b9a)</span>' : ""}
       </div>
-      <details class="room-config-detail" style="margin-top:8px">
+      <details class="room-config-detail" data-room-dirty-section="config:${r.id}" style="margin-top:8px">
         <summary style="font-size:12px;color:var(--muted);cursor:pointer">\u623f\u95f4\u914d\u7f6e(\u9ad8\u5149\u6a21\u578b/\u70ed\u8bcd/\u522b\u540d/\u5c4f\u853d)</summary>
         <div class="thresholds" style="margin-top:6px;flex-direction:column;align-items:stretch">
           <label>\u9ad8\u5149\u8bc4\u5206\u6a21\u5f0f
@@ -101,7 +109,9 @@ async function saveRoom(id) {
       auto_threshold_enabled: ($(`#sw-at-${id}`) || {}).checked,
       danmaku_sentiment_enabled: ($(`#sw-ds-${id}`) || {}).checked,
     });
+    dirtyRoomSections.delete(`controls:${id}`);
     toast("\u5df2\u4fdd\u5b58\u9608\u503c/\u6a21\u5f0f");
+    if (dirtyRoomSections.size === 0) await loadRooms();
   } catch (e) { toast("\u4fdd\u5b58\u5931\u8d25:" + e.message); }
 }
 
@@ -113,7 +123,9 @@ async function saveRoomConfig(id) {
     const bt = ($(`#bt-${id}`).value || "").split("\n").map(s => s.trim()).filter(Boolean);
     const highlightScorerMode = $(`#hm-${id}`).value || "inherit";
     await api("PATCH", `/api/rooms/${id}`, { room_config: { hotwords: hw, aliases: al, highlight_keywords: hk, blocked_topics: bt, highlight_scorer_mode: highlightScorerMode } });
+    dirtyRoomSections.delete(`config:${id}`);
     toast("\u623f\u95f4\u914d\u7f6e\u5df2\u4fdd\u5b58");
+    if (dirtyRoomSections.size === 0) await loadRooms();
   } catch (e) { toast("\u4fdd\u5b58\u5931\u8d25:" + e.message); }
 }
 
@@ -133,13 +145,22 @@ async function loadFeatureSwitches() {
   ]);
   if (!globalFeatureDirty) {
     $("#sw-recording-pipeline").checked = settings.recording_pipeline_enabled !== false;
+    $("#sw-transcript-llm-refine").checked = settings.transcript_llm_refine_enabled !== false;
     $("#recording-pipeline-hint").textContent = settings.recording_pipeline_overridden
       ? "当前值来自控制台运行时设置；修改后从下次开始或恢复录制生效。"
       : `当前值来自 .env：RECORDING_PIPELINE_ENABLED=${settings.recording_pipeline_env_default !== false ? "true" : "false"}。`;
+    $("#transcript-llm-refine-hint").textContent = settings.transcript_llm_refine_overridden
+      ? "当前值来自控制台运行时设置；从下一个完成 ASR 的切片起生效。"
+      : `当前值来自 .env：TRANSCRIPT_LLM_REFINE_ENABLED=${settings.transcript_llm_refine_env_default !== false ? "true" : "false"}。`;
   }
+  if (dirtyFeatureRooms.size > 0) {
+    $("#feature-dirty-hint").style.display = "";
+    return;
+  }
+  $("#feature-dirty-hint").style.display = "none";
   const list = $("#feature-switches-list");
   list.innerHTML = data.rooms.length ? data.rooms.map((r) => `
-    <div class="item">
+    <div class="item" data-feature-room-id="${r.id}">
       <div class="head">
         <div>
           <div class="title">${esc(r.title || r.input_url)} ${badge(r.recording_state || (r.running ? "running" : "stopped"))}</div>
@@ -175,9 +196,10 @@ async function saveGlobalFeatureSettings() {
   try {
     await api("PATCH", "/api/settings", {
       recording_pipeline_enabled: $("#sw-recording-pipeline").checked,
+      transcript_llm_refine_enabled: $("#sw-transcript-llm-refine").checked,
     });
     globalFeatureDirty = false;
-    toast("已保存录制实时转写开关；下次开始或恢复录制生效");
+    toast("已保存实时转写与 LLM 整理开关");
     await loadFeatureSwitches();
   } catch (e) { toast("保存失败:" + e.message); }
 }
@@ -196,8 +218,9 @@ async function saveFeatureSwitches(id) {
       auto_approve_threshold: parseFloat($(`#feature-approve-threshold-${id}`).value),
       review_threshold: parseFloat($(`#feature-review-threshold-${id}`).value),
     });
+    dirtyFeatureRooms.delete(String(id));
     toast("已保存该直播间的独立功能开关");
-    await Promise.all([loadFeatureSwitches(), loadRooms()]);
+    if (dirtyFeatureRooms.size === 0) await Promise.all([loadFeatureSwitches(), loadRooms()]);
   } catch (e) { toast("保存失败:" + e.message); }
 }
 
@@ -339,6 +362,27 @@ $("#btn-cluster").addEventListener("click", async () => {
   } catch (e) { toast("\u805a\u7c7b\u5931\u8d25:" + e.message); }
 });
 
+function markRoomSectionDirty(event) {
+  const section = event.target?.closest?.("[data-room-dirty-section]");
+  const key = section?.dataset?.roomDirtySection;
+  if (!key) return;
+  dirtyRoomSections.add(key);
+  $("#rooms-dirty-hint").style.display = "";
+}
+
+function markFeatureRoomDirty(event) {
+  const room = event.target?.closest?.("[data-feature-room-id]");
+  const roomId = room?.dataset?.featureRoomId;
+  if (!roomId) return;
+  dirtyFeatureRooms.add(roomId);
+  $("#feature-dirty-hint").style.display = "";
+}
+
+$("#rooms-list").addEventListener("input", markRoomSectionDirty);
+$("#rooms-list").addEventListener("change", markRoomSectionDirty);
+$("#feature-switches-list").addEventListener("input", markFeatureRoomDirty);
+$("#feature-switches-list").addEventListener("change", markFeatureRoomDirty);
 $("#sw-recording-pipeline").addEventListener("change", () => { globalFeatureDirty = true; });
+$("#sw-transcript-llm-refine").addEventListener("change", () => { globalFeatureDirty = true; });
 
 export { loadRooms, saveRoom, saveRoomConfig, loadFeatureSwitches, saveGlobalFeatureSettings, saveFeatureSwitches, loadThresholdLearning, loadSchedules, delSchedule, loadTopics, toggleCollection };

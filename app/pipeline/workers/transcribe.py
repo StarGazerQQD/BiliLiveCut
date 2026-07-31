@@ -51,6 +51,7 @@ def transcribe_compute(task_id: int) -> dict[str, Any]:
     """
     from app.analysis.transcription.pipeline import (  # noqa: PLC0415
         _apply_room_aliases,
+        _refine_transcript_for_storage,
         get_default_pipeline,
     )
 
@@ -80,6 +81,9 @@ def transcribe_compute(task_id: int) -> dict[str, Any]:
     # 4) 阿里别名纠错
     text = _apply_room_aliases(result.text, segment_id)
     final_text = _apply_room_aliases(result.final_text or result.text, segment_id)
+    raw_text = final_text or text
+    refinement = _refine_transcript_for_storage(raw_text)
+    display_text = refinement.clean_text if refinement is not None else raw_text
 
     # 5) words JSON
     words_json = json.dumps(
@@ -88,9 +92,9 @@ def transcribe_compute(task_id: int) -> dict[str, Any]:
     )
 
     # 6) 辅助特征 JSON
-    auxiliary_json: str | None = None
+    auxiliary_payload: dict[str, object] = {}
     if result.emotions or result.reviewed_segments:
-        auxiliary_json = json.dumps(
+        auxiliary_payload.update(
             {
                 "emotions": [
                     {"type": e.event_type, "start": e.start, "end": e.end, "confidence": e.confidence}
@@ -98,9 +102,14 @@ def transcribe_compute(task_id: int) -> dict[str, Any]:
                 ],
                 "reviewed_segments": result.reviewed_segments,
                 "engine": result.backend,
-            },
-            ensure_ascii=False,
+            }
         )
+    if refinement is not None:
+        auxiliary_payload["transcript_refinement"] = {
+            "applied": True,
+            "summary": refinement.summary,
+        }
+    auxiliary_json = json.dumps(auxiliary_payload, ensure_ascii=False) if auxiliary_payload else None
 
     # 7) review reasons
     review_reasons_json = json.dumps(result.review_reasons, ensure_ascii=False) if result.review_reasons else None
@@ -117,7 +126,7 @@ def transcribe_compute(task_id: int) -> dict[str, Any]:
     _logger.info(
         "transcribe_compute segment=%s text=%d chars backend=%s review=%s",
         segment_id,
-        len(final_text or text),
+        len(display_text),
         result.backend,
         result.review_triggered,
     )
@@ -125,13 +134,13 @@ def transcribe_compute(task_id: int) -> dict[str, Any]:
     return {
         "transcribed": True,
         "segment_id": segment_id,
-        "text": final_text or text,
+        "text": display_text,
         "words_json": words_json,
         "avg_logprob": avg_logprob_val,
         "auxiliary_json": auxiliary_json,
         "language": result.language,
         "base_text": result.base_text or result.text,
-        "final_text": final_text or result.text,
+        "final_text": raw_text,
         "primary_backend": result.backend,
         "primary_model_id": result.model_id,
         "primary_model_revision": result.model_revision,

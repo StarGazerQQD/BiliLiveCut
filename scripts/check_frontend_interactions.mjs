@@ -46,10 +46,10 @@ class FakeElement {
     this.listeners.set(type, listener);
   }
 
-  async emit(type) {
+  async emit(type, target = this) {
     const listener = this.listeners.get(type);
     assert.equal(typeof listener, "function", `${this.id} is missing its ${type} handler`);
-    await listener({ target: this });
+    await listener({ target });
   }
 
   dispatchEvent(event) {
@@ -145,6 +145,7 @@ globalThis.clearTimeout = () => {};
 
 const requests = [];
 const requestDetails = [];
+let dashboardRooms = [];
 globalThis.fetch = async (path, options = {}) => {
   const requestPath = String(path);
   requests.push(requestPath);
@@ -154,7 +155,7 @@ globalThis.fetch = async (path, options = {}) => {
     payload = {
       counts: { candidates: 0, clips: 0, active_sessions: 0 },
       modes: ["manual", "semi", "auto"],
-      rooms: [],
+      rooms: dashboardRooms,
       sessions: [],
     };
   } else if (requestPath.startsWith("/api/notifications")) {
@@ -199,6 +200,43 @@ try {
   assert.equal(typeof globalThis.saveGlobalFeatureSettings, "function", "global feature save action was not exported");
   assert.ok(element("btn-add").listeners.has("click"), "add-room button handler was not registered");
 
+  dashboardRooms = [{
+    id: 1,
+    title: "草稿保护测试",
+    input_url: "1",
+    room_id: 1,
+    authorized: true,
+    running: false,
+    recording_state: "stopped",
+    room_config: {},
+    mode: "manual",
+    highlight_threshold: 0.6,
+    auto_publish_threshold: 0.8,
+    schedule_enabled: false,
+    auto_threshold_enabled: false,
+    danmaku_sentiment_enabled: true,
+  }];
+  await roomsTab.emit("click");
+  await settle();
+  const roomsMarkupBeforeDraft = element("rooms-list").innerHTML;
+  assert.match(roomsMarkupBeforeDraft, /草稿保护测试/);
+  const dirtyRoomControl = {
+    closest(selector) {
+      assert.equal(selector, "[data-room-dirty-section]");
+      return { dataset: { roomDirtySection: "controls:1" } };
+    },
+  };
+  await element("rooms-list").emit("input", dirtyRoomControl);
+  dashboardRooms[0].title = "服务器刷新后的标题";
+  await roomsTab.emit("click");
+  await settle();
+  assert.equal(
+    element("rooms-list").innerHTML,
+    roomsMarkupBeforeDraft,
+    "periodic refresh discarded unsaved room recording options",
+  );
+  assert.equal(element("rooms-dirty-hint").style.display, "", "dirty room hint was not shown");
+
   await candidatesTab.emit("click");
   await settle();
 
@@ -238,7 +276,7 @@ try {
   assert.match(element("llm-test-results").innerHTML, /pong/, "connectivity result detail was not rendered");
 
   console.log(
-    "PASS: frontend module graph, bindings, initial refresh and tab interaction; feature switches, draft preservation and draft connectivity test",
+    "PASS: frontend module graph, bindings, initial refresh and tab interaction; room/model draft preservation, feature switches and draft connectivity test",
   );
 } finally {
   await rm(temporaryRoot, { recursive: true, force: true });
