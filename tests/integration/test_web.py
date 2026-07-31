@@ -289,10 +289,17 @@ def test_settings_toggle_and_uploads(temp_db: None, monkeypatch: MonkeyPatch) ->
 
     with TestClient(app) as client:
         s = client.get("/api/settings").json()
+        assert s["recording_pipeline_enabled"] is True
+        assert s["recording_pipeline_overridden"] is False
         assert s["biliup_enabled"] is False
         assert s["upload_active"] is False
 
-        s2 = client.patch("/api/settings", json={"biliup_enabled": True}).json()
+        s2 = client.patch(
+            "/api/settings",
+            json={"recording_pipeline_enabled": False, "biliup_enabled": True},
+        ).json()
+        assert s2["recording_pipeline_enabled"] is False
+        assert s2["recording_pipeline_overridden"] is True
         assert s2["biliup_enabled"] is True
         assert s2["upload_active"] is True
 

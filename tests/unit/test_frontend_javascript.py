@@ -69,6 +69,16 @@ def test_html_template_element_ids_are_unique(template_path: Path) -> None:
     assert duplicates == [], f"{template_path.name} 存在重复 ID: {duplicates}"
 
 
+def test_recording_pipeline_has_visible_switch_and_no_hardcoded_web_override() -> None:
+    """Web 录制应采用可见全局开关，不再把 Pipeline 强制写死为开启。"""
+    template = (PROJECT_ROOT / "app" / "web" / "templates" / "dashboard.html").read_text(encoding="utf-8")
+    recording_js = (STATIC_ROOT / "js" / "recording.js").read_text(encoding="utf-8")
+
+    assert 'id="sw-recording-pipeline"' in template
+    assert "RECORDING_PIPELINE_ENABLED" in (PROJECT_ROOT / ".env.example").read_text(encoding="utf-8")
+    assert "pipeline: true" not in recording_js
+
+
 def test_frontend_module_graph_and_tab_interaction() -> None:
     """真实加载全部 ES Module，并验证初始刷新、事件绑定和标签切换。"""
     node = shutil.which("node")

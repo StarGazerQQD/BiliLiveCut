@@ -42,7 +42,7 @@ class UpdateRoomRequest(BaseModel):
 class StartRequest(BaseModel):
     """录制/流水线启动请求体。"""
 
-    pipeline: bool = True
+    pipeline: bool | None = None
     produce: bool = False
 
 

@@ -230,6 +230,19 @@
           <a href="/?tab=models">大模型启用</a>
         </p>
       </div>
+      <div class="card">
+        <div class="head">
+          <div>
+            <h3>录制实时转写</h3>
+            <p class="hint" id="recording-pipeline-hint">载入中…</p>
+          </div>
+          <button class="primary" onclick="saveGlobalFeatureSettings()">保存全局开关</button>
+        </div>
+        <label class="switch-row" style="align-items:flex-start">
+          <input type="checkbox" id="sw-recording-pipeline" />
+          <span><b>启用录制 Pipeline</b><br /><span class="muted">新开始或恢复的手动录制、预约录制、恢复录制及未显式传参的 CLI 录制将实时转写并进入高光分析；录制中修改不会影响当前会话。</span></span>
+        </label>
+      </div>
       <div id="feature-switches-list"></div>
     </section>
 
@@ -279,10 +292,11 @@
         <p class="hint" id="login-status" style="margin-top:8px"></p>
         <hr style="margin:16px 0" />
         <p class="hint">
-          登录后系统自动收集 Bilibili 登录态 Cookie,用于弹幕采集、鉴权接口等。<br/>
+          登录后系统自动收集 Bilibili 登录态 Cookie,用于平台允许的部分高清取流和登录优先的弹幕接口。<br/>
+          登录弹幕接口报错时会立即转为匿名采集,并按配置间隔重试；达到单场失败上限后本场固定匿名。<br/>
           点击「登录」将弹出无痕浏览器窗口,在窗口中完成扫码或密码登录后,
           Cookie 会自动保存并关闭窗口。<br/>
-          清除 Cookie 或退出登录后,弹幕采集等需要登录态的功能将不可用。
+          清除 Cookie 或退出登录后,公开弹幕仍可匿名采集；仅需要登录态的功能会受影响。
         </p>
       </div>
     </section>

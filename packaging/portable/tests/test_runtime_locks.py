@@ -52,7 +52,7 @@ def test_runtime_locks_are_complete_and_strict() -> None:
     py311 = _load_lock("py311")
     py312 = _load_lock("py312")
 
-    assert len(py311) == len(py312) == 111
+    assert len(py311) == len(py312) == 116
     assert set(py311) == set(py312)
     assert _direct_requirement_names() <= set(py311)
 
@@ -63,6 +63,8 @@ def test_runtime_locks_cover_core_application_imports() -> None:
         "fastapi",
         "loguru",
         "numpy",
+        "openai",
+        "pip",
         "playwright",
         "pydantic-settings",
         "pyyaml",
@@ -78,15 +80,24 @@ def test_runtime_locks_cover_core_application_imports() -> None:
 
 def test_runtime_locks_keep_security_upgrades_pinned() -> None:
     expected = {
-        "fastapi": "0.139.2",
+        "aiofiles": "25.1.0",
+        "fastapi": "0.141.1",
+        "faster-whisper": "1.2.1",
+        "funasr": "1.3.30",
         "jinja2": "3.1.6",
-        "modelscope": "1.38.1",
+        "modelscope": "1.39.0",
+        "openai": "2.51.0",
         "orjson": "3.11.9",
+        "pip": "26.2",
+        "pydantic": "2.13.4",
         "python-dotenv": "1.2.2",
         "python-multipart": "0.0.32",
+        "sqlmodel": "0.0.39",
         "starlette": "1.3.1",
         "torch": "2.13.0",
         "torchaudio": "2.11.0",
+        "uvicorn": "0.52.0",
+        "websockets": "17.0",
     }
     py311 = _load_lock("py311")
     py312 = _load_lock("py312")
@@ -128,3 +139,4 @@ def test_release_workflow_performs_real_offline_installs() -> None:
     assert "from blc_portable.launcher.main import install_dependencies" in workflow
     assert "Full Bundle launcher dependency install failed" in workflow
     assert "Full bundle offline installation OK" in workflow
+    assert workflow.count("assert m.version('pip') == '26.2'") >= 2

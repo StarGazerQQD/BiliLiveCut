@@ -28,9 +28,9 @@ from blc_portable.console import configure_console_encoding
 
 # -- Constants ──────────────────────────────────────────────────
 APP_NAME = "BiliLiveCut"
-VERSION = "V0.1.16.1 Alpha"
-RELEASE_VERSION = "0.1.16.1-alpha"
-SOURCE_COMMIT_SHORT = "837a7d9"
+VERSION = "V0.1.16.2 Alpha"
+RELEASE_VERSION = "0.1.16.2-alpha"
+SOURCE_COMMIT_SHORT = "6939e68"
 # NOTE: RELEASE_ID 将在获得 Payload SHA-256 后动态生成 (内容寻址)
 SUPPORTED_PYTHON_VERSIONS = frozenset({(3, 11), (3, 12)})
 
@@ -438,10 +438,11 @@ def install_dependencies(
     lock_file = _find_lock_file(venv_python)
     needs_install = True
 
-    # Check if pip freeze output matches lock (skip full hash comparison, do version check)
+    # Check if pip freeze output matches lock (skip full hash comparison, do version check).
+    # ``--all`` is required because pip otherwise omits bootstrap tools, including itself.
     try:
         raw_freeze = subprocess.run(
-            [str(venv_python), "-m", "pip", "freeze"],
+            [str(venv_python), "-m", "pip", "freeze", "--all"],
             capture_output=True,
             text=True,
             timeout=30,
@@ -517,7 +518,7 @@ def install_dependencies(
 
     # Always run import checks, including on subsequent launches where versions match.
     print("  import smoke check...")
-    for mod in ("fastapi", "uvicorn", "sqlmodel", "pydantic", "playwright"):
+    for mod in ("fastapi", "uvicorn", "sqlmodel", "pydantic", "playwright", "openai"):
         _run_import_smoke(venv_python, mod)
     if source_dir is not None:
         _run_import_smoke(venv_python, "app.cli", source_dir)
@@ -547,7 +548,7 @@ def prepare_models(app_root: Path, user_engine_pack_path: str | None = None) -> 
         install_from_engine_pack,
     )
 
-    MODEL_ENGINE_PACK_VERSION = "0.1.16.1-alpha"
+    MODEL_ENGINE_PACK_VERSION = "0.1.16.2-alpha"
 
     # Read embedded Engine Pack info
     pack_info = get_engine_pack_info()

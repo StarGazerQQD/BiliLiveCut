@@ -20,6 +20,7 @@ def _clamp(v, lo, hi):
 class SettingsRequest(BaseModel):
     """运行时开关与上传配置请求体。"""
 
+    recording_pipeline_enabled: bool | None = None
     biliup_enabled: bool | None = None
     auto_upload: bool | None = None
     trend_schedule_enabled: bool | None = None

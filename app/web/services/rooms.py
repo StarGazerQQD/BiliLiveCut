@@ -66,6 +66,7 @@ class RecordingRuntime:
     session_id: int | None = None
     updated_at: float = 0.0
     message: str | None = None
+    pipeline_enabled: bool | None = None
 
     def as_dict(self, *, running: bool) -> dict[str, Any]:
         """返回可序列化状态。"""
@@ -75,6 +76,7 @@ class RecordingRuntime:
             "updated_at": self.updated_at,
             "message": self.message,
             "running": running,
+            "pipeline_enabled": self.pipeline_enabled,
         }
 
 
@@ -96,6 +98,7 @@ class RecorderManager:
         state: str,
         session_id: int | None = None,
         message: str | None = None,
+        pipeline_enabled: bool | None = None,
     ) -> None:
         """更新内存中的运行状态快照。"""
         current = self._runtime.setdefault(db_id, RecordingRuntime())
@@ -104,6 +107,8 @@ class RecorderManager:
             current.session_id = session_id
         current.updated_at = time.time()
         current.message = message
+        if pipeline_enabled is not None:
+            current.pipeline_enabled = pipeline_enabled
 
     def status(self, db_id: int) -> dict[str, Any]:
         """返回指定房间的录制运行状态。"""
@@ -145,14 +150,15 @@ class RecorderManager:
         """返回当前正在录制的直播间 db_id 列表。"""
         return [rid for rid in self._tasks if self.is_running(rid)]
 
-    async def start(self, db_id: int, pipeline: bool = True, produce: bool = False) -> None:
+    async def start(self, db_id: int, pipeline: bool | None = None, produce: bool = False) -> None:
         """启动某直播间的录制(幂等:已在录制则忽略)。
 
         :param db_id: ``live_rooms`` 主键。
-        :param pipeline: 是否启用实时转写+高光分析。
+        :param pipeline: 是否启用实时转写+高光分析；``None`` 使用全局默认开关。
         :param produce: 是否在产生候选后自动切片+文案。
         :raises ValueError: 房间不存在、未授权或缺少 room_id 时。
         """
+        pipeline_enabled = settings_store.recording_pipeline_enabled() if pipeline is None else pipeline
         if self.is_running(db_id):
             logger.info("房间 {} 已在录制,忽略重复启动。", db_id)
             return
@@ -166,14 +172,20 @@ class RecorderManager:
             if room.room_id is None:
                 raise ValueError("该直播间缺少 room_id。")
             room.enabled = True
+            # Pipeline 回调及后续调度器都会读取房间级 auto_analyze。
+            # 与 CLI 保持一致：有效开关为真时同步开启，否则回调即使已安装也会跳过任务登记。
+            if pipeline_enabled:
+                room.auto_analyze = True
+            if produce:
+                room.auto_render = True
             db.add(room)
             room_id = room.room_id
 
         self._set_paused(db_id, False)
-        self._set_state(db_id, SessionStatus.STARTING)
+        self._set_state(db_id, SessionStatus.STARTING, pipeline_enabled=pipeline_enabled)
 
         on_segment = None
-        if pipeline:
+        if pipeline_enabled:
             from app.pipeline.orchestrator import make_pipeline_callback
 
             on_segment = make_pipeline_callback(produce=produce, room_id=db_id)
@@ -191,7 +203,7 @@ class RecorderManager:
         from app.trends.scheduler import trend_scheduler
 
         trend_scheduler.pause_for_recording()
-        logger.info("已启动录制任务 db_id={} pipeline={} produce={}", db_id, pipeline, produce)
+        logger.info("已启动录制任务 db_id={} pipeline={} produce={}", db_id, pipeline_enabled, produce)
 
     async def _run_recorder(self, db_id: int, recorder: Recorder) -> None:
         """运行 Recorder 并保证未捕获异常被记录为可见状态。"""
@@ -600,7 +612,7 @@ async def auto_recover_interrupted_sessions() -> list[int]:
                 continue
             # 标记旧会话为中断。
             _mark_session_interrupted(sess.id)
-            await recorder_manager.start(room_id, pipeline=True, produce=False)
+            await recorder_manager.start(room_id, produce=False)
             recovered.append(room_id)
             logger.info("自动恢复录制:房间 #{} (会话 {})", room_id, sess.id)
             push_notification(
@@ -630,6 +642,8 @@ def recording_status() -> list[dict[str, Any]]:
         result = []
         for s in sessions:
             n_seg = len(db.exec(select(RawSegment).where(RawSegment.session_id == s.id)).all())
+            runtime = recorder_manager.status(s.room_id)
+            pipeline_enabled = runtime["pipeline_enabled"] if runtime["session_id"] == s.id else None
             result.append(
                 {
                     "id": s.id,
@@ -642,6 +656,7 @@ def recording_status() -> list[dict[str, Any]]:
                     "segments": n_seg,
                     "started_at": s.started_at.isoformat() if s.started_at else None,
                     "error_message": s.error_message,
+                    "pipeline_enabled": pipeline_enabled,
                 }
             )
     return result

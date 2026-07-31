@@ -196,6 +196,7 @@ try {
   assert.equal(typeof globalThis.approveCand, "function", "inline review action was not exported to window");
   assert.equal(typeof globalThis.triggerMaintenance, "function", "maintenance action was not exported to window");
   assert.equal(typeof globalThis.saveFeatureSwitches, "function", "feature-switch save action was not exported");
+  assert.equal(typeof globalThis.saveGlobalFeatureSettings, "function", "global feature save action was not exported");
   assert.ok(element("btn-add").listeners.has("click"), "add-room button handler was not registered");
 
   await candidatesTab.emit("click");

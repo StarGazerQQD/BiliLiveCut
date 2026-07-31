@@ -212,7 +212,7 @@ def test_source_manifest_job_installs_pinned_cython() -> None:
     steps = release_workflow["jobs"]["build-sdist"]["steps"]
     install_step = next(step for step in steps if step.get("name") == "Install build tools")
 
-    assert "Cython==3.2.8" in install_step["run"]
+    assert "Cython==3.2.9" in install_step["run"]
     assert "--no-build-isolation" in next(
         step["run"] for step in steps if step.get("name") == "Validate source manifest"
     )
@@ -231,7 +231,7 @@ def test_direct_setup_builds_install_declared_backend_requirements() -> None:
                 if "python setup.py build_ext --inplace" in command:
                     matched_commands.append(command)
                     assert '"setuptools>=77"' in command
-                    assert '"Cython==3.2.8"' in command
+                    assert '"Cython==3.2.9"' in command
 
     assert len(matched_commands) == 2
 

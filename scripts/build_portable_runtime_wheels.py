@@ -18,7 +18,7 @@ from dataclasses import dataclass
 from pathlib import Path
 
 SOURCE_DATE_EPOCH = "1700000000"
-REQUIRED_BUILD_TOOLS = {"setuptools": "83.0.0", "wheel": "0.46.3"}
+REQUIRED_BUILD_TOOLS = {"setuptools": "83.0.0", "wheel": "0.47.0"}
 
 
 @dataclass(frozen=True)
@@ -82,7 +82,7 @@ def download_verified(package: SourceWheel, cache_dir: Path) -> Path:
     if not destination.exists() or sha256_file(destination) != package.source_sha256:
         destination.unlink(missing_ok=True)
         print(f"Downloading {package.filename}")
-        with urllib.request.urlopen(package.url, timeout=120) as response, destination.open("wb") as output:
+        with urllib.request.urlopen(package.url, timeout=300) as response, destination.open("wb") as output:
             shutil.copyfileobj(response, output)
 
     actual = sha256_file(destination)

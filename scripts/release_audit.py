@@ -296,7 +296,7 @@ def check_distribution_config(audit: AuditResult) -> None:
         "构建后端支持 SPDX 许可证元数据",
         "setuptools>=77" in pyproject["build-system"].get("requires", []),
     )
-    direct_build_requirements = 'python -m pip install --upgrade pip "setuptools>=77" "Cython==3.2.8"'
+    direct_build_requirements = 'python -m pip install --upgrade pip "setuptools>=77" "Cython==3.2.9"'
     audit.check(
         "直接 setup.py 构建显式安装声明的构建后端",
         all(

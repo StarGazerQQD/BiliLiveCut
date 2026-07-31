@@ -48,6 +48,50 @@ class _FakeRecorder:
         await self.stop_event.wait()
 
 
+@pytest.mark.asyncio
+async def test_start_uses_pipeline_default_and_enables_room_analysis(
+    temp_db: None,
+    monkeypatch: MonkeyPatch,
+) -> None:
+    """Web 默认 Pipeline 开启时必须同步 auto_analyze，否则片段回调会被跳过。"""
+    from app.db.models import LiveRoom
+    from app.db.session import get_session
+    from app.web.services import rooms
+
+    with get_session() as db:
+        room = LiveRoom(input_url="pipeline-default", room_id=202, authorized=True, auto_analyze=False)
+        db.add(room)
+        db.flush()
+        room_id = room.id
+    assert room_id is not None
+
+    callback_args: dict[str, object] = {}
+
+    def fake_callback(**kwargs: object) -> object:
+        callback_args.update(kwargs)
+        return object()
+
+    class StartRecorder(_FakeRecorder):
+        def __init__(self, **_kwargs: object) -> None:
+            super().__init__(session_id=77)
+
+    monkeypatch.setattr(rooms.settings_store, "recording_pipeline_enabled", lambda: True)
+    monkeypatch.setattr("app.pipeline.orchestrator.make_pipeline_callback", fake_callback)
+    monkeypatch.setattr(rooms, "Recorder", StartRecorder)
+
+    manager = rooms.RecorderManager()
+    await manager.start(room_id, pipeline=None, produce=False)
+    try:
+        with get_session() as db:
+            updated = db.get(LiveRoom, room_id)
+            assert updated is not None
+            assert updated.auto_analyze is True
+        assert manager.status(room_id)["pipeline_enabled"] is True
+        assert callback_args == {"produce": False, "room_id": room_id}
+    finally:
+        await manager.stop(room_id, mode="force")
+
+
 def _seed_room_session(tmp_path: Path) -> tuple[int, int, datetime]:
     """创建房间和活动会话。"""
     from app.db.models import LiveRoom, RecordingSession, SessionStatus
@@ -286,3 +330,39 @@ def test_recorder_force_stop_kills_active_process(monkeypatch: MonkeyPatch) -> N
     recorder.force_stop()
 
     assert process.killed is True
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("cookie", ["", "SESSDATA=valid; DedeUserID=456"])
+async def test_recorder_passes_cookie_to_fallback_capable_danmaku_client(
+    monkeypatch: MonkeyPatch,
+    cookie: str,
+) -> None:
+    """录制器应传入当前 Cookie；无 Cookie 时仍必须启动匿名采集。"""
+    from app.recording import recorder as recorder_module
+    from app.sources.bilibili import danmaku as danmaku_module
+
+    created: list[tuple[int, int, str]] = []
+
+    class _FallbackDanmakuClient:
+        def __init__(self, room_id: int, session_id: int, cookie: str) -> None:
+            created.append((room_id, session_id, cookie))
+
+        async def run(self) -> None:
+            return
+
+        def stop(self) -> None:
+            return
+
+    monkeypatch.setattr(recorder_module.settings, "collect_danmaku", True)
+    monkeypatch.setattr(recorder_module, "get_bilibili_cookie", lambda: cookie)
+    monkeypatch.setattr(danmaku_module, "DanmakuClient", _FallbackDanmakuClient)
+
+    recorder = recorder_module.Recorder(room_id=856077, db_room_id=1)
+    recorder._session_id = 9  # noqa: SLF001
+    recorder._start_danmaku()  # noqa: SLF001
+    await asyncio.sleep(0)
+
+    assert created == [(856077, 9, cookie)]
+    assert recorder._danmaku_task is not None  # noqa: SLF001
+    await recorder._stop_danmaku()  # noqa: SLF001

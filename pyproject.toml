@@ -1,6 +1,6 @@
 [project]
 name = "bili-live-cut"
-version = "0.1.16.1-alpha"
+version = "0.1.16.2-alpha"
 description = "AI 直播实时切片系统:监听 Bilibili 直播,自动录制、转写、识别高光、生成切片与文案"
 readme = "README.md"
 license = "MIT"
@@ -57,7 +57,7 @@ web = [
 ]
 # 开发与测试工具。
 dev = [
-    "Cython==3.2.8",
+    "Cython==3.2.9",
     "pytest>=8.2",
     "pytest-asyncio>=0.23",
     "pytest-mock>=3.14",
@@ -75,7 +75,7 @@ dev = [
 blc = "app.cli:app"
 
 [build-system]
-requires = ["setuptools>=77", "Cython==3.2.8"]
+requires = ["setuptools>=77", "Cython==3.2.9"]
 build-backend = "setuptools.build_meta"
 
 [tool.setuptools]

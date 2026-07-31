@@ -10,7 +10,8 @@ Moonshot Kimi / 智谱 GLM 等)——只需在 ``.env`` 配置 ``LLM_BASE_URL`` 
 * **可禁用**:未配置 API Key 时自动跳过 LLM,走纯规则,不报错;
 * **预算护栏**:可设每日花费上限(按可配置的 token 价格估算),超额自动降级;
 * **失败回退**:任何异常都返回 ``None``,由上层用规则分兜底;
-* **可选依赖**:``openai`` 属可选包(``pip install -e ".[llm]"``)。
+* **依赖边界**:Portable 已内置 ``openai`` SDK;源码安装可通过
+  ``pip install -e ".[llm]"`` 启用。
 
 本模块只负责"判断是否高光"。文案生成在 ``publishing/copywriter`` 复用此处的客户端。
 """
@@ -126,7 +127,10 @@ def _get_client(provider: provs.LLMProvider):  # noqa: ANN202 — 返回 openai.
     try:
         from openai import OpenAI
     except ImportError as exc:  # pragma: no cover
-        raise RuntimeError('未安装 openai。请执行: pip install -e ".[llm]"。') from exc
+        raise RuntimeError(
+            '未安装 openai SDK。源码安装请执行: pip install -e ".[llm]";'
+            "Portable 请重新运行 Launcher 完成依赖修复,或升级到最新完整包。"
+        ) from exc
     client = OpenAI(api_key=provider.api_key, base_url=provider.base_url or None)
     _client_cache[cache_key] = client
     return client

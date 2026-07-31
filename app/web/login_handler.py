@@ -127,7 +127,7 @@ def _extract_cookie_string(context: BrowserContext) -> str:
 
 
 def _save_cookie(cookie_string: str) -> None:
-    """将 Cookie 持久化到运行时设置,供录制/弹幕模块使用。"""
+    """将 Cookie 持久化到运行时设置,供取流和登录优先的弹幕等接口使用。"""
     from app.core import settings_store
 
     settings_store.set_setting("bilibili_cookie", cookie_string)

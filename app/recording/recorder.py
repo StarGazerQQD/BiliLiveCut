@@ -106,22 +106,21 @@ class Recorder:
     # 弹幕采集(与录制并行,贯穿整个会话)
     # ------------------------------------------------------------------ #
     def _start_danmaku(self) -> None:
-        """若开启且配置了登录 cookie 则启动弹幕采集后台任务(失败不影响录制)。"""
+        """若已开启则启动登录优先、匿名兜底的弹幕采集任务。"""
         if not settings.collect_danmaku or self._session_id is None:
-            return
-        if not get_bilibili_cookie():
-            logger.info("未配置 Bilibili Cookie,跳过弹幕采集(接口需要登录态)。")
             return
         try:
             from app.sources.bilibili.danmaku import DanmakuClient
 
+            cookie = get_bilibili_cookie()
             self._danmaku = DanmakuClient(
                 room_id=self.room_id,
                 session_id=self._session_id,
-                cookie=get_bilibili_cookie(),
+                cookie=cookie,
             )
             self._danmaku_task = asyncio.create_task(self._danmaku.run())
-            logger.info("弹幕采集已启动 room={} session={}", self.room_id, self._session_id)
+            mode = "登录优先、匿名兜底" if cookie else "匿名"
+            logger.info("{}弹幕采集已启动 room={} session={}", mode, self.room_id, self._session_id)
         except Exception as exc:  # noqa: BLE001 — 弹幕采集失败不应影响录制
             logger.warning("弹幕采集启动失败 room={}: {}", self.room_id, exc)
             self._danmaku = None
