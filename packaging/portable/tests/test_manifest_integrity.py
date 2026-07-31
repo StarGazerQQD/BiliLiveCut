@@ -198,10 +198,10 @@ class TestIdentityFields:
 
     def test_core_source_commit_is_current_baseline(self, manifest: dict) -> None:
         """验证 core_source_commit 是当前 Portable 源码基线。"""
-        assert manifest["core_source_commit"] == "c677bb2407b3ff54e1d488cfc717d68071566dd7"
-        assert manifest["core_source_commit_short"] == "c677bb2"
+        assert manifest["core_source_commit"] == "16248f3f214340a138332645702be0945673306a"
+        assert manifest["core_source_commit_short"] == "16248f3"
         assert manifest["source_commit"] == manifest["core_source_commit"]
-        assert manifest["source_commit_short"] == "c677bb2"
+        assert manifest["source_commit_short"] == "16248f3"
 
     def test_portable_version_matches_release(self, manifest: dict) -> None:
         """验证 portable_release_version == release_version。"""
@@ -511,7 +511,7 @@ class TestPathSafety:
                 {
                     "release_version": "0.1.14.11-alpha",
                     "source_commit": "7" * 40,
-                    "source_commit_short": "c677bb2",
+                    "source_commit_short": "16248f3",
                     "format_version": 5,
                     "payload_sha256": "0" * 64,
                     "file_count": 1,
@@ -539,7 +539,7 @@ class TestPathSafety:
                 {
                     "release_version": "0.1.14.11-alpha",
                     "source_commit": "7" * 40,
-                    "source_commit_short": "c677bb2",
+                    "source_commit_short": "16248f3",
                     "format_version": 5,
                     "payload_sha256": "0" * 64,
                     "file_count": 1,
