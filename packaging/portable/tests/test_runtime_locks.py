@@ -52,7 +52,7 @@ def test_runtime_locks_are_complete_and_strict() -> None:
     py311 = _load_lock("py311")
     py312 = _load_lock("py312")
 
-    assert len(py311) == len(py312) == 111
+    assert len(py311) == len(py312) == 115
     assert set(py311) == set(py312)
     assert _direct_requirement_names() <= set(py311)
 
@@ -63,6 +63,7 @@ def test_runtime_locks_cover_core_application_imports() -> None:
         "fastapi",
         "loguru",
         "numpy",
+        "openai",
         "playwright",
         "pydantic-settings",
         "pyyaml",
@@ -81,6 +82,7 @@ def test_runtime_locks_keep_security_upgrades_pinned() -> None:
         "fastapi": "0.139.2",
         "jinja2": "3.1.6",
         "modelscope": "1.38.1",
+        "openai": "2.51.0",
         "orjson": "3.11.9",
         "python-dotenv": "1.2.2",
         "python-multipart": "0.0.32",

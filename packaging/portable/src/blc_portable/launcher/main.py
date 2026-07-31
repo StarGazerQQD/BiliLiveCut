@@ -517,7 +517,7 @@ def install_dependencies(
 
     # Always run import checks, including on subsequent launches where versions match.
     print("  import smoke check...")
-    for mod in ("fastapi", "uvicorn", "sqlmodel", "pydantic", "playwright"):
+    for mod in ("fastapi", "uvicorn", "sqlmodel", "pydantic", "playwright", "openai"):
         _run_import_smoke(venv_python, mod)
     if source_dir is not None:
         _run_import_smoke(venv_python, "app.cli", source_dir)

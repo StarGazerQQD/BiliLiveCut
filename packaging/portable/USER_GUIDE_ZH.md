@@ -340,6 +340,10 @@ storage\
 
 说明完整包目录不完整。检查 `vendor\wheels\` 是否存在大量 `.whl` 文件。不要让 Launcher 在线回退；重新解压完整 Full ZIP。
 
+### 大模型测试提示“未安装 openai”
+
+`v0.1.16.2-Alpha` 最新构建已经把 OpenAI 兼容 SDK 纳入 Portable 运行时。先关闭服务并重新运行 Launcher，让依赖检查自动补装；如果仍出现该提示，说明当前 Full 的 `vendor\wheels\` 不完整或仍在使用旧构建，请重新下载并解压最新完整包。不要在 Portable 目录手工执行 `pip install -e`，也不要复用旧版 `.venv`。
+
 ### 出现 `THESE PACKAGES DO NOT MATCH THE HASHES`
 
 新版 Full 应强制使用本地 wheelhouse，不应访问 PyPI 镜像。确认使用的是 `v0.1.16.2-Alpha` 最新 Full ZIP，并且没有只复制 EXE。不要修改锁文件或添加报错中的 sdist 哈希，直接重新下载并校验 Full ZIP。

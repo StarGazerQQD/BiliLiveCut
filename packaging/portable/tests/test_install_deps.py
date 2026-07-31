@@ -109,6 +109,7 @@ def test_install_dependencies_recognizes_strict_hash_lock_versions(
 
     assert not any("install" in args for args in calls)
     assert any("import playwright" in arg for args in calls for arg in args)
+    assert any("import openai" in arg for args in calls for arg in args)
 
 
 def test_install_dependencies_auto_uses_full_bundle_wheelhouse(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
@@ -140,6 +141,7 @@ def test_install_dependencies_auto_uses_full_bundle_wheelhouse(tmp_path: Path, m
     assert install_call[install_call.index("--find-links") + 1] == str(wheelhouse)
     assert not any("aliyun" in arg or "tsinghua" in arg for arg in install_call)
     assert any("import playwright" in arg for args in calls for arg in args)
+    assert any("import openai" in arg for args in calls for arg in args)
 
 
 def test_lite_online_install_uses_embedded_bootstrap_wheels(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
