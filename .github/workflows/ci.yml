@@ -177,6 +177,7 @@ jobs:
           if-no-files-found: warn
 
 # macOS runner 明显慢于 Linux/Windows，仅在 main 分支推送时执行。
+# 全量覆盖测试的历史耗时已接近 30 分钟，保留 45 分钟预算以容纳正常波动和新增回归用例。
 # 独立 job 可使用真正的 job-level if；matrix.include 中的 if 只是普通数据字段。
   test-macos:
     name: "macos-latest / py3.12"
@@ -210,7 +211,7 @@ jobs:
         env:
           ASR_NO_MODEL_DOWNLOAD: "1"
         run: python scripts/run_coverage.py
-        timeout-minutes: 30
+        timeout-minutes: 45
 
       - name: Upload coverage report
         if: always()
