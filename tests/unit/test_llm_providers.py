@@ -2,7 +2,10 @@
 
 from __future__ import annotations
 
+from types import SimpleNamespace
 from typing import TYPE_CHECKING
+
+import pytest
 
 from app.analysis import llm as llm_mod
 from app.analysis import llm_providers as provs
@@ -172,6 +175,88 @@ def test_call_text_all_fail_returns_none(monkeypatch: MonkeyPatch) -> None:
 
     monkeypatch.setattr(llm_mod, "_complete", boom)
     assert llm_mod.call_text("hi") is None
+
+
+def test_extract_text_supports_openai_content_parts() -> None:
+    """兼容服务返回文本分块时应拼接最终正文，忽略非文本块。"""
+    response = SimpleNamespace(
+        choices=[
+            SimpleNamespace(
+                message=SimpleNamespace(
+                    content=[
+                        {"type": "text", "text": "第一段"},
+                        SimpleNamespace(type="text", text="第二段"),
+                        {"type": "image_url", "image_url": "https://example.invalid/image"},
+                    ]
+                )
+            )
+        ]
+    )
+
+    assert llm_mod._extract_text(response) == "第一段\n第二段"
+
+
+def test_complete_retries_reasoning_only_deepseek_without_thinking(monkeypatch: MonkeyPatch) -> None:
+    """DeepSeek 仅返回推理且最终正文为空时，应关闭思考模式重试。"""
+    provider = provs.LLMProvider(
+        id="deepseek",
+        name="deepseek",
+        base_url="https://api.deepseek.com/v1",
+        api_key="test-key",
+        model="deepseek-v4-pro",
+    )
+    responses = [
+        SimpleNamespace(
+            choices=[
+                SimpleNamespace(
+                    finish_reason="length",
+                    message=SimpleNamespace(content=None, reasoning_content="内部推理，不应返回"),
+                )
+            ],
+            usage=SimpleNamespace(
+                completion_tokens=128,
+                completion_tokens_details=SimpleNamespace(reasoning_tokens=128),
+            ),
+        ),
+        SimpleNamespace(
+            choices=[
+                SimpleNamespace(
+                    finish_reason="stop",
+                    message=SimpleNamespace(content='{"clean_text":"正文","summary":"摘要"}'),
+                )
+            ],
+            usage=None,
+        ),
+    ]
+    calls: list[dict[str, object]] = []
+
+    def create(**kwargs: object) -> object:
+        calls.append(kwargs)
+        return responses.pop(0)
+
+    client = SimpleNamespace(chat=SimpleNamespace(completions=SimpleNamespace(create=create)))
+    monkeypatch.setattr(llm_mod, "_get_client", lambda _provider: client)
+
+    result = llm_mod._complete(provider, "整理转写", max_tokens=4096)
+
+    assert result == '{"clean_text":"正文","summary":"摘要"}'
+    assert len(calls) == 2
+    assert "extra_body" not in calls[0]
+    assert calls[1]["extra_body"] == {"thinking": {"type": "disabled"}}
+
+
+def test_complete_rejects_repeated_empty_content(monkeypatch: MonkeyPatch) -> None:
+    """服务连续返回空正文时应抛出可诊断错误，不能被当作连通成功。"""
+    provider = _p("empty", 1)
+    empty_response = SimpleNamespace(
+        choices=[SimpleNamespace(finish_reason="stop", message=SimpleNamespace(content="  "))],
+        usage=None,
+    )
+    client = SimpleNamespace(chat=SimpleNamespace(completions=SimpleNamespace(create=lambda **_kwargs: empty_response)))
+    monkeypatch.setattr(llm_mod, "_get_client", lambda _provider: client)
+
+    with pytest.raises(llm_mod.EmptyLLMResponseError, match="连续两次返回空正文"):
+        llm_mod._complete(provider, "ping", max_tokens=64)
 
 
 def test_extract_json_array_salvages_complete_items_from_truncated_output() -> None:

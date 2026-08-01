@@ -7,7 +7,7 @@ async function startRoom(id) {
     await api("POST", `/api/rooms/${id}/start`, { produce: false });
     toast("\u5df2\u5f00\u59cb\u5f55\u5236");
     const { loadRooms } = await import("./rooms.js");
-    loadRooms();
+    await loadRooms();
   } catch (e) { toast("\u542f\u52a8\u5931\u8d25:" + e.message); }
 }
 
@@ -18,7 +18,7 @@ async function stopRoom(id, force = false) {
     const result = await api("POST", `/api/rooms/${id}/stop`, { mode: force ? "force" : "graceful", cancel_pending: false });
     toast(result.forced ? "已强制停止，末尾片段可能不完整" : "录制已停止并完成收尾");
     const { loadRooms } = await import("./rooms.js");
-    loadRooms();
+    await loadRooms();
   } catch (e) { toast("\u505c\u6b62\u5931\u8d25:" + e.message); }
 }
 
@@ -27,7 +27,7 @@ async function resumeRoom(id) {
     await api("POST", `/api/rooms/${id}/resume`, { produce: false });
     toast("已恢复录制；本次会创建新会话并保留暂停缺口");
     const { loadRooms } = await import("./rooms.js");
-    loadRooms();
+    await loadRooms();
   } catch (e) { toast("恢复失败:" + e.message); }
 }
 

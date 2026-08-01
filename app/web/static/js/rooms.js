@@ -5,6 +5,44 @@ let globalFeatureDirty = false;
 const dirtyRoomSections = new Set();
 const dirtyFeatureRooms = new Set();
 
+function roomRuntimeState(room) {
+  return room.recording_state || (room.running ? "running" : "stopped");
+}
+
+function roomRuntimeMeta(room) {
+  const session = room.active_session_id ? ` \u00b7 \u4f1a\u8bdd #${room.active_session_id}` : "";
+  return `db_id=${room.id} \u00b7 room_id=${room.room_id ?? "-"} \u00b7 \u6388\u6743:${room.authorized ? "\u662f" : "\u5426"}${session}`;
+}
+
+function roomRuntimeActions(room) {
+  if (room.running) {
+    return `<button class="ok" onclick="markHighlight(${room.id})">\u9ad8\u5149\u6253\u70b9</button>
+      <button class="danger" onclick="stopRoom(${room.id})">\u505c\u6b62\u5e76\u6536\u5c3e</button>
+      <button onclick="stopRoom(${room.id}, true)">\u5f3a\u5236\u505c\u6b62</button>`;
+  }
+  if (room.room_config.recording_paused) {
+    return `<button class="ok" onclick="resumeRoom(${room.id})">\u6062\u590d\u5f55\u5236</button>`;
+  }
+  return `<button class="ok" onclick="startRoom(${room.id})">\u5f00\u59cb\u5f55\u5236</button>`;
+}
+
+function syncRoomRuntime(rooms) {
+  rooms.forEach((room) => {
+    const status = $(`#room-status-${room.id}`);
+    const meta = $(`#room-meta-${room.id}`);
+    const actions = $(`#room-actions-${room.id}`);
+    const lockHint = $(`#room-lock-hint-${room.id}`);
+    if (status) status.innerHTML = badge(roomRuntimeState(room));
+    if (meta) meta.textContent = roomRuntimeMeta(room);
+    if (actions) actions.innerHTML = roomRuntimeActions(room);
+    if (lockHint) lockHint.textContent = room.running ? "(\u5f55\u5236\u4e2d\u9501\u5b9a)" : "";
+    for (const prefix of ["sw-se", "sw-at", "sw-ds"]) {
+      const input = $(`#${prefix}-${room.id}`);
+      if (input) input.disabled = Boolean(room.running);
+    }
+  });
+}
+
 // ----------------------------- 渲染:直播间 ----------------------------- //
 async function loadRooms() {
   const data = await api("GET", "/api/dashboard");
@@ -13,6 +51,7 @@ async function loadRooms() {
   $("#stat-sessions").textContent = data.counts.active_sessions;
 
   if (dirtyRoomSections.size > 0) {
+    syncRoomRuntime(data.rooms);
     $("#rooms-dirty-hint").style.display = "";
     return;
   }
@@ -23,18 +62,10 @@ async function loadRooms() {
     <div class="item">
       <div class="head">
         <div>
-          <div class="title">${esc(r.title || r.input_url)} ${badge(r.recording_state || (r.running ? "running" : "stopped"))}</div>
-          <div class="sub">db_id=${r.id} \u00b7 room_id=${r.room_id ?? "-"} \u00b7 \u6388\u6743:${r.authorized ? "\u662f" : "\u5426"}${r.active_session_id ? ` · 会话 #${r.active_session_id}` : ""}</div>
+          <div class="title">${esc(r.title || r.input_url)} <span id="room-status-${r.id}">${badge(roomRuntimeState(r))}</span></div>
+          <div class="sub" id="room-meta-${r.id}">${esc(roomRuntimeMeta(r))}</div>
         </div>
-        <div class="actions">
-          ${r.running
-            ? `<button class="ok" onclick="markHighlight(${r.id})">高光打点</button>
-               <button class="danger" onclick="stopRoom(${r.id})">停止并收尾</button>
-               <button onclick="stopRoom(${r.id}, true)">强制停止</button>`
-            : r.room_config.recording_paused
-              ? `<button class="ok" onclick="resumeRoom(${r.id})">恢复录制</button>`
-              : `<button class="ok" onclick="startRoom(${r.id})">\u5f00\u59cb\u5f55\u5236</button>`}
-        </div>
+        <div class="actions" id="room-actions-${r.id}">${roomRuntimeActions(r)}</div>
       </div>
       <div class="thresholds" data-room-dirty-section="controls:${r.id}">
         <label>\u5ba1\u6838\u6a21\u5f0f
@@ -63,7 +94,7 @@ async function loadRooms() {
           <input type="checkbox" id="sw-ds-${r.id}" ${r.danmaku_sentiment_enabled ? "checked" : ""} ${r.running ? "disabled" : ""} />
           \u5f39\u5e55\u60c5\u7eea
         </label>
-        ${r.running ? '<span class="muted">(\u5f55\u5236\u4e2d\u9501\u5b9a)</span>' : ""}
+        <span class="muted" id="room-lock-hint-${r.id}">${r.running ? "(\u5f55\u5236\u4e2d\u9501\u5b9a)" : ""}</span>
       </div>
       <details class="room-config-detail" data-room-dirty-section="config:${r.id}" style="margin-top:8px">
         <summary style="font-size:12px;color:var(--muted);cursor:pointer">\u623f\u95f4\u914d\u7f6e(\u9ad8\u5149\u6a21\u578b/\u70ed\u8bcd/\u522b\u540d/\u5c4f\u853d)</summary>
@@ -99,16 +130,22 @@ async function loadRooms() {
   });
 }
 
+function addUnlockedSwitch(payload, key, selector) {
+  const input = $(selector);
+  if (input && !input.disabled) payload[key] = input.checked;
+}
+
 async function saveRoom(id) {
   try {
-    await api("PATCH", `/api/rooms/${id}`, {
+    const payload = {
       mode: $(`#mode-${id}`).value,
       highlight_threshold: parseFloat($(`#ht-${id}`).value),
       auto_publish_threshold: parseFloat($(`#at-${id}`).value),
-      schedule_enabled: ($(`#sw-se-${id}`) || {}).checked,
-      auto_threshold_enabled: ($(`#sw-at-${id}`) || {}).checked,
-      danmaku_sentiment_enabled: ($(`#sw-ds-${id}`) || {}).checked,
-    });
+    };
+    addUnlockedSwitch(payload, "schedule_enabled", `#sw-se-${id}`);
+    addUnlockedSwitch(payload, "auto_threshold_enabled", `#sw-at-${id}`);
+    addUnlockedSwitch(payload, "danmaku_sentiment_enabled", `#sw-ds-${id}`);
+    await api("PATCH", `/api/rooms/${id}`, payload);
     dirtyRoomSections.delete(`controls:${id}`);
     toast("\u5df2\u4fdd\u5b58\u9608\u503c/\u6a21\u5f0f");
     if (dirtyRoomSections.size === 0) await loadRooms();
@@ -206,18 +243,19 @@ async function saveGlobalFeatureSettings() {
 
 async function saveFeatureSwitches(id) {
   try {
-    await api("PATCH", `/api/rooms/${id}`, {
+    const payload = {
       auto_record: $(`#feature-record-${id}`).checked,
       auto_analyze: $(`#feature-analyze-${id}`).checked,
       auto_render: $(`#feature-render-${id}`).checked,
       auto_approve: $(`#feature-approve-${id}`).checked,
       auto_upload: $(`#feature-upload-${id}`).checked,
-      schedule_enabled: $(`#feature-schedule-${id}`).checked,
-      auto_threshold_enabled: $(`#feature-threshold-${id}`).checked,
-      danmaku_sentiment_enabled: $(`#feature-sentiment-${id}`).checked,
       auto_approve_threshold: parseFloat($(`#feature-approve-threshold-${id}`).value),
       review_threshold: parseFloat($(`#feature-review-threshold-${id}`).value),
-    });
+    };
+    addUnlockedSwitch(payload, "schedule_enabled", `#feature-schedule-${id}`);
+    addUnlockedSwitch(payload, "auto_threshold_enabled", `#feature-threshold-${id}`);
+    addUnlockedSwitch(payload, "danmaku_sentiment_enabled", `#feature-sentiment-${id}`);
+    await api("PATCH", `/api/rooms/${id}`, payload);
     dirtyFeatureRooms.delete(String(id));
     toast("已保存该直播间的独立功能开关");
     if (dirtyFeatureRooms.size === 0) await Promise.all([loadFeatureSwitches(), loadRooms()]);

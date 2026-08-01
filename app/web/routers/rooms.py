@@ -8,6 +8,7 @@ from fastapi import APIRouter, HTTPException
 from pydantic import BaseModel, ConfigDict, Field
 
 from app.web import service
+from app.web.services.rooms import RoomNotFoundError, RoomUpdateConflictError
 
 
 class AddRoomRequest(BaseModel):
@@ -83,8 +84,12 @@ def patch_room(db_id: int, req: UpdateRoomRequest) -> dict[str, Any]:
     """更新直播间阈值/模式等参数。"""
     try:
         room = service.update_room(db_id, req.model_dump(exclude_none=True))
-    except ValueError as exc:
+    except RoomNotFoundError as exc:
         raise HTTPException(status_code=404, detail=str(exc)) from exc
+    except RoomUpdateConflictError as exc:
+        raise HTTPException(status_code=409, detail=str(exc)) from exc
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
     return {"id": room.id, "mode": room.mode, "highlight_threshold": room.highlight_threshold}
 
 

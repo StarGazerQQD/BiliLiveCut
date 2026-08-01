@@ -500,6 +500,14 @@ async def add_room(url: str, authorized: bool) -> LiveRoom:
         return room
 
 
+class RoomNotFoundError(ValueError):
+    """请求更新的直播间不存在。"""
+
+
+class RoomUpdateConflictError(ValueError):
+    """直播间当前状态与请求的配置更新冲突。"""
+
+
 def update_room(db_id: int, fields: dict[str, Any]) -> LiveRoom:
     """更新直播间的可调参数(阈值、模式、授权等)。
 
@@ -508,7 +516,8 @@ def update_room(db_id: int, fields: dict[str, Any]) -> LiveRoom:
     :param db_id: ``live_rooms`` 主键。
     :param fields: 待更新字段。
     :returns: 更新后的 :class:`LiveRoom`。
-    :raises ValueError: 房间不存在时。
+    :raises RoomNotFoundError: 房间不存在时。
+    :raises RoomUpdateConflictError: 录制中尝试修改锁定字段时。
     """
     allowed = {
         "mode",
@@ -534,12 +543,12 @@ def update_room(db_id: int, fields: dict[str, Any]) -> LiveRoom:
     with get_session() as db:
         room = db.get(LiveRoom, db_id)
         if room is None:
-            raise ValueError(f"房间不存在: db_id={db_id}")
+            raise RoomNotFoundError(f"房间不存在: db_id={db_id}")
         # 录制中不允许修改功能开关(锁定保护)。
         if recorder_manager.is_running(db_id):
             for key in ("schedule_enabled", "auto_threshold_enabled", "danmaku_sentiment_enabled"):
                 if key in fields:
-                    raise ValueError(f"直播间正在录制,无法修改「{key}」开关。请先停止录制。")
+                    raise RoomUpdateConflictError(f"直播间正在录制,无法修改「{key}」开关。请先停止录制。")
         for key, value in fields.items():
             if key in allowed and value is not None:
                 if key == "room_config" and isinstance(value, dict):

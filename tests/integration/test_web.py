@@ -99,6 +99,45 @@ def test_room_pipeline_switches_are_independently_configurable(temp_db: None) ->
         assert updated.review_threshold == pytest.approx(0.56)
 
 
+def test_room_patch_distinguishes_missing_room_and_recording_conflict(
+    temp_db: None,
+    monkeypatch: MonkeyPatch,
+) -> None:
+    """录制中锁定字段返回冲突，只有不存在的直播间返回 404。"""
+    from app.db.models import LiveRoom
+    from app.db.session import get_session
+    from app.web import service
+    from app.web.main import app
+
+    with get_session() as db:
+        room = LiveRoom(input_url="recording-room", room_id=34567, authorized=True)
+        db.add(room)
+        db.flush()
+        room_id = room.id
+    assert room_id is not None
+
+    def fake_is_running(_db_id: int) -> bool:
+        return True
+
+    monkeypatch.setattr(service.recorder_manager, "is_running", fake_is_running)
+
+    with TestClient(app) as client:
+        conflict = client.patch(f"/api/rooms/{room_id}", json={"schedule_enabled": True})
+        allowed = client.patch(f"/api/rooms/{room_id}", json={"highlight_threshold": 0.72})
+        invalid = client.patch(
+            f"/api/rooms/{room_id}",
+            json={"room_config": {"highlight_scorer_mode": "invalid"}},
+        )
+        missing = client.patch("/api/rooms/999999", json={"highlight_threshold": 0.72})
+
+    assert conflict.status_code == 409
+    assert "正在录制" in conflict.json()["detail"]
+    assert allowed.status_code == 200
+    assert invalid.status_code == 400
+    assert missing.status_code == 404
+    assert "房间不存在" in missing.json()["detail"]
+
+
 def test_add_room_requires_authorization(temp_db: None, monkeypatch: MonkeyPatch) -> None:
     """未确认授权时添加直播间返回 400。"""
     from app.web.main import app
@@ -227,8 +266,8 @@ def test_llm_connectivity_uses_unsaved_form_payload(temp_db: None, monkeypatch: 
         extra_body: dict | None = None,
     ) -> str:
         assert provider.api_key == "draft-secret"
-        assert prompt == "ping"
-        assert max_tokens == 1
+        assert prompt == "只回复 pong"
+        assert max_tokens == 64
         assert extra_body is None
         return "pong"
 
@@ -256,6 +295,34 @@ def test_llm_connectivity_uses_unsaved_form_payload(temp_db: None, monkeypatch: 
         {"id": response.json()["results"][0]["id"], "name": "草稿模型", "ok": True, "detail": "pong"}
     ]
     assert provs._read_raw() == []  # noqa: SLF001
+
+
+def test_llm_connectivity_rejects_empty_response(temp_db: None, monkeypatch: MonkeyPatch) -> None:
+    """服务返回空正文时，连通测试必须显示失败而不是假阳性。"""
+    from app.analysis import llm as llm_mod
+    from app.web.main import app
+
+    monkeypatch.setattr(llm_mod, "_complete", lambda *_args, **_kwargs: "  ")
+
+    with TestClient(app) as client:
+        response = client.post(
+            "/api/llm-providers/test",
+            json={
+                "providers": [
+                    {
+                        "name": "空响应模型",
+                        "base_url": "https://example.invalid/v1",
+                        "model": "empty-model",
+                        "api_key": "draft-secret",
+                        "enabled": True,
+                    }
+                ]
+            },
+        )
+
+    assert response.status_code == 200
+    assert response.json()["results"][0]["ok"] is False
+    assert "未返回可用正文" in response.json()["results"][0]["detail"]
 
 
 def test_dashboard_serves_complete_javascript_module_graph(temp_db: None) -> None:
