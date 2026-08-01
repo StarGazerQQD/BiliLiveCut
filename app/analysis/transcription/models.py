@@ -115,7 +115,7 @@ class ASRTranscriptResult:
     primary_error_type: str = ""
     primary_error_message: str = ""
     fallback_backend: str = ""
-    fallback_trigger_reason: str = ""  # "primary_empty_output" / "primary_exception"
+    fallback_trigger_reason: str = ""  # primary_empty_output / primary_exception / primary_degenerate_repetition
 
     # 辅助特征
     emotions: list[EmotionEvent] = field(default_factory=list)

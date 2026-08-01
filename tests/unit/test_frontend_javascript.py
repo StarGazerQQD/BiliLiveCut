@@ -81,6 +81,16 @@ def test_recording_pipeline_has_visible_switch_and_no_hardcoded_web_override() -
     assert "pipeline: true" not in recording_js
 
 
+def test_transcript_page_exposes_safe_retranscription_action() -> None:
+    """实时转写页应暴露带确认提示的重转写操作。"""
+    recording_js = (STATIC_ROOT / "js" / "recording.js").read_text(encoding="utf-8")
+    app_js = (STATIC_ROOT / "app.js").read_text(encoding="utf-8")
+
+    assert "/retranscribe" in recording_js
+    assert "window.confirm" in recording_js
+    assert "window.retranscribeTranscript" in app_js
+
+
 def test_room_and_feature_forms_pause_refresh_while_dirty() -> None:
     """直播间录制选项或独立开关存在草稿时，不得被五秒轮询覆盖。"""
     rooms_js = (STATIC_ROOT / "js" / "rooms.js").read_text(encoding="utf-8")

@@ -2,7 +2,15 @@
 
 ## 未发布
 
-暂无。
+### 变更
+
+- **transcription/long-audio**: 录制产生的 TS 在进入 ASR 前统一解码为 16 kHz 单声道 PCM WAV；Fun-ASR-Nano 复用 Engine Pack 内的 FSMN-VAD，并以可配置的 30 秒上限切分五分钟音频，推理启用显式缓存、中文语言与句级时间戳。
+- **web/transcription**: 实时转写条目新增“重新识别”；可原子删除旧转写及尚未人工审核、尚未渲染的自动分析结果并重新入队，活动任务、人工审核、确认主题或成片资产会返回冲突而不覆盖数据。
+
+### 修复
+
+- **transcription/quality**: 新增空输出与连续重复退化检测。Fun-ASR-Nano 异常输出会依次回退 Paraformer、Whisper；最终结果仍不可用时任务失败，污染文本不会落库、调用 LLM 整理或进入高光分析。
+- **logging/asr**: 修正受影响的 Loguru 参数占位符，模型路径与加载信息现在会正确写入日志。
 
 ## V0.1.16.3 Alpha (2026-08-01)
 

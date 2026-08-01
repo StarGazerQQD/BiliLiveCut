@@ -502,6 +502,14 @@ def _score_segment_draft(segment_id: int) -> dict[str, Any] | None:
     if not has_transcript:
         raise ValueError(f"片段尚未转写: id={segment_id}")
 
+    from app.analysis.transcription.quality import assess_transcript_quality  # noqa: PLC0415
+
+    transcript_quality = assess_transcript_quality(text)
+    if not transcript_quality.usable:
+        raise ValueError(
+            f"片段转写质量不合格，已阻止高光与 LLM 分析: segment={segment_id} reason={transcript_quality.reason}"
+        )
+
     words = json.loads(words_json) if words_json else []
 
     # 1) 规则特征

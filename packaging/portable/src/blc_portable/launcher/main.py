@@ -30,7 +30,7 @@ from blc_portable.console import configure_console_encoding
 APP_NAME = "BiliLiveCut"
 VERSION = "V0.1.16.3 Alpha"
 RELEASE_VERSION = "0.1.16.3-alpha"
-SOURCE_COMMIT_SHORT = "daa0296"
+SOURCE_COMMIT_SHORT = "d4b6116"
 # NOTE: RELEASE_ID 将在获得 Payload SHA-256 后动态生成 (内容寻址)
 SUPPORTED_PYTHON_VERSIONS = frozenset({(3, 11), (3, 12)})
 

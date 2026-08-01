@@ -250,7 +250,7 @@ class FunASRBackend:
             spk_dir = Path(self._models_dir) / "paraformer" / "campplus"
             spk_kwargs = _legacy_campplus_kwargs(spk_dir)
             spk_model = "CAMPPlus" if spk_kwargs is not None else str(spk_dir)
-            logger.info("Loading Paraformer from local paths: model=%s vad=%s", self._primary_model_name, vad_path)
+            logger.info("Loading Paraformer from local paths: model={} vad={}", self._primary_model_name, vad_path)
             self._primary = AutoModel(
                 model=self._primary_model_name,
                 vad_model=vad_path,
@@ -278,7 +278,7 @@ class FunASRBackend:
                 revision=revision,
             )
         asr_metrics.record_backend_call("paraformer", 0, success=True)
-        logger.info("Paraformer loaded: device=%s local=%s", device, self._use_local_models)
+        logger.info("Paraformer loaded: device={} local={}", device, self._use_local_models)
         return self._primary
 
     def _load_sensevoice(self) -> object:
@@ -291,7 +291,7 @@ class FunASRBackend:
             raise RuntimeError("需要安装 funasr。请执行: pip install funasr modelscope") from None
         if self._use_local_models:
             sensevoice_path = str(Path(self._models_dir) / "sensevoice")
-            logger.info("Loading SenseVoice-Small from local path: %s", sensevoice_path)
+            logger.info("Loading SenseVoice-Small from local path: {}", sensevoice_path)
             self._sensevoice = AutoModel(
                 model=sensevoice_path,
                 device=settings.asr_auxiliary_device or settings.whisper_device,
@@ -321,19 +321,34 @@ class FunASRBackend:
         except ImportError:
             raise RuntimeError("Need funasr. Run: pip install funasr modelscope") from None
         device = (settings.asr_primary_device if for_primary else settings.asr_review_device) or settings.whisper_device
+        vad_kwargs = {"max_single_segment_time": settings.asr_vad_max_segment_s * 1000}
         if self._use_local_models:
             nano_path = str(Path(self._models_dir) / "funasr_nano")
-            logger.info("Loading Fun-ASR-Nano from local path: %s", nano_path)
+            vad_path = str(Path(self._models_dir) / "paraformer" / "fsmn-vad")
+            logger.info(
+                "Loading Fun-ASR-Nano from local paths: model={} vad={} max_segment={}s",
+                nano_path,
+                vad_path,
+                settings.asr_vad_max_segment_s,
+            )
             self._funasr = AutoModel(
                 model=nano_path,
+                vad_model=vad_path,
+                vad_kwargs=vad_kwargs,
                 device=device,
                 hub="ms",
                 disable_update=True,
             )
         else:
-            logger.info("Loading Fun-ASR-Nano online revision=%s", self._REVISION_NANO or "master")
+            logger.info(
+                "Loading Fun-ASR-Nano online revision={} max_segment={}s",
+                self._REVISION_NANO or "master",
+                settings.asr_vad_max_segment_s,
+            )
             self._funasr = AutoModel(
                 model=self.MODEL_ID_NANO,
+                vad_model="fsmn-vad",
+                vad_kwargs=vad_kwargs,
                 device=device,
                 hub="ms",
                 revision=self._REVISION_NANO or None,
@@ -609,7 +624,13 @@ class FunASRBackend:
         model = self._load_funasr(for_primary=for_primary)
         measured_duration = audio_duration if audio_duration is not None else _probe_audio_duration(audio_path)
         t0 = time.time()
-        result = model.generate(input=audio_path)
+        result = model.generate(
+            input=[audio_path],
+            cache={},
+            batch_size_s=0,
+            language="中文",
+            sentence_timestamp=True,
+        )
         elapsed = time.time() - t0
         logger.info("Fun-ASR-Nano 转写完成, 耗时 {:.1f}s", elapsed)
         asr_metrics.record_backend_call("funasr-nano", elapsed, success=bool(result))
@@ -627,7 +648,7 @@ class FunASRBackend:
             )
 
         res = result[0]
-        text = res.get("text", "")
+        text = str(res.get("text", "")).strip()
         char_conf = res.get("confidence", None)
 
         # 构建 segments
@@ -639,12 +660,38 @@ class FunASRBackend:
                 norm_conf = None
 
         segments: list[ASRSegmentResult] = []
-        if text:
+        sentences = res.get("sentence_info", []) or []
+        for sentence in sentences:
+            if not isinstance(sentence, dict):
+                continue
+            sentence_text = str(sentence.get("text", "")).strip()
+            if not sentence_text:
+                continue
+            sentence_start = float(sentence.get("start", 0.0) or 0.0) / 1000.0
+            sentence_end = float(sentence.get("end", 0.0) or 0.0) / 1000.0
+            sentence_conf = sentence.get("confidence")
+            sentence_norm = _normalize_confidence_sentence(sentence) if sentence_conf is not None else None
+            segments.append(
+                ASRSegmentResult(
+                    start=start + sentence_start,
+                    end=start + sentence_end,
+                    text=sentence_text,
+                    raw_confidence=sentence_conf,
+                    confidence_type="nano-sentence-confidence" if sentence_conf is not None else None,
+                    normalized_confidence=sentence_norm,
+                    confidence_available=sentence_norm is not None,
+                    language="zh",
+                )
+            )
+
+        if not text and segments:
+            text = "".join(segment.text for segment in segments)
+        if text and not segments:
             segments.append(
                 ASRSegmentResult(
                     start=start,
                     end=end,
-                    text=text.strip(),
+                    text=text,
                     raw_confidence=char_conf,
                     confidence_type="nano-char-confidence" if char_conf is not None else None,
                     normalized_confidence=norm_conf,
@@ -654,7 +701,7 @@ class FunASRBackend:
             )
 
         return ASRTranscriptResult(
-            text=text.strip(),
+            text=text,
             segments=segments,
             backend="funasr-nano",
             model_id=self.MODEL_ID_NANO,
@@ -742,7 +789,7 @@ class FasterWhisperBackend:
             whisper_local = Path(models_dir) / "whisper"
             if whisper_local.is_dir():
                 self.model_size = str(whisper_local)
-                logger.info("Whisper: using local Engine Pack model at %s", self.model_size)
+                logger.info("Whisper: using local Engine Pack model at {}", self.model_size)
             else:
                 self.model_size = model_size or settings.whisper_model
         else:

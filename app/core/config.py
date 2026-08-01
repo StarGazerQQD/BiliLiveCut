@@ -100,6 +100,8 @@ class Settings(BaseSettings):
     asr_review_risk_threshold: float = 0.65
     # V0.1.12.2: SenseVoice 使用开关 (独立于模型加载开关 asr_sensevoice)
     asr_sensevoice_enabled: bool = True  # False=关闭辅助特征,不参与评分
+    # FunASR 长音频先由 FSMN-VAD 切为短句，避免生成式解码器处理五分钟单句。
+    asr_vad_max_segment_s: int = Field(default=30, ge=5, le=120)
 
     # ---------- V0.1.12.2: 分后端设备与并发控制 ----------
     asr_primary_device: str = "cpu"

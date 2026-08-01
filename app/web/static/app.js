@@ -1,7 +1,7 @@
 // BiliLiveCut 控制台入口:导入模块、初始化标签切换与轮询
 import { $ } from "./js/common.js";
 import { loadRooms, saveRoom, saveRoomConfig, loadFeatureSwitches, saveGlobalFeatureSettings, saveFeatureSwitches, loadThresholdLearning, loadSchedules, delSchedule, loadTopics, toggleCollection } from "./js/rooms.js";
-import { startRoom, stopRoom, resumeRoom, markHighlight, loadRecording, loadTranscripts, loadDanmaku } from "./js/recording.js";
+import { startRoom, stopRoom, resumeRoom, markHighlight, retranscribeTranscript, loadRecording, loadTranscripts, loadDanmaku } from "./js/recording.js";
 import { loadCandidates } from "./js/candidates.js";
 import { approveCand, rejectCand, delCand } from "./js/review.js";
 import { loadClips, publishClip, enqueueClip, rejectClip } from "./js/clips.js";
@@ -23,6 +23,7 @@ window.startRoom = startRoom;
 window.stopRoom = stopRoom;
 window.resumeRoom = resumeRoom;
 window.markHighlight = markHighlight;
+window.retranscribeTranscript = retranscribeTranscript;
 window.approveCand = approveCand;
 window.rejectCand = rejectCand;
 window.delCand = delCand;

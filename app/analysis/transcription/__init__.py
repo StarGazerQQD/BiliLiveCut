@@ -29,3 +29,4 @@ from app.analysis.transcription.pipeline import (  # noqa: F401
     get_default_pipeline,
     transcribe_segment,
 )
+from app.analysis.transcription.quality import TranscriptQuality, assess_transcript_quality  # noqa: F401
