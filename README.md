@@ -35,6 +35,8 @@
 - 修复弹幕基线把 SQLModel 标量时间误当元组解包、低分分析无法从 `analyzing` 直接结束、趋势 JSON 截断后整批丢弃，以及高光理由截断后已生成评分丢失的问题。
 - 趋势采集单次最多请求 12 条，并只抢救截断前已完整闭合的 JSON 对象，避免猜测或写入半条数据。
 - Portable 的 CAM++ v1.0.0 旧式 ModelScope 元数据会显式注册为 `CAMPPlus` 并校验本地权重；转写提交不再读取不存在的 `Settings.transcript_version`。
+- 五分钟 TS 在识别前会转为 16 kHz 单声道 WAV，Fun-ASR-Nano 使用 FSMN-VAD 按默认不超过 30 秒拆句；重复退化会自动切换 Paraformer、Whisper，仍不合格的文本不会进入 LLM 或高光分析。
+- 实时转写页支持“重新识别”：仅清理可安全重建的自动分析结果；人工审核、确认主题、渲染或发布数据均受保护，不会被覆盖。
 
 ### V0.1.16.2 Alpha：弹幕回退与生产开关
 
@@ -170,7 +172,7 @@ V0.1.15 最终形成 Lite 单 EXE、Full 离线包、内容寻址 Runtime、安�
 | **次级回退** | Paraformer-zh | FunASR 无有效输出时补充中文识别、标点与时间戳 |
 | **最终兜底** | Whisper large-v3 / turbo | 前两级失败时自动回退 |
 
-通过 `ASR_PRIMARY=paraformer` 或 `ASR_PRIMARY=whisper` 可切换主路径。全部模型懒加载，按 flags 独立启用/禁用。
+录制 TS 会先标准化为 16 kHz 单声道 PCM WAV；Fun-ASR-Nano 复用 Paraformer 随包的 FSMN-VAD，默认把单句限制在 30 秒（`ASR_VAD_MAX_SEGMENT_S`）。主引擎出现空输出或连续重复退化时自动回退；最终输出仍不合格时停止该任务，禁止污染文本进入 LLM 和高光分析。通过 `ASR_PRIMARY=paraformer` 或 `ASR_PRIMARY=whisper` 可切换主路径。全部模型懒加载，按 flags 独立启用/禁用。
 
 ## V0.1.11 新特性：数据一致性与流水线稳定性
 
@@ -295,9 +297,12 @@ python -m app.cli record <db_id> --pipeline
 
 ```env
 ASR_PRIMARY=funasr_nano       # 默认；也可设为 paraformer 或 whisper
+ASR_VAD_MAX_SEGMENT_S=30      # Nano 的 FSMN-VAD 单句上限（秒）
 ASR_FALLBACK_WHISPER=true     # 主引擎失败时自动兜底
 TRANSCRIPT_LLM_REFINE_ENABLED=true  # 用已配置 LLM 整理正文并生成片段概括
 ```
+
+实时转写页的“重新识别”可修复历史污染文本。操作会删除当前转写和未人工处理、未渲染的自动候选后重新排队；若已有人工审核、确认主题、成片或正在运行的任务，服务端会拒绝覆盖并说明原因。
 
 **工作原理与成本控制**：先用零成本规则特征（音量峰值、关键词、语速突增、音频特征、弹幕热度）算出 `rule_score`；只有超过初筛阈值才调用大模型复核。未配置 `LLM_API_KEY` 时自动走**纯规则模式**，完全可用、零费用。
 

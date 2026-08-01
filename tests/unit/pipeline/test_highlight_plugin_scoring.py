@@ -5,6 +5,7 @@ from datetime import datetime, timedelta
 from typing import TYPE_CHECKING
 
 import numpy as np
+import pytest
 from sqlmodel import select
 
 from app.analysis.audio import AudioFeatures
@@ -137,6 +138,28 @@ def test_shadow_probability_does_not_change_rule_decision(
     assert result["highlight_score"] == 0.1
     metadata = json.loads(result["features_json"])["highlight_plugin"]
     assert metadata["prediction"]["shadow_probability"] == 0.95
+
+
+def test_degenerate_transcript_is_rejected_before_audio_or_llm(
+    temp_db: None,
+    monkeypatch: MonkeyPatch,
+) -> None:
+    """历史污染转写不得继续进入音频特征、插件或 LLM 分析。"""
+    from app.pipeline.workers import analyze
+
+    segment_id, _room_id = _seed_segment()
+    with get_session() as db:
+        transcript = db.exec(select(Transcript).where(Transcript.segment_id == segment_id)).one()
+        transcript.text = "等一下我们先看看" * 20
+        db.add(transcript)
+
+    def fail_audio(_path: str) -> None:
+        raise AssertionError("退化文本不得进入高光特征计算")
+
+    monkeypatch.setattr(analyze.audio_mod, "analyze_audio", fail_audio)
+
+    with pytest.raises(ValueError, match="已阻止高光与 LLM 分析"):
+        _score_segment_draft(segment_id)
 
 
 def test_commit_records_plugin_fallback_as_structured_log(temp_db: None) -> None:

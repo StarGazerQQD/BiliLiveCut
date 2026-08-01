@@ -27,6 +27,7 @@ from typing import TYPE_CHECKING
 from loguru import logger
 
 from app.analysis import asr_metrics
+from app.analysis.transcription.audio_normalization import normalized_asr_audio
 
 # ── 导入 backends 中的共享工具函数 ──────────────────────────
 # Zero-duplicate policy: all utility functions live in backends.py
@@ -42,6 +43,7 @@ from app.analysis.transcription.models import (  # single source — no duplicat
     ASRTranscriptResult,
     TranscriberBackend,
 )
+from app.analysis.transcription.quality import TranscriptQuality, assess_transcript_quality
 from app.core.config import settings
 from app.db.models import RawSegment, SegmentStatus, Transcript
 from app.db.session import get_session
@@ -96,12 +98,21 @@ class ASRPipeline:
         audio_path: str,
         initial_prompt: str | None = None,
     ) -> ASRTranscriptResult:
-        """执行完整多引擎 ASR 流水线 (V0.1.12.2: 返回统一结果)。
+        """标准化媒体并执行完整多引擎 ASR 流水线。
 
         :param audio_path: 音频文件路径。
         :param initial_prompt: 热词引导。
         :returns: :class:`ASRTranscriptResult`。
         """
+        with normalized_asr_audio(audio_path) as normalized_path:
+            return self._transcribe_normalized(normalized_path, initial_prompt)
+
+    def _transcribe_normalized(
+        self,
+        audio_path: str,
+        initial_prompt: str | None = None,
+    ) -> ASRTranscriptResult:
+        """对标准化音频执行多引擎识别与质量回退。"""
         primary_name = settings.asr_primary.strip().lower().replace("-", "_")
 
         if primary_name in {"funasr", "funasr_nano", "nano"}:
@@ -121,24 +132,40 @@ class ASRPipeline:
                     primary_error_message=str(exc)[:500],
                 )
 
-            if result.final_text.strip() or result.text.strip():
+            primary_quality = assess_transcript_quality(result.final_text or result.text)
+            if primary_quality.usable:
                 return result
 
-            logger.info("Fun-ASR-Nano 无有效输出，切换 Paraformer 次级引擎")
+            _record_quality_failure(result, primary_quality)
+            trigger_reason = _fallback_trigger_reason(result, primary_quality)
+            logger.warning(
+                "Fun-ASR-Nano 输出不可用（{}，重复占比 {:.1%}），切换 Paraformer 次级引擎",
+                primary_quality.reason,
+                primary_quality.repetition_ratio,
+            )
             try:
                 secondary = self._get_primary().transcribe(audio_path, initial_prompt)
             except Exception as exc:
                 logger.error("Paraformer 次级引擎转写失败: {}", exc)
             else:
-                if secondary.text.strip():
-                    secondary.base_text = secondary.text
-                    secondary.final_text = secondary.text
+                secondary_text = secondary.final_text or secondary.text
+                secondary_quality = assess_transcript_quality(secondary_text)
+                if secondary_quality.usable:
+                    secondary.base_text = secondary.text or secondary_text
+                    secondary.final_text = secondary_text
                     secondary.final_text_source = "fallback"
                     secondary.primary_backend = "funasr-nano"
                     secondary.primary_status = "failed"
+                    secondary.primary_error_type = result.primary_error_type
+                    secondary.primary_error_message = result.primary_error_message
                     secondary.fallback_backend = "paraformer"
-                    secondary.fallback_trigger_reason = "primary_empty_output"
+                    secondary.fallback_trigger_reason = trigger_reason
                     return secondary
+                logger.warning(
+                    "Paraformer 次级输出仍不可用（{}，重复占比 {:.1%}）",
+                    secondary_quality.reason,
+                    secondary_quality.repetition_ratio,
+                )
 
             if self._use_fallback:
                 logger.info("Fun-ASR-Nano 与 Paraformer 均无有效输出，切换 Whisper 兜底")
@@ -149,8 +176,10 @@ class ASRPipeline:
                 fallback_result.final_text_source = "fallback"
                 fallback_result.primary_backend = "funasr-nano"
                 fallback_result.primary_status = "failed"
+                fallback_result.primary_error_type = result.primary_error_type
+                fallback_result.primary_error_message = result.primary_error_message
                 fallback_result.fallback_backend = "whisper"
-                fallback_result.fallback_trigger_reason = "primary_empty_output"
+                fallback_result.fallback_trigger_reason = trigger_reason
                 return fallback_result
             result.final_text_source = "none"
             return result
@@ -175,22 +204,28 @@ class ASRPipeline:
             if settings.asr_funasr_review and result.text:
                 result = self._review_loop(result, audio_path, initial_prompt)
 
-            # 主引擎有结果则返回
-            if result.final_text and len(result.final_text.strip()) > 0:
-                return result
-            if result.text and len(result.text.strip()) > 0:
+            primary_quality = assess_transcript_quality(result.final_text or result.text)
+            if primary_quality.usable:
                 return result
 
-            # 主引擎空结果 → 兜底 Whisper
+            _record_quality_failure(result, primary_quality)
+            trigger_reason = _fallback_trigger_reason(result, primary_quality)
+            # 主引擎空结果或重复退化 → 兜底 Whisper
             if self._use_fallback:
-                logger.info("Paraformer 无有效输出, 切换 Whisper 兜底")
+                logger.warning(
+                    "Paraformer 输出不可用（{}，重复占比 {:.1%}），切换 Whisper 兜底",
+                    primary_quality.reason,
+                    primary_quality.repetition_ratio,
+                )
                 fallback_result = self._get_whisper().transcribe(audio_path, initial_prompt)
                 # V0.1.12.4: 保留主模型失败信息
                 fallback_result.final_text_source = "fallback"
                 fallback_result.primary_backend = "paraformer"
                 fallback_result.primary_status = "failed"
+                fallback_result.primary_error_type = result.primary_error_type
+                fallback_result.primary_error_message = result.primary_error_message
                 fallback_result.fallback_backend = "whisper"
-                fallback_result.fallback_trigger_reason = "primary_empty_output"
+                fallback_result.fallback_trigger_reason = trigger_reason
                 fallback_result.review_text = fallback_result.text
                 fallback_result.final_text = fallback_result.text
                 return fallback_result
@@ -408,6 +443,9 @@ def transcribe_segment(
     text = _apply_room_aliases(result.text, segment_id)
     final_text = _apply_room_aliases(result.final_text or result.text, segment_id)
     result.final_text = final_text
+    quality = assess_transcript_quality(final_text or text)
+    if not quality.usable:
+        raise RuntimeError(f"ASR 输出质量不合格: {quality.reason}")
     refinement = _refine_transcript_for_storage(final_text or text)
     display_text = refinement.clean_text if refinement is not None else (final_text or text)
 
@@ -549,7 +587,11 @@ def _refine_transcript_for_storage(text: str) -> TranscriptRefinement | None:
     from app.analysis import llm
     from app.core import settings_store
 
-    if not text.strip() or not settings_store.transcript_llm_refine_enabled():
+    quality = assess_transcript_quality(text)
+    if not quality.usable:
+        logger.warning("跳过不可用 ASR 文本的 LLM 整理: {}", quality.reason)
+        return None
+    if not settings_store.transcript_llm_refine_enabled():
         return None
     try:
         refinement = llm.refine_transcript(text)
@@ -559,3 +601,21 @@ def _refine_transcript_for_storage(text: str) -> TranscriptRefinement | None:
     if refinement is None:
         logger.info("单切片转写未获得可用 LLM 整理结果，已保留原始 ASR 文本。")
     return refinement
+
+
+def _record_quality_failure(result: ASRTranscriptResult, quality: TranscriptQuality) -> None:
+    """把质量门禁拒绝写入主引擎追踪字段。"""
+    result.primary_status = "failed"
+    if not result.primary_error_type:
+        result.primary_error_type = "ASRQualityError"
+        result.primary_error_message = (
+            f"{quality.reason}; repetition_ratio={quality.repetition_ratio:.3f}; "
+            f"normalized_length={quality.normalized_length}"
+        )
+
+
+def _fallback_trigger_reason(result: ASRTranscriptResult, quality: TranscriptQuality) -> str:
+    """区分模型异常和质量门禁触发的回退原因。"""
+    if result.primary_error_type and result.primary_error_type != "ASRQualityError":
+        return "primary_exception"
+    return f"primary_{quality.reason}"

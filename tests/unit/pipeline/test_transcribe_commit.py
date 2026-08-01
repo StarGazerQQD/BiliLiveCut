@@ -123,6 +123,33 @@ def test_transcribe_compute_stores_clean_text_summary_and_raw_asr(
     assert auxiliary["transcript_refinement"] == {"applied": True, "summary": "片段摘要"}
 
 
+def test_transcribe_compute_rejects_degenerate_text_before_llm(
+    temp_db: None,
+    monkeypatch: MonkeyPatch,
+) -> None:
+    """所有 ASR 都退化时不得调用 LLM，也不得返回可落库的转写。"""
+    from app.analysis.transcription import pipeline as pipeline_module
+    from app.analysis.transcription.models import ASRTranscriptResult
+    from app.pipeline.workers.transcribe import transcribe_compute
+
+    class FakePipeline:
+        def transcribe(self, _audio_path: str, initial_prompt: str | None = None) -> ASRTranscriptResult:
+            assert initial_prompt is None
+            repeated = "等一下我们先看看" * 20
+            return ASRTranscriptResult(text=repeated, final_text=repeated, backend="whisper")
+
+    def fail_refine(_text: str) -> None:
+        raise AssertionError("退化文本不得进入 LLM")
+
+    task_id, segment_id = _seed_claimed_task()
+    monkeypatch.setattr(pipeline_module, "get_default_pipeline", lambda: FakePipeline())
+    monkeypatch.setattr(pipeline_module, "_refine_transcript_for_storage", fail_refine)
+
+    result = transcribe_compute(task_id)
+
+    assert result == {"error": "ASR 输出质量不合格: degenerate_repetition", "segment_id": segment_id}
+
+
 def test_commit_transcript_advances_without_nonexistent_task_field(temp_db: None) -> None:
     """新转写应落库并推进任务，不依赖不存在的 ``task.transcript_id``。"""
     from app.db.models import RawSegment, SegmentStatus, SegmentTask, TaskStatus, Transcript

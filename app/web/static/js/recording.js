@@ -82,8 +82,18 @@ async function loadTranscripts() {
       <div class="txt">${esc(t.text) || "(\u7a7a)"}</div>
       ${t.summary ? `<div class="sub" style="margin-top:8px"><b>片段概括：</b>${esc(t.summary)}</div>` : ""}
       ${rawDetails}
+      <div class="actions" style="margin-top:8px"><button class="secondary" onclick="retranscribeTranscript(${t.id})">重新识别</button></div>
     </div>`;
   }).join("") : `<div class="empty">\u6682\u65e0\u8f6c\u5199\u3002\u8bf7\u5728\u300c\u914d\u7f6e \u2192 \u529f\u80fd\u5f00\u5173\u300d\u542f\u7528\u201c\u5f55\u5236\u5b9e\u65f6\u8f6c\u5199\u201d\uff0c\u6216\u5728 CLI \u4f7f\u7528 --pipeline\u3002</div>`;
+}
+
+async function retranscribeTranscript(id) {
+  if (!window.confirm("重新识别会删除当前转写，并清理尚未人工审核或渲染的自动分析结果。继续吗？")) return;
+  try {
+    const result = await api("POST", `/api/transcripts/${id}/retranscribe`);
+    toast(`片段 #${result.segment_id} 已重新加入转写队列`);
+    await loadTranscripts();
+  } catch (e) { toast("重新识别失败:" + e.message); }
 }
 
 // ----------------------------- \u6e32\u67d3:\u5f39\u5e55\u70ed\u5ea6 ----------------------------- //
@@ -103,4 +113,4 @@ async function loadDanmaku() {
     </div>`).join("") : `<div class="empty">\u6682\u65e0\u5f39\u5e55\u8bb0\u5f55\u3002</div>`;
 }
 
-export { startRoom, stopRoom, resumeRoom, markHighlight, loadRecording, loadTranscripts, loadDanmaku };
+export { startRoom, stopRoom, resumeRoom, markHighlight, retranscribeTranscript, loadRecording, loadTranscripts, loadDanmaku };

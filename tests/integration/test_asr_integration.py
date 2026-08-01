@@ -112,7 +112,55 @@ class TestPipelineIntegration:
         assert result.final_text == "Paraformer 回退文本"
         assert result.primary_backend == "funasr-nano"
         assert result.fallback_backend == "paraformer"
+        assert result.fallback_trigger_reason == "primary_empty_output"
+        assert result.primary_error_type == "ASRQualityError"
         assert result.final_text_source == "fallback"
+
+    def test_funasr_degenerate_repetition_falls_back_to_paraformer(self, monkeypatch: MonkeyPatch) -> None:
+        """Nano 解码循环必须丢弃，并由 Paraformer 产生正式文本。"""
+        from app.analysis.transcription import pipeline as pipeline_module
+
+        class FakePrimary:
+            nano_revision = "master"
+
+            def transcribe_funasr(self, _audio_path: str, _initial_prompt: str | None = None) -> ASRTranscriptResult:
+                repeated = "等一下我们先看看" * 20
+                return ASRTranscriptResult(text=repeated, final_text=repeated, backend="funasr-nano")
+
+            def transcribe(self, _audio_path: str, _initial_prompt: str | None = None) -> ASRTranscriptResult:
+                return ASRTranscriptResult(text="Paraformer 给出的正常回退文本。", backend="paraformer")
+
+        monkeypatch.setattr(pipeline_module.settings, "asr_primary", "funasr_nano")
+        pipeline = ASRPipeline(primary_backend=FakePrimary())  # type: ignore[arg-type]
+
+        result = pipeline.transcribe("audio.wav")
+
+        assert result.final_text == "Paraformer 给出的正常回退文本。"
+        assert result.fallback_backend == "paraformer"
+        assert result.fallback_trigger_reason == "primary_degenerate_repetition"
+        assert result.primary_error_type == "ASRQualityError"
+
+    def test_funasr_exception_provenance_survives_paraformer_fallback(self, monkeypatch: MonkeyPatch) -> None:
+        """模型异常与空输出应使用不同回退原因，并保留原始异常类型。"""
+        from app.analysis.transcription import pipeline as pipeline_module
+
+        class FakePrimary:
+            nano_revision = "master"
+
+            def transcribe_funasr(self, _audio_path: str, _initial_prompt: str | None = None) -> ASRTranscriptResult:
+                raise RuntimeError("nano crashed")
+
+            def transcribe(self, _audio_path: str, _initial_prompt: str | None = None) -> ASRTranscriptResult:
+                return ASRTranscriptResult(text="Paraformer 异常回退文本。", backend="paraformer")
+
+        monkeypatch.setattr(pipeline_module.settings, "asr_primary", "funasr_nano")
+        pipeline = ASRPipeline(primary_backend=FakePrimary())  # type: ignore[arg-type]
+
+        result = pipeline.transcribe("audio.wav")
+
+        assert result.fallback_trigger_reason == "primary_exception"
+        assert result.primary_error_type == "RuntimeError"
+        assert result.primary_error_message == "nano crashed"
 
 
 class TestASRTranscriptResultIntegration:

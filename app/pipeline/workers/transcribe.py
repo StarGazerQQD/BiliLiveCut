@@ -54,6 +54,7 @@ def transcribe_compute(task_id: int) -> dict[str, Any]:
         _refine_transcript_for_storage,
         get_default_pipeline,
     )
+    from app.analysis.transcription.quality import assess_transcript_quality  # noqa: PLC0415
 
     # 1) 读取 Task -> segment_id
     with get_session() as db:
@@ -82,6 +83,19 @@ def transcribe_compute(task_id: int) -> dict[str, Any]:
     text = _apply_room_aliases(result.text, segment_id)
     final_text = _apply_room_aliases(result.final_text or result.text, segment_id)
     raw_text = final_text or text
+    quality = assess_transcript_quality(raw_text)
+    if not quality.usable:
+        _logger.error(
+            "transcribe_quality_rejected segment=%s backend=%s reason=%s repetition_ratio=%.3f",
+            segment_id,
+            result.backend,
+            quality.reason,
+            quality.repetition_ratio,
+        )
+        return {
+            "error": f"ASR 输出质量不合格: {quality.reason}",
+            "segment_id": segment_id,
+        }
     refinement = _refine_transcript_for_storage(raw_text)
     display_text = refinement.clean_text if refinement is not None else raw_text
 

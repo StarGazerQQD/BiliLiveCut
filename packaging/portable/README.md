@@ -411,6 +411,7 @@ BILIBILI_COOKIE=            # 可选登录态 Cookie，用于平台允许的部�
 ```ini
 # 主引擎（V0.1.12）
 ASR_PRIMARY=funasr_nano                 # 默认 FunASR；也可设为 paraformer / whisper
+ASR_VAD_MAX_SEGMENT_S=30                # Nano 的 FSMN-VAD 单句上限（秒）
 ASR_PRIMARY_DEVICE=cpu                  # 主引擎设备，首次测试保持 cpu
 ASR_AUXILIARY_DEVICE=cpu                # 辅助引擎设备
 ASR_REVIEW_DEVICE=cpu                   # 复核引擎设备
@@ -425,6 +426,8 @@ WHISPER_MODEL=small                      # Whisper 兜底模型
 WHISPER_DEVICE=cpu                       # Whisper 设备
 WHISPER_COMPUTE_TYPE=int8                # CPU 推荐 int8
 ```
+
+录制 TS 会先转换为 16 kHz 单声道 PCM WAV，Nano 再复用 Engine Pack 中的 FSMN-VAD 拆句。空输出或连续重复退化会依次切换 Paraformer、Whisper；最终仍不合格时不会落库，也不会调用 LLM 或高光分析。实时转写页可对历史污染结果执行“重新识别”，人工审核、确认主题与成片资产不会被自动覆盖。
 
 ### 大模型（可选，用于转写梳理 / 高光复核 / 文案 / 网感采集）
 

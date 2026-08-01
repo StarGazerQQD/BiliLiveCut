@@ -166,6 +166,7 @@ DANMAKU_LOGIN_RETRY_MAX_ATTEMPTS=5
 DANMAKU_LOGIN_RETRY_INTERVAL_S=60
 RECORDING_PIPELINE_ENABLED=true
 ASR_PRIMARY=funasr_nano
+ASR_VAD_MAX_SEGMENT_S=30
 TRANSCRIPT_LLM_REFINE_ENABLED=true
 LLM_API_KEY=
 TREND_ENABLED=false
@@ -184,10 +185,13 @@ UPLOADER=manual
 - 若日志出现 `code=-352`，表示请求触发平台风控，不能只据此判定 Cookie 过期。登录请求失败会匿名兜底；匿名请求也失败时会按配置间隔重试，录像与实时转写仍会继续。
 - `RECORDING_PIPELINE_ENABLED=true`：新开始或恢复的录制默认实时转写；也可在“配置 → 功能开关”中修改，下一次录制生效。
 - `ASR_PRIMARY=funasr_nano`：优先使用本地 Fun-ASR-Nano；无有效输出时自动回退 Paraformer，再回退 Whisper。
+- `ASR_VAD_MAX_SEGMENT_S=30`：先把 TS 标准化为 16 kHz 单声道 WAV，再由 FSMN-VAD 把 Nano 的单句限制在 30 秒；建议保持默认值。
 - `TRANSCRIPT_LLM_REFINE_ENABLED=true`：每个切片完成 ASR 后，用已配置的大模型整理正文并生成概括；失败时保留原始 ASR，不中断分析。
 - `LLM_API_KEY` 留空：转写梳理自动跳过，高光判断使用本地规则评分，不产生 API 费用。
 - `TREND_ENABLED=false`：不启用联网热点采集。
 - `UPLOADER=manual`：只生成本地文件，不自动投稿。
+
+若历史版本已经写入明显重复的转写，可在“实时转写”页点击“重新识别”。程序只会清理未人工审核、未渲染的自动分析结果；存在人工审核、确认主题、成片或活动任务时会拒绝覆盖并显示原因。
 
 ### 7.3 不要先改这些配置
 

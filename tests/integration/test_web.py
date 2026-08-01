@@ -350,3 +350,161 @@ def test_transcript_api_exposes_summary_and_raw_asr(temp_db: None) -> None:
     assert row["summary"] == "片段摘要"
     assert row["llm_refined"] is True
     assert row["primary_backend"] == "funasr-nano"
+
+
+def test_retranscribe_api_deletes_transcript_and_requeues_segment(temp_db: None) -> None:
+    """无受保护下游资产时，重新识别应原子删除旧转写并重置任务。"""
+    from app.db.models import RawSegment, SegmentStatus, SegmentTask, TaskStatus, Transcript
+    from app.db.session import get_session
+    from app.web.main import app
+
+    with get_session() as db:
+        segment = RawSegment(session_id=1, seq=1, file_path="segment.ts", status=SegmentStatus.SCORED)
+        db.add(segment)
+        db.flush()
+        transcript = Transcript(segment_id=segment.id, text="被污染的旧转写")
+        db.add(transcript)
+        task = SegmentTask(
+            segment_id=segment.id,
+            session_id=segment.session_id,
+            stage=TaskStatus.COMPLETED,
+            pipeline_key=f"pipeline:{segment.id}",
+        )
+        db.add(task)
+        db.flush()
+        transcript_id = transcript.id
+        task_id = task.id
+        segment_id = segment.id
+
+    with TestClient(app) as client:
+        response = client.post(f"/api/transcripts/{transcript_id}/retranscribe")
+
+    assert response.status_code == 200
+    assert response.json() == {"task_id": task_id, "segment_id": segment_id}
+    with get_session() as db:
+        assert db.get(Transcript, transcript_id) is None
+        segment = db.get(RawSegment, segment_id)
+        task = db.get(SegmentTask, task_id)
+        assert segment is not None and segment.status == SegmentStatus.RECORDED
+        assert task is not None and task.stage == TaskStatus.QUEUED_FOR_TRANS
+        assert task.candidate_id is None
+        assert task.event_id is None
+        assert task.completed_at is None
+
+
+def test_retranscribe_api_cleans_only_automatic_unrendered_analysis(temp_db: None) -> None:
+    """未人工处理且未渲染的候选、事件和自动主题关联可随污染转写重建。"""
+    from datetime import UTC, datetime, timedelta
+
+    from app.db.models import (
+        HighlightCandidate,
+        HighlightEvent,
+        HighlightTopic,
+        RawSegment,
+        SegmentTask,
+        TaskStatus,
+        Topic,
+        Transcript,
+    )
+    from app.db.session import get_session
+    from app.web.main import app
+
+    now = datetime.now(UTC)
+    with get_session() as db:
+        segment = RawSegment(session_id=2, seq=1, file_path="segment.ts")
+        db.add(segment)
+        db.flush()
+        transcript = Transcript(segment_id=segment.id, text="等一下" * 100)
+        candidate = HighlightCandidate(
+            session_id=2,
+            peak_ts=now,
+            start_ts=now,
+            end_ts=now + timedelta(seconds=30),
+            dedup_hash="auto-retranscribe-test",
+        )
+        topic = Topic(session_id=2, title="自动主题")
+        db.add(candidate)
+        db.add(topic)
+        db.flush()
+        event = HighlightEvent(candidate_id=candidate.id, session_id=2, topic_id=topic.id, review_by="auto")
+        db.add(event)
+        db.flush()
+        membership = HighlightTopic(event_id=event.id, topic_id=topic.id, confidence=0.8)
+        task = SegmentTask(
+            segment_id=segment.id,
+            session_id=2,
+            stage=TaskStatus.AWAITING_REVIEW,
+            candidate_id=candidate.id,
+            event_id=event.id,
+            pipeline_key=f"pipeline:{segment.id}",
+        )
+        db.add(transcript)
+        db.add(membership)
+        db.add(task)
+        db.flush()
+        transcript_id = transcript.id
+        candidate_id = candidate.id
+        event_id = event.id
+        membership_id = membership.id
+
+    with TestClient(app) as client:
+        response = client.post(f"/api/transcripts/{transcript_id}/retranscribe")
+
+    assert response.status_code == 200
+    with get_session() as db:
+        assert db.get(Transcript, transcript_id) is None
+        assert db.get(HighlightCandidate, candidate_id) is None
+        assert db.get(HighlightEvent, event_id) is None
+        assert db.get(HighlightTopic, membership_id) is None
+
+
+def test_retranscribe_api_preserves_manually_reviewed_assets(temp_db: None) -> None:
+    """存在人工审核时接口应返回冲突，且不修改任何数据。"""
+    from datetime import UTC, datetime, timedelta
+
+    from app.db.models import HighlightCandidate, HighlightEvent, RawSegment, SegmentTask, TaskStatus, Transcript
+    from app.db.session import get_session
+    from app.web.main import app
+
+    now = datetime.now(UTC)
+    with get_session() as db:
+        segment = RawSegment(session_id=3, seq=1, file_path="segment.ts")
+        db.add(segment)
+        db.flush()
+        transcript = Transcript(segment_id=segment.id, text="旧转写")
+        candidate = HighlightCandidate(
+            session_id=3,
+            peak_ts=now,
+            start_ts=now,
+            end_ts=now + timedelta(seconds=30),
+            dedup_hash="manual-retranscribe-test",
+        )
+        db.add(candidate)
+        db.flush()
+        event = HighlightEvent(candidate_id=candidate.id, session_id=3, review_by="operator")
+        db.add(event)
+        db.flush()
+        task = SegmentTask(
+            segment_id=segment.id,
+            session_id=3,
+            stage=TaskStatus.AWAITING_REVIEW,
+            candidate_id=candidate.id,
+            event_id=event.id,
+            pipeline_key=f"pipeline:{segment.id}",
+        )
+        db.add(transcript)
+        db.add(task)
+        db.flush()
+        transcript_id = transcript.id
+        candidate_id = candidate.id
+        event_id = event.id
+
+    with TestClient(app) as client:
+        response = client.post(f"/api/transcripts/{transcript_id}/retranscribe")
+
+    assert response.status_code == 409
+    assert "人工审核" in response.json()["detail"]
+    with get_session() as db:
+        assert db.get(Transcript, transcript_id) is not None
+        assert db.get(HighlightCandidate, candidate_id) is not None
+        assert db.get(HighlightEvent, event_id) is not None
