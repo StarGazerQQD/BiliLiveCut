@@ -2,9 +2,9 @@
 
 架构:
     音频
-    ├─ Paraformer-zh : 中文文本、时间戳、标点 (主引擎)
+    ├─ Fun-ASR-Nano : 中文语音识别 (默认主引擎)
+    ├─ Paraformer-zh : 中文文本、时间戳、标点 (次级回退或可选主引擎)
     ├─ SenseVoice-Small : 情感、笑声、音乐、事件 (辅助特征, 与主引擎并行)
-    └─ Fun-ASR-Nano : 低置信度 / 非中文片段复核
     └─ Whisper large-v3 / turbo : 保留切换开关, 最终兜底
 
 使用方式:

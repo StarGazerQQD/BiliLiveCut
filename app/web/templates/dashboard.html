@@ -67,6 +67,7 @@
         </div>
         <p class="hint">合规提示:仅可录制你拥有授权的内容。</p>
       </div>
+      <p class="hint" id="rooms-dirty-hint" style="display:none">检测到未保存的直播间录制选项，已暂停列表自动刷新；保存后恢复。</p>
       <div id="rooms-list"></div>
     </section>
 
@@ -242,7 +243,13 @@
           <input type="checkbox" id="sw-recording-pipeline" />
           <span><b>启用录制 Pipeline</b><br /><span class="muted">新开始或恢复的手动录制、预约录制、恢复录制及未显式传参的 CLI 录制将实时转写并进入高光分析；录制中修改不会影响当前会话。</span></span>
         </label>
+        <label class="switch-row" style="align-items:flex-start">
+          <input type="checkbox" id="sw-transcript-llm-refine" />
+          <span><b>启用单切片 LLM 转写整理</b><br /><span class="muted">每个切片完成本地 ASR 后，交给已配置的大模型补全标点、整理可读正文并生成片段概括；失败时保留原始 ASR，不中断流水线。</span></span>
+        </label>
+        <p class="hint" id="transcript-llm-refine-hint">载入中…</p>
       </div>
+      <p class="hint" id="feature-dirty-hint" style="display:none">检测到未保存的直播间功能开关，已暂停列表自动刷新；保存后恢复。</p>
       <div id="feature-switches-list"></div>
     </section>
 
@@ -268,7 +275,7 @@
         <p class="hint">
           可同时配置多个 OpenAI 兼容服务商(DeepSeek / 通义千问 / Kimi / 智谱 GLM 等)。
           系统按「优先级」从小到大依次调用,某个不可用/报错会自动降级到下一个。
-          语音转写始终用本地 Whisper,不受影响。API Key 留空表示不修改沿用旧值。
+          语音识别使用本地 FunASR / Paraformer / Whisper；启用“转写 LLM 梳理”后，识别原文会交给这里配置的大模型整理并生成概括。API Key 留空表示不修改沿用旧值。
         </p>
         <div class="row">
           <button id="btn-add-llm">+ 新增模型</button>

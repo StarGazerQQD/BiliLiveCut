@@ -42,11 +42,13 @@ def test_settings_fields_boundary_values() -> None:
     from app.core.config import Settings
 
     s = Settings()
-    assert 5 <= s.segment_duration_s <= 600
+    assert s.segment_duration_s == 300
     assert s.reconnect_max_backoff_s >= 1
     assert s.live_poll_interval_s >= 5
     assert s.danmaku_login_retry_max_attempts == 5
     assert s.danmaku_login_retry_interval_s == 60.0
+    assert s.transcript_llm_refine_enabled is True
+    assert s.transcript_llm_refine_max_tokens == 4096
     assert s.asr_primary_max_concurrency >= 1
     assert s.asr_auxiliary_max_concurrency >= 1
     assert s.asr_review_max_concurrency >= 1
@@ -89,6 +91,22 @@ def test_recording_pipeline_env_and_runtime_override(temp_db: None, monkeypatch:
 
     settings_store.set_bool("recording_pipeline_enabled", True)
     assert settings_store.recording_pipeline_enabled() is True
+
+
+def test_transcript_refinement_env_and_runtime_override(temp_db: None, monkeypatch: MonkeyPatch) -> None:
+    """转写整理默认值来自环境配置，控制台运行时设置可覆盖。"""
+    from app.core import settings_store
+    from app.core.config import Settings, settings
+
+    monkeypatch.setenv("TRANSCRIPT_LLM_REFINE_ENABLED", "false")
+    configured = Settings(_env_file=None)
+    assert configured.transcript_llm_refine_enabled is False
+
+    monkeypatch.setattr(settings, "transcript_llm_refine_enabled", False)
+    assert settings_store.transcript_llm_refine_enabled() is False
+
+    settings_store.set_bool("transcript_llm_refine_enabled", True)
+    assert settings_store.transcript_llm_refine_enabled() is True
 
 
 def test_db_session_context_manager(temp_db: None) -> None:

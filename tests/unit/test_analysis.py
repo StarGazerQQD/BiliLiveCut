@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+from datetime import UTC, datetime, timedelta
+
 import numpy as np
 
 from app.analysis.audio import (
@@ -129,3 +131,32 @@ def test_scoring_config_defaults() -> None:
     assert "volume" in cfg.weights
     assert cfg.pre_roll_s > 0
     assert 0 <= cfg.iou_threshold <= 1
+
+
+def test_danmaku_baseline_accepts_sqlmodel_scalar_rows(temp_db: None) -> None:
+    """SQLModel 标量查询返回 datetime 时，弹幕基线不得按单元素元组解包。"""
+    from app.analysis.highlight import _danmaku_baseline
+    from app.db.models import Danmaku
+    from app.db.session import get_session
+
+    window_start = datetime.now(UTC)
+    with get_session() as db:
+        for index in range(12):
+            db.add(
+                Danmaku(
+                    session_id=7,
+                    room_id=23771139,
+                    ts=window_start - timedelta(seconds=120 - index * 5),
+                    content=f"弹幕{index}",
+                )
+            )
+
+    rate, count = _danmaku_baseline(
+        session_id=7,
+        before_end=window_start,
+        window_start=window_start,
+        window_end=window_start + timedelta(minutes=5),
+    )
+
+    assert rate > 0
+    assert count == 12

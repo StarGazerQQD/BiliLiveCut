@@ -101,9 +101,10 @@ def collect_trends(topic: str = "") -> list[TrendRecord]:
         logger.info("网感资料库未启用(TREND_ENABLED=false),跳过采集。")
         return []
 
+    request_limit = min(settings.trend_max_items, 12)
     prompt = _COLLECT_PROMPT.format(
         topic=topic or _DEFAULT_TOPIC,
-        max_items=settings.trend_max_items,
+        max_items=request_limit,
     )
 
     if settings.trend_web_search:
@@ -126,7 +127,7 @@ def collect_trends(topic: str = "") -> list[TrendRecord]:
 
     records = [r for r in (_coerce_record(it) for it in data) if r is not None]
     logger.info("网感采集解析出 {} 条记录。", len(records))
-    return records[: settings.trend_max_items]
+    return records[:request_limit]
 
 
 def collect_and_save(topic: str = "") -> int:

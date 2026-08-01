@@ -122,6 +122,23 @@ def recording_pipeline_enabled() -> bool:
     return settings.recording_pipeline_enabled
 
 
+def transcript_llm_refine_enabled() -> bool:
+    """返回单切片转写 LLM 整理与摘要的运行时开关。
+
+    Web 控制台保存的运行时值优先；尚未保存时回退到
+    ``TRANSCRIPT_LLM_REFINE_ENABLED`` 环境配置。
+
+    :returns: 是否在 ASR 后调用 LLM 整理正文并生成摘要。
+    """
+    stored = get_setting("transcript_llm_refine_enabled", "").strip()
+    if stored:
+        return stored.lower() in _TRUE
+
+    from app.core.config import settings
+
+    return settings.transcript_llm_refine_enabled
+
+
 def all_settings() -> dict[str, str]:
     """返回所有运行时设置(含未覆盖项的默认值)。
 

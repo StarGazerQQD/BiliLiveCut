@@ -2,9 +2,9 @@
 
 架构:
     音频
-    ├─ Paraformer-zh : 中文文本、时间戳、标点 (主引擎)
+    ├─ Fun-ASR-Nano : 中文语音识别 (默认主引擎)
+    ├─ Paraformer-zh : 中文文本、时间戳、标点 (次级回退或可选主引擎)
     ├─ SenseVoice-Small : 情感、笑声、音乐、事件 (辅助特征, 与主引擎并行)
-    └─ Fun-ASR-Nano : 低置信度 / 非中文片段复核
     └─ Whisper large-v3 / turbo : 保留切换开关, 最终兜底
 
 使用方式:
@@ -20,6 +20,7 @@ V0.1.12.2 变更:
 
 from __future__ import annotations
 
+import json
 import re
 import time
 import uuid
@@ -94,19 +95,82 @@ def _probe_audio_duration(audio_path: str) -> float:
         return 0.0
 
 
+def _legacy_campplus_kwargs(model_dir: Path) -> dict[str, object] | None:
+    """Build FunASR arguments for legacy CAM++ Engine Pack metadata.
+
+    CAM++ v1.0.0 only ships ModelScope's ``configuration.json``.  FunASR
+    1.3.30 therefore treats the directory path as a model registry key and
+    rejects it.  Newer snapshots include ``config.yaml`` and can continue to
+    use FunASR's native local-directory loading path.
+    """
+    if (model_dir / "config.yaml").is_file():
+        return None
+
+    metadata_path = model_dir / "configuration.json"
+    try:
+        metadata = json.loads(metadata_path.read_text(encoding="utf-8"))
+    except (OSError, json.JSONDecodeError) as exc:
+        raise RuntimeError(f"CAM++ local model metadata is unavailable or invalid: {metadata_path}") from exc
+    if not isinstance(metadata, dict):
+        raise RuntimeError(f"CAM++ local model metadata must be a JSON object: {metadata_path}")
+
+    model_metadata = metadata.get("model")
+    if not isinstance(model_metadata, dict) or model_metadata.get("type") != "cam++-sv":
+        raise RuntimeError(f"Unsupported legacy CAM++ model metadata: {metadata_path}")
+    model_config = model_metadata.get("model_config")
+    if not isinstance(model_config, dict):
+        raise RuntimeError(f"Legacy CAM++ model_config is missing: {metadata_path}")
+
+    dimensions: dict[str, int] = {}
+    for key in ("sample_rate", "fbank_dim", "emb_size"):
+        value = model_config.get(key)
+        if isinstance(value, bool) or not isinstance(value, int) or value <= 0:
+            raise RuntimeError(f"Legacy CAM++ {key} must be a positive integer: {metadata_path}")
+        dimensions[key] = value
+
+    weight_name = model_metadata.get("pretrained_model")
+    if not isinstance(weight_name, str) or not weight_name.strip():
+        raise RuntimeError(f"Legacy CAM++ pretrained_model is missing: {metadata_path}")
+    model_root = model_dir.resolve()
+    weight_path = (model_root / weight_name).resolve()
+    try:
+        weight_path.relative_to(model_root)
+    except ValueError as exc:
+        raise RuntimeError(f"Legacy CAM++ pretrained_model escapes its model directory: {metadata_path}") from exc
+    if not weight_path.is_file() or weight_path.stat().st_size == 0:
+        raise RuntimeError(f"Legacy CAM++ weight is missing or empty: {weight_path}")
+
+    return {
+        "model_path": str(model_root),
+        "model_conf": {
+            "feat_dim": dimensions["fbank_dim"],
+            "embedding_size": dimensions["emb_size"],
+            "growth_rate": 32,
+            "bn_size": 4,
+            "init_channels": 128,
+            "config_str": "batchnorm-relu",
+            "memory_efficient": True,
+            "output_level": "segment",
+        },
+        "frontend": "WavFrontend",
+        "frontend_conf": {"fs": dimensions["sample_rate"]},
+        "init_param": str(weight_path),
+    }
+
+
 # ═══════════════════════════════════════════════════════════
 # FunASR 多引擎后端 (Paraformer + SenseVoice + FunASR-Nano)
 # ═══════════════════════════════════════════════════════════
 
 
 class FunASRBackend:
-    """Paraformer-zh 主引擎 + SenseVoice 辅助 + Fun-ASR-Nano 复核。
+    """Fun-ASR-Nano / Paraformer 识别 + SenseVoice 辅助的本地后端。
 
     首次调用时懒加载模型, 进程内单例缓存。
 
     V0.1.14.11: 每引擎使用 model catalog 独立 revision, 不再共用 settings.asr_model_revision。
 
-    :param primary: 主引擎模型名, 默认 paraformer-zh。
+    :param primary: Paraformer 模型名, 默认 paraformer-zh。
     :param sensevoice: 是否加载 SenseVoice-Small。
     :param funasr_nano: 是否加载 Fun-ASR-Nano。
     """
@@ -183,13 +247,16 @@ class FunASRBackend:
             # Portable mode: use Engine Pack local directories
             vad_path = str(Path(self._models_dir) / "paraformer" / "fsmn-vad")
             punc_path = str(Path(self._models_dir) / "paraformer" / "ct-punc")
-            spk_path = str(Path(self._models_dir) / "paraformer" / "campplus")
+            spk_dir = Path(self._models_dir) / "paraformer" / "campplus"
+            spk_kwargs = _legacy_campplus_kwargs(spk_dir)
+            spk_model = "CAMPPlus" if spk_kwargs is not None else str(spk_dir)
             logger.info("Loading Paraformer from local paths: model=%s vad=%s", self._primary_model_name, vad_path)
             self._primary = AutoModel(
                 model=self._primary_model_name,
                 vad_model=vad_path,
                 punc_model=punc_path,
-                spk_model=spk_path,
+                spk_model=spk_model,
+                spk_kwargs=spk_kwargs,
                 device=device,
                 hub="ms",
                 disable_update=True,
@@ -240,20 +307,26 @@ class FunASRBackend:
             )
         return self._sensevoice
 
-    def _load_funasr(self) -> object:
-        """Load Fun-ASR-Nano (low-confidence review). Uses per-engine revision."""
+    def _load_funasr(self, *, for_primary: bool = False) -> object:
+        """加载 Fun-ASR-Nano，并按用途选择首选或复核设备。
+
+        :param for_primary: 作为整段主引擎加载时使用 ``ASR_PRIMARY_DEVICE``；
+            局部复核时使用 ``ASR_REVIEW_DEVICE``。
+        :returns: 缓存的 FunASR ``AutoModel`` 实例。
+        """
         if self._funasr is not None:
             return self._funasr
         try:
             from funasr import AutoModel
         except ImportError:
             raise RuntimeError("Need funasr. Run: pip install funasr modelscope") from None
+        device = (settings.asr_primary_device if for_primary else settings.asr_review_device) or settings.whisper_device
         if self._use_local_models:
             nano_path = str(Path(self._models_dir) / "funasr_nano")
             logger.info("Loading Fun-ASR-Nano from local path: %s", nano_path)
             self._funasr = AutoModel(
                 model=nano_path,
-                device=settings.asr_review_device or settings.whisper_device,
+                device=device,
                 hub="ms",
                 disable_update=True,
             )
@@ -261,7 +334,7 @@ class FunASRBackend:
             logger.info("Loading Fun-ASR-Nano online revision=%s", self._REVISION_NANO or "master")
             self._funasr = AutoModel(
                 model=self.MODEL_ID_NANO,
-                device=settings.asr_review_device or settings.whisper_device,
+                device=device,
                 hub="ms",
                 revision=self._REVISION_NANO or None,
             )
@@ -515,33 +588,30 @@ class FunASRBackend:
 
         return events
 
-    def transcribe_segment(
+    def _transcribe_funasr_audio(
         self,
         audio_path: str,
         start: float,
         end: float,
+        *,
+        for_primary: bool = False,
+        audio_duration: float | None = None,
     ) -> ASRTranscriptResult:
-        """Fun-ASR-Nano: 对指定音频文件做复核 (V0.1.12.2: 必须传入已截取的局部 WAV)。
+        """执行一次 Fun-ASR-Nano 音频识别。
 
-        :param audio_path: 已截取的局部音频 WAV 路径。
-        :param start: 原音频中的起始秒 (仅用于记录元数据)。
-        :param end: 原音频中的结束秒 (仅用于记录元数据)。
+        :param audio_path: 待识别的音频文件路径。
+        :param start: 原音频中的起始秒（仅用于结果元数据）。
+        :param end: 原音频中的结束秒（仅用于结果元数据）。
+        :param for_primary: 是否按主引擎设备配置加载模型。
+        :param audio_duration: 已探测的音频时长；省略时在此探测。
         :returns: :class:`ASRTranscriptResult`。
         """
-        if not self._use_funasr:
-            return ASRTranscriptResult(
-                text="",
-                language="zh",
-                backend="funasr-nano",
-                model_id=self.MODEL_ID_NANO,
-                model_revision=self.model_revision,
-            )
-        model = self._load_funasr()
-        audio_duration = _probe_audio_duration(audio_path)
+        model = self._load_funasr(for_primary=for_primary)
+        measured_duration = audio_duration if audio_duration is not None else _probe_audio_duration(audio_path)
         t0 = time.time()
         result = model.generate(input=audio_path)
         elapsed = time.time() - t0
-        logger.debug("Fun-ASR-Nano 片段复核完成, 耗时 {:.1f}s", elapsed)
+        logger.info("Fun-ASR-Nano 转写完成, 耗时 {:.1f}s", elapsed)
         asr_metrics.record_backend_call("funasr-nano", elapsed, success=bool(result))
 
         if not result or len(result) == 0:
@@ -550,10 +620,10 @@ class FunASRBackend:
                 language="zh",
                 backend="funasr-nano",
                 model_id=self.MODEL_ID_NANO,
-                model_revision=self.model_revision,
+                model_revision=self.nano_revision,
                 inference_duration=elapsed,
-                audio_duration=audio_duration,
-                real_time_factor=_compute_real_time_factor(elapsed, audio_duration),
+                audio_duration=measured_duration,
+                real_time_factor=_compute_real_time_factor(elapsed, measured_duration),
             )
 
         res = result[0]
@@ -588,12 +658,67 @@ class FunASRBackend:
             segments=segments,
             backend="funasr-nano",
             model_id=self.MODEL_ID_NANO,
-            model_revision=self.model_revision,
+            model_revision=self.nano_revision,
             inference_duration=elapsed,
-            audio_duration=audio_duration,
-            real_time_factor=_compute_real_time_factor(elapsed, audio_duration),
+            audio_duration=measured_duration,
+            real_time_factor=_compute_real_time_factor(elapsed, measured_duration),
             language="zh",
         )
+
+    def transcribe_funasr(
+        self,
+        audio_path: str,
+        initial_prompt: str | None = None,
+    ) -> ASRTranscriptResult:
+        """使用 Fun-ASR-Nano 作为整段音频的主识别引擎。
+
+        :param audio_path: 音频文件路径。
+        :param initial_prompt: 保留的统一接口参数；当前 Nano 模型不接受热词。
+        :returns: 带主引擎 provenance 与可选 SenseVoice 特征的统一结果。
+        """
+        del initial_prompt
+        audio_duration = _probe_audio_duration(audio_path)
+        result = self._transcribe_funasr_audio(
+            audio_path,
+            0.0,
+            audio_duration,
+            for_primary=True,
+            audio_duration=audio_duration,
+        )
+        result.base_text = result.text
+        result.final_text = result.text
+        result.primary_backend = "funasr-nano"
+        result.primary_status = "success" if result.text else "failed"
+
+        if self._use_sensevoice:
+            try:
+                result.emotions = self._detect_auxiliary(audio_path)
+            except Exception as exc:
+                logger.warning("SenseVoice 辅助特征检测失败: {}", exc)
+        return result
+
+    def transcribe_segment(
+        self,
+        audio_path: str,
+        start: float,
+        end: float,
+    ) -> ASRTranscriptResult:
+        """用 Fun-ASR-Nano 复核已经截取的局部音频。
+
+        :param audio_path: 已截取的局部音频 WAV 路径。
+        :param start: 原音频中的起始秒。
+        :param end: 原音频中的结束秒。
+        :returns: :class:`ASRTranscriptResult`。
+        """
+        if not self._use_funasr:
+            return ASRTranscriptResult(
+                text="",
+                language="zh",
+                backend="funasr-nano",
+                model_id=self.MODEL_ID_NANO,
+                model_revision=self.nano_revision,
+            )
+        return self._transcribe_funasr_audio(audio_path, start, end)
 
 
 # ═══════════════════════════════════════════════════════════
@@ -974,5 +1099,5 @@ def _levenshtein_distance(a: str, b: str) -> int:
 
 
 # ═══════════════════════════════════════════════════════════
-# ASR 流水线 (Paraformer → SenseVoice → FunASR → Whisper)
+# ASR 流水线工具 (FunASR → Paraformer → Whisper，SenseVoice 辅助)
 # ═══════════════════════════════════════════════════════════

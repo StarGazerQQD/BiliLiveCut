@@ -291,15 +291,23 @@ def test_settings_toggle_and_uploads(temp_db: None, monkeypatch: MonkeyPatch) ->
         s = client.get("/api/settings").json()
         assert s["recording_pipeline_enabled"] is True
         assert s["recording_pipeline_overridden"] is False
+        assert s["transcript_llm_refine_enabled"] is True
+        assert s["transcript_llm_refine_overridden"] is False
         assert s["biliup_enabled"] is False
         assert s["upload_active"] is False
 
         s2 = client.patch(
             "/api/settings",
-            json={"recording_pipeline_enabled": False, "biliup_enabled": True},
+            json={
+                "recording_pipeline_enabled": False,
+                "transcript_llm_refine_enabled": False,
+                "biliup_enabled": True,
+            },
         ).json()
         assert s2["recording_pipeline_enabled"] is False
         assert s2["recording_pipeline_overridden"] is True
+        assert s2["transcript_llm_refine_enabled"] is False
+        assert s2["transcript_llm_refine_overridden"] is True
         assert s2["biliup_enabled"] is True
         assert s2["upload_active"] is True
 
@@ -309,3 +317,36 @@ def test_settings_toggle_and_uploads(temp_db: None, monkeypatch: MonkeyPatch) ->
         r = client.post("/api/open-clips-dir")
         assert r.status_code == 200
         assert "clips_dir" in r.json()
+
+
+def test_transcript_api_exposes_summary_and_raw_asr(temp_db: None) -> None:
+    """实时转写接口应区分 LLM 整理正文、片段摘要和原始 ASR。"""
+    import json
+
+    from app.db.models import Transcript
+    from app.db.session import get_session
+    from app.web.main import app
+
+    with get_session() as db:
+        db.add(
+            Transcript(
+                segment_id=9,
+                language="zh",
+                text="整理后的可读正文。",
+                final_text="原始没有标点的转写",
+                primary_backend="funasr-nano",
+                auxiliary_json=json.dumps(
+                    {"transcript_refinement": {"applied": True, "summary": "片段摘要"}},
+                    ensure_ascii=False,
+                ),
+            )
+        )
+
+    with TestClient(app) as client:
+        row = client.get("/api/transcripts?limit=1").json()[0]
+
+    assert row["text"] == "整理后的可读正文。"
+    assert row["raw_text"] == "原始没有标点的转写"
+    assert row["summary"] == "片段摘要"
+    assert row["llm_refined"] is True
+    assert row["primary_backend"] == "funasr-nano"
