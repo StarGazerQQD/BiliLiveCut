@@ -1,7 +1,7 @@
 """Portable 构建系统完整测试套件。
 
 覆盖:
-- Source Snapshot (46e157b 解析/提取/Overlay)
+- Source Snapshot (daa0296 解析/提取/Overlay)
 - Payload (构建/ZIP/Manifest/可复现性)
 - Runtime 安装 (原子安装/staging/current.json)
 - 用户数据保护 (.env/数据库/storage)
@@ -81,9 +81,9 @@ class TestSourceSnapshot:
         """验证当前 Portable 源码基线可解析。"""
         from blc_portable.payload.source_snapshot import resolve_commit
 
-        full = resolve_commit("46e157b")
+        full = resolve_commit("daa0296")
         assert len(full) == 40
-        assert full == "46e157be8508a5e7edba29bebffb46819e47df71"
+        assert full == "daa0296ca577b124f0d6e8c9eab2041b27bd7f3b"
 
     def test_git_operations_are_independent_of_current_directory(
         self,
@@ -109,8 +109,8 @@ class TestSourceSnapshot:
 
         staging = Path(tmp_worktree) / "test_staging"
         staging.mkdir(parents=True)
-        report = extract_source("46e157b", staging)
-        assert report["source_commit_short"] == "46e157b"
+        report = extract_source("daa0296", staging)
+        assert report["source_commit_short"] == "daa0296"
         assert (staging / "app" / "cli.py").exists()
         assert (staging / "pyproject.toml").exists()
 
@@ -120,7 +120,7 @@ class TestSourceSnapshot:
 
         staging = Path(tmp_worktree) / "test_clean"
         staging.mkdir(parents=True)
-        extract_source("46e157b", staging)
+        extract_source("daa0296", staging)
 
         # 确认不包含构建产物
         assert not (staging / ".venv").exists()
@@ -134,7 +134,7 @@ class TestSourceSnapshot:
 
         staging = Path(tmp_worktree) / "test_overlay"
         staging.mkdir(parents=True)
-        extract_source("46e157b", staging)
+        extract_source("daa0296", staging)
         modified = apply_version_overlay(
             staging,
             source_commit_full=SOURCE_COMMIT_FULL,
@@ -391,7 +391,7 @@ class TestRuntimeInstall:
         current = read_current(app_root)
         assert current is not None
         assert current["release_version"] == RELEASE_VERSION
-        assert current["source_commit_short"] == "46e157b"
+        assert current["source_commit_short"] == "daa0296"
         assert "payload_sha256" in current
 
     def test_staging_not_left_behind(self, payload_zip: Path, payload_manifest: dict, tmp_worktree: str) -> None:
