@@ -198,6 +198,15 @@ def test_windows_payload_jobs_run_on_windows_and_verify_native_modules() -> None
     assert "Full Bundle native acceleration OK" in release_source
 
 
+def test_macos_coverage_timeout_has_runtime_headroom() -> None:
+    """macOS 全量覆盖测试必须为正常运行波动保留足够余量。"""
+    ci_workflow = yaml.safe_load((run_ruff.REPO_ROOT / ".github/workflows/ci.yml").read_text(encoding="utf-8"))
+    steps = ci_workflow["jobs"]["test-macos"]["steps"]
+    coverage_step = next(step for step in steps if step.get("run") == "python scripts/run_coverage.py")
+
+    assert coverage_step["timeout-minutes"] >= 45
+
+
 def test_release_gate_audits_portable_runtime_locks() -> None:
     source = (run_ruff.REPO_ROOT / "scripts" / "release_gate.py").read_text(encoding="utf-8")
 
