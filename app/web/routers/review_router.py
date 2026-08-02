@@ -228,14 +228,32 @@ def _preview_lock(candidate_id: int) -> threading.Lock:
         return _PREVIEW_LOCKS.setdefault(candidate_id, threading.Lock())
 
 
-def _review_preview_path(candidate_id: int, start_ts: datetime, end_ts: datetime) -> Path:
-    """返回包含边界指纹的审片预览缓存路径。"""
+def _review_preview_root() -> Path:
+    """返回受控的审片预览缓存根目录。"""
     from app.core.paths import clips_dir
 
-    fingerprint = hashlib.sha256(f"{candidate_id}:{start_ts.isoformat()}:{end_ts.isoformat()}".encode()).hexdigest()[
+    return (Path(clips_dir()).resolve() / "review_previews").resolve()
+
+
+def _review_preview_key(candidate_id: int, start_ts: datetime, end_ts: datetime) -> tuple[str, str]:
+    """把候选标识和边界编码为仅含十六进制字符的不可逆缓存键。"""
+    if candidate_id <= 0:
+        raise ValueError("candidate_id 必须是正整数")
+    candidate_key = hashlib.sha256(f"candidate:{candidate_id}".encode()).hexdigest()[:16]
+    boundary_key = hashlib.sha256(f"{candidate_key}:{start_ts.isoformat()}:{end_ts.isoformat()}".encode()).hexdigest()[
         :16
     ]
-    return Path(clips_dir()) / "review_previews" / f"candidate_{candidate_id}_{fingerprint}.mp4"
+    return candidate_key, boundary_key
+
+
+def _review_preview_path(candidate_id: int, start_ts: datetime, end_ts: datetime) -> Path:
+    """返回受控目录内、仅由十六进制缓存键组成的预览路径。"""
+    candidate_key, boundary_key = _review_preview_key(candidate_id, start_ts, end_ts)
+    preview_root = _review_preview_root()
+    output_path = (preview_root / f"{candidate_key}_{boundary_key}.mp4").resolve()
+    if output_path.parent != preview_root:
+        raise RuntimeError("审片预览缓存路径越界")
+    return output_path
 
 
 def _ensure_review_preview(candidate_id: int, start_ts: datetime, end_ts: datetime) -> Path:
@@ -246,15 +264,16 @@ def _ensure_review_preview(candidate_id: int, start_ts: datetime, end_ts: dateti
     from app.clipping.models import ClipOptions
     from app.core.config import settings
 
+    preview_root = _review_preview_root()
+    preview_root.mkdir(parents=True, exist_ok=True)
     output_path = _review_preview_path(candidate_id, start_ts, end_ts)
-    output_path.parent.mkdir(parents=True, exist_ok=True)
     if output_path.is_file() and output_path.stat().st_size > 0:
         return output_path
 
     with _preview_lock(candidate_id):
         if output_path.is_file() and output_path.stat().st_size > 0:
             return output_path
-        temp_path = output_path.with_name(f"{output_path.stem}.{uuid4().hex}.partial.mp4")
+        temp_path = preview_root / f"{uuid4().hex}.partial.mp4"
         try:
             render_clip_to_file(
                 candidate_id,
@@ -276,7 +295,8 @@ def _ensure_review_preview(candidate_id: int, start_ts: datetime, end_ts: dateti
             temp_path.unlink(missing_ok=True)
             temp_path.with_suffix(".jpg").unlink(missing_ok=True)
 
-        for stale in output_path.parent.glob(f"candidate_{candidate_id}_*.mp4"):
+        candidate_key, _ = _review_preview_key(candidate_id, start_ts, end_ts)
+        for stale in preview_root.glob(f"{candidate_key}_*.mp4"):
             if stale != output_path:
                 try:
                     stale.unlink(missing_ok=True)
@@ -1060,12 +1080,16 @@ def get_review_preview(candidate_id: int) -> FileResponse:
         start_ts = event.adjusted_start_ts if event and event.adjusted_start_ts else candidate.start_ts
         end_ts = event.adjusted_end_ts if event and event.adjusted_end_ts else candidate.end_ts
 
+    from loguru import logger
+
     try:
         preview_path = _ensure_review_preview(candidate_id, start_ts, end_ts)
     except ValueError as exc:
-        raise HTTPException(status_code=422, detail=str(exc)) from exc
+        logger.warning("候选预览边界无效 candidate_id={} error={}", candidate_id, exc)
+        raise HTTPException(status_code=422, detail="候选预览边界无效") from exc
     except (OSError, RuntimeError) as exc:
-        raise HTTPException(status_code=500, detail=f"候选预览渲染失败: {exc}") from exc
+        logger.exception("候选预览渲染失败 candidate_id={}", candidate_id)
+        raise HTTPException(status_code=500, detail="候选预览渲染失败") from exc
     return FileResponse(preview_path, media_type="video/mp4")
 
 
@@ -1082,48 +1106,30 @@ def get_waveform(candidate_id: int, resolution: int = 400) -> dict:
     import subprocess as _sp
     import tempfile as _tf
 
-    from app.core.paths import clips_dir
-    from app.db.models import FinalClip, HighlightCandidate, HighlightEvent
+    from loguru import logger
+
+    from app.db.models import HighlightCandidate, HighlightEvent
     from app.db.session import get_session
 
     with get_session() as db:
         c = db.get(HighlightCandidate, candidate_id)
         if c is None:
             raise HTTPException(status_code=404, detail="候选不存在")
-        # 找已有成品。
-        clip = db.exec(
-            _sql_select(FinalClip)
-            .where(
-                FinalClip.candidate_id == candidate_id,
-            )
-            .order_by(FinalClip.created_at.desc())
-            .limit(1)
-        ).first()
         event = db.exec(_sql_select(HighlightEvent).where(HighlightEvent.candidate_id == candidate_id)).first()
         start_ts = event.adjusted_start_ts if event and event.adjusted_start_ts else c.start_ts
         end_ts = event.adjusted_end_ts if event and event.adjusted_end_ts else c.end_ts
-        has_final_clip = bool(clip and clip.file_path and Path(clip.file_path).exists())
-        file_path = clip.file_path if has_final_clip and clip is not None else None
-        duration_s = clip.duration_s or 0 if has_final_clip and clip is not None else 0
 
-    if file_path is None:
-        try:
-            file_path = str(_ensure_review_preview(candidate_id, start_ts, end_ts))
-            duration_s = (end_ts - start_ts).total_seconds()
-        except (OSError, RuntimeError, ValueError) as exc:
-            return {
-                "peaks": [],
-                "duration_s": 0,
-                "sample_rate": 0,
-                "error": f"候选预览渲染失败: {exc}",
-            }
-
-    # 路径遍历保护:确保文件在 clips 目录内。
-    resolved = Path(file_path).resolve()
-    clips_root = Path(clips_dir()).resolve()
-    if resolved.parent != clips_root and not any(p == clips_root for p in resolved.parents):
-        return {"peaks": [], "duration_s": 0, "sample_rate": 0, "error": "文件路径不可访问"}
-    file_path = str(resolved)
+    try:
+        file_path = str(_ensure_review_preview(candidate_id, start_ts, end_ts))
+        duration_s = (end_ts - start_ts).total_seconds()
+    except (OSError, RuntimeError, ValueError):
+        logger.exception("候选波形预览渲染失败 candidate_id={}", candidate_id)
+        return {
+            "peaks": [],
+            "duration_s": 0,
+            "sample_rate": 0,
+            "error": "候选预览渲染失败",
+        }
 
     if duration_s <= 0:
         # 用 ffprobe 获取时长。

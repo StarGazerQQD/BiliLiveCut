@@ -391,3 +391,94 @@ def test_pending_candidate_preview_is_available_without_final_clip(
     assert media.status_code == 200
     assert media.headers["content-type"].startswith("video/mp4")
     assert media.content == b"preview-video"
+
+
+def test_review_preview_cache_path_is_opaque_and_contained(
+    monkeypatch: MonkeyPatch,
+    tmp_path: Path,
+) -> None:
+    """候选请求参数不得直接进入预览文件名，缓存路径必须留在受控目录。"""
+    from app.core import paths
+    from app.web.routers import review_router
+
+    clips_root = tmp_path / "clips"
+    monkeypatch.setattr(paths, "clips_dir", lambda: clips_root)
+    start_ts = datetime(2026, 8, 2, 12, 0, tzinfo=UTC)
+    end_ts = start_ts + timedelta(minutes=5)
+
+    preview_path = review_router._review_preview_path(123456, start_ts, end_ts)
+
+    assert preview_path.parent == (clips_root / "review_previews").resolve()
+    assert "123456" not in preview_path.name
+    key_parts = preview_path.stem.split("_")
+    assert len(key_parts) == 2
+    assert all(len(part) == 16 and set(part) <= set("0123456789abcdef") for part in key_parts)
+
+
+def test_review_preview_render_uses_server_generated_temporary_path(
+    monkeypatch: MonkeyPatch,
+    tmp_path: Path,
+) -> None:
+    """预览渲染仅向受控缓存目录内的随机临时文件写入。"""
+    from app.clipping import core
+    from app.core import paths
+    from app.web.routers import review_router
+
+    clips_root = tmp_path / "clips"
+    monkeypatch.setattr(paths, "clips_dir", lambda: clips_root)
+    rendered_paths: list[Path] = []
+
+    def fake_render(
+        candidate_id: int,
+        output_path: str | Path,
+        _options: object,
+        *,
+        start_ts: datetime | None = None,
+        end_ts: datetime | None = None,
+    ) -> dict[str, object]:
+        assert candidate_id == 987654
+        assert start_ts is not None and end_ts is not None
+        target = Path(output_path)
+        rendered_paths.append(target)
+        target.write_bytes(b"preview-video")
+        return {"file_path": str(target)}
+
+    monkeypatch.setattr(core, "render_clip_to_file", fake_render)
+    start_ts = datetime(2026, 8, 2, 12, 0, tzinfo=UTC)
+    end_ts = start_ts + timedelta(minutes=5)
+
+    first = review_router._ensure_review_preview(987654, start_ts, end_ts)
+    second = review_router._ensure_review_preview(987654, start_ts, end_ts)
+
+    assert first == second
+    assert first.read_bytes() == b"preview-video"
+    assert len(rendered_paths) == 1
+    assert rendered_paths[0].parent == first.parent
+    assert rendered_paths[0].name.endswith(".partial.mp4")
+    assert "987654" not in rendered_paths[0].name
+
+
+def test_review_preview_errors_do_not_expose_internal_details(
+    review_client: TestClient,
+    monkeypatch: MonkeyPatch,
+) -> None:
+    """预览及波形失败响应不得泄露内部路径或异常文本。"""
+    from app.web.routers import review_router
+
+    candidate_id = _seed_candidate()
+    secret_detail = r"C:\sensitive\recording\source.flv"
+
+    def fail_preview(_candidate_id: int, _start_ts: datetime, _end_ts: datetime) -> Path:
+        raise RuntimeError(secret_detail)
+
+    monkeypatch.setattr(review_router, "_ensure_review_preview", fail_preview)
+    with review_client as client:
+        preview = client.get(f"/review/api/{candidate_id}/preview", auth=("admin", "admin-pass"))
+        waveform = client.get(f"/review/api/{candidate_id}/waveform", auth=("admin", "admin-pass"))
+
+    assert preview.status_code == 500
+    assert preview.json()["detail"] == "候选预览渲染失败"
+    assert waveform.status_code == 200
+    assert waveform.json()["error"] == "候选预览渲染失败"
+    assert secret_detail not in preview.text
+    assert secret_detail not in waveform.text
