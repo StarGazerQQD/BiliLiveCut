@@ -166,6 +166,11 @@ globalThis.fetch = async (path, options = {}) => {
     payload = { providers: [], active_count: 0 };
   } else if (requestPath === "/api/llm-providers/test") {
     payload = { results: [{ id: "draft", name: "草稿模型", ok: true, detail: "pong" }] };
+  } else if (requestPath === "/api/rooms/1/start") {
+    dashboardRooms[0].running = true;
+    dashboardRooms[0].recording_state = "starting";
+    dashboardRooms[0].active_session_id = 7;
+    payload = { status: "started" };
   }
   return {
     ok: true,
@@ -237,6 +242,65 @@ try {
   );
   assert.equal(element("rooms-dirty-hint").style.display, "", "dirty room hint was not shown");
 
+  assert.equal(typeof globalThis.startRoom, "function", "start-room action was not exported");
+  await globalThis.startRoom(1);
+  await settle();
+  assert.equal(
+    element("rooms-list").innerHTML,
+    roomsMarkupBeforeDraft,
+    "start-room refresh discarded unsaved room recording options",
+  );
+  assert.match(element("room-status-1").innerHTML, /starting/, "start-room did not refresh runtime status");
+  assert.match(element("room-meta-1").textContent, /#7/, "start-room did not refresh active session metadata");
+  assert.match(element("room-actions-1").innerHTML, /stopRoom\(1\)/, "start-room did not render stop actions");
+  assert.doesNotMatch(element("room-actions-1").innerHTML, /startRoom\(1\)/, "start action remained visible");
+  assert.equal(element("room-lock-hint-1").textContent, "(\u5f55\u5236\u4e2d\u9501\u5b9a)");
+  for (const id of ["sw-se-1", "sw-at-1", "sw-ds-1"]) {
+    assert.equal(element(id).disabled, true, `${id} remained editable after recording started`);
+  }
+
+  element("mode-1").value = "semi";
+  element("ht-1").value = "0.72";
+  element("at-1").value = "0.84";
+  for (const id of ["sw-se-1", "sw-at-1", "sw-ds-1"]) {
+    element(id).checked = true;
+    element(id).disabled = true;
+  }
+  const roomSaveRequestOffset = requestDetails.length;
+  await globalThis.saveRoom(1);
+  await settle();
+  const roomSaveRequest = requestDetails
+    .slice(roomSaveRequestOffset)
+    .find((entry) => entry.path === "/api/rooms/1" && entry.options.method === "PATCH");
+  assert.ok(roomSaveRequest, "room settings save was not requested");
+  const roomSavePayload = JSON.parse(roomSaveRequest.options.body || "null");
+  assert.equal(roomSavePayload.mode, "semi");
+  assert.ok(!("schedule_enabled" in roomSavePayload), "room save submitted a locked schedule switch");
+  assert.ok(!("auto_threshold_enabled" in roomSavePayload), "room save submitted a locked threshold switch");
+  assert.ok(!("danmaku_sentiment_enabled" in roomSavePayload), "room save submitted a locked sentiment switch");
+
+  for (const id of ["feature-record-1", "feature-analyze-1", "feature-render-1", "feature-approve-1", "feature-upload-1"]) {
+    element(id).checked = true;
+  }
+  for (const id of ["feature-schedule-1", "feature-threshold-1", "feature-sentiment-1"]) {
+    element(id).checked = true;
+    element(id).disabled = true;
+  }
+  element("feature-approve-threshold-1").value = "0.88";
+  element("feature-review-threshold-1").value = "0.56";
+  const featureSaveRequestOffset = requestDetails.length;
+  await globalThis.saveFeatureSwitches(1);
+  await settle();
+  const featureSaveRequest = requestDetails
+    .slice(featureSaveRequestOffset)
+    .find((entry) => entry.path === "/api/rooms/1" && entry.options.method === "PATCH");
+  assert.ok(featureSaveRequest, "feature settings save was not requested");
+  const featureSavePayload = JSON.parse(featureSaveRequest.options.body || "null");
+  assert.equal(featureSavePayload.auto_record, true);
+  assert.ok(!("schedule_enabled" in featureSavePayload), "feature save submitted a locked schedule switch");
+  assert.ok(!("auto_threshold_enabled" in featureSavePayload), "feature save submitted a locked threshold switch");
+  assert.ok(!("danmaku_sentiment_enabled" in featureSavePayload), "feature save submitted a locked sentiment switch");
+
   await candidatesTab.emit("click");
   await settle();
 
@@ -276,7 +340,7 @@ try {
   assert.match(element("llm-test-results").innerHTML, /pong/, "connectivity result detail was not rendered");
 
   console.log(
-    "PASS: frontend module graph, bindings, initial refresh and tab interaction; room/model draft preservation, feature switches and draft connectivity test",
+    "PASS: frontend module graph, bindings, initial refresh and tab interaction; room/model draft preservation, locked room switches, feature switches and draft connectivity test",
   );
 } finally {
   await rm(temporaryRoot, { recursive: true, force: true });

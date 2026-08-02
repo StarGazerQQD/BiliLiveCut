@@ -127,6 +127,10 @@ def _add_spend(usd: float) -> None:
 _client_cache: dict[str, object] = {}
 
 
+class EmptyLLMResponseError(RuntimeError):
+    """服务请求成功但没有返回可供业务使用的最终正文。"""
+
+
 def _get_client(provider: provs.LLMProvider):  # noqa: ANN202 — 返回 openai.OpenAI
     """为指定 provider 创建或复用 OpenAI 兼容客户端(模块级单例缓存)。
 
@@ -169,23 +173,110 @@ def _account_usage(provider: provs.LLMProvider, resp: object) -> None:
     _add_spend(cost)
 
 
+def _field(value: object, name: str) -> object | None:
+    """兼容对象属性和字典键读取 OpenAI 兼容响应字段。
+
+    :param value: 响应对象或字典。
+    :param name: 字段名。
+    :returns: 字段值；不存在时返回 ``None``。
+    """
+    if isinstance(value, dict):
+        return value.get(name)
+    return getattr(value, name, None)
+
+
+def _first_choice(resp: object) -> object | None:
+    """返回 chat.completions 的首个 choice。"""
+    choices = _field(resp, "choices")
+    if not choices:
+        return None
+    try:
+        return choices[0]  # type: ignore[index]
+    except (IndexError, KeyError, TypeError):
+        return None
+
+
+def _content_text(value: object | None) -> str:
+    """把字符串或 OpenAI 内容分块整理为纯文本。"""
+    if isinstance(value, str):
+        return value.strip()
+    if not isinstance(value, (list, tuple)):
+        return ""
+    parts: list[str] = []
+    for part in value:
+        if isinstance(part, str):
+            text = part
+        else:
+            raw_text = _field(part, "text")
+            text = raw_text if isinstance(raw_text, str) else ""
+        if text.strip():
+            parts.append(text.strip())
+    return "\n".join(parts)
+
+
 def _extract_text(resp: object) -> str:
-    """从 chat.completions 响应中取出首条消息文本。
+    """从 chat.completions 响应中取出首条消息的最终正文。
+
+    ``reasoning_content`` 是模型的推理过程，不得作为业务正文写入转写、
+    文案或 JSON 结果。
 
     :param resp: 响应对象。
     :returns: 文本内容(可能为空串)。
     """
-    try:
-        return resp.choices[0].message.content or ""  # type: ignore[attr-defined,index]
-    except (AttributeError, IndexError, TypeError):
+    choice = _first_choice(resp)
+    if choice is None:
         return ""
+    message = _field(choice, "message")
+    return _content_text(_field(message, "content")) if message is not None else ""
+
+
+def _empty_response_details(resp: object) -> tuple[str, bool, int, int]:
+    """提取空正文诊断信息，但不记录推理过程本身。
+
+    :returns: ``(finish_reason, has_reasoning, completion_tokens, reasoning_tokens)``。
+    """
+    choice = _first_choice(resp)
+    finish_value = _field(choice, "finish_reason") if choice is not None else None
+    finish_reason = str(finish_value or "unknown")
+    message = _field(choice, "message") if choice is not None else None
+    reasoning = _content_text(_field(message, "reasoning_content")) if message is not None else ""
+    usage = _field(resp, "usage")
+    completion_value = _field(usage, "completion_tokens") if usage is not None else None
+    details = _field(usage, "completion_tokens_details") if usage is not None else None
+    reasoning_value = _field(details, "reasoning_tokens") if details is not None else None
+    completion_tokens = int(completion_value or 0)
+    reasoning_tokens = int(reasoning_value or 0)
+    return finish_reason, bool(reasoning), completion_tokens, reasoning_tokens
+
+
+def _should_disable_thinking(provider: provs.LLMProvider, has_reasoning: bool) -> bool:
+    """判断空正文重试是否应关闭 DeepSeek 思考模式。"""
+    if has_reasoning:
+        return True
+    return "deepseek-v4" in provider.model.lower()
+
+
+def _create_completion(
+    client: object,
+    provider: provs.LLMProvider,
+    prompt: str,
+    max_tokens: int,
+    extra_body: dict[str, object] | None,
+) -> object:
+    """发起一次 OpenAI Chat Completions 请求。"""
+    return client.chat.completions.create(  # type: ignore[attr-defined,no-any-return]
+        model=provider.model,
+        max_tokens=max_tokens,
+        messages=[{"role": "user", "content": prompt}],
+        **({"extra_body": extra_body} if extra_body else {}),
+    )
 
 
 def _complete(
     provider: provs.LLMProvider,
     prompt: str,
     max_tokens: int,
-    extra_body: dict | None = None,
+    extra_body: dict[str, object] | None = None,
 ) -> str:
     """用单个 provider 完成一次对话补全(失败会抛异常)。
 
@@ -196,14 +287,43 @@ def _complete(
     :returns: 模型输出文本。
     """
     client = _get_client(provider)
-    resp = client.chat.completions.create(
-        model=provider.model,
-        max_tokens=max_tokens,
-        messages=[{"role": "user", "content": prompt}],
-        **({"extra_body": extra_body} if extra_body else {}),
-    )
+    resp = _create_completion(client, provider, prompt, max_tokens, extra_body)
     _account_usage(provider, resp)
-    return _extract_text(resp)
+    text = _extract_text(resp)
+    if text:
+        return text
+
+    finish_reason, has_reasoning, completion_tokens, reasoning_tokens = _empty_response_details(resp)
+    if finish_reason in {"content_filter", "tool_calls"}:
+        raise EmptyLLMResponseError(f"服务未返回最终正文: finish_reason={finish_reason}, reasoning={has_reasoning}")
+
+    retry_extra = dict(extra_body or {})
+    retry_mode = "原参数"
+    if _should_disable_thinking(provider, has_reasoning):
+        retry_extra["thinking"] = {"type": "disabled"}
+        retry_mode = "关闭思考模式"
+    logger.warning(
+        "模型 {} 返回空正文,finish_reason={} completion_tokens={} reasoning_tokens={} reasoning={};将{}重试一次。",
+        provider.name,
+        finish_reason,
+        completion_tokens,
+        reasoning_tokens,
+        has_reasoning,
+        retry_mode,
+    )
+
+    retry_resp = _create_completion(client, provider, prompt, max_tokens, retry_extra or None)
+    _account_usage(provider, retry_resp)
+    retry_text = _extract_text(retry_resp)
+    if retry_text:
+        return retry_text
+
+    retry_finish, retry_reasoning, retry_tokens, retry_reasoning_tokens = _empty_response_details(retry_resp)
+    raise EmptyLLMResponseError(
+        "服务连续两次返回空正文: "
+        f"finish_reason={retry_finish}, completion_tokens={retry_tokens}, "
+        f"reasoning_tokens={retry_reasoning_tokens}, reasoning={retry_reasoning}"
+    )
 
 
 def call_text(prompt: str, max_tokens: int = 512) -> str | None:
