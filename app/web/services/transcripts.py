@@ -44,8 +44,20 @@ def list_transcripts(limit: int = 30) -> list[dict[str, Any]]:
         rows = db.exec(
             select(Transcript).order_by(Transcript.created_at.desc())  # type: ignore[attr-defined]
         ).all()[:limit]
+        segments = {
+            segment.id: segment
+            for segment in db.exec(select(RawSegment).where(RawSegment.id.in_([row.segment_id for row in rows]))).all()
+        }
+        from app.web.services.source_identity import source_identities_for_sessions, unknown_source_identity
+
+        sources = source_identities_for_sessions(
+            db,
+            (segment.session_id for segment in segments.values()),
+        )
     result: list[dict[str, Any]] = []
     for transcript in rows:
+        segment = segments.get(transcript.segment_id)
+        source = sources.get(segment.session_id, unknown_source_identity()) if segment else unknown_source_identity()
         refinement: dict[str, Any] = {}
         if transcript.auxiliary_json:
             try:
@@ -65,6 +77,8 @@ def list_transcripts(limit: int = 30) -> list[dict[str, Any]]:
                 "llm_refined": refinement.get("applied") is True,
                 "primary_backend": transcript.primary_backend,
                 "created_at": transcript.created_at.isoformat() if transcript.created_at else None,
+                "session_id": segment.session_id if segment else None,
+                **source,
             }
         )
     return result

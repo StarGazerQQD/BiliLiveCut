@@ -9,9 +9,14 @@ function roomRuntimeState(room) {
   return room.recording_state || (room.running ? "running" : "stopped");
 }
 
+function roomDisplayName(room) {
+  return room.uploader_name || room.title || room.input_url || `房间 ${room.room_id ?? room.id}`;
+}
+
 function roomRuntimeMeta(room) {
   const session = room.active_session_id ? ` \u00b7 \u4f1a\u8bdd #${room.active_session_id}` : "";
-  return `db_id=${room.id} \u00b7 room_id=${room.room_id ?? "-"} \u00b7 \u6388\u6743:${room.authorized ? "\u662f" : "\u5426"}${session}`;
+  const title = room.title && room.title !== room.uploader_name ? ` · ${room.title}` : "";
+  return `db_id=${room.id} · room_id=${room.room_id ?? "-"}${title} · 授权:${room.authorized ? "是" : "否"}${session}`;
 }
 
 function roomRuntimeActions(room) {
@@ -28,10 +33,12 @@ function roomRuntimeActions(room) {
 
 function syncRoomRuntime(rooms) {
   rooms.forEach((room) => {
+    const title = $(`#room-title-${room.id}`);
     const status = $(`#room-status-${room.id}`);
     const meta = $(`#room-meta-${room.id}`);
     const actions = $(`#room-actions-${room.id}`);
     const lockHint = $(`#room-lock-hint-${room.id}`);
+    if (title) title.textContent = roomDisplayName(room);
     if (status) status.innerHTML = badge(roomRuntimeState(room));
     if (meta) meta.textContent = roomRuntimeMeta(room);
     if (actions) actions.innerHTML = roomRuntimeActions(room);
@@ -62,7 +69,7 @@ async function loadRooms() {
     <div class="item">
       <div class="head">
         <div>
-          <div class="title">${esc(r.title || r.input_url)} <span id="room-status-${r.id}">${badge(roomRuntimeState(r))}</span></div>
+          <div class="title"><span id="room-title-${r.id}">${esc(roomDisplayName(r))}</span> <span id="room-status-${r.id}">${badge(roomRuntimeState(r))}</span></div>
           <div class="sub" id="room-meta-${r.id}">${esc(roomRuntimeMeta(r))}</div>
         </div>
         <div class="actions" id="room-actions-${r.id}">${roomRuntimeActions(r)}</div>
@@ -200,7 +207,7 @@ async function loadFeatureSwitches() {
     <div class="item" data-feature-room-id="${r.id}">
       <div class="head">
         <div>
-          <div class="title">${esc(r.title || r.input_url)} ${badge(r.recording_state || (r.running ? "running" : "stopped"))}</div>
+          <div class="title">${esc(roomDisplayName(r))} ${badge(r.recording_state || (r.running ? "running" : "stopped"))}</div>
           <div class="sub">db_id=${r.id} · room_id=${r.room_id ?? "-"} · 以下设置仅作用于此直播间</div>
         </div>
         <button class="primary" onclick="saveFeatureSwitches(${r.id})">保存本直播间开关</button>
@@ -298,7 +305,7 @@ async function loadThresholdLearning(roomId) {
 async function loadSchedules() {
   const data = await api("GET", "/api/dashboard");
   let roomOpts = data.rooms.map((r) =>
-    `<option value="${r.id}">#${r.id} ${esc(r.title || r.input_url)}</option>`
+    `<option value="${r.id}">#${r.id} ${esc(roomDisplayName(r))}</option>`
   ).join("");
   $("#schedule-room").innerHTML = roomOpts;
 

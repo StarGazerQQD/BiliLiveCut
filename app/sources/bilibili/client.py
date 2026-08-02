@@ -37,6 +37,7 @@ _DEFAULT_HEADERS = {
 }
 
 _ROOM_INIT_URL = "https://api.live.bilibili.com/room/v1/Room/room_init"
+_ROOM_DETAIL_URL = "https://api.live.bilibili.com/xlive/web-room/v1/index/getInfoByRoom"
 _PLAY_INFO_URL = "https://api.live.bilibili.com/xlive/web-room/v2/index/getRoomPlayInfo"
 _DANMU_INFO_URL = "https://api.live.bilibili.com/xlive/web-room/v1/index/getDanmuInfo"
 _WBI_NAV_URL = "https://api.bilibili.com/x/web-interface/nav"
@@ -135,12 +136,16 @@ class RoomInfo:
     :param short_id: 短号(可能为 0)。
     :param uid: 主播 UID。
     :param live_status: 开播状态,1 表示直播中。
+    :param title: 直播间标题。
+    :param uploader_name: 主播名称。
     """
 
     room_id: int
     short_id: int
     uid: int
     live_status: int
+    title: str | None = None
+    uploader_name: str | None = None
 
     @property
     def is_live(self) -> bool:
@@ -335,25 +340,51 @@ class BilibiliLiveClient:
         except ValueError as exc:
             raise BilibiliError("WBI 导航响应包含无效图片键") from exc
 
-    async def get_room_info(self, input_url: str) -> RoomInfo:
+    async def get_room_info(self, input_url: str, *, include_detail: bool = True) -> RoomInfo:
         """解析房间号并归一化为真实房间信息。
 
         :param input_url: 用户输入的 URL 或房间号。
+        :param include_detail: 是否额外请求主播名与直播标题。
         :returns: :class:`RoomInfo`。
         :raises BilibiliError: 解析或接口调用失败时。
         """
         raw_id = parse_room_id(input_url)
         data = await self._get_json(_ROOM_INIT_URL, {"id": raw_id})
+        room_id = int(data["room_id"])
+        title: str | None = None
+        uploader_name: str | None = None
+        uid = int(data.get("uid", 0))
+        if include_detail:
+            try:
+                detail = await self._get_json(_ROOM_DETAIL_URL, {"room_id": room_id})
+                room_detail = detail.get("room_info")
+                anchor_detail = detail.get("anchor_info")
+                if isinstance(room_detail, dict):
+                    raw_title = str(room_detail.get("title") or "").strip()
+                    title = raw_title or None
+                    uid = int(room_detail.get("uid") or uid)
+                if isinstance(anchor_detail, dict):
+                    base_info = anchor_detail.get("base_info")
+                    if isinstance(base_info, dict):
+                        raw_name = str(base_info.get("uname") or "").strip()
+                        uploader_name = raw_name or None
+            except BilibiliError as exc:
+                # 基础 room_init 已成功时，详情失败不应阻止录制；仅退化为房间号显示。
+                logger.warning("房间 {} 主播资料读取失败,继续使用基础信息: {}", room_id, exc)
+
         info = RoomInfo(
-            room_id=int(data["room_id"]),
+            room_id=room_id,
             short_id=int(data.get("short_id", 0)),
-            uid=int(data.get("uid", 0)),
+            uid=uid,
             live_status=int(data.get("live_status", 0)),
+            title=title,
+            uploader_name=uploader_name,
         )
         logger.info(
-            "房间解析成功: input={} -> room_id={} live_status={}",
+            "房间解析成功: input={} -> room_id={} uploader={} live_status={}",
             input_url,
             info.room_id,
+            info.uploader_name or "-",
             info.live_status,
         )
         return info

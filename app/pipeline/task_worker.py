@@ -24,6 +24,7 @@ from loguru import logger
 from sqlmodel import select
 
 from app.db.models import (
+    RawSegment,
     SegmentTask,
     TaskStatus,
 )
@@ -92,6 +93,14 @@ def create_task(segment_id: int, session_id: int) -> SegmentTask | None:
     pipeline_key = make_pipeline_key(segment_id)
     stage_key = make_stage_key(segment_id, "recorded")
     with get_session() as db:
+        segment = db.get(RawSegment, segment_id)
+        if segment is None:
+            raise ValueError(f"无法为不存在的片段创建任务: segment={segment_id}")
+        if segment.session_id != session_id:
+            raise ValueError(
+                f"任务来源不一致: segment={segment_id} 属于 session={segment.session_id},"
+                f" 不能登记到 session={session_id}"
+            )
         existing = db.exec(select(SegmentTask).where(SegmentTask.pipeline_key == pipeline_key)).first()
         if existing is not None:
             _logger.debug("pipeline_key 已存在: segment={} task={} stage={}", segment_id, existing.id, existing.stage)
@@ -206,6 +215,8 @@ def _task_to_dict(t: SegmentTask) -> dict[str, Any]:
         "created_at": t.created_at.isoformat() if t.created_at else None,
         "started_at": t.started_at.isoformat() if t.started_at else None,
         "completed_at": t.completed_at.isoformat() if t.completed_at else None,
+        "processing_time_ms": t.processing_time_ms,
+        "total_elapsed_ms": t.total_elapsed_ms,
         "claimed_by": t.claimed_by,
         "candidate_id": t.candidate_id,
         "event_id": t.event_id,

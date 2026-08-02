@@ -24,7 +24,7 @@ def record_feedback(room_id: int, candidate_id: int, action: str) -> ThresholdFe
     """
     with get_session() as db:
         room = db.get(LiveRoom, room_id)
-        old_threshold = room.highlight_threshold if room else 0.65
+        old_threshold = room.highlight_threshold if room else settings.highlight_threshold
         cand = db.get(HighlightCandidate, candidate_id)
         highlight_score = cand.highlight_score if cand else 0.0
 
@@ -183,4 +183,4 @@ def _current_threshold(room_id: int) -> float:
     """读取房间当前阈值。"""
     with get_session() as db:
         room = db.get(LiveRoom, room_id)
-        return room.highlight_threshold if room else 0.65
+        return room.highlight_threshold if room else settings.highlight_threshold

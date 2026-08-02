@@ -15,7 +15,7 @@ from __future__ import annotations
 import hashlib
 import json
 from dataclasses import asdict
-from datetime import timedelta
+from datetime import datetime, timedelta
 
 from loguru import logger
 from sqlmodel import select
@@ -40,6 +40,77 @@ from app.db.session import get_session
 # --------------------------------------------------------------------------- #
 # 纯函数:特征与几何(便于单测)
 # --------------------------------------------------------------------------- #
+def candidate_time_bounds(
+    *,
+    segment_start: datetime,
+    available_start: datetime,
+    available_end: datetime,
+    peak_offset_s: float,
+    pre_roll_s: float,
+    post_roll_s: float,
+    suggested_start_offset_s: float | None,
+    suggested_end_offset_s: float | None,
+    silences: list[tuple[float, float]],
+) -> tuple[datetime, datetime, datetime]:
+    """计算可直接渲染的候选边界，并强制保留爆点前文。
+
+    LLM 可以建议更早的入点，但不能把入点推迟到配置的
+    ``pre_roll_s`` 之后。最终边界会被限制在本会话已存在的录像范围内。
+    """
+    required_start_offset = peak_offset_s - pre_roll_s
+    requested_start_offset = suggested_start_offset_s if suggested_start_offset_s is not None else required_start_offset
+    start_offset = min(requested_start_offset, required_start_offset)
+    start_offset = min(audio_mod.snap_to_silence(start_offset, silences), required_start_offset)
+
+    requested_end_offset = suggested_end_offset_s if suggested_end_offset_s is not None else peak_offset_s + post_roll_s
+    end_offset = audio_mod.snap_to_silence(requested_end_offset, silences)
+
+    peak_ts = segment_start + timedelta(seconds=peak_offset_s)
+    start_ts = max(available_start, segment_start + timedelta(seconds=start_offset))
+    end_ts = min(available_end, segment_start + timedelta(seconds=end_offset))
+    if end_ts <= start_ts:
+        raise ValueError("候选边界在可用录像范围内没有有效时长。")
+    return start_ts, end_ts, peak_ts
+
+
+def contiguous_recording_start(
+    segments: list[RawSegment],
+    current_segment: RawSegment,
+    *,
+    gap_tolerance_s: float = 1.0,
+) -> datetime:
+    """返回当前片段向前连续可用的最早录像时间。
+
+    前文只能跨越相邻或轻微重叠的片段；遇到断流缺口即停止，避免生成无法
+    通过剪辑边界校验的候选。
+    """
+    if current_segment.start_ts is None:
+        raise ValueError("当前片段缺少 start_ts，无法计算连续录像范围。")
+
+    ordered = sorted(segments, key=lambda item: item.seq)
+    current_index = next(
+        (
+            index
+            for index, item in enumerate(ordered)
+            if item is current_segment or (current_segment.id is not None and item.id == current_segment.id)
+        ),
+        None,
+    )
+    if current_index is None:
+        return current_segment.start_ts
+
+    contiguous_start = current_segment.start_ts
+    for previous in reversed(ordered[:current_index]):
+        if previous.start_ts is None or previous.end_ts is None:
+            break
+        current_naive = contiguous_start.replace(tzinfo=None) if contiguous_start.tzinfo else contiguous_start
+        previous_end = previous.end_ts.replace(tzinfo=None) if previous.end_ts.tzinfo else previous.end_ts
+        if (current_naive - previous_end).total_seconds() > gap_tolerance_s:
+            break
+        contiguous_start = previous.start_ts
+    return contiguous_start
+
+
 def speech_rate_score(words: list[dict], duration_s: float, window_s: float = 5.0) -> float:
     """根据词级时间戳估算"语速突增"得分。
 
@@ -379,9 +450,13 @@ def score_segment(segment_id: int) -> HighlightCandidate | None:
 
         # V0.1.12.8: 提前提取 room 级标量, 避免 session 关闭后 DetachedInstanceError
         room_auto_approve = bool(room.auto_approve) if room else False
-        room_auto_approve_threshold = room.auto_approve_threshold if room else 0.82
-        room_review_threshold = room.review_threshold if room else 0.50
+        room_auto_approve_threshold = room.auto_approve_threshold if room else settings.highlight_auto_approve_threshold
+        room_review_threshold = room.review_threshold if room else settings.highlight_review_threshold
         use_dm_sentiment = room is not None and bool(room.danmaku_sentiment_enabled) and settings.collect_danmaku
+        session_segments = db.exec(
+            select(RawSegment).where(RawSegment.session_id == segment.session_id).order_by(RawSegment.seq.asc())
+        ).all()
+        available_start = contiguous_recording_start(session_segments, segment)
 
     if not has_transcript:
         raise ValueError(f"片段尚未转写: id={segment_id}")
@@ -451,22 +526,17 @@ def score_segment(segment_id: int) -> HighlightCandidate | None:
 
     # ---- 4) 边界吸附:爆点±留白,并对齐到最近静音 ----
     peak_off = feats.peak_offset()
-    if judgement and judgement.suggested_start_offset is not None:
-        start_off = judgement.suggested_start_offset
-    else:
-        start_off = peak_off - cfg.pre_roll_s
-    if judgement and judgement.suggested_end_offset is not None:
-        end_off = judgement.suggested_end_offset
-    else:
-        end_off = peak_off + cfg.post_roll_s
-
-    start_off = audio_mod.snap_to_silence(start_off, feats.silences)
-    end_off = audio_mod.snap_to_silence(end_off, feats.silences)
-
-    # 起止偏移可超出本片段(向前/向后留白),切片阶段会跨片段拼接。
-    peak_ts = seg_start_ts + timedelta(seconds=peak_off)
-    start_ts = seg_start_ts + timedelta(seconds=start_off)
-    end_ts = seg_start_ts + timedelta(seconds=end_off)
+    start_ts, end_ts, peak_ts = candidate_time_bounds(
+        segment_start=seg_start_ts,
+        available_start=available_start,
+        available_end=seg_end_ts,
+        peak_offset_s=peak_off,
+        pre_roll_s=cfg.pre_roll_s,
+        post_roll_s=cfg.post_roll_s,
+        suggested_start_offset_s=judgement.suggested_start_offset if judgement else None,
+        suggested_end_offset_s=judgement.suggested_end_offset if judgement else None,
+        silences=feats.silences,
+    )
 
     # ---- 5) 去重:与本会话既有候选做时间 IoU 比较 ----
     if _is_duplicate(session_id, (start_ts.timestamp(), end_ts.timestamp()), cfg.iou_threshold):
@@ -530,7 +600,7 @@ def score_segment(segment_id: int) -> HighlightCandidate | None:
         cid,
         segment_id,
         highlight_score,
-        end_off - start_off,
+        (end_ts - start_ts).total_seconds(),
         reason,
     )
     return candidate

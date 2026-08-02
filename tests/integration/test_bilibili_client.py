@@ -108,6 +108,48 @@ def test_pick_best_stream_empty_returns_none() -> None:
 
 
 @pytest.mark.asyncio
+async def test_room_info_includes_anchor_name_and_title() -> None:
+    """房间解析应连同详情接口返回主播名和直播标题。"""
+    requests: list[httpx.Request] = []
+
+    async def handler(request: httpx.Request) -> httpx.Response:
+        requests.append(request)
+        if request.url.path == "/room/v1/Room/room_init":
+            payload = {
+                "code": 0,
+                "message": "0",
+                "data": {"room_id": 23771139, "short_id": 123, "uid": 456, "live_status": 1},
+            }
+        else:
+            payload = {
+                "code": 0,
+                "message": "0",
+                "data": {
+                    "room_info": {"uid": 456, "title": "深夜游戏直播"},
+                    "anchor_info": {"base_info": {"uname": "测试主播"}},
+                },
+            }
+        return httpx.Response(200, json=payload, request=request)
+
+    client = BilibiliLiveClient()
+    headers = dict(client._client.headers)  # noqa: SLF001
+    await client._client.aclose()  # noqa: SLF001
+    client._client = httpx.AsyncClient(headers=headers, transport=httpx.MockTransport(handler))  # noqa: SLF001
+    try:
+        info = await client.get_room_info("123")
+    finally:
+        await client.aclose()
+
+    assert info.room_id == 23771139
+    assert info.title == "深夜游戏直播"
+    assert info.uploader_name == "测试主播"
+    assert [request.url.path for request in requests] == [
+        "/room/v1/Room/room_init",
+        "/xlive/web-room/v1/index/getInfoByRoom",
+    ]
+
+
+@pytest.mark.asyncio
 async def test_danmaku_server_parses_success_response() -> None:
     """匿名弹幕请求应接受导航 -101、携带有效 WBI 签名并解析节点。"""
     requests: list[httpx.Request] = []

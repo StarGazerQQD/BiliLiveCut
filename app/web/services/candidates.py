@@ -165,6 +165,9 @@ def list_candidates(limit: int = 50, status: str | None = None) -> list[dict[str
         if status:
             stmt = stmt.where(HighlightCandidate.status == status)
         rows = db.exec(stmt).all()[:limit]
+        from app.web.services.source_identity import source_identities_for_sessions, unknown_source_identity
+
+        sources = source_identities_for_sessions(db, (candidate.session_id for candidate in rows))
     return [
         {
             "id": c.id,
@@ -176,6 +179,7 @@ def list_candidates(limit: int = 50, status: str | None = None) -> list[dict[str
             "reason": c.reason,
             "peak_ts": c.peak_ts.isoformat() if c.peak_ts else None,
             "features": json.loads(c.features_json) if c.features_json else {},
+            **sources.get(c.session_id, unknown_source_identity()),
         }
         for c in rows
     ]

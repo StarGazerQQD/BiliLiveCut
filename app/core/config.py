@@ -164,9 +164,11 @@ class Settings(BaseSettings):
     trend_match_days: int = Field(default=7, ge=1)  # 高光/文案参考的"近期"窗口(天)
 
     # ---------- 高光阈值 ----------
-    highlight_init_threshold: float = Field(default=0.5, ge=0.0, le=1.0)
-    highlight_threshold: float = Field(default=0.65, ge=0.0, le=1.0)
-    auto_publish_threshold: float = Field(default=0.85, ge=0.0, le=1.0)
+    highlight_init_threshold: float = Field(default=0.35, ge=0.0, le=1.0)
+    highlight_threshold: float = Field(default=0.45, ge=0.0, le=1.0)
+    highlight_review_threshold: float = Field(default=0.40, ge=0.0, le=1.0)
+    highlight_auto_approve_threshold: float = Field(default=0.72, ge=0.0, le=1.0)
+    auto_publish_threshold: float = Field(default=0.80, ge=0.0, le=1.0)
 
     # ---------- 切片后处理 ----------
     clip_loudnorm: bool = True  # 响度标准化(EBU R128)

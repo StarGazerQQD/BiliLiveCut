@@ -8,6 +8,7 @@ from typing import TYPE_CHECKING
 
 from sqlmodel import select
 
+from app.core.config import settings
 from app.db.models import (
     HighlightCandidate,
     RawSegment,
@@ -106,7 +107,7 @@ def advance_candidate() -> None:
         for task in tasks:
             cfg = room_cfg_from_task(task)
             auto_approve = bool(cfg.get("auto_approve", False))
-            threshold = float(cfg.get("auto_approve_threshold", 0.82))
+            threshold = float(cfg.get("auto_approve_threshold", settings.highlight_auto_approve_threshold))
 
             if auto_approve:
                 candidate = db.get(HighlightCandidate, task.candidate_id) if task.candidate_id else None
@@ -145,7 +146,7 @@ def advance_awaiting_review() -> None:
         for task in tasks:
             cfg = room_cfg_from_task(task)
             auto_approve = bool(cfg.get("auto_approve", False))
-            threshold = float(cfg.get("auto_approve_threshold", 0.82))
+            threshold = float(cfg.get("auto_approve_threshold", settings.highlight_auto_approve_threshold))
 
             if not auto_approve:
                 _logger.debug("auto_approve=off, task %s 留在 awaiting_review", task.id)

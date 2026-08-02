@@ -55,7 +55,7 @@ def test_score_segment_creates_candidate(
     monkeypatch: MonkeyPatch,
 ) -> None:
     """规则分达阈值时,score_segment 应生成一个高光候选并落库。"""
-    from datetime import UTC, datetime
+    from datetime import UTC, datetime, timedelta
 
     from app.analysis.highlight import score_segment
     from app.db.models import (
@@ -85,7 +85,7 @@ def test_score_segment_creates_candidate(
             seq=0,
             file_path=str(wav),
             start_ts=now,
-            end_ts=now,
+            end_ts=now + timedelta(seconds=4),
             duration_s=4.0,
         )
         db.add(segment)

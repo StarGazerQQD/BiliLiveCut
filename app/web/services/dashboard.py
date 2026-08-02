@@ -107,6 +107,11 @@ def danmaku_overview(limit: int = 50, session_id: int | None = None) -> dict[str
         if session_id is not None:
             agg_stmt = agg_stmt.where(Danmaku.session_id == session_id)
         all_rows = db.exec(agg_stmt).all()
+        from app.web.services.source_identity import source_identities_for_sessions, unknown_source_identity
+
+        source_session_ids = {row.session_id for row in recent_rows}
+        source_session_ids.update(sid for sid, _ in all_rows)
+        sources = source_identities_for_sessions(db, source_session_ids)
 
     counts: dict[int, dict[str, float]] = {}
     for sid, value in all_rows:
@@ -115,7 +120,12 @@ def danmaku_overview(limit: int = 50, session_id: int | None = None) -> dict[str
         bucket["intensity"] += float(value)
 
     sessions = [
-        {"session_id": sid, "count": int(v["count"]), "intensity": round(v["intensity"], 2)}
+        {
+            "session_id": sid,
+            "count": int(v["count"]),
+            "intensity": round(v["intensity"], 2),
+            **sources.get(sid, unknown_source_identity()),
+        }
         for sid, v in sorted(counts.items(), reverse=True)
     ]
     recent = [
@@ -125,6 +135,7 @@ def danmaku_overview(limit: int = 50, session_id: int | None = None) -> dict[str
             "type": d.msg_type,
             "user": d.user,
             "content": d.content,
+            **sources.get(d.session_id, unknown_source_identity()),
         }
         for d in recent_rows
     ]

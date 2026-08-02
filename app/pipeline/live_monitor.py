@@ -107,6 +107,7 @@ class LiveMonitor:
                     "room_id": r.room_id,
                     "auto_analyze": r.auto_analyze,
                     "auto_render": r.auto_render,
+                    "needs_identity": not r.uploader_name or not r.title,
                     "recording_paused": load_room_config(r).get("recording_paused", False),
                 }
                 for r in rooms
@@ -115,14 +116,14 @@ class LiveMonitor:
         from app.web.service import recorder_manager
 
         async with BilibiliLiveClient(cookie=get_bilibili_cookie()) as client:
-            for info in room_info:
+            for room_state in room_info:
                 if self._stop.is_set():
                     return
-                db_id: int = info["db_id"]
-                room_id: int = info["room_id"]
-                auto_analyze: bool = info["auto_analyze"]
-                auto_render: bool = info["auto_render"]
-                if info["recording_paused"]:
+                db_id: int = room_state["db_id"]
+                room_id: int = room_state["room_id"]
+                auto_analyze: bool = room_state["auto_analyze"]
+                auto_render: bool = room_state["auto_render"]
+                if room_state["recording_paused"]:
                     continue
                 self._last_check_at[db_id] = asyncio.get_event_loop().time()
 
@@ -130,12 +131,26 @@ class LiveMonitor:
                     continue  # 正在启动中,跳过
 
                 try:
-                    info = await client.get_room_info(str(room_id))
+                    latest = await client.get_room_info(str(room_id), include_detail=bool(room_state["needs_identity"]))
                 except Exception as exc:
                     logger.warning("房间 {} 状态查询失败: {}", room_id, exc)
                     continue
 
-                is_live = info.live_status == 1
+                if latest.title or latest.uploader_name:
+                    with get_session() as db:
+                        room = db.get(LiveRoom, db_id)
+                        if room is not None:
+                            changed = False
+                            if latest.title and room.title != latest.title:
+                                room.title = latest.title
+                                changed = True
+                            if latest.uploader_name and room.uploader_name != latest.uploader_name:
+                                room.uploader_name = latest.uploader_name
+                                changed = True
+                            if changed:
+                                db.add(room)
+
+                is_live = latest.live_status == 1
                 is_recording = recorder_manager.is_running(db_id)
 
                 if is_live and not is_recording:

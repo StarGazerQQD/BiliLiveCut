@@ -10,6 +10,44 @@ import os
 import re
 
 
+def _discover_archived_versions(docs_dir: str) -> dict[int, list[str]]:
+    """扫描已有归档文件及其版本标题。"""
+    archived: dict[int, list[str]] = {}
+    for filename in sorted(os.listdir(docs_dir)):
+        match = re.fullmatch(r"CHANGELOG_PRE_0\.1\.(\d+)\.md", filename)
+        if match is None:
+            continue
+        versions: list[str] = []
+        with open(os.path.join(docs_dir, filename), encoding="utf-8") as file:
+            for line in file:
+                version_match = re.match(r"^## (V?0\.1\.\d+(?:\.\d+)?)", line)
+                if version_match and version_match.group(1) not in versions:
+                    versions.append(version_match.group(1))
+        if versions:
+            archived[int(match.group(1))] = versions
+    return archived
+
+
+def _write_index(docs_dir: str, keep_series: set[int]) -> None:
+    """根据主文件保留系列和全部现存归档重建索引。"""
+    index_lines = [
+        "# CHANGELOG 归档索引",
+        "",
+        "| 三级版本系列 | 文件 | 含版本 |",
+        "|-------------|------|--------|",
+    ]
+    for series_num in sorted(keep_series, reverse=True):
+        label = "当前版本" if series_num == max(keep_series) else f"0.1.{series_num} 全系列"
+        index_lines.append(f"| 0.1.{series_num} | `../../CHANGELOG.md` | {label} |")
+
+    for series_num, versions in sorted(_discover_archived_versions(docs_dir).items(), reverse=True):
+        index_lines.append(f"| 0.1.{series_num} | `CHANGELOG_PRE_0.1.{series_num}.md` | {', '.join(versions)} |")
+
+    index_path = os.path.join(docs_dir, "CHANGELOG_INDEX.md")
+    with open(index_path, "w", encoding="utf-8") as file:
+        file.write("\n".join(index_lines) + "\n")
+
+
 def main() -> None:
     """执行 CHANGELOG 归档。"""
     root = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
@@ -35,13 +73,15 @@ def main() -> None:
     # 2. 动态提取所有三级版本系列, 按 X 倒序
     all_series = sorted({v[2] for v in versions}, reverse=True)
     print(f"发现三级版本系列: {all_series}")
+    keep_series = set(all_series[:3])
 
     if len(all_series) <= 3:
         print(f"只有 {len(all_series)} 个系列, 无需归档。")
+        _write_index(docs_dir, keep_series)
+        print("  更新: CHANGELOG_INDEX.md")
         return
 
     # 最近 3 个系列保留在主文件
-    keep_series = set(all_series[:3])
     archive_series = all_series[3:]
     print(f"保留 (主 CHANGELOG): {sorted(keep_series, reverse=True)}")
     print(f"归档: {sorted(archive_series, reverse=True)}")
@@ -120,36 +160,13 @@ def main() -> None:
     archive_notice = (
         "\n\n---\n\n历史版本归档见 [docs/changelog/CHANGELOG_INDEX.md](docs/changelog/CHANGELOG_INDEX.md)。\n"
     )
-    kept_content = "\n".join(kept_lines).rstrip() + archive_notice + "\n"
+    kept_content = "\n".join(kept_lines).rstrip() + archive_notice
 
     with open(changelog_path, "w", encoding="utf-8") as f:
         f.write(kept_content)
 
-    # 8. 生成 CHANGELOG_INDEX.md
-    index_lines = [
-        "# CHANGELOG 归档索引",
-        "",
-        "| 三级版本系列 | 文件 | 含版本 |",
-        "|-------------|------|--------|",
-    ]
-    # 保留系列
-    for sn in sorted(keep_series, reverse=True):
-        label = "当前版本" if sn == max(keep_series) else f"0.1.{sn} 全系列"
-        index_lines.append(f"| 0.1.{sn} | `../../CHANGELOG.md` | {label} |")
-
-    # 归档系列
-    for sn in sorted(archive_series, reverse=True):
-        ver_names = []
-        for _, fv, _sn in versions:
-            if _sn == sn and fv not in ver_names:
-                ver_names.append(fv)
-        ver_list = ", ".join(ver_names)
-        index_lines.append(f"| 0.1.{sn} | `CHANGELOG_PRE_0.1.{sn}.md` | {ver_list} |")
-
-    index_content = "\n".join(index_lines) + "\n"
-    index_path = os.path.join(docs_dir, "CHANGELOG_INDEX.md")
-    with open(index_path, "w", encoding="utf-8") as f:
-        f.write(index_content)
+    # 8. 生成包含全部历史归档的 CHANGELOG_INDEX.md
+    _write_index(docs_dir, keep_series)
 
     print(f"\n  更新: CHANGELOG.md (保留 {len(keep_series)} 个系列)")
     print("  创建: CHANGELOG_INDEX.md")

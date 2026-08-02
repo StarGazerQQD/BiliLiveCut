@@ -20,6 +20,7 @@ from app.db.models import (
     ClipVariantType,
     FinalClip,
     HighlightCandidate,
+    RawSegment,
     RenderStatus,
     SegmentTask,
     TaskStatus,
@@ -89,6 +90,20 @@ def render_compute(lease: TaskLease) -> dict[str, Any]:
             return {"error": "task or candidate_id missing", "permanent": True}
         cid = task.candidate_id
         event_id = task.event_id or 0
+        candidate = db.get(HighlightCandidate, cid)
+        if candidate is None:
+            return {"error": "candidate missing", "permanent": True}
+        segment = db.get(RawSegment, task.segment_id)
+        if segment is None or segment.session_id != task.session_id:
+            return {"error": "task/segment source mismatch", "permanent": True}
+        if candidate.session_id != task.session_id:
+            return {
+                "error": (
+                    f"task/candidate source mismatch: task_session={task.session_id} "
+                    f"candidate_session={candidate.session_id}"
+                ),
+                "permanent": True,
+            }
 
     try:
         artifact = render_clip_to_file(cid, temp_path)

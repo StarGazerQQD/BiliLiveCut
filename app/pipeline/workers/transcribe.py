@@ -62,6 +62,7 @@ def transcribe_compute(task_id: int) -> dict[str, Any]:
         if task is None:
             return {"error": "task not found"}
         segment_id = task.segment_id
+        task_session_id = task.session_id
 
     # 2) 读取片段元数据
     try:
@@ -71,6 +72,13 @@ def transcribe_compute(task_id: int) -> dict[str, Any]:
 
     file_path = ctx["file_path"]
     initial_prompt = ctx["initial_prompt"]
+    if ctx["session_id"] != task_session_id:
+        return {
+            "error": (
+                f"任务来源不一致: task={task_id} session={task_session_id},"
+                f" segment={segment_id} session={ctx['session_id']}"
+            )
+        }
 
     if not file_path:
         return {"error": "segment has no file_path"}
@@ -148,6 +156,7 @@ def transcribe_compute(task_id: int) -> dict[str, Any]:
     return {
         "transcribed": True,
         "segment_id": segment_id,
+        "session_id": task_session_id,
         "text": display_text,
         "words_json": words_json,
         "avg_logprob": avg_logprob_val,
@@ -212,6 +221,20 @@ def commit_transcript(lease: TaskLease, compute_result: dict[str, Any], ms: int)
                 from app.pipeline.stage_result import mark_failed
 
                 mark_failed(task, "invalid segment_id in compute result", permanent=True)
+                db.add(task)
+                db.commit()
+                return
+            result_session_id = compute_result.get("session_id", task.session_id)
+            segment = db.get(RawSegment, segment_id)
+            if (
+                segment_id != task.segment_id
+                or result_session_id != task.session_id
+                or segment is None
+                or segment.session_id != task.session_id
+            ):
+                from app.pipeline.stage_result import mark_failed
+
+                mark_failed(task, "transcribe compute result source mismatch", permanent=True)
                 db.add(task)
                 db.commit()
                 return

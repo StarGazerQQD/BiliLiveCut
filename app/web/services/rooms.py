@@ -485,13 +485,21 @@ async def add_room(url: str, authorized: bool) -> LiveRoom:
         if existing:
             existing.input_url = url
             existing.authorized = authorized
+            if info.title:
+                existing.title = info.title
+            if info.uploader_name:
+                existing.uploader_name = info.uploader_name
             db.add(existing)
             return existing
         room = LiveRoom(
             input_url=url,
             room_id=info.room_id,
+            title=info.title,
+            uploader_name=info.uploader_name,
             authorized=authorized,
             highlight_threshold=settings.highlight_threshold,
+            review_threshold=settings.highlight_review_threshold,
+            auto_approve_threshold=settings.highlight_auto_approve_threshold,
             auto_publish_threshold=settings.auto_publish_threshold,
         )
         db.add(room)
@@ -648,6 +656,9 @@ def recording_status() -> list[dict[str, Any]]:
                 RecordingSession.started_at.desc()  # type: ignore[attr-defined]
             )
         ).all()[:20]
+        from app.web.services.source_identity import source_identities_for_sessions, unknown_source_identity
+
+        sources = source_identities_for_sessions(db, (session.id for session in sessions if session.id is not None))
         result = []
         for s in sessions:
             n_seg = len(db.exec(select(RawSegment).where(RawSegment.session_id == s.id)).all())
@@ -666,6 +677,7 @@ def recording_status() -> list[dict[str, Any]]:
                     "started_at": s.started_at.isoformat() if s.started_at else None,
                     "error_message": s.error_message,
                     "pipeline_enabled": pipeline_enabled,
+                    **sources.get(s.id, unknown_source_identity()),
                 }
             )
     return result

@@ -51,15 +51,20 @@ async def approve_candidate(candidate_id: int, request: Request) -> dict[str, An
     from app.db.session import get_session
     from app.web.services.background_jobs import web_job_manager
     from app.web.services.review_workflow import review_actor
+    from app.web.services.source_identity import source_identities_for_sessions, unknown_source_identity
 
     with get_session() as db:
-        if db.get(HighlightCandidate, candidate_id) is None:
+        candidate = db.get(HighlightCandidate, candidate_id)
+        if candidate is None:
             raise HTTPException(status_code=404, detail="候选不存在")
+        source_label = source_identities_for_sessions(db, [candidate.session_id]).get(
+            candidate.session_id, unknown_source_identity()
+        )["source_label"]
     actor, _ = review_actor(request)
     job = await web_job_manager.enqueue(
         "candidate_render",
         {"candidate_id": candidate_id, "reviewed_by": actor},
-        label=f"候选 #{candidate_id} 批准出片",
+        label=f"{source_label} · 候选 #{candidate_id} 批准出片",
         owner=actor,
         dedup_key=f"candidate-render:{candidate_id}",
     )
@@ -102,15 +107,20 @@ async def batch_candidates(request: BatchRequest, http_request: Request) -> dict
                 from app.db.session import get_session
                 from app.web.services.background_jobs import web_job_manager
                 from app.web.services.review_workflow import review_actor
+                from app.web.services.source_identity import source_identities_for_sessions, unknown_source_identity
 
                 with get_session() as db:
-                    if db.get(HighlightCandidate, cid) is None:
+                    candidate = db.get(HighlightCandidate, cid)
+                    if candidate is None:
                         raise ValueError(f"候选不存在: id={cid}")
+                    source_label = source_identities_for_sessions(db, [candidate.session_id]).get(
+                        candidate.session_id, unknown_source_identity()
+                    )["source_label"]
                 actor, _ = review_actor(http_request)
                 job = await web_job_manager.enqueue(
                     "candidate_render",
                     {"candidate_id": cid, "reviewed_by": actor},
-                    label=f"候选 #{cid} 批准出片",
+                    label=f"{source_label} · 候选 #{cid} 批准出片",
                     owner=actor,
                     dedup_key=f"candidate-render:{cid}",
                 )
