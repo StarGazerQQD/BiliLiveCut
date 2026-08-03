@@ -1,6 +1,5 @@
 # BiliLiveCut — AI 直播实时切片系统
 
-[![版本](https://img.shields.io/badge/version-v0.1.16.4-Alpha%20(0.1.16.4-Alpha)-dcd2ee)](CHANGELOG.md)
 [![CI](https://github.com/StarGazerQQD/BiliLiveCut/actions/workflows/ci.yml/badge.svg)](https://github.com/StarGazerQQD/BiliLiveCut/actions/workflows/ci.yml)
 
 **当前版本：V0.1.16.4 Alpha** (`0.1.16.4-alpha`)
