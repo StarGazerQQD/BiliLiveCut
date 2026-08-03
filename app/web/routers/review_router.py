@@ -26,6 +26,8 @@ from fastapi.templating import Jinja2Templates
 from pydantic import BaseModel, ConfigDict, Field
 from sqlmodel import select as _sql_select
 
+from app.analysis.transcript_windows import extract_transcript_window
+
 if TYPE_CHECKING:
     from sqlmodel import Session
 
@@ -162,8 +164,6 @@ def _candidate_transcript(
     end_ts: datetime | None = None,
 ) -> dict | None:
     """合并候选覆盖片段的转写，并换算为候选播放器相对时间。"""
-    import json
-
     from app.db.models import Transcript
 
     segment_ids = [segment.id for segment in segments if segment.id is not None]
@@ -185,21 +185,21 @@ def _candidate_transcript(
         if transcript is None:
             continue
         used_segment_ids.append(segment.id)
-        if transcript.text:
-            texts.append(transcript.text.strip())
         language = language or transcript.language
-        if not transcript.words_json:
-            continue
-        try:
-            raw_words = json.loads(transcript.words_json)
-        except (json.JSONDecodeError, TypeError):
-            continue
-        if not isinstance(raw_words, list):
-            continue
         offset = (_as_utc_naive(segment.start_ts) - candidate_start).total_seconds()
-        for raw_word in raw_words:
-            if not isinstance(raw_word, dict):
-                continue
+        segment_duration = segment.duration_s
+        if segment_duration is None and segment.end_ts is not None:
+            segment_duration = (_as_utc_naive(segment.end_ts) - _as_utc_naive(segment.start_ts)).total_seconds()
+        window = extract_transcript_window(
+            transcript.text,
+            transcript.words_json,
+            start_s=max(0.0, -offset),
+            end_s=max(0.0, candidate_duration - offset),
+            duration_s=float(segment_duration or 0.0),
+        )
+        if window.text:
+            texts.append(window.text)
+        for raw_word in window.words:
             try:
                 word_start = float(raw_word.get("start", 0.0)) + offset
                 word_end = float(raw_word.get("end", word_start)) + offset
@@ -734,6 +734,7 @@ def undo_review_action(candidate_id: int, request: Request) -> dict:
         pop_history,
         refresh_claim,
         require_edit_claim,
+        restore_related_state,
         review_actor,
     )
 
@@ -752,10 +753,12 @@ def undo_review_action(candidate_id: int, request: Request) -> dict:
         event.review_reason = snapshot.get("review_reason")
         event.review_by = str(snapshot["review_by"])
         candidate.status = str(snapshot["candidate_status"])
-        task = _latest_task(db, candidate_id)
-        if task is not None and snapshot.get("task_stage"):
-            task.stage = str(snapshot["task_stage"])
-            db.add(task)
+        restored_task = restore_related_state(db, candidate_id, snapshot)
+        if not restored_task:
+            task = _latest_task(db, candidate_id)
+            if task is not None and snapshot.get("task_stage"):
+                task.stage = str(snapshot["task_stage"])
+                db.add(task)
         refresh_claim(event, actor)
         db.add(event)
         db.add(candidate)
@@ -840,7 +843,7 @@ async def adjust_boundary(
             )
         except ValueError as exc:
             raise HTTPException(status_code=422, detail=str(exc)) from exc
-        push_history(event, c, _latest_task(db, candidate_id), action="adjust_boundary", actor=actor)
+        push_history(db, event, c, action="adjust_boundary", actor=actor)
         event.adjusted_start_ts = proposed_start
         event.adjusted_end_ts = proposed_end
         event.updated_at = _dt.now(UTC)
@@ -873,7 +876,7 @@ def submit_review(
 
     正向决断时调用 approve_event_and_task 传入外层 db session,
     在同一事务中更新 Task.stage + Event.review_status + Candidate.status。
-    非正向决断 (拒绝等) 仅更新 Event 和 Candidate。
+    明确拒绝时同步更新 Event、Candidate、关联 Task 和未发布 FinalClip。
 
     :param candidate_id: 候选 id。
     :param decision: 审核决断(approved_solo/rejected/insufficient_context 等)。
@@ -928,7 +931,14 @@ def submit_review(
         event = _ensure_event(db, c)
         require_edit_claim(event, actor, role)
         task = _latest_task(db, candidate_id)
-        push_history(event, c, task, action="submit_review", actor=actor)
+        push_history(
+            db,
+            event,
+            c,
+            action="submit_review",
+            actor=actor,
+            include_related_state=True,
+        )
 
         if is_positive:
             # V0.1.12.8: 正向决断统一走 approve_event_and_task, 传入外层 db
@@ -958,15 +968,23 @@ def submit_review(
                 db.add(event)
                 c.status = CandidateStatus.APPROVED
                 db.add(c)
+        elif decision in (ReviewStatus.REJECTED, ReviewStatus.NOT_EXCITING):
+            from app.pipeline.rejection import reject_candidate_and_outputs
+
+            reject_candidate_and_outputs(
+                db,
+                candidate_id,
+                rejected_by=actor,
+                reason=reason,
+                review_decision=decision,
+            )
         else:
-            # 非正向决断: 仅更新 Event 和 Candidate
+            # 保留待定、边界或质量问题只更新审核事件，不终结候选工作流。
             event.review_status = decision
             event.review_reason = reason
             event.review_by = actor
             event.updated_at = _dt.now(UTC)
             db.add(event)
-            if decision in (ReviewStatus.REJECTED, ReviewStatus.NOT_EXCITING):
-                c.status = CandidateStatus.REJECTED
             db.add(c)
 
         clear_draft(event)

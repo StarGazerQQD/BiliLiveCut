@@ -12,12 +12,14 @@ from __future__ import annotations
 
 import json
 from dataclasses import dataclass
+from datetime import UTC, datetime
 
 from loguru import logger
 from sqlmodel import select
 
 from app.analysis import llm as llm_mod
 from app.analysis.keywords import match_keywords
+from app.analysis.transcript_windows import extract_transcript_window
 from app.clipping.clipper import select_covering_segments
 from app.core.config import settings
 from app.core.paths import ready_to_upload_dir
@@ -25,6 +27,7 @@ from app.db.models import (
     ClipStatus,
     FinalClip,
     HighlightCandidate,
+    HighlightEvent,
     LiveRoom,
     RecordingSession,
     Transcript,
@@ -54,7 +57,8 @@ class Copy:
 
 _COPY_PROMPT = """你是一名 Bilibili 资深短视频运营。下面是一个直播切片的转写内容,\
 请为它生成投稿文案。要求:标题吸引人但不浮夸失真、不做标题党;贴合 B 站社区调性;\
-简介 1-3 句概括看点;标签 4-8 个;并判断是否值得发布。
+简介 1-3 句概括看点;标签 4-8 个;并判断是否值得发布。切片转写已经按最终成片时间范围裁剪,\
+是文案内容的唯一事实来源;高光理由可能来自更宽的评分窗口,如有冲突必须忽略高光理由。
 
 切片转写:
 {text}
@@ -92,7 +96,7 @@ def _trend_block() -> str:
 
 
 def gather_clip_text(candidate_id: int) -> tuple[str, str]:
-    """汇总候选覆盖片段的转写文本与高光理由。
+    """汇总候选最终时间窗内的转写文本与高光理由。
 
     :param candidate_id: ``highlight_candidates`` 主键。
     :returns: ``(text, reason)``。
@@ -104,7 +108,9 @@ def gather_clip_text(candidate_id: int) -> tuple[str, str]:
             raise ValueError(f"候选不存在: id={candidate_id}")
         reason = cand.reason or ""
         session_id = cand.session_id
-        start_ts, end_ts = cand.start_ts, cand.end_ts
+        event = db.exec(select(HighlightEvent).where(HighlightEvent.candidate_id == candidate_id)).first()
+        start_ts = event.adjusted_start_ts if event and event.adjusted_start_ts else cand.start_ts
+        end_ts = event.adjusted_end_ts if event and event.adjusted_end_ts else cand.end_ts
 
     segments = select_covering_segments(session_id, start_ts, end_ts)
     seg_ids = [s.id for s in segments if s.id is not None]
@@ -112,9 +118,36 @@ def gather_clip_text(candidate_id: int) -> tuple[str, str]:
         rows = db.exec(
             select(Transcript).where(Transcript.segment_id.in_(seg_ids))  # type: ignore[attr-defined]
         ).all()
-    by_seg = {t.segment_id: t.text for t in rows}
-    text = "".join(by_seg.get(s.id, "") for s in segments).strip()
-    return text, reason
+    by_seg = {t.segment_id: t for t in rows}
+    texts: list[str] = []
+    for segment in segments:
+        transcript = by_seg.get(segment.id)
+        if transcript is None or segment.start_ts is None:
+            continue
+        segment_start = _as_utc_naive(segment.start_ts)
+        window_start = _as_utc_naive(start_ts)
+        window_end = _as_utc_naive(end_ts)
+        duration = segment.duration_s
+        if duration is None and segment.end_ts is not None:
+            segment_end = _as_utc_naive(segment.end_ts)
+            duration = max(0.0, (segment_end - segment_start).total_seconds())
+        window = extract_transcript_window(
+            transcript.text,
+            transcript.words_json,
+            start_s=max(0.0, (window_start - segment_start).total_seconds()),
+            end_s=max(0.0, (window_end - segment_start).total_seconds()),
+            duration_s=float(duration or 0.0),
+        )
+        if window.text:
+            texts.append(window.text)
+    return "\n".join(texts).strip(), reason
+
+
+def _as_utc_naive(value: datetime) -> datetime:
+    """把数据库与请求边界统一为 UTC-naive 后再计算偏移。"""
+    if value.tzinfo is None:
+        return value
+    return value.astimezone(UTC).replace(tzinfo=None)
 
 
 def _llm_copy(text: str, reason: str) -> Copy | None:

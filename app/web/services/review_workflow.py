@@ -7,9 +7,10 @@ from datetime import UTC, datetime, timedelta
 from typing import TYPE_CHECKING, Any
 
 from fastapi import HTTPException, Request
+from sqlmodel import select
 
 from app.core.config import settings
-from app.db.models import HighlightCandidate, HighlightEvent, SegmentTask, SystemLog
+from app.db.models import FinalClip, HighlightCandidate, HighlightEvent, SegmentTask, SystemLog
 
 if TYPE_CHECKING:
     from sqlmodel import Session
@@ -147,32 +148,47 @@ def clear_draft(event: HighlightEvent) -> None:
 
 
 def push_history(
+    db: Session,
     event: HighlightEvent,
     candidate: HighlightCandidate,
-    task: SegmentTask | None,
     *,
     action: str,
     actor: str,
+    include_related_state: bool = False,
 ) -> None:
-    """在修改前保存可撤销快照。"""
+    """在修改前保存可撤销快照。
+
+    :param db: 当前审核事务使用的数据库会话。
+    :param event: 即将修改的审核事件。
+    :param candidate: 事件关联候选。
+    :param action: 审核动作名称。
+    :param actor: 操作者标识。
+    :param include_related_state: 是否同时快照会被拒绝流程改写的任务和成片。
+    """
     data = workflow(event)
     history = data.get("history", [])
     if not isinstance(history, list):
         history = []
-    history.append(
-        {
-            "action": action,
-            "actor": actor,
-            "at": datetime.now(UTC).isoformat(),
-            "adjusted_start_ts": _iso(event.adjusted_start_ts),
-            "adjusted_end_ts": _iso(event.adjusted_end_ts),
-            "review_status": event.review_status,
-            "review_reason": event.review_reason,
-            "review_by": event.review_by,
-            "candidate_status": candidate.status,
-            "task_stage": task.stage if task else None,
-        }
-    )
+    tasks = db.exec(
+        select(SegmentTask).where(SegmentTask.candidate_id == candidate.id).order_by(SegmentTask.created_at.desc())
+    ).all()
+    snapshot: dict[str, Any] = {
+        "action": action,
+        "actor": actor,
+        "at": datetime.now(UTC).isoformat(),
+        "adjusted_start_ts": _iso(event.adjusted_start_ts),
+        "adjusted_end_ts": _iso(event.adjusted_end_ts),
+        "review_status": event.review_status,
+        "review_reason": event.review_reason,
+        "review_by": event.review_by,
+        "candidate_status": candidate.status,
+        "task_stage": tasks[0].stage if tasks else None,
+    }
+    if include_related_state:
+        clips = db.exec(select(FinalClip).where(FinalClip.candidate_id == candidate.id)).all()
+        snapshot["task_states"] = [_task_state(task) for task in tasks]
+        snapshot["clip_statuses"] = [{"id": clip.id, "status": clip.status} for clip in clips if clip.id is not None]
+    history.append(snapshot)
     data["history"] = history[-MAX_HISTORY:]
     save_workflow(event, data)
 
@@ -187,6 +203,43 @@ def pop_history(event: HighlightEvent) -> dict[str, Any]:
     data["history"] = history
     save_workflow(event, data)
     return snapshot
+
+
+def restore_related_state(db: Session, candidate_id: int, snapshot: dict[str, Any]) -> bool:
+    """恢复审核快照中的任务控制字段和成片状态。
+
+    :param db: 当前审核事务使用的数据库会话。
+    :param candidate_id: 快照所属候选 ID。
+    :param snapshot: :func:`push_history` 生成的历史快照。
+    :returns: 是否恢复了至少一个新版任务快照。
+    """
+    restored_task = False
+    task_states = snapshot.get("task_states", [])
+    if isinstance(task_states, list):
+        for raw_state in task_states:
+            if not isinstance(raw_state, dict) or not isinstance(raw_state.get("id"), int):
+                continue
+            task = db.get(SegmentTask, raw_state["id"])
+            if task is None or task.candidate_id != candidate_id:
+                continue
+            _restore_task_state(task, raw_state)
+            db.add(task)
+            restored_task = True
+
+    clip_statuses = snapshot.get("clip_statuses", [])
+    if isinstance(clip_statuses, list):
+        for raw_state in clip_statuses:
+            if not isinstance(raw_state, dict) or not isinstance(raw_state.get("id"), int):
+                continue
+            status = raw_state.get("status")
+            if not isinstance(status, str):
+                continue
+            clip = db.get(FinalClip, raw_state["id"])
+            if clip is None or clip.candidate_id != candidate_id:
+                continue
+            clip.status = status
+            db.add(clip)
+    return restored_task
 
 
 def add_audit(
@@ -240,3 +293,46 @@ def _parse_datetime(value: object) -> datetime | None:
 
 def _iso(value: datetime | None) -> str | None:
     return value.isoformat() if value else None
+
+
+def _task_state(task: SegmentTask) -> dict[str, Any]:
+    """把取消任务时会改写的字段序列化到审核快照。"""
+    return {
+        "id": task.id,
+        "stage": task.stage,
+        "stage_key": task.stage_key,
+        "idempotency_key": task.idempotency_key,
+        "attempts": task.attempts,
+        "last_error": task.last_error,
+        "error_is_permanent": task.error_is_permanent,
+        "next_retry_at": _iso(task.next_retry_at),
+        "claimed_by": task.claimed_by,
+        "claimed_at": _iso(task.claimed_at),
+        "heartbeat_at": _iso(task.heartbeat_at),
+        "lease_token": task.lease_token,
+        "completed_at": _iso(task.completed_at),
+        "total_elapsed_ms": task.total_elapsed_ms,
+    }
+
+
+def _restore_task_state(task: SegmentTask, state: dict[str, Any]) -> None:
+    """从可信的本地审核快照恢复任务字段。"""
+    task.stage = str(state["stage"])
+    task.stage_key = _optional_string(state.get("stage_key"))
+    task.idempotency_key = _optional_string(state.get("idempotency_key"))
+    task.attempts = int(state.get("attempts", 0))
+    task.last_error = _optional_string(state.get("last_error"))
+    task.error_is_permanent = bool(state.get("error_is_permanent", False))
+    task.next_retry_at = _parse_datetime(state.get("next_retry_at"))
+    task.claimed_by = _optional_string(state.get("claimed_by"))
+    task.claimed_at = _parse_datetime(state.get("claimed_at"))
+    task.heartbeat_at = _parse_datetime(state.get("heartbeat_at"))
+    task.lease_token = _optional_string(state.get("lease_token"))
+    task.completed_at = _parse_datetime(state.get("completed_at"))
+    total_elapsed_ms = state.get("total_elapsed_ms")
+    task.total_elapsed_ms = total_elapsed_ms if isinstance(total_elapsed_ms, int) else None
+
+
+def _optional_string(value: object) -> str | None:
+    """仅接受审核快照中的字符串或空值。"""
+    return value if isinstance(value, str) else None

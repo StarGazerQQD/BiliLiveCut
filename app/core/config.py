@@ -142,7 +142,9 @@ class Settings(BaseSettings):
     llm_daily_budget: float = 0.0
     # 每个录制切片完成 ASR 后，是否调用 LLM 整理正文并生成摘要。
     transcript_llm_refine_enabled: bool = True
-    transcript_llm_refine_max_tokens: int = Field(default=4096, ge=128, le=8192)
+    transcript_llm_refine_max_tokens: int = Field(default=65536, ge=128, le=65536)
+    # 高光复核需要同时容纳五分钟转写、模型推理和结构化判断结果。
+    highlight_llm_max_tokens: int = Field(default=65536, ge=512, le=65536)
 
     # 兼容旧配置:若未填 llm_* 而填了 anthropic_*,仍可回退读取(已废弃,仅为兼容保留)。
     anthropic_api_key: str = Field(default="", repr=False)

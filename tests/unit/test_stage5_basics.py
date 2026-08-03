@@ -41,14 +41,15 @@ def test_settings_fields_boundary_values() -> None:
     """Settings fields respect their declared boundaries."""
     from app.core.config import Settings
 
-    s = Settings()
+    s = Settings(_env_file=None)
     assert s.segment_duration_s == 300
     assert s.reconnect_max_backoff_s >= 1
     assert s.live_poll_interval_s >= 5
     assert s.danmaku_login_retry_max_attempts == 5
     assert s.danmaku_login_retry_interval_s == 60.0
     assert s.transcript_llm_refine_enabled is True
-    assert s.transcript_llm_refine_max_tokens == 4096
+    assert s.transcript_llm_refine_max_tokens == 65536
+    assert s.highlight_llm_max_tokens == 65536
     assert s.asr_primary_max_concurrency >= 1
     assert s.asr_auxiliary_max_concurrency >= 1
     assert s.asr_review_max_concurrency >= 1
@@ -99,8 +100,12 @@ def test_transcript_refinement_env_and_runtime_override(temp_db: None, monkeypat
     from app.core.config import Settings, settings
 
     monkeypatch.setenv("TRANSCRIPT_LLM_REFINE_ENABLED", "false")
+    monkeypatch.setenv("TRANSCRIPT_LLM_REFINE_MAX_TOKENS", "20000")
+    monkeypatch.setenv("HIGHLIGHT_LLM_MAX_TOKENS", "24000")
     configured = Settings(_env_file=None)
     assert configured.transcript_llm_refine_enabled is False
+    assert configured.transcript_llm_refine_max_tokens == 20000
+    assert configured.highlight_llm_max_tokens == 24000
 
     monkeypatch.setattr(settings, "transcript_llm_refine_enabled", False)
     assert settings_store.transcript_llm_refine_enabled() is False

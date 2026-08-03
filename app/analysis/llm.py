@@ -19,6 +19,7 @@ Moonshot Kimi / 智谱 GLM 等)——只需在 ``.env`` 配置 ``LLM_BASE_URL`` 
 from __future__ import annotations
 
 import json
+import math
 import re
 from dataclasses import dataclass
 from datetime import date
@@ -560,8 +561,9 @@ def refine_transcript(raw_text: str) -> TranscriptRefinement | None:
     return TranscriptRefinement(clean_text=clean_text, summary=summary[:120])
 
 
-_JUDGE_PROMPT = """你是一名 Bilibili 短视频切片编辑。下面是一段直播录制片段的信息,请判断它是否包含\
-值得单独切片传播的"高光/爆点",并给出建议的切片时间范围(相对本片段起点的秒数)。
+_JUDGE_PROMPT = """你是一名 Bilibili 短视频切片编辑。下面是一段直播录制候选窗口的信息,请判断它是否包含\
+值得单独切片传播的"高光/爆点",并给出建议的切片时间范围。start_offset/end_offset 必须相对下面\
+这个候选窗口的起点填写；系统会再换算到原始录制分段。候选窗口在原始分段中的起点是 {window_start:.3f} 秒。
 
 转写文本:
 {text}
@@ -608,20 +610,26 @@ def judge_highlight(
     text: str,
     features: dict[str, float],
     danmaku_summary: str = "",
+    window_start_offset_s: float = 0.0,
 ) -> HighlightJudgement | None:
     """调用 LLM 复核某片段是否为高光。
 
     :param text: 转写文本。
     :param features: 规则特征字典(维度名->0-1 分)。
     :param danmaku_summary: 弹幕摘要(可空)。
+    :param window_start_offset_s: 当前文本窗口相对原始录制分段的起点秒数。
     :returns: :class:`HighlightJudgement`;LLM 不可用或出错时返回 ``None``。
     """
+    window_start = float(window_start_offset_s)
+    if not math.isfinite(window_start) or window_start < 0:
+        window_start = 0.0
     prompt = _JUDGE_PROMPT.format(
         text=text or "(无转写)",
         features=json.dumps(features, ensure_ascii=False),
         danmaku=danmaku_summary or "(无弹幕数据)",
+        window_start=window_start,
     )
-    raw = call_text(prompt, max_tokens=512)
+    raw = call_text(prompt, max_tokens=settings.highlight_llm_max_tokens)
     if raw is None:
         return None
     data = extract_json(raw)
@@ -637,12 +645,14 @@ def judge_highlight(
     raw_flag = data.get("is_highlight", False)
     is_highlight = raw_flag if isinstance(raw_flag, bool) else str(raw_flag).lower() == "true"
 
+    suggested_start = _opt_float(data.get("start_offset"))
+    suggested_end = _opt_float(data.get("end_offset"))
     return HighlightJudgement(
         is_highlight=is_highlight,
         score=score,
         reason=str(data.get("reason", "")).replace("\n", " ").strip()[:30],
-        suggested_start_offset=_opt_float(data.get("start_offset")),
-        suggested_end_offset=_opt_float(data.get("end_offset")),
+        suggested_start_offset=window_start + suggested_start if suggested_start is not None else None,
+        suggested_end_offset=window_start + suggested_end if suggested_end is not None else None,
     )
 
 
@@ -655,6 +665,7 @@ def _opt_float(value: object) -> float | None:
     if value is None:
         return None
     try:
-        return float(value)  # type: ignore[arg-type]
+        number = float(value)  # type: ignore[arg-type]
     except (TypeError, ValueError):
         return None
+    return number if math.isfinite(number) else None

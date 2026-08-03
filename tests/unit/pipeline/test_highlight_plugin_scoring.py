@@ -140,6 +140,83 @@ def test_shadow_probability_does_not_change_rule_decision(
     assert metadata["prediction"]["shadow_probability"] == 0.95
 
 
+def test_llm_reason_is_limited_to_candidate_time_window(
+    temp_db: None,
+    monkeypatch: MonkeyPatch,
+) -> None:
+    """高光理由不得读取候选结束后的同一原始分段内容。"""
+    from app.analysis import highlight, llm
+    from app.analysis.llm import HighlightJudgement
+    from app.analysis.scoring_config import ScoringConfig
+    from app.pipeline.workers import analyze
+
+    segment_id, _room_id = _seed_segment()
+    with get_session() as db:
+        transcript = db.exec(select(Transcript).where(Transcript.segment_id == segment_id)).one()
+        transcript.text = "当前爆点。候选结束后发生的另一件事。"
+        transcript.words_json = json.dumps(
+            [
+                {"w": "当前爆点", "start": 1.5, "end": 2.4},
+                {"w": "候选结束后发生的另一件事", "start": 20, "end": 24},
+            ],
+            ensure_ascii=False,
+        )
+        db.add(transcript)
+
+    _patch_rule_scoring(monkeypatch, rule_score=0.9)
+    monkeypatch.setattr(plugin_manager, "has_capability", lambda _capability: False)
+    monkeypatch.setattr(
+        highlight,
+        "get_scoring_config",
+        lambda: ScoringConfig(pre_roll_s=1.0, post_roll_s=1.0),
+    )
+    captured: dict[str, object] = {}
+
+    def fake_match_keywords(text: str) -> tuple[float, list[str]]:
+        captured["keyword_text"] = text
+        return 0.0, []
+
+    def fake_danmaku_score(_session_id: int, start_ts: datetime, end_ts: datetime) -> float:
+        captured["danmaku_start"] = start_ts
+        captured["danmaku_end"] = end_ts
+        return 0.0
+
+    def fake_judge(text: str, _features: dict[str, float], _danmaku: str, window_start: float) -> HighlightJudgement:
+        captured["text"] = text
+        captured["window_start"] = window_start
+        return HighlightJudgement(
+            is_highlight=True,
+            score=0.9,
+            reason="当前爆点",
+            suggested_start_offset=1.0,
+            suggested_end_offset=3.0,
+        )
+
+    monkeypatch.setattr(llm, "judge_highlight", fake_judge)
+    monkeypatch.setattr(analyze, "match_keywords", fake_match_keywords)
+    monkeypatch.setattr(highlight, "_danmaku_score", fake_danmaku_score)
+
+    result = _score_segment_draft(segment_id)
+
+    assert result is not None
+    assert result["decision"] == HighlightDecision.CANDIDATE
+    assert captured["text"] == "当前爆点"
+    assert captured["keyword_text"] == "当前爆点"
+    assert captured["window_start"] == 1.0
+    assert captured["danmaku_start"] == datetime(2026, 1, 3, 12, 1, 1)
+    assert captured["danmaku_end"] == datetime(2026, 1, 3, 12, 1, 3)
+    assert result["reason"] == "当前爆点"
+    assert result["asr_text"] == "当前爆点"
+    metadata = json.loads(result["features_json"])["analysis_window"]
+    assert metadata == {
+        "segment_id": segment_id,
+        "segment_seq": 0,
+        "start_offset_s": 1.0,
+        "end_offset_s": 3.0,
+        "precise_transcript": True,
+    }
+
+
 def test_degenerate_transcript_is_rejected_before_audio_or_llm(
     temp_db: None,
     monkeypatch: MonkeyPatch,

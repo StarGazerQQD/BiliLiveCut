@@ -282,6 +282,58 @@ def test_judge_highlight_recovers_score_from_truncated_reason(monkeypatch: Monke
     assert result.reason == "高音量配合"
 
 
+def test_judge_highlight_uses_configured_token_budget(monkeypatch: MonkeyPatch) -> None:
+    """五分钟转写的高光复核应使用可配置的万级输出预算。"""
+    calls: list[int] = []
+
+    def fake_call_text(_prompt: str, max_tokens: int = 512) -> str:
+        calls.append(max_tokens)
+        return '{"is_highlight":false,"score":0.1,"reason":"普通片段"}'
+
+    monkeypatch.setattr(llm_mod, "call_text", fake_call_text)
+    monkeypatch.setattr(llm_mod.settings, "highlight_llm_max_tokens", 65536)
+
+    result = llm_mod.judge_highlight("五分钟转写", {"volume": 0.1})
+
+    assert result is not None
+    assert calls == [65536]
+
+
+def test_judge_highlight_restores_offsets_to_original_segment(monkeypatch: MonkeyPatch) -> None:
+    """局部转写窗口返回的偏移必须换算回原始录制分段。"""
+    prompts: list[str] = []
+
+    def fake_call_text(prompt: str, max_tokens: int = 512) -> str:
+        prompts.append(prompt)
+        return '{"is_highlight":true,"score":0.9,"reason":"窗口内爆点","start_offset":2,"end_offset":8}'
+
+    monkeypatch.setattr(llm_mod, "call_text", fake_call_text)
+
+    result = llm_mod.judge_highlight("只包含候选窗口的正文", {"volume": 0.9}, "", 120.0)
+
+    assert result is not None
+    assert result.suggested_start_offset == pytest.approx(122.0)
+    assert result.suggested_end_offset == pytest.approx(128.0)
+    assert "120.000 秒" in prompts[0]
+
+
+def test_judge_highlight_discards_non_finite_offsets(monkeypatch: MonkeyPatch) -> None:
+    """模型异常返回 NaN/Infinity 时不得污染候选时间边界。"""
+    monkeypatch.setattr(
+        llm_mod,
+        "call_text",
+        lambda *_args, **_kwargs: (
+            '{"is_highlight":true,"score":0.9,"reason":"窗口内爆点","start_offset":NaN,"end_offset":Infinity}'
+        ),
+    )
+
+    result = llm_mod.judge_highlight("候选正文", {"volume": 0.9}, "", 120.0)
+
+    assert result is not None
+    assert result.suggested_start_offset is None
+    assert result.suggested_end_offset is None
+
+
 def test_refine_transcript_requires_complete_clean_text_and_summary(monkeypatch: MonkeyPatch) -> None:
     """转写整理仅接受同时包含可读正文与摘要的 JSON。"""
     monkeypatch.setattr(
