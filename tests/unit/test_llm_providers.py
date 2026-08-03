@@ -348,3 +348,22 @@ def test_refine_transcript_requires_complete_clean_text_and_summary(monkeypatch:
 
     monkeypatch.setattr(llm_mod, "call_text", lambda *_args, **_kwargs: '{"clean_text":"只有正文"}')
     assert llm_mod.refine_transcript("原始转写") is None
+
+
+def test_refine_transcript_prompt_requests_conservative_repetition_cleanup(monkeypatch: MonkeyPatch) -> None:
+    """整理提示词应清除 ASR 边界复读，同时明确保留真实口语强调。"""
+    captured: dict[str, object] = {}
+
+    def fake_call_text(prompt: str, max_tokens: int = 512) -> str:
+        captured["prompt"] = prompt
+        captured["max_tokens"] = max_tokens
+        return '{"clean_text":"整理后的正文。","summary":"本段摘要"}'
+
+    monkeypatch.setattr(llm_mod, "call_text", fake_call_text)
+
+    result = llm_mod.refine_transcript("等一下我们先看看等一下我们先看看")
+
+    assert result is not None
+    assert "ASR 解码或 VAD 分句边界产生的连续重复词句" in str(captured["prompt"])
+    assert "保留主播有明确语义的强调、复述和口头禅" in str(captured["prompt"])
+    assert captured["max_tokens"] == 65536

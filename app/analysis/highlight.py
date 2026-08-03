@@ -24,6 +24,7 @@ from app.analysis import audio as audio_mod
 from app.analysis import llm as llm_mod
 from app.analysis.keywords import match_keywords
 from app.analysis.scoring_config import get_scoring_config
+from app.analysis.transcript_windows import extract_transcript_window
 from app.core.config import settings
 from app.db.models import (
     CandidateStatus,
@@ -52,18 +53,28 @@ def candidate_time_bounds(
     suggested_end_offset_s: float | None,
     silences: list[tuple[float, float]],
 ) -> tuple[datetime, datetime, datetime]:
-    """计算可直接渲染的候选边界，并强制保留爆点前文。
+    """计算可直接渲染的候选边界，并完整覆盖爆点分析窗口。
 
-    LLM 可以建议更早的入点，但不能把入点推迟到配置的
-    ``pre_roll_s`` 之后。最终边界会被限制在本会话已存在的录像范围内。
+    LLM 只能把入点向前、出点向后扩展，不能缩掉系统交给它判断的
+    ``爆点 - pre_roll_s`` 到 ``爆点 + post_roll_s`` 窗口。静音吸附同样
+    只允许向候选外侧移动，避免把理由所依据的内容切在视频之外。最终边界
+    会被限制在本会话已存在的录像范围内。
     """
     required_start_offset = peak_offset_s - pre_roll_s
     requested_start_offset = suggested_start_offset_s if suggested_start_offset_s is not None else required_start_offset
-    start_offset = min(requested_start_offset, required_start_offset)
-    start_offset = min(audio_mod.snap_to_silence(start_offset, silences), required_start_offset)
+    requested_start_offset = min(requested_start_offset, required_start_offset)
+    start_offset = min(
+        requested_start_offset,
+        audio_mod.snap_to_silence(requested_start_offset, silences),
+    )
 
-    requested_end_offset = suggested_end_offset_s if suggested_end_offset_s is not None else peak_offset_s + post_roll_s
-    end_offset = audio_mod.snap_to_silence(requested_end_offset, silences)
+    required_end_offset = peak_offset_s + post_roll_s
+    requested_end_offset = suggested_end_offset_s if suggested_end_offset_s is not None else required_end_offset
+    requested_end_offset = max(requested_end_offset, required_end_offset)
+    end_offset = max(
+        requested_end_offset,
+        audio_mod.snap_to_silence(requested_end_offset, silences),
+    )
 
     peak_ts = segment_start + timedelta(seconds=peak_offset_s)
     start_ts = max(available_start, segment_start + timedelta(seconds=start_offset))
@@ -442,6 +453,7 @@ def score_segment(segment_id: int) -> HighlightCandidate | None:
             logger.error("片段 {} 缺少时间戳,无法评分", segment_id)
             return None
         duration = segment.duration_s or float(settings.segment_duration_s)
+        segment_seq = segment.seq
         session_id = segment.session_id
         threshold = room.highlight_threshold if room else settings.highlight_threshold
         has_transcript = transcript is not None
@@ -461,22 +473,38 @@ def score_segment(segment_id: int) -> HighlightCandidate | None:
     if not has_transcript:
         raise ValueError(f"片段尚未转写: id={segment_id}")
 
-    words = json.loads(words_json) if words_json else []
-
     # ---- 1) 规则特征 ----
     feats = audio_mod.analyze_audio(file_path)
-    kw_score, kw_hits = match_keywords(text)
+    peak_off = feats.peak_offset()
+    analysis_start_s = max(0.0, peak_off - cfg.pre_roll_s)
+    analysis_end_s = min(duration, peak_off + cfg.post_roll_s)
+    analysis_window = extract_transcript_window(
+        text,
+        words_json,
+        start_s=analysis_start_s,
+        end_s=analysis_end_s,
+        duration_s=duration,
+    )
+    judgement_text = analysis_window.text
+    analysis_duration_s = analysis_end_s - analysis_start_s
+    analysis_start_ts = seg_start_ts + timedelta(seconds=analysis_start_s)
+    analysis_end_ts = seg_start_ts + timedelta(seconds=analysis_end_s)
+    kw_score, kw_hits = match_keywords(judgement_text)
     features: dict[str, float] = {
         "volume": feats.volume_score(),
         "keywords": kw_score,
-        "speech_rate": speech_rate_score(words, duration),
-        "laughter": laughter_score(text),
-        # 弹幕热度:本片段时间窗内弹幕强度相对全场平均的倍数(无弹幕数据则为 0)。
-        "danmaku": _danmaku_score(session_id, seg_start_ts, seg_end_ts),
+        "speech_rate": speech_rate_score(analysis_window.words, analysis_duration_s),
+        "laughter": laughter_score(judgement_text),
+        # 弹幕热度:候选分析窗内弹幕强度相对全场平均的倍数(无弹幕数据则为 0)。
+        "danmaku": _danmaku_score(session_id, analysis_start_ts, analysis_end_ts),
     }
     # 弹幕情绪(V0.1.2 新增):仅当房间级开关启用且弹幕采集开启时才计入。
     if use_dm_sentiment:
-        features["danmaku_sentiment"] = danmaku_sentiment_score(session_id, seg_start_ts, seg_end_ts)
+        features["danmaku_sentiment"] = danmaku_sentiment_score(
+            session_id,
+            analysis_start_ts,
+            analysis_end_ts,
+        )
     # V0.1.12.2: 音频事件特征 (SenseVoice 辅助特征)
     audio_event_contribs: list[str] = []
     if settings.asr_sensevoice and settings.asr_sensevoice_enabled:
@@ -487,7 +515,7 @@ def score_segment(segment_id: int) -> HighlightCandidate | None:
     # 网感维度:片段题材与资料库近期热门内容的关联度(仅在启用时计入)。
     trend_hits: list[str] = []
     if settings.trend_enabled:
-        trend_score, trend_hits = _trend_score(text)
+        trend_score, trend_hits = _trend_score(judgement_text)
         features["trend"] = trend_score
     rule_score = weighted_rule_score(features, cfg.weights)
     logger.info(
@@ -506,7 +534,7 @@ def score_segment(segment_id: int) -> HighlightCandidate | None:
         return None
 
     # ---- 3) LLM 复核(可选) ----
-    judgement = llm_mod.judge_highlight(text, features)
+    judgement = llm_mod.judge_highlight(judgement_text, features, "", analysis_start_s)
     llm_score = judgement.score if judgement else None
     reason = judgement.reason if judgement else "规则命中(未启用/未触发 LLM)"
 
@@ -525,7 +553,6 @@ def score_segment(segment_id: int) -> HighlightCandidate | None:
         return None
 
     # ---- 4) 边界吸附:爆点±留白,并对齐到最近静音 ----
-    peak_off = feats.peak_offset()
     start_ts, end_ts, peak_ts = candidate_time_bounds(
         segment_start=seg_start_ts,
         available_start=available_start,
@@ -565,7 +592,7 @@ def score_segment(segment_id: int) -> HighlightCandidate | None:
     ).hexdigest()
 
     # 弹幕可解释数据(P0):供审核页展示。
-    danmaku_explain = danmaku_score_explain(session_id, seg_start_ts, seg_end_ts)
+    danmaku_explain = danmaku_score_explain(session_id, analysis_start_ts, analysis_end_ts)
 
     candidate = HighlightCandidate(
         session_id=session_id,
@@ -581,6 +608,13 @@ def score_segment(segment_id: int) -> HighlightCandidate | None:
                 "keyword_hits": kw_hits,
                 "audio": _audio_meta(feats),
                 "danmaku_explain": danmaku_explain,
+                "analysis_window": {
+                    "segment_id": segment_id,
+                    "segment_seq": segment_seq,
+                    "start_offset_s": round(analysis_start_s, 3),
+                    "end_offset_s": round(analysis_end_s, 3),
+                    "precise_transcript": analysis_window.precise,
+                },
             },
             ensure_ascii=False,
         ),

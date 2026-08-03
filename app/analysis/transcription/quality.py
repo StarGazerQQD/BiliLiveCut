@@ -1,7 +1,7 @@
 """ASR 文本质量门禁。
 
 该模块只判断转写结果是否可进入 LLM 整理和高光分析，不尝试修正文案。
-空输出和明显的连续重复退化会被拒绝，由上层切换备用 ASR 或暂停任务。
+空输出、整段退化和局部解码循环会被拒绝，由上层切换备用 ASR 或暂停任务。
 """
 
 from __future__ import annotations
@@ -60,8 +60,9 @@ def _max_consecutive_repeat(text: str) -> tuple[int, int]:
 def assess_transcript_quality(text: str) -> TranscriptQuality:
     """拒绝空文本和模型解码循环产生的明显重复文本。
 
-    判断刻意要求连续重复覆盖较大比例，避免把正常口语中的短暂复述误判为
-    模型退化。该门禁用于决定是否回退其他 ASR，以及是否允许调用 LLM。
+    局部解码循环按重复次数与绝对覆盖长度识别；整段退化再结合覆盖比例判断。
+    阈值刻意保留正常口语中的短暂复述、语气强调和短口头禅。该门禁用于决定
+    是否回退其他 ASR，以及是否允许调用 LLM。
 
     :param text: 待检查的 ASR 文本。
     :returns: 结构化质量结果。
@@ -79,9 +80,10 @@ def assess_transcript_quality(text: str) -> TranscriptQuality:
 
     repeat_coverage, repeat_count = _max_consecutive_repeat(normalized)
     repetition_ratio = repeat_coverage / length
+    local_decode_loop = repeat_count >= 4 and repeat_coverage >= 16
     clearly_repeated = repeat_count >= 4 and repeat_coverage >= 12 and repetition_ratio >= 0.45
     long_repeated_block = repeat_count >= 3 and repeat_coverage >= 18 and repetition_ratio >= 0.60
-    if clearly_repeated or long_repeated_block:
+    if local_decode_loop or clearly_repeated or long_repeated_block:
         return TranscriptQuality(False, "degenerate_repetition", repetition_ratio, length)
 
     return TranscriptQuality(True, None, repetition_ratio, length)
