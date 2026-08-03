@@ -66,6 +66,10 @@ class Settings(BaseSettings):
     stream_quality: int = 10000
     reconnect_max_backoff_s: int = Field(default=30, ge=1)
     live_poll_interval_s: int = Field(default=15, ge=5)
+    # 连续无法恢复录制的最大失败次数；0=不按次数停止。
+    recording_reconnect_max_attempts: int = Field(default=20, ge=0, le=10000)
+    # 从断流开始计算的最长重试时间（秒）；0=不按时间停止。
+    recording_reconnect_max_elapsed_s: int = Field(default=300, ge=0, le=86400)
     collect_danmaku: bool = True  # 录制期间是否同时采集弹幕
     # 单场录制使用登录 Cookie 获取弹幕 token 的最大失败次数（首次计入）；0=始终匿名。
     danmaku_login_retry_max_attempts: int = Field(default=5, ge=0, le=100)

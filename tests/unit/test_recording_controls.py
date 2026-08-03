@@ -366,3 +366,174 @@ async def test_recorder_passes_cookie_to_fallback_capable_danmaku_client(
     assert created == [(856077, 9, cookie)]
     assert recorder._danmaku_task is not None  # noqa: SLF001
     await recorder._stop_danmaku()  # noqa: SLF001
+
+
+def test_reconnect_budget_honors_count_time_and_reset() -> None:
+    """连续重试预算应按次数或时长耗尽，并在成功后完全归零。"""
+    from app.recording.recorder import _ReconnectBudget
+
+    budget = _ReconnectBudget()
+    budget.record_failure(10.0)
+    assert budget.exhaustion_reason(20.0, max_attempts=2, max_elapsed_s=30) is None
+
+    budget.record_failure(20.0)
+    assert "2/2 次" in (budget.exhaustion_reason(20.0, max_attempts=2, max_elapsed_s=30) or "")
+
+    budget.reset()
+    budget.begin(100.0)
+    assert budget.exhaustion_reason(129.9, max_attempts=0, max_elapsed_s=30) is None
+    assert "30.0/30 秒" in (budget.exhaustion_reason(130.0, max_attempts=0, max_elapsed_s=30) or "")
+
+
+@pytest.mark.asyncio
+async def test_recorder_auto_stops_after_consecutive_retry_limit(
+    tmp_path: Path,
+    monkeypatch: MonkeyPatch,
+) -> None:
+    """持续无流达到次数上限后应正常收尾，而不是无限轮询。"""
+    from app.pipeline import storage_lifecycle
+    from app.recording import recorder as recorder_module
+
+    class _ClientContext:
+        async def __aenter__(self) -> object:
+            return object()
+
+        async def __aexit__(self, *_args: object) -> None:
+            return None
+
+    recorder = recorder_module.Recorder(room_id=23771139, db_room_id=1)
+    updates: list[dict[str, object]] = []
+    fetch_calls = 0
+
+    def create_session() -> int:
+        return 91
+
+    def update_session(**kwargs: object) -> None:
+        updates.append(kwargs)
+
+    async def fetch_stream(_client: object) -> None:
+        nonlocal fetch_calls
+        fetch_calls += 1
+        return None
+
+    async def no_wait(_seconds: float) -> None:
+        return None
+
+    monkeypatch.setattr(recorder_module, "BilibiliLiveClient", lambda **_kwargs: _ClientContext())
+    monkeypatch.setattr(recorder_module, "session_raw_dir", lambda _session_id: tmp_path)
+    monkeypatch.setattr(storage_lifecycle, "should_stop_recording", lambda: False)
+    monkeypatch.setattr(recorder_module.settings, "collect_danmaku", False)
+    monkeypatch.setattr(recorder_module.settings, "recording_reconnect_max_attempts", 3)
+    monkeypatch.setattr(recorder_module.settings, "recording_reconnect_max_elapsed_s", 0)
+    monkeypatch.setattr(recorder, "_create_session", create_session)
+    monkeypatch.setattr(recorder, "_update_session", update_session)
+    monkeypatch.setattr(recorder, "_fetch_stream", fetch_stream)
+    monkeypatch.setattr(recorder, "_sleep_or_stop", no_wait)
+
+    await recorder.run()
+
+    assert fetch_calls == 3
+    assert any("3/3 次" in str(update.get("error_message", "")) for update in updates)
+    assert [update.get("status") for update in updates[-2:]] == ["finalizing", "stopped"]
+
+
+@pytest.mark.asyncio
+async def test_recorder_resets_retry_limit_after_productive_reconnect(
+    tmp_path: Path,
+    monkeypatch: MonkeyPatch,
+) -> None:
+    """重连后产出片段应清零旧失败，下一次断流获得完整重试预算。"""
+    from types import SimpleNamespace
+
+    from app.pipeline import storage_lifecycle
+    from app.recording import recorder as recorder_module
+
+    class _ClientContext:
+        async def __aenter__(self) -> object:
+            return object()
+
+        async def __aexit__(self, *_args: object) -> None:
+            return None
+
+    recorder = recorder_module.Recorder(room_id=23771139, db_room_id=1)
+    stream = SimpleNamespace(url="https://example.invalid/live.m3u8", protocol="hls", quality=10000)
+    streams: list[object | None] = [None, stream, None, None]
+    updates: list[dict[str, object]] = []
+
+    def create_session() -> int:
+        return 92
+
+    def update_session(**kwargs: object) -> None:
+        updates.append(kwargs)
+
+    async def fetch_stream(_client: object) -> object | None:
+        return streams.pop(0)
+
+    async def record_once(_stream: object, _out_dir: Path) -> int:
+        recorder._seq += 1  # noqa: SLF001
+        return 1
+
+    async def no_wait(_seconds: float) -> None:
+        return None
+
+    def classify_exit(_exit_code: int, _stderr_tail: str | None) -> None:
+        return None
+
+    def increment_reconnect() -> None:
+        return None
+
+    monkeypatch.setattr(recorder_module, "BilibiliLiveClient", lambda **_kwargs: _ClientContext())
+    monkeypatch.setattr(recorder_module, "session_raw_dir", lambda _session_id: tmp_path)
+    monkeypatch.setattr(storage_lifecycle, "should_stop_recording", lambda: False)
+    monkeypatch.setattr(recorder_module.settings, "collect_danmaku", False)
+    monkeypatch.setattr(recorder_module.settings, "recording_reconnect_max_attempts", 2)
+    monkeypatch.setattr(recorder_module.settings, "recording_reconnect_max_elapsed_s", 0)
+    monkeypatch.setattr(recorder, "_create_session", create_session)
+    monkeypatch.setattr(recorder, "_update_session", update_session)
+    monkeypatch.setattr(recorder, "_fetch_stream", fetch_stream)
+    monkeypatch.setattr(recorder, "_record_once", record_once)
+    monkeypatch.setattr(recorder, "_classify_recording_exit", classify_exit)
+    monkeypatch.setattr(recorder, "_increment_reconnect", increment_reconnect)
+    monkeypatch.setattr(recorder, "_sleep_or_stop", no_wait)
+
+    await recorder.run()
+
+    assert streams == []
+    assert any("2/2 次" in str(update.get("error_message", "")) for update in updates)
+
+
+@pytest.mark.asyncio
+async def test_manager_cleans_up_naturally_finished_recorder(
+    temp_db: None,
+    tmp_path: Path,
+    monkeypatch: MonkeyPatch,
+) -> None:
+    """录制器自行结束后应移除运行任务、关闭房间标记并恢复网感采集。"""
+    from app.db.models import LiveRoom
+    from app.db.session import get_session
+    from app.trends.scheduler import trend_scheduler
+    from app.web.services.rooms import RecorderManager
+
+    room_id, session_id, _ = _seed_room_session(tmp_path)
+    recorder = _FakeRecorder(session_id)
+    recorder.stop_event.set()
+    resumed: list[bool] = []
+
+    def resume_after_recording() -> None:
+        resumed.append(True)
+
+    monkeypatch.setattr(trend_scheduler, "resume_after_recording", resume_after_recording)
+    manager = RecorderManager()
+    manager._recorders[room_id] = recorder  # type: ignore[assignment]  # noqa: SLF001
+    task = asyncio.create_task(manager._run_recorder(room_id, recorder))  # type: ignore[arg-type]  # noqa: SLF001
+    manager._tasks[room_id] = task  # noqa: SLF001
+
+    await task
+
+    assert room_id not in manager._recorders  # noqa: SLF001
+    assert room_id not in manager._tasks  # noqa: SLF001
+    assert resumed == [True]
+    with get_session() as db:
+        room = db.get(LiveRoom, room_id)
+        assert room is not None
+        assert room.enabled is False

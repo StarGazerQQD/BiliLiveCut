@@ -217,6 +217,28 @@ class RecorderManager:
             recorder.fail(str(exc))
             self._set_state(db_id, SessionStatus.ERROR, recorder.session_id, str(exc))
             logger.exception("录制任务异常 db_id={}: {}", db_id, exc)
+        finally:
+            self._cleanup_finished_recorder(db_id, recorder)
+
+    def _cleanup_finished_recorder(self, db_id: int, recorder: Recorder) -> None:
+        """清理自然结束或异常退出的录制任务及房间运行标记。"""
+        if self._recorders.get(db_id) is not recorder:
+            return
+        self._recorders.pop(db_id, None)
+        if self._tasks.get(db_id) is asyncio.current_task():
+            self._tasks.pop(db_id, None)
+
+        with get_session() as db:
+            room = db.get(LiveRoom, db_id)
+            if room is not None:
+                room.enabled = False
+                db.add(room)
+
+        if not self.running_ids():
+            from app.trends.scheduler import trend_scheduler
+
+            trend_scheduler.resume_after_recording()
+        logger.info("录制任务已收尾并清理 db_id={} session={}", db_id, recorder.session_id)
 
     async def stop(
         self,

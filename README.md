@@ -298,6 +298,8 @@ python -m app.cli record <db_id> --pipeline
 
 `RECORDING_PIPELINE_ENABLED=true` 时，Web 手动开始/恢复、预约、崩溃恢复以及未显式传参的 CLI 录制都会启用实时转写与高光分析。可在控制台“配置 → 功能开关 → 录制实时转写”覆盖该默认值；CLI 可用 `--pipeline` 或 `--no-pipeline` 对单次录制覆盖。`TRANSCRIPT_LLM_REFINE_ENABLED=true` 时，每个切片完成本地 ASR 后还会调用已配置的大模型补全标点、整理正文并生成片段概括；调用失败时保留原始 ASR，不阻断流水线。这两个开关都从下一次开始或恢复录制生效。
 
+主播下播、断流或平台暂时无法返回播放地址时，录制器会继续重试，但不会无限挂起。连续失败达到 `RECORDING_RECONNECT_MAX_ATTEMPTS`（默认 20 次）或从断流开始经过 `RECORDING_RECONNECT_MAX_ELAPSED_S`（默认 300 秒）时，任一条件先满足都会自动结束本场录制并正常执行会话收尾。成功恢复并产出新片段后，次数和计时都会归零。将某一项设为 `0` 可单独禁用该限制；两项都设为 `0` 会恢复无限重试，不建议用于无人值守录制。
+
 `COLLECT_DANMAKU=true` 时，录制器会按 Bilibili 直播网页的 WBI 请求格式获取短期弹幕 token。有已保存 Cookie 时优先使用登录请求，并以 Cookie 中的 `DedeUserID` 完成 WebSocket 鉴权；登录接口返回业务错误或登录鉴权被拒绝后，会立即改用不带 Cookie、`uid=0` 的匿名链路，录制和弹幕接收不会因此停止。匿名连接存活期间，程序按 `DANMAKU_LOGIN_RETRY_INTERVAL_S` 定时探测登录链路；单场累计失败达到 `DANMAKU_LOGIN_RETRY_MAX_ATTEMPTS`（默认 5 次，首次计入）后，本场不再发送 Cookie。将最大次数设为 `0` 可始终匿名采集。
 
 默认启用以 Fun-ASR-Nano 为首选的四层 ASR 流水线（`ASR_PRIMARY=funasr_nano`），也可切换到 Paraformer 或纯 Whisper：

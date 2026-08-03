@@ -45,6 +45,8 @@ def test_settings_fields_boundary_values() -> None:
     assert s.segment_duration_s == 300
     assert s.reconnect_max_backoff_s >= 1
     assert s.live_poll_interval_s >= 5
+    assert s.recording_reconnect_max_attempts == 20
+    assert s.recording_reconnect_max_elapsed_s == 300
     assert s.danmaku_login_retry_max_attempts == 5
     assert s.danmaku_login_retry_interval_s == 60.0
     assert s.transcript_llm_refine_enabled is True
@@ -76,6 +78,32 @@ def test_danmaku_login_retry_settings_are_configurable(monkeypatch: MonkeyPatch)
         Settings(_env_file=None, danmaku_login_retry_max_attempts=-1)
     with pytest.raises(ValidationError):
         Settings(_env_file=None, danmaku_login_retry_interval_s=0.5)
+
+
+def test_recording_reconnect_limits_are_configurable(monkeypatch: MonkeyPatch) -> None:
+    """录制连续重试次数与时长应支持环境变量和零值禁用。"""
+    from pydantic import ValidationError
+
+    from app.core.config import Settings
+
+    monkeypatch.setenv("RECORDING_RECONNECT_MAX_ATTEMPTS", "12")
+    monkeypatch.setenv("RECORDING_RECONNECT_MAX_ELAPSED_S", "180")
+    configured = Settings(_env_file=None)
+
+    assert configured.recording_reconnect_max_attempts == 12
+    assert configured.recording_reconnect_max_elapsed_s == 180
+    disabled = Settings(
+        _env_file=None,
+        recording_reconnect_max_attempts=0,
+        recording_reconnect_max_elapsed_s=0,
+    )
+    assert disabled.recording_reconnect_max_attempts == 0
+    assert disabled.recording_reconnect_max_elapsed_s == 0
+
+    with pytest.raises(ValidationError):
+        Settings(_env_file=None, recording_reconnect_max_attempts=-1)
+    with pytest.raises(ValidationError):
+        Settings(_env_file=None, recording_reconnect_max_elapsed_s=86401)
 
 
 def test_recording_pipeline_env_and_runtime_override(temp_db: None, monkeypatch: MonkeyPatch) -> None:

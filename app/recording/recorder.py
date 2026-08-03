@@ -16,7 +16,9 @@
 from __future__ import annotations
 
 import asyncio
+import time
 from collections.abc import Awaitable, Callable
+from dataclasses import dataclass
 from datetime import timedelta
 from pathlib import Path
 
@@ -47,6 +49,45 @@ SessionEndCallback = Callable[[int], Awaitable[None]]
 StateCallback = Callable[[str, int | None], None]
 
 _SEGMENT_LIST_NAME = "segments.csv"
+
+
+@dataclass(slots=True)
+class _ReconnectBudget:
+    """跟踪一次连续断流期间的失败次数和持续时间。"""
+
+    failures: int = 0
+    started_at: float | None = None
+
+    def begin(self, now: float) -> None:
+        """在尚未计时时记录本次连续断流的起点。"""
+        if self.started_at is None:
+            self.started_at = now
+
+    def record_failure(self, now: float) -> None:
+        """登记一次未能恢复稳定录制的重试。"""
+        self.begin(now)
+        self.failures += 1
+
+    def reset(self) -> None:
+        """成功产出新片段后清空连续失败预算。"""
+        self.failures = 0
+        self.started_at = None
+
+    def exhaustion_reason(
+        self,
+        now: float,
+        *,
+        max_attempts: int,
+        max_elapsed_s: int,
+    ) -> str | None:
+        """返回预算耗尽原因；两个上限为 ``0`` 时分别禁用。"""
+        if max_attempts > 0 and self.failures >= max_attempts:
+            return f"连续取流重试达到次数上限({self.failures}/{max_attempts} 次)"
+        if max_elapsed_s > 0 and self.started_at is not None:
+            elapsed_s = max(0.0, now - self.started_at)
+            if elapsed_s >= max_elapsed_s:
+                return f"连续取流重试达到时长上限({elapsed_s:.1f}/{max_elapsed_s} 秒)"
+        return None
 
 
 class Recorder:
@@ -156,6 +197,7 @@ class Recorder:
         out_dir = session_raw_dir(self._session_id)
         backoff = 1
         reconnect_episode = False  # 当前录制是否为重连后的一次尝试
+        reconnect_budget = _ReconnectBudget()
 
         # 会话期间并行采集弹幕(用于弹幕热度与高光评分的弹幕维度)。
         self._start_danmaku()
@@ -170,9 +212,15 @@ class Recorder:
                     self.stop()
                     break
 
+                if self._retry_exhausted(reconnect_budget):
+                    break
+
                 stream = await self._fetch_stream(client)
                 if stream is None:
-                    # 未开播或暂无流,按轮询间隔等待后重试(不计入重连退避)。
+                    # 未开播、已下播或暂时无法取流：计入连续失败预算。
+                    reconnect_budget.record_failure(time.monotonic())
+                    if self._retry_exhausted(reconnect_budget):
+                        break
                     self._update_session(status=SessionStatus.RECONNECTING)
                     await self._sleep_or_stop(settings.live_poll_interval_s)
                     continue
@@ -195,15 +243,19 @@ class Recorder:
                 seq_before = self._seq
                 exit_code = await self._record_once(stream, out_dir)
                 self._classify_recording_exit(exit_code, getattr(self, "_stderr_tail", None))
+                produced_segment = self._seq > seq_before
 
                 if self._stop.is_set():
                     break
+
+                if produced_segment:
+                    reconnect_budget.reset()
 
                 # ---- 重连成功后重置退避 ----
                 # 如果本次录制实际上是重连且成功产出了至少 1 个片段,
                 # 说明重连成功、流已稳定,把 backoff 重置为 1。
                 # 避免"稳定录制 30 分钟后再次被断流,却要白等 30s"。
-                if reconnect_episode and self._seq > seq_before:
+                if reconnect_episode and produced_segment:
                     logger.info(
                         "重连成功并产出片段 room={} seq={}→{}, backoff 重置 30→1。",
                         self.room_id,
@@ -229,6 +281,14 @@ class Recorder:
                 # -1 = 被我们主动 kill(正常停止),不计为重连。
                 if exit_code != -1:
                     self._update_session(status=SessionStatus.RECONNECTING)
+                retry_started_at = time.monotonic()
+                if produced_segment:
+                    # 从本次真实断流开始计时；下一次成功产出片段后会再次清零。
+                    reconnect_budget.begin(retry_started_at)
+                else:
+                    reconnect_budget.record_failure(retry_started_at)
+                    if self._retry_exhausted(reconnect_budget):
+                        break
                 logger.warning(
                     "录制中断 room={} exit_code={},{}s 后重连。",
                     self.room_id,
@@ -248,6 +308,20 @@ class Recorder:
                 await self.on_end(self._session_id)
             except Exception as exc:  # noqa: BLE001 — 结束回调异常不应影响停止流程
                 logger.error("会话结束回调失败 session={}: {}", self._session_id, exc)
+
+    def _retry_exhausted(self, budget: _ReconnectBudget) -> bool:
+        """检查连续取流预算，并在耗尽时记录自动停止原因。"""
+        reason = budget.exhaustion_reason(
+            time.monotonic(),
+            max_attempts=settings.recording_reconnect_max_attempts,
+            max_elapsed_s=settings.recording_reconnect_max_elapsed_s,
+        )
+        if reason is None:
+            return False
+        message = f"{reason}，自动结束本场录制"
+        self._update_session(error_message=message)
+        logger.info("{} room={} session={}", message, self.room_id, self._session_id)
+        return True
 
     # ------------------------------------------------------------------ #
     # 取流
