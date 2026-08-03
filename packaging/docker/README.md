@@ -74,6 +74,10 @@ cp .env.example .env
 # 编辑 .env 填入必要配置
 ```
 
+V0.1.16.5 Alpha 使用与本机/Portable 相同的配置真源：默认分片目标为 300 秒，首选 Fun-ASR-Nano，转写整理和高光复核的最大输出预算均为 `65536` token。连续无法取流默认达到 20 次或 300 秒后自动结束本场；可通过 `RECORDING_RECONNECT_MAX_ATTEMPTS` 与 `RECORDING_RECONNECT_MAX_ELAPSED_S` 调整。
+
+候选审核与成片同样采用 V0.1.16.5 的正确性约束：高光规则评分和 LLM 使用同一候选窗口，最终成片必须覆盖完整分析窗口；拒绝候选会同步未发布关联成片和仍可取消的任务。
+
 ## 数据持久化
 
 - `./storage/` → 容器内 `/data`（数据库、录制文件、日志等）
@@ -81,4 +85,4 @@ cp .env.example .env
 
 ## 版本
 
-当前 Docker 发行对应 BiliLiveCut `v0.1.16.4-Alpha`。
+当前 Docker 发行对应 BiliLiveCut `v0.1.16.5-Alpha`。
