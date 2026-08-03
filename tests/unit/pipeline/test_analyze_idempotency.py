@@ -170,11 +170,13 @@ class TestGetOrCreateEvent:
                 highlight_score=0.95,
                 features_json="{}",
                 reason="test",
+                segment_id=321,
             )
             db.commit()
             event = db.get(HE, eid)
             assert event is not None
             assert event.candidate_id == cid
+            assert event.segment_id == 321
 
     def test_second_call_reuses(self, _use_temp_db: None) -> None:
         """第二次以相同 candidate_id 调用应复用已有 Event。"""

@@ -12,8 +12,8 @@ async function loadCandidates() {
         <div style="display:flex;align-items:center;gap:6px">
           <input type="checkbox" class="cand-check" data-id="${c.id}" />
           <div>
-            <div class="title">\u5019\u9009 #${c.id} \u00b7 \u5206\u6570 ${c.highlight_score} ${badge(c.status)}</div>
-            <div class="sub">\u89c4\u5219 ${c.rule_score} / LLM ${c.llm_score} \u00b7 ${esc(c.reason || "")}</div>
+            <div class="title">${esc(c.source_label || "未知来源")} · 候选 #${c.id} · 分数 ${c.highlight_score} ${badge(c.status)}</div>
+            <div class="sub">会话 #${c.session_id} · 规则 ${c.rule_score} / LLM ${c.llm_score} · ${esc(c.reason || "")}</div>
           </div>
         </div>
         <div class="actions">

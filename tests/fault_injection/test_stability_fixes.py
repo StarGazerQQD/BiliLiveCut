@@ -503,7 +503,12 @@ class TestUniqueConstraints:
 
     def test_create_task_idempotent(self, test_db) -> None:
         """create_task 对同一 segment 只创建一次。"""
+        from app.db.models import RawSegment
+        from app.db.session import get_session
         from app.pipeline.task_worker import create_task
+
+        with get_session() as db:
+            db.add(RawSegment(id=400, session_id=1, seq=0, file_path="test.mp4"))
 
         first = create_task(400, 1)
         assert first is not None

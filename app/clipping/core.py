@@ -523,6 +523,9 @@ def render_clip_to_file(
     candidate_id: int,
     output_path: str | Path,
     options: ClipOptions | None = None,
+    *,
+    start_ts: datetime | None = None,
+    end_ts: datetime | None = None,
 ) -> dict:
     """纯渲染: 将候选切片生成到指定临时文件, 不写 DB, 不创建 FinalClip。
 
@@ -531,6 +534,8 @@ def render_clip_to_file(
     :param candidate_id: HighlightCandidate ID。
     :param output_path: 目标文件路径 (通常是 lease 专属临时路径)。
     :param options: 切片选项; 默认取自配置。
+    :param start_ts: 可选的显式剪辑起点，必须与 ``end_ts`` 同时提供。
+    :param end_ts: 可选的显式剪辑终点，必须与 ``start_ts`` 同时提供。
     :returns: 文件元数据 dict:
         {"file_path", "duration_s", "width", "height", "size_bytes", "content_hash"}
     :raises ValueError: 候选不存在或找不到覆盖片段时。
@@ -548,21 +553,28 @@ def render_clip_to_file(
         if cand is None:
             raise ValueError(f"候选不存在: id={candidate_id}")
         session_id = cand.session_id
-        start_ts = cand.start_ts
-        end_ts = cand.end_ts
-        peak_ts = cand.peak_ts
+        if (start_ts is None) != (end_ts is None):
+            raise ValueError("显式剪辑起点和终点必须同时提供。")
+        resolved_start_ts = _as_utc_naive(start_ts or cand.start_ts)
+        resolved_end_ts = _as_utc_naive(end_ts or cand.end_ts)
+        peak_ts = _as_utc_naive(cand.peak_ts)
 
-    segments = select_covering_segments(session_id, start_ts, end_ts)
+    segments = validate_clip_boundary(
+        session_id,
+        resolved_start_ts,
+        resolved_end_ts,
+        max_duration_s=float(options.max_duration_s),
+    )
     if not segments:
         raise ValueError(f"候选 {candidate_id} 找不到覆盖的原始片段。")
 
     base_ts = segments[0].start_ts
     if base_ts is None:
         raise ValueError(f"原始片段 {segments[0].id} 缺少 start_ts,无法计算裁剪偏移。")
-    cut_offset = max(0.0, (start_ts - base_ts).total_seconds())
-    raw_duration = (end_ts - start_ts).total_seconds()
+    cut_offset = max(0.0, (resolved_start_ts - _as_utc_naive(base_ts)).total_seconds())
+    raw_duration = (resolved_end_ts - resolved_start_ts).total_seconds()
     duration = max(2.0, min(raw_duration, float(options.max_duration_s)))
-    peak_rel = max(0.0, (peak_ts - start_ts).total_seconds())
+    peak_rel = max(0.0, (peak_ts - resolved_start_ts).total_seconds())
 
     with tempfile.TemporaryDirectory(prefix="blc_clip_") as tmp:
         work_dir = _P(tmp)

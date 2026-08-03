@@ -21,10 +21,16 @@ router = APIRouter()
 def get_tasks(limit: int = 50, stage: str | None = None) -> dict[str, Any]:
     """返回任务队列列表及各阶段统计。"""
     limit = _clamp(limit, 1, _MAX_QUERY_LIMIT)
+    from app.db.session import get_session
     from app.pipeline.task_worker import list_tasks as _list
     from app.pipeline.task_worker import task_worker
+    from app.web.services.source_identity import source_identities_for_sessions, unknown_source_identity
 
     tasks = _list(limit=limit, stage=stage)
+    with get_session() as db:
+        sources = source_identities_for_sessions(db, (int(task["session_id"]) for task in tasks))
+    for task in tasks:
+        task.update(sources.get(int(task["session_id"]), unknown_source_identity()))
     return {"tasks": tasks, "stats": task_worker.stats}
 
 

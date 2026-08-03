@@ -22,7 +22,14 @@ def test_dashboard_and_room_crud(temp_db: None, monkeypatch: MonkeyPatch) -> Non
     from app.web.main import app
 
     async def fake_room_info(self: BilibiliLiveClient, url: str) -> RoomInfo:  # noqa: ANN001
-        return RoomInfo(room_id=12345, short_id=0, uid=1, live_status=0)
+        return RoomInfo(
+            room_id=12345,
+            short_id=0,
+            uid=1,
+            live_status=0,
+            title="测试直播间",
+            uploader_name="测试主播",
+        )
 
     monkeypatch.setattr(BilibiliLiveClient, "get_room_info", fake_room_info)
 
@@ -40,10 +47,16 @@ def test_dashboard_and_room_crud(temp_db: None, monkeypatch: MonkeyPatch) -> Non
         assert r.status_code == 200
         db_id = r.json()["id"]
         assert r.json()["room_id"] == 12345
+        assert r.json()["title"] == "测试直播间"
+        assert r.json()["uploader_name"] == "测试主播"
 
         # 出现在概览中
         rooms = client.get("/api/dashboard").json()["rooms"]
-        assert any(rm["id"] == db_id for rm in rooms)
+        created_room = next(rm for rm in rooms if rm["id"] == db_id)
+        assert created_room["highlight_threshold"] == pytest.approx(0.45)
+        assert created_room["review_threshold"] == pytest.approx(0.40)
+        assert created_room["auto_approve_threshold"] == pytest.approx(0.72)
+        assert created_room["auto_publish_threshold"] == pytest.approx(0.80)
 
         # 调整阈值与模式
         r = client.patch(f"/api/rooms/{db_id}", json={"mode": "auto", "highlight_threshold": 0.7})

@@ -197,3 +197,32 @@ def test_commit_transcript_reuses_existing_transcript(temp_db: None) -> None:
         assert [item.text for item in transcripts] == ["已有转写"]
         assert task is not None and task.stage == TaskStatus.TRANSCRIBED
         assert segment is not None and segment.status == SegmentStatus.TRANSCRIBED
+
+
+def test_commit_transcript_rejects_deleted_source_segment(temp_db: None) -> None:
+    """提交阶段找不到原始片段时不得写入无来源的转写。"""
+    from app.db.models import RawSegment, SegmentTask, TaskStatus, Transcript
+    from app.db.session import get_session
+    from app.pipeline.workers.transcribe import commit_transcript
+
+    task_id, segment_id = _seed_claimed_task()
+    with get_session() as db:
+        segment = db.get(RawSegment, segment_id)
+        assert segment is not None
+        db.delete(segment)
+
+    commit_transcript(
+        _lease(task_id),
+        {"segment_id": segment_id, "session_id": 1, "text": "不得落库"},
+        8,
+    )
+
+    with get_session() as db:
+        task = db.get(SegmentTask, task_id)
+        transcripts = db.exec(select(Transcript).where(Transcript.segment_id == segment_id)).all()
+
+    assert task is not None
+    assert task.stage == TaskStatus.FAILED
+    assert task.error_is_permanent is True
+    assert task.last_error == "transcribe compute result source mismatch"
+    assert transcripts == []

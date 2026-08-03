@@ -42,7 +42,7 @@
       const root = document.querySelector("#queue");
       if (!data.items.length) { root.innerHTML = '<div class="card empty">当前筛选下没有候选</div>'; return; }
       root.innerHTML = data.items.map(item => `<article class="card queue-item">
-        <div><strong>#${item.id}</strong><div class="meta">会话 ${item.session_id}</div></div>
+        <div><strong>${esc(item.source_label || "未知来源")}</strong><div class="meta">候选 #${item.id} · 会话 ${item.session_id}</div></div>
         <div><strong>${item.blinded ? "评分已隐藏" : `评分 ${Number(item.score || 0).toFixed(3)}`}</strong><div class="meta">${esc(item.reason || "等待人工判断")}</div></div>
         <div class="meta">${item.claim.active ? `由 ${esc(item.claim.claimed_by)} 领取` : "尚未领取"}<br>${esc(item.review_status)}</div>
         <button onclick="openItem(${item.id}, ${!item.claim.active})">${item.status === "reviewed" ? "查看" : "进入审核"}</button>

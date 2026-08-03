@@ -202,7 +202,7 @@ def generate_copy(clip_id: int) -> FinalClip:
         room = db.get(LiveRoom, session.room_id) if session else None
         # 使用新版 auto_* 独立开关。
         auto_approve = room.auto_approve if room else False
-        auto_approve_threshold = room.auto_approve_threshold if room else 0.82
+        auto_approve_threshold = room.auto_approve_threshold if room else settings.highlight_auto_approve_threshold
         score = cand.highlight_score if cand else 0.0
 
     text, reason = gather_clip_text(candidate_id)

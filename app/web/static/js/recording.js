@@ -36,11 +36,11 @@ async function markHighlight(id) {
   if (note === null) return;
   try {
     const result = await api("POST", `/api/rooms/${id}/markers`, {
-      pre_roll_s: 20,
+      pre_roll_s: 60,
       post_roll_s: 40,
       note: note.trim() || null,
     });
-    toast(`已打点：候选 #${result.candidate_id}（前 20 秒 / 后 40 秒）`);
+    toast(`已打点：候选 #${result.candidate_id}（前 60 秒 / 后 40 秒）`);
   } catch (e) { toast("打点失败:" + e.message); }
 }
 
@@ -62,7 +62,7 @@ async function loadRecording() {
     return `
     <div class="item">
       <div class="head">
-        <div class="title">\u4f1a\u8bdd #${s.id} \u00b7 room ${s.room_id} ${badge(s.status)}</div>
+        <div class="title">${esc(s.source_label || `房间 ${s.room_id}`)} · 会话 #${s.id} ${badge(s.status)}</div>
         <div class="sub">${s.segments} \u4e2a\u7247\u6bb5 \u00b7 \u91cd\u8fde ${s.reconnect_count} \u6b21${reconnectInfo} \u00b7 ${esc(s.stream_format || "-")}${s.pipeline_enabled == null ? "" : ` \u00b7 \u5b9e\u65f6\u8f6c\u5199:${s.pipeline_enabled ? "\u5f00" : "\u5173"}`}</div>
       </div>
       ${s.error_message ? `<div class="sub" style="color:var(--red)">${esc(s.error_message)}</div>` : ""}
@@ -78,7 +78,7 @@ async function loadTranscripts() {
       : "";
     return `
     <div class="item">
-      <div class="sub">\u7247\u6bb5 #${t.segment_id} \u00b7 ${esc(t.language || "")} \u00b7 ${esc(t.primary_backend || "")} \u00b7 ${esc(t.created_at || "")}</div>
+      <div class="sub">${esc(t.source_label || "未知来源")} · 会话 #${t.session_id ?? "-"} · 片段 #${t.segment_id} · ${esc(t.language || "")} · ${esc(t.primary_backend || "")} · ${esc(t.created_at || "")}</div>
       <div class="txt">${esc(t.text) || "(\u7a7a)"}</div>
       ${t.summary ? `<div class="sub" style="margin-top:8px"><b>片段概括：</b>${esc(t.summary)}</div>` : ""}
       ${rawDetails}
@@ -102,13 +102,13 @@ async function loadDanmaku() {
   const sessions = data.sessions || [];
   $("#danmaku-sessions").innerHTML = sessions.length ? sessions.map((s) => `
     <div class="item">
-      <div class="sub">\u4f1a\u8bdd #${s.session_id}</div>
+      <div class="sub">${esc(s.source_label || "未知来源")} · 会话 #${s.session_id}</div>
       <div class="title">\u5f39\u5e55 ${s.count} \u6761 \u00b7 \u5f3a\u5ea6 ${s.intensity}</div>
     </div>`).join("") : `<div class="empty">\u6682\u65e0\u5f39\u5e55\u3002\u5f00\u542f\u5f55\u5236(COLLECT_DANMAKU=true)\u540e\u4f1a\u81ea\u52a8\u91c7\u96c6\u3002</div>`;
   const recent = data.recent || [];
   $("#danmaku-list").innerHTML = recent.length ? recent.map((d) => `
     <div class="item">
-      <div class="sub">#${d.session_id} \u00b7 ${DANMAKU_TYPE_LABEL[d.type] || d.type} \u00b7 ${esc(d.user || "\u533f\u540d")} \u00b7 ${esc(d.ts || "")}</div>
+      <div class="sub">${esc(d.source_label || "未知来源")} · 会话 #${d.session_id} · ${DANMAKU_TYPE_LABEL[d.type] || d.type} · ${esc(d.user || "匿名")} · ${esc(d.ts || "")}</div>
       <div class="txt">${esc(d.content) || "(\u65e0\u6587\u672c)"}</div>
     </div>`).join("") : `<div class="empty">\u6682\u65e0\u5f39\u5e55\u8bb0\u5f55\u3002</div>`;
 }

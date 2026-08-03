@@ -101,6 +101,7 @@ async function loadTasks() {
     $("#task-tbody").innerHTML = tasks.length ? tasks.map(t => `
       <tr>
         <td>${esc(t.id)}</td>
+        <td title="${esc(t.room_title || "")}">${esc(t.source_label || "未知来源")}<br><span class="muted">会话 #${esc(t.session_id)}</span></td>
         <td>${esc(t.segment_id)}</td>
         <td><span class="badge badge-${esc(t.stage.replace(/_/g,'-'))}">${esc(t.stage)}</span></td>
         <td>${t.attempts}/${t.max_retries}</td>
@@ -115,7 +116,7 @@ async function loadTasks() {
               : `<button class="small danger" onclick="cancelTask(${t.id})">\u53d6\u6d88</button>`
           }
         </td>
-      </tr>`).join("") : `<tr><td colspan="8" class="empty">\u6682\u65e0\u4efb\u52a1\u3002</td></tr>`;
+      </tr>`).join("") : `<tr><td colspan="9" class="empty">暂无任务。</td></tr>`;
   } catch (e) { console.warn("\u52a0\u8f7d\u5931\u8d25:", e); }
 }
 

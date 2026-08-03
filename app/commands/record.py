@@ -51,8 +51,12 @@ def cmd_add_room(
         return LiveRoom(
             input_url=url,
             room_id=info.room_id,
+            title=info.title,
+            uploader_name=info.uploader_name,
             authorized=authorize,
             highlight_threshold=settings.highlight_threshold,
+            review_threshold=settings.highlight_review_threshold,
+            auto_approve_threshold=settings.highlight_auto_approve_threshold,
             auto_publish_threshold=settings.auto_publish_threshold,
         )
 
@@ -62,6 +66,10 @@ def cmd_add_room(
         if existing:
             existing.authorized = authorize
             existing.input_url = url
+            if room.title:
+                existing.title = room.title
+            if room.uploader_name:
+                existing.uploader_name = room.uploader_name
             db.add(existing)
             console.print(f"[yellow]已存在,信息已更新:[/yellow] room_id={room.room_id}")
             return

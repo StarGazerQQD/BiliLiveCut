@@ -23,6 +23,7 @@ class LiveRoom(SQLModel, table=True):
     mode: str = Field(
         default=RoomMode.MANUAL, description="[已废弃 V0.1.6]审核模式:manual/semi/auto;请改用 auto_* 开关"
     )  # noqa: E501
+    # 保留历史模型默认值以维持 Schema 指纹；正式创建入口会显式写入当前推荐值。
     highlight_threshold: float = Field(default=0.65, description="进入候选池的综合评分阈值")
     auto_publish_threshold: float = Field(default=0.85, description="自动发布阈值")
     enabled: bool = Field(default=False, description="是否启用监控/录制")

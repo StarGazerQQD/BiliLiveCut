@@ -61,7 +61,7 @@ class MarkerRequest(BaseModel):
 
     model_config = ConfigDict(extra="forbid")
 
-    pre_roll_s: float = Field(default=20.0, ge=0.0, le=300.0, allow_inf_nan=False)
+    pre_roll_s: float = Field(default=60.0, ge=0.0, le=300.0, allow_inf_nan=False)
     post_roll_s: float = Field(default=40.0, ge=2.0, le=300.0, allow_inf_nan=False)
     note: str | None = Field(default=None, max_length=200)
 
@@ -76,7 +76,12 @@ async def create_room(req: AddRoomRequest) -> dict[str, Any]:
         room = await service.add_room(req.url, req.authorized)
     except (ValueError, Exception) as exc:  # noqa: BLE001 — 取流/解析失败统一报 400
         raise HTTPException(status_code=400, detail=str(exc)) from exc
-    return {"id": room.id, "room_id": room.room_id}
+    return {
+        "id": room.id,
+        "room_id": room.room_id,
+        "title": room.title,
+        "uploader_name": room.uploader_name,
+    }
 
 
 @router.patch("/rooms/{db_id}")
@@ -90,7 +95,13 @@ def patch_room(db_id: int, req: UpdateRoomRequest) -> dict[str, Any]:
         raise HTTPException(status_code=409, detail=str(exc)) from exc
     except ValueError as exc:
         raise HTTPException(status_code=400, detail=str(exc)) from exc
-    return {"id": room.id, "mode": room.mode, "highlight_threshold": room.highlight_threshold}
+    return {
+        "id": room.id,
+        "mode": room.mode,
+        "highlight_threshold": room.highlight_threshold,
+        "title": room.title,
+        "uploader_name": room.uploader_name,
+    }
 
 
 @router.post("/rooms/{db_id}/start")

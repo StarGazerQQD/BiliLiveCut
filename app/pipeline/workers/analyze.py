@@ -11,7 +11,6 @@ import json
 import logging
 import time
 from dataclasses import dataclass
-from datetime import timedelta
 from enum import StrEnum
 from typing import Any
 
@@ -38,7 +37,7 @@ from app.db.models import (
 from app.db.session import get_session
 from app.pipeline.highlight_plugins import build_highlight_scoring_request
 from app.pipeline.lease import LeaseLostError, TaskLease, still_owns_lease
-from app.pipeline.stage_result import enqueue_next, mark_completed
+from app.pipeline.stage_result import enqueue_next, mark_completed, mark_failed
 from app.plugins.highlight import HighlightDispatch
 from app.plugins.manager import plugin_manager
 
@@ -155,6 +154,16 @@ def analyze_compute(task_id: int) -> dict[str, Any]:
         if task is None:
             return {"error": "task not found", "decision": HighlightDecision.SKIPPED}
         segment_id = task.segment_id
+        segment = db.get(RawSegment, segment_id)
+        if segment is not None and segment.session_id != task.session_id:
+            return {
+                "error": (
+                    f"任务来源不一致: task={task_id} session={task.session_id},"
+                    f" segment={segment_id} session={segment.session_id}"
+                ),
+                "decision": HighlightDecision.SKIPPED,
+                "segment_id": segment_id,
+            }
 
     try:
         draft = _score_segment_draft(segment_id)
@@ -191,6 +200,18 @@ def commit_highlight(lease: TaskLease, compute_result: dict[str, Any], ms: int) 
 
             task = db.get(SegmentTask, lease.task_id)
             if task is None:
+                return
+            result_session_id = compute_result.get("session_id", task.session_id)
+            segment = db.get(RawSegment, task.segment_id)
+            if (
+                segment_id != task.segment_id
+                or result_session_id != task.session_id
+                or segment is None
+                or segment.session_id != task.session_id
+            ):
+                mark_failed(task, "highlight compute result source mismatch", permanent=True)
+                db.add(task)
+                db.commit()
                 return
             _record_plugin_dispatch(db, compute_result)
 
@@ -267,6 +288,7 @@ def commit_highlight(lease: TaskLease, compute_result: dict[str, Any], ms: int) 
                 compute_result["highlight_score"],
                 compute_result.get("features_json", "{}"),
                 compute_result.get("reason", ""),
+                segment_id=segment_id,
             )
 
             mark_completed(task, ms)
@@ -363,6 +385,8 @@ def _get_or_create_event(
     highlight_score: float,
     features_json: str,
     reason: str,
+    *,
+    segment_id: int | None = None,
 ) -> int:
     """并发幂等获取或创建 HighlightEvent。
 
@@ -378,6 +402,9 @@ def _get_or_create_event(
     # 1) 优先查询
     existing = db.exec(select(HighlightEvent).where(HighlightEvent.candidate_id == candidate_id)).first()
     if existing is not None:
+        if existing.segment_id is None and segment_id is not None:
+            existing.segment_id = segment_id
+            db.add(existing)
         _logger.debug("event_reused: eid=%s cid=%s (幂等复用)", existing.id, candidate_id)
         return existing.id
 
@@ -385,6 +412,7 @@ def _get_or_create_event(
     event = HighlightEvent(
         candidate_id=candidate_id,
         session_id=session_id,
+        segment_id=segment_id,
         raw_start_ts=raw_start_ts,
         raw_end_ts=raw_end_ts,
         rule_score=rule_score,
@@ -461,6 +489,8 @@ def _score_segment_draft(segment_id: int) -> dict[str, Any] | None:
         _audio_meta,
         _is_duplicate,
         _trend_score,
+        candidate_time_bounds,
+        contiguous_recording_start,
         danmaku_score_explain,
         danmaku_sentiment_score,
         fuse_scores,
@@ -495,9 +525,13 @@ def _score_segment_draft(segment_id: int) -> dict[str, Any] | None:
         words_json = transcript.words_json if transcript else None
         file_path = segment.file_path
         room_auto_approve = bool(room.auto_approve) if room else False
-        room_auto_approve_threshold = room.auto_approve_threshold if room else 0.82
-        room_review_threshold = room.review_threshold if room else 0.50
+        room_auto_approve_threshold = room.auto_approve_threshold if room else settings.highlight_auto_approve_threshold
+        room_review_threshold = room.review_threshold if room else settings.highlight_review_threshold
         use_dm_sentiment = room is not None and bool(room.danmaku_sentiment_enabled) and settings.collect_danmaku
+        session_segments = db.exec(
+            select(RawSegment).where(RawSegment.session_id == segment.session_id).order_by(RawSegment.seq.asc())
+        ).all()
+        available_start = contiguous_recording_start(session_segments, segment)
 
     if not has_transcript:
         raise ValueError(f"片段尚未转写: id={segment_id}")
@@ -615,21 +649,17 @@ def _score_segment_draft(segment_id: int) -> dict[str, Any] | None:
 
     # 4) 边界吸附
     peak_off = feats.peak_offset()
-    if judgement and judgement.suggested_start_offset is not None:
-        start_off = judgement.suggested_start_offset
-    else:
-        start_off = peak_off - cfg.pre_roll_s
-    if judgement and judgement.suggested_end_offset is not None:
-        end_off = judgement.suggested_end_offset
-    else:
-        end_off = peak_off + cfg.post_roll_s
-
-    start_off = audio_mod.snap_to_silence(start_off, feats.silences)
-    end_off = audio_mod.snap_to_silence(end_off, feats.silences)
-
-    peak_ts = seg_start_ts + timedelta(seconds=peak_off)
-    start_ts = seg_start_ts + timedelta(seconds=start_off)
-    end_ts = seg_start_ts + timedelta(seconds=end_off)
+    start_ts, end_ts, peak_ts = candidate_time_bounds(
+        segment_start=seg_start_ts,
+        available_start=available_start,
+        available_end=seg_end_ts,
+        peak_offset_s=peak_off,
+        pre_roll_s=cfg.pre_roll_s,
+        post_roll_s=cfg.post_roll_s,
+        suggested_start_offset_s=judgement.suggested_start_offset if judgement else None,
+        suggested_end_offset_s=judgement.suggested_end_offset if judgement else None,
+        silences=feats.silences,
+    )
 
     # 5) 去重 — 不写 DB, 返回 DUPLICATE 决策
     if _is_duplicate(session_id, (start_ts.timestamp(), end_ts.timestamp()), cfg.iou_threshold):
@@ -725,9 +755,13 @@ def _ensure_event(candidate_id: int) -> int | None:
         cand = db.get(HighlightCandidate, candidate_id)
         if cand is None:
             return None
+        task = db.exec(
+            select(SegmentTask).where(SegmentTask.candidate_id == candidate_id).order_by(SegmentTask.created_at.desc())
+        ).first()
         event = HighlightEvent(
             candidate_id=candidate_id,
             session_id=cand.session_id,
+            segment_id=task.segment_id if task else None,
             raw_start_ts=cand.start_ts,
             raw_end_ts=cand.end_ts,
             rule_score=cand.rule_score,

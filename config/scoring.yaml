@@ -18,7 +18,7 @@ fusion:
 
 # 切片上下文留白(秒)
 context:
-  pre_roll_s: 15
+  pre_roll_s: 60
   post_roll_s: 30
 
 # 候选去重:时间区间重叠 IoU 超过该值则合并

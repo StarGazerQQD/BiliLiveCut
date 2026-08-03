@@ -15,6 +15,7 @@ from loguru import logger
 
 from app.analysis.highlight import score_segment
 from app.analysis.transcribe import TranscriberBackend, transcribe_segment
+from app.core.config import settings
 from app.db.models import FinalClip, HighlightCandidate, RawSegment
 
 
@@ -47,8 +48,8 @@ def _read_room_config(room_id: int | None) -> dict:
             "auto_render": False,
             "auto_approve": False,
             "auto_upload": False,
-            "auto_approve_threshold": 0.82,
-            "review_threshold": 0.50,
+            "auto_approve_threshold": settings.highlight_auto_approve_threshold,
+            "review_threshold": settings.highlight_review_threshold,
         }
     from app.db.models import LiveRoom
     from app.db.session import get_session as _gs
@@ -62,8 +63,8 @@ def _read_room_config(room_id: int | None) -> dict:
                 "auto_render": False,
                 "auto_approve": False,
                 "auto_upload": False,
-                "auto_approve_threshold": 0.82,
-                "review_threshold": 0.50,
+                "auto_approve_threshold": settings.highlight_auto_approve_threshold,
+                "review_threshold": settings.highlight_review_threshold,
             }
         return {
             "auto_record": room.auto_record,

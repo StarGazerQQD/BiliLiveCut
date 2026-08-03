@@ -13,13 +13,15 @@
 
 from __future__ import annotations
 
-from datetime import datetime
+import hashlib
+import threading
+from datetime import UTC, datetime
 from pathlib import Path
 from typing import TYPE_CHECKING, Literal
 from uuid import uuid4
 
 from fastapi import APIRouter, HTTPException, Request
-from fastapi.responses import HTMLResponse
+from fastapi.responses import FileResponse, HTMLResponse
 from fastapi.templating import Jinja2Templates
 from pydantic import BaseModel, ConfigDict, Field
 from sqlmodel import select as _sql_select
@@ -27,11 +29,13 @@ from sqlmodel import select as _sql_select
 if TYPE_CHECKING:
     from sqlmodel import Session
 
-    from app.db.models import HighlightCandidate, HighlightEvent, SegmentTask
+    from app.db.models import HighlightCandidate, HighlightEvent, RawSegment, SegmentTask
 
 review_router = APIRouter(prefix="/review", tags=["review"])
 
 _TEMPLATES = Jinja2Templates(directory=str(Path(__file__).resolve().parent.parent / "templates"))
+_PREVIEW_LOCKS: dict[int, threading.Lock] = {}
+_PREVIEW_LOCKS_GUARD = threading.Lock()
 
 
 class BoundaryAdjustRequest(BaseModel):
@@ -75,10 +79,17 @@ def _ensure_event(db: Session, candidate: HighlightCandidate) -> HighlightEvent:
 
     event = db.exec(_sql_select(HighlightEvent).where(HighlightEvent.candidate_id == candidate.id)).first()
     if event is not None:
+        if event.segment_id is None:
+            task = _latest_task(db, int(candidate.id)) if candidate.id is not None else None
+            if task is not None:
+                event.segment_id = task.segment_id
+                db.add(event)
         return event
+    task = _latest_task(db, int(candidate.id)) if candidate.id is not None else None
     event = HighlightEvent(
         candidate_id=candidate.id,
         session_id=candidate.session_id,
+        segment_id=task.segment_id if task else None,
         raw_start_ts=candidate.start_ts,
         raw_end_ts=candidate.end_ts,
         adjusted_start_ts=candidate.start_ts,
@@ -104,6 +115,196 @@ def _latest_task(db: Session, candidate_id: int) -> SegmentTask | None:
     ).first()
 
 
+def _as_utc_naive(value: datetime) -> datetime:
+    """把数据库与请求中的时间统一为 UTC-naive 后再比较。"""
+    if value.tzinfo is None:
+        return value
+    return value.astimezone(UTC).replace(tzinfo=None)
+
+
+def _candidate_segments(
+    db: Session,
+    candidate: HighlightCandidate,
+    *,
+    start_ts: datetime | None = None,
+    end_ts: datetime | None = None,
+) -> list[RawSegment]:
+    """返回与候选时间范围重叠的同会话录像片段。"""
+    from app.db.models import RawSegment
+
+    start = _as_utc_naive(start_ts or candidate.start_ts)
+    end = _as_utc_naive(end_ts or candidate.end_ts)
+    rows = db.exec(
+        _sql_select(RawSegment).where(RawSegment.session_id == candidate.session_id).order_by(RawSegment.seq.asc())
+    ).all()
+    covering = [
+        segment
+        for segment in rows
+        if segment.start_ts is not None
+        and segment.end_ts is not None
+        and _as_utc_naive(segment.end_ts) > start
+        and _as_utc_naive(segment.start_ts) < end
+    ]
+    if covering:
+        return covering
+
+    task = _latest_task(db, int(candidate.id)) if candidate.id is not None else None
+    segment = db.get(RawSegment, task.segment_id) if task is not None else None
+    return [segment] if segment is not None and segment.session_id == candidate.session_id else []
+
+
+def _candidate_transcript(
+    db: Session,
+    candidate: HighlightCandidate,
+    segments: list[RawSegment],
+    *,
+    start_ts: datetime | None = None,
+    end_ts: datetime | None = None,
+) -> dict | None:
+    """合并候选覆盖片段的转写，并换算为候选播放器相对时间。"""
+    import json
+
+    from app.db.models import Transcript
+
+    segment_ids = [segment.id for segment in segments if segment.id is not None]
+    if not segment_ids:
+        return None
+    transcripts = db.exec(_sql_select(Transcript).where(Transcript.segment_id.in_(segment_ids))).all()
+    transcript_by_segment = {transcript.segment_id: transcript for transcript in transcripts}
+    candidate_start = _as_utc_naive(start_ts or candidate.start_ts)
+    candidate_duration = (_as_utc_naive(end_ts or candidate.end_ts) - candidate_start).total_seconds()
+    texts: list[str] = []
+    words: list[dict] = []
+    language: str | None = None
+    used_segment_ids: list[int] = []
+
+    for segment in segments:
+        if segment.id is None or segment.start_ts is None:
+            continue
+        transcript = transcript_by_segment.get(segment.id)
+        if transcript is None:
+            continue
+        used_segment_ids.append(segment.id)
+        if transcript.text:
+            texts.append(transcript.text.strip())
+        language = language or transcript.language
+        if not transcript.words_json:
+            continue
+        try:
+            raw_words = json.loads(transcript.words_json)
+        except (json.JSONDecodeError, TypeError):
+            continue
+        if not isinstance(raw_words, list):
+            continue
+        offset = (_as_utc_naive(segment.start_ts) - candidate_start).total_seconds()
+        for raw_word in raw_words:
+            if not isinstance(raw_word, dict):
+                continue
+            try:
+                word_start = float(raw_word.get("start", 0.0)) + offset
+                word_end = float(raw_word.get("end", word_start)) + offset
+            except (TypeError, ValueError):
+                continue
+            if word_end < 0 or word_start > candidate_duration:
+                continue
+            word = dict(raw_word)
+            word["start"] = round(max(0.0, word_start), 3)
+            word["end"] = round(min(candidate_duration, max(0.0, word_end)), 3)
+            words.append(word)
+
+    if not texts and not words:
+        return None
+    return {
+        "text": "\n".join(text for text in texts if text),
+        "words": words,
+        "language": language,
+        "segment_ids": used_segment_ids,
+    }
+
+
+def _preview_lock(candidate_id: int) -> threading.Lock:
+    """返回候选级预览渲染锁，防止播放器和波形请求重复渲染。"""
+    with _PREVIEW_LOCKS_GUARD:
+        return _PREVIEW_LOCKS.setdefault(candidate_id, threading.Lock())
+
+
+def _review_preview_root() -> Path:
+    """返回受控的审片预览缓存根目录。"""
+    from app.core.paths import clips_dir
+
+    return (Path(clips_dir()).resolve() / "review_previews").resolve()
+
+
+def _review_preview_key(candidate_id: int, start_ts: datetime, end_ts: datetime) -> tuple[str, str]:
+    """把候选标识和边界编码为仅含十六进制字符的不可逆缓存键。"""
+    if candidate_id <= 0:
+        raise ValueError("candidate_id 必须是正整数")
+    candidate_key = hashlib.sha256(f"candidate:{candidate_id}".encode()).hexdigest()[:16]
+    boundary_key = hashlib.sha256(f"{candidate_key}:{start_ts.isoformat()}:{end_ts.isoformat()}".encode()).hexdigest()[
+        :16
+    ]
+    return candidate_key, boundary_key
+
+
+def _review_preview_path(candidate_id: int, start_ts: datetime, end_ts: datetime) -> Path:
+    """返回受控目录内、仅由十六进制缓存键组成的预览路径。"""
+    candidate_key, boundary_key = _review_preview_key(candidate_id, start_ts, end_ts)
+    preview_root = _review_preview_root()
+    output_path = (preview_root / f"{candidate_key}_{boundary_key}.mp4").resolve()
+    if output_path.parent != preview_root:
+        raise RuntimeError("审片预览缓存路径越界")
+    return output_path
+
+
+def _ensure_review_preview(candidate_id: int, start_ts: datetime, end_ts: datetime) -> Path:
+    """按需渲染候选预览，并以原子替换方式写入专用缓存目录。"""
+    from loguru import logger
+
+    from app.clipping.core import render_clip_to_file
+    from app.clipping.models import ClipOptions
+    from app.core.config import settings
+
+    preview_root = _review_preview_root()
+    preview_root.mkdir(parents=True, exist_ok=True)
+    output_path = _review_preview_path(candidate_id, start_ts, end_ts)
+    if output_path.is_file() and output_path.stat().st_size > 0:
+        return output_path
+
+    with _preview_lock(candidate_id):
+        if output_path.is_file() and output_path.stat().st_size > 0:
+            return output_path
+        temp_path = preview_root / f"{uuid4().hex}.partial.mp4"
+        try:
+            render_clip_to_file(
+                candidate_id,
+                temp_path,
+                ClipOptions(
+                    loudnorm=False,
+                    remove_silence=False,
+                    vertical=False,
+                    subtitle=False,
+                    max_duration_s=settings.clip_max_duration_s,
+                    crf=23,
+                    preset="veryfast",
+                ),
+                start_ts=start_ts,
+                end_ts=end_ts,
+            )
+            temp_path.replace(output_path)
+        finally:
+            temp_path.unlink(missing_ok=True)
+            temp_path.with_suffix(".jpg").unlink(missing_ok=True)
+
+        candidate_key, _ = _review_preview_key(candidate_id, start_ts, end_ts)
+        for stale in preview_root.glob(f"{candidate_key}_*.mp4"):
+            if stale != output_path:
+                try:
+                    stale.unlink(missing_ok=True)
+                except OSError as exc:
+                    logger.debug("旧审片预览正在使用，暂缓清理 path={} error={}", stale, exc)
+        return output_path
+
+
 @review_router.get("/queue", response_class=HTMLResponse)
 async def review_queue_page(request: Request) -> HTMLResponse:
     """审核队列页面。"""
@@ -122,6 +323,7 @@ def get_review_queue(
     from app.db.models import HighlightCandidate, HighlightEvent, ReviewStatus
     from app.db.session import get_session
     from app.web.services.review_workflow import claim_state, review_actor
+    from app.web.services.source_identity import source_identities_for_sessions, unknown_source_identity
 
     actor, role = review_actor(request)
     safe_limit = max(1, min(limit, 500))
@@ -132,6 +334,7 @@ def get_review_queue(
         ids = [candidate.id for candidate in candidates if candidate.id is not None]
         events = db.exec(_sql_select(HighlightEvent).where(HighlightEvent.candidate_id.in_(ids))).all() if ids else []
         event_by_candidate = {event.candidate_id: event for event in events}
+        sources = source_identities_for_sessions(db, (candidate.session_id for candidate in candidates))
 
     items = []
     counts = {"pending": 0, "claimed": 0, "reviewed": 0}
@@ -158,6 +361,7 @@ def get_review_queue(
                 "reason": None if blinded else candidate.reason,
                 "claim": claim,
                 "blinded": blinded,
+                **sources.get(candidate.session_id, unknown_source_identity()),
             }
         )
     return {
@@ -224,46 +428,34 @@ def get_review_data(request: Request, candidate_id: int) -> dict:
         FinalClip,
         HighlightCandidate,
         HighlightEvent,
-        RawSegment,
         RecordingSession,
-        Transcript,
     )
     from app.db.session import get_session
+    from app.web.services.source_identity import source_identities_for_sessions, unknown_source_identity
 
     with get_session() as db:
         c = db.get(HighlightCandidate, candidate_id)
         if c is None:
             raise HTTPException(status_code=404, detail="候选不存在")
+        source = source_identities_for_sessions(db, [c.session_id]).get(c.session_id, unknown_source_identity())
 
-        # 转写文本。
-        transcript_data = None
-        # 候选关联的片段通过评分时的 session+时间范围查找。
-        session = db.get(RecordingSession, c.session_id)
-        segment = db.exec(
-            _sql_select(RawSegment).where(
-                RawSegment.session_id == c.session_id,
+        event = db.exec(
+            _sql_select(HighlightEvent).where(
+                HighlightEvent.candidate_id == candidate_id,
             )
         ).first()
-        if segment:
-            trans = db.exec(
-                _sql_select(Transcript).where(
-                    Transcript.segment_id == segment.id,
-                )
-            ).first()
-            if trans:
-                import json as _json
 
-                words = []
-                if trans.words_json:
-                    try:
-                        words = _json.loads(trans.words_json)
-                    except _json.JSONDecodeError:
-                        pass
-                transcript_data = {
-                    "text": trans.text,
-                    "words": words,
-                    "language": trans.language,
-                }
+        # 候选可能跨越多个原始分段；转写必须按时间覆盖关系合并。
+        transcript_start = event.adjusted_start_ts if event and event.adjusted_start_ts else c.start_ts
+        transcript_end = event.adjusted_end_ts if event and event.adjusted_end_ts else c.end_ts
+        transcript_data = _candidate_transcript(
+            db,
+            c,
+            _candidate_segments(db, c, start_ts=transcript_start, end_ts=transcript_end),
+            start_ts=transcript_start,
+            end_ts=transcript_end,
+        )
+        session = db.get(RecordingSession, c.session_id)
 
         # 弹幕密度数据:按 5 秒分桶。
         start = c.start_ts
@@ -301,7 +493,7 @@ def get_review_data(request: Request, candidate_id: int) -> dict:
                 num_buckets = max(1, int(total_s / bucket_s))
                 counts = [0] * num_buckets
                 t0_ts = int(t0.timestamp()) if hasattr(t0, "timestamp") else 0
-                for (ts,) in danmaku_rows:
+                for ts in danmaku_rows:
                     ts_ts = int(ts.timestamp()) if hasattr(ts, "timestamp") else 0
                     idx = (ts_ts - t0_ts) // bucket_s
                     if 0 <= idx < num_buckets:
@@ -349,9 +541,11 @@ def get_review_data(request: Request, candidate_id: int) -> dict:
 
         # 已有的成品(若有)。
         clips = db.exec(
-            _sql_select(FinalClip).where(
+            _sql_select(FinalClip)
+            .where(
                 FinalClip.candidate_id == candidate_id,
             )
+            .order_by(FinalClip.created_at.desc())
         ).all()
         existing_clips = [
             {
@@ -362,11 +556,6 @@ def get_review_data(request: Request, candidate_id: int) -> dict:
             }
             for cl in clips
         ]
-        event = db.exec(
-            _sql_select(HighlightEvent).where(
-                HighlightEvent.candidate_id == candidate_id,
-            )
-        ).first()
 
     from app.core.config import settings
     from app.db.models import ReviewStatus
@@ -427,7 +616,9 @@ def get_review_data(request: Request, candidate_id: int) -> dict:
             "highlight_score": None if blinded else c.highlight_score,
             "reason": None if blinded else c.reason,
             "status": c.status,
+            **source,
         },
+        "source": source,
         "transcript": transcript_data,
         "danmaku_buckets": danmaku_buckets,
         "danmaku_window": danmaku_window,
@@ -437,6 +628,8 @@ def get_review_data(request: Request, candidate_id: int) -> dict:
         "prev_candidates": prev_candidates,
         "next_candidates": next_candidates,
         "existing_clips": existing_clips,
+        "preview_url": f"/review/api/{candidate_id}/preview",
+        "media_url": existing_clips[0]["video_url"] if existing_clips else f"/review/api/{candidate_id}/preview",
         "boundary": {
             "event_id": event.id if event else None,
             "adjusted_start_ts": event.adjusted_start_ts.isoformat()
@@ -815,6 +1008,7 @@ async def rerender_clip(candidate_id: int, request: Request) -> dict:
         require_edit_claim,
         review_actor,
     )
+    from app.web.services.source_identity import source_identities_for_sessions, unknown_source_identity
 
     actor, role = review_actor(request)
     with get_session() as db:
@@ -834,6 +1028,9 @@ async def rerender_clip(candidate_id: int, request: Request) -> dict:
         start_ts = event.adjusted_start_ts if event and event.adjusted_start_ts else c.start_ts
         end_ts = event.adjusted_end_ts if event and event.adjusted_end_ts else c.end_ts
         event_id = event.id if event else None
+        source_label = source_identities_for_sessions(db, [c.session_id]).get(c.session_id, unknown_source_identity())[
+            "source_label"
+        ]
 
         try:
             validate_clip_boundary(
@@ -856,7 +1053,7 @@ async def rerender_clip(candidate_id: int, request: Request) -> dict:
             "end_ts": end_ts.isoformat(),
             "version": version,
         },
-        label=f"候选 #{candidate_id} 审核版本渲染",
+        label=f"{source_label} · 候选 #{candidate_id} 审核版本渲染",
         owner=actor,
         dedup_key=f"review-rerender:{candidate_id}:{start_ts.isoformat()}:{end_ts.isoformat()}",
     )
@@ -867,6 +1064,33 @@ async def rerender_clip(candidate_id: int, request: Request) -> dict:
         "start_ts": job["payload"]["start_ts"],
         "end_ts": job["payload"]["end_ts"],
     }
+
+
+@review_router.get("/api/{candidate_id}/preview")
+def get_review_preview(candidate_id: int) -> FileResponse:
+    """返回候选的按需渲染预览，不要求候选已批准或已出片。"""
+    from app.db.models import HighlightCandidate, HighlightEvent
+    from app.db.session import get_session
+
+    with get_session() as db:
+        candidate = db.get(HighlightCandidate, candidate_id)
+        if candidate is None:
+            raise HTTPException(status_code=404, detail="候选不存在")
+        event = db.exec(_sql_select(HighlightEvent).where(HighlightEvent.candidate_id == candidate_id)).first()
+        start_ts = event.adjusted_start_ts if event and event.adjusted_start_ts else candidate.start_ts
+        end_ts = event.adjusted_end_ts if event and event.adjusted_end_ts else candidate.end_ts
+
+    from loguru import logger
+
+    try:
+        preview_path = _ensure_review_preview(candidate_id, start_ts, end_ts)
+    except ValueError as exc:
+        logger.warning("候选预览边界无效 candidate_id={} error={}", candidate_id, exc)
+        raise HTTPException(status_code=422, detail="候选预览边界无效") from exc
+    except (OSError, RuntimeError) as exc:
+        logger.exception("候选预览渲染失败 candidate_id={}", candidate_id)
+        raise HTTPException(status_code=500, detail="候选预览渲染失败") from exc
+    return FileResponse(preview_path, media_type="video/mp4")
 
 
 @review_router.get("/api/{candidate_id}/waveform")
@@ -882,38 +1106,30 @@ def get_waveform(candidate_id: int, resolution: int = 400) -> dict:
     import subprocess as _sp
     import tempfile as _tf
 
-    from app.core.paths import clips_dir
-    from app.db.models import FinalClip, HighlightCandidate
+    from loguru import logger
+
+    from app.db.models import HighlightCandidate, HighlightEvent
     from app.db.session import get_session
 
     with get_session() as db:
         c = db.get(HighlightCandidate, candidate_id)
         if c is None:
             raise HTTPException(status_code=404, detail="候选不存在")
-        # 找已有成品。
-        clip = db.exec(
-            _sql_select(FinalClip)
-            .where(
-                FinalClip.candidate_id == candidate_id,
-            )
-            .limit(1)
-        ).first()
-        if clip is None or not clip.file_path or not Path(clip.file_path).exists():
-            return {
-                "peaks": [],
-                "duration_s": 0,
-                "sample_rate": 0,
-                "error": "尚未生成切片,请先「批准并出片」或「重新渲染」",
-            }  # noqa: E501
+        event = db.exec(_sql_select(HighlightEvent).where(HighlightEvent.candidate_id == candidate_id)).first()
+        start_ts = event.adjusted_start_ts if event and event.adjusted_start_ts else c.start_ts
+        end_ts = event.adjusted_end_ts if event and event.adjusted_end_ts else c.end_ts
 
-        file_path = clip.file_path
-        # 路径遍历保护:确保文件在 clips 目录内。
-        resolved = Path(file_path).resolve()
-        clips_root = Path(clips_dir()).resolve()
-        if resolved.parent != clips_root and not any(p == clips_root for p in resolved.parents):
-            return {"peaks": [], "duration_s": 0, "sample_rate": 0, "error": "文件路径不可访问"}
-        file_path = str(resolved)
-        duration_s = clip.duration_s or 0
+    try:
+        file_path = str(_ensure_review_preview(candidate_id, start_ts, end_ts))
+        duration_s = (end_ts - start_ts).total_seconds()
+    except (OSError, RuntimeError, ValueError):
+        logger.exception("候选波形预览渲染失败 candidate_id={}", candidate_id)
+        return {
+            "peaks": [],
+            "duration_s": 0,
+            "sample_rate": 0,
+            "error": "候选预览渲染失败",
+        }
 
     if duration_s <= 0:
         # 用 ffprobe 获取时长。
@@ -1001,21 +1217,8 @@ def _get_candidate_asr_text(db, candidate) -> str | None:
     :param candidate: HighlightCandidate 实例。
     :returns: ASR 文本或 ``None``。
     """
-    from app.db.models import RawSegment, Transcript
-
-    segment = db.exec(
-        _sql_select(RawSegment).where(
-            RawSegment.session_id == candidate.session_id,
-        )
-    ).first()
-    if segment is None:
-        return None
-    trans = db.exec(
-        _sql_select(Transcript).where(
-            Transcript.segment_id == segment.id,
-        )
-    ).first()
-    return trans.text if trans else None
+    transcript = _candidate_transcript(db, candidate, _candidate_segments(db, candidate))
+    return str(transcript["text"]) if transcript and transcript.get("text") else None
 
 
 def _parse_saved_datetime(value: object) -> datetime | None:

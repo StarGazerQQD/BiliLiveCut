@@ -83,6 +83,7 @@
 <body>
 <div class="topbar">
   <div class="brand">🎬 审片工作台</div>
+  <span class="stat">来源 <b id="source-label">-</b></span>
   <span class="muted">候选 #<span id="cand-id">-</span></span>
   <span class="stat">总分 <b id="cand-score">-</b></span>
   <span class="stat">规则 <b id="rule-score">-</b></span>
@@ -100,7 +101,7 @@
     <div class="player-area" id="player-area">
       <div class="player-placeholder" id="player-placeholder">
         <p>🎥 视频播放器</p>
-        <p class="msg">请先在"成品切片"页面生成切片,或通过边界调整后点击「重新渲染」</p>
+        <p class="msg">正在生成候选预览…</p>
       </div>
       <video id="player" controls style="display:none" crossorigin="anonymous">
         <source id="player-src" src="" type="video/mp4" />
@@ -294,6 +295,7 @@ function renderReview() {
   const hidden = d.viewer?.blinded;
 
   $("#cand-id").textContent = c.id;
+  $("#source-label").textContent = d.source?.source_label || "未知来源";
   $("#cand-score").textContent = hidden ? "盲审" : c.highlight_score.toFixed(3);
   $("#rule-score").textContent = hidden ? "-" : c.rule_score.toFixed(2);
   $("#llm-score").textContent = hidden ? "-" : c.llm_score.toFixed(2);
@@ -364,11 +366,15 @@ function renderReview() {
   renderSubtitles(d.transcript);
 
   // 视频播放器。
-  if (d.existing_clips && d.existing_clips.length > 0) {
-    const clip = d.existing_clips[0];
-    $("#player-src").src = clip.video_url;
+  if (d.media_url) {
+    $("#player-src").src = d.media_url;
     $("#player").style.display = "";
     $("#player-placeholder").style.display = "none";
+    $("#player").addEventListener("error", () => {
+      $("#player").style.display = "none";
+      $("#player-placeholder").style.display = "";
+      $("#player-placeholder .msg").textContent = "候选预览生成失败，请检查原始录像与 FFmpeg。";
+    }, { once: true });
     $("#player").load();
   }
 

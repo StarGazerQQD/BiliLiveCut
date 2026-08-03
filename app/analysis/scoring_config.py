@@ -46,7 +46,7 @@ class ScoringConfig:
     weights: dict[str, float] = field(default_factory=lambda: dict(_DEFAULT_WEIGHTS))
     alpha: float = 0.5
     beta: float = 0.5
-    pre_roll_s: float = 15.0
+    pre_roll_s: float = 60.0
     post_roll_s: float = 30.0
     iou_threshold: float = 0.5
     cooldown_s: float = 60.0
@@ -77,7 +77,7 @@ def get_scoring_config() -> ScoringConfig:
         weights={k: float(v) for k, v in weights.items()},
         alpha=float(fusion.get("alpha", 0.5)),
         beta=float(fusion.get("beta", 0.5)),
-        pre_roll_s=float(context.get("pre_roll_s", 15)),
+        pre_roll_s=float(context.get("pre_roll_s", 60)),
         post_roll_s=float(context.get("post_roll_s", 30)),
         iou_threshold=float(dedup.get("iou_threshold", 0.5)),
         cooldown_s=float(dedup.get("cooldown_s", 60)),

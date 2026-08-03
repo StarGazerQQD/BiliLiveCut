@@ -1,6 +1,6 @@
 # BiliLiveCut Portable 小白使用说明
 
-适用版本：`v0.1.16.3-Alpha` · 适用系统：Windows 10/11 x64
+适用版本：`v0.1.16.4-Alpha` · 适用系统：Windows 10/11 x64
 
 这份说明面向不懂 Python、Git 或命令行的普通 Windows 用户。按顺序操作即可完成下载安装、首次启动、基础配置、添加直播间和首次录制。
 
@@ -41,9 +41,9 @@ Full 版不要求系统安装 Python、FFmpeg、Visual Studio、Git 或其他编
 
 ## 2. 下载正确的文件
 
-打开项目的 [GitHub Releases 页面](https://github.com/StarGazerQQD/BiliLiveCut/releases)，进入 `v0.1.16.3-Alpha`，下载：
+打开项目的 [GitHub Releases 页面](https://github.com/StarGazerQQD/BiliLiveCut/releases)，进入 `v0.1.16.4-Alpha`，下载：
 
-1. `BiliLiveCut-Portable-Full-0.1.16.3-alpha-x64.zip`
+1. `BiliLiveCut-Portable-Full-0.1.16.4-alpha-x64.zip`
 2. `SHA256SUMS.txt`
 
 不要把下面这些文件当成 Windows 小白版：
@@ -61,7 +61,7 @@ Full 版不要求系统安装 Python、FFmpeg、Visual Studio、Git 或其他编
 3. 复制并执行：
 
 ```powershell
-Get-FileHash ".\BiliLiveCut-Portable-Full-0.1.16.3-alpha-x64.zip" -Algorithm SHA256
+Get-FileHash ".\BiliLiveCut-Portable-Full-0.1.16.4-alpha-x64.zip" -Algorithm SHA256
 ```
 
 4. 将输出的 `Hash` 与 `SHA256SUMS.txt` 中同名文件前面的值比较。英文字母大小写不同不影响结果。
@@ -71,7 +71,7 @@ Get-FileHash ".\BiliLiveCut-Portable-Full-0.1.16.3-alpha-x64.zip" -Algorithm SHA
 
 1. 新建目录，例如 `D:\BiliLiveCut`。
 2. 右键 ZIP，选择“全部解压”。
-3. 打开解压出来的 `BiliLiveCut-Portable-Full-0.1.16.3-alpha-x64` 文件夹。
+3. 打开解压出来的 `BiliLiveCut-Portable-Full-0.1.16.4-alpha-x64` 文件夹。
 4. 确认同一层能看到：
 
 ```text
@@ -99,7 +99,7 @@ Full 版包含运行环境，但不包含四个语音识别模型。
 只接受与应用版本匹配的文件：
 
 ```text
-BiliLiveCut-EnginePack-0.1.16.3-alpha.zip
+BiliLiveCut-EnginePack-0.1.16.4-alpha.zip
 ```
 
 将这个 ZIP 原样放到 `BiliLiveCut-Portable.exe` 同级目录，不要手动解压。Launcher 会先做完整性校验，再安装到 `models/`。
@@ -354,7 +354,7 @@ storage\
 
 ### 大模型测试提示“未安装 openai”
 
-`v0.1.16.3-Alpha` 最新构建已经把 OpenAI 兼容 SDK 纳入 Portable 运行时。先关闭服务并重新运行 Launcher，让依赖检查自动补装；如果仍出现该提示，说明当前 Full 的 `vendor\wheels\` 不完整或仍在使用旧构建，请重新下载并解压最新完整包。不要在 Portable 目录手工执行 `pip install -e`，也不要复用旧版 `.venv`。
+`v0.1.16.4-Alpha` 最新构建已经把 OpenAI 兼容 SDK 纳入 Portable 运行时。先关闭服务并重新运行 Launcher，让依赖检查自动补装；如果仍出现该提示，说明当前 Full 的 `vendor\wheels\` 不完整或仍在使用旧构建，请重新下载并解压最新完整包。不要在 Portable 目录手工执行 `pip install -e`，也不要复用旧版 `.venv`。
 
 ### 控制台提示 pip 有新版本
 
@@ -362,7 +362,7 @@ storage\
 
 ### 出现 `THESE PACKAGES DO NOT MATCH THE HASHES`
 
-新版 Full 应强制使用本地 wheelhouse，不应访问 PyPI 镜像。确认使用的是 `v0.1.16.3-Alpha` 最新 Full ZIP，并且没有只复制 EXE。不要修改锁文件或添加报错中的 sdist 哈希，直接重新下载并校验 Full ZIP。
+新版 Full 应强制使用本地 wheelhouse，不应访问 PyPI 镜像。确认使用的是 `v0.1.16.4-Alpha` 最新 Full ZIP，并且没有只复制 EXE。不要修改锁文件或添加报错中的 sdist 哈希，直接重新下载并校验 Full ZIP。
 
 ### 模型下载很慢或中断
 
@@ -401,7 +401,7 @@ storage\
 
 - Windows 版本，例如 Windows 11 23H2；
 - 使用 Full 还是 Lite；
-- 程序版本 `v0.1.16.3-Alpha`；
+- 程序版本 `v0.1.16.4-Alpha`；
 - 解压目录；
 - 问题发生在 `[1/6]`～`[6/6]` 的哪一步；
 - 黑色窗口最后 30 行文字或截图；
@@ -413,7 +413,7 @@ storage\
 
 ## 16. 当前 Alpha 的测试边界
 
-`v0.1.16.3-Alpha` 适合小规模、受控测试，不等同于稳定正式版。当前应重点验证：
+`v0.1.16.4-Alpha` 适合小规模、受控测试，不等同于稳定正式版。当前应重点验证：
 
 - Full ZIP 下载、校验和解压；
 - 首次离线依赖安装；
