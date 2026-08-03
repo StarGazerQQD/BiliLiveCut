@@ -72,7 +72,7 @@ class TestAtomicInstall:
                 ["whisper", "paraformer"],
                 files_info,
                 zip_sha256="abc123",
-                source_commit="c9f47e6",
+                source_commit="5d50263",
             )
             manifest = _read_installed_manifest(models_dir)
             assert manifest is not None
