@@ -14,12 +14,12 @@ audioread==3.1.0 --hash=sha256:b30d1df6c5d3de5dcef0fb0e256f6ea17bdcf5f979408df02
 av==18.0.0 --hash=sha256:aaf4d354d2beaa6651e4f92e54409a578bde64f79c0beef9a30b388d06f7c629  # av-18.0.0-cp311-abi3-win_amd64.whl
 brotli==1.2.0 --hash=sha256:b35c13ce241abdd44cb8ca70683f20c0c079728a36a996297adb5334adfc1c44  # brotli-1.2.0-cp312-cp312-win_amd64.whl
 certifi==2026.7.22 --hash=sha256:62f22742b58a1a33014a2b6b706588a8d7e2a88ae7bd1a6ebe8c992928483775  # certifi-2026.7.22-py3-none-any.whl
-cffi==2.1.0 --hash=sha256:c97f080ea627e2863524c5af3836e2270b5f5dfff1f104392b959f8df0c5d384  # cffi-2.1.0-cp312-cp312-win_amd64.whl
+cffi==2.1.1 --hash=sha256:f53e442b08449d42821fa4a4fba000095af9f62742a500f978a9f557ec44339a  # cffi-2.1.1-cp312-cp312-win_amd64.whl
 charset-normalizer==3.4.9 --hash=sha256:4b3dac63058cc36820b0dd072f89898604e2d39686fe05321729d00d8ac185a0  # charset_normalizer-3.4.9-cp312-cp312-win_amd64.whl
 click==8.4.2 --hash=sha256:e6f9f66136c816745b9d65817da91d61d957fb16e02e4dcd0552553c5a197b76  # click-8.4.2-py3-none-any.whl
 colorama==0.4.6 --hash=sha256:4f1d9991f5acc0ca119f9d443620b77f9d6b33703e51011c16baf57afb285fc6  # colorama-0.4.6-py2.py3-none-any.whl
 crcmod==1.7 --hash=sha256:a5c73de3c773b72cc842002639640626e4511c51e122056111a732f398af3931  # crcmod-1.7-py3-none-any.whl
-cryptography==49.0.0 --hash=sha256:e5dfc1e64de5677cec922ffa8da89c546d0415bf6efdf081842e5d44c84e1f0e  # cryptography-49.0.0-cp311-abi3-win_amd64.whl
+cryptography==50.0.0 --hash=sha256:bd1c592e4d5974f0d08d4888e432157adba757c66da0246918e43677fafa2d30  # cryptography-50.0.0-cp311-abi3-win_amd64.whl
 ctranslate2==4.8.1 --hash=sha256:49f96e861b57301f0b76a082109bde2cac8204a6b4fedc870883008271e82251  # ctranslate2-4.8.1-cp312-cp312-win_amd64.whl
 decorator==5.3.1 --hash=sha256:f47fe6fdbd2edd623ecfe36875d37aba411624e2670dd395dddae1358689bb3c  # decorator-5.3.1-py3-none-any.whl
 distro==1.9.0 --hash=sha256:7bffd925d65168f85027d8da9af6bddab658135b840670a223589bc0c8ef02b2  # distro-1.9.0-py3-none-any.whl
@@ -31,7 +31,7 @@ fsspec==2026.7.0 --hash=sha256:b57ddbafedfaef7018c1ecab32aa200a9d7ca26b77965f64e
 funasr==1.3.30 --hash=sha256:b5d1544a6c8cf0cd5518e1b34636293f534f6ad15d8400c0fbc46d49390f6918  # funasr-1.3.30-py3-none-any.whl
 greenlet==3.5.4 --hash=sha256:60149df8f462d1b230038e6590c23c3b4768bb5d6c022b3b6e82532b34b0b8a3  # greenlet-3.5.4-cp312-cp312-win_amd64.whl
 h11==0.16.0 --hash=sha256:63cf8bbe7522de3bf65932fda1d9c2772064ffb3dae62d55932da54b31cb6c86  # h11-0.16.0-py3-none-any.whl
-hf-xet==1.5.2 --hash=sha256:ecf63d1cb69a9a7319910f8f83fcf9b46e7a32dfcf4b8f8eeddb55f647306e65  # hf_xet-1.5.2-cp38-abi3-win_amd64.whl
+hf-xet==1.6.0 --hash=sha256:fb4fadde1b2b70bf4c0c14a6dccbe7194b1c28947fefd5bbe3fed9d940676c3b  # hf_xet-1.6.0-cp38-abi3-win_amd64.whl
 httpcore==1.0.9 --hash=sha256:2d400746a40668fc9dec9810239072b40b4484b640a8c38fd654a024c7a1bf55  # httpcore-1.0.9-py3-none-any.whl
 httptools==0.8.0 --hash=sha256:cd96f29b4bab1d42fa6e3d008711c75e0f79e94e06827330160e3a304227f150  # httptools-0.8.0-cp312-cp312-win_amd64.whl
 httpx==0.28.1 --hash=sha256:d909fcccc110f8c7faf814ca82a9a4d816bc5a6dbfea25d6591d6985b8ba59ad  # httpx-0.28.1-py3-none-any.whl
@@ -54,7 +54,7 @@ markdown-it-py==4.2.0 --hash=sha256:9f7ebbcd14fe59494226453aed97c1070d83f8d24b6f
 markupsafe==3.0.3 --hash=sha256:26a5784ded40c9e318cfc2bdb30fe164bdb8665ded9cd64d500a34fb42067b1c  # markupsafe-3.0.3-cp312-cp312-win_amd64.whl
 mdurl==0.1.2 --hash=sha256:84008a41e51615a49fc9966191ff91509e3c40b939176e643fd50a5c2196b8f8  # mdurl-0.1.2-py3-none-any.whl
 modelscope==1.39.0 --hash=sha256:a363298e4620db83b3ec0057a23a73c4ee1fa122ca11b375e72ef94874123efa  # modelscope-1.39.0-py3-none-any.whl
-modelscope-hub==0.1.8 --hash=sha256:905ffd0a64c99bd34d40a72452dba97611f702b1887c11ba694584fb46d25420  # modelscope_hub-0.1.8-py3-none-any.whl
+modelscope-hub==0.2.0 --hash=sha256:84668c80c1d36d1fb1ea1ce17b707d77e044b92255288618c3b7de5b13834418  # modelscope_hub-0.2.0-py3-none-any.whl
 mpmath==1.3.0 --hash=sha256:a0b2b9fe80bbcd81a6647ff13108738cfb482d481d826cc0e02f5b35e5c88d2c  # mpmath-1.3.0-py3-none-any.whl
 msgpack==1.2.1 --hash=sha256:5c24aa15d5963051e1a5c62b12c50cd705992502b5ec1f3bece6046f33c9fc24  # msgpack-1.2.1-cp312-cp312-win_amd64.whl
 narwhals==2.24.0 --hash=sha256:42fdedf44e5b2ca7505630d45b4ac3058f38d8485cba9fe1652ca23152df7489  # narwhals-2.24.0-py3-none-any.whl

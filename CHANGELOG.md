@@ -2,6 +2,10 @@
 
 ## 未发布
 
+### 修复
+
+- **portable/security**: 将 Python 3.11/3.12 Windows runtime lock 中的 `cryptography` 升级并固定为 `50.0.0`，修复 `GHSA-g6cj-pr64-35w5` / `CVE-2026-69247`，并重新生成完整依赖闭包与 wheel SHA-256。
+
 ## V0.1.16.5 Alpha (2026-08-03)
 
 ### 变更
