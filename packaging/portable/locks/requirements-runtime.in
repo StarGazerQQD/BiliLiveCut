@@ -23,6 +23,7 @@ loguru==0.7.3
 typer==0.27.0
 rich==15.0.0
 brotli==1.2.0
+cryptography==50.0.0
 pyyaml==6.0.3
 numpy==2.4.6
 torch==2.13.0

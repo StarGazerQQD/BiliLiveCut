@@ -81,6 +81,7 @@ def test_runtime_locks_cover_core_application_imports() -> None:
 def test_runtime_locks_keep_security_upgrades_pinned() -> None:
     expected = {
         "aiofiles": "25.1.0",
+        "cryptography": "50.0.0",
         "fastapi": "0.141.1",
         "faster-whisper": "1.2.1",
         "funasr": "1.3.30",
