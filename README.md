@@ -4,7 +4,7 @@
 [![Release](https://img.shields.io/github/v/release/StarGazerQQD/BiliLiveCut?include_prereleases&sort=semver)](https://github.com/StarGazerQQD/BiliLiveCut/releases)
 [![License](https://img.shields.io/github/license/StarGazerQQD/BiliLiveCut)](LICENSE)
 
-**当前版本：V0.1.16.4 Alpha** (`0.1.16.4-alpha`)
+**当前版本：V0.1.16.5 Alpha** (`0.1.16.5-alpha`)
 
 面向 Bilibili 直播的全自动工作流：实时录制 → 转写 → 识别高光 → 生成切片 → 生成文案 → (可选)上传。
 阶段 1–5 全链路已可用；即插即用分发包见 [`packaging/portable/`](packaging/portable/README.md)。普通 Windows 用户可直接阅读 [Portable 小白使用说明](packaging/portable/USER_GUIDE_ZH.md)。
@@ -27,8 +27,13 @@
 
 **V0.1.16 把录制、审片、渲染与上传从单人同步操作升级为可恢复、可审计、可扩展的生产工作台。** 本次版本同时加入正式的本地插件接口和插件管理界面，并统一重做控制台的信息层级与交互样式。
 
-### V0.1.16.4 Alpha：多直播间隔离与候选审片
+### V0.1.16.5 Alpha：候选、摘要与成片正确性修复
 
+- 高光规则评分与 LLM 复核统一只读取音频峰值对应的候选窗口；关键词、语速、弹幕、趋势、LLM 理由和候选边界现在来自同一段时间轴，不再把五分钟分片末尾的后续内容错配给更早的候选。
+- LLM 的 `start_offset` / `end_offset` 明确表示候选窗口内的视频开始点和完整结束点，系统会换算回原始分片；最终成片必须覆盖完整分析窗口，LLM 建议与静音吸附只能向外扩展，不能把理由所描述的事件卡在视频结尾之后。
+- 在候选页或审片工作台拒绝候选时，会在同一事务中同步候选、审核事件、仍可取消的任务和未发布成片；拒绝成片不再出现在成品队列，已经发布的外部结果则保留真实状态。撤销审核可恢复新版审核快照中的关联状态。
+- 主播下播、断流或持续无法取流时，录制会在连续失败达到 20 次或 300 秒后自动收尾（任一先到即停止）；成功产出新片段后预算归零，运行标记与网感暂停状态也会在自然结束时清理。
+- 五分钟转写整理和高光复核的默认最大输出预算均提高到 `65536` token；DeepSeek 等推理模型只返回思考过程时会关闭思考模式重试，推理内容不会冒充业务正文。
 - 默认录制分片目标改为约 5 分钟；FFmpeg 仍按实际关键帧完成切分，因此单片时长允许小幅浮动，也可通过 `SEGMENT_DURATION_S` 覆盖。
 - 默认语音主引擎改为本地 Fun-ASR-Nano；无有效输出时依次回退 Paraformer 与 Whisper，保留实际引擎、失败原因及回退来源。
 - 每个切片完成 ASR 后可调用已配置的 OpenAI 兼容大模型补全标点、整理可读正文并生成片段概括；控制台提供独立开关，失败时保留原始 ASR 且不中断分析。
@@ -38,7 +43,7 @@
 - 修复弹幕基线把 SQLModel 标量时间误当元组解包、低分分析无法从 `analyzing` 直接结束、趋势 JSON 截断后整批丢弃，以及高光理由截断后已生成评分丢失的问题。
 - 趋势采集单次最多请求 12 条，并只抢救截断前已完整闭合的 JSON 对象，避免猜测或写入半条数据。
 - Portable 的 CAM++ v1.0.0 旧式 ModelScope 元数据会显式注册为 `CAMPPlus` 并校验本地权重；转写提交不再读取不存在的 `Settings.transcript_version`。
-- 五分钟 TS 在识别前会转为 16 kHz 单声道 WAV，Fun-ASR-Nano 使用 FSMN-VAD 按默认不超过 30 秒拆句；重复退化会自动切换 Paraformer、Whisper，仍不合格的文本不会进入 LLM 或高光分析。
+- 五分钟 TS 在识别前会转为 16 kHz 单声道 WAV，Fun-ASR-Nano 使用 FSMN-VAD 按默认不超过 30 秒拆句；整段退化或长正文中的局部解码复读会自动切换 Paraformer、Whisper，仍不合格的文本不会进入 LLM 或高光分析。LLM 整理会保守清除残余的 ASR/VAD 边界复读，并保留有语义的强调、复述和口头禅。
 - 实时转写页支持“重新识别”：仅清理可安全重建的自动分析结果；人工审核、确认主题、渲染或发布数据均受保护，不会被覆盖。
 - DeepSeek 思考模式只返回推理过程而没有最终正文时，会记录非敏感的结束原因与 token 统计，并关闭思考模式重试一次；推理过程不会写入转写或文案，空正文也不再被连通测试误报为成功。
 
@@ -53,7 +58,9 @@
 ### 审片边界与可追溯渲染
 
 - 候选状态即可在审片工作台播放；尚无成品时会按需生成轻量预览，并与音频波形共用缓存。
+- 人工拒绝候选会同步取消仍可取消的关联任务，并把所有未发布关联成片标记为拒绝；成品列表不会再显示这些记录。已经发布的成片不会被事后决策改写。
 - 默认保留爆点前 60 秒上下文（`config/scoring.yaml` 的 `context.pre_roll_s`），前文可跨原始分段拼接，转写和字幕也按候选时间范围合并。
+- 高光复核理由、关键词等文本特征只读取音频峰值对应的候选窗口；最终成片强制完整覆盖该分析窗口，LLM 只能向外扩展边界，静音吸附也不会向内切掉理由所描述的事件。审片正文与投稿文案再按最终保存的成片边界裁剪；存在词级时间戳时精确过滤，无时间戳的旧数据按时长比例近似裁剪。
 - 审片边界调整改为严格 JSON 请求；服务端会校验起止顺序、最大时长以及边界是否落在真实录像覆盖范围内。
 - 重渲染只使用已经保存的审片边界，不再临时改写候选记录；每次输出独立的版本文件，避免覆盖已有成品。
 - 主剪辑、派生版本与合集 FFmpeg 统一使用可协作取消的子进程执行；取消时终止当前命令并清理未完成输出。
@@ -62,6 +69,7 @@
 
 - 房间录制增加“停止并收尾”“强制停止”和“恢复录制”，并提供当前录制生命周期查询接口。
 - 人工暂停状态持久化保存，进程重启或自动录制监控轮询时不会误拉起暂停中的房间。
+- 连续无法恢复取流时默认按 20 次或 300 秒双上限自动结束本场录制；任一上限可单独设为 `0` 禁用，全部禁用会恢复无限重试，不建议用于无人值守场景。
 - 支持直播过程中手动标记高光；会话结束后按真实媒体范围收敛标记窗口，避免生成越界候选。
 
 ### 多人审核与最小权限
@@ -88,7 +96,7 @@
 
 ### 版本与发布一致性
 
-- Python 包、CLI、C/Cython、Rust、Portable、Docker、GitHub Actions、测试和用户文档统一升级为 `0.1.16.4-alpha`，Engine Pack 兼容区间同步为 `0.1.16.4-alpha ≤ app < 0.1.17`。
+- Python 包、CLI、C/Cython、Rust、Portable、Docker、GitHub Actions、测试和用户文档统一升级为 `0.1.16.5-alpha`，Engine Pack 兼容区间同步为 `0.1.16.5-alpha ≤ app < 0.1.17`。
 - 新功能覆盖单元、集成、前端语法和发布回归测试；CI 与 Release 门禁继续校验版本、固定源码、可复现 Payload、原生模块、依赖锁和制品完整性。
 
 ## V0.1.15 版本总结：Portable 发布链路完整收口
@@ -178,7 +186,7 @@ V0.1.15 最终形成 Lite 单 EXE、Full 离线包、内容寻址 Runtime、安�
 | **次级回退** | Paraformer-zh | FunASR 无有效输出时补充中文识别、标点与时间戳 |
 | **最终兜底** | Whisper large-v3 / turbo | 前两级失败时自动回退 |
 
-录制 TS 会先标准化为 16 kHz 单声道 PCM WAV；Fun-ASR-Nano 复用 Paraformer 随包的 FSMN-VAD，默认把单句限制在 30 秒（`ASR_VAD_MAX_SEGMENT_S`）。主引擎出现空输出或连续重复退化时自动回退；最终输出仍不合格时停止该任务，禁止污染文本进入 LLM 和高光分析。通过 `ASR_PRIMARY=paraformer` 或 `ASR_PRIMARY=whisper` 可切换主路径。全部模型懒加载，按 flags 独立启用/禁用。
+录制 TS 会先标准化为 16 kHz 单声道 PCM WAV；Fun-ASR-Nano 复用 Paraformer 随包的 FSMN-VAD，默认把单句限制在 30 秒（`ASR_VAD_MAX_SEGMENT_S`）。主引擎出现空输出、整段重复退化或长正文中的局部解码循环时自动回退；最终输出仍不合格时停止该任务，禁止污染文本进入 LLM 和高光分析。通过 `ASR_PRIMARY=paraformer` 或 `ASR_PRIMARY=whisper` 可切换主路径。全部模型懒加载，按 flags 独立启用/禁用。
 
 ## V0.1.11 新特性：数据一致性与流水线稳定性
 
@@ -297,6 +305,8 @@ python -m app.cli record <db_id> --pipeline
 
 `RECORDING_PIPELINE_ENABLED=true` 时，Web 手动开始/恢复、预约、崩溃恢复以及未显式传参的 CLI 录制都会启用实时转写与高光分析。可在控制台“配置 → 功能开关 → 录制实时转写”覆盖该默认值；CLI 可用 `--pipeline` 或 `--no-pipeline` 对单次录制覆盖。`TRANSCRIPT_LLM_REFINE_ENABLED=true` 时，每个切片完成本地 ASR 后还会调用已配置的大模型补全标点、整理正文并生成片段概括；调用失败时保留原始 ASR，不阻断流水线。这两个开关都从下一次开始或恢复录制生效。
 
+主播下播、断流或平台暂时无法返回播放地址时，录制器会继续重试，但不会无限挂起。连续失败达到 `RECORDING_RECONNECT_MAX_ATTEMPTS`（默认 20 次）或从断流开始经过 `RECORDING_RECONNECT_MAX_ELAPSED_S`（默认 300 秒）时，任一条件先满足都会自动结束本场录制并正常执行会话收尾。成功恢复并产出新片段后，次数和计时都会归零。将某一项设为 `0` 可单独禁用该限制；两项都设为 `0` 会恢复无限重试，不建议用于无人值守录制。
+
 `COLLECT_DANMAKU=true` 时，录制器会按 Bilibili 直播网页的 WBI 请求格式获取短期弹幕 token。有已保存 Cookie 时优先使用登录请求，并以 Cookie 中的 `DedeUserID` 完成 WebSocket 鉴权；登录接口返回业务错误或登录鉴权被拒绝后，会立即改用不带 Cookie、`uid=0` 的匿名链路，录制和弹幕接收不会因此停止。匿名连接存活期间，程序按 `DANMAKU_LOGIN_RETRY_INTERVAL_S` 定时探测登录链路；单场累计失败达到 `DANMAKU_LOGIN_RETRY_MAX_ATTEMPTS`（默认 5 次，首次计入）后，本场不再发送 Cookie。将最大次数设为 `0` 可始终匿名采集。
 
 默认启用以 Fun-ASR-Nano 为首选的四层 ASR 流水线（`ASR_PRIMARY=funasr_nano`），也可切换到 Paraformer 或纯 Whisper：
@@ -306,7 +316,11 @@ ASR_PRIMARY=funasr_nano       # 默认；也可设为 paraformer 或 whisper
 ASR_VAD_MAX_SEGMENT_S=30      # Nano 的 FSMN-VAD 单句上限（秒）
 ASR_FALLBACK_WHISPER=true     # 主引擎失败时自动兜底
 TRANSCRIPT_LLM_REFINE_ENABLED=true  # 用已配置 LLM 整理正文并生成片段概括
+TRANSCRIPT_LLM_REFINE_MAX_TOKENS=65536  # 五分钟转写整理的最大输出预算
+HIGHLIGHT_LLM_MAX_TOKENS=65536      # 高光复核的最大输出预算（含推理 token）
 ```
+
+转写整理和高光复核默认各预留 `65536` 个最大输出 token，避免推理模型在处理五分钟切片时耗尽额度而没有正文；可按模型能力分别在 `128-65536` 和 `512-65536` 范围内调低。该值是单次请求上限，实际用量仍以模型返回的 token 数为准。
 
 实时转写页的“重新识别”可修复历史污染文本。操作会删除当前转写和未人工处理、未渲染的自动候选后重新排队；若已有人工审核、确认主题、成片或正在运行的任务，服务端会拒绝覆盖并说明原因。
 

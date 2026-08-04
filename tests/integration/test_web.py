@@ -20,6 +20,7 @@ def test_dashboard_and_room_crud(temp_db: None, monkeypatch: MonkeyPatch) -> Non
     """概览、添加直播间(mock 取流)、调阈值等核心 API 正常工作。"""
     from app.sources.bilibili.client import BilibiliLiveClient, RoomInfo
     from app.web.main import app
+    from app.web.services import rooms as room_service
 
     async def fake_room_info(self: BilibiliLiveClient, url: str) -> RoomInfo:  # noqa: ANN001
         return RoomInfo(
@@ -32,6 +33,10 @@ def test_dashboard_and_room_crud(temp_db: None, monkeypatch: MonkeyPatch) -> Non
         )
 
     monkeypatch.setattr(BilibiliLiveClient, "get_room_info", fake_room_info)
+    monkeypatch.setattr(room_service.settings, "highlight_threshold", 0.45)
+    monkeypatch.setattr(room_service.settings, "highlight_review_threshold", 0.40)
+    monkeypatch.setattr(room_service.settings, "highlight_auto_approve_threshold", 0.72)
+    monkeypatch.setattr(room_service.settings, "auto_publish_threshold", 0.80)
 
     with TestClient(app) as client:
         # 初始概览
@@ -178,8 +183,19 @@ def test_start_unauthorized_room_returns_400(temp_db: None) -> None:
 
 
 def test_candidate_listing_and_reject(temp_db: None) -> None:
-    """候选可被列出并拒绝。"""
-    from app.db.models import HighlightCandidate
+    """候选拒绝应同步终结任务，并从成品队列隐藏关联切片。"""
+    from sqlmodel import select
+
+    from app.db.models import (
+        CandidateStatus,
+        ClipStatus,
+        FinalClip,
+        HighlightCandidate,
+        HighlightEvent,
+        ReviewStatus,
+        SegmentTask,
+        TaskStatus,
+    )
     from app.db.session import get_session
     from app.web.main import app
 
@@ -196,6 +212,25 @@ def test_candidate_listing_and_reject(temp_db: None) -> None:
         db.add(cand)
         db.flush()
         cid = cand.id
+        assert cid is not None
+        event = HighlightEvent(candidate_id=cid, session_id=1)
+        db.add(event)
+        clip = FinalClip(candidate_id=cid, file_path="candidate-reviewing.mp4", status=ClipStatus.REVIEWING)
+        db.add(clip)
+        db.flush()
+        clip_id = clip.id
+        task = SegmentTask(
+            segment_id=9002,
+            session_id=1,
+            candidate_id=cid,
+            clip_id=clip_id,
+            stage=TaskStatus.AWAITING_PUBLISH_CONFIRMATION,
+        )
+        db.add(task)
+        db.flush()
+        task_id = task.id
+    assert clip_id is not None
+    assert task_id is not None
 
     with TestClient(app) as client:
         rows = client.get("/api/candidates").json()
@@ -206,6 +241,18 @@ def test_candidate_listing_and_reject(temp_db: None) -> None:
 
         rejected = client.get("/api/candidates?status=rejected").json()
         assert any(c["id"] == cid for c in rejected)
+        clips = client.get("/api/clips").json()
+        assert all(clip["id"] != clip_id for clip in clips)
+
+    with get_session() as db:
+        candidate = db.get(HighlightCandidate, cid)
+        event = db.exec(select(HighlightEvent).where(HighlightEvent.candidate_id == cid)).one()
+        clip = db.get(FinalClip, clip_id)
+        task = db.get(SegmentTask, task_id)
+    assert candidate is not None and candidate.status == CandidateStatus.REJECTED
+    assert event.review_status == ReviewStatus.REJECTED
+    assert clip is not None and clip.status == ClipStatus.REJECTED
+    assert task is not None and task.stage == TaskStatus.CANCELLED
 
 
 def test_trends_endpoint(temp_db: None) -> None:

@@ -1,22 +1,22 @@
 {
   "format_version": 4,
   "artifact_class": "fixture",
-  "engine_pack_version": "0.1.16.4-alpha",
+  "engine_pack_version": "0.1.16.5-alpha",
   "engine_pack_api_version": 4,
   "model_set_version": 4,
   "payload_schema_version": 4,
   "compatible_app": {
-    "min": "0.1.16.4-alpha",
+    "min": "0.1.16.5-alpha",
     "max_exclusive": "0.1.17"
   },
-  "filename": "BiliLiveCut-EnginePack-0.1.16.4-alpha.zip",
+  "filename": "BiliLiveCut-EnginePack-0.1.16.5-alpha.zip",
   "size_bytes": 11277,
   "crc32": "16614544",
   "sha256": "c972b5147c2d8620add281e7aee316d069798b30d8ad841ee2f6ca5f6380dabf",
   "content_manifest_sha256": "ff7e7a25ef4cdb8af6e3810d4821bf53b7532ea8adb74da5d95fe7d77ae4a3a3",
-  "model_lock_sha256": "dc43b6254c616e778c4ee527b5be4694a6daa08fa3b90f2c99a294e36dc58d04",
-  "source_commit": "5086174769859aff4b55924b59e63ecb8f5f1ecf",
-  "builder_commit": "5086174769859aff4b55924b59e63ecb8f5f1ecf",
+  "model_lock_sha256": "3913c670e6b871705ee2720baf72bb6c293573abebc4c136d2dfec85a2b8e1a4",
+  "source_commit": "c8c5e50eacabf58d8e61a1bd1b4de7971ae7475c",
+  "builder_commit": "c8c5e50eacabf58d8e61a1bd1b4de7971ae7475c",
   "build_timestamp": "2026-08-01T22:42:54",
   "expected_engine_ids": [
     "whisper",

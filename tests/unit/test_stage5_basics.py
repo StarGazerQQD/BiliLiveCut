@@ -41,14 +41,17 @@ def test_settings_fields_boundary_values() -> None:
     """Settings fields respect their declared boundaries."""
     from app.core.config import Settings
 
-    s = Settings()
+    s = Settings(_env_file=None)
     assert s.segment_duration_s == 300
     assert s.reconnect_max_backoff_s >= 1
     assert s.live_poll_interval_s >= 5
+    assert s.recording_reconnect_max_attempts == 20
+    assert s.recording_reconnect_max_elapsed_s == 300
     assert s.danmaku_login_retry_max_attempts == 5
     assert s.danmaku_login_retry_interval_s == 60.0
     assert s.transcript_llm_refine_enabled is True
-    assert s.transcript_llm_refine_max_tokens == 4096
+    assert s.transcript_llm_refine_max_tokens == 65536
+    assert s.highlight_llm_max_tokens == 65536
     assert s.asr_primary_max_concurrency >= 1
     assert s.asr_auxiliary_max_concurrency >= 1
     assert s.asr_review_max_concurrency >= 1
@@ -77,6 +80,32 @@ def test_danmaku_login_retry_settings_are_configurable(monkeypatch: MonkeyPatch)
         Settings(_env_file=None, danmaku_login_retry_interval_s=0.5)
 
 
+def test_recording_reconnect_limits_are_configurable(monkeypatch: MonkeyPatch) -> None:
+    """录制连续重试次数与时长应支持环境变量和零值禁用。"""
+    from pydantic import ValidationError
+
+    from app.core.config import Settings
+
+    monkeypatch.setenv("RECORDING_RECONNECT_MAX_ATTEMPTS", "12")
+    monkeypatch.setenv("RECORDING_RECONNECT_MAX_ELAPSED_S", "180")
+    configured = Settings(_env_file=None)
+
+    assert configured.recording_reconnect_max_attempts == 12
+    assert configured.recording_reconnect_max_elapsed_s == 180
+    disabled = Settings(
+        _env_file=None,
+        recording_reconnect_max_attempts=0,
+        recording_reconnect_max_elapsed_s=0,
+    )
+    assert disabled.recording_reconnect_max_attempts == 0
+    assert disabled.recording_reconnect_max_elapsed_s == 0
+
+    with pytest.raises(ValidationError):
+        Settings(_env_file=None, recording_reconnect_max_attempts=-1)
+    with pytest.raises(ValidationError):
+        Settings(_env_file=None, recording_reconnect_max_elapsed_s=86401)
+
+
 def test_recording_pipeline_env_and_runtime_override(temp_db: None, monkeypatch: MonkeyPatch) -> None:
     """实时转写默认值来自环境配置，控制台运行时设置可覆盖。"""
     from app.core import settings_store
@@ -99,8 +128,12 @@ def test_transcript_refinement_env_and_runtime_override(temp_db: None, monkeypat
     from app.core.config import Settings, settings
 
     monkeypatch.setenv("TRANSCRIPT_LLM_REFINE_ENABLED", "false")
+    monkeypatch.setenv("TRANSCRIPT_LLM_REFINE_MAX_TOKENS", "20000")
+    monkeypatch.setenv("HIGHLIGHT_LLM_MAX_TOKENS", "24000")
     configured = Settings(_env_file=None)
     assert configured.transcript_llm_refine_enabled is False
+    assert configured.transcript_llm_refine_max_tokens == 20000
+    assert configured.highlight_llm_max_tokens == 24000
 
     monkeypatch.setattr(settings, "transcript_llm_refine_enabled", False)
     assert settings_store.transcript_llm_refine_enabled() is False

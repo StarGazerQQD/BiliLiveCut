@@ -7,7 +7,7 @@ def test_settings_has_sensible_defaults() -> None:
     """All ASR and core settings have reasonable default values."""
     from app.core.config import Settings
 
-    s = Settings()
+    s = Settings(_env_file=None)
     assert s.ffmpeg_path
     assert s.ffprobe_path
     assert s.segment_duration_s == 300

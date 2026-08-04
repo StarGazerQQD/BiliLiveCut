@@ -54,6 +54,67 @@ def test_candidate_time_bounds_clamps_to_recorded_range() -> None:
     assert end == base + timedelta(seconds=330)
 
 
+def test_candidate_time_bounds_cannot_end_before_analysis_window() -> None:
+    """LLM 把事件开始点误填为出点时，不得切掉爆点和配置的后文。"""
+    base = datetime(2026, 8, 3, tzinfo=UTC)
+
+    start, end, peak = candidate_time_bounds(
+        segment_start=base,
+        available_start=base,
+        available_end=base + timedelta(seconds=120),
+        peak_offset_s=60,
+        pre_roll_s=20,
+        post_roll_s=15,
+        suggested_start_offset_s=45,
+        suggested_end_offset_s=55,
+        silences=[],
+    )
+
+    assert start == base + timedelta(seconds=40)
+    assert peak == base + timedelta(seconds=60)
+    assert end == base + timedelta(seconds=75)
+
+
+def test_candidate_time_bounds_snaps_only_outward() -> None:
+    """自然停顿吸附不得把 LLM 建议的入点推后或把出点提前。"""
+    base = datetime(2026, 8, 3, tzinfo=UTC)
+
+    start, end, _ = candidate_time_bounds(
+        segment_start=base,
+        available_start=base,
+        available_end=base + timedelta(seconds=120),
+        peak_offset_s=50,
+        pre_roll_s=10,
+        post_roll_s=10,
+        suggested_start_offset_s=35,
+        suggested_end_offset_s=70,
+        silences=[(37, 39), (66, 68)],
+    )
+
+    assert start == base + timedelta(seconds=35)
+    assert end == base + timedelta(seconds=70)
+
+
+def test_candidate_time_bounds_may_snap_outward_to_natural_pauses() -> None:
+    """候选外侧五秒内存在自然停顿时仍应允许扩展到该停顿。"""
+    base = datetime(2026, 8, 3, tzinfo=UTC)
+
+    start, end, _ = candidate_time_bounds(
+        segment_start=base,
+        available_start=base,
+        available_end=base + timedelta(seconds=120),
+        peak_offset_s=50,
+        pre_roll_s=10,
+        post_roll_s=10,
+        suggested_start_offset_s=None,
+        suggested_end_offset_s=None,
+        silences=[(35, 37), (63, 65)],
+    )
+
+    assert start == base + timedelta(seconds=36)
+    assert end == base + timedelta(seconds=64)
+
+
 def test_contiguous_recording_start_stops_at_stream_gap() -> None:
     """前文扩展不得跨越断流缺口。"""
     from app.db.models import RawSegment

@@ -113,7 +113,17 @@ def test_review_submission_releases_claim_and_can_be_undone(
     monkeypatch: MonkeyPatch,
 ) -> None:
     """提交决策后自动释放，重新领取后可撤销并留下审计记录。"""
-    from app.db.models import CandidateStatus, HighlightCandidate, HighlightEvent, ReviewStatus, SystemLog
+    from app.db.models import (
+        CandidateStatus,
+        ClipStatus,
+        FinalClip,
+        HighlightCandidate,
+        HighlightEvent,
+        ReviewStatus,
+        SegmentTask,
+        SystemLog,
+        TaskStatus,
+    )
     from app.db.session import get_session
     from app.pipeline import highlight_feedback
 
@@ -131,6 +141,32 @@ def test_review_submission_releases_claim_and_can_be_undone(
     monkeypatch.setattr(highlight_feedback, "record_candidate_review_feedback", record_feedback)
 
     candidate_id = _seed_candidate()
+    with get_session() as db:
+        candidate = db.get(HighlightCandidate, candidate_id)
+        assert candidate is not None
+        clip = FinalClip(
+            candidate_id=candidate_id,
+            file_path="reviewing.mp4",
+            status=ClipStatus.REVIEWING,
+        )
+        db.add(clip)
+        db.flush()
+        clip_id = clip.id
+        task = SegmentTask(
+            segment_id=9001,
+            session_id=candidate.session_id,
+            candidate_id=candidate_id,
+            clip_id=clip_id,
+            stage=TaskStatus.AWAITING_PUBLISH_CONFIRMATION,
+            stage_key="stage:9001:awaiting_publish_confirmation",
+            idempotency_key="9001:awaiting_publish_confirmation",
+        )
+        db.add(task)
+        db.flush()
+        task_id = task.id
+    assert clip_id is not None
+    assert task_id is not None
+
     auth = ("alice", "alice-pass")
     with review_client as client:
         client.post(f"/review/api/{candidate_id}/claim", json={"force": False}, auth=auth)
@@ -140,14 +176,18 @@ def test_review_submission_releases_claim_and_can_be_undone(
             auth=auth,
         )
         after_submit = client.get(f"/review/api/{candidate_id}", auth=auth).json()
+        clips_after_submit = client.get("/api/clips", auth=("admin", "admin-pass")).json()
         client.post(f"/review/api/{candidate_id}/claim", json={"force": False}, auth=auth)
         undone = client.post(f"/review/api/{candidate_id}/undo", auth=auth)
+        clips_after_undo = client.get("/api/clips", auth=("admin", "admin-pass")).json()
         audit = client.get("/review/api/audit", auth=("admin", "admin-pass"))
 
     assert submitted.status_code == 200
     assert after_submit["workflow"]["claim"]["active"] is False
+    assert all(item["id"] != clip_id for item in clips_after_submit)
     assert undone.status_code == 200
     assert undone.json()["review_status"] == ReviewStatus.PENDING
+    assert any(item["id"] == clip_id and item["status"] == ClipStatus.REVIEWING for item in clips_after_undo)
     assert audit.status_code == 200
     assert {item["event"] for item in audit.json()["items"]} >= {
         "review.claim",
@@ -158,9 +198,15 @@ def test_review_submission_releases_claim_and_can_be_undone(
     with get_session() as db:
         candidate = db.get(HighlightCandidate, candidate_id)
         event = db.exec(select(HighlightEvent).where(HighlightEvent.candidate_id == candidate_id)).one()
+        clip = db.get(FinalClip, clip_id)
+        task = db.get(SegmentTask, task_id)
         logs = db.exec(select(SystemLog).where(SystemLog.module == "review")).all()
     assert candidate is not None and candidate.status == CandidateStatus.PENDING
     assert event.review_status == ReviewStatus.PENDING
+    assert clip is not None and clip.status == ClipStatus.REVIEWING
+    assert task is not None and task.stage == TaskStatus.AWAITING_PUBLISH_CONFIRMATION
+    assert task.stage_key == "stage:9001:awaiting_publish_confirmation"
+    assert task.idempotency_key == "9001:awaiting_publish_confirmation"
     assert len(logs) >= 4
     assert feedback_calls == [
         (candidate_id, ReviewStatus.REJECTED, "alice"),
@@ -318,8 +364,13 @@ def test_multi_room_queues_keep_source_identity_and_candidate_transcript(
         db.add(
             Transcript(
                 segment_id=segment_a2.id,
-                text="爆点",
-                words_json=json.dumps([{"word": "爆点", "start": 5, "end": 7}]),
+                text="爆点。候选结束后才发生的内容。",
+                words_json=json.dumps(
+                    [
+                        {"word": "爆点", "start": 5, "end": 7},
+                        {"word": "候选结束后才发生的内容", "start": 120, "end": 125},
+                    ]
+                ),
             )
         )
         db.add(

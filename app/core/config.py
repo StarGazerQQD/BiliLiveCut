@@ -66,6 +66,10 @@ class Settings(BaseSettings):
     stream_quality: int = 10000
     reconnect_max_backoff_s: int = Field(default=30, ge=1)
     live_poll_interval_s: int = Field(default=15, ge=5)
+    # 连续无法恢复录制的最大失败次数；0=不按次数停止。
+    recording_reconnect_max_attempts: int = Field(default=20, ge=0, le=10000)
+    # 从断流开始计算的最长重试时间（秒）；0=不按时间停止。
+    recording_reconnect_max_elapsed_s: int = Field(default=300, ge=0, le=86400)
     collect_danmaku: bool = True  # 录制期间是否同时采集弹幕
     # 单场录制使用登录 Cookie 获取弹幕 token 的最大失败次数（首次计入）；0=始终匿名。
     danmaku_login_retry_max_attempts: int = Field(default=5, ge=0, le=100)
@@ -142,7 +146,9 @@ class Settings(BaseSettings):
     llm_daily_budget: float = 0.0
     # 每个录制切片完成 ASR 后，是否调用 LLM 整理正文并生成摘要。
     transcript_llm_refine_enabled: bool = True
-    transcript_llm_refine_max_tokens: int = Field(default=4096, ge=128, le=8192)
+    transcript_llm_refine_max_tokens: int = Field(default=65536, ge=128, le=65536)
+    # 高光复核需要同时容纳五分钟转写、模型推理和结构化判断结果。
+    highlight_llm_max_tokens: int = Field(default=65536, ge=512, le=65536)
 
     # 兼容旧配置:若未填 llm_* 而填了 anthropic_*,仍可回退读取(已废弃,仅为兼容保留)。
     anthropic_api_key: str = Field(default="", repr=False)

@@ -31,9 +31,18 @@ def set_candidate_status(candidate_id: int, status: str, *, reviewed_by: str = "
         cand = db.get(HighlightCandidate, candidate_id)
         if cand is None:
             raise ValueError(f"候选不存在: id={candidate_id}")
-        cand.status = status
         session_id = cand.session_id
-        db.add(cand)
+        if status == CandidateStatus.REJECTED:
+            from app.pipeline.rejection import reject_candidate_and_outputs
+
+            reject_candidate_and_outputs(
+                db,
+                candidate_id,
+                rejected_by=reviewed_by,
+            )
+        else:
+            cand.status = status
+            db.add(cand)
 
     # V0.1.2:记录阈值自学习反馈。
     if status in (CandidateStatus.APPROVED, CandidateStatus.REJECTED):

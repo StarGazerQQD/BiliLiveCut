@@ -11,6 +11,7 @@ import json
 import logging
 import time
 from dataclasses import dataclass
+from datetime import timedelta
 from enum import StrEnum
 from typing import Any
 
@@ -19,6 +20,7 @@ from sqlmodel import Session, select
 
 from app.analysis import audio as audio_mod
 from app.analysis.keywords import match_keywords
+from app.analysis.transcript_windows import extract_transcript_window
 from app.core.config import settings
 from app.db.models import (
     CandidateStatus,
@@ -289,6 +291,7 @@ def commit_highlight(lease: TaskLease, compute_result: dict[str, Any], ms: int) 
                 compute_result.get("features_json", "{}"),
                 compute_result.get("reason", ""),
                 segment_id=segment_id,
+                asr_text=compute_result.get("asr_text"),
             )
 
             mark_completed(task, ms)
@@ -387,6 +390,7 @@ def _get_or_create_event(
     reason: str,
     *,
     segment_id: int | None = None,
+    asr_text: str | None = None,
 ) -> int:
     """并发幂等获取或创建 HighlightEvent。
 
@@ -405,6 +409,9 @@ def _get_or_create_event(
         if existing.segment_id is None and segment_id is not None:
             existing.segment_id = segment_id
             db.add(existing)
+        if existing.asr_text is None and asr_text:
+            existing.asr_text = asr_text
+            db.add(existing)
         _logger.debug("event_reused: eid=%s cid=%s (幂等复用)", existing.id, candidate_id)
         return existing.id
 
@@ -420,6 +427,7 @@ def _get_or_create_event(
         highlight_score=highlight_score,
         features_json=features_json,
         reason=reason,
+        asr_text=asr_text,
         review_status=ReviewStatus.PENDING,
         review_by="auto",
     )
@@ -517,6 +525,7 @@ def _score_segment_draft(segment_id: int) -> dict[str, Any] | None:
         if seg_start_ts is None or seg_end_ts is None:
             return None
         duration = segment.duration_s or float(settings.segment_duration_s)
+        segment_seq = segment.seq
         session_id = segment.session_id
         room_id = room.id if room else None
         threshold = room.highlight_threshold if room else settings.highlight_threshold
@@ -544,20 +553,36 @@ def _score_segment_draft(segment_id: int) -> dict[str, Any] | None:
             f"片段转写质量不合格，已阻止高光与 LLM 分析: segment={segment_id} reason={transcript_quality.reason}"
         )
 
-    words = json.loads(words_json) if words_json else []
-
     # 1) 规则特征
     feats = audio_mod.analyze_audio(file_path)
-    kw_score, kw_hits = match_keywords(text)
+    peak_off = feats.peak_offset()
+    analysis_start_s = max(0.0, peak_off - cfg.pre_roll_s)
+    analysis_end_s = min(duration, peak_off + cfg.post_roll_s)
+    analysis_window = extract_transcript_window(
+        text,
+        words_json,
+        start_s=analysis_start_s,
+        end_s=analysis_end_s,
+        duration_s=duration,
+    )
+    judgement_text = analysis_window.text
+    analysis_duration_s = analysis_end_s - analysis_start_s
+    analysis_start_ts = seg_start_ts + timedelta(seconds=analysis_start_s)
+    analysis_end_ts = seg_start_ts + timedelta(seconds=analysis_end_s)
+    kw_score, kw_hits = match_keywords(judgement_text)
     features: dict[str, float] = {
         "volume": feats.volume_score(),
         "keywords": kw_score,
-        "speech_rate": speech_rate_score(words, duration),
-        "laughter": laughter_score(text),
-        "danmaku": _dm_score(session_id, seg_start_ts, seg_end_ts),
+        "speech_rate": speech_rate_score(analysis_window.words, analysis_duration_s),
+        "laughter": laughter_score(judgement_text),
+        "danmaku": _dm_score(session_id, analysis_start_ts, analysis_end_ts),
     }
     if use_dm_sentiment:
-        features["danmaku_sentiment"] = danmaku_sentiment_score(session_id, seg_start_ts, seg_end_ts)
+        features["danmaku_sentiment"] = danmaku_sentiment_score(
+            session_id,
+            analysis_start_ts,
+            analysis_end_ts,
+        )
     audio_event_contribs: list[str] = []
     if settings.asr_sensevoice and settings.asr_sensevoice_enabled:
         aux_json = transcript.auxiliary_json if transcript else None
@@ -566,7 +591,7 @@ def _score_segment_draft(segment_id: int) -> dict[str, Any] | None:
             features["audio_events"] = audio_evt_score
     trend_hits: list[str] = []
     if settings.trend_enabled:
-        trend_score, trend_hits = _trend_score(text)
+        trend_score, trend_hits = _trend_score(judgement_text)
         features["trend"] = trend_score
     rule_score = weighted_rule_score(features, cfg.weights)
     plugin_dispatch: HighlightDispatch | None = None
@@ -620,7 +645,7 @@ def _score_segment_draft(segment_id: int) -> dict[str, Any] | None:
         }
 
     # 3) LLM 复核
-    judgement = llm_mod.judge_highlight(text, features)
+    judgement = llm_mod.judge_highlight(judgement_text, features, "", analysis_start_s)
     llm_score = judgement.score if judgement else None
     reason = judgement.reason if judgement else "规则命中(未启用/未触发 LLM)"
     highlight_score = fuse_scores(primary_score, llm_score, cfg.alpha, cfg.beta)
@@ -648,7 +673,6 @@ def _score_segment_draft(segment_id: int) -> dict[str, Any] | None:
         }
 
     # 4) 边界吸附
-    peak_off = feats.peak_offset()
     start_ts, end_ts, peak_ts = candidate_time_bounds(
         segment_start=seg_start_ts,
         available_start=available_start,
@@ -694,7 +718,7 @@ def _score_segment_draft(segment_id: int) -> dict[str, Any] | None:
     else:
         initial_status = CandidateStatus.REJECTED
 
-    danmaku_explain = danmaku_score_explain(session_id, seg_start_ts, seg_end_ts)
+    danmaku_explain = danmaku_score_explain(session_id, analysis_start_ts, analysis_end_ts)
 
     features_json = _merge_plugin_metadata(
         json.dumps(
@@ -703,6 +727,13 @@ def _score_segment_draft(segment_id: int) -> dict[str, Any] | None:
                 "keyword_hits": kw_hits,
                 "audio": _audio_meta(feats),
                 "danmaku_explain": danmaku_explain,
+                "analysis_window": {
+                    "segment_id": segment_id,
+                    "segment_seq": segment_seq,
+                    "start_offset_s": round(analysis_start_s, 3),
+                    "end_offset_s": round(analysis_end_s, 3),
+                    "precise_transcript": analysis_window.precise,
+                },
             },
             ensure_ascii=False,
         ),
@@ -726,6 +757,7 @@ def _score_segment_draft(segment_id: int) -> dict[str, Any] | None:
         "highlight_score": highlight_score,
         "features_json": features_json,
         "reason": reason,
+        "asr_text": judgement_text,
         "initial_status": initial_status,
         "dedup_hash": dedup_hash_val,
         "score": highlight_score,

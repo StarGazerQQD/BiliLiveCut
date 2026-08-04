@@ -1,14 +1,25 @@
 # BiliLiveCut · 即插即用版（`packaging/portable/`，原 Publish-PnP）
 
-**版本：V0.1.16.4 Alpha** (`0.1.16.4-alpha`)
+**版本：V0.1.16.5 Alpha** (`0.1.16.5-alpha`)
 
 > **普通用户请先阅读：[Portable 小白使用说明](USER_GUIDE_ZH.md)**。该说明按 Windows 用户从下载、校验、解压、首次启动到第一次录制的顺序编写。
 
 BiliLiveCut 是一个**全自动 AI 直播切片系统**：监听 Bilibili 直播间 → 实时录制 + 转写 → 识别高光爆点 → 生成剪辑成品 + 文案。
 
-这个 `packaging/portable/` 目录是**即插即用分发版**。Launcher 内嵌了当前发布基线的完整业务源码 (Commit `5086174`)，**双击即用，首次启动不需要从 GitHub 下载业务源码**。Full 版自带 Python 3.12、离线依赖和 FFmpeg；Lite 版需要目标电脑已有 Python 3.11/3.12，并自行满足 FFmpeg 等运行组件。
+这个 `packaging/portable/` 目录是**即插即用分发版**。Launcher 内嵌了当前发布基线的完整业务源码 (Commit `c8c5e50`)，**双击即用，首次启动不需要从 GitHub 下载业务源码**。Full 版自带 Python 3.12、离线依赖和 FFmpeg；Lite 版需要目标电脑已有 Python 3.11/3.12，并自行满足 FFmpeg 等运行组件。
 
 > **与旧版的关键区别**：旧版 PnP 首次启动从 GitHub 下载 `main` 分支源码（不稳定，且国内访问 GitHub 经常失败）。新版源码从 **EXE 内置 Payload** 释放，版本固定、SHA-256 可校验，彻底摆脱 GitHub 依赖。
+
+---
+
+## V0.1.16.5 Alpha：严重正确性修复
+
+- 高光规则评分与 LLM 复核统一消费音频峰值附近的同一候选窗口，候选理由、时间偏移和成片不再混入五分钟分片后续发生的内容。
+- `start_offset` 是视频开始点，`end_offset` 是理由所述事件完整结束后的出点；换算到原始分片后，最终成片必须覆盖完整分析窗口，LLM 与静音吸附只能向外扩展。
+- 拒绝候选会原子同步审核事件、仍可取消的任务和全部未发布关联成片；拒绝记录不会继续以 `reviewing` 出现在成品队列，已经发布的外部结果不会被事后改写。
+- 主播下播或持续断流时，连续重试默认最多 20 次或 300 秒，任一先到即自动收尾；成功产出新片段后重试预算归零。
+- 转写整理与高光复核默认各允许最多 `65536` 个输出 token。长转写的局部解码复读会触发 Paraformer、Whisper 回退，LLM 只保守清理残余的 ASR/VAD 边界重复。
+- 本补丁不会静默改写已经人工审核、渲染或发布的历史数据。需要重建旧转写时请使用“实时转写 → 重新识别”；存在受保护下游资产时，服务会拒绝覆盖并说明原因。
 
 ---
 
@@ -35,7 +46,7 @@ BiliLiveCut 是一个**全自动 AI 直播切片系统**：监听 Bilibili 直�
 | 旧版 (Publish-PnP) | 新版 (packaging/portable) |
 |---|---|
 | 首次运行从 GitHub 下载 `main` 分支源码 | 首次运行从 **EXE 内置 Payload** 释放固定版本源码 |
-| 源码版本不确定（随 `main` 漂移） | 源码固定于当前发布基线 `5086174`，SHA-256 可校验 |
+| 源码版本不确定（随 `main` 漂移） | 源码固定于当前发布基线 `c8c5e50`，SHA-256 可校验 |
 | 无 Manifest / 无法校验完整性 | 完整 `payload_manifest.json` 含逐文件 SHA-256 |
 | 无版本 Overlay 机制 | 受控 Release Metadata Overlay (仅 6 个文件可修改) |
 | 无 Runtime 原子安装 | `staging → rename` 原子切换 + `current.json` 原子更新 |
@@ -159,7 +170,7 @@ Lite 和 Full 均不携带 ASR 模型。四个引擎模型统一由独立的 **E
 
 ### 使用方式
 
-1. 下载 BiliLiveCut-EnginePack-0.1.16.4-alpha.zip
+1. 下载 BiliLiveCut-EnginePack-0.1.16.5-alpha.zip
 2. 放在 Launcher EXE **同级目录** (或 packages/ 子目录)
 3. 双击启动 Launcher → 自动 **CRC32 校验** → 校验通过即离线安装 (网络请求 0)
 4. 无本地包或校验失败 → 自动**全量在线下载**四个引擎模型
@@ -202,7 +213,7 @@ python build_engine_pack.py --from-cache  # 从已验证缓存构建
 
 输出:
 
-- dist/engine-pack/BiliLiveCut-EnginePack-0.1.16.4-alpha.zip
+- dist/engine-pack/BiliLiveCut-EnginePack-0.1.16.5-alpha.zip
 - dist/engine-pack/engine-pack-manifest.json
 - dist/engine-pack/CRC32SUMS.txt
 - dist/engine-pack/SHA256SUMS.txt
@@ -240,7 +251,7 @@ resources/engine_pack_info.json (本地 Engine Pack 构建后可供 Lite/Full EX
 | ⑥ | 生成 `.env` 配置 | — | 含合理默认值 |
 
 > **断点续跑**：任何一步失败或中断，再次双击自动从断点继续。
-> **源码固定**：本次发布源码来源固定为 Commit `5086174`，不随 GitHub 上游变动。
+> **源码固定**：本次发布源码来源固定为 Commit `c8c5e50`，不随 GitHub 上游变动。
 
 4. 部署完成后打开 **Web 管理控制台**（默认 `http://127.0.0.1:8000`；未自动弹出时请手动访问）
 
@@ -285,7 +296,7 @@ packaging/portable/                     # ★ 即插即用分发版根目录 (�
 ├── launcher.py                      # launcher.exe 的 Python 源码（可选，便于审查）
 ├── build_exe.py                     # Lite 版构建 (PyInstaller one-file)
 ├── build_full_bundle.py             # Full 完整包构建脚本
-├── build_payload.py                 # Payload 构建器 (5086174 → source_payload.zip)
+├── build_payload.py                 # Payload 构建器 (c8c5e50 → source_payload.zip)
 ├── build_bundle.py                  # 兼容旧版预置打包（保留）
 ├── portable_launcher.spec           # PyInstaller 规格文件
 ├── pip.ini                          # pip 镜像源配置（阿里云 + 清华备用）
@@ -301,7 +312,7 @@ packaging/portable/                     # ★ 即插即用分发版根目录 (�
 └── README.md                        # 本文件
 ```
 
-> **源码去哪了？** `app/` `config/` `pyproject.toml` 等业务文件**不在分发目录中**，而是内嵌在 `launcher.exe` 内部作为 **source_payload.zip**（从当前发布基线 Commit `5086174` 提取，SHA-256 可校验）。`launcher.exe` 首次运行时自动将 Payload 解压到 `runtime/releases/` 目录。PnP 目录始终保持最小体积，源码不受工作区未提交内容影响。
+> **源码去哪了？** `app/` `config/` `pyproject.toml` 等业务文件**不在分发目录中**，而是内嵌在 `launcher.exe` 内部作为 **source_payload.zip**（从当前发布基线 Commit `c8c5e50` 提取，SHA-256 可校验）。`launcher.exe` 首次运行时自动将 Payload 解压到 `runtime/releases/` 目录。PnP 目录始终保持最小体积，源码不受工作区未提交内容影响。
 
 ### 运行时动态生成（首次启动后）
 
@@ -309,7 +320,7 @@ packaging/portable/                     # ★ 即插即用分发版根目录 (�
 ├── runtime/                  # ★ Runtime 版本管理
 │   ├── current.json          #   当前激活的 Release 信息
 │   └── releases/
-│       └── 0.1.16.4-alpha+<source-sha>+<payload-hash>/  # 内容寻址的固定版本源码
+│       └── 0.1.16.5-alpha+<source-sha>+<payload-hash>/  # 内容寻址的固定版本源码
 │
 ├── .venv/                    # Python 虚拟环境（launcher.exe 自动创建）
 ├── models/                   # 四引擎 ASR 模型 (由 Engine Pack 或在线下载安装)
@@ -388,6 +399,8 @@ PREFERRED_STREAM_PROTOCOL=hls    # 取流协议：hls（稳定）或 flv
 STREAM_QUALITY=10000             # 清晰度：10000=原画，400=蓝光，250=超清
 RECONNECT_MAX_BACKOFF_S=30       # 断流后最大重试等待秒数
 LIVE_POLL_INTERVAL_S=15          # 检查直播间开播/下播的间隔（秒）
+RECORDING_RECONNECT_MAX_ATTEMPTS=20  # 连续无法恢复的次数上限；成功产出片段后归零，0=禁用次数限制
+RECORDING_RECONNECT_MAX_ELAPSED_S=300 # 连续断流最长秒数；成功产出片段后归零，0=禁用时间限制
 COLLECT_DANMAKU=true             # 录制时采集公开弹幕（登录优先、匿名兜底）
 DANMAKU_LOGIN_RETRY_MAX_ATTEMPTS=5  # 单场登录失败上限（首次计入）；0=始终匿名
 DANMAKU_LOGIN_RETRY_INTERVAL_S=60   # 匿名采集期间重试登录链路的间隔（秒）
@@ -427,7 +440,7 @@ WHISPER_DEVICE=cpu                       # Whisper 设备
 WHISPER_COMPUTE_TYPE=int8                # CPU 推荐 int8
 ```
 
-录制 TS 会先转换为 16 kHz 单声道 PCM WAV，Nano 再复用 Engine Pack 中的 FSMN-VAD 拆句。空输出或连续重复退化会依次切换 Paraformer、Whisper；最终仍不合格时不会落库，也不会调用 LLM 或高光分析。实时转写页可对历史污染结果执行“重新识别”，人工审核、确认主题与成片资产不会被自动覆盖。
+录制 TS 会先转换为 16 kHz 单声道 PCM WAV，Nano 再复用 Engine Pack 中的 FSMN-VAD 拆句。空输出、整段重复退化或长正文中的局部解码循环会依次切换 Paraformer、Whisper；最终仍不合格时不会落库，也不会调用 LLM 或高光分析。LLM 整理会保守清除残余的 ASR/VAD 边界复读，并保留有语义的强调、复述和口头禅。实时转写页可对历史污染结果执行“重新识别”，人工审核、确认主题与成片资产不会被自动覆盖。
 
 ### 大模型（可选，用于转写梳理 / 高光复核 / 文案 / 网感采集）
 
@@ -441,10 +454,11 @@ LLM_PRICE_INPUT_PER_M=0              # 每百万 token 输入价格（0=不计�
 LLM_PRICE_OUTPUT_PER_M=0             # 每百万 token 输出价格（0=不计费）
 LLM_DAILY_BUDGET=0                   # 每日预算上限（0=不限）
 TRANSCRIPT_LLM_REFINE_ENABLED=true   # 每个切片 ASR 后整理正文并生成概括；失败保留原始文本
-TRANSCRIPT_LLM_REFINE_MAX_TOKENS=4096  # 覆盖约 5 分钟转写正文与片段概括的最大输出 token
+TRANSCRIPT_LLM_REFINE_MAX_TOKENS=65536  # 五分钟转写整理的最大输出预算
+HIGHLIGHT_LLM_MAX_TOKENS=65536        # 高光复核的最大输出预算（含推理 token）
 ```
 
-**多模型配置**：Web 控制台「模型」Tab 可同时添加多个服务商（DeepSeek / 通义千问 / Kimi / 智谱 GLM 等），设置优先级，某个不可用时自动降级到下一个。“测试连通”直接测试当前表单且不会保存 API Key；页面会显示每个服务商的响应或错误详情，确认无误后再点击“保存全部”。转写梳理可在「配置 → 功能开关」独立关闭，关闭后仍保留本地 ASR 原文。
+**多模型配置**：Web 控制台「模型」Tab 可同时添加多个服务商（DeepSeek / 通义千问 / Kimi / 智谱 GLM 等），设置优先级，某个不可用时自动降级到下一个。“测试连通”直接测试当前表单且不会保存 API Key；页面会显示每个服务商的响应或错误详情，确认无误后再点击“保存全部”。转写梳理可在「配置 → 功能开关」独立关闭，关闭后仍保留本地 ASR 原文。两类五分钟切片请求默认各预留 `65536` 个最大输出 token，实际消耗仍以服务商返回为准。
 
 ### 网感资料库（可选，用于热点采集）
 
@@ -465,12 +479,16 @@ TREND_MATCH_DAYS=7               # 高光评分参考"近期"窗口（天）
 ### 高光判断阈值
 
 ```ini
-HIGHLIGHT_INIT_THRESHOLD=0.5     # 进入 LLM 复核的初筛阈值（0-1）
-HIGHLIGHT_THRESHOLD=0.65         # 进入候选池的综合评分阈值（0-1）
-AUTO_PUBLISH_THRESHOLD=0.85      # 全自动模式下直接发布的阈值（0-1）
+HIGHLIGHT_INIT_THRESHOLD=0.35    # 进入 LLM 复核的初筛阈值（0-1）
+HIGHLIGHT_THRESHOLD=0.45         # 进入候选池的综合评分阈值（0-1）
+HIGHLIGHT_REVIEW_THRESHOLD=0.40  # 进入人工审核的综合评分阈值（0-1）
+HIGHLIGHT_AUTO_APPROVE_THRESHOLD=0.72  # 自动批准候选的综合评分阈值（0-1）
+AUTO_PUBLISH_THRESHOLD=0.80      # 全自动模式下直接发布的阈值（0-1）
 ```
 
 > 阈值越低越容易切片（更多候选但可能含低质），越高越严格（少而精）。
+
+高光复核理由、关键词等文本特征只读取音频峰值对应的候选窗口；最终成片强制完整覆盖该分析窗口，LLM 只能向外扩展边界，静音吸附也不会向内切掉理由所描述的事件。候选审核正文和投稿文案会按最终保存的成片边界再次裁剪；已有词级时间戳时精确过滤，旧数据缺少时间戳时按片段时长比例近似裁剪。
 
 ### 切片后处理
 
@@ -517,6 +535,8 @@ BILIUP_UPLOAD_CMD=                          # 自定义上传命令模板
 7. 已产生候选时，可在 **「候选审核」Tab** 点击「批准并出片」，再到 **「成品切片」Tab** 查看
 8. 成品（MP4 + 封面 + 文案）输出在 `storage/clips/` 目录；房间“自动上传”还需配合“上传与发布”页的全局总开关
 
+拒绝候选会同步停止其未终结工作流，并从成品列表隐藏所有未发布的关联切片；已经发布的记录保留真实外部状态。审片预览与 LLM 理由使用同一候选时间窗，最终成片至少完整覆盖该窗口。
+
 > **可选增强**：在 `.env` 配置 `LLM_API_KEY` 后，高光复核和文案生成将由大模型辅助（否则走纯规则，同样可用）。
 > **安全建议**：多人共用或暴露在局域网时，设置 `ADMIN_PASSWORD` 启用 Web 后台认证。
 
@@ -531,19 +551,22 @@ BILIUP_UPLOAD_CMD=                          # 自定义上传命令模板
 | 下载模型卡住不动 | 关闭窗口重新双击，模型支持断点续传 |
 | ASR 报 `funasr` / `modelscope` 未安装 | Full 应重新校验并解压完整 ZIP；Lite 需重新完成依赖安装 |
 | ASR 主引擎无法加载 | 检查 `models/` 是否完整；无 Engine Pack 时首次需联网下载模型 |
+| 主播下播后仍显示重连 | 默认会在连续失败 20 次或 300 秒后自动收尾；检查 `RECORDING_RECONNECT_MAX_ATTEMPTS` 与 `RECORDING_RECONNECT_MAX_ELAPSED_S` 是否被设为 `0` |
+| 候选理由与预览内容不一致 | 确认使用 V0.1.16.5 Alpha；新版只保证新分析结果，已有受保护候选不会被静默重写 |
+| 拒绝候选仍出现在成品列表 | 新版拒绝操作会同步未发布关联成片；升级前形成的不一致旧记录不会自动改库，若候选仍可操作可重新拒绝，否则请先备份 `storage/blc.db` 并携带候选/成片 ID 反馈，已发布记录按设计保留 |
 | 弹幕采集提示 `code=-352` | 匿名 token 请求被平台风控拒绝；稍后重试，不要反复登录。录制与实时转写不受影响 |
 | LLM 调用报错 / 空结果 | 检查 `.env` 中 `LLM_API_KEY` 和 `LLM_BASE_URL` 是否正确 |
 | FFmpeg 未找到 | Full 应检查 `bin/ffmpeg.exe` 与 `bin/ffprobe.exe` 是否完整；Lite 需自行准备 FFmpeg |
 | API 请求返回 401 | `.env` 中设置了 `ADMIN_PASSWORD`，浏览器需要输入用户名 `admin` + 密码 |
 | 修改 `.env` 后不生效 | 重启 `launcher.exe` |
 | `launcher.exe` 被杀软拦截 | 添加信任白名单 |
-| Runtime 损坏 | 删除 `runtime/` 目录后重新启动，Launcher 会自动重新安装 |
+| Runtime 损坏 | 先备份 `.env` 与 `storage/`，再执行 `BiliLiveCut-Portable.exe --repair`；不要直接删除用户数据 |
 
 ---
 
 ## 回主工程
 
-此 `packaging/portable/` 目录是**发布给最终用户的即插即用版本**，源码固定于 `v0.1.16.4-Alpha` 的发布基线 Commit。
+此 `packaging/portable/` 目录是**发布给最终用户的即插即用版本**，源码固定于 `v0.1.16.5-Alpha` 的发布基线 Commit。
 
 - **主仓库**: `D:\Vibe\BiliLiveCut\README.md`
 - **完整变更日志**: `D:\Vibe\BiliLiveCut\CHANGELOG.md`

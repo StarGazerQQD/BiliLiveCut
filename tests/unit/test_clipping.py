@@ -16,7 +16,7 @@ from app.clipping.clipper import (
     _group_srt,
 )
 from app.db.models import ClipStatus
-from app.publishing.copywriter import _decide_status, _fallback_copy
+from app.publishing.copywriter import _decide_status, _fallback_copy, gather_clip_text
 
 if TYPE_CHECKING:
     from _pytest.monkeypatch import MonkeyPatch
@@ -81,6 +81,77 @@ def test_fallback_copy_uses_keywords() -> None:
     assert copy.title
     assert "直播切片" in copy.tags
     assert copy.worth_publishing is True
+
+
+def test_gather_clip_text_excludes_content_after_final_window(temp_db: None) -> None:
+    """文案只能读取最终成片时间窗，不能吸入同一五分钟分段的后续内容。"""
+    import json
+    from datetime import UTC, datetime, timedelta
+
+    from app.db.models import HighlightCandidate, HighlightEvent, RawSegment, RecordingSession, Transcript
+    from app.db.session import get_session
+
+    base = datetime(2026, 8, 3, 12, 0, tzinfo=UTC)
+    with get_session() as db:
+        session = RecordingSession(room_id=1, started_at=base)
+        db.add(session)
+        db.flush()
+        segment = RawSegment(
+            session_id=session.id,
+            seq=7,
+            file_path="five-minute.ts",
+            start_ts=base,
+            end_ts=base + timedelta(seconds=300),
+            duration_s=300,
+        )
+        db.add(segment)
+        db.flush()
+        db.add(
+            Transcript(
+                segment_id=segment.id,
+                text="片头闲聊。真正的成片正文。成片结束后才发生的下一件事。",
+                words_json=json.dumps(
+                    [
+                        {"w": "片头闲聊", "start": 20, "end": 25},
+                        {"w": "真正的成片正文", "start": 82, "end": 90},
+                        {"w": "成片结束后才发生的下一件事", "start": 210, "end": 220},
+                    ],
+                    ensure_ascii=False,
+                ),
+            )
+        )
+        candidate = HighlightCandidate(
+            session_id=session.id,
+            peak_ts=base + timedelta(seconds=90),
+            start_ts=base + timedelta(seconds=60),
+            end_ts=base + timedelta(seconds=150),
+            highlight_score=0.9,
+            reason="候选评分理由",
+            dedup_hash="copy-window-regression",
+        )
+        db.add(candidate)
+        db.flush()
+        db.add(
+            HighlightEvent(
+                candidate_id=candidate.id,
+                session_id=session.id,
+                segment_id=segment.id,
+                raw_start_ts=candidate.start_ts,
+                raw_end_ts=candidate.end_ts,
+                adjusted_start_ts=base + timedelta(seconds=75),
+                adjusted_end_ts=base + timedelta(seconds=105),
+            )
+        )
+        db.flush()
+        candidate_id = candidate.id
+
+    assert candidate_id is not None
+    text, reason = gather_clip_text(candidate_id)
+
+    assert text == "真正的成片正文"
+    assert "片头闲聊" not in text
+    assert "成片结束后" not in text
+    assert reason == "候选评分理由"
 
 
 # --------------------------- 集成:真实出片 --------------------------- #

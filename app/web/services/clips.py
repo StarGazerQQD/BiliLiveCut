@@ -100,14 +100,14 @@ def reject_clip(clip_id: int) -> None:
 
 
 def list_clips(limit: int = 50) -> list[dict[str, Any]]:
-    """列出成品切片(按创建时间降序)。
+    """列出未拒绝的成品切片(按创建时间降序)。
 
     :param limit: 数量上限。
     :returns: 成品字典列表。
     """
     with get_session() as db:
         rows = db.exec(
-            select(FinalClip).order_by(FinalClip.created_at.desc())  # type: ignore[attr-defined]
+            select(FinalClip).where(FinalClip.status != ClipStatus.REJECTED).order_by(FinalClip.created_at.desc())  # type: ignore[attr-defined]
         ).all()[:limit]
     return [
         {
