@@ -4,7 +4,7 @@
 
 ### 修复
 
-- **release/ffmpeg-download**: Windows Release 构建不再单点依赖 Gyan FFmpeg 下载源；改用 BtbN 主源与 Gyan 备用源，按来源进行有限指数退避重试，并在安全提取前校验 ZIP 完整性，避免第三方临时 `503` 直接中断整个发布。
+- **release/ffmpeg-download**: Windows Release 构建不再单点依赖 Gyan FFmpeg 下载源；改用 BtbN 主源与 Gyan 备用源，按来源进行有限指数退避重试，并在安全提取前校验 ZIP 完整性；下载器在输出日志前主动切换 UTF-8，避免第三方临时 `503` 或 Windows `charmap` 代码页直接中断整个发布。
 
 ## V0.1.17 Alpha (2026-08-05)
 

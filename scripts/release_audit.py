@@ -246,8 +246,9 @@ def check_ci_bypass(audit: AuditResult) -> None:
             and "BtbN/FFmpeg-Builds" in ffmpeg_download
             and "www.gyan.dev" in ffmpeg_download
             and "DEFAULT_ATTEMPTS = 3" in ffmpeg_download
-            and "testzip()" in ffmpeg_download,
-            "Release 必须通过受测下载器重试多个来源，并在提取前校验 FFmpeg ZIP",
+            and "testzip()" in ffmpeg_download
+            and 'reconfigure(encoding="utf-8", errors="backslashreplace")' in ffmpeg_download,
+            "Release 必须通过受测下载器重试多个来源、切换 UTF-8，并在提取前校验 FFmpeg ZIP",
         )
     launcher_spec = REPO_ROOT / "packaging" / "portable" / "specs" / "portable_launcher.spec"
     if launcher_spec.exists():

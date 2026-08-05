@@ -2,14 +2,20 @@
 
 from __future__ import annotations
 
+import io
 import shutil
+import sys
 import zipfile
 from pathlib import Path
+from typing import TYPE_CHECKING
 
 import pytest
 import yaml
 
 from scripts import download_release_ffmpeg
+
+if TYPE_CHECKING:
+    from pytest import MonkeyPatch
 
 
 def _build_ffmpeg_fixture(path: Path) -> None:
@@ -80,6 +86,37 @@ def test_download_fails_closed_without_partial_binaries(tmp_path: Path) -> None:
     assert "primary attempt 1/1" in str(error.value)
     assert "fallback attempt 1/1" in str(error.value)
     assert not output_dir.exists()
+
+
+def test_main_reconfigures_narrow_windows_console_before_logging(
+    tmp_path: Path,
+    monkeypatch: MonkeyPatch,
+) -> None:
+    """CP1252 控制台也必须能输出下载器的中文日志。"""
+    fixture = tmp_path / "fixture.zip"
+    output_dir = tmp_path / "bin"
+    _build_ffmpeg_fixture(fixture)
+    stdout_bytes = io.BytesIO()
+    stderr_bytes = io.BytesIO()
+    stdout = io.TextIOWrapper(stdout_bytes, encoding="cp1252", errors="strict")
+    stderr = io.TextIOWrapper(stderr_bytes, encoding="cp1252", errors="strict")
+
+    def fake_download(url: str, destination: Path, timeout_s: float) -> None:
+        del url, timeout_s
+        shutil.copyfile(fixture, destination)
+
+    monkeypatch.setattr(sys, "stdout", stdout)
+    monkeypatch.setattr(sys, "stderr", stderr)
+    monkeypatch.setattr(download_release_ffmpeg, "_download_archive", fake_download)
+
+    exit_code = download_release_ffmpeg.main(["--output-dir", str(output_dir), "--attempts", "1"])
+    stdout.flush()
+    stderr.flush()
+
+    assert exit_code == 0
+    assert stdout.encoding.lower().replace("_", "-") == "utf-8"
+    assert stderr.encoding.lower().replace("_", "-") == "utf-8"
+    assert "FFmpeg 下载与校验完成" in stdout_bytes.getvalue().decode("utf-8")
 
 
 def test_release_workflow_uses_resilient_ffmpeg_downloader() -> None:

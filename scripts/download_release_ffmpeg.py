@@ -26,6 +26,18 @@ DownloadFunction = Callable[[str, Path, float], None]
 SleepFunction = Callable[[float], None]
 
 
+def _configure_console_encoding() -> None:
+    """在宿主支持时将输出切换为 UTF-8，避免旧版 Windows 代码页无法输出中文。"""
+    for stream in (sys.stdout, sys.stderr):
+        reconfigure = getattr(stream, "reconfigure", None)
+        if not callable(reconfigure):
+            continue
+        try:
+            reconfigure(encoding="utf-8", errors="backslashreplace")
+        except (OSError, TypeError, ValueError):
+            continue
+
+
 def _download_archive(url: str, destination: Path, timeout_s: float) -> None:
     """把单个候选 URL 流式下载到临时文件。"""
     request = urllib.request.Request(  # noqa: S310 - URL 固定在受审计的发布脚本中
@@ -168,6 +180,7 @@ def build_parser() -> argparse.ArgumentParser:
 
 def main(argv: Sequence[str] | None = None) -> int:
     """运行命令行下载器。"""
+    _configure_console_encoding()
     args = build_parser().parse_args(argv)
     if args.timeout_seconds <= 0:
         print("ERROR: --timeout-seconds 必须为正数", file=sys.stderr)
