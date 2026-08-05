@@ -214,6 +214,32 @@ def test_review_submission_releases_claim_and_can_be_undone(
     ]
 
 
+def test_review_submission_does_not_fail_after_threshold_learning_error(
+    review_client: TestClient,
+    monkeypatch: MonkeyPatch,
+) -> None:
+    """审核事务已提交后，阈值学习异常只能降级记录，不能返回 500。"""
+    from app.analysis import threshold_learning
+
+    def fail_sync(candidate_id: int, *, decision: str) -> dict[str, object]:
+        raise ValueError(f"invalid feedback candidate={candidate_id} decision={decision}")
+
+    monkeypatch.setattr(threshold_learning, "sync_candidate_feedback", fail_sync)
+    candidate_id = _seed_candidate()
+    auth = ("alice", "alice-pass")
+    with review_client as client:
+        claimed = client.post(f"/review/api/{candidate_id}/claim", json={"force": False}, auth=auth)
+        submitted = client.post(
+            f"/review/api/{candidate_id}/review",
+            json={"decision": "hold", "reason": "稍后复核"},
+            auth=auth,
+        )
+
+    assert claimed.status_code == 200
+    assert submitted.status_code == 200
+    assert submitted.json()["status"] == "hold"
+
+
 def test_admin_can_force_take_over_claim(review_client: TestClient) -> None:
     """管理员只有显式 force 时才能接管他人的有效领取。"""
     candidate_id = _seed_candidate()

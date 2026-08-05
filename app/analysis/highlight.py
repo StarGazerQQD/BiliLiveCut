@@ -12,28 +12,19 @@
 
 from __future__ import annotations
 
-import hashlib
 import json
 from dataclasses import asdict
-from datetime import datetime, timedelta
+from datetime import UTC, datetime, timedelta
 
 from loguru import logger
 from sqlmodel import select
 
 from app.analysis import audio as audio_mod
-from app.analysis import llm as llm_mod
-from app.analysis.keywords import match_keywords
-from app.analysis.scoring_config import get_scoring_config
-from app.analysis.transcript_windows import extract_transcript_window
 from app.core.config import settings
 from app.db.models import (
-    CandidateStatus,
     HighlightCandidate,
-    LiveRoom,
     RawSegment,
-    RecordingSession,
     SegmentStatus,
-    Transcript,
 )
 from app.db.session import get_session
 
@@ -52,15 +43,22 @@ def candidate_time_bounds(
     suggested_start_offset_s: float | None,
     suggested_end_offset_s: float | None,
     silences: list[tuple[float, float]],
+    minimum_pre_roll_s: float | None = None,
+    minimum_post_roll_s: float | None = None,
 ) -> tuple[datetime, datetime, datetime]:
-    """计算可直接渲染的候选边界，并完整覆盖爆点分析窗口。
+    """计算可直接渲染的动态候选边界。
 
-    LLM 只能把入点向前、出点向后扩展，不能缩掉系统交给它判断的
-    ``爆点 - pre_roll_s`` 到 ``爆点 + post_roll_s`` 窗口。静音吸附同样
-    只允许向候选外侧移动，避免把理由所依据的内容切在视频之外。最终边界
-    会被限制在本会话已存在的录像范围内。
+    ``pre_roll_s``/``post_roll_s`` 描述分析文本窗口；可选的
+    ``minimum_*`` 则描述成片必须保留的最小上下文。未传最小值时保持旧行为，
+    传入后允许 LLM 在完整分析窗口内给出更短或更长的自然事件边界，从而不再
+    把每个候选固定为同一时长。静音吸附只向外扩展，最终边界限制在连续录像
+    范围内。
     """
-    required_start_offset = peak_offset_s - pre_roll_s
+    normalized_available_start = _coerce_datetime_like(available_start, segment_start)
+    normalized_available_end = _coerce_datetime_like(available_end, segment_start)
+    required_pre_roll = pre_roll_s if minimum_pre_roll_s is None else max(0.0, minimum_pre_roll_s)
+    required_post_roll = post_roll_s if minimum_post_roll_s is None else max(0.0, minimum_post_roll_s)
+    required_start_offset = peak_offset_s - required_pre_roll
     requested_start_offset = suggested_start_offset_s if suggested_start_offset_s is not None else required_start_offset
     requested_start_offset = min(requested_start_offset, required_start_offset)
     start_offset = min(
@@ -68,7 +66,7 @@ def candidate_time_bounds(
         audio_mod.snap_to_silence(requested_start_offset, silences),
     )
 
-    required_end_offset = peak_offset_s + post_roll_s
+    required_end_offset = peak_offset_s + required_post_roll
     requested_end_offset = suggested_end_offset_s if suggested_end_offset_s is not None else required_end_offset
     requested_end_offset = max(requested_end_offset, required_end_offset)
     end_offset = max(
@@ -77,8 +75,8 @@ def candidate_time_bounds(
     )
 
     peak_ts = segment_start + timedelta(seconds=peak_offset_s)
-    start_ts = max(available_start, segment_start + timedelta(seconds=start_offset))
-    end_ts = min(available_end, segment_start + timedelta(seconds=end_offset))
+    start_ts = max(normalized_available_start, segment_start + timedelta(seconds=start_offset))
+    end_ts = min(normalized_available_end, segment_start + timedelta(seconds=end_offset))
     if end_ts <= start_ts:
         raise ValueError("候选边界在可用录像范围内没有有效时长。")
     return start_ts, end_ts, peak_ts
@@ -114,12 +112,62 @@ def contiguous_recording_start(
     for previous in reversed(ordered[:current_index]):
         if previous.start_ts is None or previous.end_ts is None:
             break
-        current_naive = contiguous_start.replace(tzinfo=None) if contiguous_start.tzinfo else contiguous_start
-        previous_end = previous.end_ts.replace(tzinfo=None) if previous.end_ts.tzinfo else previous.end_ts
-        if (current_naive - previous_end).total_seconds() > gap_tolerance_s:
+        previous_end = _coerce_datetime_like(previous.end_ts, contiguous_start)
+        if (contiguous_start - previous_end).total_seconds() > gap_tolerance_s:
             break
-        contiguous_start = previous.start_ts
+        contiguous_start = _coerce_datetime_like(previous.start_ts, current_segment.start_ts)
     return contiguous_start
+
+
+def contiguous_recording_range(
+    segments: list[RawSegment],
+    current_segment: RawSegment,
+    *,
+    gap_tolerance_s: float = 1.0,
+) -> tuple[datetime, datetime]:
+    """返回当前片段所在连续录像块的起止时间。
+
+    与只向前查询的 :func:`contiguous_recording_start` 不同，本函数也会纳入
+    已经落盘的后续分段，使分析滞后或会话收尾重分析时可以生成跨分段候选。
+
+    :param segments: 同一录制会话的分段。
+    :param current_segment: 当前评分分段。
+    :param gap_tolerance_s: 允许的相邻分段时间缺口。
+    :returns: 连续录像块的 ``(start_ts, end_ts)``。
+    """
+    if current_segment.start_ts is None or current_segment.end_ts is None:
+        raise ValueError("当前片段缺少起止时间，无法计算连续录像范围。")
+    ordered = sorted(segments, key=lambda item: item.seq)
+    current_index = next(
+        (
+            index
+            for index, item in enumerate(ordered)
+            if item is current_segment or (current_segment.id is not None and item.id == current_segment.id)
+        ),
+        None,
+    )
+    if current_index is None:
+        return current_segment.start_ts, current_segment.end_ts
+
+    start = contiguous_recording_start(ordered, current_segment, gap_tolerance_s=gap_tolerance_s)
+    end = current_segment.end_ts
+    for following in ordered[current_index + 1 :]:
+        if following.start_ts is None or following.end_ts is None:
+            break
+        following_start = _coerce_datetime_like(following.start_ts, end)
+        if (following_start - end).total_seconds() > gap_tolerance_s:
+            break
+        end = _coerce_datetime_like(following.end_ts, current_segment.end_ts)
+    return start, end
+
+
+def _coerce_datetime_like(value: datetime, reference: datetime) -> datetime:
+    """把 UTC 时间统一成与参考值相同的时区表示。"""
+    if reference.tzinfo is None:
+        return value.astimezone(UTC).replace(tzinfo=None) if value.tzinfo is not None else value
+    if value.tzinfo is None:
+        return value.replace(tzinfo=UTC).astimezone(reference.tzinfo)
+    return value.astimezone(reference.tzinfo)
 
 
 def speech_rate_score(words: list[dict], duration_s: float, window_s: float = 5.0) -> float:
@@ -436,208 +484,9 @@ def score_segment(segment_id: int) -> HighlightCandidate | None:
     :returns: 新建的 :class:`HighlightCandidate`;未达阈值或重复时返回 ``None``。
     :raises ValueError: 片段不存在,或尚未转写时。
     """
-    cfg = get_scoring_config()
+    from app.pipeline.workers.analyze import score_segment_direct
 
-    with get_session() as db:
-        segment = db.get(RawSegment, segment_id)
-        if segment is None:
-            raise ValueError(f"片段不存在: id={segment_id}")
-        transcript = db.exec(select(Transcript).where(Transcript.segment_id == segment_id)).first()
-        session = db.get(RecordingSession, segment.session_id)
-        room = db.get(LiveRoom, session.room_id) if session else None
-        # 取出需要的标量,避免会话关闭后再访问 ORM 对象(DetachedInstanceError)。
-        file_path = segment.file_path
-        seg_start_ts = segment.start_ts
-        seg_end_ts = segment.end_ts
-        if seg_start_ts is None or seg_end_ts is None:
-            logger.error("片段 {} 缺少时间戳,无法评分", segment_id)
-            return None
-        duration = segment.duration_s or float(settings.segment_duration_s)
-        segment_seq = segment.seq
-        session_id = segment.session_id
-        threshold = room.highlight_threshold if room else settings.highlight_threshold
-        has_transcript = transcript is not None
-        text = transcript.text if transcript else ""
-        words_json = transcript.words_json if transcript else None
-
-        # V0.1.12.8: 提前提取 room 级标量, 避免 session 关闭后 DetachedInstanceError
-        room_auto_approve = bool(room.auto_approve) if room else False
-        room_auto_approve_threshold = room.auto_approve_threshold if room else settings.highlight_auto_approve_threshold
-        room_review_threshold = room.review_threshold if room else settings.highlight_review_threshold
-        use_dm_sentiment = room is not None and bool(room.danmaku_sentiment_enabled) and settings.collect_danmaku
-        session_segments = db.exec(
-            select(RawSegment).where(RawSegment.session_id == segment.session_id).order_by(RawSegment.seq.asc())
-        ).all()
-        available_start = contiguous_recording_start(session_segments, segment)
-
-    if not has_transcript:
-        raise ValueError(f"片段尚未转写: id={segment_id}")
-
-    # ---- 1) 规则特征 ----
-    feats = audio_mod.analyze_audio(file_path)
-    peak_off = feats.peak_offset()
-    analysis_start_s = max(0.0, peak_off - cfg.pre_roll_s)
-    analysis_end_s = min(duration, peak_off + cfg.post_roll_s)
-    analysis_window = extract_transcript_window(
-        text,
-        words_json,
-        start_s=analysis_start_s,
-        end_s=analysis_end_s,
-        duration_s=duration,
-    )
-    judgement_text = analysis_window.text
-    analysis_duration_s = analysis_end_s - analysis_start_s
-    analysis_start_ts = seg_start_ts + timedelta(seconds=analysis_start_s)
-    analysis_end_ts = seg_start_ts + timedelta(seconds=analysis_end_s)
-    kw_score, kw_hits = match_keywords(judgement_text)
-    features: dict[str, float] = {
-        "volume": feats.volume_score(),
-        "keywords": kw_score,
-        "speech_rate": speech_rate_score(analysis_window.words, analysis_duration_s),
-        "laughter": laughter_score(judgement_text),
-        # 弹幕热度:候选分析窗内弹幕强度相对全场平均的倍数(无弹幕数据则为 0)。
-        "danmaku": _danmaku_score(session_id, analysis_start_ts, analysis_end_ts),
-    }
-    # 弹幕情绪(V0.1.2 新增):仅当房间级开关启用且弹幕采集开启时才计入。
-    if use_dm_sentiment:
-        features["danmaku_sentiment"] = danmaku_sentiment_score(
-            session_id,
-            analysis_start_ts,
-            analysis_end_ts,
-        )
-    # V0.1.12.2: 音频事件特征 (SenseVoice 辅助特征)
-    audio_event_contribs: list[str] = []
-    if settings.asr_sensevoice and settings.asr_sensevoice_enabled:
-        aux_json = transcript.auxiliary_json if transcript else None
-        audio_evt_score, audio_event_contribs = _audio_events_score(aux_json)
-        if audio_evt_score > 0:
-            features["audio_events"] = audio_evt_score
-    # 网感维度:片段题材与资料库近期热门内容的关联度(仅在启用时计入)。
-    trend_hits: list[str] = []
-    if settings.trend_enabled:
-        trend_score, trend_hits = _trend_score(judgement_text)
-        features["trend"] = trend_score
-    rule_score = weighted_rule_score(features, cfg.weights)
-    logger.info(
-        "片段 {} 规则分={:.3f} 特征={} 命中词={} 网感词={}",
-        segment_id,
-        rule_score,
-        {k: round(v, 3) for k, v in features.items()},
-        kw_hits,
-        trend_hits,
-    )
-
-    # ---- 2) 初筛:不够分就不调 LLM(省钱) ----
-    if rule_score < settings.highlight_init_threshold:
-        _mark_scored(segment_id)
-        logger.debug("片段 {} 低于初筛阈值,跳过 LLM。", segment_id)
-        return None
-
-    # ---- 3) LLM 复核(可选) ----
-    judgement = llm_mod.judge_highlight(judgement_text, features, "", analysis_start_s)
-    llm_score = judgement.score if judgement else None
-    reason = judgement.reason if judgement else "规则命中(未启用/未触发 LLM)"
-
-    highlight_score = fuse_scores(rule_score, llm_score, cfg.alpha, cfg.beta)
-    logger.info(
-        "片段 {} 综合分={:.3f}(rule={:.3f} llm={}) 阈值={:.2f}",
-        segment_id,
-        highlight_score,
-        rule_score,
-        f"{llm_score:.3f}" if llm_score is not None else "N/A",
-        threshold,
-    )
-
-    if highlight_score < threshold:
-        _mark_scored(segment_id)
-        return None
-
-    # ---- 4) 边界吸附:爆点±留白,并对齐到最近静音 ----
-    start_ts, end_ts, peak_ts = candidate_time_bounds(
-        segment_start=seg_start_ts,
-        available_start=available_start,
-        available_end=seg_end_ts,
-        peak_offset_s=peak_off,
-        pre_roll_s=cfg.pre_roll_s,
-        post_roll_s=cfg.post_roll_s,
-        suggested_start_offset_s=judgement.suggested_start_offset if judgement else None,
-        suggested_end_offset_s=judgement.suggested_end_offset if judgement else None,
-        silences=feats.silences,
-    )
-
-    # ---- 5) 去重:与本会话既有候选做时间 IoU 比较 ----
-    if _is_duplicate(session_id, (start_ts.timestamp(), end_ts.timestamp()), cfg.iou_threshold):
-        _mark_scored(segment_id)
-        logger.info("片段 {} 候选与既有候选重叠,跳过。", segment_id)
-        return None
-
-    # ---- 5b) V0.1.6 审核状态:根据房间阈值自动决定初始状态 ----
-    # P0 重构:取代旧 mode 逻辑。
-    # V0.1.12.8: 使用前提取的标量, 避免 DetachedInstanceError
-
-    if room_auto_approve and highlight_score >= room_auto_approve_threshold:
-        initial_status = CandidateStatus.APPROVED
-        logger.info(
-            "片段 {} 达自动批准阈值({}≥{}),自动批准。", segment_id, highlight_score, room_auto_approve_threshold
-        )
-    elif highlight_score >= room_review_threshold:
-        initial_status = CandidateStatus.PENDING
-    else:
-        initial_status = CandidateStatus.REJECTED
-        logger.info("片段 {} 低于审核阈值({}<{}),自动淘汰。", segment_id, highlight_score, room_review_threshold)
-
-    # 自动淘汰的候选仍然入库(供后续调参参考),但标记为 REJECTED。
-    dedup_hash = hashlib.sha1(
-        f"{session_id}:{round(start_ts.timestamp())}:{round(end_ts.timestamp())}".encode()
-    ).hexdigest()
-
-    # 弹幕可解释数据(P0):供审核页展示。
-    danmaku_explain = danmaku_score_explain(session_id, analysis_start_ts, analysis_end_ts)
-
-    candidate = HighlightCandidate(
-        session_id=session_id,
-        peak_ts=peak_ts,
-        start_ts=start_ts,
-        end_ts=end_ts,
-        rule_score=rule_score,
-        llm_score=llm_score or 0.0,
-        highlight_score=highlight_score,
-        features_json=json.dumps(
-            {
-                "features": features,
-                "keyword_hits": kw_hits,
-                "audio": _audio_meta(feats),
-                "danmaku_explain": danmaku_explain,
-                "analysis_window": {
-                    "segment_id": segment_id,
-                    "segment_seq": segment_seq,
-                    "start_offset_s": round(analysis_start_s, 3),
-                    "end_offset_s": round(analysis_end_s, 3),
-                    "precise_transcript": analysis_window.precise,
-                },
-            },
-            ensure_ascii=False,
-        ),
-        reason=reason,
-        status=initial_status,
-        dedup_hash=dedup_hash,
-    )
-    with get_session() as db:
-        db.add(candidate)
-        db.flush()
-        db.refresh(candidate)
-        cid = candidate.id
-
-    _mark_scored(segment_id)
-    logger.success(
-        "★ 新高光候选 id={} segment={} 分数={:.3f} 时长={:.0f}s 理由={}",
-        cid,
-        segment_id,
-        highlight_score,
-        (end_ts - start_ts).total_seconds(),
-        reason,
-    )
-    return candidate
+    return score_segment_direct(segment_id)
 
 
 # --------------------------------------------------------------------------- #
@@ -663,20 +512,30 @@ def _is_duplicate(
     session_id: int,
     interval: tuple[float, float],
     iou_threshold: float,
+    *,
+    peak_ts: datetime | None = None,
+    cooldown_s: float = 0.0,
 ) -> bool:
     """判断新候选区间是否与同会话既有候选高度重叠。
 
     :param session_id: 会话 id。
     :param interval: 新候选的 ``(start_epoch, end_epoch)`` 秒。
     :param iou_threshold: 判重的 IoU 阈值。
-    :returns: 重复返回 ``True``。
+    :param peak_ts: 新候选峰值；提供时同时执行冷却时间判重。
+    :param cooldown_s: 峰值冷却时间。
+    :returns: 重复或落入冷却簇返回 ``True``。
     """
+    from app.analysis.timeline import datetime_distance_s
+
     with get_session() as db:
         rows = db.exec(select(HighlightCandidate).where(HighlightCandidate.session_id == session_id)).all()
     for c in rows:
         existing = (c.start_ts.timestamp(), c.end_ts.timestamp())
         if temporal_iou(interval, existing) >= iou_threshold:
             return True
+        if peak_ts is not None and cooldown_s > 0:
+            if datetime_distance_s(c.peak_ts, peak_ts) < cooldown_s:
+                return True
     return False
 
 

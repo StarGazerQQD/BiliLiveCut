@@ -146,6 +146,21 @@ globalThis.clearTimeout = () => {};
 const requests = [];
 const requestDetails = [];
 let dashboardRooms = [];
+const sessionTimelineRows = [{
+  session_id: 21,
+  room_db_id: 1,
+  room_id: 23771139,
+  source_label: "测试主播 · 房间 23771139",
+  status: "finished",
+  started_at_gmt8: "2026-08-05T19:00:00+08:00",
+  ended_at_gmt8: "2026-08-05T20:00:00+08:00",
+  duration_s: 3600,
+  segment_count: 12,
+  highlight_count: 2,
+  pending_review_count: 1,
+  rejected_count: 1,
+  processing_state: "ready",
+}];
 globalThis.fetch = async (path, options = {}) => {
   const requestPath = String(path);
   requests.push(requestPath);
@@ -160,8 +175,31 @@ globalThis.fetch = async (path, options = {}) => {
     };
   } else if (requestPath.startsWith("/api/notifications")) {
     payload = [];
-  } else if (requestPath.startsWith("/api/candidates")) {
-    payload = [];
+  } else if (requestPath.startsWith("/api/sessions/timeline")) {
+    payload = sessionTimelineRows;
+  } else if (requestPath.startsWith("/api/sessions/21/timeline")) {
+    payload = {
+      session: sessionTimelineRows[0],
+      timezone: "GMT+8",
+      counts: { visible: 1, rejected: 0, total: 1 },
+      points: [{
+        candidate_id: 31,
+        clock_gmt8: "19:45:10",
+        start_at_gmt8: "2026-08-05T19:44:30+08:00",
+        end_at_gmt8: "2026-08-05T19:46:00+08:00",
+        duration_s: 90,
+        summary: "测试高光梗概",
+        representative_danmaku: [{ text: "名场面", count: 5 }],
+        confidence: 0.88,
+        source_signals: ["danmaku", "transcript"],
+        review_status: "pending",
+        rejected: false,
+        review_url: "/review/31",
+        provenance: { rule_score: 0.8, llm_score: 0.9, highlight_score: 0.88, dynamic_bounds: true, cross_segment: true, danmaku_lag_s: 7.5 },
+      }],
+    };
+  } else if (requestPath === "/api/sessions/21/reanalyze") {
+    payload = { session_id: 21, requested: true };
   } else if (requestPath === "/api/llm-providers") {
     payload = { providers: [], active_count: 0 };
   } else if (requestPath === "/api/llm-providers/test") {
@@ -203,6 +241,8 @@ try {
   assert.equal(typeof globalThis.triggerMaintenance, "function", "maintenance action was not exported to window");
   assert.equal(typeof globalThis.saveFeatureSwitches, "function", "feature-switch save action was not exported");
   assert.equal(typeof globalThis.saveGlobalFeatureSettings, "function", "global feature save action was not exported");
+  assert.equal(typeof globalThis.toggleSessionTimeline, "function", "timeline expand action was not exported");
+  assert.equal(typeof globalThis.correctTranscript, "function", "transcript correction action was not exported");
   assert.ok(element("btn-add").listeners.has("click"), "add-room button handler was not registered");
 
   dashboardRooms = [{
@@ -308,9 +348,26 @@ try {
   assert.ok(candidatesPanel.classList.contains("active"), "clicked panel did not become active");
   assert.ok(!roomsPanel.classList.contains("active"), "previous panel remained active");
   assert.ok(
-    requests.some((path) => path.startsWith("/api/candidates?")),
-    "candidate loader did not run after tab click",
+    requests.some((path) => path.startsWith("/api/sessions/timeline")),
+    "session timeline loader did not run after tab click",
   );
+  assert.match(element("timeline-list").innerHTML, /测试主播/);
+  assert.match(element("timeline-list").innerHTML, /会话 #21/);
+
+  await globalThis.toggleSessionTimeline(21);
+  await settle();
+  assert.match(element("timeline-detail-21").innerHTML, /测试高光梗概/);
+  assert.match(element("timeline-detail-21").innerHTML, /名场面/);
+  assert.match(element("timeline-detail-21").innerHTML, /跨片段/);
+
+  const reanalysisRequestOffset = requestDetails.length;
+  await globalThis.requestSessionReanalysis(21, false);
+  await settle();
+  const reanalysisRequest = requestDetails
+    .slice(reanalysisRequestOffset)
+    .find((entry) => entry.path === "/api/sessions/21/reanalyze" && entry.options.method === "POST");
+  assert.ok(reanalysisRequest, "session reanalysis was not requested");
+  assert.equal(JSON.parse(reanalysisRequest.options.body).retranscribe, false);
 
   await modelsTab.emit("click");
   await settle();
@@ -340,7 +397,7 @@ try {
   assert.match(element("llm-test-results").innerHTML, /pong/, "connectivity result detail was not rendered");
 
   console.log(
-    "PASS: frontend module graph, bindings, initial refresh and tab interaction; room/model draft preservation, locked room switches, feature switches and draft connectivity test",
+    "PASS: frontend module graph, bindings, session timeline expansion/reanalysis, room/model draft preservation, locked room switches, feature switches and draft connectivity test",
   );
 } finally {
   await rm(temporaryRoot, { recursive: true, force: true });

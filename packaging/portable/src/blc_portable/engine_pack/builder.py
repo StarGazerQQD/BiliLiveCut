@@ -11,7 +11,7 @@
 
 输出:
     dist/engine-pack/
-    ├── BiliLiveCut-EnginePack-0.1.16.5-alpha.zip
+    ├── BiliLiveCut-EnginePack-0.1.17-alpha.zip
     ├── engine-pack-manifest.json
     ├── CRC32SUMS.txt
     ├── SHA256SUMS.txt
@@ -48,7 +48,7 @@ DIST_DIR = PORTABLE_DIR / "dist" / "engine-pack"
 RESOURCES_DIR = PORTABLE_DIR / "resources"
 LICENSES_DIR = PORTABLE_DIR / "licenses"
 
-ENGINE_PACK_VERSION = "0.1.16.5-alpha"
+ENGINE_PACK_VERSION = "0.1.17-alpha"
 SOURCE_COMMIT_SHORT = "c8c5e50"
 ARCHIVE_NAME = f"BiliLiveCut-EnginePack-{ENGINE_PACK_VERSION}"
 
@@ -586,7 +586,7 @@ def write_output_files(
         "engine_pack_api_version": engine_pack_api_version,
         "model_set_version": model_set_version,
         "payload_schema_version": payload_schema_version,
-        "compatible_app": {"min": ENGINE_PACK_VERSION, "max_exclusive": "0.1.17"},
+        "compatible_app": {"min": ENGINE_PACK_VERSION, "max_exclusive": "0.1.18"},
         "filename": archive_path.name,
         "size_bytes": total_size,
         "crc32": crc32_val,
@@ -754,7 +754,7 @@ def build_engine_pack(fixture: bool = False, from_cache: bool = False) -> dict[s
         "format_version": 4,
         "engine_pack_version": ENGINE_PACK_VERSION,
         "portable_release_version": ENGINE_PACK_VERSION,
-        "compatible_app": {"min": ENGINE_PACK_VERSION, "max_exclusive": "0.1.17"},
+        "compatible_app": {"min": ENGINE_PACK_VERSION, "max_exclusive": "0.1.18"},
         "source_commit": source_commit,
         "source_commit_short": SOURCE_COMMIT_SHORT,
         "builder_commit": builder_head,

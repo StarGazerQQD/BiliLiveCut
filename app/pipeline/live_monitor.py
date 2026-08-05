@@ -22,15 +22,6 @@ from app.db.models import LiveRoom
 from app.db.session import get_session
 from app.sources.bilibili.client import BilibiliLiveClient
 
-# 连续 N 次检测到未开播才认为真正下播(防止短暂断流误判)。
-_OFFLINE_CONFIRM_COUNT = 3
-
-# 下播后延迟结束 Session 的秒数。
-_SESSION_END_DELAY_S = 60
-
-# 最大录制时长(秒),超时自动停止。
-_MAX_RECORD_DURATION_S = 12 * 3600  # 12 小时
-
 
 class LiveMonitor:
     """直播状态监控器。
@@ -48,6 +39,7 @@ class LiveMonitor:
         self._starting: set[int] = set()
         self._last_check_at: dict[int, float] = {}
         self._reconnect_totals: dict[int, int] = {}
+        self._pending_stops: dict[int, asyncio.Task[None]] = {}
 
     async def start(self) -> None:
         """启动后台监控循环。"""
@@ -67,6 +59,12 @@ class LiveMonitor:
                 await self._task
             except asyncio.CancelledError:
                 pass
+        pending = list(self._pending_stops.values())
+        self._pending_stops.clear()
+        for task in pending:
+            task.cancel()
+        if pending:
+            await asyncio.gather(*pending, return_exceptions=True)
         logger.info("直播状态监控已停止。")
 
     def status(self) -> dict:
@@ -75,6 +73,7 @@ class LiveMonitor:
             "running": self._task is not None and not self._task.done(),
             "watching_rooms": len(self._offline_counts),
             "offline_counts": dict(self._offline_counts),
+            "pending_stops": sorted(self._pending_stops),
             "last_check": {str(k): v for k, v in self._last_check_at.items()},
         }
 
@@ -155,19 +154,21 @@ class LiveMonitor:
 
                 if is_live and not is_recording:
                     # 开播,启动录制。
+                    self._cancel_pending_stop(db_id)
                     self._offline_counts[db_id] = 0
                     await self._start_recording(db_id, auto_analyze, auto_render)
                 elif is_live and is_recording:
                     # 持续直播,重置离线计数。
+                    self._cancel_pending_stop(db_id)
                     self._offline_counts[db_id] = 0
                     # 检查最大录制时长。
                     if db_id in self._started_at:
                         elapsed = asyncio.get_event_loop().time() - self._started_at[db_id]
-                        if elapsed > _MAX_RECORD_DURATION_S:
+                        if elapsed > settings.recording_max_duration_s:
                             logger.warning(
                                 "房间 {} 录制已达 {} 秒上限,自动停止。",
                                 db_id,
-                                _MAX_RECORD_DURATION_S,
+                                settings.recording_max_duration_s,
                             )
                             await recorder_manager.stop(db_id)
                             self._started_at.pop(db_id, None)
@@ -175,28 +176,60 @@ class LiveMonitor:
                     # 可能下播,累积离线计数。
                     count = self._offline_counts.get(db_id, 0) + 1
                     self._offline_counts[db_id] = count
-                    if count >= _OFFLINE_CONFIRM_COUNT:
+                    if count >= settings.live_offline_confirm_count and db_id not in self._pending_stops:
                         logger.info(
                             "房间 {} 连续 {} 次检测到未开播,延迟 {} 秒后停止录制。",
                             room_id,
                             count,
-                            _SESSION_END_DELAY_S,
+                            settings.live_session_end_delay_s,
                         )
-                        self._offline_counts.pop(db_id, None)
-                        self._started_at.pop(db_id, None)
-                        # 异步延迟停止,不阻塞其他房间监控。
-                        asyncio.create_task(self._delayed_stop(db_id))
+                        self._schedule_delayed_stop(db_id, room_id)
                 elif not is_live and not is_recording:
                     # 未开播也未录制,重置状态。
+                    self._cancel_pending_stop(db_id)
                     self._offline_counts.pop(db_id, None)
 
-    async def _delayed_stop(self, db_id: int) -> None:
-        """延迟停止录制(不阻塞 check_all 循环)。"""
-        await asyncio.sleep(_SESSION_END_DELAY_S)
+    def _schedule_delayed_stop(self, db_id: int, room_id: int) -> None:
+        """登记唯一的延迟停止任务，并在完成时清理句柄。"""
+        task = asyncio.create_task(self._delayed_stop(db_id, room_id))
+        self._pending_stops[db_id] = task
+
+        def _cleanup(done: asyncio.Task[None]) -> None:
+            if self._pending_stops.get(db_id) is done:
+                self._pending_stops.pop(db_id, None)
+
+        task.add_done_callback(_cleanup)
+
+    def _cancel_pending_stop(self, db_id: int) -> None:
+        """直播恢复时撤销尚未执行的停录任务。"""
+        task = self._pending_stops.pop(db_id, None)
+        if task is not None and not task.done():
+            task.cancel()
+            logger.info("房间 {} 在延迟收尾期间恢复直播,已撤销停止。", db_id)
+
+    async def _delayed_stop(self, db_id: int, room_id: int) -> None:
+        """延迟后再次向直播源确认，仍离线才停止录制。"""
+        await self._sleep_or_stop(settings.live_session_end_delay_s)
+        if self._stop is None or self._stop.is_set():
+            return
+
+        try:
+            async with BilibiliLiveClient(cookie=get_bilibili_cookie()) as client:
+                latest = await client.get_room_info(str(room_id), include_detail=False)
+        except Exception as exc:  # noqa: BLE001 - 网络边界失败时保守地保留录制
+            logger.warning("房间 {} 停录前复核失败,本轮保留录制: {}", room_id, exc)
+            return
+        if latest.live_status == 1:
+            self._offline_counts[db_id] = 0
+            logger.info("房间 {} 停录前复核已恢复直播,继续当前会话。", room_id)
+            return
+
         from app.web.service import recorder_manager
 
-        if not self._stop.is_set():
+        if recorder_manager.is_running(db_id):
             await recorder_manager.stop(db_id)
+        self._offline_counts.pop(db_id, None)
+        self._started_at.pop(db_id, None)
 
     async def _start_recording(self, db_id: int, auto_analyze: bool, auto_render: bool) -> None:
         """启动录制。

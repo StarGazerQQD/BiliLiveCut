@@ -35,7 +35,7 @@
 - app/web/static/js/publishing.js: PASS
 - app/web/static/js/settings.js: PASS
 - app/web/static/js/monitor.js: PASS
-- app/web/static/js/candidates.js: PASS
+- app/web/static/js/timeline.js: PASS（V0.1.17 已用场次时间线替代旧 `candidates.js`）
 - app/web/static/js/rooms.js: PASS
 
 ## 版本一致性

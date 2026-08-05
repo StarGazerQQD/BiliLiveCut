@@ -26,6 +26,16 @@ class TranscriptQuality:
     normalized_length: int
 
 
+@dataclass(frozen=True, slots=True)
+class RepetitionRepair:
+    """一次局部 ASR 解码循环修复结果。"""
+
+    text: str
+    changed: bool
+    removed_characters: int
+    original_ratio: float
+
+
 def _normalize_text(text: str) -> str:
     """保留字母、数字和中日韩文字，去除标点与空白。"""
     return "".join(character.casefold() for character in text if character.isalnum())
@@ -55,6 +65,70 @@ def _max_consecutive_repeat(text: str) -> tuple[int, int]:
                 best_repeats = repeats
 
     return best_coverage, best_repeats
+
+
+def repair_local_decode_loop(text: str, *, max_ratio: float = 0.35) -> RepetitionRepair:
+    """折叠占比较小的局部连续复读，同时保留两次自然强调。
+
+    整段退化或覆盖比例较高的结果不会被修补，仍由上层切换备用 ASR。
+    仅修复精确的连续字符重复，不对语义相近的正常复述做模糊替换。
+    """
+    original_quality = assess_transcript_quality(text)
+    if original_quality.reason != "degenerate_repetition" or original_quality.repetition_ratio > max_ratio:
+        return RepetitionRepair(text, False, 0, original_quality.repetition_ratio)
+
+    repaired = text
+    removed = 0
+    for _ in range(3):
+        normalized, raw_indexes = _normalize_with_indexes(repaired)
+        start, unit_length, repeats = _max_consecutive_repeat_details(normalized)
+        if repeats < 4 or unit_length <= 0:
+            break
+        keep_end_index = start + unit_length * 2 - 1
+        remove_end_index = start + unit_length * repeats - 1
+        if remove_end_index >= len(raw_indexes):
+            break
+        raw_keep_end = raw_indexes[keep_end_index] + 1
+        raw_remove_end = raw_indexes[remove_end_index] + 1
+        removed += raw_remove_end - raw_keep_end
+        repaired = repaired[:raw_keep_end] + repaired[raw_remove_end:]
+        if assess_transcript_quality(repaired).usable:
+            return RepetitionRepair(repaired, True, removed, original_quality.repetition_ratio)
+
+    return RepetitionRepair(text, False, 0, original_quality.repetition_ratio)
+
+
+def _normalize_with_indexes(text: str) -> tuple[str, list[int]]:
+    """规范化文本并保留规范化字符到原文下标的映射。"""
+    characters: list[str] = []
+    indexes: list[int] = []
+    for index, character in enumerate(text):
+        if character.isalnum():
+            characters.append(character.casefold())
+            indexes.append(index)
+    return "".join(characters), indexes
+
+
+def _max_consecutive_repeat_details(text: str) -> tuple[int, int, int]:
+    """返回最佳连续重复的起点、单元长度和次数。"""
+    text_length = len(text)
+    best = (0, 0, 0)
+    best_coverage = 0
+    max_unit_length = min(32, text_length // 3)
+    for unit_length in range(1, max_unit_length + 1):
+        last_start = text_length - unit_length * 3
+        for start in range(last_start + 1):
+            unit = text[start : start + unit_length]
+            cursor = start + unit_length
+            repeats = 1
+            while text[cursor : cursor + unit_length] == unit:
+                repeats += 1
+                cursor += unit_length
+            coverage = repeats * unit_length
+            if repeats >= 3 and coverage > best_coverage:
+                best = (start, unit_length, repeats)
+                best_coverage = coverage
+    return best
 
 
 def assess_transcript_quality(text: str) -> TranscriptQuality:

@@ -4,9 +4,9 @@
 [![Release](https://img.shields.io/github/v/release/StarGazerQQD/BiliLiveCut?include_prereleases&sort=semver)](https://github.com/StarGazerQQD/BiliLiveCut/releases)
 [![License](https://img.shields.io/github/license/StarGazerQQD/BiliLiveCut)](LICENSE)
 
-**当前版本：V0.1.16.5 Alpha** (`0.1.16.5-alpha`)
+**当前版本：V0.1.17 Alpha** (`0.1.17-alpha`)
 
-面向 Bilibili 直播的全自动工作流：实时录制 → 转写 → 识别高光 → 生成切片 → 生成文案 → (可选)上传。
+面向 Bilibili 直播的全自动工作流：实时录制 → 转写 → 生成场次时间线 → 审核动态高光 → 生成切片与文案 →（可选）上传。
 阶段 1–5 全链路已可用；即插即用分发包见 [`packaging/portable/`](packaging/portable/README.md)。普通 Windows 用户可直接阅读 [Portable 小白使用说明](packaging/portable/USER_GUIDE_ZH.md)。
 
 > ⚠️ **合规声明**：本项目仅调用 Bilibili 网页播放器自身使用的公开接口，不做任何逆向、破解或绕过平台安全策略的行为。请**仅录制你拥有授权的内容**，遵守平台服务条款与合理访问频率。自动上传默认采用 `manual` 模式（只产出成品与元数据，不调用任何平台接口），零封号风险。
@@ -22,6 +22,21 @@
 > 正式构建会校验每个主模型、子模型和随附组件的固定 revision、目录契约及再分发许可证；包内附带 MIT、Apache-2.0 原文和[第三方模型声明](packaging/portable/licenses/THIRD_PARTY_NOTICES.md)。
 
 > ⚖️ **许可证边界**：BiliLiveCut 项目代码采用 [MIT License](LICENSE)，Copyright (c) 2026 StarGazerQQD。随包第三方模型和组件继续适用各自的许可证与归属声明；项目的 MIT License 不改变任何第三方条款。
+
+## V0.1.17 新特性：场次时间线与可校正分析闭环
+
+**V0.1.17 不再把五分钟录制分段直接当成一个固定切片。** 控制台按录制场次生成 GMT+8 时间线，在真正的高光时间点展示摘要、1～2 条代表弹幕、置信度和来源依据；点击节点仍可进入详细审核并按动态边界生成视频。
+
+- 每个录制分段最多提取 4 个相互独立的音频峰值，高光可跨越相邻原始分段；入点和出点按语音、弹幕与上下文动态计算，不再固定为 1 分 30 秒。
+- Bilibili 弹幕评分默认向前校正 `7.5` 秒，以抵消弹幕输入相对画面的常见延迟；时间线保存原始弹幕时间，不篡改采集事实。
+- 同场临近爆点会按冷却时间和内容相似度去簇，避免一个事件连续出片；仍允许相距足够远或内容明显不同的多个高光。
+- 时间线节点显示主播、房间、场次、来源信号、置信度、动态边界与跨分段信息；默认隐藏已拒绝节点，可随时切换查看。
+- 人工修正转写可同时提交“错误词=正确词”别名，形成直播间专属词典并传给 Fun-ASR-Nano；更换词典或模型后可选择重新转写并重分析整场。
+- 阈值、词典或模型变化支持场次级重分析。系统保留人工审核、手工边界、草稿、成片、反馈与人工转写，不用删库或覆盖已确认资产。
+- 人工审核会回写正负样本，阈值建议不再长期显示“尚无反馈样本”；审核日志包含场次、直播间、候选、操作者、决策与当时阈值。
+- Fun-ASR-Nano 的局部复读先做保守修复，整段退化才回退 Paraformer/Whisper，避免把正常强调误删；最终所用引擎和修复依据会写入转写元数据。
+- 主播下播需连续多次确认并等待收尾延迟；恢复开播会撤销停止。会话还支持最长时限，网络错误按既定预算重试，防止无人值守任务永不结束。
+- 实时转写编辑器在自动刷新期间保护未保存草稿；保存后可自动触发场次重分析，时间线会持续反映最新、可追溯的结果。
 
 ## V0.1.16 新特性：生产工作台与插件平台
 
@@ -96,7 +111,7 @@
 
 ### 版本与发布一致性
 
-- Python 包、CLI、C/Cython、Rust、Portable、Docker、GitHub Actions、测试和用户文档统一升级为 `0.1.16.5-alpha`，Engine Pack 兼容区间同步为 `0.1.16.5-alpha ≤ app < 0.1.17`。
+- Python 包、CLI、C/Cython、Rust、Portable、Docker、GitHub Actions、测试和用户文档当前统一为 `0.1.17-alpha`，Engine Pack 兼容区间同步为 `0.1.17-alpha ≤ app < 0.1.18`。
 - 新功能覆盖单元、集成、前端语法和发布回归测试；CI 与 Release 门禁继续校验版本、固定源码、可复现 Payload、原生模块、依赖锁和制品完整性。
 
 ## V0.1.15 版本总结：Portable 发布链路完整收口

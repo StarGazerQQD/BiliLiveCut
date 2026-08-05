@@ -43,7 +43,11 @@ from app.analysis.transcription.models import (  # single source — no duplicat
     ASRTranscriptResult,
     TranscriberBackend,
 )
-from app.analysis.transcription.quality import TranscriptQuality, assess_transcript_quality
+from app.analysis.transcription.quality import (
+    TranscriptQuality,
+    assess_transcript_quality,
+    repair_local_decode_loop,
+)
 from app.core.config import settings
 from app.db.models import RawSegment, SegmentStatus, Transcript
 from app.db.session import get_session
@@ -132,7 +136,22 @@ class ASRPipeline:
                     primary_error_message=str(exc)[:500],
                 )
 
-            primary_quality = assess_transcript_quality(result.final_text or result.text)
+            primary_text = result.final_text or result.text
+            repair = repair_local_decode_loop(primary_text)
+            if repair.changed:
+                result.text = repair.text
+                result.final_text = repair.text
+                result.metadata["repetition_repair"] = {
+                    "applied": True,
+                    "removed_characters": repair.removed_characters,
+                    "original_ratio": round(repair.original_ratio, 4),
+                }
+                logger.warning(
+                    "Fun-ASR-Nano 检测到局部解码复读（占比 {:.1%}），已安全折叠后继续使用主引擎",
+                    repair.original_ratio,
+                )
+                primary_text = repair.text
+            primary_quality = assess_transcript_quality(primary_text)
             if primary_quality.usable:
                 return result
 
@@ -467,6 +486,8 @@ def transcribe_segment(
                 "engine": result.backend,
             }
         )
+    if result.metadata.get("repetition_repair"):
+        auxiliary_payload["repetition_repair"] = result.metadata["repetition_repair"]
     if refinement is not None:
         auxiliary_payload["transcript_refinement"] = {
             "applied": True,
@@ -537,7 +558,7 @@ def transcribe_segment(
 
 def _build_whisper_prompt(db, segment) -> str | None:
     """从房间配置构建 hotwords prompt。"""
-    from app.analysis.room_config import load_room_config
+    from app.analysis.room_config import effective_hotwords, load_room_config
     from app.db.models import LiveRoom, RecordingSession
 
     session = db.get(RecordingSession, segment.session_id) if segment.session_id else None
@@ -548,7 +569,7 @@ def _build_whisper_prompt(db, segment) -> str | None:
         return None
 
     cfg = load_room_config(room)
-    hotwords: list[str] = cfg.get("hotwords", [])
+    hotwords = effective_hotwords(cfg)
     if not hotwords:
         return None
     return ", ".join(hotwords)

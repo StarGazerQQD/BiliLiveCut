@@ -1,8 +1,8 @@
 // BiliLiveCut 控制台入口:导入模块、初始化标签切换与轮询
 import { $ } from "./js/common.js";
 import { loadRooms, saveRoom, saveRoomConfig, loadFeatureSwitches, saveGlobalFeatureSettings, saveFeatureSwitches, loadThresholdLearning, loadSchedules, delSchedule, loadTopics, toggleCollection } from "./js/rooms.js";
-import { startRoom, stopRoom, resumeRoom, markHighlight, retranscribeTranscript, loadRecording, loadTranscripts, loadDanmaku } from "./js/recording.js";
-import { loadCandidates } from "./js/candidates.js";
+import { startRoom, stopRoom, resumeRoom, markHighlight, correctTranscript, cancelTranscriptCorrection, retranscribeTranscript, loadRecording, loadTranscripts, loadDanmaku } from "./js/recording.js";
+import { loadSessionTimelines, toggleSessionTimeline, requestSessionReanalysis } from "./js/timeline.js";
 import { approveCand, rejectCand, delCand } from "./js/review.js";
 import { loadClips, publishClip, enqueueClip, rejectClip } from "./js/clips.js";
 import { loadUploads, retryUpload, pollNotifications } from "./js/publishing.js";
@@ -23,7 +23,11 @@ window.startRoom = startRoom;
 window.stopRoom = stopRoom;
 window.resumeRoom = resumeRoom;
 window.markHighlight = markHighlight;
+window.correctTranscript = correctTranscript;
+window.cancelTranscriptCorrection = cancelTranscriptCorrection;
 window.retranscribeTranscript = retranscribeTranscript;
+window.toggleSessionTimeline = toggleSessionTimeline;
+window.requestSessionReanalysis = requestSessionReanalysis;
 window.approveCand = approveCand;
 window.rejectCand = rejectCand;
 window.delCand = delCand;
@@ -49,8 +53,6 @@ document.querySelectorAll(".tab").forEach((btn) => {
     btn.classList.add("active");
     activeTab = btn.dataset.tab;
     $(`#tab-${activeTab}`).classList.add("active");
-    const batchBar = document.getElementById("batch-bar");
-    if (batchBar) batchBar.style.display = activeTab === "candidates" ? "" : "none";
     refresh();
   });
 });
@@ -62,7 +64,7 @@ if (requestedButton) requestedButton.click();
 // ----------------------------- 轮询 ----------------------------- //
 const loaders = {
   rooms: loadRooms, recording: loadRecording, transcripts: loadTranscripts,
-  danmaku: loadDanmaku, trends: loadTrends, candidates: loadCandidates,
+  danmaku: loadDanmaku, trends: loadTrends, candidates: loadSessionTimelines,
   clips: loadClips, uploads: loadUploads, features: loadFeatureSwitches, models: loadLLM, logs: loadLogs,
   schedules: loadSchedules, login: loadCookieStatus, tasks: async () => Promise.all([loadTasks(), loadJobs()]),
   topics: loadTopics, monitor: loadMonitor, templates: loadTemplates,

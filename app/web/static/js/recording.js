@@ -1,6 +1,8 @@
 // BiliLiveCut \u5f55\u5236\u63a7\u5236:\u542f\u52a8/\u505c\u6b62\u3001\u4f1a\u8bdd\u5217\u8868\u3001\u8f6c\u5199\u3001\u5f39\u5e55
 import { $, api, toast, esc, badge, DANMAKU_TYPE_LABEL } from "./common.js";
 
+const dirtyTranscriptIds = new Set();
+
 // ----------------------------- \u542f\u52a8/\u505c\u6b62\u5f55\u5236 ----------------------------- //
 async function startRoom(id) {
   try {
@@ -71,6 +73,11 @@ async function loadRecording() {
 
 // ----------------------------- \u6e32\u67d3:\u5b9e\u65f6\u8f6c\u5199 ----------------------------- //
 async function loadTranscripts() {
+  if (dirtyTranscriptIds.size > 0) {
+    $("#transcripts-dirty-hint").style.display = "";
+    return;
+  }
+  $("#transcripts-dirty-hint").style.display = "none";
   const rows = await api("GET", "/api/transcripts?limit=30");
   $("#transcripts-list").innerHTML = rows.length ? rows.map((t) => {
     const rawDetails = t.llm_refined && t.raw_text && t.raw_text !== t.text
@@ -82,19 +89,78 @@ async function loadTranscripts() {
       <div class="txt">${esc(t.text) || "(\u7a7a)"}</div>
       ${t.summary ? `<div class="sub" style="margin-top:8px"><b>片段概括：</b>${esc(t.summary)}</div>` : ""}
       ${rawDetails}
-      <div class="actions" style="margin-top:8px"><button class="secondary" onclick="retranscribeTranscript(${t.id})">重新识别</button></div>
+      <details class="transcript-correction" data-transcript-editor="${t.id}" style="margin-top:8px">
+        <summary>人工纠错并学习房间词典</summary>
+        <label class="editor-label">纠正后的全文
+          <textarea id="transcript-text-${t.id}" rows="6">${esc(t.text || "")}</textarea>
+        </label>
+        <label class="editor-label">专属词纠错（可选，每行“错误词=正确词”）
+          <textarea id="transcript-aliases-${t.id}" rows="2" placeholder="查里斯=查理斯"></textarea>
+        </label>
+        <label class="chk"><input type="checkbox" id="transcript-learn-${t.id}" checked /> 将纠错词学习到 ${esc(t.source_label || "当前直播间")} 的 ASR 词典</label>
+        <p class="hint">保存后会自动请求本场重分析；人工审核、人工边界、草稿和已生成成品不会被覆盖。</p>
+        <div class="actions">
+          <button class="primary" onclick="correctTranscript(${t.id})">保存纠错</button>
+          <button onclick="cancelTranscriptCorrection(${t.id})">取消编辑</button>
+          <button class="secondary" onclick="retranscribeTranscript(${t.id})">重新识别原音频</button>
+        </div>
+      </details>
     </div>`;
   }).join("") : `<div class="empty">\u6682\u65e0\u8f6c\u5199\u3002\u8bf7\u5728\u300c\u914d\u7f6e \u2192 \u529f\u80fd\u5f00\u5173\u300d\u542f\u7528\u201c\u5f55\u5236\u5b9e\u65f6\u8f6c\u5199\u201d\uff0c\u6216\u5728 CLI \u4f7f\u7528 --pipeline\u3002</div>`;
+}
+
+function parseTranscriptAliases(value) {
+  const aliases = {};
+  for (const rawLine of String(value || "").split("\n")) {
+    const line = rawLine.trim();
+    if (!line) continue;
+    const separator = line.indexOf("=");
+    if (separator <= 0 || !line.slice(separator + 1).trim()) {
+      throw new Error(`词典格式错误：${line}（应为“错误词=正确词”）`);
+    }
+    aliases[line.slice(0, separator).trim()] = line.slice(separator + 1).trim();
+  }
+  return aliases;
+}
+
+async function correctTranscript(id) {
+  try {
+    const correctedText = $(`#transcript-text-${id}`).value.trim();
+    if (!correctedText) throw new Error("纠正后的转写不能为空");
+    const aliases = parseTranscriptAliases($(`#transcript-aliases-${id}`).value);
+    const result = await api("PATCH", `/api/transcripts/${id}`, {
+      corrected_text: correctedText,
+      aliases,
+      learn_dictionary: $(`#transcript-learn-${id}`).checked,
+    });
+    dirtyTranscriptIds.delete(id);
+    const learnedCount = Object.keys(result.learned_aliases || {}).length;
+    toast(`转写已保存并请求整场重分析${learnedCount ? `，学习 ${learnedCount} 条房间词典` : ""}`);
+    await loadTranscripts();
+  } catch (e) { toast("保存纠错失败：" + e.message); }
+}
+
+async function cancelTranscriptCorrection(id) {
+  dirtyTranscriptIds.delete(id);
+  await loadTranscripts();
 }
 
 async function retranscribeTranscript(id) {
   if (!window.confirm("重新识别会删除当前转写，并清理尚未人工审核或渲染的自动分析结果。继续吗？")) return;
   try {
     const result = await api("POST", `/api/transcripts/${id}/retranscribe`);
+    dirtyTranscriptIds.delete(id);
     toast(`片段 #${result.segment_id} 已重新加入转写队列`);
     await loadTranscripts();
   } catch (e) { toast("重新识别失败:" + e.message); }
 }
+
+$("#transcripts-list").addEventListener("input", (event) => {
+  const editor = event.target.closest?.("[data-transcript-editor]");
+  if (!editor) return;
+  dirtyTranscriptIds.add(Number(editor.dataset.transcriptEditor));
+  $("#transcripts-dirty-hint").style.display = "";
+});
 
 // ----------------------------- \u6e32\u67d3:\u5f39\u5e55\u70ed\u5ea6 ----------------------------- //
 async function loadDanmaku() {
@@ -113,4 +179,4 @@ async function loadDanmaku() {
     </div>`).join("") : `<div class="empty">\u6682\u65e0\u5f39\u5e55\u8bb0\u5f55\u3002</div>`;
 }
 
-export { startRoom, stopRoom, resumeRoom, markHighlight, retranscribeTranscript, loadRecording, loadTranscripts, loadDanmaku };
+export { startRoom, stopRoom, resumeRoom, markHighlight, correctTranscript, cancelTranscriptCorrection, retranscribeTranscript, loadRecording, loadTranscripts, loadDanmaku };

@@ -6,7 +6,7 @@ from datetime import UTC, datetime, timedelta
 
 import pytest
 
-from app.analysis.highlight import candidate_time_bounds, contiguous_recording_start
+from app.analysis.highlight import candidate_time_bounds, contiguous_recording_range, contiguous_recording_start
 from app.analysis.scoring_config import ScoringConfig
 from app.core.config import Settings
 from app.db.models import LiveRoom
@@ -115,6 +115,53 @@ def test_candidate_time_bounds_may_snap_outward_to_natural_pauses() -> None:
     assert end == base + timedelta(seconds=64)
 
 
+def test_candidate_time_bounds_uses_dynamic_minimum_context() -> None:
+    """分析窗口仍可很长，但无 LLM 扩展时成片只保留动态最小上下文。"""
+    base = datetime(2026, 8, 3, tzinfo=UTC)
+
+    start, end, peak = candidate_time_bounds(
+        segment_start=base,
+        available_start=base,
+        available_end=base + timedelta(seconds=180),
+        peak_offset_s=90,
+        pre_roll_s=60,
+        post_roll_s=30,
+        suggested_start_offset_s=None,
+        suggested_end_offset_s=None,
+        silences=[],
+        minimum_pre_roll_s=20,
+        minimum_post_roll_s=12,
+    )
+
+    assert start == base + timedelta(seconds=70)
+    assert peak == base + timedelta(seconds=90)
+    assert end == base + timedelta(seconds=102)
+
+
+def test_candidate_time_bounds_accepts_mixed_utc_representations() -> None:
+    """SQLite 无时区时间与 API 有时区时间混用时仍应生成同一 UTC 边界。"""
+    aware = datetime(2026, 8, 3, tzinfo=UTC)
+    naive = aware.replace(tzinfo=None)
+
+    start, end, peak = candidate_time_bounds(
+        segment_start=naive + timedelta(seconds=60),
+        available_start=aware,
+        available_end=aware + timedelta(seconds=180),
+        peak_offset_s=30,
+        pre_roll_s=60,
+        post_roll_s=30,
+        suggested_start_offset_s=None,
+        suggested_end_offset_s=None,
+        silences=[],
+        minimum_pre_roll_s=20,
+        minimum_post_roll_s=12,
+    )
+
+    assert start == naive + timedelta(seconds=70)
+    assert peak == naive + timedelta(seconds=90)
+    assert end == naive + timedelta(seconds=102)
+
+
 def test_contiguous_recording_start_stops_at_stream_gap() -> None:
     """前文扩展不得跨越断流缺口。"""
     from app.db.models import RawSegment
@@ -148,14 +195,50 @@ def test_contiguous_recording_start_stops_at_stream_gap() -> None:
     assert contiguous_recording_start([before_gap, after_gap, current], current) == after_gap.start_ts
 
 
+def test_contiguous_recording_range_includes_recorded_following_segments() -> None:
+    """已录制的相邻后续分段可作为跨片段候选的尾部。"""
+    from app.db.models import RawSegment
+
+    base = datetime(2026, 8, 2, tzinfo=UTC)
+    previous = RawSegment(
+        id=1,
+        session_id=1,
+        seq=0,
+        file_path="0.ts",
+        start_ts=base,
+        end_ts=base + timedelta(seconds=300),
+    )
+    current = RawSegment(
+        id=2,
+        session_id=1,
+        seq=1,
+        file_path="1.ts",
+        start_ts=base + timedelta(seconds=300),
+        end_ts=base + timedelta(seconds=600),
+    )
+    following = RawSegment(
+        id=3,
+        session_id=1,
+        seq=2,
+        file_path="2.ts",
+        start_ts=base + timedelta(seconds=600),
+        end_ts=base + timedelta(seconds=900),
+    )
+
+    assert contiguous_recording_range([previous, current, following], current) == (
+        previous.start_ts,
+        following.end_ts,
+    )
+
+
 def test_default_thresholds_are_candidate_friendly_without_schema_drift() -> None:
     """推荐阈值来自应用配置，表模型默认值保持兼容已有 Schema 指纹。"""
     settings = Settings(_env_file=None)
     room = LiveRoom(input_url="test")
 
-    assert settings.highlight_init_threshold == pytest.approx(0.35)
-    assert settings.highlight_threshold == pytest.approx(0.45)
-    assert settings.highlight_review_threshold == pytest.approx(0.40)
+    assert settings.highlight_init_threshold == pytest.approx(0.28)
+    assert settings.highlight_threshold == pytest.approx(0.38)
+    assert settings.highlight_review_threshold == pytest.approx(0.32)
     assert settings.highlight_auto_approve_threshold == pytest.approx(0.72)
     assert settings.auto_publish_threshold == pytest.approx(0.80)
     assert room.highlight_threshold == pytest.approx(0.65)

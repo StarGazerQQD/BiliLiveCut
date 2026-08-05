@@ -41,11 +41,18 @@ async def _on_session_end(session_id: int) -> None:
     :param session_id: 结束的会话 id。
     """
     _finalize_manual_markers(session_id)
+    from app.analysis.reanalysis import request_session_reanalysis
+
+    reanalysis_requested = request_session_reanalysis(
+        session_id,
+        reason="session_finalized",
+    )
     clips_path = str(clips_dir())
     if settings_store.upload_active():
         push_notification(
             f"会话 #{session_id} 已结束。上传模块开启,成品将自动进入上传队列。",
             kind="success",
+            data={"session_id": session_id, "final_reanalysis": reanalysis_requested},
         )
         return
     # 上传模块关闭:弹出(在本机文件管理器打开)切片所在目录,并通知前端。
@@ -53,7 +60,12 @@ async def _on_session_end(session_id: int) -> None:
     push_notification(
         f"本场直播(会话 #{session_id})已结束,上传模块未开启。切片已保存到:{clips_path}",
         kind="success",
-        data={"clips_dir": clips_path, "ready_dir": str(ready_to_upload_dir())},
+        data={
+            "clips_dir": clips_path,
+            "ready_dir": str(ready_to_upload_dir()),
+            "session_id": session_id,
+            "final_reanalysis": reanalysis_requested,
+        },
     )
     logger.info("会话 {} 结束,上传关闭,已弹出切片目录: {}", session_id, clips_path)
 

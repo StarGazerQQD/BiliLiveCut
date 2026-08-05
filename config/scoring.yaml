@@ -16,7 +16,8 @@ fusion:
   alpha: 0.5
   beta: 0.5
 
-# 切片上下文留白(秒)
+# 高光判断使用的完整上下文窗口(秒)；成片边界由 LLM、静音点和
+# HIGHLIGHT_MIN_PRE_ROLL_S / HIGHLIGHT_MIN_POST_ROLL_S 动态决定。
 context:
   pre_roll_s: 60
   post_roll_s: 30

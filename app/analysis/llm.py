@@ -624,7 +624,7 @@ def judge_highlight(
     :returns: :class:`HighlightJudgement`;LLM 不可用或出错时返回 ``None``。
     """
     window_start = float(window_start_offset_s)
-    if not math.isfinite(window_start) or window_start < 0:
+    if not math.isfinite(window_start):
         window_start = 0.0
     prompt = _JUDGE_PROMPT.format(
         text=text or "(无转写)",

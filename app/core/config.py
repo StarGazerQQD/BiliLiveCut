@@ -70,6 +70,10 @@ class Settings(BaseSettings):
     recording_reconnect_max_attempts: int = Field(default=20, ge=0, le=10000)
     # 从断流开始计算的最长重试时间（秒）；0=不按时间停止。
     recording_reconnect_max_elapsed_s: int = Field(default=300, ge=0, le=86400)
+    # 自动监控连续离线确认、延迟收尾和单场录制时长保护。
+    live_offline_confirm_count: int = Field(default=3, ge=1, le=100)
+    live_session_end_delay_s: int = Field(default=60, ge=0, le=3600)
+    recording_max_duration_s: int = Field(default=43200, ge=300, le=604800)
     collect_danmaku: bool = True  # 录制期间是否同时采集弹幕
     # 单场录制使用登录 Cookie 获取弹幕 token 的最大失败次数（首次计入）；0=始终匿名。
     danmaku_login_retry_max_attempts: int = Field(default=5, ge=0, le=100)
@@ -170,10 +174,16 @@ class Settings(BaseSettings):
     trend_match_days: int = Field(default=7, ge=1)  # 高光/文案参考的"近期"窗口(天)
 
     # ---------- 高光阈值 ----------
-    highlight_init_threshold: float = Field(default=0.35, ge=0.0, le=1.0)
-    highlight_threshold: float = Field(default=0.45, ge=0.0, le=1.0)
-    highlight_review_threshold: float = Field(default=0.40, ge=0.0, le=1.0)
+    highlight_init_threshold: float = Field(default=0.28, ge=0.0, le=1.0)
+    highlight_threshold: float = Field(default=0.38, ge=0.0, le=1.0)
+    highlight_review_threshold: float = Field(default=0.32, ge=0.0, le=1.0)
     highlight_auto_approve_threshold: float = Field(default=0.72, ge=0.0, le=1.0)
+    highlight_max_candidates_per_segment: int = Field(default=4, ge=1, le=12)
+    highlight_peak_min_distance_s: float = Field(default=25.0, ge=5.0, le=300.0)
+    highlight_min_pre_roll_s: float = Field(default=20.0, ge=0.0, le=180.0)
+    highlight_min_post_roll_s: float = Field(default=12.0, ge=0.0, le=180.0)
+    # B 站弹幕接收时间通常晚于画面爆点；评分查询窗口向后平移此秒数。
+    danmaku_event_lag_s: float = Field(default=7.5, ge=0.0, le=60.0)
     auto_publish_threshold: float = Field(default=0.80, ge=0.0, le=1.0)
 
     # ---------- 切片后处理 ----------

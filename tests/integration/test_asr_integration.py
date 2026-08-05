@@ -140,8 +140,8 @@ class TestPipelineIntegration:
         assert result.fallback_trigger_reason == "primary_degenerate_repetition"
         assert result.primary_error_type == "ASRQualityError"
 
-    def test_funasr_local_decode_loop_falls_back_to_paraformer(self, monkeypatch: MonkeyPatch) -> None:
-        """五分钟正文中的局部 Nano 复读也应切换 Paraformer，而不是继续进入 LLM。"""
+    def test_funasr_local_decode_loop_is_repaired_without_discarding_primary(self, monkeypatch: MonkeyPatch) -> None:
+        """占比较小的局部 Nano 复读应折叠，不应丢弃整段主引擎文本。"""
         from app.analysis.transcription import pipeline as pipeline_module
 
         class FakePrimary:
@@ -162,9 +162,10 @@ class TestPipelineIntegration:
 
         result = pipeline.transcribe("audio.wav")
 
-        assert result.final_text == "Paraformer 已消除局部复读。"
-        assert result.fallback_backend == "paraformer"
-        assert result.fallback_trigger_reason == "primary_degenerate_repetition"
+        assert result.final_text != "Paraformer 已消除局部复读。"
+        assert result.final_text.count("等一下我们先看看") == 2
+        assert result.fallback_backend == ""
+        assert result.metadata["repetition_repair"]["applied"] is True
 
     def test_funasr_exception_provenance_survives_paraformer_fallback(self, monkeypatch: MonkeyPatch) -> None:
         """模型异常与空输出应使用不同回退原因，并保留原始异常类型。"""

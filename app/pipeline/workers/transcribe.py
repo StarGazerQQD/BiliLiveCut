@@ -126,6 +126,8 @@ def transcribe_compute(task_id: int) -> dict[str, Any]:
                 "engine": result.backend,
             }
         )
+    if result.metadata.get("repetition_repair"):
+        auxiliary_payload["repetition_repair"] = result.metadata["repetition_repair"]
     if refinement is not None:
         auxiliary_payload["transcript_refinement"] = {
             "applied": True,

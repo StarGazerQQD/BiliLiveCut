@@ -184,3 +184,21 @@ def test_nano_generate_uses_batched_input_cache_and_sentence_timestamps(monkeypa
         (11.0, 12.5, "第一句。"),
         (12.5, 14.0, "第二句。"),
     ]
+
+
+def test_nano_generate_receives_room_hotwords(monkeypatch: MonkeyPatch) -> None:
+    """Fun-ASR-Nano 主引擎也必须接收直播间专属词典。"""
+    captured: dict[str, object] = {}
+
+    class FakeModel:
+        def generate(self, **kwargs: object) -> list[dict[str, object]]:
+            captured.update(kwargs)
+            return [{"text": "专属词"}]
+
+    backend = FunASRBackend(sensevoice=False, funasr_nano=True)
+    monkeypatch.setattr(backend, "_load_funasr", lambda *, for_primary=False: FakeModel())
+    monkeypatch.setattr("app.analysis.transcription.backends._probe_audio_duration", lambda _path: 3.0)
+
+    backend.transcribe_funasr("normalized.wav", "查理斯, 亚运冠军")
+
+    assert captured["hotword"] == "查理斯, 亚运冠军"

@@ -23,6 +23,7 @@ from uuid import uuid4
 from fastapi import APIRouter, HTTPException, Request
 from fastapi.responses import FileResponse, HTMLResponse
 from fastapi.templating import Jinja2Templates
+from loguru import logger
 from pydantic import BaseModel, ConfigDict, Field
 from sqlmodel import select as _sql_select
 
@@ -997,6 +998,7 @@ def submit_review(
             candidate_id=candidate_id,
             details={"decision": decision, "reason": reason},
         )
+        candidate_session_id = c.session_id
 
     from app.pipeline.highlight_feedback import record_candidate_review_feedback
 
@@ -1004,6 +1006,30 @@ def submit_review(
         candidate_id,
         decision=decision,
         reviewed_by=actor,
+    )
+    from app.analysis.threshold_learning import sync_candidate_feedback
+
+    try:
+        threshold_feedback = sync_candidate_feedback(candidate_id, decision=decision)
+    except (OSError, RuntimeError, TypeError, ValueError) as exc:
+        # 审核事务已经成功提交；学习链异常只能降级，不能把已生效的审核误报为失败。
+        logger.opt(exception=exc).error(
+            "审核反馈同步失败 candidate={} session={} decision={} actor={}",
+            candidate_id,
+            candidate_session_id,
+            decision,
+            actor,
+        )
+        threshold_feedback = {"room_id": None, "action": None, "threshold": None}
+    logger.info(
+        "审核提交 candidate={} session={} room={} decision={} actor={} threshold_action={} threshold_changed={}",
+        candidate_id,
+        candidate_session_id,
+        threshold_feedback.get("room_id"),
+        decision,
+        actor,
+        threshold_feedback.get("action"),
+        threshold_feedback.get("threshold"),
     )
     return {"status": decision, "reason": reason}
 
