@@ -427,7 +427,7 @@ def _draft_dedup_hash(draft: dict[str, Any]) -> str:
     end = draft.get("end_ts")
     start_value = start.timestamp() if hasattr(start, "timestamp") else str(start)
     end_value = end.timestamp() if hasattr(end, "timestamp") else str(end)
-    return hashlib.sha1(f"{draft.get('session_id', '')}:{start_value}:{end_value}".encode()).hexdigest()
+    return hashlib.sha256(f"{draft.get('session_id', '')}:{start_value}:{end_value}".encode()).hexdigest()
 
 
 def _draft_clusters_existing(
@@ -952,7 +952,7 @@ def _score_segment_draft(
         peak_ts=peak_ts,
         cooldown_s=cfg.cooldown_s,
     ):
-        dedup_hash_val = hashlib.sha1(
+        dedup_hash_val = hashlib.sha256(
             f"{session_id}:{start_ts.timestamp():.1f}:{end_ts.timestamp():.1f}".encode()
         ).hexdigest()
         return {
@@ -1016,7 +1016,7 @@ def _score_segment_draft(
         plugin_payload,
     )
 
-    dedup_hash_val = hashlib.sha1(
+    dedup_hash_val = hashlib.sha256(
         f"{session_id}:{start_ts.timestamp():.1f}:{end_ts.timestamp():.1f}".encode()
     ).hexdigest()
 

@@ -20,6 +20,7 @@
 
 ### 修复
 
+- **security/codeql**: 候选去重指纹由 SHA-1 升级为 SHA-256；转写纠错词边界清理改为线性扫描，避免超长用户输入触发高代价正则回溯。
 - **analysis/timezone**: 统一会话、分段、弹幕和候选的时区归一化，修复混合 naive/aware `datetime` 在时间线、跨分段窗口和弹幕统计中的比较错误。
 - **transcription/repetition**: Fun-ASR-Nano 局部复读先保守折叠超过合理次数的重复，整段退化才回退 Paraformer/Whisper；保留有语义的正常强调，并记录实际修复与回退元数据。
 - **pipeline/cross-segment**: 跨分段候选保留相对当前分段的负偏移，原子提交同一分析任务产生的多个候选与事件，并在并发工作进程下安全抑制同场重复节点。

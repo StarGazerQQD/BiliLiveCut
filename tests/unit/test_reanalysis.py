@@ -26,7 +26,7 @@ from app.db.models import (
     Transcript,
 )
 from app.db.session import get_session
-from app.web.services.transcripts import correct_transcript, derive_aliases_from_correction
+from app.web.services.transcripts import _clean_alias_term, correct_transcript, derive_aliases_from_correction
 
 
 def _seed_session() -> tuple[int, int, int, int]:
@@ -274,3 +274,10 @@ def test_reanalysis_without_transcript_returns_segment_to_transcription(temp_db:
 def test_derive_aliases_ignores_wholesale_rewrites() -> None:
     """整段改写不应被误学成直播间纠错词。"""
     assert derive_aliases_from_correction("完全不同的一大段旧内容", "另一段毫无关系的新内容") == {}
+
+
+def test_clean_alias_term_handles_long_untrusted_padding_linearly() -> None:
+    """超长用户标点输入应在线性扫描中完成清理。"""
+    padding = "_！？— " * 50_000
+
+    assert _clean_alias_term(f"{padding}查理斯{padding}") == "查理斯"

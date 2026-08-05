@@ -3,7 +3,6 @@
 from __future__ import annotations
 
 import json
-import re
 from difflib import SequenceMatcher
 from typing import Any
 
@@ -127,7 +126,13 @@ def derive_aliases_from_correction(original: str, corrected: str) -> dict[str, s
 
 def _clean_alias_term(value: str) -> str:
     """去掉纠错差异两侧的空白和标点。"""
-    return re.sub(r"^[\W_]+|[\W_]+$", "", value, flags=re.UNICODE).strip()
+    start = 0
+    end = len(value)
+    while start < end and not value[start].isalnum():
+        start += 1
+    while end > start and not value[end - 1].isalnum():
+        end -= 1
+    return value[start:end]
 
 
 def _decode_auxiliary(raw: str | None) -> dict[str, Any]:

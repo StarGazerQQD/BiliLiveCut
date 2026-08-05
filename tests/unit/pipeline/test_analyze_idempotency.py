@@ -25,6 +25,7 @@ from app.db.models import HighlightCandidate as HC
 from app.db.models import HighlightEvent as HE
 from app.db.session import get_session
 from app.pipeline.workers.analyze import (
+    _draft_dedup_hash,
     _get_or_create_candidate,
     _get_or_create_event,
 )
@@ -37,6 +38,18 @@ if TYPE_CHECKING:
 def _use_temp_db(temp_db: None) -> None:
     """依赖项目级 temp_db fixture。"""
     pass
+
+
+def test_fallback_dedup_hash_uses_sha256() -> None:
+    """兼容候选指纹应使用抗碰撞的 SHA-256。"""
+    start = datetime(2026, 8, 5, 12, 0, tzinfo=UTC)
+    end = datetime(2026, 8, 5, 12, 1, tzinfo=UTC)
+
+    digest = _draft_dedup_hash({"session_id": 7, "start_ts": start, "end_ts": end})
+
+    expected = hashlib.sha256(f"7:{start.timestamp()}:{end.timestamp()}".encode()).hexdigest()
+    assert digest == expected
+    assert len(digest) == 64
 
 
 class TestGetOrCreateCandidate:
