@@ -32,7 +32,7 @@
     <div class="tabs-group">
       <span class="tabs-label">制作</span>
       <button class="tab" data-tab="trends">网感资料库</button>
-      <button class="tab" data-tab="candidates">候选审核</button>
+      <button class="tab" data-tab="candidates">场次时间线</button>
       <button class="tab" data-tab="topics">主题管理</button>
       <button class="tab" data-tab="clips">成品切片</button>
       <button class="tab" data-tab="uploads">上传与发布</button>
@@ -100,6 +100,11 @@
 
     <!-- 实时转写 -->
     <section id="tab-transcripts" class="panel">
+      <div class="card">
+        <h3>转写纠错与房间词典</h3>
+        <p class="hint">可直接修正 ASR 文本，并用“错误词=正确词”回流当前直播间词典。保存后会保留人工审核成果，并安全重分析整场录制。</p>
+      </div>
+      <p class="hint" id="transcripts-dirty-hint" style="display:none">检测到未保存的转写纠错，已暂停列表自动刷新；保存或取消后恢复。</p>
       <div id="transcripts-list"></div>
     </section>
 
@@ -146,26 +151,24 @@
       <div id="trends-list"></div>
     </section>
 
-    <!-- 候选审核 -->
+    <!-- 场次高光时间线 -->
     <section id="tab-candidates" class="panel">
-      <div class="row toolbar">
-        <select id="cand-filter">
-          <option value="">全部状态</option>
-          <option value="pending">待审 pending</option>
-          <option value="approved">已批准 approved</option>
-          <option value="rejected">已拒绝 rejected</option>
-          <option value="clipped">已出片 clipped</option>
+      <div class="card timeline-intro">
+        <div>
+          <h3>每场直播的高光时间线</h3>
+          <p class="hint">按 GMT+8 展示动态高光节点、梗概、高频弹幕、来源证据和置信度。可按新阈值重分析，或按新词典/ASR 模型重识别；人工成果不会被覆盖。</p>
+        </div>
+        <a class="back-link" href="/review/queue" target="_blank" rel="noopener">打开多人精审队列</a>
+      </div>
+      <div class="row toolbar timeline-toolbar">
+        <select id="timeline-room-filter" aria-label="筛选直播间">
+          <option value="">全部直播间</option>
         </select>
-        <a class="back-link" href="/review/queue" target="_blank">打开多人审核队列</a>
+        <label class="chk"><input type="checkbox" id="timeline-include-rejected" /> 显示已拒绝节点</label>
+        <button id="btn-refresh-timeline">刷新时间线</button>
+        <span class="muted">所有时间均为 GMT+8</span>
       </div>
-      <div class="row toolbar" id="batch-bar" style="display:none">
-        <input type="checkbox" id="select-all-candidates" title="全选" /> <label for="select-all-candidates">全选</label>
-        <button class="danger" id="btn-batch-reject">批量拒绝</button>
-        <button class="primary" id="btn-batch-approve">批量批准</button>
-        <button class="secondary" id="btn-batch-publish">批量发布</button>
-        <span id="batch-count"></span>
-      </div>
-      <div id="candidates-list"></div>
+      <div id="timeline-list"></div>
     </section>
 
     <!-- 主题管理(V0.1.6 P1) -->

@@ -23,6 +23,7 @@ from app.db.models import LiveRoom
 _DEFAULT_CONFIG: dict = {
     "hotwords": [],
     "aliases": {},
+    "learned_aliases": {},
     "highlight_keywords": [],
     "blocked_topics": [],
     "recording_paused": False,
@@ -40,9 +41,25 @@ def load_room_config(room: LiveRoom | None) -> dict:
         return deepcopy(_DEFAULT_CONFIG)
     try:
         parsed = json.loads(room.room_config_json)
-        # 确保所有预期键存在。
+        if not isinstance(parsed, dict):
+            return deepcopy(_DEFAULT_CONFIG)
+        # 保留未来扩展键，同时把旧版或手工编辑产生的畸形已知字段降级为默认值。
         cfg = deepcopy(_DEFAULT_CONFIG)
         cfg.update(parsed)
+        for key in ("hotwords", "highlight_keywords", "blocked_topics"):
+            try:
+                cfg[key] = _string_list(cfg.get(key), name=key, limit=500)
+            except ValueError:
+                cfg[key] = deepcopy(_DEFAULT_CONFIG[key])
+        for key in ("aliases", "learned_aliases"):
+            try:
+                cfg[key] = _alias_map(cfg.get(key), name=key)
+            except ValueError:
+                cfg[key] = deepcopy(_DEFAULT_CONFIG[key])
+        if not isinstance(cfg.get("recording_paused"), bool):
+            cfg["recording_paused"] = False
+        if cfg.get("highlight_scorer_mode") not in {"inherit", "off", "shadow", "champion"}:
+            cfg["highlight_scorer_mode"] = "inherit"
         return cfg
     except (json.JSONDecodeError, TypeError):
         return deepcopy(_DEFAULT_CONFIG)
@@ -60,7 +77,85 @@ def merge_room_config(room: LiveRoom, updates: dict[str, object]) -> dict[str, o
     if scoring_mode not in {"inherit", "off", "shadow", "champion"}:
         raise ValueError("highlight_scorer_mode 必须是 inherit/off/shadow/champion")
     merged["highlight_scorer_mode"] = scoring_mode
+    merged["hotwords"] = _string_list(merged.get("hotwords"), name="hotwords", limit=500)
+    merged["highlight_keywords"] = _string_list(merged.get("highlight_keywords"), name="highlight_keywords", limit=500)
+    merged["blocked_topics"] = _string_list(merged.get("blocked_topics"), name="blocked_topics", limit=500)
+    merged["aliases"] = _alias_map(merged.get("aliases"), name="aliases")
+    merged["learned_aliases"] = _alias_map(merged.get("learned_aliases"), name="learned_aliases")
     return merged
+
+
+def effective_hotwords(config: dict[str, object]) -> list[str]:
+    """返回人工热词和纠错目标词合并后的稳定去重列表。"""
+    aliases = config.get("aliases", {})
+    learned = config.get("learned_aliases", {})
+    values: list[str] = list(_string_list(config.get("hotwords"), name="hotwords", limit=500))
+    for mapping in (aliases, learned):
+        if isinstance(mapping, dict):
+            values.extend(str(value) for value in mapping.values())
+    return list(dict.fromkeys(value.strip() for value in values if value.strip()))
+
+
+def learn_room_aliases(room: LiveRoom, aliases: dict[str, str]) -> dict[str, object]:
+    """把人工转写纠错沉淀到当前直播间词典。"""
+    validated = _alias_map(aliases, name="aliases")
+    config = load_room_config(room)
+    existing = _alias_map(config.get("aliases"), name="aliases")
+    learned = _alias_map(config.get("learned_aliases"), name="learned_aliases")
+    existing.update(validated)
+    learned.update(validated)
+    hotwords = _string_list(config.get("hotwords"), name="hotwords", limit=500)
+    hotwords = list(dict.fromkeys([*hotwords, *validated.values()]))
+    return merge_room_config(
+        room,
+        {
+            "aliases": existing,
+            "learned_aliases": learned,
+            "hotwords": hotwords,
+        },
+    )
+
+
+def _string_list(value: object, *, name: str, limit: int) -> list[str]:
+    """校验房间配置中的短字符串列表。"""
+    if value is None:
+        return []
+    if not isinstance(value, list):
+        raise ValueError(f"{name} 必须是字符串列表")
+    if len(value) > limit:
+        raise ValueError(f"{name} 最多允许 {limit} 项")
+    result: list[str] = []
+    for item in value:
+        if not isinstance(item, str):
+            raise ValueError(f"{name} 只能包含字符串")
+        normalized = item.strip()
+        if not normalized:
+            continue
+        if len(normalized) > 80:
+            raise ValueError(f"{name} 单项最多 80 个字符")
+        result.append(normalized)
+    return list(dict.fromkeys(result))
+
+
+def _alias_map(value: object, *, name: str) -> dict[str, str]:
+    """校验房间配置中的纠错映射。"""
+    if value is None:
+        return {}
+    if not isinstance(value, dict) or len(value) > 500:
+        raise ValueError(f"{name} 必须是至多 500 项的对象")
+    result: dict[str, str] = {}
+    for wrong, correct in value.items():
+        if not isinstance(wrong, str) or not isinstance(correct, str):
+            raise ValueError(f"{name} 的键和值必须是字符串")
+        source = wrong.strip()
+        target = correct.strip()
+        if not source or not target:
+            continue
+        if len(source) > 80 or len(target) > 80:
+            raise ValueError(f"{name} 单项最多 80 个字符")
+        if source != target:
+            result[source] = target
+    return result
 
 
 def apply_aliases(text: str, aliases: dict[str, str]) -> str:

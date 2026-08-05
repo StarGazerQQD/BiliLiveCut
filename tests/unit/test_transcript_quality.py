@@ -7,7 +7,7 @@ from pathlib import Path
 from typing import TYPE_CHECKING
 
 from app.analysis.transcription.audio_normalization import normalized_asr_audio
-from app.analysis.transcription.quality import assess_transcript_quality
+from app.analysis.transcription.quality import assess_transcript_quality, repair_local_decode_loop
 
 if TYPE_CHECKING:
     from _pytest.monkeypatch import MonkeyPatch
@@ -52,6 +52,19 @@ def test_quality_keeps_short_natural_emphasis() -> None:
 
     assert quality.usable is True
     assert quality.reason is None
+
+
+def test_repair_local_decode_loop_only_collapses_small_exact_loop() -> None:
+    """局部解码循环保留两次强调，整段退化仍交给备用引擎。"""
+    prefix = "".join(f"主播正在解释第{index}段不同的正常内容。" for index in range(20))
+    suffix = "".join(f"随后继续介绍第{index}种不同玩法。" for index in range(20))
+    local = repair_local_decode_loop(prefix + "等一下我们先看看" * 4 + suffix)
+    dominant = repair_local_decode_loop("等一下我们先看看" * 20)
+
+    assert local.changed is True
+    assert local.text.count("等一下我们先看看") == 2
+    assert assess_transcript_quality(local.text).usable is True
+    assert dominant.changed is False
 
 
 def test_non_wav_input_is_normalized_to_16k_mono_pcm(

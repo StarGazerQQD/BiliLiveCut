@@ -611,6 +611,7 @@ class FunASRBackend:
         *,
         for_primary: bool = False,
         audio_duration: float | None = None,
+        hotword: str | None = None,
     ) -> ASRTranscriptResult:
         """执行一次 Fun-ASR-Nano 音频识别。
 
@@ -619,17 +620,23 @@ class FunASRBackend:
         :param end: 原音频中的结束秒（仅用于结果元数据）。
         :param for_primary: 是否按主引擎设备配置加载模型。
         :param audio_duration: 已探测的音频时长；省略时在此探测。
+        :param hotword: 传给 FunASR 解码器的房间专属热词串。
         :returns: :class:`ASRTranscriptResult`。
         """
         model = self._load_funasr(for_primary=for_primary)
         measured_duration = audio_duration if audio_duration is not None else _probe_audio_duration(audio_path)
         t0 = time.time()
+        generate_kwargs: dict[str, object] = {
+            "input": [audio_path],
+            "cache": {},
+            "batch_size_s": 0,
+            "language": "中文",
+            "sentence_timestamp": True,
+        }
+        if hotword:
+            generate_kwargs["hotword"] = hotword
         result = model.generate(
-            input=[audio_path],
-            cache={},
-            batch_size_s=0,
-            language="中文",
-            sentence_timestamp=True,
+            **generate_kwargs,
         )
         elapsed = time.time() - t0
         logger.info("Fun-ASR-Nano 转写完成, 耗时 {:.1f}s", elapsed)
@@ -720,10 +727,9 @@ class FunASRBackend:
         """使用 Fun-ASR-Nano 作为整段音频的主识别引擎。
 
         :param audio_path: 音频文件路径。
-        :param initial_prompt: 保留的统一接口参数；当前 Nano 模型不接受热词。
+        :param initial_prompt: 房间级热词，传给 FunASR ``hotword`` 参数。
         :returns: 带主引擎 provenance 与可选 SenseVoice 特征的统一结果。
         """
-        del initial_prompt
         audio_duration = _probe_audio_duration(audio_path)
         result = self._transcribe_funasr_audio(
             audio_path,
@@ -731,6 +737,7 @@ class FunASRBackend:
             audio_duration,
             for_primary=True,
             audio_duration=audio_duration,
+            hotword=initial_prompt,
         )
         result.base_text = result.text
         result.final_text = result.text

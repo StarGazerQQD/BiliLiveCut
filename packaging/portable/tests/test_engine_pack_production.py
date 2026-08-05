@@ -208,7 +208,7 @@ class TestEnginePackInfoFields:
 
         content_manifest = {
             "format_version": 4,
-            "engine_pack_version": "0.1.16.5-alpha",
+            "engine_pack_version": "0.1.17-alpha",
             "total_files": 1,
             "fixture": True,
             "engines": [],
@@ -223,7 +223,7 @@ class TestEnginePackInfoFields:
             crc32_val="1234ABCD",
             sha256_val="a" * 64,
             archive_path=archive_path,
-            source_commit="c8c5e50eacabf58d8e61a1bd1b4de7971ae7475c",
+            source_commit="2ebd509e8fa93cc09067888dbcf6d0984b976a16",
             content_manifest_path=content_manifest_path,
             is_fixture=True,
         )
@@ -241,10 +241,10 @@ class TestEnginePackInfoFields:
 
         content_manifest = {
             "format_version": 4,
-            "engine_pack_version": "0.1.16.5-alpha",
-            "portable_release_version": "0.1.16.5-alpha",
-            "source_commit": "c8c5e50eacabf58d8e61a1bd1b4de7971ae7475c",
-            "source_commit_short": "c8c5e50",
+            "engine_pack_version": "0.1.17-alpha",
+            "portable_release_version": "0.1.17-alpha",
+            "source_commit": "2ebd509e8fa93cc09067888dbcf6d0984b976a16",
+            "source_commit_short": "2ebd509",
             "engines": [
                 {
                     "engine_id": engine_id,

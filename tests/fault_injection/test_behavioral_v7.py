@@ -161,6 +161,39 @@ class TestApprovalConsistency:
         ok = approve_event_and_task(task_id=task.id, event_id=7704, source="auto")
         assert ok  # 幂等成功
 
+    def test_approve_secondary_candidate_without_task_updates_event_and_candidate(self, temp_db) -> None:
+        """同分段第二候选没有独立任务时仍应完整批准，不能留下 pending 事件。"""
+        from app.db.models import CandidateStatus, HighlightCandidate, HighlightEvent, ReviewStatus
+        from app.db.session import get_session
+        from app.pipeline.approval import approve_event_and_task
+
+        with get_session() as db:
+            candidate = HighlightCandidate(
+                id=6605,
+                session_id=8805,
+                peak_ts=_now(),
+                start_ts=_now(),
+                end_ts=_now(),
+                status=CandidateStatus.PENDING,
+            )
+            event = HighlightEvent(
+                id=7705,
+                candidate_id=candidate.id,
+                session_id=8805,
+                raw_start_ts=_now(),
+                raw_end_ts=_now(),
+                review_status=ReviewStatus.PENDING,
+            )
+            db.add_all([candidate, event])
+
+        assert approve_event_and_task(task_id=None, event_id=7705, source="human", approved_by="tester")
+
+        with get_session() as db:
+            candidate = db.get(HighlightCandidate, 6605)
+            event = db.get(HighlightEvent, 7705)
+        assert candidate is not None and candidate.status == CandidateStatus.APPROVED
+        assert event is not None and event.review_status == ReviewStatus.APPROVED_SOLO
+
 
 # ═══════════════════════════════════════════════════
 # UploadTask 映射测试

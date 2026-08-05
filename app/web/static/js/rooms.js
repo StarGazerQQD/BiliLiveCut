@@ -31,6 +31,14 @@ function roomRuntimeActions(room) {
   return `<button class="ok" onclick="startRoom(${room.id})">\u5f00\u59cb\u5f55\u5236</button>`;
 }
 
+function learnedAliasesMarkup(room) {
+  const learned = Object.entries(room.room_config?.learned_aliases || {});
+  if (!learned.length) return '<span class="muted">尚无从人工转写纠错中学习的词条。</span>';
+  return `<details class="learned-aliases"><summary>已自动学习 ${learned.length} 条</summary><div class="tagcloud">${learned
+    .map(([wrong, correct]) => `<span class="tagchip">${esc(wrong)} → ${esc(correct)}</span>`)
+    .join("")}</div></details>`;
+}
+
 function syncRoomRuntime(rooms) {
   rooms.forEach((room) => {
     const title = $(`#room-title-${room.id}`);
@@ -104,7 +112,7 @@ async function loadRooms() {
         <span class="muted" id="room-lock-hint-${r.id}">${r.running ? "(\u5f55\u5236\u4e2d\u9501\u5b9a)" : ""}</span>
       </div>
       <details class="room-config-detail" data-room-dirty-section="config:${r.id}" style="margin-top:8px">
-        <summary style="font-size:12px;color:var(--muted);cursor:pointer">\u623f\u95f4\u914d\u7f6e(\u9ad8\u5149\u6a21\u578b/\u70ed\u8bcd/\u522b\u540d/\u5c4f\u853d)</summary>
+        <summary style="font-size:12px;color:var(--muted);cursor:pointer">房间配置（高光模型 / ASR 词典 / 话题规则）</summary>
         <div class="thresholds" style="margin-top:6px;flex-direction:column;align-items:stretch">
           <label>\u9ad8\u5149\u8bc4\u5206\u6a21\u5f0f
             <select id="hm-${r.id}" style="width:100%">
@@ -112,19 +120,22 @@ async function loadRooms() {
             </select>
             <span class="muted">inherit \u8ddf\u968f\u63d2\u4ef6\u5168\u5c40\u8bbe\u7f6e\uff1bshadow \u53ea\u89c2\u6d4b\uff1bchampion \u53ef\u66ff\u6362\u89c4\u5219\u4e3b\u8bc4\u5206\u3002</span>
           </label>
-          <label>\u70ed\u8bcd(\u6362\u884c\u5206\u9694)
-            <textarea id="hw-${r.id}" rows="2" style="width:100%;font-size:11px">${(r.room_config.hotwords||[]).join("\n")}</textarea>
+          <label>ASR 热词（换行分隔）
+            <textarea id="hw-${r.id}" rows="2" style="width:100%;font-size:11px">${esc((r.room_config.hotwords||[]).join("\n"))}</textarea>
+            <span class="muted">绑定当前房间，同时传给 FunASR / Paraformer，并作为 Whisper 提示词。</span>
           </label>
-          <label>\u9ad8\u5149\u5173\u952e\u8bcd(\u6362\u884c\u5206\u9694)
-            <textarea id="hk-${r.id}" rows="2" style="width:100%;font-size:11px">${(r.room_config.highlight_keywords||[]).join("\n")}</textarea>
+          <label>高光关键词（换行分隔）
+            <textarea id="hk-${r.id}" rows="2" style="width:100%;font-size:11px">${esc((r.room_config.highlight_keywords||[]).join("\n"))}</textarea>
           </label>
-          <label>\u522b\u540d(\u6bcf\u884c:\u9519\u8bef=\u6b63\u786e)
-            <textarea id="al-${r.id}" rows="2" style="width:100%;font-size:11px">${Object.entries(r.room_config.aliases||{}).map(([k,v])=>`${k}=${v}`).join("\n")}</textarea>
+          <label>人工纠错词典（每行“错误词=正确词”）
+            <textarea id="al-${r.id}" rows="3" style="width:100%;font-size:11px">${esc(Object.entries(r.room_config.aliases||{}).map(([k,v])=>`${k}=${v}`).join("\n"))}</textarea>
           </label>
-          <label>\u5c4f\u853d\u8bdd\u9898(\u6362\u884c\u5206\u9694)
-            <textarea id="bt-${r.id}" rows="2" style="width:100%;font-size:11px">${(r.room_config.blocked_topics||[]).join("\n")}</textarea>
+          ${learnedAliasesMarkup(r)}
+          <label>屏蔽话题（换行分隔）
+            <textarea id="bt-${r.id}" rows="2" style="width:100%;font-size:11px">${esc((r.room_config.blocked_topics||[]).join("\n"))}</textarea>
           </label>
-          <button onclick="saveRoomConfig(${r.id})" style="margin-top:4px">\u4fdd\u5b58\u623f\u95f4\u914d\u7f6e</button>
+          <button onclick="saveRoomConfig(${r.id})" style="margin-top:4px">保存房间配置</button>
+          <span class="muted">保存只影响新识别；既有场次可在“场次时间线”中点击“按新词典重识别”。</span>
         </div>
       </details>
       ${r.auto_threshold_enabled ? `<div id="tl-${r.id}" class="threshold-learning"></div>` : ""}

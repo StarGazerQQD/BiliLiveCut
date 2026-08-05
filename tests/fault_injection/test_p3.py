@@ -2,7 +2,11 @@
 
 from __future__ import annotations
 
+import asyncio
 from pathlib import Path
+from types import SimpleNamespace
+
+import pytest
 
 from app.clipping.cover import (
     _detect_blur as detect_blur,
@@ -175,3 +179,67 @@ class TestLiveMonitor:
 
         monitor = LiveMonitor()
         assert monitor.get_reconnect_total(999) == 0
+
+    @staticmethod
+    @pytest.mark.asyncio
+    async def test_delayed_stop_rechecks_live_source_before_stopping(monkeypatch: pytest.MonkeyPatch) -> None:
+        """延迟窗口结束时必须复核：恢复直播不停止，仍离线才停止。"""
+        from app.pipeline import live_monitor as live_monitor_module
+        from app.web import service as service_module
+
+        live_state = {"value": 1}
+
+        class FakeClient:
+            async def __aenter__(self) -> FakeClient:
+                return self
+
+            async def __aexit__(self, *_args: object) -> None:
+                return None
+
+            async def get_room_info(self, _room_id: str, *, include_detail: bool) -> SimpleNamespace:
+                assert include_detail is False
+                return SimpleNamespace(live_status=live_state["value"])
+
+        class FakeManager:
+            def __init__(self) -> None:
+                self.running = True
+                self.stopped: list[int] = []
+
+            def is_running(self, db_id: int) -> bool:
+                return self.running
+
+            async def stop(self, db_id: int) -> None:
+                self.running = False
+                self.stopped.append(db_id)
+
+        manager = FakeManager()
+        monkeypatch.setattr(live_monitor_module, "BilibiliLiveClient", lambda **_kwargs: FakeClient())
+        monkeypatch.setattr(live_monitor_module, "get_bilibili_cookie", lambda: "")
+        monkeypatch.setattr(live_monitor_module.settings, "live_session_end_delay_s", 0)
+        monkeypatch.setattr(service_module, "recorder_manager", manager)
+        monitor = live_monitor_module.LiveMonitor()
+        monitor._stop = asyncio.Event()  # noqa: SLF001
+
+        await monitor._delayed_stop(9, 99)  # noqa: SLF001
+        assert manager.stopped == []
+
+        live_state["value"] = 0
+        await monitor._delayed_stop(9, 99)  # noqa: SLF001
+        assert manager.stopped == [9]
+
+    @staticmethod
+    @pytest.mark.asyncio
+    async def test_live_recovery_cancels_pending_delayed_stop() -> None:
+        """延迟收尾任务必须可追踪并可在直播恢复时撤销。"""
+        from app.pipeline.live_monitor import LiveMonitor
+
+        monitor = LiveMonitor()
+        monitor._stop = asyncio.Event()  # noqa: SLF001
+        task = asyncio.create_task(asyncio.sleep(60))
+        monitor._pending_stops[3] = task  # noqa: SLF001
+
+        monitor._cancel_pending_stop(3)  # noqa: SLF001
+        await asyncio.gather(task, return_exceptions=True)
+
+        assert task.cancelled()
+        assert monitor.status()["pending_stops"] == []

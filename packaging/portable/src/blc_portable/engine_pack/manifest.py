@@ -366,7 +366,7 @@ def get_engine_pack_info() -> dict[str, object]:
         "engine_pack_version": ENGINE_PACK_VERSION,
         "compatible_app": {
             "min": RELEASE_VERSION,
-            "max_exclusive": "0.1.17",
+            "max_exclusive": "0.1.18",
         },
         "filename": ARCHIVE_FILENAME,
         "size_bytes": 0,

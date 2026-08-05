@@ -7,6 +7,7 @@ from datetime import UTC, datetime, timedelta
 import numpy as np
 
 from app.analysis.audio import (
+    AudioFeatures,
     compute_rms_envelope,
     find_silences,
     snap_to_silence,
@@ -99,6 +100,29 @@ def test_compute_rms_envelope_normalized() -> None:
     assert abs(float(np.max(rms)) - 1.0) < 1e-6
     # 前半段应接近静音。
     assert float(np.mean(rms[:5])) < 0.1
+
+
+def test_audio_features_returns_separated_local_peaks() -> None:
+    """五分钟分段中的多个独立能量峰应全部进入候选集合。"""
+    times = np.arange(0, 120, 1.0)
+    rms = np.full(times.shape, 0.1)
+    rms[10] = 1.0
+    rms[50] = 0.9
+    rms[90] = 0.8
+    features = AudioFeatures(16000, 1.0, times, rms, 120.0, [])
+
+    assert features.peak_offsets(limit=4, min_distance_s=20) == [10.0, 50.0, 90.0]
+
+
+def test_audio_features_peak_distance_prevents_clustered_duplicates() -> None:
+    """同一阵爆发内相邻局部峰只保留最强点。"""
+    times = np.arange(0, 60, 1.0)
+    rms = np.full(times.shape, 0.1)
+    rms[20] = 0.8
+    rms[25] = 1.0
+    features = AudioFeatures(16000, 1.0, times, rms, 60.0, [])
+
+    assert features.peak_offsets(limit=4, min_distance_s=10) == [25.0]
 
 
 def test_find_silences_detects_quiet_region() -> None:

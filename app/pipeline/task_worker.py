@@ -294,6 +294,9 @@ class TaskWorker:
         """主调度循环 — 每个 tick 执行阶段推进、stale 恢复、任务分发。"""
         while self._running and not shutdown_event.is_set():
             try:
+                from app.analysis.reanalysis import process_pending_session_reanalyses
+
+                process_pending_session_reanalyses()
                 retry_expired()
                 recover_stale()
                 advance_recorded()

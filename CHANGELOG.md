@@ -2,8 +2,29 @@
 
 ## 未发布
 
+暂无。
+
+## V0.1.17 Alpha (2026-08-05)
+
+### 变更
+
+- **web/session-timeline**: 将控制台的逐候选平铺列表升级为按主播和录制场次归组的 GMT+8 时间线；节点展示高光时刻、摘要、1～2 条代表弹幕、置信度、来源信号、动态边界、跨分段状态和审核入口，默认隐藏已拒绝节点。
+- **analysis/multi-highlight**: 每个五分钟原始分段最多分析 4 个相互独立的音频峰值，并支持跨相邻分段提取上下文与成片；入点、出点改为动态最小前后文加 LLM/静音向外扩展，不再固定为 1 分 30 秒。
+- **analysis/danmaku-alignment**: 弹幕信号默认按 `7.5` 秒接收延迟向前对齐画面，仅调整评分窗口，保留原始采集时间；时间线同时提取 1～2 条高频代表弹幕。
+- **analysis/diversity**: 同场临近候选按冷却距离与内容相似度去簇，避免一个爆点连续重复出片，同时保留相距足够远或语义不同的多个高光。
+- **analysis/reanalysis**: 新增持久化场次重分析入口；阈值变化可直接重算，词典或 ASR 变化可重新转写后重算，且保留人工审核、手工边界、草稿、成片、反馈和人工转写等受保护资产。
+- **transcription/room-dictionary**: 直播间支持手工热词与“错误词=正确词”学习别名；人工修正转写可选择回写房间词典，Fun-ASR-Nano 推理会消费合并后的有效热词。
+- **analysis/feedback-learning**: 候选审核正负样本按候选原子回写阈值学习数据，并计算带负样本上限的分位数建议；审核日志补充直播间、场次、候选、操作者、决策和当时阈值。
+- **recording/session-finalization**: 下播停止改为连续状态确认加可撤销的结束延迟，并增加单场最长时限；自然结束后执行最终重分析，网络错误仍按现有重试预算收尾。
+- **version/release**: Python、C/Cython、Rust、Portable、Engine Pack、Docker、测试与用户文档统一升级为 `0.1.17-alpha`，Engine Pack 兼容区间调整为 `0.1.17-alpha ≤ app < 0.1.18`。
+
 ### 修复
 
+- **security/codeql**: 候选去重指纹由 SHA-1 升级为 SHA-256；转写纠错词边界清理改为线性扫描，避免超长用户输入触发高代价正则回溯。
+- **analysis/timezone**: 统一会话、分段、弹幕和候选的时区归一化，修复混合 naive/aware `datetime` 在时间线、跨分段窗口和弹幕统计中的比较错误。
+- **transcription/repetition**: Fun-ASR-Nano 局部复读先保守折叠超过合理次数的重复，整段退化才回退 Paraformer/Whisper；保留有语义的正常强调，并记录实际修复与回退元数据。
+- **pipeline/cross-segment**: 跨分段候选保留相对当前分段的负偏移，原子提交同一分析任务产生的多个候选与事件，并在并发工作进程下安全抑制同场重复节点。
+- **web/transcript-editor**: 自动轮询不再覆盖正在编辑的转写草稿；保存人工正文时清除过期时间戳和旧整理结果，并可立即触发场次重分析。
 - **portable/security**: 将 Python 3.11/3.12 Windows runtime lock 中的 `cryptography` 升级并固定为 `50.0.0`，修复 `GHSA-g6cj-pr64-35w5` / `CVE-2026-69247`，并重新生成完整依赖闭包与 wheel SHA-256。
 
 ## V0.1.16.5 Alpha (2026-08-03)

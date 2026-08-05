@@ -317,6 +317,25 @@ def test_judge_highlight_restores_offsets_to_original_segment(monkeypatch: Monke
     assert "120.000 秒" in prompts[0]
 
 
+def test_judge_highlight_preserves_negative_cross_segment_window_offset(monkeypatch: MonkeyPatch) -> None:
+    """跨前一分段的窗口起点可为负数，换算时不得错误钳制到当前分段起点。"""
+    from app.analysis import llm as llm_mod
+
+    monkeypatch.setattr(
+        llm_mod,
+        "call_text",
+        lambda *_args, **_kwargs: (
+            '{"is_highlight":true,"score":0.9,"reason":"跨段爆点","start_offset":2,"end_offset":18}'
+        ),
+    )
+
+    result = llm_mod.judge_highlight("跨分段上下文", {"danmaku": 0.9}, "", -30.0)
+
+    assert result is not None
+    assert result.suggested_start_offset == pytest.approx(-28.0)
+    assert result.suggested_end_offset == pytest.approx(-12.0)
+
+
 def test_judge_highlight_discards_non_finite_offsets(monkeypatch: MonkeyPatch) -> None:
     """模型异常返回 NaN/Infinity 时不得污染候选时间边界。"""
     monkeypatch.setattr(

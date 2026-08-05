@@ -391,7 +391,71 @@ button.ok:hover { background: var(--green-soft); border-color: rgba(85, 214, 160
 .plugin-setting-field small { color: var(--muted); font-size: 11px; font-weight: 400; }
 .plugin-settings-footer { margin-top: 20px; }
 
+/* 按录制场次聚合的高光时间线。 */
+.timeline-intro { display: flex; justify-content: space-between; align-items: flex-start; gap: 18px; }
+.timeline-intro h3 { margin-bottom: 4px; }
+.timeline-toolbar { padding: 0 2px; }
+.timeline-session { overflow: hidden; }
+.timeline-session-head { align-items: flex-start !important; }
+.timeline-counts { display: flex; gap: 14px; margin-top: 9px; color: var(--muted); font-size: 12px; }
+.timeline-counts b { color: var(--text); font-variant-numeric: tabular-nums; }
+.timeline-detail { margin-top: 16px; padding-top: 16px; border-top: 1px solid var(--border); }
+.timeline-detail[hidden] { display: none; }
+.session-timeline { margin: 0; padding: 0; list-style: none; }
+.timeline-point {
+  display: grid;
+  grid-template-columns: 78px 18px minmax(0, 1fr);
+  gap: 11px;
+  align-items: stretch;
+  min-height: 118px;
+}
+.timeline-clock { padding-top: 15px; color: var(--text-soft); font-variant-numeric: tabular-nums; font-weight: 700; text-align: right; }
+.timeline-node { position: relative; }
+.timeline-node::before {
+  content: "";
+  position: absolute;
+  top: 20px;
+  left: 4px;
+  width: 10px;
+  height: 10px;
+  border-radius: 50%;
+  background: var(--accent);
+  box-shadow: 0 0 0 5px var(--accent-soft);
+  z-index: 1;
+}
+.timeline-point:not(:last-child) .timeline-node::after {
+  content: "";
+  position: absolute;
+  top: 30px;
+  bottom: 0;
+  left: 8px;
+  width: 2px;
+  background: var(--border-strong);
+}
+.timeline-point.rejected { opacity: 0.65; }
+.timeline-point.rejected .timeline-node::before { background: var(--red); box-shadow: 0 0 0 5px var(--red-soft); }
+.timeline-point-card { margin-bottom: 13px; padding: 14px 15px; border: 1px solid var(--border); border-radius: var(--radius); background: var(--panel2); }
+.timeline-point-card .head { align-items: flex-start; }
+.timeline-danmaku { display: grid; gap: 6px; margin-top: 12px; }
+.timeline-danmaku span { color: var(--text-soft); font-size: 13px; }
+.timeline-tags { display: flex; gap: 6px; flex-wrap: wrap; margin-top: 11px; }
+.timeline-tags span { padding: 2px 8px; border: 1px solid rgba(120, 169, 255, 0.28); border-radius: 999px; background: var(--accent-soft); color: #cfe0ff; font-size: 11px; }
+.timeline-provenance { margin-top: 10px; }
+.timeline-provenance summary, .transcript-correction summary, .learned-aliases summary { color: var(--muted); cursor: pointer; font-size: 12px; }
+.timeline-provenance .sub { margin-top: 7px; overflow-wrap: anywhere; }
+.transcript-correction { border-top: 1px solid var(--border); padding-top: 9px; }
+.transcript-correction[open] { display: grid; gap: 10px; }
+.editor-label { display: grid; gap: 5px; color: var(--text-soft); font-size: 12px; }
+.editor-label textarea { width: 100%; resize: vertical; line-height: 1.55; }
+.learned-aliases { padding: 8px 0; }
+
 @media (max-width: 620px) {
   .plugin-center-head { display: grid; }
   .plugin-center-head button { justify-self: start; }
+  .timeline-intro { display: grid; }
+  .timeline-point { grid-template-columns: 64px 14px minmax(0, 1fr); gap: 7px; }
+  .timeline-clock { font-size: 11px; }
+  .timeline-node::before { left: 2px; }
+  .timeline-point:not(:last-child) .timeline-node::after { left: 6px; }
+  .timeline-point-card { padding: 12px; }
 }

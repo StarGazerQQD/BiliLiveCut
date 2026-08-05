@@ -20,7 +20,6 @@ from sqlmodel import Session, select
 
 from app.analysis import audio as audio_mod
 from app.analysis.keywords import match_keywords
-from app.analysis.transcript_windows import extract_transcript_window
 from app.core.config import settings
 from app.db.models import (
     CandidateStatus,
@@ -168,7 +167,7 @@ def analyze_compute(task_id: int) -> dict[str, Any]:
             }
 
     try:
-        draft = _score_segment_draft(segment_id)
+        draft = _score_segment_drafts(segment_id)
     except ValueError as exc:
         return {"error": str(exc), "decision": HighlightDecision.SKIPPED, "segment_id": segment_id}
 
@@ -252,47 +251,80 @@ def commit_highlight(lease: TaskLease, compute_result: dict[str, Any], ms: int) 
                 db.commit()
                 return
 
-            # ── CANDIDATE: 幂等创建 Candidate ───────────
-            dedup_hash = (
-                compute_result.get("dedup_hash")
-                or hashlib.sha1(
-                    f"{compute_result.get('session_id', '')}:"
-                    f"{round(compute_result.get('start_ts', ''))}:"
-                    f"{round(compute_result.get('end_ts', ''))}".encode()
-                ).hexdigest()
-            )
+            # ── CANDIDATE: 同一租约内幂等创建一个或多个 Candidate ─────
+            drafts = [compute_result]
+            additional = compute_result.get("additional_candidates", [])
+            if isinstance(additional, list):
+                drafts.extend(item for item in additional if isinstance(item, dict))
 
-            candidate = _get_or_create_candidate(
-                db,
-                dedup_hash,
-                compute_result["session_id"],
-                compute_result["peak_ts"],
-                compute_result["start_ts"],
-                compute_result["end_ts"],
-                compute_result["rule_score"],
-                compute_result.get("llm_score", 0.0),
-                compute_result["highlight_score"],
-                compute_result.get("features_json", "{}"),
-                compute_result.get("reason", ""),
-                compute_result.get("initial_status", CandidateStatus.PENDING),
-            )
-            cid = candidate.id
+            created: list[tuple[int, int]] = []
+            from app.analysis.scoring_config import get_scoring_config
 
-            # 幂等创建 Event (含 IntegrityError 保护)
-            event_id = _get_or_create_event(
-                db,
-                cid,
-                compute_result["session_id"],
-                compute_result["start_ts"],
-                compute_result["end_ts"],
-                compute_result["rule_score"],
-                compute_result.get("llm_score", 0.0),
-                compute_result["highlight_score"],
-                compute_result.get("features_json", "{}"),
-                compute_result.get("reason", ""),
-                segment_id=segment_id,
-                asr_text=compute_result.get("asr_text"),
-            )
+            scoring_config = get_scoring_config()
+            for draft in drafts:
+                if (
+                    draft.get("decision") != HighlightDecision.CANDIDATE
+                    or draft.get("segment_id", segment_id) != segment_id
+                    or draft.get("session_id", task.session_id) != task.session_id
+                ):
+                    continue
+                dedup_hash = draft.get("dedup_hash") or _draft_dedup_hash(draft)
+                if _draft_clusters_existing(
+                    db,
+                    draft,
+                    dedup_hash=dedup_hash,
+                    cooldown_s=scoring_config.cooldown_s,
+                    iou_threshold=scoring_config.iou_threshold,
+                ):
+                    _logger.info(
+                        "analyze_candidate_cluster_suppressed: segment=%s dedup_hash=%s",
+                        segment_id,
+                        dedup_hash[:16],
+                    )
+                    continue
+                candidate = _get_or_create_candidate(
+                    db,
+                    dedup_hash,
+                    draft["session_id"],
+                    draft["peak_ts"],
+                    draft["start_ts"],
+                    draft["end_ts"],
+                    draft["rule_score"],
+                    draft.get("llm_score", 0.0),
+                    draft["highlight_score"],
+                    draft.get("features_json", "{}"),
+                    draft.get("reason", ""),
+                    draft.get("initial_status", CandidateStatus.PENDING),
+                )
+                cid = candidate.id
+                if cid is None:
+                    raise RuntimeError("候选创建后缺少主键")
+                event_id = _get_or_create_event(
+                    db,
+                    cid,
+                    draft["session_id"],
+                    draft["start_ts"],
+                    draft["end_ts"],
+                    draft["rule_score"],
+                    draft.get("llm_score", 0.0),
+                    draft["highlight_score"],
+                    draft.get("features_json", "{}"),
+                    draft.get("reason", ""),
+                    segment_id=segment_id,
+                    asr_text=draft.get("asr_text"),
+                )
+                created.append((cid, event_id))
+
+            if not created:
+                _mark_scored_in_db(db, segment_id)
+                mark_completed(task, ms)
+                enqueue_next(task, TaskStatus.COMPLETED)
+                db.add(task)
+                db.commit()
+                return
+
+            cid, event_id = created[0]
+            _logger.info("analyze_candidates_committed: segment=%s count=%s primary=%s", segment_id, len(created), cid)
 
             mark_completed(task, ms)
             enqueue_next(task, TaskStatus.CANDIDATE_CREATED, candidate_id=cid, event_id=event_id)
@@ -301,6 +333,129 @@ def commit_highlight(lease: TaskLease, compute_result: dict[str, Any], ms: int) 
 
     except LeaseLostError:
         _logger.warning("stale_result_discarded: highlight task=%s 已失去租约", lease.task_id)
+
+
+def score_segment_direct(segment_id: int) -> HighlightCandidate | None:
+    """供 CLI/同步编排器复用正式多峰评分链，并提交全部去簇候选。
+
+    返回最高分候选以维持既有同步 API；同一分段的其他有效爆点也会创建为
+    独立 Candidate/Event，随后统一出现在场次时间线与审核工作台中。
+    """
+    compute_result = _score_segment_drafts(segment_id)
+    if compute_result is None:
+        _mark_scored_direct(segment_id)
+        return None
+    if compute_result.get("decision") != HighlightDecision.CANDIDATE:
+        _mark_scored_direct(segment_id)
+        return None
+
+    drafts = [compute_result]
+    additional = compute_result.get("additional_candidates", [])
+    if isinstance(additional, list):
+        drafts.extend(item for item in additional if isinstance(item, dict))
+
+    primary: HighlightCandidate | None = None
+    with get_session() as db:
+        from app.analysis.scoring_config import get_scoring_config
+
+        segment = db.get(RawSegment, segment_id)
+        if segment is None:
+            raise ValueError(f"片段不存在: id={segment_id}")
+        scoring_config = get_scoring_config()
+        for draft in drafts:
+            if (
+                draft.get("decision") != HighlightDecision.CANDIDATE
+                or draft.get("segment_id") != segment_id
+                or draft.get("session_id") != segment.session_id
+            ):
+                continue
+            _record_plugin_dispatch(db, draft)
+            dedup_hash = draft.get("dedup_hash") or _draft_dedup_hash(draft)
+            if _draft_clusters_existing(
+                db,
+                draft,
+                dedup_hash=dedup_hash,
+                cooldown_s=scoring_config.cooldown_s,
+                iou_threshold=scoring_config.iou_threshold,
+            ):
+                continue
+            candidate = _get_or_create_candidate(
+                db,
+                dedup_hash,
+                draft["session_id"],
+                draft["peak_ts"],
+                draft["start_ts"],
+                draft["end_ts"],
+                draft["rule_score"],
+                draft.get("llm_score", 0.0),
+                draft["highlight_score"],
+                draft.get("features_json", "{}"),
+                draft.get("reason", ""),
+                draft.get("initial_status", CandidateStatus.PENDING),
+            )
+            if candidate.id is None:
+                raise RuntimeError("候选创建后缺少主键")
+            _get_or_create_event(
+                db,
+                candidate.id,
+                draft["session_id"],
+                draft["start_ts"],
+                draft["end_ts"],
+                draft["rule_score"],
+                draft.get("llm_score", 0.0),
+                draft["highlight_score"],
+                draft.get("features_json", "{}"),
+                draft.get("reason", ""),
+                segment_id=segment_id,
+                asr_text=draft.get("asr_text"),
+            )
+            if primary is None:
+                primary = candidate
+        _mark_scored_in_db(db, segment_id)
+    return primary
+
+
+def _mark_scored_direct(segment_id: int) -> None:
+    """在同步评分入口没有候选时持久化分段完成状态。"""
+    with get_session() as db:
+        _mark_scored_in_db(db, segment_id)
+
+
+def _draft_dedup_hash(draft: dict[str, Any]) -> str:
+    """为缺少业务键的兼容计算结果生成稳定候选指纹。"""
+    start = draft.get("start_ts")
+    end = draft.get("end_ts")
+    start_value = start.timestamp() if hasattr(start, "timestamp") else str(start)
+    end_value = end.timestamp() if hasattr(end, "timestamp") else str(end)
+    return hashlib.sha256(f"{draft.get('session_id', '')}:{start_value}:{end_value}".encode()).hexdigest()
+
+
+def _draft_clusters_existing(
+    db: Session,
+    draft: dict[str, Any],
+    *,
+    dedup_hash: str,
+    cooldown_s: float,
+    iou_threshold: float,
+) -> bool:
+    """在提交事务内复核跨分段冷却与 IoU，封住并发计算竞态。"""
+    from app.analysis.timeline import datetime_distance_s, interval_iou
+
+    start = draft.get("start_ts")
+    end = draft.get("end_ts")
+    peak = draft.get("peak_ts")
+    session_id = draft.get("session_id")
+    if not all(hasattr(value, "timestamp") for value in (start, end, peak)) or not isinstance(session_id, int):
+        return False
+    existing = db.exec(select(HighlightCandidate).where(HighlightCandidate.session_id == session_id)).all()
+    for candidate in existing:
+        if candidate.dedup_hash == dedup_hash:
+            return False
+        if interval_iou(start, end, candidate.start_ts, candidate.end_ts) >= iou_threshold:
+            return True
+        if cooldown_s > 0 and datetime_distance_s(peak, candidate.peak_ts) < cooldown_s:
+            return True
+    return False
 
 
 def _get_or_create_candidate(
@@ -480,7 +635,77 @@ def run_analyze(lease: TaskLease) -> None:
 # ══════════════════════════════════════════
 
 
-def _score_segment_draft(segment_id: int) -> dict[str, Any] | None:
+def _score_segment_drafts(segment_id: int) -> dict[str, Any] | None:
+    """对一个录制分段的多个局部峰值分别评分并执行防扎堆筛选。
+
+    返回值仍以最高分候选作为顶层结果，保持现有任务状态机兼容；其余候选
+    放在 ``additional_candidates`` 中，由同一个租约事务幂等提交。
+    """
+    from app.analysis.timeline import suppress_clustered_drafts  # noqa: PLC0415
+    from app.analysis.transcription.quality import assess_transcript_quality  # noqa: PLC0415
+
+    with get_session() as db:
+        segment = db.get(RawSegment, segment_id)
+        if segment is None:
+            raise ValueError(f"片段不存在: id={segment_id}")
+        transcript = db.exec(select(Transcript).where(Transcript.segment_id == segment_id)).first()
+        if transcript is None:
+            raise ValueError(f"片段尚未转写: id={segment_id}")
+        quality = assess_transcript_quality(transcript.text)
+        if not quality.usable:
+            raise ValueError(f"片段转写质量不合格，已阻止高光与 LLM 分析: segment={segment_id} reason={quality.reason}")
+        file_path = segment.file_path
+
+    features = audio_mod.analyze_audio(file_path)
+    offsets = features.peak_offsets(
+        limit=settings.highlight_max_candidates_per_segment,
+        min_distance_s=settings.highlight_peak_min_distance_s,
+    )
+    if not offsets:
+        offsets = [features.peak_offset()]
+
+    outcomes: list[dict[str, Any]] = []
+    candidates: list[dict[str, Any]] = []
+    for peak_offset in offsets:
+        draft = _score_segment_draft(
+            segment_id,
+            peak_offset_s=peak_offset,
+            audio_features=features,
+        )
+        if draft is None:
+            continue
+        outcomes.append(draft)
+        if draft.get("decision") == HighlightDecision.CANDIDATE:
+            candidates.append(draft)
+
+    if not candidates:
+        if not outcomes:
+            return None
+        return max(outcomes, key=lambda item: float(item.get("highlight_score", 0.0)))
+
+    from app.analysis.scoring_config import get_scoring_config  # noqa: PLC0415
+
+    cfg = get_scoring_config()
+    selected = suppress_clustered_drafts(
+        candidates,
+        cooldown_s=cfg.cooldown_s,
+        iou_threshold=cfg.iou_threshold,
+        limit=settings.highlight_max_candidates_per_segment,
+    )
+    if not selected:
+        return None
+    primary = max(selected, key=lambda item: float(item.get("highlight_score", 0.0)))
+    primary["additional_candidates"] = [draft for draft in selected if draft is not primary]
+    primary["candidate_count"] = len(selected)
+    return primary
+
+
+def _score_segment_draft(
+    segment_id: int,
+    *,
+    peak_offset_s: float | None = None,
+    audio_features: audio_mod.AudioFeatures | None = None,
+) -> dict[str, Any] | None:
     """纯评分计算, 不写 DB, 不创建 Candidate。
 
     返回 dict 包含 decision 字段:
@@ -489,6 +714,8 @@ def _score_segment_draft(segment_id: int) -> dict[str, Any] | None:
     返回 None: 初筛未过或终分不足 (由调用方转为 BELOW_THRESHOLD)
 
     :param segment_id: RawSegment ID。
+    :param peak_offset_s: 指定的局部峰值；省略时使用全局峰值。
+    :param audio_features: 已提取的音频特征，供多峰评分复用。
     :returns: draft dict 含 decision 字段, 或 None (分数不足)。
     """
     from app.analysis import llm as llm_mod
@@ -498,18 +725,18 @@ def _score_segment_draft(segment_id: int) -> dict[str, Any] | None:
         _is_duplicate,
         _trend_score,
         candidate_time_bounds,
-        contiguous_recording_start,
+        contiguous_recording_range,
         danmaku_score_explain,
         danmaku_sentiment_score,
         fuse_scores,
-        get_scoring_config,
-        laughter_score,  # noqa: PLC0415
+        laughter_score,
         speech_rate_score,
         weighted_rule_score,
     )
     from app.analysis.highlight import (
         _danmaku_score as _dm_score,
     )
+    from app.analysis.scoring_config import get_scoring_config  # noqa: PLC0415
 
     cfg = get_scoring_config()
 
@@ -531,7 +758,6 @@ def _score_segment_draft(segment_id: int) -> dict[str, Any] | None:
         threshold = room.highlight_threshold if room else settings.highlight_threshold
         has_transcript = transcript is not None
         text = transcript.text if transcript else ""
-        words_json = transcript.words_json if transcript else None
         file_path = segment.file_path
         room_auto_approve = bool(room.auto_approve) if room else False
         room_auto_approve_threshold = room.auto_approve_threshold if room else settings.highlight_auto_approve_threshold
@@ -540,7 +766,13 @@ def _score_segment_draft(segment_id: int) -> dict[str, Any] | None:
         session_segments = db.exec(
             select(RawSegment).where(RawSegment.session_id == segment.session_id).order_by(RawSegment.seq.asc())
         ).all()
-        available_start = contiguous_recording_start(session_segments, segment)
+        session_transcripts = {
+            item.segment_id: item
+            for item in db.exec(
+                select(Transcript).where(Transcript.segment_id.in_([item.id for item in session_segments]))
+            ).all()
+        }
+        available_start, available_end = contiguous_recording_range(session_segments, segment)
 
     if not has_transcript:
         raise ValueError(f"片段尚未转写: id={segment_id}")
@@ -554,34 +786,57 @@ def _score_segment_draft(segment_id: int) -> dict[str, Any] | None:
         )
 
     # 1) 规则特征
-    feats = audio_mod.analyze_audio(file_path)
-    peak_off = feats.peak_offset()
-    analysis_start_s = max(0.0, peak_off - cfg.pre_roll_s)
-    analysis_end_s = min(duration, peak_off + cfg.post_roll_s)
-    analysis_window = extract_transcript_window(
-        text,
-        words_json,
-        start_s=analysis_start_s,
-        end_s=analysis_end_s,
-        duration_s=duration,
+    feats = audio_features or audio_mod.analyze_audio(file_path)
+    peak_off = feats.peak_offset() if peak_offset_s is None else max(0.0, min(float(peak_offset_s), duration))
+    peak_ts = seg_start_ts + timedelta(seconds=peak_off)
+    analysis_start_ts = max(available_start, peak_ts - timedelta(seconds=cfg.pre_roll_s))
+    analysis_end_ts = min(available_end, peak_ts + timedelta(seconds=cfg.post_roll_s))
+    analysis_start_s = (analysis_start_ts - seg_start_ts).total_seconds()
+    analysis_end_s = (analysis_end_ts - seg_start_ts).total_seconds()
+    from app.analysis.transcript_windows import (  # noqa: PLC0415
+        TimedTranscriptPart,
+        extract_session_transcript_window,
+    )
+
+    transcript_parts = [
+        TimedTranscriptPart(
+            start_ts=item.start_ts,
+            end_ts=item.end_ts,
+            text=session_transcripts[item.id].text,
+            words_json=session_transcripts[item.id].words_json,
+        )
+        for item in session_segments
+        if item.id in session_transcripts and item.start_ts is not None and item.end_ts is not None
+    ]
+    analysis_window = extract_session_transcript_window(
+        transcript_parts,
+        start_ts=analysis_start_ts,
+        end_ts=analysis_end_ts,
     )
     judgement_text = analysis_window.text
-    analysis_duration_s = analysis_end_s - analysis_start_s
-    analysis_start_ts = seg_start_ts + timedelta(seconds=analysis_start_s)
-    analysis_end_ts = seg_start_ts + timedelta(seconds=analysis_end_s)
+    analysis_duration_s = (analysis_end_ts - analysis_start_ts).total_seconds()
+    from app.analysis.timeline import (  # noqa: PLC0415
+        TIMELINE_ANALYSIS_VERSION,
+        align_danmaku_window,
+        confidence_score,
+        representative_danmaku,
+        source_signals,
+    )
+
+    danmaku_start_ts, danmaku_end_ts = align_danmaku_window(analysis_start_ts, analysis_end_ts)
     kw_score, kw_hits = match_keywords(judgement_text)
     features: dict[str, float] = {
         "volume": feats.volume_score(),
         "keywords": kw_score,
         "speech_rate": speech_rate_score(analysis_window.words, analysis_duration_s),
         "laughter": laughter_score(judgement_text),
-        "danmaku": _dm_score(session_id, analysis_start_ts, analysis_end_ts),
+        "danmaku": _dm_score(session_id, danmaku_start_ts, danmaku_end_ts),
     }
     if use_dm_sentiment:
         features["danmaku_sentiment"] = danmaku_sentiment_score(
             session_id,
-            analysis_start_ts,
-            analysis_end_ts,
+            danmaku_start_ts,
+            danmaku_end_ts,
         )
     audio_event_contribs: list[str] = []
     if settings.asr_sensevoice and settings.asr_sensevoice_enabled:
@@ -645,7 +900,9 @@ def _score_segment_draft(segment_id: int) -> dict[str, Any] | None:
         }
 
     # 3) LLM 复核
-    judgement = llm_mod.judge_highlight(judgement_text, features, "", analysis_start_s)
+    top_danmaku = representative_danmaku(session_id, analysis_start_ts, analysis_end_ts)
+    danmaku_summary = "；".join(str(item["text"]) for item in top_danmaku)
+    judgement = llm_mod.judge_highlight(judgement_text, features, danmaku_summary, analysis_start_s)
     llm_score = judgement.score if judgement else None
     reason = judgement.reason if judgement else "规则命中(未启用/未触发 LLM)"
     highlight_score = fuse_scores(primary_score, llm_score, cfg.alpha, cfg.beta)
@@ -676,18 +933,26 @@ def _score_segment_draft(segment_id: int) -> dict[str, Any] | None:
     start_ts, end_ts, peak_ts = candidate_time_bounds(
         segment_start=seg_start_ts,
         available_start=available_start,
-        available_end=seg_end_ts,
+        available_end=available_end,
         peak_offset_s=peak_off,
         pre_roll_s=cfg.pre_roll_s,
         post_roll_s=cfg.post_roll_s,
         suggested_start_offset_s=judgement.suggested_start_offset if judgement else None,
         suggested_end_offset_s=judgement.suggested_end_offset if judgement else None,
         silences=feats.silences,
+        minimum_pre_roll_s=min(cfg.pre_roll_s, settings.highlight_min_pre_roll_s),
+        minimum_post_roll_s=min(cfg.post_roll_s, settings.highlight_min_post_roll_s),
     )
 
     # 5) 去重 — 不写 DB, 返回 DUPLICATE 决策
-    if _is_duplicate(session_id, (start_ts.timestamp(), end_ts.timestamp()), cfg.iou_threshold):
-        dedup_hash_val = hashlib.sha1(
+    if _is_duplicate(
+        session_id,
+        (start_ts.timestamp(), end_ts.timestamp()),
+        cfg.iou_threshold,
+        peak_ts=peak_ts,
+        cooldown_s=cfg.cooldown_s,
+    ):
+        dedup_hash_val = hashlib.sha256(
             f"{session_id}:{start_ts.timestamp():.1f}:{end_ts.timestamp():.1f}".encode()
         ).hexdigest()
         return {
@@ -718,7 +983,9 @@ def _score_segment_draft(segment_id: int) -> dict[str, Any] | None:
     else:
         initial_status = CandidateStatus.REJECTED
 
-    danmaku_explain = danmaku_score_explain(session_id, analysis_start_ts, analysis_end_ts)
+    danmaku_explain = danmaku_score_explain(session_id, danmaku_start_ts, danmaku_end_ts)
+    signals = source_signals(features, keyword_hits=kw_hits)
+    confidence = confidence_score(rule_score, llm_score, signals)
 
     features_json = _merge_plugin_metadata(
         json.dumps(
@@ -727,6 +994,15 @@ def _score_segment_draft(segment_id: int) -> dict[str, Any] | None:
                 "keyword_hits": kw_hits,
                 "audio": _audio_meta(feats),
                 "danmaku_explain": danmaku_explain,
+                "timeline": {
+                    "analysis_version": TIMELINE_ANALYSIS_VERSION,
+                    "confidence": confidence,
+                    "source_signals": signals,
+                    "representative_danmaku": top_danmaku,
+                    "danmaku_lag_s": settings.danmaku_event_lag_s,
+                    "dynamic_bounds": True,
+                    "cross_segment": start_ts < seg_start_ts or end_ts > seg_end_ts,
+                },
                 "analysis_window": {
                     "segment_id": segment_id,
                     "segment_seq": segment_seq,
@@ -740,7 +1016,7 @@ def _score_segment_draft(segment_id: int) -> dict[str, Any] | None:
         plugin_payload,
     )
 
-    dedup_hash_val = hashlib.sha1(
+    dedup_hash_val = hashlib.sha256(
         f"{session_id}:{start_ts.timestamp():.1f}:{end_ts.timestamp():.1f}".encode()
     ).hexdigest()
 

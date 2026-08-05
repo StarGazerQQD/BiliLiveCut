@@ -89,6 +89,34 @@ def test_transcript_page_exposes_safe_retranscription_action() -> None:
     assert "/retranscribe" in recording_js
     assert "window.confirm" in recording_js
     assert "window.retranscribeTranscript" in app_js
+    assert 'api("PATCH", `/api/transcripts/${id}`' in recording_js
+    assert "dirtyTranscriptIds.size > 0" in recording_js
+    assert "window.correctTranscript" in app_js
+
+
+def test_dashboard_uses_session_timeline_as_primary_review_view() -> None:
+    """制作主视图应按录制场次展示时间线，同时保留逐条精审入口。"""
+    template = (PROJECT_ROOT / "app" / "web" / "templates" / "dashboard.html").read_text(encoding="utf-8")
+    app_js = (STATIC_ROOT / "app.js").read_text(encoding="utf-8")
+    timeline_js = (STATIC_ROOT / "js" / "timeline.js").read_text(encoding="utf-8")
+
+    assert 'data-tab="candidates">场次时间线' in template
+    assert 'id="timeline-list"' in template
+    assert 'id="timeline-include-rejected"' in template
+    assert 'id="candidates-list"' not in template
+    assert "loadSessionTimelines" in app_js
+    assert "/api/sessions/timeline" in timeline_js
+    assert "representative_danmaku" in timeline_js
+    assert "requestSessionReanalysis" in timeline_js
+
+
+def test_room_dictionary_ui_exposes_manual_and_learned_aliases() -> None:
+    """房间配置应说明 ASR 热词作用，并展示人工纠错自动学习结果。"""
+    rooms_js = (STATIC_ROOT / "js" / "rooms.js").read_text(encoding="utf-8")
+
+    assert "ASR 热词" in rooms_js
+    assert "learned_aliases" in rooms_js
+    assert "人工纠错词典" in rooms_js
 
 
 def test_room_and_feature_forms_pause_refresh_while_dirty() -> None:

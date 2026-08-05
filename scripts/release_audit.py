@@ -355,11 +355,11 @@ def check_distribution_config(audit: AuditResult) -> None:
         "node scripts/check_frontend_interactions.mjs" in ci,
     )
     audit.check(
-        "前端交互检查覆盖模块、刷新与标签切换",
+        "前端交互检查覆盖模块、场次时间线与标签切换",
         all(
             token in frontend_check
             for token in (
-                "frontend module graph, bindings, initial refresh and tab interaction",
+                "frontend module graph, bindings, session timeline expansion/reanalysis",
                 'await import(`${pathToFileURL(join(copiedStatic, "app.js"))',
                 'await candidatesTab.emit("click")',
             )

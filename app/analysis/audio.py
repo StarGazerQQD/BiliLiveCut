@@ -50,6 +50,50 @@ class AudioFeatures:
             return 0.0
         return float(self.times[int(np.argmax(self.rms))])
 
+    def peak_offsets(
+        self,
+        *,
+        limit: int = 4,
+        min_distance_s: float = 25.0,
+        min_prominence: float = 0.15,
+    ) -> list[float]:
+        """返回按时间排序、彼此分离的局部能量峰值。
+
+        全局最大值始终保留；其余局部峰值必须明显高于中位能量，并与已选
+        峰值保持 ``min_distance_s`` 间隔。这样一个五分钟录制分段可以产生
+        多个独立高光判断窗口，同时避免同一阵笑声被重复打点。
+
+        :param limit: 最多返回的峰值数。
+        :param min_distance_s: 峰值之间的最小时间距离（秒）。
+        :param min_prominence: 相对中位能量的最小突出度。
+        :returns: 峰值时间偏移列表（秒，升序）。
+        """
+        if self.rms.size == 0 or self.times.size == 0 or limit <= 0:
+            return []
+
+        size = min(self.rms.size, self.times.size)
+        rms = self.rms[:size]
+        times = self.times[:size]
+        global_index = int(np.argmax(rms))
+        median = float(np.median(rms))
+        threshold = median + max(0.0, min_prominence) * max(1.0 - median, 0.0)
+        candidates = {global_index}
+        for index in range(1, size - 1):
+            value = float(rms[index])
+            if value >= threshold and value >= float(rms[index - 1]) and value > float(rms[index + 1]):
+                candidates.add(index)
+
+        selected: list[int] = []
+        minimum_distance = max(0.0, min_distance_s)
+        for index in sorted(candidates, key=lambda item: float(rms[item]), reverse=True):
+            offset = float(times[index])
+            if any(abs(offset - float(times[chosen])) < minimum_distance for chosen in selected):
+                continue
+            selected.append(index)
+            if len(selected) >= limit:
+                break
+        return sorted(float(times[index]) for index in selected)
+
     def volume_score(self) -> float:
         """计算音量维度的高光分(0-1)。
 

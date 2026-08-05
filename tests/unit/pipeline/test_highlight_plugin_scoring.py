@@ -70,7 +70,7 @@ def _patch_rule_scoring(monkeypatch: MonkeyPatch, rule_score: float) -> None:
     )
     monkeypatch.setattr(analyze.audio_mod, "analyze_audio", lambda _path: audio)
     monkeypatch.setattr(highlight, "_danmaku_score", lambda *_args: 0.0)
-    monkeypatch.setattr(highlight, "_is_duplicate", lambda *_args: False)
+    monkeypatch.setattr(highlight, "_is_duplicate", lambda *_args, **_kwargs: False)
     monkeypatch.setattr(highlight, "danmaku_score_explain", lambda *_args: {})
     monkeypatch.setattr(highlight, "weighted_rule_score", lambda *_args: rule_score)
     monkeypatch.setattr(highlight, "fuse_scores", lambda primary, *_args: primary)
@@ -165,8 +165,10 @@ def test_llm_reason_is_limited_to_candidate_time_window(
 
     _patch_rule_scoring(monkeypatch, rule_score=0.9)
     monkeypatch.setattr(plugin_manager, "has_capability", lambda _capability: False)
+    from app.analysis import scoring_config
+
     monkeypatch.setattr(
-        highlight,
+        scoring_config,
         "get_scoring_config",
         lambda: ScoringConfig(pre_roll_s=1.0, post_roll_s=1.0),
     )
@@ -203,8 +205,8 @@ def test_llm_reason_is_limited_to_candidate_time_window(
     assert captured["text"] == "当前爆点"
     assert captured["keyword_text"] == "当前爆点"
     assert captured["window_start"] == 1.0
-    assert captured["danmaku_start"] == datetime(2026, 1, 3, 12, 1, 1)
-    assert captured["danmaku_end"] == datetime(2026, 1, 3, 12, 1, 3)
+    assert captured["danmaku_start"] == datetime(2026, 1, 3, 12, 1, 8, 500000)
+    assert captured["danmaku_end"] == datetime(2026, 1, 3, 12, 1, 10, 500000)
     assert result["reason"] == "当前爆点"
     assert result["asr_text"] == "当前爆点"
     metadata = json.loads(result["features_json"])["analysis_window"]
@@ -263,3 +265,147 @@ def test_commit_records_plugin_fallback_as_structured_log(temp_db: None) -> None
         context = json.loads(row.context_json)
         assert context["plugin_id"] == "highlight-model"
         assert context["segment_id"] == 7
+
+
+def test_commit_persists_all_decluttered_candidates_and_keeps_primary_task_pointer(
+    temp_db: None,
+    monkeypatch: MonkeyPatch,
+) -> None:
+    """同一分段的多个独立爆点都应入库，任务指针只指向最高分主候选。"""
+    from app.analysis import scoring_config
+    from app.analysis.scoring_config import ScoringConfig
+    from app.db.models import HighlightCandidate, HighlightEvent, RawSegment, SegmentTask, TaskStatus
+    from app.pipeline.lease import TaskLease
+    from app.pipeline.workers.analyze import commit_highlight
+
+    monkeypatch.setattr(scoring_config, "get_scoring_config", lambda: ScoringConfig(cooldown_s=5.0))
+
+    segment_id, _room_id = _seed_segment()
+    with get_session() as db:
+        segment = db.get(RawSegment, segment_id)
+        assert segment is not None
+        task = SegmentTask(
+            segment_id=segment_id,
+            session_id=segment.session_id,
+            stage=TaskStatus.ANALYZING,
+            claimed_by="multi-worker",
+            lease_token="multi-token",
+            pipeline_key=f"pipeline:{segment_id}",
+        )
+        db.add(task)
+        db.flush()
+        assert task.id is not None
+        task_id = task.id
+        session_id = segment.session_id
+        start = segment.start_ts
+        assert start is not None
+
+    def draft(*, suffix: str, offset_s: float, score: float) -> dict[str, object]:
+        return {
+            "decision": HighlightDecision.CANDIDATE,
+            "segment_id": segment_id,
+            "session_id": session_id,
+            "peak_ts": start + timedelta(seconds=offset_s),
+            "start_ts": start + timedelta(seconds=offset_s - 5),
+            "end_ts": start + timedelta(seconds=offset_s + 8),
+            "rule_score": score,
+            "llm_score": score,
+            "highlight_score": score,
+            "features_json": "{}",
+            "reason": f"爆点 {suffix}",
+            "initial_status": "pending",
+            "dedup_hash": f"multi-{suffix}",
+        }
+
+    compute_result = draft(suffix="primary", offset_s=10, score=0.9)
+    compute_result["additional_candidates"] = [draft(suffix="secondary", offset_s=25, score=0.8)]
+    lease = TaskLease(
+        task_id=task_id,
+        worker_id="multi-worker",
+        lease_token="multi-token",
+        expected_stage=TaskStatus.ANALYZING,
+    )
+
+    commit_highlight(lease, compute_result, 120)
+
+    with get_session() as db:
+        candidates = db.exec(
+            select(HighlightCandidate)
+            .where(HighlightCandidate.session_id == session_id)
+            .order_by(HighlightCandidate.highlight_score.desc())
+        ).all()
+        events = db.exec(select(HighlightEvent).where(HighlightEvent.session_id == session_id)).all()
+        task = db.get(SegmentTask, task_id)
+    assert len(candidates) == 2
+    assert len(events) == 2
+    assert {event.segment_id for event in events} == {segment_id}
+    assert task is not None
+    assert task.stage == TaskStatus.CANDIDATE_CREATED
+    assert task.candidate_id == candidates[0].id
+
+
+def test_commit_suppresses_cross_segment_cluster_and_completes_task(temp_db: None) -> None:
+    """并发计算出的邻近跨分段候选应在提交时再去簇，且任务正常结束。"""
+    from app.db.models import HighlightCandidate, RawSegment, SegmentTask, TaskStatus
+    from app.pipeline.lease import TaskLease
+    from app.pipeline.workers.analyze import commit_highlight
+
+    segment_id, _room_id = _seed_segment()
+    with get_session() as db:
+        segment = db.get(RawSegment, segment_id)
+        assert segment is not None and segment.start_ts is not None
+        start = segment.start_ts
+        existing = HighlightCandidate(
+            session_id=segment.session_id,
+            peak_ts=start + timedelta(seconds=8),
+            start_ts=start,
+            end_ts=start + timedelta(seconds=18),
+            highlight_score=0.9,
+            dedup_hash="existing-cluster",
+        )
+        task = SegmentTask(
+            segment_id=segment_id,
+            session_id=segment.session_id,
+            stage=TaskStatus.ANALYZING,
+            claimed_by="cluster-worker",
+            lease_token="cluster-token",
+            pipeline_key=f"pipeline:{segment_id}",
+        )
+        db.add(existing)
+        db.add(task)
+        db.flush()
+        assert task.id is not None
+        task_id = task.id
+        session_id = segment.session_id
+
+    compute_result = {
+        "decision": HighlightDecision.CANDIDATE,
+        "segment_id": segment_id,
+        "session_id": session_id,
+        "peak_ts": start + timedelta(seconds=20),
+        "start_ts": start + timedelta(seconds=10),
+        "end_ts": start + timedelta(seconds=28),
+        "rule_score": 0.8,
+        "llm_score": 0.8,
+        "highlight_score": 0.8,
+        "features_json": "{}",
+        "reason": "同一爆点的延迟候选",
+        "initial_status": "pending",
+        "dedup_hash": "late-cluster",
+    }
+    lease = TaskLease(
+        task_id=task_id,
+        worker_id="cluster-worker",
+        lease_token="cluster-token",
+        expected_stage=TaskStatus.ANALYZING,
+    )
+
+    commit_highlight(lease, compute_result, 80)
+
+    with get_session() as db:
+        candidates = db.exec(select(HighlightCandidate).where(HighlightCandidate.session_id == session_id)).all()
+        task = db.get(SegmentTask, task_id)
+    assert len(candidates) == 1
+    assert task is not None
+    assert task.stage == TaskStatus.COMPLETED
+    assert task.candidate_id is None

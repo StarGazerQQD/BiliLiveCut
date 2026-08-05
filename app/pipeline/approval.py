@@ -29,7 +29,7 @@ from app.db.session import get_session
 
 def approve_event_and_task(
     *,
-    task_id: int,
+    task_id: int | None,
     event_id: int,
     approved_by: str = "auto",
     reason: str | None = None,
@@ -42,7 +42,7 @@ def approve_event_and_task(
     V0.1.12.8: 接受可选 db session。若调用方已持有 session,
     传入后所有更新在同一事务中完成, 消除双写风险。
 
-    :param task_id: SegmentTask.id。
+    :param task_id: SegmentTask.id；多爆点候选没有独立任务时可为 ``None``。
     :param event_id: HighlightEvent.id。
     :param approved_by: 审批操作者标识 (auto/manual user id)。
     :param reason: 审批原因/备注。
@@ -79,7 +79,7 @@ def approve_event_and_task(
                 event.review_status,
                 task_id,
             )
-            task = db.get(SegmentTask, task_id)
+            task = db.get(SegmentTask, task_id) if task_id is not None else None
             if task and task.stage in (TaskStatus.AWAITING_REVIEW, TaskStatus.APPROVED):
                 task.stage = TaskStatus.APPROVED
                 db.add(task)
@@ -99,7 +99,7 @@ def approve_event_and_task(
                 db.add(candidate)
 
         # 同步 Task 状态
-        task = db.get(SegmentTask, task_id)
+        task = db.get(SegmentTask, task_id) if task_id is not None else None
         if task and task.stage in (
             TaskStatus.AWAITING_REVIEW,
             TaskStatus.CANDIDATE_CREATED,
@@ -114,7 +114,7 @@ def approve_event_and_task(
             task.heartbeat_at = None
             task.lease_token = None
             db.add(task)
-        else:
+        elif task_id is not None:
             logger.warning(
                 "approve_event_and_task: task {} 状态 {} 不在可批准状态, 跳过 task stage 更新",
                 task_id,

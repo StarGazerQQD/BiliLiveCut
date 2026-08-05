@@ -98,6 +98,7 @@ class TestRoomConfig:
         cfg = load_room_config(None)
         assert cfg["hotwords"] == []
         assert cfg["aliases"] == {}
+        assert cfg["learned_aliases"] == {}
         assert cfg["highlight_keywords"] == []
         assert cfg["blocked_topics"] == []
 
@@ -133,6 +134,24 @@ class TestRoomConfig:
 
         cfg = load_room_config(FakeRoom())  # type: ignore[arg-type]
         assert cfg["hotwords"] == []
+
+    @staticmethod
+    def test_load_malformed_legacy_fields_keeps_valid_values() -> None:
+        """旧配置的畸形词典字段不能阻断录制，其他有效设置仍应保留。"""
+
+        class FakeRoom:
+            room_config_json = (
+                '{"hotwords":"not-a-list","aliases":[],"highlight_keywords":["名场面"],'
+                '"highlight_scorer_mode":"invalid","recording_paused":"false","future_flag":true}'
+            )
+
+        cfg = load_room_config(FakeRoom())  # type: ignore[arg-type]
+        assert cfg["hotwords"] == []
+        assert cfg["aliases"] == {}
+        assert cfg["highlight_keywords"] == ["名场面"]
+        assert cfg["highlight_scorer_mode"] == "inherit"
+        assert cfg["recording_paused"] is False
+        assert cfg["future_flag"] is True
 
 
 class TestApplyAliases:

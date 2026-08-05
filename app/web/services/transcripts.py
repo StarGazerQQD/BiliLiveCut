@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import json
+from difflib import SequenceMatcher
 from typing import Any
 
 from sqlmodel import Session, select
@@ -32,6 +33,116 @@ class TranscriptNotFoundError(LookupError):
 
 class TranscriptRetranscribeConflict(RuntimeError):
     """当前转写关联的人工或成片资产不允许自动覆盖。"""
+
+
+def correct_transcript(
+    transcript_id: int,
+    corrected_text: str,
+    *,
+    aliases: dict[str, str] | None = None,
+    learn_dictionary: bool = True,
+    actor: str = "local-admin",
+) -> dict[str, Any]:
+    """保存人工转写并把可信纠错回流到当前直播间词典。"""
+    corrected = corrected_text.strip()
+    if not corrected:
+        raise ValueError("纠正后的转写不能为空")
+    if len(corrected) > 200_000:
+        raise ValueError("纠正后的转写超过 200000 字符")
+
+    with get_session() as db:
+        transcript = db.get(Transcript, transcript_id)
+        if transcript is None:
+            raise TranscriptNotFoundError("转写不存在")
+        segment = db.get(RawSegment, transcript.segment_id)
+        if segment is None:
+            raise TranscriptNotFoundError("转写对应的原始片段不存在")
+        from app.db.models import LiveRoom, RecordingSession
+
+        session = db.get(RecordingSession, segment.session_id)
+        room = db.get(LiveRoom, session.room_id) if session is not None else None
+        original = transcript.final_text or transcript.text
+        inferred = derive_aliases_from_correction(original, corrected)
+        learned = {**inferred, **(aliases or {})}
+        if learn_dictionary and room is not None and learned:
+            from app.analysis.room_config import learn_room_aliases
+
+            room.room_config_json = json.dumps(learn_room_aliases(room, learned), ensure_ascii=False)
+            db.add(room)
+
+        auxiliary = _decode_auxiliary(transcript.auxiliary_json)
+        auxiliary.pop("transcript_refinement", None)
+        auxiliary["manual_correction"] = {
+            "actor": actor,
+            "original_text": original,
+            "learned_aliases": learned if learn_dictionary else {},
+        }
+        transcript.text = corrected
+        transcript.final_text = corrected
+        transcript.final_text_source = "manual"
+        transcript.words_json = None
+        transcript.auxiliary_json = json.dumps(auxiliary, ensure_ascii=False)
+        db.add(transcript)
+        session_id = segment.session_id
+
+    from app.analysis.reanalysis import request_session_reanalysis
+
+    reanalysis_requested = request_session_reanalysis(
+        session_id,
+        reason=f"transcript_manual_correction:{transcript_id}",
+        retranscribe=False,
+    )
+    return {
+        "transcript_id": transcript_id,
+        "session_id": session_id,
+        "learned_aliases": learned if learn_dictionary else {},
+        "reanalysis": {"session_id": session_id, "requested": reanalysis_requested},
+    }
+
+
+def derive_aliases_from_correction(original: str, corrected: str) -> dict[str, str]:
+    """从小范围人工替换中提取适合作为 ASR 房间词典的映射。"""
+    aliases: dict[str, str] = {}
+    matcher = SequenceMatcher(a=original, b=corrected, autojunk=False)
+    if matcher.ratio() < 0.6:
+        return aliases
+    for operation, i1, i2, j1, j2 in matcher.get_opcodes():
+        if operation != "replace":
+            continue
+        if i2 - i1 <= 1 and j2 - j1 <= 1:
+            left = 1 if i1 > 0 and j1 > 0 else 0
+            right_context = 1 if i2 < len(original) and j2 < len(corrected) else 0
+            wrong = _clean_alias_term(original[i1 - left : i2 + right_context])
+            right = _clean_alias_term(corrected[j1 - left : j2 + right_context])
+        else:
+            wrong = _clean_alias_term(original[i1:i2])
+            right = _clean_alias_term(corrected[j1:j2])
+        if not wrong or not right or wrong == right:
+            continue
+        if 2 <= len(wrong) <= 24 and 2 <= len(right) <= 24:
+            aliases[wrong] = right
+    return aliases
+
+
+def _clean_alias_term(value: str) -> str:
+    """去掉纠错差异两侧的空白和标点。"""
+    start = 0
+    end = len(value)
+    while start < end and not value[start].isalnum():
+        start += 1
+    while end > start and not value[end - 1].isalnum():
+        end -= 1
+    return value[start:end]
+
+
+def _decode_auxiliary(raw: str | None) -> dict[str, Any]:
+    if not raw:
+        return {}
+    try:
+        value = json.loads(raw)
+    except (json.JSONDecodeError, TypeError):
+        return {}
+    return value if isinstance(value, dict) else {}
 
 
 def list_transcripts(limit: int = 30) -> list[dict[str, Any]]:

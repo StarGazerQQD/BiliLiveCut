@@ -109,9 +109,9 @@ def approve_candidate_sync(
         ).first()
 
         # V0.1.12.8: 统一审批, 传入外层 db session
-        if task is not None and event is not None:
+        if event is not None:
             approved_via_event = approve_event_and_task(
-                task_id=task.id,
+                task_id=task.id if task is not None else None,
                 event_id=event.id,
                 approved_by=reviewed_by,
                 reason=None,

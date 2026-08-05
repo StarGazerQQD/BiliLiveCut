@@ -1,6 +1,6 @@
 # BiliLiveCut Portable 小白使用说明
 
-适用版本：`v0.1.16.5-Alpha` · 适用系统：Windows 10/11 x64
+适用版本：`v0.1.17-Alpha` · 适用系统：Windows 10/11 x64
 
 这份说明面向不懂 Python、Git 或命令行的普通 Windows 用户。按顺序操作即可完成下载安装、首次启动、基础配置、添加直播间和首次录制。
 
@@ -16,13 +16,14 @@
 - “账号管理”会优先调用电脑已安装的 Google Chrome；没有 Chrome 时会自动下载一次 Playwright Chromium。
 - 第一次测试先完成一小段授权直播录制，并在 `storage/raw/` 找到文件。Cookie、大模型 API 和自动上传都不是首次使用的必需项。
 
-## V0.1.16.5 Alpha 先知道的修复
+## V0.1.17 Alpha 先知道的新流程
 
-- 候选审核中的 LLM 理由、预览和最终成片现在使用同一段候选时间窗。模型给出的开始点、结束点会换算回原始录像，最终视频不会在理由所述事件发生前结束。
-- 拒绝候选会同时取消仍可取消的任务，并把未发布关联成片标记为拒绝；这些记录不会继续以 `reviewing` 出现在“成品切片”。已经发布的外部结果不会被事后改写。
-- 主播下播或持续断流后，默认最多重试 20 次或 300 秒，任一上限先到就自动结束本场并清理运行状态。
-- 五分钟转写整理和高光复核默认各有 `65536` 个最大输出 token；Fun-ASR-Nano 出现局部解码复读时会回退 Paraformer、Whisper。
-- 修复不会静默覆盖旧版已经人工审核、渲染或发布的数据。旧转写可在“实时转写”页使用“重新识别”，但存在受保护下游资产时服务会拒绝覆盖并说明原因。
+- “候选审核”首页升级为“场次时间线”。每场录制按 GMT+8 展示高光节点、摘要、1～2 条代表弹幕、置信度和来源依据；点击“审片”仍可播放、调整边界、批准或拒绝。
+- 一个五分钟原始分段可产生多个高光，高光也可跨相邻分段。系统按语音、弹幕和上下文动态决定片头片尾，不再固定输出 1 分 30 秒。
+- Bilibili 弹幕默认向前校正 `7.5` 秒来对齐画面，同场过近且内容相似的节点会去重，减少一个爆点重复出片。
+- “实时转写”可以人工改正文，并可填写“错误词=正确词”加入该直播间的专属词典；保存后可自动重分析本场。
+- 修改阈值后使用“按新阈值重分析”；修改房间词典或 ASR 模型后使用“按新词典/模型重新转写”。人工审核、手工边界、草稿、成片和人工正文不会被静默覆盖。
+- 主播下播需连续确认 3 次，再等待 60 秒收尾；期间恢复直播会取消停止。单场默认最长 12 小时，断流仍受 20 次或 300 秒的恢复预算限制。
 
 ## 1. 电脑和网络要求
 
@@ -49,9 +50,9 @@ Full 版不要求系统安装 Python、FFmpeg、Visual Studio、Git 或其他编
 
 ## 2. 下载正确的文件
 
-打开项目的 [GitHub Releases 页面](https://github.com/StarGazerQQD/BiliLiveCut/releases)，进入 `v0.1.16.5-Alpha`，下载：
+打开项目的 [GitHub Releases 页面](https://github.com/StarGazerQQD/BiliLiveCut/releases)，进入 `v0.1.17-Alpha`，下载：
 
-1. `BiliLiveCut-Portable-Full-0.1.16.5-alpha-x64.zip`
+1. `BiliLiveCut-Portable-Full-0.1.17-alpha-x64.zip`
 2. `SHA256SUMS.txt`
 
 不要把下面这些文件当成 Windows 小白版：
@@ -69,7 +70,7 @@ Full 版不要求系统安装 Python、FFmpeg、Visual Studio、Git 或其他编
 3. 复制并执行：
 
 ```powershell
-Get-FileHash ".\BiliLiveCut-Portable-Full-0.1.16.5-alpha-x64.zip" -Algorithm SHA256
+Get-FileHash ".\BiliLiveCut-Portable-Full-0.1.17-alpha-x64.zip" -Algorithm SHA256
 ```
 
 4. 将输出的 `Hash` 与 `SHA256SUMS.txt` 中同名文件前面的值比较。英文字母大小写不同不影响结果。
@@ -79,7 +80,7 @@ Get-FileHash ".\BiliLiveCut-Portable-Full-0.1.16.5-alpha-x64.zip" -Algorithm SHA
 
 1. 新建目录，例如 `D:\BiliLiveCut`。
 2. 右键 ZIP，选择“全部解压”。
-3. 打开解压出来的 `BiliLiveCut-Portable-Full-0.1.16.5-alpha-x64` 文件夹。
+3. 打开解压出来的 `BiliLiveCut-Portable-Full-0.1.17-alpha-x64` 文件夹。
 4. 确认同一层能看到：
 
 ```text
@@ -107,7 +108,7 @@ Full 版包含运行环境，但不包含四个语音识别模型。
 只接受与应用版本匹配的文件：
 
 ```text
-BiliLiveCut-EnginePack-0.1.16.5-alpha.zip
+BiliLiveCut-EnginePack-0.1.17-alpha.zip
 ```
 
 将这个 ZIP 原样放到 `BiliLiveCut-Portable.exe` 同级目录，不要手动解压。Launcher 会先做完整性校验，再安装到 `models/`。
@@ -169,6 +170,9 @@ ADMIN_PASSWORD=
 STORAGE_ROOT=./storage
 STREAM_QUALITY=10000
 SEGMENT_DURATION_S=300
+LIVE_OFFLINE_CONFIRM_COUNT=3
+LIVE_SESSION_END_DELAY_S=60
+RECORDING_MAX_DURATION_S=43200
 RECORDING_RECONNECT_MAX_ATTEMPTS=20
 RECORDING_RECONNECT_MAX_ELAPSED_S=300
 COLLECT_DANMAKU=true
@@ -180,10 +184,15 @@ ASR_VAD_MAX_SEGMENT_S=30
 TRANSCRIPT_LLM_REFINE_ENABLED=true
 TRANSCRIPT_LLM_REFINE_MAX_TOKENS=65536
 HIGHLIGHT_LLM_MAX_TOKENS=65536
-HIGHLIGHT_INIT_THRESHOLD=0.35
-HIGHLIGHT_THRESHOLD=0.45
-HIGHLIGHT_REVIEW_THRESHOLD=0.40
+HIGHLIGHT_INIT_THRESHOLD=0.28
+HIGHLIGHT_THRESHOLD=0.38
+HIGHLIGHT_REVIEW_THRESHOLD=0.32
 HIGHLIGHT_AUTO_APPROVE_THRESHOLD=0.72
+HIGHLIGHT_MAX_CANDIDATES_PER_SEGMENT=4
+HIGHLIGHT_PEAK_MIN_DISTANCE_S=25
+HIGHLIGHT_MIN_PRE_ROLL_S=20
+HIGHLIGHT_MIN_POST_ROLL_S=12
+DANMAKU_EVENT_LAG_S=7.5
 AUTO_PUBLISH_THRESHOLD=0.80
 LLM_API_KEY=
 TREND_ENABLED=false
@@ -196,6 +205,8 @@ UPLOADER=manual
 - `STORAGE_ROOT` 保持 `./storage`：数据库、原始录像和成品都在程序目录内，便于备份。
 - `STREAM_QUALITY=10000`：请求原画；若匿名访问无法取得，可改为 `400` 或 `250`。
 - `SEGMENT_DURATION_S=300`：每个原始片段以 5 分钟为目标；FFmpeg 按关键帧落盘，实际时长允许小幅浮动。
+- `LIVE_OFFLINE_CONFIRM_COUNT=3` 与 `LIVE_SESSION_END_DELAY_S=60`：连续确认三次下播后等待 60 秒再收尾；等待期间恢复直播会撤销停止。
+- `RECORDING_MAX_DURATION_S=43200`：单场最长 12 小时；达到后安全收尾，若直播仍在继续则由自动监控开启下一场会话。
 - `RECORDING_RECONNECT_MAX_ATTEMPTS=20` 与 `RECORDING_RECONNECT_MAX_ELAPSED_S=300`：连续无法恢复取流时，达到 20 次或 300 秒中的任一上限即自动结束本场；成功产出新片段后两项预算归零。某项设为 `0` 只禁用该项，两项都为 `0` 会无限重试，不建议无人值守时使用。
 - `COLLECT_DANMAKU=true`：采集公开弹幕；有 Cookie 时登录优先，失败后立即匿名兜底。
 - `DANMAKU_LOGIN_RETRY_MAX_ATTEMPTS=5`：单场最多累计 5 次登录失败（首次计入）；达到后本场固定匿名，设为 `0` 可始终匿名。
@@ -206,12 +217,15 @@ UPLOADER=manual
 - `ASR_VAD_MAX_SEGMENT_S=30`：先把 TS 标准化为 16 kHz 单声道 WAV，再由 FSMN-VAD 把 Nano 的单句限制在 30 秒；建议保持默认值。
 - `TRANSCRIPT_LLM_REFINE_ENABLED=true`：每个切片完成 ASR 后，用已配置的大模型整理正文并生成概括；失败时保留原始 ASR，不中断分析。
 - `TRANSCRIPT_LLM_REFINE_MAX_TOKENS=65536` 与 `HIGHLIGHT_LLM_MAX_TOKENS=65536`：分别控制五分钟转写整理和高光复核的最大输出预算；实际消耗由模型响应决定，可按服务商能力调低。
-- 高光默认初筛/候选/人工审核阈值为 `0.35/0.45/0.40`，自动批准/发布阈值为 `0.72/0.80`。阈值越低越容易产生候选；房间已经保存的显式值不会被升级覆盖。
+- 高光默认初筛/候选/人工审核阈值为 `0.28/0.38/0.32`，自动批准/发布阈值为 `0.72/0.80`。阈值越低越容易产生候选；房间已经保存的显式值不会被升级覆盖。
+- `HIGHLIGHT_MAX_CANDIDATES_PER_SEGMENT=4` 与 `HIGHLIGHT_PEAK_MIN_DISTANCE_S=25`：每个原始分段最多分析 4 个独立峰值，相邻峰值至少间隔 25 秒；跨分段分析仍按场次统一去簇。
+- `HIGHLIGHT_MIN_PRE_ROLL_S=20` 与 `HIGHLIGHT_MIN_POST_ROLL_S=12`：动态切片至少保留的前文和后文，LLM 与静音吸附仍可继续向外扩展。
+- `DANMAKU_EVENT_LAG_S=7.5`：评分时把弹幕信号向前对齐 7.5 秒，不修改数据库中的原始弹幕时间。
 - `LLM_API_KEY` 留空：转写梳理自动跳过，高光判断使用本地规则评分，不产生 API 费用。
 - `TREND_ENABLED=false`：不启用联网热点采集。
 - `UPLOADER=manual`：只生成本地文件，不自动投稿。
 
-若历史版本已经写入明显重复的转写，可在“实时转写”页点击“重新识别”。程序只会清理未人工审核、未渲染的自动分析结果；存在人工审核、确认主题、成片或活动任务时会拒绝覆盖并显示原因。
+若历史版本已经写入明显重复的转写，可在“实时转写”页点击“重新识别”。V0.1.17 的场次重分析会保留人工审核、手工边界、草稿、成片、反馈与人工正文，只重建可安全重建的自动结果；有活动任务时会等待或显示明确原因。
 
 ### 7.3 不要先改这些配置
 
@@ -243,7 +257,7 @@ https://live.bilibili.com/123456
 4. 勾选“我已确认拥有录制授权”。未勾选时系统会拒绝添加。
 5. 点击“添加”。
 6. 打开“功能开关”，找到刚添加的直播间；首次测试可只开启“自动分析”，确认录制和分析后再逐项开启自动渲染、自动审核与自动上传。
-7. 点击“保存本直播间开关”。预约录制、阈值自学习、弹幕情绪和审核阈值也在这里独立设置。
+7. 点击“保存本直播间开关”。预约录制、阈值自学习、弹幕情绪、审核阈值和 ASR 手工词典也在这里按直播间独立设置；热词一行一个。
 8. 在房间卡片中点击“开始录制”。
 9. 打开“录制状态”，确认状态变为 `recording`，片段数量开始增加。
 10. 先录制 2～5 分钟，再回到“直播间”点击“停止录制”。
@@ -287,22 +301,30 @@ Cookie 不是公开直播录制或弹幕采集的必需项。程序会按网页 
 
 只有显示测试成功后再启用相关功能。不要把真实 API Key 写进公开文档或问题报告。
 
-## 11. 候选审核和成品文件
+## 11. 场次时间线、审核和成品文件
 
 只有分析流水线已启用并产生高光候选时，下面的页面才会出现数据：
 
-1. 在“候选审核”中点击“审片”查看候选。
-2. 确认内容后点击“批准并出片”；不需要的候选点击“拒绝”。
-3. 在“成品切片”中播放并检查成品。
-4. “发布（置 ready）”只会把成品标记为可交付并导出本地清单；默认不会自动投稿。
-5. 在“上传 / 设置”中点击“打开切片目录”。
+1. 打开“场次时间线”，按主播、房间和录制场次找到本次直播；页面时间统一显示为 GMT+8。
+2. 展开场次卡片查看高光节点。每个节点提供时刻、摘要、最多两条代表弹幕、置信度、来源信号以及动态/跨分段标记。
+3. 点击节点中的“审片”播放候选；确认内容后点击“批准并出片”，不需要的候选点击“拒绝”。
+4. 默认不显示已拒绝节点；需要核查时打开“包含已拒绝”。
+5. 在“成品切片”中播放并检查成品。“发布（置 ready）”只会标记本地交付状态并导出清单，默认不会自动投稿。
+6. 在“上传 / 设置”中点击“打开切片目录”。
+
+需要重算时：
+
+- 只改了审核阈值，点击场次卡片的“按新阈值重分析”。
+- 改了房间手工词典、人工学习别名或 ASR 模型，点击“按新词典/模型重新转写”。
+- 在“实时转写”编辑正文时，可额外输入若干行 `错误词=正确词`，勾选加入直播间词典；保存期间自动刷新不会覆盖未提交草稿。
+- 重分析只替换可重建的自动结果；人工审核、手工边界、私有草稿、已生成成片、反馈和人工正文继续保留。
 
 审片时请注意：
 
 - “LLM 理由”来自音频峰值附近的候选分析窗口，播放器预览和最终成片必须完整覆盖该窗口；LLM 建议和静音吸附只能向外扩展边界。
 - `start_offset` 表示视频开始点，`end_offset` 表示理由所述事件完整结束后的出点，不是事件开始时刻。
 - 点击“拒绝”会同步停止该候选仍可取消的任务，并把所有未发布关联成片标记为拒绝；已经发布的成片保留真实状态。
-- V0.1.16.5 不会自动重写旧版已有的人工审核或成片。若旧候选仍有错位，请保留原始录像并重新识别可安全重建的转写；服务拒绝时不要删除数据库绕过保护。
+- V0.1.17 不会自动重写旧版已有的人工审核或成片。若旧候选仍有错位，请保留原始录像并从对应场次执行安全重分析；不要删除数据库绕过保护。
 
 常用目录：
 
@@ -381,7 +403,7 @@ storage\
 
 ### 大模型测试提示“未安装 openai”
 
-`v0.1.16.5-Alpha` 最新构建已经把 OpenAI 兼容 SDK 纳入 Portable 运行时。先关闭服务并重新运行 Launcher，让依赖检查自动补装；如果仍出现该提示，说明当前 Full 的 `vendor\wheels\` 不完整或仍在使用旧构建，请重新下载并解压最新完整包。不要在 Portable 目录手工执行 `pip install -e`，也不要复用旧版 `.venv`。
+`v0.1.17-Alpha` 最新构建已经把 OpenAI 兼容 SDK 纳入 Portable 运行时。先关闭服务并重新运行 Launcher，让依赖检查自动补装；如果仍出现该提示，说明当前 Full 的 `vendor\wheels\` 不完整或仍在使用旧构建，请重新下载并解压最新完整包。不要在 Portable 目录手工执行 `pip install -e`，也不要复用旧版 `.venv`。
 
 ### 控制台提示 pip 有新版本
 
@@ -389,7 +411,7 @@ storage\
 
 ### 出现 `THESE PACKAGES DO NOT MATCH THE HASHES`
 
-新版 Full 应强制使用本地 wheelhouse，不应访问 PyPI 镜像。确认使用的是 `v0.1.16.5-Alpha` 最新 Full ZIP，并且没有只复制 EXE。不要修改锁文件或添加报错中的 sdist 哈希，直接重新下载并校验 Full ZIP。
+新版 Full 应强制使用本地 wheelhouse，不应访问 PyPI 镜像。确认使用的是 `v0.1.17-Alpha` 最新 Full ZIP，并且没有只复制 EXE。不要修改锁文件或添加报错中的 sdist 哈希，直接重新下载并校验 Full ZIP。
 
 ### 模型下载很慢或中断
 
@@ -410,15 +432,15 @@ storage\
 
 ### 主播下播后任务一直显示重连
 
-V0.1.16.5 Alpha 默认在连续失败 20 次或 300 秒后自动收尾，任一条件先到即停止。检查 `.env` 中 `RECORDING_RECONNECT_MAX_ATTEMPTS` 与 `RECORDING_RECONNECT_MAX_ELAPSED_S`；两项都设为 `0` 会恢复无限重试。自动结束后房间运行标记会清理，最后一个录制任务结束时网感定时采集会恢复。
+V0.1.17 Alpha 会先按 `LIVE_OFFLINE_CONFIRM_COUNT` 连续确认下播，再等待 `LIVE_SESSION_END_DELAY_S` 秒；期间恢复开播会取消停止。断流恢复仍受 20 次或 300 秒预算限制，单场还受 `RECORDING_MAX_DURATION_S` 限制。自动结束后房间运行标记会清理，最后一个录制任务结束时网感定时采集会恢复。
 
 ### 候选理由、预览和视频内容不一致
 
-先确认使用 V0.1.16.5 Alpha。新分析会用同一个候选窗口生成规则特征、LLM 理由和边界，并强制成片覆盖完整窗口。旧版本已经生成且受人工审核、渲染或发布保护的数据不会被静默改写；可安全重建时使用“实时转写 → 重新识别”。
+先确认使用 V0.1.17 Alpha。新分析会用同一个候选窗口生成规则特征、LLM 理由和动态边界，并强制成片覆盖完整窗口。若旧结果仍错位，在“场次时间线”对对应场次执行重分析；改过词典或 ASR 时选择重新转写。受保护数据不会被静默改写。
 
 ### 拒绝候选后仍在成品列表显示 `reviewing`
 
-V0.1.16.5 Alpha 的拒绝操作会同步未发布成片并从列表过滤。升级前形成的不一致旧记录不会自动改库：若该候选在界面仍可操作，可以在新版重新拒绝；否则请先备份 `storage/blc.db`，再携带候选/成片 ID 反馈，不要直接修改数据库。已经发布的成片按设计保留，避免篡改真实外部发布结果。
+V0.1.17 Alpha 的拒绝操作会同步未发布成片并默认从时间线过滤。升级前形成的不一致旧记录不会自动改库：若该候选在界面仍可操作，可以在新版重新拒绝；否则请先备份 `storage/blc.db`，再携带候选/成片 ID 反馈，不要直接修改数据库。已经发布的成片按设计保留，避免篡改真实外部发布结果。
 
 ### 修改 `.env` 后没有生效
 
@@ -440,7 +462,7 @@ V0.1.16.5 Alpha 的拒绝操作会同步未发布成片并从列表过滤。升�
 
 - Windows 版本，例如 Windows 11 23H2；
 - 使用 Full 还是 Lite；
-- 程序版本 `v0.1.16.5-Alpha`；
+- 程序版本 `v0.1.17-Alpha`；
 - 解压目录；
 - 问题发生在 `[1/6]`～`[6/6]` 的哪一步；
 - 黑色窗口最后 30 行文字或截图；
@@ -452,7 +474,7 @@ V0.1.16.5 Alpha 的拒绝操作会同步未发布成片并从列表过滤。升�
 
 ## 16. 当前 Alpha 的测试边界
 
-`v0.1.16.5-Alpha` 适合小规模、受控测试，不等同于稳定正式版。当前应重点验证：
+`v0.1.17-Alpha` 适合小规模、受控测试，不等同于稳定正式版。当前应重点验证：
 
 - Full ZIP 下载、校验和解压；
 - 首次离线依赖安装；
@@ -460,7 +482,9 @@ V0.1.16.5 Alpha 的拒绝操作会同步未发布成片并从列表过滤。升�
 - Web 控制台启动；
 - 授权直播间添加、开始和停止录制；
 - 主播下播或断流后的重试上限、自动收尾和页面状态清理；
-- 候选理由、审片预览与最终成片时间范围是否一致；
+- 场次时间线的主播、房间、GMT+8 时刻、摘要、代表弹幕与来源依据是否一致；
+- 同一分段多个高光、跨分段高光及动态片头片尾是否覆盖完整事件；
+- 房间词典、人工转写校正和场次重分析是否保留人工资产；
 - 拒绝候选后未发布关联成片是否从成品列表消失；
 - 原始文件完整性、磁盘占用和长时间运行稳定性；
 - 不同 Windows 版本、杀毒软件和安装路径的兼容性。
