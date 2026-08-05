@@ -332,18 +332,8 @@ jobs:
         timeout-minutes: 15
 
       - name: Download FFmpeg static binaries
-        shell: pwsh
-        run: |
-          Write-Output "::group::Downloading FFmpeg"
-          Invoke-WebRequest -Uri "https://www.gyan.dev/ffmpeg/builds/ffmpeg-release-essentials.zip" `
-            -OutFile "$env:RUNNER_TEMP\ffmpeg.zip"
-          Expand-Archive -Path "$env:RUNNER_TEMP\ffmpeg.zip" -DestinationPath "$env:RUNNER_TEMP\ffmpeg-extracted" -Force
-          New-Item -ItemType Directory -Path bin -Force
-          $ffmpegDir = Get-ChildItem "$env:RUNNER_TEMP\ffmpeg-extracted" -Directory | Select-Object -First 1
-          Copy-Item "$($ffmpegDir.FullName)\bin\ffmpeg.exe" "bin\ffmpeg.exe"
-          Copy-Item "$($ffmpegDir.FullName)\bin\ffprobe.exe" "bin\ffprobe.exe"
-          Write-Output "::endgroup::"
-        timeout-minutes: 5
+        run: python scripts/download_release_ffmpeg.py --output-dir bin
+        timeout-minutes: 15
 
       - name: Download Windows wheels from lock files
         shell: pwsh

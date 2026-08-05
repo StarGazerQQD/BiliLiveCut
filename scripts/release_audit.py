@@ -145,6 +145,7 @@ def check_ci_bypass(audit: AuditResult) -> None:
     lite_py = REPO_ROOT / "packaging" / "portable" / "src" / "blc_portable" / "builders" / "lite.py"
     release_yml = REPO_ROOT / ".github" / "workflows" / "release.yml"
     lite_smoke_py = REPO_ROOT / "scripts" / "smoke_portable_lite.py"
+    ffmpeg_download_py = REPO_ROOT / "scripts" / "download_release_ffmpeg.py"
 
     if lite_py.exists():
         content = lite_py.read_text(encoding="utf-8")
@@ -162,6 +163,7 @@ def check_ci_bypass(audit: AuditResult) -> None:
     if release_yml.exists():
         content = release_yml.read_text(encoding="utf-8")
         lite_smoke = lite_smoke_py.read_text(encoding="utf-8") if lite_smoke_py.is_file() else ""
+        ffmpeg_download = ffmpeg_download_py.read_text(encoding="utf-8") if ffmpeg_download_py.is_file() else ""
         doctor_start = content.find("- name: Lite EXE --doctor rejects incomplete environment")
         doctor_end = content.find("- name: Lite fresh-install to empty directory", doctor_start)
         doctor_smoke = content[doctor_start:doctor_end] if doctor_start >= 0 and doctor_end > doctor_start else ""
@@ -237,6 +239,15 @@ def check_ci_bypass(audit: AuditResult) -> None:
             and 'echo "prerelease=$PRERELEASE"' in content
             and "prerelease: ${{ steps.tag.outputs.prerelease == 'true' }}" in content,
             "历史 -Alpha/-Beta/-RC 标签必须保持 GitHub prerelease 属性",
+        )
+        audit.check(
+            "release.yml FFmpeg 下载具备重试与备用源",
+            "python scripts/download_release_ffmpeg.py --output-dir bin" in content
+            and "BtbN/FFmpeg-Builds" in ffmpeg_download
+            and "www.gyan.dev" in ffmpeg_download
+            and "DEFAULT_ATTEMPTS = 3" in ffmpeg_download
+            and "testzip()" in ffmpeg_download,
+            "Release 必须通过受测下载器重试多个来源，并在提取前校验 FFmpeg ZIP",
         )
     launcher_spec = REPO_ROOT / "packaging" / "portable" / "specs" / "portable_launcher.spec"
     if launcher_spec.exists():
