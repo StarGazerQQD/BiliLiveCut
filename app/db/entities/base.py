@@ -126,6 +126,7 @@ class TaskStatus:
     ANALYZING = "analyzing"  # 正在分析(规则+LLM)
     CANDIDATE_CREATED = "candidate_created"  # 已生成候选
     AWAITING_REVIEW = "awaiting_review"  # 候选待审核/自动批准
+    REVIEWED_WAITING_ACTION = "reviewed_waiting_action"  # 已提交待定/边界/质量反馈,等待后续处理
     APPROVED = "approved"  # 已批准
     APPROVED_WAITING_RENDER = "approved_waiting_render"  # 已批准,等待手动渲染
     QUEUED_FOR_RENDER = "queued_for_render"  # 等待渲染

@@ -2,6 +2,8 @@
 import { $, api, toast, esc, badge, DANMAKU_TYPE_LABEL } from "./common.js";
 
 const dirtyTranscriptIds = new Set();
+const openTranscriptDetails = new Set();
+let transcriptEditorRevision = 0;
 
 // ----------------------------- \u542f\u52a8/\u505c\u6b62\u5f55\u5236 ----------------------------- //
 async function startRoom(id) {
@@ -78,10 +80,17 @@ async function loadTranscripts() {
     return;
   }
   $("#transcripts-dirty-hint").style.display = "none";
+  const revision = transcriptEditorRevision;
   const rows = await api("GET", "/api/transcripts?limit=30");
+  if (dirtyTranscriptIds.size > 0 || transcriptEditorRevision !== revision) {
+    $("#transcripts-dirty-hint").style.display = dirtyTranscriptIds.size > 0 ? "" : "none";
+    return;
+  }
   $("#transcripts-list").innerHTML = rows.length ? rows.map((t) => {
+    const rawDetailKey = `raw:${t.id}`;
+    const correctionDetailKey = `correction:${t.id}`;
     const rawDetails = t.llm_refined && t.raw_text && t.raw_text !== t.text
-      ? `<details style="margin-top:8px"><summary class="muted">查看原始 ASR</summary><div class="txt muted">${esc(t.raw_text)}</div></details>`
+      ? `<details data-transcript-detail="${rawDetailKey}" ${openTranscriptDetails.has(rawDetailKey) ? "open" : ""} style="margin-top:8px"><summary class="muted">查看原始 ASR</summary><div class="txt muted">${esc(t.raw_text)}</div></details>`
       : "";
     return `
     <div class="item">
@@ -89,7 +98,7 @@ async function loadTranscripts() {
       <div class="txt">${esc(t.text) || "(\u7a7a)"}</div>
       ${t.summary ? `<div class="sub" style="margin-top:8px"><b>片段概括：</b>${esc(t.summary)}</div>` : ""}
       ${rawDetails}
-      <details class="transcript-correction" data-transcript-editor="${t.id}" style="margin-top:8px">
+      <details class="transcript-correction" data-transcript-editor="${t.id}" data-transcript-detail="${correctionDetailKey}" ${openTranscriptDetails.has(correctionDetailKey) ? "open" : ""} style="margin-top:8px">
         <summary>人工纠错并学习房间词典</summary>
         <label class="editor-label">纠正后的全文
           <textarea id="transcript-text-${t.id}" rows="6">${esc(t.text || "")}</textarea>
@@ -134,6 +143,8 @@ async function correctTranscript(id) {
       learn_dictionary: $(`#transcript-learn-${id}`).checked,
     });
     dirtyTranscriptIds.delete(id);
+    openTranscriptDetails.delete(`correction:${id}`);
+    transcriptEditorRevision += 1;
     const learnedCount = Object.keys(result.learned_aliases || {}).length;
     toast(`转写已保存并请求整场重分析${learnedCount ? `，学习 ${learnedCount} 条房间词典` : ""}`);
     await loadTranscripts();
@@ -142,6 +153,8 @@ async function correctTranscript(id) {
 
 async function cancelTranscriptCorrection(id) {
   dirtyTranscriptIds.delete(id);
+  openTranscriptDetails.delete(`correction:${id}`);
+  transcriptEditorRevision += 1;
   await loadTranscripts();
 }
 
@@ -150,6 +163,8 @@ async function retranscribeTranscript(id) {
   try {
     const result = await api("POST", `/api/transcripts/${id}/retranscribe`);
     dirtyTranscriptIds.delete(id);
+    openTranscriptDetails.delete(`correction:${id}`);
+    transcriptEditorRevision += 1;
     toast(`片段 #${result.segment_id} 已重新加入转写队列`);
     await loadTranscripts();
   } catch (e) { toast("重新识别失败:" + e.message); }
@@ -159,8 +174,18 @@ $("#transcripts-list").addEventListener("input", (event) => {
   const editor = event.target.closest?.("[data-transcript-editor]");
   if (!editor) return;
   dirtyTranscriptIds.add(Number(editor.dataset.transcriptEditor));
+  transcriptEditorRevision += 1;
   $("#transcripts-dirty-hint").style.display = "";
 });
+
+$("#transcripts-list").addEventListener("toggle", (event) => {
+  const detail = event.target.closest?.("[data-transcript-detail]");
+  const key = detail?.dataset?.transcriptDetail;
+  if (!key) return;
+  if (detail.open) openTranscriptDetails.add(key);
+  else openTranscriptDetails.delete(key);
+  transcriptEditorRevision += 1;
+}, true);
 
 // ----------------------------- \u6e32\u67d3:\u5f39\u5e55\u70ed\u5ea6 ----------------------------- //
 async function loadDanmaku() {

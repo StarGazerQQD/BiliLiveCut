@@ -23,6 +23,7 @@ from typing import Any
 from loguru import logger
 from sqlmodel import select
 
+from app.core.config import settings
 from app.db.models import (
     RawSegment,
     SegmentTask,
@@ -62,7 +63,7 @@ from app.pipeline.stale_recovery import (
 )
 
 # ── 并发配置 ──────────────────────────────────────────────────────
-MAX_TRANSCRIBING: int = int(os.environ.get("MAX_TRANSCRIBING", "1"))
+MAX_TRANSCRIBING: int = int(os.environ.get("MAX_TRANSCRIBING", str(settings.asr_task_max_concurrency)))
 MAX_ANALYZING: int = int(os.environ.get("MAX_ANALYZING", "2"))
 MAX_RENDERING: int = int(os.environ.get("MAX_RENDERING", "2"))
 MAX_PUBLISHING: int = int(os.environ.get("MAX_PUBLISHING", "1"))
@@ -253,7 +254,9 @@ class TaskWorker:
         self._running = True
         recover_orphans()
         self._main_task = asyncio.create_task(self._loop())
-        _logger.info("TaskWorker started T{}/A{}/R{}", MAX_TRANSCRIBING, MAX_ANALYZING, MAX_RENDERING)
+        from app.core.settings_store import asr_task_max_concurrency
+
+        _logger.info("TaskWorker started T{}/A{}/R{}", asr_task_max_concurrency(), MAX_ANALYZING, MAX_RENDERING)
 
     async def stop(self) -> None:
         """优雅关闭 — 停止领取新任务, 等待当前任务完成或取消。"""
@@ -310,7 +313,13 @@ class TaskWorker:
 
                 disk_safe = is_safe_for_new_tasks()
                 if disk_safe:
-                    await self._dispatch(TaskStatus.QUEUED_FOR_TRANS, self._transcribing, MAX_TRANSCRIBING)
+                    from app.core.settings_store import asr_task_max_concurrency
+
+                    await self._dispatch(
+                        TaskStatus.QUEUED_FOR_TRANS,
+                        self._transcribing,
+                        asr_task_max_concurrency(),
+                    )
                     await self._dispatch(TaskStatus.QUEUED_FOR_ANALYSIS, self._analyzing, MAX_ANALYZING)
                     await self._dispatch(TaskStatus.QUEUED_FOR_RENDER, self._rendering, MAX_RENDERING)
                 else:
@@ -333,7 +342,6 @@ class TaskWorker:
         max_concurrent: int,
     ) -> None:
         _STAGE_TO_RESOURCE: dict[str, str] = {
-            TaskStatus.QUEUED_FOR_TRANS: "asr",
             TaskStatus.QUEUED_FOR_ANALYSIS: "analysis",
             TaskStatus.QUEUED_FOR_RENDER: "render",
             TaskStatus.QUEUED_FOR_PUBLISH: "publish",
@@ -375,10 +383,13 @@ class TaskWorker:
     @property
     def stats(self) -> dict[str, Any]:
         """当前 Worker 和任务队列统计。"""
+        from app.core.settings_store import asr_task_max_concurrency
+
         counts = task_counts()
         counts["worker"] = {
             "worker_id": _WORKER_ID,
             "transcribing": len(self._transcribing),
+            "transcribing_limit": asr_task_max_concurrency(),
             "analyzing": len(self._analyzing),
             "rendering": len(self._rendering),
             "publishing": len(self._publishing),

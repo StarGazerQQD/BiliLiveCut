@@ -89,10 +89,15 @@ def approve_candidate_sync(
     from app.db.models import HighlightEvent, SegmentTask
     from app.db.models import TaskStatus as _Ts
     from app.pipeline.approval import approve_event_and_task
+    from app.pipeline.heartbeat import start_heartbeat_thread
     from app.pipeline.highlight_feedback import record_candidate_review_feedback
+    from app.pipeline.lifecycle import _WORKER_ID, now_utc
+    from app.pipeline.stage_result import enqueue_next, mark_completed, mark_failed
 
     feedback_recorded = False
     approved_via_event = False
+    claimed_task_id: int | None = None
+    claimed_lease_token: str | None = None
     with get_session() as db:
         # 查找关联 task 和 event
         task = db.exec(
@@ -127,6 +132,22 @@ def approve_candidate_sync(
                 task.stage = _Ts.APPROVED
                 db.add(task)
 
+        if task is not None and task.stage in (_Ts.APPROVED, _Ts.APPROVED_WAITING_RENDER):
+            import uuid
+
+            enqueue_next(task, _Ts.QUEUED_FOR_RENDER)
+            enqueue_next(task, _Ts.RENDERING)
+            claimed_lease_token = uuid.uuid4().hex
+            claimed_at = now_utc()
+            task.claimed_by = _WORKER_ID
+            task.claimed_at = claimed_at
+            task.heartbeat_at = claimed_at
+            task.lease_token = claimed_lease_token
+            task.started_at = claimed_at
+            task.attempts += 1
+            db.add(task)
+            claimed_task_id = task.id
+
     if approved_via_event and not feedback_recorded:
         record_candidate_review_feedback(
             candidate_id,
@@ -136,11 +157,46 @@ def approve_candidate_sync(
 
     from app.pipeline.orchestrator import produce_clip
 
-    clip = produce_clip(
-        candidate_id,
-        progress_callback=progress_callback,
-        cancel_check=cancel_check,
+    heartbeat_stop = (
+        start_heartbeat_thread(claimed_task_id, claimed_lease_token, _Ts.RENDERING)
+        if claimed_task_id is not None and claimed_lease_token is not None
+        else None
     )
+    try:
+        clip = produce_clip(
+            candidate_id,
+            progress_callback=progress_callback,
+            cancel_check=cancel_check,
+        )
+    except Exception as exc:
+        if claimed_task_id is not None:
+            with get_session() as db:
+                claimed_task = db.get(SegmentTask, claimed_task_id)
+                if (
+                    claimed_task is not None
+                    and claimed_task.stage == _Ts.RENDERING
+                    and claimed_task.lease_token == claimed_lease_token
+                ):
+                    mark_failed(claimed_task, f"人工出片失败: {exc}", permanent=False)
+                    db.add(claimed_task)
+        raise
+    finally:
+        if heartbeat_stop is not None:
+            heartbeat_stop.set()
+    if claimed_task_id is not None:
+        with get_session() as db:
+            claimed_task = db.get(SegmentTask, claimed_task_id)
+            if (
+                claimed_task is not None
+                and claimed_task.stage == _Ts.RENDERING
+                and claimed_task.lease_token == claimed_lease_token
+            ):
+                if clip is None or clip.id is None:
+                    mark_failed(claimed_task, "人工出片未生成成品", permanent=False)
+                else:
+                    mark_completed(claimed_task)
+                    enqueue_next(claimed_task, _Ts.RENDERED, clip_id=clip.id)
+                db.add(claimed_task)
     return clip.id if clip else None
 
 

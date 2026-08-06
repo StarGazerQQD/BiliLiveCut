@@ -1,9 +1,9 @@
 {
-  "release_version": "0.1.17-alpha",
-  "version_label": "V0.1.17 Alpha",
+  "release_version": "0.1.17.1-alpha",
+  "version_label": "V0.1.17.1 Alpha",
   "source_commit_short": "2ebd509",
   "source_commit_full": "2ebd509e8fa93cc09067888dbcf6d0984b976a16",
-  "engine_pack_version": "0.1.17-alpha",
+  "engine_pack_version": "0.1.17.1-alpha",
   "runtime_schema": 4,
   "engine_pack_schema": 4,
   "payload_schema": 4,
@@ -13,7 +13,7 @@
     "max_validated": "3.12"
   },
   "compatible_app": {
-    "min": "0.1.17-alpha",
+    "min": "0.1.17.1-alpha",
     "max_exclusive": "0.1.18"
   },
   "target_platforms": ["windows"],

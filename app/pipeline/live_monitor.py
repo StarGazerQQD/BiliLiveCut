@@ -108,6 +108,8 @@ class LiveMonitor:
                     "auto_render": r.auto_render,
                     "needs_identity": not r.uploader_name or not r.title,
                     "recording_paused": load_room_config(r).get("recording_paused", False),
+                    "auto_restart_suppressed": load_room_config(r).get("recording_auto_restart_suppressed", False),
+                    "wait_for_next_live": load_room_config(r).get("recording_wait_for_next_live", False),
                 }
                 for r in rooms
             ]
@@ -122,7 +124,7 @@ class LiveMonitor:
                 room_id: int = room_state["room_id"]
                 auto_analyze: bool = room_state["auto_analyze"]
                 auto_render: bool = room_state["auto_render"]
-                if room_state["recording_paused"]:
+                if room_state["recording_paused"] or room_state["auto_restart_suppressed"]:
                     continue
                 self._last_check_at[db_id] = asyncio.get_event_loop().time()
 
@@ -151,6 +153,13 @@ class LiveMonitor:
 
                 is_live = latest.live_status == 1
                 is_recording = recorder_manager.is_running(db_id)
+
+                if room_state["wait_for_next_live"]:
+                    if is_live:
+                        continue
+                    recorder_manager.release_retry_hold(db_id)
+                    room_state["wait_for_next_live"] = False
+                    logger.info("房间 {} 已确认离线,下次开播将恢复自动录制。", room_id)
 
                 if is_live and not is_recording:
                     # 开播,启动录制。

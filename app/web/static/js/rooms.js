@@ -4,6 +4,7 @@ import { $, api, toast, esc, badge } from "./common.js";
 let globalFeatureDirty = false;
 const dirtyRoomSections = new Set();
 const dirtyFeatureRooms = new Set();
+const openRoomDetails = new Set();
 
 function roomRuntimeState(room) {
   return room.recording_state || (room.running ? "running" : "stopped");
@@ -34,7 +35,8 @@ function roomRuntimeActions(room) {
 function learnedAliasesMarkup(room) {
   const learned = Object.entries(room.room_config?.learned_aliases || {});
   if (!learned.length) return '<span class="muted">尚无从人工转写纠错中学习的词条。</span>';
-  return `<details class="learned-aliases"><summary>已自动学习 ${learned.length} 条</summary><div class="tagcloud">${learned
+  const detailKey = `learned:${room.id}`;
+  return `<details class="learned-aliases" data-room-detail="${detailKey}" ${openRoomDetails.has(detailKey) ? "open" : ""}><summary>已自动学习 ${learned.length} 条</summary><div class="tagcloud">${learned
     .map(([wrong, correct]) => `<span class="tagchip">${esc(wrong)} → ${esc(correct)}</span>`)
     .join("")}</div></details>`;
 }
@@ -111,7 +113,7 @@ async function loadRooms() {
         </label>
         <span class="muted" id="room-lock-hint-${r.id}">${r.running ? "(\u5f55\u5236\u4e2d\u9501\u5b9a)" : ""}</span>
       </div>
-      <details class="room-config-detail" data-room-dirty-section="config:${r.id}" style="margin-top:8px">
+      <details class="room-config-detail" data-room-dirty-section="config:${r.id}" data-room-detail="config:${r.id}" ${openRoomDetails.has(`config:${r.id}`) ? "open" : ""} style="margin-top:8px">
         <summary style="font-size:12px;color:var(--muted);cursor:pointer">房间配置（高光模型 / ASR 词典 / 话题规则）</summary>
         <div class="thresholds" style="margin-top:6px;flex-direction:column;align-items:stretch">
           <label>\u9ad8\u5149\u8bc4\u5206\u6a21\u5f0f
@@ -201,12 +203,16 @@ async function loadFeatureSwitches() {
   if (!globalFeatureDirty) {
     $("#sw-recording-pipeline").checked = settings.recording_pipeline_enabled !== false;
     $("#sw-transcript-llm-refine").checked = settings.transcript_llm_refine_enabled !== false;
+    $("#asr-task-concurrency").value = settings.asr_task_max_concurrency || 1;
     $("#recording-pipeline-hint").textContent = settings.recording_pipeline_overridden
       ? "当前值来自控制台运行时设置；修改后从下次开始或恢复录制生效。"
       : `当前值来自 .env：RECORDING_PIPELINE_ENABLED=${settings.recording_pipeline_env_default !== false ? "true" : "false"}。`;
     $("#transcript-llm-refine-hint").textContent = settings.transcript_llm_refine_overridden
       ? "当前值来自控制台运行时设置；从下一个完成 ASR 的切片起生效。"
       : `当前值来自 .env：TRANSCRIPT_LLM_REFINE_ENABLED=${settings.transcript_llm_refine_env_default !== false ? "true" : "false"}。`;
+    $("#asr-task-concurrency-hint").textContent = settings.asr_task_max_concurrency_overridden
+      ? "当前值来自控制台；新调度的转写任务立即生效。每个并行使用独立模型实例，显存占用近似倍增。"
+      : `当前值来自 .env：ASR_TASK_MAX_CONCURRENCY=${settings.asr_task_max_concurrency_env_default || 1}。CUDA 可提高，CPU 建议保持 1。`;
   }
   if (dirtyFeatureRooms.size > 0) {
     $("#feature-dirty-hint").style.display = "";
@@ -252,6 +258,7 @@ async function saveGlobalFeatureSettings() {
     await api("PATCH", "/api/settings", {
       recording_pipeline_enabled: $("#sw-recording-pipeline").checked,
       transcript_llm_refine_enabled: $("#sw-transcript-llm-refine").checked,
+      asr_task_max_concurrency: parseInt($("#asr-task-concurrency").value || "1", 10),
     });
     globalFeatureDirty = false;
     toast("已保存实时转写与 LLM 整理开关");
@@ -315,10 +322,14 @@ async function loadThresholdLearning(roomId) {
 // ----------------------------- V0.1.2 \u6e32\u67d3:\u5f55\u5236\u9884\u7ea6 ----------------------------- //
 async function loadSchedules() {
   const data = await api("GET", "/api/dashboard");
+  const selectedRoom = $("#schedule-room").value;
   let roomOpts = data.rooms.map((r) =>
     `<option value="${r.id}">#${r.id} ${esc(roomDisplayName(r))}</option>`
   ).join("");
   $("#schedule-room").innerHTML = roomOpts;
+  if ([...$("#schedule-room").options].some((option) => option.value === selectedRoom)) {
+    $("#schedule-room").value = selectedRoom;
+  }
 
   const rows = await api("GET", "/api/schedules");
   $("#schedules-list").innerHTML = rows.length ? rows.map((s) => `
@@ -344,6 +355,7 @@ async function delSchedule(id) {
 async function loadTopics() {
   try {
     const dbData = await api("GET", "/api/dashboard");
+    const selectedSession = $("#topic-session-select").value;
     const sessions = dbData.sessions || [];
     const sessionsWithActive = sessions.filter(s => s.status === "stopped" || s.status === "recording");
     let selHtml = '<option value="">\u9009\u62e9\u5f55\u5236\u4f1a\u8bdd</option>';
@@ -351,6 +363,9 @@ async function loadTopics() {
       selHtml += `<option value="${s.id}">\u4f1a\u8bdd #${s.id} (\u623f\u95f4 ${s.room_id}) - ${s.status}</option>`;
     }
     $("#topic-session-select").innerHTML = selHtml;
+    if ([...$("#topic-session-select").options].some((option) => option.value === selectedSession)) {
+      $("#topic-session-select").value = selectedSession;
+    }
 
     const data = await api("GET", "/api/topics");
     const topics = data.topics || [];
@@ -436,9 +451,17 @@ function markFeatureRoomDirty(event) {
 
 $("#rooms-list").addEventListener("input", markRoomSectionDirty);
 $("#rooms-list").addEventListener("change", markRoomSectionDirty);
+$("#rooms-list").addEventListener("toggle", (event) => {
+  const detail = event.target.closest?.("[data-room-detail]");
+  const key = detail?.dataset?.roomDetail;
+  if (!key) return;
+  if (detail.open) openRoomDetails.add(key);
+  else openRoomDetails.delete(key);
+}, true);
 $("#feature-switches-list").addEventListener("input", markFeatureRoomDirty);
 $("#feature-switches-list").addEventListener("change", markFeatureRoomDirty);
 $("#sw-recording-pipeline").addEventListener("change", () => { globalFeatureDirty = true; });
 $("#sw-transcript-llm-refine").addEventListener("change", () => { globalFeatureDirty = true; });
+$("#asr-task-concurrency").addEventListener("input", () => { globalFeatureDirty = true; });
 
 export { loadRooms, saveRoom, saveRoomConfig, loadFeatureSwitches, saveGlobalFeatureSettings, saveFeatureSwitches, loadThresholdLearning, loadSchedules, delSchedule, loadTopics, toggleCollection };

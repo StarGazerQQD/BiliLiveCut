@@ -22,6 +22,7 @@ class SettingsRequest(BaseModel):
 
     recording_pipeline_enabled: bool | None = None
     transcript_llm_refine_enabled: bool | None = None
+    asr_task_max_concurrency: int | None = None
     biliup_enabled: bool | None = None
     auto_upload: bool | None = None
     trend_schedule_enabled: bool | None = None

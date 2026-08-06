@@ -123,6 +123,7 @@ async def stop_recording(db_id: int, req: StopRequest | None = None) -> dict[str
             db_id,
             mode=payload.mode,
             pause_auto_restart=True,
+            mark_paused=False,
             cancel_pending=payload.cancel_pending,
         )
     except ValueError as exc:
@@ -133,7 +134,12 @@ async def stop_recording(db_id: int, req: StopRequest | None = None) -> dict[str
 @router.post("/rooms/{db_id}/pause")
 async def pause_recording(db_id: int) -> dict[str, Any]:
     """优雅暂停录制;恢复时会创建新会话并明确形成时间缺口。"""
-    result = await service.recorder_manager.stop(db_id, mode="graceful", pause_auto_restart=True)
+    result = await service.recorder_manager.stop(
+        db_id,
+        mode="graceful",
+        pause_auto_restart=True,
+        mark_paused=True,
+    )
     return {"status": result["state"], **result}
 
 

@@ -420,6 +420,8 @@ def test_settings_toggle_and_uploads(temp_db: None, monkeypatch: MonkeyPatch) ->
         assert s["recording_pipeline_overridden"] is False
         assert s["transcript_llm_refine_enabled"] is True
         assert s["transcript_llm_refine_overridden"] is False
+        assert s["asr_task_max_concurrency"] == 1
+        assert s["asr_task_max_concurrency_overridden"] is False
         assert s["biliup_enabled"] is False
         assert s["upload_active"] is False
 
@@ -428,6 +430,7 @@ def test_settings_toggle_and_uploads(temp_db: None, monkeypatch: MonkeyPatch) ->
             json={
                 "recording_pipeline_enabled": False,
                 "transcript_llm_refine_enabled": False,
+                "asr_task_max_concurrency": 3,
                 "biliup_enabled": True,
             },
         ).json()
@@ -435,6 +438,8 @@ def test_settings_toggle_and_uploads(temp_db: None, monkeypatch: MonkeyPatch) ->
         assert s2["recording_pipeline_overridden"] is True
         assert s2["transcript_llm_refine_enabled"] is False
         assert s2["transcript_llm_refine_overridden"] is True
+        assert s2["asr_task_max_concurrency"] == 3
+        assert s2["asr_task_max_concurrency_overridden"] is True
         assert s2["biliup_enabled"] is True
         assert s2["upload_active"] is True
 
@@ -444,6 +449,9 @@ def test_settings_toggle_and_uploads(temp_db: None, monkeypatch: MonkeyPatch) ->
         r = client.post("/api/open-clips-dir")
         assert r.status_code == 200
         assert "clips_dir" in r.json()
+
+        invalid = client.patch("/api/settings", json={"asr_task_max_concurrency": 9})
+        assert invalid.status_code == 400
 
 
 def test_transcript_api_exposes_summary_and_raw_asr(temp_db: None) -> None:

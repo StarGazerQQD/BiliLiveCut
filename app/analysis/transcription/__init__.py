@@ -27,6 +27,7 @@ from app.analysis.transcription.models import (  # noqa: F401
 from app.analysis.transcription.pipeline import (  # noqa: F401
     ASRPipeline,
     get_default_pipeline,
+    get_task_pipeline,
     transcribe_segment,
 )
 from app.analysis.transcription.quality import TranscriptQuality, assess_transcript_quality  # noqa: F401

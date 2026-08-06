@@ -1,6 +1,6 @@
 # BiliLiveCut · 即插即用版（`packaging/portable/`，原 Publish-PnP）
 
-**版本：V0.1.17 Alpha** (`0.1.17-alpha`)
+**版本：V0.1.17.1 Alpha** (`0.1.17.1-alpha`)
 
 > **普通用户请先阅读：[Portable 小白使用说明](USER_GUIDE_ZH.md)**。该说明按 Windows 用户从下载、校验、解压、首次启动到第一次录制的顺序编写。
 
@@ -12,7 +12,7 @@ BiliLiveCut 是一个**全自动 AI 直播切片系统**：监听 Bilibili 直�
 
 ---
 
-## V0.1.17 Alpha：场次时间线与可校正分析
+## V0.1.17.1 Alpha：场次时间线与可校正分析
 
 - 控制台按录制场次生成 GMT+8 时间线；每个高光节点展示时刻、摘要、1～2 条代表弹幕、置信度、来源信号及审核入口，默认隐藏已拒绝节点。
 - 每个五分钟原始分段最多识别 4 个独立高光，并可跨相邻分段取前后文；成片使用动态入点和出点，不再固定为 1 分 30 秒。
@@ -180,7 +180,7 @@ Lite 和 Full 均不携带 ASR 模型。四个引擎模型统一由独立的 **E
 
 ### 使用方式
 
-1. 下载 BiliLiveCut-EnginePack-0.1.17-alpha.zip
+1. 下载 BiliLiveCut-EnginePack-0.1.17.1-alpha.zip
 2. 放在 Launcher EXE **同级目录** (或 packages/ 子目录)
 3. 双击启动 Launcher → 自动 **CRC32 校验** → 校验通过即离线安装 (网络请求 0)
 4. 无本地包或校验失败 → 自动**全量在线下载**四个引擎模型
@@ -223,7 +223,7 @@ python build_engine_pack.py --from-cache  # 从已验证缓存构建
 
 输出:
 
-- dist/engine-pack/BiliLiveCut-EnginePack-0.1.17-alpha.zip
+- dist/engine-pack/BiliLiveCut-EnginePack-0.1.17.1-alpha.zip
 - dist/engine-pack/engine-pack-manifest.json
 - dist/engine-pack/CRC32SUMS.txt
 - dist/engine-pack/SHA256SUMS.txt
@@ -330,7 +330,7 @@ packaging/portable/                     # ★ 即插即用分发版根目录 (�
 ├── runtime/                  # ★ Runtime 版本管理
 │   ├── current.json          #   当前激活的 Release 信息
 │   └── releases/
-│       └── 0.1.17-alpha+<source-sha>+<payload-hash>/  # 内容寻址的固定版本源码
+│       └── 0.1.17.1-alpha+<source-sha>+<payload-hash>/  # 内容寻址的固定版本源码
 │
 ├── .venv/                    # Python 虚拟环境（launcher.exe 自动创建）
 ├── models/                   # 四引擎 ASR 模型 (由 Engine Pack 或在线下载安装)
@@ -562,7 +562,7 @@ BILIUP_UPLOAD_CMD=                          # 自定义上传命令模板
 | ASR 报 `funasr` / `modelscope` 未安装 | Full 应重新校验并解压完整 ZIP；Lite 需重新完成依赖安装 |
 | ASR 主引擎无法加载 | 检查 `models/` 是否完整；无 Engine Pack 时首次需联网下载模型 |
 | 主播下播后仍显示重连 | 默认会在连续失败 20 次或 300 秒后自动收尾；检查 `RECORDING_RECONNECT_MAX_ATTEMPTS` 与 `RECORDING_RECONNECT_MAX_ELAPSED_S` 是否被设为 `0` |
-| 时间线摘要与预览内容不一致 | 确认使用 V0.1.17 Alpha，并在场次卡片中按需执行“按新阈值重分析”或“按新词典/模型重新转写”；受保护资产不会被静默覆盖 |
+| 时间线摘要与预览内容不一致 | 确认使用 V0.1.17.1 Alpha，并在场次卡片中按需执行“按新阈值重分析”或“按新词典/模型重新转写”；受保护资产不会被静默覆盖 |
 | 拒绝候选仍出现在成品列表 | 新版拒绝操作会同步未发布关联成片；升级前形成的不一致旧记录不会自动改库，若候选仍可操作可重新拒绝，否则请先备份 `storage/blc.db` 并携带候选/成片 ID 反馈，已发布记录按设计保留 |
 | 弹幕采集提示 `code=-352` | 匿名 token 请求被平台风控拒绝；稍后重试，不要反复登录。录制与实时转写不受影响 |
 | LLM 调用报错 / 空结果 | 检查 `.env` 中 `LLM_API_KEY` 和 `LLM_BASE_URL` 是否正确 |
@@ -576,7 +576,7 @@ BILIUP_UPLOAD_CMD=                          # 自定义上传命令模板
 
 ## 回主工程
 
-此 `packaging/portable/` 目录是**发布给最终用户的即插即用版本**，源码固定于 `v0.1.17-Alpha` 的发布基线 Commit。
+此 `packaging/portable/` 目录是**发布给最终用户的即插即用版本**，源码固定于 `v0.1.17.1-Alpha` 的发布基线 Commit。
 
 - **主仓库**: `D:\Vibe\BiliLiveCut\README.md`
 - **完整变更日志**: `D:\Vibe\BiliLiveCut\CHANGELOG.md`

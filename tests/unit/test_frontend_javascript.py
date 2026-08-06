@@ -91,6 +91,9 @@ def test_transcript_page_exposes_safe_retranscription_action() -> None:
     assert "window.retranscribeTranscript" in app_js
     assert 'api("PATCH", `/api/transcripts/${id}`' in recording_js
     assert "dirtyTranscriptIds.size > 0" in recording_js
+    assert "transcriptEditorRevision !== revision" in recording_js
+    assert "data-transcript-detail" in recording_js
+    assert "openTranscriptDetails" in recording_js
     assert "window.correctTranscript" in app_js
 
 
@@ -108,6 +111,8 @@ def test_dashboard_uses_session_timeline_as_primary_review_view() -> None:
     assert "/api/sessions/timeline" in timeline_js
     assert "representative_danmaku" in timeline_js
     assert "requestSessionReanalysis" in timeline_js
+    assert "expandedProvenanceCandidates" in timeline_js
+    assert "data-provenance-candidate" in timeline_js
 
 
 def test_room_dictionary_ui_exposes_manual_and_learned_aliases() -> None:
@@ -127,6 +132,10 @@ def test_room_and_feature_forms_pause_refresh_while_dirty() -> None:
     assert "data-room-dirty-section" in rooms_js
     assert "dirtyFeatureRooms.size > 0" in rooms_js
     assert "data-feature-room-id" in rooms_js
+    assert "openRoomDetails" in rooms_js
+    assert "data-room-detail" in rooms_js
+    assert "selectedRoom" in rooms_js
+    assert "selectedSession" in rooms_js
 
 
 def test_frontend_module_graph_and_tab_interaction() -> None:

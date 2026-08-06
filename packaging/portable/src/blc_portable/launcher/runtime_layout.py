@@ -14,7 +14,7 @@ from blc_portable.atomic_fs import replace_with_retry
 
 _logger = logging.getLogger(__name__)
 
-RELEASE_VERSION = "0.1.17-alpha"
+RELEASE_VERSION = "0.1.17.1-alpha"
 SOURCE_COMMIT_SHORT = "2ebd509"
 RELEASE_ID = f"{RELEASE_VERSION}+{SOURCE_COMMIT_SHORT}"
 

@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+from pathlib import Path
 from typing import TYPE_CHECKING
 
 import pytest
@@ -10,7 +11,7 @@ if TYPE_CHECKING:
     from _pytest.monkeypatch import MonkeyPatch
 
 
-def test_get_cookie_runs_and_returns_str() -> None:
+def test_get_cookie_runs_and_returns_str(temp_db: None) -> None:
     """get_bilibili_cookie returns a string through the settings chain."""
     from app.core.cookie import get_bilibili_cookie
 
@@ -18,7 +19,7 @@ def test_get_cookie_runs_and_returns_str() -> None:
     assert isinstance(result, str)
 
 
-def test_settings_store_get_set_delete_cycle(tmp_path) -> None:
+def test_settings_store_get_set_delete_cycle(temp_db: None, tmp_path: Path) -> None:
     """settings_store set/get/delete persists correctly across calls."""
     import os
 
@@ -46,13 +47,15 @@ def test_settings_fields_boundary_values() -> None:
     assert s.reconnect_max_backoff_s >= 1
     assert s.live_poll_interval_s >= 5
     assert s.recording_reconnect_max_attempts == 20
-    assert s.recording_reconnect_max_elapsed_s == 300
+    assert s.recording_reconnect_max_elapsed_s == 180
     assert s.danmaku_login_retry_max_attempts == 5
     assert s.danmaku_login_retry_interval_s == 60.0
     assert s.transcript_llm_refine_enabled is True
     assert s.transcript_llm_refine_max_tokens == 65536
     assert s.highlight_llm_max_tokens == 65536
+    assert s.highlight_min_post_roll_s == 30.0
     assert s.asr_primary_max_concurrency >= 1
+    assert s.asr_task_max_concurrency == 1
     assert s.asr_auxiliary_max_concurrency >= 1
     assert s.asr_review_max_concurrency >= 1
     assert s.asr_fallback_max_concurrency >= 1
@@ -120,6 +123,48 @@ def test_recording_pipeline_env_and_runtime_override(temp_db: None, monkeypatch:
 
     settings_store.set_bool("recording_pipeline_enabled", True)
     assert settings_store.recording_pipeline_enabled() is True
+
+
+def test_asr_task_concurrency_env_and_runtime_override(temp_db: None, monkeypatch: MonkeyPatch) -> None:
+    """ASR 分段并行数支持环境默认和控制台热更新。"""
+    from app.core import settings_store
+    from app.core.config import Settings, settings
+
+    monkeypatch.setenv("ASR_TASK_MAX_CONCURRENCY", "3")
+    assert Settings(_env_file=None).asr_task_max_concurrency == 3
+    monkeypatch.setattr(settings, "asr_task_max_concurrency", 2)
+    assert settings_store.asr_task_max_concurrency() == 2
+    settings_store.set_setting("asr_task_max_concurrency", "4")
+    assert settings_store.asr_task_max_concurrency() == 4
+
+
+def test_parallel_asr_uses_thread_local_pipeline(monkeypatch: MonkeyPatch) -> None:
+    """并行转写线程不得共享同一个可变模型实例。"""
+    from concurrent.futures import ThreadPoolExecutor
+
+    from app.analysis.transcription import pipeline as pipeline_module
+    from app.core import settings_store
+
+    created: list[object] = []
+
+    def fake_pipeline() -> object:
+        instance = object()
+        created.append(instance)
+        return instance
+
+    monkeypatch.setattr(settings_store, "asr_task_max_concurrency", lambda: 2)
+    monkeypatch.setattr(pipeline_module, "ASRPipeline", fake_pipeline)
+    if hasattr(pipeline_module._task_pipeline_local, "pipeline"):
+        del pipeline_module._task_pipeline_local.pipeline
+
+    main_pipeline = pipeline_module.get_task_pipeline()
+    assert pipeline_module.get_task_pipeline() is main_pipeline
+    with ThreadPoolExecutor(max_workers=1) as executor:
+        worker_pipeline = executor.submit(pipeline_module.get_task_pipeline).result()
+
+    assert worker_pipeline is not main_pipeline
+    assert len(created) == 2
+    del pipeline_module._task_pipeline_local.pipeline
 
 
 def test_transcript_refinement_env_and_runtime_override(temp_db: None, monkeypatch: MonkeyPatch) -> None:

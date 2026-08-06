@@ -25,6 +25,7 @@ from app.db.models import (
     TaskStatus,
 )
 from app.db.session import get_session
+from app.pipeline.stage_result import enqueue_next
 
 
 def approve_event_and_task(
@@ -80,8 +81,12 @@ def approve_event_and_task(
                 task_id,
             )
             task = db.get(SegmentTask, task_id) if task_id is not None else None
-            if task and task.stage in (TaskStatus.AWAITING_REVIEW, TaskStatus.APPROVED):
-                task.stage = TaskStatus.APPROVED
+            if task and task.stage in (
+                TaskStatus.AWAITING_REVIEW,
+                TaskStatus.CANDIDATE_CREATED,
+                TaskStatus.REVIEWED_WAITING_ACTION,
+            ):
+                enqueue_next(task, TaskStatus.APPROVED, event_id=event_id)
                 db.add(task)
             return True
 
@@ -103,16 +108,16 @@ def approve_event_and_task(
         if task and task.stage in (
             TaskStatus.AWAITING_REVIEW,
             TaskStatus.CANDIDATE_CREATED,
+            TaskStatus.REVIEWED_WAITING_ACTION,
             TaskStatus.APPROVED,
         ):
-            task.stage = TaskStatus.APPROVED
-            task.event_id = event_id
-            if event.candidate_id:
-                task.candidate_id = event.candidate_id
-            task.claimed_by = None
-            task.claimed_at = None
-            task.heartbeat_at = None
-            task.lease_token = None
+            if task.stage != TaskStatus.APPROVED:
+                enqueue_next(
+                    task,
+                    TaskStatus.APPROVED,
+                    candidate_id=event.candidate_id,
+                    event_id=event_id,
+                )
             db.add(task)
         elif task_id is not None:
             logger.warning(

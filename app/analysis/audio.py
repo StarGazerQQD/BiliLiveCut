@@ -112,6 +112,45 @@ class AudioFeatures:
         return float(np.clip(prominence, 0.0, 1.0))
 
 
+def analysis_probe_offsets(
+    peak_offsets: list[float],
+    *,
+    duration_s: float,
+    limit: int,
+    min_distance_s: float,
+) -> list[float]:
+    """用真实音量峰值与均匀覆盖点组成分散的高光分析探针。
+
+    音量峰值只是一种触发信号；直播中的语言梗、反转和低声量事件不能因为
+    没有明显音量局部极值而完全不被分析。函数优先保留真实峰值，再从等分
+    时间轴中选择离现有探针最远的点，直到达到配置上限。
+    """
+    if limit <= 0 or duration_s <= 0:
+        return []
+    duration = float(duration_s)
+    minimum_distance = max(0.0, float(min_distance_s))
+    selected: list[float] = []
+    for raw_offset in peak_offsets:
+        offset = max(0.0, min(float(raw_offset), duration))
+        if any(abs(offset - existing) < minimum_distance for existing in selected):
+            continue
+        selected.append(offset)
+        if len(selected) >= limit:
+            return sorted(selected)
+
+    anchors = [duration * index / (limit + 1) for index in range(1, limit + 1)]
+    while anchors and len(selected) < limit:
+        offset = max(
+            anchors,
+            key=lambda item: min((abs(item - existing) for existing in selected), default=duration),
+        )
+        anchors.remove(offset)
+        if any(abs(offset - existing) < minimum_distance for existing in selected):
+            continue
+        selected.append(offset)
+    return sorted(selected)
+
+
 def extract_pcm(path: str) -> np.ndarray:
     """用 FFmpeg 把媒体文件解码为归一化的单声道 PCM 浮点数组。
 

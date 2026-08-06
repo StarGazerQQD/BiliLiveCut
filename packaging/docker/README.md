@@ -74,7 +74,7 @@ cp .env.example .env
 # 编辑 .env 填入必要配置
 ```
 
-V0.1.17 Alpha 使用与本机/Portable 相同的配置真源：默认分片目标为 300 秒，首选 Fun-ASR-Nano，转写整理和高光复核的最大输出预算均为 `65536` token。下播需连续确认 3 次并等待 60 秒，单场默认最长 12 小时；断流恢复仍按 20 次或 300 秒预算收尾。对应配置为 `LIVE_OFFLINE_CONFIRM_COUNT`、`LIVE_SESSION_END_DELAY_S`、`RECORDING_MAX_DURATION_S`、`RECORDING_RECONNECT_MAX_ATTEMPTS` 与 `RECORDING_RECONNECT_MAX_ELAPSED_S`。
+V0.1.17.1 Alpha 使用与本机/Portable 相同的配置真源：默认分片目标为 300 秒，首选 Fun-ASR-Nano，转写整理和高光复核的最大输出预算均为 `65536` token。下播需连续确认 3 次并等待 60 秒，单场默认最长 12 小时；断流恢复仍按 20 次或 180 秒预算收尾。对应配置为 `LIVE_OFFLINE_CONFIRM_COUNT`、`LIVE_SESSION_END_DELAY_S`、`RECORDING_MAX_DURATION_S`、`RECORDING_RECONNECT_MAX_ATTEMPTS` 与 `RECORDING_RECONNECT_MAX_ELAPSED_S`。
 
 控制台按录制场次生成 GMT+8 高光时间线；每个原始分段可识别多个峰值并跨分段取上下文，弹幕默认按 `7.5` 秒接收延迟对齐，成片使用动态入点/出点。房间手工词典、人工校正、阈值反馈和场次重分析与本机/Portable 行为一致，并保留人工审核、边界、草稿和成片。
 
@@ -85,4 +85,4 @@ V0.1.17 Alpha 使用与本机/Portable 相同的配置真源：默认分片目�
 
 ## 版本
 
-当前 Docker 发行对应 BiliLiveCut `v0.1.17-Alpha`。
+当前 Docker 发行对应 BiliLiveCut `v0.1.17.1-Alpha`。

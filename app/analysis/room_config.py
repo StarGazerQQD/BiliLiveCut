@@ -6,6 +6,8 @@
 - highlight_keywords: 规则评分额外关键词。
 - blocked_topics: 不适合生成切片的屏蔽话题模式。
 - recording_paused: 人工暂停自动录制,恢复时创建新会话。
+- recording_auto_restart_suppressed: 人工停止后阻止监控器立即重新拉起。
+- recording_wait_for_next_live: 重连预算耗尽后等待一次真实离线再允许自动录制。
 - highlight_scorer_mode: 高光评分插件的房间级模式覆盖。
 
 配置存储在 ``LiveRoom.room_config_json`` 中。
@@ -27,6 +29,8 @@ _DEFAULT_CONFIG: dict = {
     "highlight_keywords": [],
     "blocked_topics": [],
     "recording_paused": False,
+    "recording_auto_restart_suppressed": False,
+    "recording_wait_for_next_live": False,
     "highlight_scorer_mode": "inherit",
 }
 
@@ -58,6 +62,9 @@ def load_room_config(room: LiveRoom | None) -> dict:
                 cfg[key] = deepcopy(_DEFAULT_CONFIG[key])
         if not isinstance(cfg.get("recording_paused"), bool):
             cfg["recording_paused"] = False
+        for key in ("recording_auto_restart_suppressed", "recording_wait_for_next_live"):
+            if not isinstance(cfg.get(key), bool):
+                cfg[key] = False
         if cfg.get("highlight_scorer_mode") not in {"inherit", "off", "shadow", "champion"}:
             cfg["highlight_scorer_mode"] = "inherit"
         return cfg
@@ -73,6 +80,11 @@ def merge_room_config(room: LiveRoom, updates: dict[str, object]) -> dict[str, o
     if not isinstance(paused, bool):
         raise ValueError("recording_paused 必须是布尔值")
     merged["recording_paused"] = paused
+    for key in ("recording_auto_restart_suppressed", "recording_wait_for_next_live"):
+        value = merged.get(key, False)
+        if not isinstance(value, bool):
+            raise ValueError(f"{key} 必须是布尔值")
+        merged[key] = value
     scoring_mode = merged.get("highlight_scorer_mode", "inherit")
     if scoring_mode not in {"inherit", "off", "shadow", "champion"}:
         raise ValueError("highlight_scorer_mode 必须是 inherit/off/shadow/champion")
