@@ -657,12 +657,16 @@ def _score_segment_drafts(segment_id: int) -> dict[str, Any] | None:
         file_path = segment.file_path
 
     features = audio_mod.analyze_audio(file_path)
-    offsets = features.peak_offsets(
+    peak_offsets = features.peak_offsets(
         limit=settings.highlight_max_candidates_per_segment,
         min_distance_s=settings.highlight_peak_min_distance_s,
     )
-    if not offsets:
-        offsets = [features.peak_offset()]
+    offsets = audio_mod.analysis_probe_offsets(
+        peak_offsets,
+        duration_s=features.duration_s or float(segment.duration_s or settings.segment_duration_s),
+        limit=settings.highlight_max_candidates_per_segment,
+        min_distance_s=settings.highlight_peak_min_distance_s,
+    )
 
     outcomes: list[dict[str, Any]] = []
     candidates: list[dict[str, Any]] = []

@@ -139,6 +139,20 @@ def transcript_llm_refine_enabled() -> bool:
     return settings.transcript_llm_refine_enabled
 
 
+def asr_task_max_concurrency() -> int:
+    """返回可同时执行的分段 ASR 任务数。"""
+    stored = get_setting("asr_task_max_concurrency", "").strip()
+    if stored:
+        try:
+            return max(1, min(int(stored), 8))
+        except ValueError:
+            pass
+
+    from app.core.config import settings
+
+    return settings.asr_task_max_concurrency
+
+
 def all_settings() -> dict[str, str]:
     """返回所有运行时设置(含未覆盖项的默认值)。
 

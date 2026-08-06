@@ -135,16 +135,30 @@ class RecorderManager:
             room = db.get(LiveRoom, db_id)
             return bool(load_room_config(room).get("recording_paused", False))
 
-    def _set_paused(self, db_id: int, paused: bool) -> None:
-        """持久化人工暂停标记。"""
+    def _set_recording_flags(
+        self,
+        db_id: int,
+        *,
+        paused: bool | None = None,
+        suppress_auto_restart: bool | None = None,
+        wait_for_next_live: bool | None = None,
+    ) -> None:
+        """原子更新录制控制标记，避免停止、暂停和断流恢复互相混淆。"""
         from app.analysis.room_config import merge_room_config
 
         with get_session() as db:
             room = db.get(LiveRoom, db_id)
             if room is None:
                 return
+            updates: dict[str, object] = {}
+            if paused is not None:
+                updates["recording_paused"] = paused
+            if suppress_auto_restart is not None:
+                updates["recording_auto_restart_suppressed"] = suppress_auto_restart
+            if wait_for_next_live is not None:
+                updates["recording_wait_for_next_live"] = wait_for_next_live
             room.room_config_json = json.dumps(
-                merge_room_config(room, {"recording_paused": paused}),
+                merge_room_config(room, updates),
                 ensure_ascii=False,
             )
             db.add(room)
@@ -157,6 +171,10 @@ class RecorderManager:
         """
         task = self._tasks.get(db_id)
         return task is not None and not task.done()
+
+    def release_retry_hold(self, db_id: int) -> None:
+        """确认房间已经真实离线，允许下一次开播再次自动录制。"""
+        self._set_recording_flags(db_id, wait_for_next_live=False)
 
     def running_ids(self) -> list[int]:
         """返回当前正在录制的直播间 db_id 列表。"""
@@ -193,7 +211,12 @@ class RecorderManager:
             db.add(room)
             room_id = room.room_id
 
-        self._set_paused(db_id, False)
+        self._set_recording_flags(
+            db_id,
+            paused=False,
+            suppress_auto_restart=False,
+            wait_for_next_live=False,
+        )
         self._set_state(db_id, SessionStatus.STARTING, pipeline_enabled=pipeline_enabled)
 
         on_segment = None
@@ -230,6 +253,8 @@ class RecorderManager:
             self._set_state(db_id, SessionStatus.ERROR, recorder.session_id, str(exc))
             logger.exception("录制任务异常 db_id={}: {}", db_id, exc)
         finally:
+            if bool(getattr(recorder, "retry_budget_exhausted", False)):
+                self._set_recording_flags(db_id, wait_for_next_live=True)
             self._cleanup_finished_recorder(db_id, recorder)
 
     def _cleanup_finished_recorder(self, db_id: int, recorder: Recorder) -> None:
@@ -258,6 +283,7 @@ class RecorderManager:
         *,
         mode: str = "graceful",
         pause_auto_restart: bool = False,
+        mark_paused: bool = False,
         cancel_pending: bool = False,
     ) -> dict[str, Any]:
         """停止某直播间的录制并等待任务收尾。
@@ -265,12 +291,18 @@ class RecorderManager:
         :param db_id: ``live_rooms`` 主键。
         :param mode: ``graceful`` 优雅收尾或 ``force`` 立即结束 FFmpeg。
         :param pause_auto_restart: 是否阻止自动录制监控再次拉起。
+        :param mark_paused: 是否把当前会话与界面状态标记为人工暂停。
         :param cancel_pending: 是否取消该会话尚未完成的下游任务。
         :returns: 最终状态和取消任务数。
         """
         if mode not in {"graceful", "force"}:
             raise ValueError("停止模式必须是 graceful 或 force")
-        self._set_paused(db_id, pause_auto_restart)
+        self._set_recording_flags(
+            db_id,
+            paused=mark_paused,
+            suppress_auto_restart=pause_auto_restart,
+            wait_for_next_live=False,
+        )
         recorder = self._recorders.get(db_id)
         task = self._tasks.get(db_id)
         session_id = recorder.session_id if recorder is not None else self.status(db_id).get("session_id")
@@ -311,9 +343,9 @@ class RecorderManager:
         if forced:
             final_state = "force_stopped"
         else:
-            final_state = SessionStatus.PAUSED if pause_auto_restart else SessionStatus.STOPPED
-        if pause_auto_restart and session_id is not None:
-            _set_session_status(int(session_id), SessionStatus.PAUSED)
+            final_state = SessionStatus.PAUSED if mark_paused else SessionStatus.STOPPED
+        if not forced and session_id is not None:
+            _set_session_status(int(session_id), final_state)
         self._set_state(db_id, final_state, session_id)
         # 若已无任何录制在跑,恢复网感定时采集。
         if not self.running_ids():
@@ -657,9 +689,11 @@ async def auto_recover_interrupted_sessions() -> list[int]:
                 room = db.get(LiveRoom, room_id)
                 if room is None or not room.authorized:
                     continue
-                paused = bool(load_room_config(room).get("recording_paused", False))
-            if paused:
-                _set_session_status(sess.id, SessionStatus.PAUSED)
+                room_config = load_room_config(room)
+                paused = bool(room_config.get("recording_paused", False))
+                suppressed = bool(room_config.get("recording_auto_restart_suppressed", False))
+            if paused or suppressed:
+                _set_session_status(sess.id, SessionStatus.PAUSED if paused else SessionStatus.STOPPED)
                 continue
             # 标记旧会话为中断。
             _mark_session_interrupted(sess.id)

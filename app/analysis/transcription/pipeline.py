@@ -21,6 +21,7 @@ V0.1.12.2 变更:
 from __future__ import annotations
 
 import json
+import threading
 from functools import lru_cache
 from typing import TYPE_CHECKING
 
@@ -430,6 +431,22 @@ class ASRPipeline:
 def get_default_pipeline() -> ASRPipeline:
     """返回进程级缓存的默认 ASR 流水线。"""
     return ASRPipeline()
+
+
+_task_pipeline_local = threading.local()
+
+
+def get_task_pipeline() -> ASRPipeline:
+    """返回任务线程专属的 ASR 流水线，避免 CUDA 并行共享模型竞态。"""
+    from app.core.settings_store import asr_task_max_concurrency
+
+    if asr_task_max_concurrency() <= 1:
+        return get_default_pipeline()
+    pipeline = getattr(_task_pipeline_local, "pipeline", None)
+    if pipeline is None:
+        pipeline = ASRPipeline()
+        _task_pipeline_local.pipeline = pipeline
+    return pipeline
 
 
 def transcribe_segment(

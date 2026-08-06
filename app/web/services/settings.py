@@ -19,6 +19,7 @@ def get_settings_view() -> dict[str, Any]:
     """
     pipeline_override = settings_store.get_setting("recording_pipeline_enabled", "").strip()
     refinement_override = settings_store.get_setting("transcript_llm_refine_enabled", "").strip()
+    asr_concurrency_override = settings_store.get_setting("asr_task_max_concurrency", "").strip()
     return {
         "recording_pipeline_enabled": settings_store.recording_pipeline_enabled(),
         "recording_pipeline_env_default": settings.recording_pipeline_enabled,
@@ -26,6 +27,9 @@ def get_settings_view() -> dict[str, Any]:
         "transcript_llm_refine_enabled": settings_store.transcript_llm_refine_enabled(),
         "transcript_llm_refine_env_default": settings.transcript_llm_refine_enabled,
         "transcript_llm_refine_overridden": bool(refinement_override),
+        "asr_task_max_concurrency": settings_store.asr_task_max_concurrency(),
+        "asr_task_max_concurrency_env_default": settings.asr_task_max_concurrency,
+        "asr_task_max_concurrency_overridden": bool(asr_concurrency_override),
         "biliup_enabled": settings_store.biliup_enabled(),
         "auto_upload": settings_store.auto_upload_enabled(),
         "upload_active": settings_store.upload_active(),
@@ -50,6 +54,12 @@ def update_settings(fields: dict[str, Any]) -> dict[str, Any]:
         enabled = bool(fields["transcript_llm_refine_enabled"])
         settings_store.set_bool("transcript_llm_refine_enabled", enabled)
         logger.info("单切片转写 LLM 整理与摘要开关已设置为 {}。", enabled)
+    if "asr_task_max_concurrency" in fields and fields["asr_task_max_concurrency"] is not None:
+        concurrency = int(fields["asr_task_max_concurrency"])
+        if not 1 <= concurrency <= 8:
+            raise ValueError("ASR 任务并行数必须在 1 到 8 之间。")
+        settings_store.set_setting("asr_task_max_concurrency", str(concurrency))
+        logger.warning("ASR 任务并行数已设置为 {}，并行模型实例会增加内存/显存占用。", concurrency)
     if "biliup_enabled" in fields and fields["biliup_enabled"] is not None:
         settings_store.set_bool("biliup_enabled", bool(fields["biliup_enabled"]))
         logger.warning("biliup 上传开关被设置为 {}(合规风险自负)。", bool(fields["biliup_enabled"]))

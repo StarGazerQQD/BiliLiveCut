@@ -69,7 +69,7 @@ class Settings(BaseSettings):
     # 连续无法恢复录制的最大失败次数；0=不按次数停止。
     recording_reconnect_max_attempts: int = Field(default=20, ge=0, le=10000)
     # 从断流开始计算的最长重试时间（秒）；0=不按时间停止。
-    recording_reconnect_max_elapsed_s: int = Field(default=300, ge=0, le=86400)
+    recording_reconnect_max_elapsed_s: int = Field(default=180, ge=0, le=86400)
     # 自动监控连续离线确认、延迟收尾和单场录制时长保护。
     live_offline_confirm_count: int = Field(default=3, ge=1, le=100)
     live_session_end_delay_s: int = Field(default=60, ge=0, le=3600)
@@ -110,6 +110,8 @@ class Settings(BaseSettings):
     asr_sensevoice_enabled: bool = True  # False=关闭辅助特征,不参与评分
     # FunASR 长音频先由 FSMN-VAD 切为短句，避免生成式解码器处理五分钟单句。
     asr_vad_max_segment_s: int = Field(default=30, ge=5, le=120)
+    # 同时执行的分段 ASR 任务数；大于 1 时每个工作线程独立加载模型，显存近似线性增加。
+    asr_task_max_concurrency: int = Field(default=1, ge=1, le=8)
 
     # ---------- V0.1.12.2: 分后端设备与并发控制 ----------
     asr_primary_device: str = "cpu"
@@ -181,7 +183,7 @@ class Settings(BaseSettings):
     highlight_max_candidates_per_segment: int = Field(default=4, ge=1, le=12)
     highlight_peak_min_distance_s: float = Field(default=25.0, ge=5.0, le=300.0)
     highlight_min_pre_roll_s: float = Field(default=20.0, ge=0.0, le=180.0)
-    highlight_min_post_roll_s: float = Field(default=12.0, ge=0.0, le=180.0)
+    highlight_min_post_roll_s: float = Field(default=30.0, ge=0.0, le=180.0)
     # B 站弹幕接收时间通常晚于画面爆点；评分查询窗口向后平移此秒数。
     danmaku_event_lag_s: float = Field(default=7.5, ge=0.0, le=60.0)
     auto_publish_threshold: float = Field(default=0.80, ge=0.0, le=1.0)

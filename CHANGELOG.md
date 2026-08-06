@@ -2,9 +2,17 @@
 
 ## 未发布
 
+## V0.1.17.1 Alpha (2026-08-06)
+
 ### 修复
 
 - **release/ffmpeg-download**: Windows Release 构建不再单点依赖 Gyan FFmpeg 下载源；改用 BtbN 主源与 Gyan 备用源，按来源进行有限指数退避重试，并在安全提取前校验 ZIP 完整性；下载器在输出日志前主动切换 UTF-8，避免第三方临时 `503` 或 Windows `charmap` 代码页直接中断整个发布。
+- **web/dirty-state**: 五秒轮询保留转写纠错与房间词典草稿、房间配置、功能开关、预约/主题选择及各类展开项；请求进行期间开始输入也不会被迟到响应覆盖，场次时间线“查看来源与评分”不再自动收起。
+- **pipeline/review-render**: 非终结审核决策把任务移出 `awaiting_review`；人工批准独立成片会绕过自动渲染开关并进入正式渲染队列，网页后台渲染补齐任务租约与心跳，成功后同步成品 ID，避免恢复器抢回正在出片的任务。
+- **analysis/multi-window-tail**: 五分钟分段除真实音频峰值外补充分散分析探针，并在活动直播中等待下一相邻分段转写后再分析，支持同段多候选、跨断点上下文和至少 30 秒后文。
+- **recording/retry-terminal-state**: 连续取流失败默认时间上限调整为 180 秒；预算耗尽后停止本场并等待一次真实离线，防止平台仍报告直播中时无限创建重连会话；“停止并收尾”显示 `stopped`，仅显式暂停显示 `paused`。
+- **transcription/cuda-task-concurrency**: 新增 `ASR_TASK_MAX_CONCURRENCY`（1～8）与控制台运行时设置；并行任务使用线程独立 ASR 流水线，允许 CUDA 在显存充足时并发处理多个录制分段。
+- **version/release**: Python、C/Cython、Rust、Portable、Engine Pack、Docker、测试与用户文档统一升级为 `0.1.17.1-alpha`，Engine Pack 兼容区间调整为 `0.1.17.1-alpha ≤ app < 0.1.18`。
 
 ## V0.1.17 Alpha (2026-08-05)
 

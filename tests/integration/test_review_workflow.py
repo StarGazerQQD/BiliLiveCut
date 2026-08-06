@@ -240,6 +240,168 @@ def test_review_submission_does_not_fail_after_threshold_learning_error(
     assert submitted.json()["status"] == "hold"
 
 
+@pytest.mark.parametrize(
+    ("decision", "expected_stage"),
+    [
+        ("hold", "reviewed_waiting_action"),
+        ("end_too_early", "reviewed_waiting_action"),
+        ("approved_solo", "queued_for_render"),
+    ],
+)
+def test_review_submission_advances_linked_task_state(
+    review_client: TestClient,
+    decision: str,
+    expected_stage: str,
+) -> None:
+    """人工反馈必须离开 awaiting_review，独立成片还要立即进入渲染队列。"""
+    from app.db.models import HighlightCandidate, SegmentTask, TaskStatus
+    from app.db.session import get_session
+
+    candidate_id = _seed_candidate()
+    with get_session() as db:
+        candidate = db.get(HighlightCandidate, candidate_id)
+        assert candidate is not None
+        task = SegmentTask(
+            segment_id=9100 + candidate_id,
+            session_id=candidate.session_id,
+            candidate_id=candidate_id,
+            stage=TaskStatus.AWAITING_REVIEW,
+            pipeline_key=f"pipeline:{9100 + candidate_id}",
+        )
+        db.add(task)
+        db.flush()
+        task_id = task.id
+    assert task_id is not None
+
+    auth = ("alice", "alice-pass")
+    with review_client as client:
+        client.post(f"/review/api/{candidate_id}/claim", json={"force": False}, auth=auth)
+        submitted = client.post(
+            f"/review/api/{candidate_id}/review",
+            json={"decision": decision, "reason": "回归测试"},
+            auth=auth,
+        )
+
+    assert submitted.status_code == 200
+    with get_session() as db:
+        task = db.get(SegmentTask, task_id)
+        assert task is not None
+        assert task.stage == expected_stage
+
+
+def test_unlinked_approved_candidate_enqueues_background_render(
+    review_client: TestClient,
+    monkeypatch: MonkeyPatch,
+) -> None:
+    """没有主 SegmentTask 的额外爆点通过审核后也必须进入后台出片作业。"""
+    from app.web.services.background_jobs import web_job_manager
+
+    calls: list[tuple[str, dict[str, object]]] = []
+
+    async def fake_enqueue(job_type: str, payload: dict[str, object], **_kwargs: object) -> dict[str, object]:
+        calls.append((job_type, payload))
+        return {"id": "job-1", "status": "queued"}
+
+    monkeypatch.setattr(web_job_manager, "enqueue", fake_enqueue)
+    candidate_id = _seed_candidate()
+    auth = ("alice", "alice-pass")
+    with review_client as client:
+        client.post(f"/review/api/{candidate_id}/claim", json={"force": False}, auth=auth)
+        submitted = client.post(
+            f"/review/api/{candidate_id}/review",
+            json={"decision": "approved_solo", "reason": "独立成片"},
+            auth=auth,
+        )
+
+    assert submitted.status_code == 200
+    assert submitted.json()["job"]["id"] == "job-1"
+    assert calls == [("candidate_render", {"candidate_id": candidate_id, "reviewed_by": "alice"})]
+
+
+def test_background_candidate_render_keeps_task_lease_until_clip_is_recorded(
+    temp_db: None,
+    monkeypatch: MonkeyPatch,
+) -> None:
+    """网页后台渲染必须持有心跳租约，且成功后把任务推进到成品阶段。"""
+    import threading
+
+    from app.db.models import FinalClip, HighlightCandidate, HighlightEvent, SegmentTask, TaskStatus
+    from app.db.session import get_session
+    from app.pipeline import heartbeat, orchestrator
+    from app.pipeline.stale_recovery import recover_orphans
+    from app.web.services.candidates import approve_candidate_sync
+
+    candidate_id = _seed_candidate()
+    with get_session() as db:
+        candidate = db.get(HighlightCandidate, candidate_id)
+        assert candidate is not None
+        event = HighlightEvent(candidate_id=candidate_id, session_id=candidate.session_id)
+        db.add(event)
+        db.flush()
+        task = SegmentTask(
+            segment_id=9101,
+            session_id=candidate.session_id,
+            candidate_id=candidate_id,
+            event_id=event.id,
+            stage=TaskStatus.AWAITING_REVIEW,
+            stage_key="stage:9101:awaiting_review",
+            idempotency_key="9101:awaiting_review",
+        )
+        db.add(task)
+        db.flush()
+        task_id = task.id
+    assert task_id is not None
+
+    heartbeat_calls: list[tuple[int, str | None, str | None]] = []
+    heartbeat_stop = threading.Event()
+
+    def fake_start_heartbeat(
+        claimed_task_id: int,
+        lease_token: str | None = None,
+        expected_stage: str | None = None,
+    ) -> threading.Event:
+        heartbeat_calls.append((claimed_task_id, lease_token, expected_stage))
+        return heartbeat_stop
+
+    def fake_produce_clip(render_candidate_id: int, **_kwargs: object) -> FinalClip:
+        assert render_candidate_id == candidate_id
+        with get_session() as db:
+            claimed = db.get(SegmentTask, task_id)
+            assert claimed is not None
+            assert claimed.stage == TaskStatus.RENDERING
+            assert claimed.heartbeat_at is not None
+            assert claimed.lease_token
+        recover_orphans()
+        with get_session() as db:
+            claimed = db.get(SegmentTask, task_id)
+            assert claimed is not None
+            assert claimed.stage == TaskStatus.RENDERING
+            clip = FinalClip(candidate_id=candidate_id, file_path="approved.mp4")
+            db.add(clip)
+            db.flush()
+            clip_id = clip.id
+        assert clip_id is not None
+        return clip
+
+    monkeypatch.setattr(heartbeat, "start_heartbeat_thread", fake_start_heartbeat)
+    monkeypatch.setattr(orchestrator, "produce_clip", fake_produce_clip)
+
+    clip_id = approve_candidate_sync(candidate_id, reviewed_by="alice")
+
+    assert clip_id is not None
+    assert heartbeat_stop.is_set()
+    assert len(heartbeat_calls) == 1
+    claimed_task_id, lease_token, expected_stage = heartbeat_calls[0]
+    assert claimed_task_id == task_id
+    assert lease_token
+    assert expected_stage == TaskStatus.RENDERING
+    with get_session() as db:
+        task = db.get(SegmentTask, task_id)
+        assert task is not None
+        assert task.stage == TaskStatus.RENDERED
+        assert task.clip_id == clip_id
+
+
 def test_admin_can_force_take_over_claim(review_client: TestClient) -> None:
     """管理员只有显式 force 时才能接管他人的有效领取。"""
     candidate_id = _seed_candidate()

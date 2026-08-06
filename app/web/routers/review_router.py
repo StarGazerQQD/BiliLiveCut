@@ -868,7 +868,7 @@ async def adjust_boundary(
 
 
 @review_router.post("/api/{candidate_id}/review")
-def submit_review(
+async def submit_review(
     candidate_id: int,
     request: Request,
     payload: ReviewSubmitRequest,
@@ -887,7 +887,7 @@ def submit_review(
     from datetime import UTC
     from datetime import datetime as _dt
 
-    from app.db.models import CandidateStatus, HighlightCandidate, ReviewStatus
+    from app.db.models import CandidateStatus, HighlightCandidate, ReviewStatus, TaskStatus
     from app.db.session import get_session
     from app.web.services.review_workflow import (
         add_audit,
@@ -923,6 +923,7 @@ def submit_review(
     is_positive = decision in ReviewStatus.POSITIVE
 
     actor, role = review_actor(request)
+    enqueue_unlinked_render = False
     with get_session() as db:
         begin_review_write(db)
         c = db.get(HighlightCandidate, candidate_id)
@@ -946,7 +947,7 @@ def submit_review(
             from app.pipeline.approval import approve_event_and_task
 
             if task is not None:
-                approve_event_and_task(
+                approved = approve_event_and_task(
                     task_id=task.id,
                     event_id=event.id,
                     approved_by=actor,
@@ -955,6 +956,15 @@ def submit_review(
                     review_decision=decision,
                     db=db,
                 )
+                if approved and decision == ReviewStatus.APPROVED_SOLO:
+                    from app.pipeline.stage_result import enqueue_next
+
+                    if task.stage == TaskStatus.APPROVED:
+                        enqueue_next(task, TaskStatus.QUEUED_FOR_RENDER)
+                        db.add(task)
+                    elif task.stage == TaskStatus.APPROVED_WAITING_RENDER:
+                        enqueue_next(task, TaskStatus.QUEUED_FOR_RENDER)
+                        db.add(task)
                 event.review_status = decision
                 event.review_reason = reason
                 event.review_by = actor
@@ -969,6 +979,7 @@ def submit_review(
                 db.add(event)
                 c.status = CandidateStatus.APPROVED
                 db.add(c)
+                enqueue_unlinked_render = decision == ReviewStatus.APPROVED_SOLO
         elif decision in (ReviewStatus.REJECTED, ReviewStatus.NOT_EXCITING):
             from app.pipeline.rejection import reject_candidate_and_outputs
 
@@ -980,13 +991,21 @@ def submit_review(
                 review_decision=decision,
             )
         else:
-            # 保留待定、边界或质量问题只更新审核事件，不终结候选工作流。
+            # 保留待定、边界或质量问题已被人工处理，不再伪装成“等待审核”。
             event.review_status = decision
             event.review_reason = reason
             event.review_by = actor
             event.updated_at = _dt.now(UTC)
             db.add(event)
             db.add(c)
+            if task is not None and task.stage in (
+                TaskStatus.AWAITING_REVIEW,
+                TaskStatus.CANDIDATE_CREATED,
+            ):
+                from app.pipeline.stage_result import enqueue_next
+
+                enqueue_next(task, TaskStatus.REVIEWED_WAITING_ACTION)
+                db.add(task)
 
         clear_draft(event)
         release_event(event, actor, role)
@@ -1031,7 +1050,18 @@ def submit_review(
         threshold_feedback.get("action"),
         threshold_feedback.get("threshold"),
     )
-    return {"status": decision, "reason": reason}
+    job = None
+    if enqueue_unlinked_render:
+        from app.web.services.background_jobs import web_job_manager
+
+        job = await web_job_manager.enqueue(
+            "candidate_render",
+            {"candidate_id": candidate_id, "reviewed_by": actor},
+            label=f"候选 #{candidate_id} 审核通过出片",
+            owner=actor,
+            dedup_key=f"candidate-render:{candidate_id}",
+        )
+    return {"status": decision, "reason": reason, "job": job}
 
 
 @review_router.post("/api/{candidate_id}/rerender")

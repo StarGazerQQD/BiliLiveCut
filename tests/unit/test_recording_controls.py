@@ -186,6 +186,7 @@ async def test_graceful_stop_persists_pause_and_cancels_pending(
         room_id,
         mode="graceful",
         pause_auto_restart=True,
+        mark_paused=True,
         cancel_pending=True,
     )
 
@@ -203,6 +204,37 @@ async def test_graceful_stop_persists_pause_and_cancels_pending(
         assert load_room_config(room)["recording_paused"] is True
         assert session.status == SessionStatus.PAUSED
         assert task.stage == TaskStatus.CANCELLED
+
+
+@pytest.mark.asyncio
+async def test_manual_stop_suppresses_restart_without_showing_paused(temp_db: None, tmp_path: Path) -> None:
+    """“停止并收尾”阻止监控器重启，但会话与界面均应显示已停止。"""
+    from app.analysis.room_config import load_room_config
+    from app.db.models import LiveRoom, RecordingSession, SessionStatus
+    from app.db.session import get_session
+    from app.web.services.rooms import RecorderManager
+
+    room_id, session_id, _ = _seed_room_session(tmp_path)
+    manager = RecorderManager()
+    recorder = _FakeRecorder(session_id)
+    manager._recorders[room_id] = recorder  # type: ignore[assignment]  # noqa: SLF001
+    manager._tasks[room_id] = asyncio.create_task(recorder.run())  # noqa: SLF001
+
+    result = await manager.stop(
+        room_id,
+        mode="graceful",
+        pause_auto_restart=True,
+        mark_paused=False,
+    )
+
+    assert result["state"] == SessionStatus.STOPPED
+    with get_session() as db:
+        room = db.get(LiveRoom, room_id)
+        session = db.get(RecordingSession, session_id)
+        room_config = load_room_config(room)
+        assert room_config["recording_paused"] is False
+        assert room_config["recording_auto_restart_suppressed"] is True
+        assert session.status == SessionStatus.STOPPED
 
 
 @pytest.mark.asyncio
@@ -537,3 +569,81 @@ async def test_manager_cleans_up_naturally_finished_recorder(
         room = db.get(LiveRoom, room_id)
         assert room is not None
         assert room.enabled is False
+
+
+@pytest.mark.asyncio
+async def test_retry_exhaustion_waits_for_a_real_offline_transition(
+    temp_db: None,
+    tmp_path: Path,
+    monkeypatch: MonkeyPatch,
+) -> None:
+    """取流预算耗尽后不得立即拉起，只有确认离线后才允许下一次开播。"""
+    from types import SimpleNamespace
+
+    from app.analysis.room_config import load_room_config, merge_room_config
+    from app.db.models import LiveRoom
+    from app.db.session import get_session
+    from app.pipeline import live_monitor as live_monitor_module
+    from app.web import service as service_module
+    from app.web.services.rooms import RecorderManager
+
+    room_id, session_id, _ = _seed_room_session(tmp_path)
+    recorder = _FakeRecorder(session_id)
+    recorder.retry_budget_exhausted = True
+    recorder.stop_event.set()
+    manager = RecorderManager()
+    task = asyncio.create_task(manager._run_recorder(room_id, recorder))  # type: ignore[arg-type]  # noqa: SLF001
+    manager._tasks[room_id] = task  # noqa: SLF001
+    manager._recorders[room_id] = recorder  # type: ignore[assignment]  # noqa: SLF001
+    await task
+
+    with get_session() as db:
+        room = db.get(LiveRoom, room_id)
+        assert room is not None
+        assert load_room_config(room)["recording_wait_for_next_live"] is True
+        room.auto_record = True
+        room.enabled = True
+        room.room_config_json = json.dumps(
+            merge_room_config(room, {"recording_wait_for_next_live": True}),
+            ensure_ascii=False,
+        )
+        db.add(room)
+
+    live_state = {"value": 1}
+
+    class FakeClient:
+        async def __aenter__(self) -> FakeClient:
+            return self
+
+        async def __aexit__(self, *_args: object) -> None:
+            return None
+
+        async def get_room_info(self, _room_id: str, *, include_detail: bool) -> SimpleNamespace:
+            assert isinstance(include_detail, bool)
+            return SimpleNamespace(live_status=live_state["value"], title="测试直播", uploader_name="测试主播")
+
+    starts: list[int] = []
+
+    async def fake_start(db_id: int, _auto_analyze: bool, _auto_render: bool) -> None:
+        starts.append(db_id)
+
+    monkeypatch.setattr(live_monitor_module, "BilibiliLiveClient", lambda **_kwargs: FakeClient())
+    monkeypatch.setattr(live_monitor_module, "get_bilibili_cookie", lambda: "")
+    monkeypatch.setattr(service_module, "recorder_manager", manager)
+    monitor = live_monitor_module.LiveMonitor()
+    monitor._stop = asyncio.Event()  # noqa: SLF001
+    monkeypatch.setattr(monitor, "_start_recording", fake_start)
+
+    await monitor._check_all()  # noqa: SLF001
+    assert starts == []
+    live_state["value"] = 0
+    await monitor._check_all()  # noqa: SLF001
+    assert starts == []
+    with get_session() as db:
+        room = db.get(LiveRoom, room_id)
+        assert room is not None
+        assert load_room_config(room)["recording_wait_for_next_live"] is False
+
+    live_state["value"] = 1
+    await monitor._check_all()  # noqa: SLF001
+    assert starts == [room_id]

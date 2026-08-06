@@ -52,7 +52,7 @@ def transcribe_compute(task_id: int) -> dict[str, Any]:
     from app.analysis.transcription.pipeline import (  # noqa: PLC0415
         _apply_room_aliases,
         _refine_transcript_for_storage,
-        get_default_pipeline,
+        get_task_pipeline,
     )
     from app.analysis.transcription.quality import assess_transcript_quality  # noqa: PLC0415
 
@@ -84,7 +84,7 @@ def transcribe_compute(task_id: int) -> dict[str, Any]:
         return {"error": "segment has no file_path"}
 
     # 3) 执行 ASR
-    pipeline = get_default_pipeline()
+    pipeline = get_task_pipeline()
     result = pipeline.transcribe(file_path, initial_prompt=initial_prompt)
 
     # 4) 阿里别名纠错

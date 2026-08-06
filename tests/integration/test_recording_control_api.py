@@ -46,7 +46,7 @@ def test_stop_and_marker_api_contract(temp_db: None, monkeypatch: MonkeyPatch) -
 
     async def fake_stop(db_id: int, **kwargs: Any) -> dict[str, Any]:
         stop_calls.append({"db_id": db_id, **kwargs})
-        return {"state": "paused", "session_id": 8, "forced": False, "cancelled_tasks": 2}
+        return {"state": "stopped", "session_id": 8, "forced": False, "cancelled_tasks": 2}
 
     def fake_marker(db_id: int, **kwargs: Any) -> dict[str, Any]:
         marker_calls.append({"db_id": db_id, **kwargs})
@@ -70,12 +70,13 @@ def test_stop_and_marker_api_contract(temp_db: None, monkeypatch: MonkeyPatch) -
         )
 
     assert stop_response.status_code == 200
-    assert stop_response.json()["status"] == "paused"
+    assert stop_response.json()["status"] == "stopped"
     assert stop_calls == [
         {
             "db_id": 3,
             "mode": "graceful",
             "pause_auto_restart": True,
+            "mark_paused": False,
             "cancel_pending": True,
         }
     ]

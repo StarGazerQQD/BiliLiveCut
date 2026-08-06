@@ -8,6 +8,7 @@ import numpy as np
 
 from app.analysis.audio import (
     AudioFeatures,
+    analysis_probe_offsets,
     compute_rms_envelope,
     find_silences,
     snap_to_silence,
@@ -123,6 +124,21 @@ def test_audio_features_peak_distance_prevents_clustered_duplicates() -> None:
     features = AudioFeatures(16000, 1.0, times, rms, 60.0, [])
 
     assert features.peak_offsets(limit=4, min_distance_s=10) == [25.0]
+
+
+def test_analysis_probes_fill_quiet_five_minute_timeline() -> None:
+    """只有一个音量峰时仍应覆盖五分钟时间轴的多个独立内容窗口。"""
+    offsets = analysis_probe_offsets(
+        [150.0],
+        duration_s=300.0,
+        limit=4,
+        min_distance_s=25.0,
+    )
+
+    assert len(offsets) == 4
+    assert 150.0 in offsets
+    assert offsets == sorted(offsets)
+    assert all(right - left >= 25.0 for left, right in zip(offsets, offsets[1:], strict=False))
 
 
 def test_find_silences_detects_quiet_region() -> None:

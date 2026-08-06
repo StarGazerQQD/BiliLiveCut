@@ -318,10 +318,16 @@ class Recorder:
         )
         if reason is None:
             return False
+        self._retry_budget_exhausted = True
         message = f"{reason}，自动结束本场录制"
         self._update_session(error_message=message)
         logger.info("{} room={} session={}", message, self.room_id, self._session_id)
         return True
+
+    @property
+    def retry_budget_exhausted(self) -> bool:
+        """返回本场录制是否因连续取流失败耗尽重试预算。"""
+        return bool(getattr(self, "_retry_budget_exhausted", False))
 
     # ------------------------------------------------------------------ #
     # 取流

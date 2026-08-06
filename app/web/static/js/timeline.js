@@ -2,6 +2,7 @@
 import { $, api, toast, esc, badge } from "./common.js";
 
 const expandedSessions = new Set();
+const expandedProvenanceCandidates = new Set();
 const knownRooms = new Map();
 let loadGeneration = 0;
 
@@ -107,6 +108,7 @@ function renderSignals(point) {
 function renderTimelinePoint(point) {
   const confidence = Math.round((Number(point.confidence) || 0) * 100);
   const rejectedClass = point.rejected ? " rejected" : "";
+  const candidateKey = String(point.candidate_id);
   return `
     <li class="timeline-point${rejectedClass}">
       <div class="timeline-clock">${esc(point.clock_gmt8 || "--:--:--")}</div>
@@ -121,7 +123,7 @@ function renderTimelinePoint(point) {
         </div>
         ${renderDanmaku(point.representative_danmaku)}
         ${renderSignals(point)}
-        <details class="timeline-provenance">
+        <details class="timeline-provenance" data-provenance-candidate="${esc(candidateKey)}" ${expandedProvenanceCandidates.has(candidateKey) ? "open" : ""}>
           <summary>查看来源与评分</summary>
           <div class="sub">规则 ${Number(point.provenance?.rule_score || 0).toFixed(3)} · LLM ${Number(point.provenance?.llm_score || 0).toFixed(3)} · 综合 ${Number(point.provenance?.highlight_score || 0).toFixed(3)} · 区间 ${esc(point.start_at_gmt8 || "-")} 至 ${esc(point.end_at_gmt8 || "-")}</div>
         </details>
@@ -190,5 +192,12 @@ async function requestSessionReanalysis(sessionId, retranscribe = false) {
 $("#timeline-room-filter").addEventListener("change", () => loadSessionTimelines());
 $("#timeline-include-rejected").addEventListener("change", () => loadSessionTimelines());
 $("#btn-refresh-timeline").addEventListener("click", () => loadSessionTimelines());
+$("#timeline-list").addEventListener("toggle", (event) => {
+  const detail = event.target.closest?.("[data-provenance-candidate]");
+  const candidateId = detail?.dataset?.provenanceCandidate;
+  if (!candidateId) return;
+  if (detail.open) expandedProvenanceCandidates.add(candidateId);
+  else expandedProvenanceCandidates.delete(candidateId);
+}, true);
 
 export { loadSessionTimelines, toggleSessionTimeline, requestSessionReanalysis };

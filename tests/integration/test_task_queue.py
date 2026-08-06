@@ -27,8 +27,12 @@ class TestStateMachine:
             (TaskStatus.ANALYZING, TaskStatus.COMPLETED, True),
             (TaskStatus.ANALYZING, TaskStatus.FAILED, True),
             (TaskStatus.CANDIDATE_CREATED, TaskStatus.AWAITING_REVIEW, True),
+            (TaskStatus.CANDIDATE_CREATED, TaskStatus.REVIEWED_WAITING_ACTION, True),
             (TaskStatus.CANDIDATE_CREATED, TaskStatus.APPROVED, True),
+            (TaskStatus.AWAITING_REVIEW, TaskStatus.REVIEWED_WAITING_ACTION, True),
             (TaskStatus.AWAITING_REVIEW, TaskStatus.APPROVED, True),
+            (TaskStatus.REVIEWED_WAITING_ACTION, TaskStatus.APPROVED, True),
+            (TaskStatus.REVIEWED_WAITING_ACTION, TaskStatus.CANCELLED, True),
             (TaskStatus.APPROVED, TaskStatus.QUEUED_FOR_RENDER, True),
             (TaskStatus.APPROVED, TaskStatus.APPROVED_WAITING_RENDER, True),
             (TaskStatus.APPROVED_WAITING_RENDER, TaskStatus.QUEUED_FOR_RENDER, True),
@@ -53,6 +57,7 @@ class TestStateMachine:
             (TaskStatus.FAILED, TaskStatus.PUBLISHING, False),
             (TaskStatus.CANCELLED, TaskStatus.ANALYZING, False),
             (TaskStatus.RENDERING, TaskStatus.AWAITING_REVIEW, False),
+            (TaskStatus.REVIEWED_WAITING_ACTION, TaskStatus.QUEUED_FOR_RENDER, False),
             (TaskStatus.APPROVED, TaskStatus.COMPLETED, False),
         ],
     )
@@ -69,6 +74,95 @@ class TestStateMachine:
                 TaskStatus.RENDERING,
             ):
                 assert _can_transition(terminal, target) is False
+
+
+def test_analysis_lookahead_waits_for_following_transcript(temp_db: None) -> None:
+    """活动直播的当前分段必须等到下一相邻分段转写完成，避免尾部卡在断点。"""
+    from datetime import UTC, datetime, timedelta
+
+    from app.db.models import LiveRoom, RawSegment, RecordingSession, SegmentTask, SessionStatus, Transcript
+    from app.db.session import get_session
+    from app.pipeline.scheduler import _analysis_lookahead_ready
+
+    base = datetime(2026, 8, 6, tzinfo=UTC)
+    with get_session() as db:
+        room = LiveRoom(input_url="lookahead", room_id=188, auto_analyze=True)
+        db.add(room)
+        db.flush()
+        session = RecordingSession(room_id=room.id, status=SessionStatus.RECORDING, started_at=base)
+        db.add(session)
+        db.flush()
+        current = RawSegment(
+            session_id=session.id,
+            seq=0,
+            file_path="0.ts",
+            start_ts=base,
+            end_ts=base + timedelta(seconds=300),
+            duration_s=300,
+        )
+        following = RawSegment(
+            session_id=session.id,
+            seq=1,
+            file_path="1.ts",
+            start_ts=base + timedelta(seconds=300),
+            end_ts=base + timedelta(seconds=600),
+            duration_s=300,
+        )
+        db.add(current)
+        db.add(following)
+        db.flush()
+        task = SegmentTask(
+            segment_id=current.id,
+            session_id=session.id,
+            stage=TaskStatus.TRANSCRIBED,
+            pipeline_key=f"pipeline:{current.id}",
+        )
+        db.add(task)
+        db.add(Transcript(segment_id=current.id, text="当前片段"))
+        db.flush()
+
+        assert _analysis_lookahead_ready(db, task) is False
+        db.add(Transcript(segment_id=following.id, text="后续片段"))
+        db.flush()
+        assert _analysis_lookahead_ready(db, task) is True
+
+
+def test_analysis_lookahead_releases_final_segment_after_session_stop(temp_db: None) -> None:
+    """会话结束后没有下一分段的尾段不能永久停在 transcribed。"""
+    from datetime import UTC, datetime, timedelta
+
+    from app.db.models import LiveRoom, RawSegment, RecordingSession, SegmentTask, SessionStatus
+    from app.db.session import get_session
+    from app.pipeline.scheduler import _analysis_lookahead_ready
+
+    base = datetime(2026, 8, 6, tzinfo=UTC)
+    with get_session() as db:
+        room = LiveRoom(input_url="final-segment", room_id=189)
+        db.add(room)
+        db.flush()
+        session = RecordingSession(room_id=room.id, status=SessionStatus.STOPPED, started_at=base, ended_at=base)
+        db.add(session)
+        db.flush()
+        segment = RawSegment(
+            session_id=session.id,
+            seq=0,
+            file_path="final.ts",
+            start_ts=base,
+            end_ts=base + timedelta(seconds=300),
+            duration_s=300,
+        )
+        db.add(segment)
+        db.flush()
+        task = SegmentTask(
+            segment_id=segment.id,
+            session_id=session.id,
+            stage=TaskStatus.TRANSCRIBED,
+            pipeline_key=f"pipeline:{segment.id}",
+        )
+        db.add(task)
+        db.flush()
+
+        assert _analysis_lookahead_ready(db, task) is True
 
 
 class TestIdempotencyKey:

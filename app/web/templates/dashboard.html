@@ -251,6 +251,12 @@
           <span><b>启用单切片 LLM 转写整理</b><br /><span class="muted">每个切片完成本地 ASR 后，交给已配置的大模型补全标点、整理可读正文并生成片段概括；失败时保留原始 ASR，不中断流水线。</span></span>
         </label>
         <p class="hint" id="transcript-llm-refine-hint">载入中…</p>
+        <div class="row" style="margin-top:10px;align-items:center">
+          <label>ASR 任务并行数
+            <input id="asr-task-concurrency" type="number" min="1" max="8" step="1" style="width:80px" />
+          </label>
+          <span class="muted" id="asr-task-concurrency-hint">CUDA 可设置多个并行；每个并行使用独立模型实例，显存占用近似倍增。CPU 建议保持 1。</span>
+        </div>
       </div>
       <p class="hint" id="feature-dirty-hint" style="display:none">检测到未保存的直播间功能开关，已暂停列表自动刷新；保存后恢复。</p>
       <div id="feature-switches-list"></div>

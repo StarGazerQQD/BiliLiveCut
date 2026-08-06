@@ -12,8 +12,11 @@ from app.core.config import settings
 from app.db.models import (
     HighlightCandidate,
     RawSegment,
+    RecordingSession,
     SegmentTask,
+    SessionStatus,
     TaskStatus,
+    Transcript,
 )
 from app.db.models import SegmentStatus as OldStatus
 from app.db.session import get_session
@@ -33,7 +36,7 @@ from app.pipeline.workers import (
 )
 
 if TYPE_CHECKING:
-    pass
+    from sqlmodel import Session
 
 
 def room_cfg_from_task(task: SegmentTask) -> dict[str, bool | float]:
@@ -80,7 +83,7 @@ def advance_recorded() -> None:
 
 
 def advance_transcribed() -> None:
-    """TRANSCRIBED → QUEUED_FOR_ANALYSIS (如果 auto_analyze 开启)。"""
+    """TRANSCRIBED → QUEUED_FOR_ANALYSIS，并为活动直播保留一个分段的后视窗口。"""
     import logging
 
     _logger = logging.getLogger(__name__)
@@ -91,8 +94,49 @@ def advance_transcribed() -> None:
             if not cfg.get("auto_analyze", False):
                 _logger.debug("auto_analyze=off, 片段 %s 不自动创建分析任务", task.segment_id)
                 continue
+            if not _analysis_lookahead_ready(db, task):
+                _logger.debug("片段 %s 等待下一相邻分段转写，以保留爆点尾部", task.segment_id)
+                continue
             enqueue_next(task, TaskStatus.QUEUED_FOR_ANALYSIS)
             db.add(task)
+
+
+def _analysis_lookahead_ready(db: Session, task: SegmentTask) -> bool:
+    """判断当前转写是否已具备跨断点分析所需的后续上下文。"""
+    segment = db.get(RawSegment, task.segment_id)
+    session = db.get(RecordingSession, task.session_id)
+    if segment is None or session is None or segment.end_ts is None:
+        return True
+    following = db.exec(
+        select(RawSegment)
+        .where(
+            RawSegment.session_id == task.session_id,
+            RawSegment.seq > segment.seq,
+        )
+        .order_by(RawSegment.seq.asc())
+    ).first()
+    if following is not None:
+        if following.start_ts is None:
+            return True
+        from app.analysis.timeline import datetime_epoch
+
+        gap_s = datetime_epoch(following.start_ts) - datetime_epoch(segment.end_ts)
+        if gap_s > 1.0:
+            return True
+        transcript = db.exec(select(Transcript).where(Transcript.segment_id == following.id)).first()
+        if transcript is not None:
+            return True
+        following_task = db.exec(select(SegmentTask).where(SegmentTask.segment_id == following.id)).first()
+        return following_task is not None and following_task.stage in {
+            TaskStatus.FAILED,
+            TaskStatus.CANCELLED,
+        }
+    return session.status not in {
+        SessionStatus.STARTING,
+        SessionStatus.RECORDING,
+        SessionStatus.RECONNECTING,
+        SessionStatus.RECONNECTED,
+    }
 
 
 def advance_candidate() -> None:
