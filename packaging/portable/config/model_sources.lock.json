@@ -5,7 +5,7 @@
     "min": "0.1.17.2-alpha",
     "max_exclusive": "0.1.18"
   },
-  "source_commit": "2dc167da770a367f5d6e983941497f47c2918f35",
+  "source_commit": "e4fa0260d21ad65e30be03b01f2fd5ef77679f19",
   "generated_at": "",
   "engines": [
     {
