@@ -113,6 +113,11 @@ def test_dashboard_uses_session_timeline_as_primary_review_view() -> None:
     assert "requestSessionReanalysis" in timeline_js
     assert "expandedProvenanceCandidates" in timeline_js
     assert "data-provenance-candidate" in timeline_js
+    assert "sessionListSignature" in timeline_js
+    assert "timelineDetailSignatures" in timeline_js
+    assert "preservedDetails" in timeline_js
+    assert "captureTimelineViewport" in timeline_js
+    assert "restoreTimelineViewport" in timeline_js
 
 
 def test_room_dictionary_ui_exposes_manual_and_learned_aliases() -> None:

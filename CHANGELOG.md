@@ -2,6 +2,13 @@
 
 ## 未发布
 
+## V0.1.17.2 Alpha (2026-08-11)
+
+### 修复
+
+- **web/timeline-scroll-retention**: 场次时间线轮询会跳过内容未变化的会话列表与展开详情，不再每五秒销毁并重建正在阅读的 DOM；确有新节点或状态变化时会在刷新完成后恢复原滚动坐标，避免查看摘要或来源评分时自动跳回页面顶部。
+- **version/release**: Python、C/Cython、Rust、Portable、Engine Pack、Docker、测试与用户文档统一升级为 `0.1.17.2-alpha`，Engine Pack 兼容区间调整为 `0.1.17.2-alpha ≤ app < 0.1.18`。
+
 ## V0.1.17.1 Alpha (2026-08-06)
 
 ### 修复
