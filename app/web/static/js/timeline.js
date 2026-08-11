@@ -3,8 +3,11 @@ import { $, api, toast, esc, badge } from "./common.js";
 
 const expandedSessions = new Set();
 const expandedProvenanceCandidates = new Set();
+const timelineDetailSignatures = new Map();
 const knownRooms = new Map();
 let loadGeneration = 0;
+let sessionListSignature = "";
+let roomFilterSignature = "";
 
 const PROCESSING_LABELS = {
   recording: "录制中",
@@ -46,6 +49,20 @@ function sourceLabel(session) {
   return session.source_label || session.uploader_name || session.room_title || `房间 ${session.room_id ?? "未知"}`;
 }
 
+function captureTimelineViewport() {
+  return {
+    x: Number(window.scrollX ?? window.pageXOffset ?? 0),
+    y: Number(window.scrollY ?? window.pageYOffset ?? 0),
+  };
+}
+
+function restoreTimelineViewport(viewport) {
+  if (!viewport || typeof window.scrollTo !== "function") return;
+  const restore = () => window.scrollTo(viewport.x, viewport.y);
+  if (typeof window.requestAnimationFrame === "function") window.requestAnimationFrame(restore);
+  else restore();
+}
+
 function updateRoomFilter(rows) {
   rows.forEach((row) => {
     if (row.room_db_id != null) knownRooms.set(String(row.room_db_id), sourceLabel(row));
@@ -56,11 +73,15 @@ function updateRoomFilter(rows) {
     .sort((left, right) => left[1].localeCompare(right[1], "zh-CN"))
     .map(([id, label]) => `<option value="${esc(id)}">${esc(label)}</option>`)
     .join("");
-  select.innerHTML = `<option value="">全部直播间</option>${options}`;
+  const markup = `<option value="">全部直播间</option>${options}`;
+  if (markup !== roomFilterSignature) {
+    select.innerHTML = markup;
+    roomFilterSignature = markup;
+  }
   if (knownRooms.has(selected)) select.value = selected;
 }
 
-function renderSessionCard(session) {
+function renderSessionCard(session, preservedDetail = "") {
   const expanded = expandedSessions.has(session.session_id);
   const title = sourceLabel(session);
   const timeRange = `${formatGmt8(session.started_at_gmt8)} — ${formatGmt8(session.ended_at_gmt8)}`;
@@ -83,7 +104,7 @@ function renderSessionCard(session) {
         </div>
       </div>
       <div id="timeline-detail-${session.session_id}" class="timeline-detail" ${expanded ? "" : "hidden"}>
-        ${expanded ? '<div class="empty">正在载入时间线…</div>' : ""}
+        ${expanded ? preservedDetail || '<div class="empty">正在载入时间线…</div>' : ""}
       </div>
     </article>`;
 }
@@ -139,7 +160,11 @@ function renderTimelineDetail(data) {
   return `<ol class="session-timeline" aria-label="${esc(sourceLabel(data.session))} 的高光时间线">${points.map(renderTimelinePoint).join("")}</ol>`;
 }
 
-async function loadTimelineDetail(sessionId, generation = loadGeneration) {
+async function loadTimelineDetail(
+  sessionId,
+  generation = loadGeneration,
+  { forceRender = false, preserveViewport = true } = {},
+) {
   const target = $(`#timeline-detail-${sessionId}`);
   if (!target || !expandedSessions.has(sessionId)) return;
   try {
@@ -147,30 +172,62 @@ async function loadTimelineDetail(sessionId, generation = loadGeneration) {
     const data = await api("GET", `/api/sessions/${sessionId}/timeline?include_rejected=${includeRejected}`);
     if (generation !== loadGeneration || !expandedSessions.has(sessionId)) return;
     const current = $(`#timeline-detail-${sessionId}`);
-    if (current) current.innerHTML = renderTimelineDetail(data);
+    if (!current) return;
+    const markup = renderTimelineDetail(data);
+    const signature = `${includeRejected}:${markup}`;
+    if (!forceRender && timelineDetailSignatures.get(sessionId) === signature && current.innerHTML) return;
+    const viewport = preserveViewport ? captureTimelineViewport() : null;
+    current.innerHTML = markup;
+    timelineDetailSignatures.set(sessionId, signature);
+    restoreTimelineViewport(viewport);
   } catch (error) {
+    if (generation !== loadGeneration || !expandedSessions.has(sessionId)) return;
     const current = $(`#timeline-detail-${sessionId}`);
-    if (current) current.innerHTML = `<div class="empty">时间线载入失败：${esc(error.message)}</div>`;
+    if (!current) return;
+    const signature = `error:${String(error.message || error)}`;
+    if (!forceRender && timelineDetailSignatures.get(sessionId) === signature && current.innerHTML) return;
+    const viewport = preserveViewport ? captureTimelineViewport() : null;
+    current.innerHTML = `<div class="empty">时间线载入失败：${esc(error.message)}</div>`;
+    timelineDetailSignatures.set(sessionId, signature);
+    restoreTimelineViewport(viewport);
   }
 }
 
-async function loadSessionTimelines() {
+async function loadSessionTimelines(forceRender = false) {
   const generation = ++loadGeneration;
   const roomId = $("#timeline-room-filter").value;
   const suffix = roomId ? `&room_db_id=${encodeURIComponent(roomId)}` : "";
   const rows = await api("GET", `/api/sessions/timeline?limit=30${suffix}`);
   if (generation !== loadGeneration) return;
   updateRoomFilter(rows);
-  $("#timeline-list").innerHTML = rows.length
-    ? rows.map(renderSessionCard).join("")
-    : '<div class="empty">暂无录制场次。开始录制后，这里会按场次生成高光时间线。</div>';
-  await Promise.all(rows.filter((row) => expandedSessions.has(row.session_id)).map((row) => loadTimelineDetail(row.session_id, generation)));
+  const list = $("#timeline-list");
+  const signature = JSON.stringify({ roomId, rows });
+  const shouldRender = forceRender || signature !== sessionListSignature || !list.innerHTML;
+  const viewport = shouldRender ? captureTimelineViewport() : null;
+  const preservedDetails = new Map();
+  if (shouldRender) {
+    rows.filter((row) => expandedSessions.has(row.session_id)).forEach((row) => {
+      const detail = $(`#timeline-detail-${row.session_id}`);
+      if (detail?.innerHTML) preservedDetails.set(row.session_id, detail.innerHTML);
+    });
+    list.innerHTML = rows.length
+      ? rows.map((row) => renderSessionCard(row, preservedDetails.get(row.session_id))).join("")
+      : '<div class="empty">暂无录制场次。开始录制后，这里会按场次生成高光时间线。</div>';
+    sessionListSignature = signature;
+  }
+  await Promise.all(rows
+    .filter((row) => expandedSessions.has(row.session_id))
+    .map((row) => loadTimelineDetail(row.session_id, generation, {
+      forceRender: shouldRender && !preservedDetails.has(row.session_id),
+      preserveViewport: !shouldRender,
+    })));
+  if (generation === loadGeneration) restoreTimelineViewport(viewport);
 }
 
 async function toggleSessionTimeline(sessionId) {
   if (expandedSessions.has(sessionId)) expandedSessions.delete(sessionId);
   else expandedSessions.add(sessionId);
-  await loadSessionTimelines();
+  await loadSessionTimelines(true);
 }
 
 async function requestSessionReanalysis(sessionId, retranscribe = false) {
@@ -185,7 +242,7 @@ async function requestSessionReanalysis(sessionId, retranscribe = false) {
     });
     toast(result.requested ? `会话 #${sessionId} 已加入重分析队列` : `会话 #${sessionId} 已有待处理的重分析请求`);
     expandedSessions.add(sessionId);
-    await loadSessionTimelines();
+    await loadSessionTimelines(true);
   } catch (error) { toast("重分析请求失败：" + error.message); }
 }
 

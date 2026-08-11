@@ -52,7 +52,7 @@ def get_version_label() -> str:
 def get_source_commit_short() -> str:
     """获取业务源码基线短 Hash。
 
-    :returns: 如 "2dc167d"
+    :returns: 如 "e4fa026"
     """
     return _load_version_config()["source_commit_short"]
 

@@ -371,7 +371,7 @@ def check_distribution_config(audit: AuditResult) -> None:
         all(
             token in frontend_check
             for token in (
-                "frontend module graph, bindings, session timeline expansion/reanalysis",
+                "frontend module graph, timeline scroll retention, session timeline expansion/reanalysis",
                 'await import(`${pathToFileURL(join(copiedStatic, "app.js"))',
                 'await candidatesTab.emit("click")',
             )

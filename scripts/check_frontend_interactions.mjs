@@ -37,9 +37,19 @@ class FakeElement {
     this.listeners = new Map();
     this.checked = false;
     this.disabled = false;
-    this.innerHTML = "";
+    this._innerHTML = "";
+    this.innerHTMLWriteCount = 0;
     this.textContent = "";
     this.value = "";
+  }
+
+  get innerHTML() {
+    return this._innerHTML;
+  }
+
+  set innerHTML(value) {
+    this._innerHTML = String(value);
+    this.innerHTMLWriteCount += 1;
   }
 
   addEventListener(type, listener) {
@@ -142,6 +152,18 @@ globalThis.Event = class Event {
 globalThis.confirm = () => true;
 globalThis.setTimeout = () => 0;
 globalThis.clearTimeout = () => {};
+const scrollCalls = [];
+globalThis.scrollX = 0;
+globalThis.scrollY = 0;
+globalThis.scrollTo = (x, y) => {
+  globalThis.scrollX = Number(x);
+  globalThis.scrollY = Number(y);
+  scrollCalls.push([globalThis.scrollX, globalThis.scrollY]);
+};
+globalThis.requestAnimationFrame = (callback) => {
+  callback();
+  return 1;
+};
 
 const requests = [];
 const requestDetails = [];
@@ -356,9 +378,43 @@ try {
 
   await globalThis.toggleSessionTimeline(21);
   await settle();
-  assert.match(element("timeline-detail-21").innerHTML, /测试高光梗概/);
-  assert.match(element("timeline-detail-21").innerHTML, /名场面/);
-  assert.match(element("timeline-detail-21").innerHTML, /跨片段/);
+  const timelineList = element("timeline-list");
+  const timelineDetail = element("timeline-detail-21");
+  assert.match(timelineDetail.innerHTML, /测试高光梗概/);
+  assert.match(timelineDetail.innerHTML, /名场面/);
+  assert.match(timelineDetail.innerHTML, /跨片段/);
+
+  const timelineMarkupBeforePoll = timelineList.innerHTML;
+  const timelineWritesBeforePoll = timelineList.innerHTMLWriteCount;
+  const detailWritesBeforePoll = timelineDetail.innerHTMLWriteCount;
+  await candidatesTab.emit("click");
+  await settle();
+  assert.equal(timelineList.innerHTML, timelineMarkupBeforePoll, "unchanged timeline polling changed visible markup");
+  assert.equal(
+    timelineList.innerHTMLWriteCount,
+    timelineWritesBeforePoll,
+    "unchanged timeline polling rebuilt the session list and displaced the reading position",
+  );
+  assert.equal(
+    timelineDetail.innerHTMLWriteCount,
+    detailWritesBeforePoll,
+    "unchanged timeline polling rebuilt expanded details",
+  );
+
+  globalThis.scrollX = 12;
+  globalThis.scrollY = 640;
+  const scrollCallsBeforeUpdate = scrollCalls.length;
+  const detailWritesBeforeOverviewUpdate = timelineDetail.innerHTMLWriteCount;
+  sessionTimelineRows[0].highlight_count = 3;
+  await candidatesTab.emit("click");
+  await settle();
+  assert.ok(scrollCalls.length > scrollCallsBeforeUpdate, "changed timeline did not restore the viewport");
+  assert.deepEqual(scrollCalls.at(-1), [12, 640], "changed timeline restored the wrong viewport");
+  assert.equal(
+    timelineDetail.innerHTMLWriteCount,
+    detailWritesBeforeOverviewUpdate,
+    "overview refresh discarded an unchanged expanded timeline detail",
+  );
 
   const reanalysisRequestOffset = requestDetails.length;
   await globalThis.requestSessionReanalysis(21, false);
@@ -397,7 +453,7 @@ try {
   assert.match(element("llm-test-results").innerHTML, /pong/, "connectivity result detail was not rendered");
 
   console.log(
-    "PASS: frontend module graph, bindings, session timeline expansion/reanalysis, room/model draft preservation, locked room switches, feature switches and draft connectivity test",
+    "PASS: frontend module graph, timeline scroll retention, session timeline expansion/reanalysis, room/model draft preservation, locked room switches, feature switches and draft connectivity test",
   );
 } finally {
   await rm(temporaryRoot, { recursive: true, force: true });
