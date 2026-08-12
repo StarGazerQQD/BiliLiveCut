@@ -56,7 +56,7 @@ def test_release_workflow_cross_verifies_artifact_identity() -> None:
 
 
 def test_release_tag_is_exact_and_matches_project_version() -> None:
-    """Release tag 不得只匹配前缀，也不得偏离版本真源。"""
+    """Release tag 必须从内部版本真源得到唯一的外部标签。"""
     release_yml = _PROJ_ROOT / ".github" / "workflows" / "release.yml"
     content = release_yml.read_text(encoding="utf-8")
 
@@ -64,15 +64,16 @@ def test_release_tag_is_exact_and_matches_project_version() -> None:
     assert "PROJECT_VERSION=" in content
     assert 'TAG_VERSION="${TAG_INPUT#v}"' in content
     assert "NORMALIZED_TAG_VERSION" not in content
-    assert 'if [ "$TAG_VERSION" != "$PROJECT_VERSION" ]' in content
+    assert 'EXPECTED_TAG_VERSION="${PROJECT_VERSION%-alpha}-Alpha"' in content
+    assert 'if [ "$TAG_VERSION" != "$EXPECTED_TAG_VERSION" ]' in content
 
 
-def test_release_only_accepts_canonical_lowercase_prerelease_tag() -> None:
-    """当前 Alpha 标签必须使用版本真源规定的小写预发布后缀。"""
+def test_release_only_accepts_canonical_title_case_github_tag() -> None:
+    """当前 GitHub Release 标签只能使用项目文档规定的 TitleCase 后缀。"""
     release_yml = _PROJ_ROOT / ".github" / "workflows" / "release.yml"
     content = release_yml.read_text(encoding="utf-8")
 
-    assert 'if [[ "$TAG_VERSION" =~ -(alpha|beta|rc)' in content
+    assert 'if [[ "$TAG" =~ -(Alpha|Beta|RC)' in content
     assert 'echo "prerelease=$PRERELEASE"' in content
     assert "prerelease: ${{ steps.tag.outputs.prerelease == 'true' }}" in content
     assert "NORMALIZED_TAG_VERSION" not in content
