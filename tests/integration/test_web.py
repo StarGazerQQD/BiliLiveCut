@@ -455,14 +455,22 @@ def test_settings_toggle_and_uploads(temp_db: None, monkeypatch: MonkeyPatch) ->
 
 
 def test_transcript_api_exposes_summary_and_raw_asr(temp_db: None) -> None:
-    """实时转写接口应区分 LLM 整理正文、片段摘要和原始 ASR。"""
+    """实时转写接口应返回整理结果、原始 ASR 和对应源 TS 文件名。"""
     import json
 
-    from app.db.models import Transcript
+    from app.db.models import RawSegment, Transcript
     from app.db.session import get_session
     from app.web.main import app
 
     with get_session() as db:
+        db.add(
+            RawSegment(
+                id=9,
+                session_id=1,
+                seq=7,
+                file_path=r"C:\recordings\room\part000_00007.ts",
+            )
+        )
         db.add(
             Transcript(
                 segment_id=9,
@@ -485,6 +493,98 @@ def test_transcript_api_exposes_summary_and_raw_asr(temp_db: None) -> None:
     assert row["summary"] == "片段摘要"
     assert row["llm_refined"] is True
     assert row["primary_backend"] == "funasr-nano"
+    assert row["source_file_name"] == "part000_00007.ts"
+    assert "file_path" not in row
+
+
+def test_transcript_api_handles_missing_source_segment(temp_db: None) -> None:
+    """历史转写缺少原始片段时应返回空文件名，而不是暴露错误路径。"""
+    from app.db.models import Transcript
+    from app.db.session import get_session
+    from app.web.main import app
+
+    with get_session() as db:
+        db.add(Transcript(segment_id=999, text="历史转写"))
+
+    with TestClient(app) as client:
+        row = client.get("/api/transcripts?limit=1").json()[0]
+
+    assert row["text"] == "历史转写"
+    assert row["source_file_name"] is None
+    assert "file_path" not in row
+
+
+def test_transcript_source_mp4_endpoint_serves_controlled_export(
+    temp_db: None,
+    tmp_path,
+    monkeypatch: MonkeyPatch,
+) -> None:
+    """源 TS 导出接口只能返回服务层生成的受控 MP4。"""
+    from app.db.models import RawSegment, Transcript
+    from app.db.session import get_session
+    from app.web.main import app
+    from app.web.services import transcripts as transcript_service
+
+    exported = tmp_path / "segment_9_export.mp4"
+    exported.write_bytes(b"mp4-fixture")
+    with get_session() as db:
+        db.add(RawSegment(id=9, session_id=1, seq=7, file_path=str(tmp_path / "source.ts")))
+        transcript = Transcript(segment_id=9, text="原片导出")
+        db.add(transcript)
+        db.flush()
+        transcript_id = transcript.id
+    monkeypatch.setattr(transcript_service, "remux_transcript_source", lambda _transcript_id: exported)
+
+    with TestClient(app) as client:
+        response = client.get(f"/api/transcripts/{transcript_id}/source-mp4")
+
+    assert response.status_code == 200
+    assert response.content == b"mp4-fixture"
+    assert response.headers["content-type"].startswith("video/mp4")
+    assert "attachment" in response.headers["content-disposition"]
+
+
+def test_transcript_source_mp4_endpoint_reports_missing_transcript(temp_db: None) -> None:
+    """不存在的转写不能泄露或伪造原始媒体。"""
+    from app.web.main import app
+
+    with TestClient(app) as client:
+        response = client.get("/api/transcripts/999/source-mp4")
+
+    assert response.status_code == 404
+
+
+def test_finished_session_timeline_api_exposes_and_regenerates_whole_summary(temp_db: None) -> None:
+    """结束场次 API 应返回整场总结状态，并提供幂等重生成入口。"""
+    from app.db.models import LiveRoom, RecordingSession
+    from app.db.session import get_session
+    from app.web.main import app
+
+    started_at = datetime(2026, 8, 12, 1, 0, tzinfo=UTC)
+    with get_session() as db:
+        room = LiveRoom(input_url="summary-api", room_id=10086, uploader_name="总结主播")
+        db.add(room)
+        db.flush()
+        assert room.id is not None
+        recording = RecordingSession(
+            room_id=room.id,
+            status="stopped",
+            started_at=started_at,
+            ended_at=started_at + timedelta(hours=1),
+        )
+        db.add(recording)
+        db.flush()
+        assert recording.id is not None
+        session_id = recording.id
+
+    with TestClient(app) as client:
+        timeline = client.get(f"/api/sessions/{session_id}/timeline")
+        regenerate = client.post(f"/api/sessions/{session_id}/timeline-summary", json={})
+
+    assert timeline.status_code == 200
+    assert timeline.json()["whole_session_summary"]["status"] in {"pending", "generating", "ready"}
+    assert regenerate.status_code == 200
+    assert regenerate.json() == {"session_id": session_id, "requested": True}
 
 
 def test_retranscribe_api_deletes_transcript_and_requeues_segment(temp_db: None) -> None:

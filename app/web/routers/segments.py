@@ -5,10 +5,15 @@ from __future__ import annotations
 from typing import Any
 
 from fastapi import APIRouter, HTTPException, Request
+from fastapi.responses import FileResponse
 from pydantic import BaseModel, Field
 
 from app.web import service
-from app.web.services.transcripts import TranscriptNotFoundError, TranscriptRetranscribeConflict
+from app.web.services.transcripts import (
+    TranscriptMediaError,
+    TranscriptNotFoundError,
+    TranscriptRetranscribeConflict,
+)
 
 _MAX_QUERY_LIMIT = 500
 _MAX_QUERY_DAYS = 365
@@ -61,11 +66,46 @@ def get_session_timeline(session_id: int, include_rejected: bool = False) -> dic
         raise HTTPException(status_code=404, detail=str(exc)) from exc
 
 
+@router.post("/sessions/{session_id}/timeline-summary")
+def regenerate_session_timeline_summary(session_id: int) -> dict[str, int | bool]:
+    """使当前整场总结失效，并持久化重新生成请求。"""
+    from app.analysis.session_summary import request_session_timeline_summary
+
+    try:
+        requested = request_session_timeline_summary(
+            session_id,
+            reason="manual_regenerate",
+            force=True,
+        )
+        return {"session_id": session_id, "requested": requested}
+    except ValueError as exc:
+        raise HTTPException(status_code=404, detail=str(exc)) from exc
+
+
 @router.get("/transcripts")
 def get_transcripts(limit: int = 30) -> list[dict[str, Any]]:
     """返回最近转写文本。"""
     limit = _clamp(limit, 1, _MAX_QUERY_LIMIT)
     return service.list_transcripts(limit=limit)
+
+
+@router.get("/transcripts/{transcript_id}/source-mp4")
+def export_transcript_source_mp4(transcript_id: int) -> FileResponse:
+    """无损导出转写对应的源 TS，并确保 MP4 从首个真实视频帧开始。"""
+    from app.web.services.transcripts import remux_transcript_source
+
+    try:
+        output = remux_transcript_source(transcript_id)
+    except TranscriptNotFoundError as exc:
+        raise HTTPException(status_code=404, detail=str(exc)) from exc
+    except TranscriptMediaError as exc:
+        raise HTTPException(status_code=422, detail=str(exc)) from exc
+    return FileResponse(
+        str(output),
+        media_type="video/mp4",
+        filename=output.name,
+        content_disposition_type="attachment",
+    )
 
 
 @router.post("/transcripts/{transcript_id}/retranscribe")

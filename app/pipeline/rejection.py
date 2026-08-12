@@ -48,6 +48,14 @@ def reject_candidate_and_outputs(
         raise ValueError(f"候选不存在: id={candidate_id}")
     candidate.status = CandidateStatus.REJECTED
     db.add(candidate)
+    from app.analysis.session_summary import request_session_timeline_summary_in_session
+
+    request_session_timeline_summary_in_session(
+        db,
+        candidate.session_id,
+        reason="review_rejected",
+        force=True,
+    )
 
     event = db.exec(select(HighlightEvent).where(HighlightEvent.candidate_id == candidate_id)).first()
     if event is not None:

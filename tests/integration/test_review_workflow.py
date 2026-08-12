@@ -114,6 +114,7 @@ def test_review_submission_releases_claim_and_can_be_undone(
 ) -> None:
     """提交决策后自动释放，重新领取后可撤销并留下审计记录。"""
     from app.db.models import (
+        AppSetting,
         CandidateStatus,
         ClipStatus,
         FinalClip,
@@ -201,6 +202,7 @@ def test_review_submission_releases_claim_and_can_be_undone(
         clip = db.get(FinalClip, clip_id)
         task = db.get(SegmentTask, task_id)
         logs = db.exec(select(SystemLog).where(SystemLog.module == "review")).all()
+        summary_request = db.get(AppSetting, f"session_timeline_summary_request:{candidate.session_id}")
     assert candidate is not None and candidate.status == CandidateStatus.PENDING
     assert event.review_status == ReviewStatus.PENDING
     assert clip is not None and clip.status == ClipStatus.REVIEWING
@@ -208,6 +210,8 @@ def test_review_submission_releases_claim_and_can_be_undone(
     assert task.stage_key == "stage:9001:awaiting_publish_confirmation"
     assert task.idempotency_key == "9001:awaiting_publish_confirmation"
     assert len(logs) >= 4
+    assert summary_request is not None
+    assert json.loads(summary_request.value)["reason"] == "review_undo"
     assert feedback_calls == [
         (candidate_id, ReviewStatus.REJECTED, "alice"),
         (candidate_id, ReviewStatus.PENDING, "alice"),

@@ -213,6 +213,14 @@ def delete_candidate(candidate_id: int) -> None:
     with get_session() as db:
         cand = db.get(HighlightCandidate, candidate_id)
         if cand is not None:
+            from app.analysis.session_summary import request_session_timeline_summary_in_session
+
+            request_session_timeline_summary_in_session(
+                db,
+                cand.session_id,
+                reason="candidate_deleted",
+                force=True,
+            )
             db.delete(cand)
 
 

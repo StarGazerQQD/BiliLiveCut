@@ -3,8 +3,12 @@
 from __future__ import annotations
 
 import json
+import subprocess
+import threading
 from difflib import SequenceMatcher
+from pathlib import Path
 from typing import Any
+from uuid import uuid4
 
 from sqlmodel import Session, select
 
@@ -33,6 +37,14 @@ class TranscriptNotFoundError(LookupError):
 
 class TranscriptRetranscribeConflict(RuntimeError):
     """当前转写关联的人工或成片资产不允许自动覆盖。"""
+
+
+class TranscriptMediaError(RuntimeError):
+    """转写关联的原始媒体无法安全导出。"""
+
+
+_SOURCE_EXPORT_LOCKS: dict[int, threading.Lock] = {}
+_SOURCE_EXPORT_LOCKS_GUARD = threading.Lock()
 
 
 def correct_transcript(
@@ -145,6 +157,167 @@ def _decode_auxiliary(raw: str | None) -> dict[str, Any]:
     return value if isinstance(value, dict) else {}
 
 
+def _source_file_name(file_path: str | None) -> str | None:
+    """从跨平台保存的原始片段路径中提取文件名。"""
+    normalized = (file_path or "").strip().replace("\\", "/")
+    return normalized.rsplit("/", maxsplit=1)[-1] or None
+
+
+def remux_transcript_source(transcript_id: int) -> Path:
+    """把转写关联的 TS 无损重封装为首视频帧从 0 秒开始的 MP4。
+
+    MPEG-TS 中 AAC 音频常比首个 H.264/H.265 画面早几十毫秒。常规 ``-c copy``
+    会把音频归零，却让视频从一个非零时间戳开始，剪辑软件因而显示一帧黑画面。
+    本函数先探测音视频起点差，再用 ``setts`` bitstream filter 仅校正视频包的
+    PTS/DTS；视频帧、音频包和编码数据全部保留。输出按源文件大小和修改时间缓存，
+    源文件变化后自动生成新路径，避免把陈旧 MP4 当作当前原片。
+
+    :param transcript_id: 转写主键。
+    :returns: 可直接剪辑的 MP4 路径。
+    :raises TranscriptNotFoundError: 转写或片段不存在。
+    :raises TranscriptMediaError: 源文件越界、缺失、探测或 FFmpeg 失败。
+    """
+    from app.core.paths import clips_dir, raw_dir
+
+    with get_session() as db:
+        transcript = db.get(Transcript, transcript_id)
+        if transcript is None:
+            raise TranscriptNotFoundError("转写不存在")
+        segment = db.get(RawSegment, transcript.segment_id)
+        if segment is None:
+            raise TranscriptNotFoundError("转写对应的原始片段不存在")
+        source = Path(segment.file_path).resolve()
+
+    raw_root = raw_dir().resolve()
+    if not source.is_relative_to(raw_root):
+        raise TranscriptMediaError("原始片段不在受控录像目录内")
+    if not source.is_file():
+        raise TranscriptMediaError("原始片段文件不存在")
+    if source.suffix.casefold() != ".ts":
+        raise TranscriptMediaError("仅支持把 MPEG-TS 原片无损导出为 MP4")
+
+    stat = source.stat()
+    fingerprint = f"{stat.st_size:x}_{stat.st_mtime_ns:x}"
+    export_root = (clips_dir() / "source_exports").resolve()
+    export_root.mkdir(parents=True, exist_ok=True)
+    output = (export_root / f"segment_{segment.id}_{fingerprint}.mp4").resolve()
+    if output.parent != export_root:
+        raise TranscriptMediaError("导出路径越界")
+    if output.is_file() and output.stat().st_size > 0:
+        return output
+
+    lock = _source_export_lock(int(segment.id))
+    with lock:
+        if output.is_file() and output.stat().st_size > 0:
+            return output
+        _render_source_export(source, output, int(segment.id), export_root)
+    return output
+
+
+def _source_export_lock(segment_id: int) -> threading.Lock:
+    """返回片段级导出锁，避免并发请求互相替换同一临时文件。"""
+    with _SOURCE_EXPORT_LOCKS_GUARD:
+        return _SOURCE_EXPORT_LOCKS.setdefault(segment_id, threading.Lock())
+
+
+def _render_source_export(source: Path, output: Path, segment_id: int, export_root: Path) -> None:
+    """执行一次无损重封装并原子发布到导出缓存。"""
+    from app.core.config import settings
+    from app.core.ffmpeg_errors import classify_ffmpeg_error
+
+    video_start, earliest_start = _probe_stream_start_times(source)
+    if video_start is None:
+        raise TranscriptMediaError("原始片段没有可导出的视频流")
+    video_shift = max(0.0, video_start - (earliest_start if earliest_start is not None else video_start))
+    temp_output = output.with_name(f"{output.stem}.{uuid4().hex}.partial.mp4")
+    command = [
+        settings.ffmpeg_path,
+        "-hide_banner",
+        "-loglevel",
+        "error",
+        "-y",
+        "-i",
+        str(source),
+        "-map",
+        "0:v:0",
+        "-map",
+        "0:a:0?",
+        "-c",
+        "copy",
+    ]
+    if video_shift > 0.0005:
+        shift_expression = f"{video_shift:.9f}/TB"
+        command += ["-bsf:v", f"setts=pts=PTS-{shift_expression}:dts=DTS-{shift_expression}"]
+    command += ["-movflags", "+faststart", str(temp_output)]
+    try:
+        result = subprocess.run(command, capture_output=True, timeout=600)
+    except subprocess.TimeoutExpired as exc:
+        temp_output.unlink(missing_ok=True)
+        raise TranscriptMediaError("FFmpeg 无损导出超时") from exc
+    except OSError as exc:
+        temp_output.unlink(missing_ok=True)
+        raise TranscriptMediaError(f"无法启动 FFmpeg: {exc}") from exc
+    if result.returncode != 0:
+        temp_output.unlink(missing_ok=True)
+        stderr = result.stderr.decode("utf-8", errors="ignore")
+        error_type = classify_ffmpeg_error(result.returncode, stderr)
+        raise TranscriptMediaError(f"FFmpeg 无损导出失败 [{error_type.name}]: {stderr}")
+    temp_output.replace(output)
+    for stale in export_root.glob(f"segment_{segment_id}_*.mp4"):
+        if stale != output:
+            try:
+                stale.unlink(missing_ok=True)
+            except OSError:
+                # Windows 下载响应可能仍持有旧缓存句柄；旧文件由下次导出再清理，
+                # 不能因为清理失败而让本次已完成的导出报错。
+                continue
+
+
+def _probe_stream_start_times(source: Path) -> tuple[float | None, float | None]:
+    """探测首视频流起点和所有音视频流中的最早起点。"""
+    from app.core.config import settings
+    from app.core.ffmpeg_errors import classify_ffmpeg_error
+
+    command = [
+        settings.ffprobe_path,
+        "-v",
+        "error",
+        "-show_entries",
+        "stream=codec_type,start_time",
+        "-of",
+        "json",
+        str(source),
+    ]
+    try:
+        result = subprocess.run(command, capture_output=True, check=True, text=True, timeout=30)
+        streams = json.loads(result.stdout).get("streams", [])
+    except subprocess.TimeoutExpired as exc:
+        raise TranscriptMediaError("ffprobe 探测原片超时") from exc
+    except subprocess.CalledProcessError as exc:
+        stderr = exc.stderr or ""
+        error_type = classify_ffmpeg_error(exc.returncode, stderr)
+        raise TranscriptMediaError(f"ffprobe 探测原片失败 [{error_type.name}]: {stderr}") from exc
+    except OSError as exc:
+        raise TranscriptMediaError(f"无法启动 ffprobe: {exc}") from exc
+    except (json.JSONDecodeError, TypeError, ValueError) as exc:
+        raise TranscriptMediaError("ffprobe 返回了无效的媒体信息") from exc
+
+    video_start: float | None = None
+    starts: list[float] = []
+    for stream in streams:
+        if not isinstance(stream, dict):
+            continue
+        try:
+            start = float(stream["start_time"])
+        except (KeyError, TypeError, ValueError):
+            continue
+        if stream.get("codec_type") in {"video", "audio"}:
+            starts.append(start)
+        if video_start is None and stream.get("codec_type") == "video":
+            video_start = start
+    return video_start, min(starts) if starts else None
+
+
 def list_transcripts(limit: int = 30) -> list[dict[str, Any]]:
     """列出最近的转写文本(用于"实时转写"视图)。
 
@@ -189,6 +362,7 @@ def list_transcripts(limit: int = 30) -> list[dict[str, Any]]:
                 "primary_backend": transcript.primary_backend,
                 "created_at": transcript.created_at.isoformat() if transcript.created_at else None,
                 "session_id": segment.session_id if segment else None,
+                "source_file_name": _source_file_name(segment.file_path) if segment else None,
                 **source,
             }
         )

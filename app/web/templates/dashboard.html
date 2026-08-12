@@ -67,7 +67,7 @@
         </div>
         <p class="hint">合规提示:仅可录制你拥有授权的内容。</p>
       </div>
-      <p class="hint" id="rooms-dirty-hint" style="display:none">检测到未保存的直播间录制选项，已暂停列表自动刷新；保存后恢复。</p>
+      <p class="hint" id="rooms-dirty-hint" style="display:none">正在编辑或存在未保存的直播间设置，已暂停列表重绘；保存并收起编辑区后恢复。</p>
       <div id="rooms-list"></div>
     </section>
 
@@ -104,7 +104,7 @@
         <h3>转写纠错与房间词典</h3>
         <p class="hint">可直接修正 ASR 文本，并用“错误词=正确词”回流当前直播间词典。保存后会保留人工审核成果，并安全重分析整场录制。</p>
       </div>
-      <p class="hint" id="transcripts-dirty-hint" style="display:none">检测到未保存的转写纠错，已暂停列表自动刷新；保存或取消后恢复。</p>
+      <p class="hint" id="transcripts-dirty-hint" style="display:none">正在人工纠错或存在未保存修改，已暂停转写列表重绘；保存或取消后恢复。</p>
       <div id="transcripts-list"></div>
     </section>
 
@@ -156,7 +156,7 @@
       <div class="card timeline-intro">
         <div>
           <h3>每场直播的高光时间线</h3>
-          <p class="hint">按 GMT+8 展示动态高光节点、梗概、高频弹幕、来源证据和置信度。可按新阈值重分析，或按新词典/ASR 模型重识别；人工成果不会被覆盖。</p>
+          <p class="hint">按 GMT+8 展示动态高光节点、梗概、高频弹幕、来源证据和置信度；整场最终分析完成后，会把所有未拒绝节点整理成一段不按录制分片拆分的全场高光总结。可按新阈值重分析，或按新词典/ASR 模型重识别；人工成果不会被覆盖。</p>
         </div>
         <a class="back-link" href="/review/queue" target="_blank" rel="noopener">打开多人精审队列</a>
       </div>
@@ -258,7 +258,7 @@
           <span class="muted" id="asr-task-concurrency-hint">CUDA 可设置多个并行；每个并行使用独立模型实例，显存占用近似倍增。CPU 建议保持 1。</span>
         </div>
       </div>
-      <p class="hint" id="feature-dirty-hint" style="display:none">检测到未保存的直播间功能开关，已暂停列表自动刷新；保存后恢复。</p>
+      <p class="hint" id="feature-dirty-hint" style="display:none">检测到未保存的全局或直播间功能设置，自动刷新不会覆盖当前表单；保存后恢复。</p>
       <div id="feature-switches-list"></div>
     </section>
 

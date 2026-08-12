@@ -121,6 +121,7 @@ def test_persisted_final_reanalysis_waits_for_old_pipeline_then_runs(temp_db: No
     assert process_pending_session_reanalyses() == []
     with get_session() as db:
         assert db.get(AppSetting, f"session_reanalysis:{session_id}") is not None
+        assert db.get(AppSetting, f"session_timeline_summary_request:{session_id}") is not None
         assert db.get(HighlightCandidate, auto_candidate_id) is not None
         task = db.exec(select(SegmentTask).where(SegmentTask.segment_id == first_segment_id)).one()
         task.stage = TaskStatus.AWAITING_REVIEW

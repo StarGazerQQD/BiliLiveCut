@@ -229,6 +229,10 @@ let adjustedStart = null;
 let adjustedEnd = null;
 let eventId = null;
 let renderJobId = null;
+let reviewReasonDirty = false;
+let reviewReasonRevision = 0;
+let boundaryRevision = 0;
+let reviewLoadGeneration = 0;
 
 // ===== 工具函数 =====
 const $ = (s) => document.querySelector(s);
@@ -281,15 +285,26 @@ function toast(msg) {
 
 // ===== 加载数据 =====
 async function loadReviewData() {
+  const generation = ++reviewLoadGeneration;
+  const reasonRevision = reviewReasonRevision;
+  const currentBoundaryRevision = boundaryRevision;
   try {
-    reviewData = await api("GET", `/review/api/${CAND_ID}`);
-    renderReview();
+    const data = await api("GET", `/review/api/${CAND_ID}`);
+    if (generation !== reviewLoadGeneration) return;
+    reviewData = data;
+    renderReview({
+      preserveBoundary: boundaryRevision !== currentBoundaryRevision,
+      preserveReason: reviewReasonDirty || reviewReasonRevision !== reasonRevision,
+      reason: $("#review-reason").value,
+      adjustedStart,
+      adjustedEnd,
+    });
   } catch (e) {
     toast("加载失败:" + e.message);
   }
 }
 
-function renderReview() {
+function renderReview(preserved = {}) {
   const d = reviewData;
   const c = d.candidate;
   const hidden = d.viewer?.blinded;
@@ -322,17 +337,23 @@ function renderReview() {
   $$(".timeline-bar button, .review-actions button").forEach(button => {
     if (!["btn-claim", "btn-release", "btn-draft", "btn-undo"].includes(button.id)) button.disabled = !canModify;
   });
-  if (d.workflow?.draft && document.activeElement !== $("#review-reason")) {
+  if (preserved.preserveReason) {
+    $("#review-reason").value = preserved.reason || "";
+  } else if (d.workflow?.draft && document.activeElement !== $("#review-reason")) {
     $("#review-reason").value = d.workflow.draft.reason || "";
   }
 
   // 入/出点。
   const dur = durationSec(c.start_ts, c.end_ts);
-  $("#in-point").value = secToHHMMSS(0);
-  $("#out-point").value = secToHHMMSS(dur);
-
-  adjustedStart = d.boundary?.adjusted_start_ts || c.start_ts;
-  adjustedEnd = d.boundary?.adjusted_end_ts || c.end_ts;
+  const serverAdjustedStart = d.boundary?.adjusted_start_ts || c.start_ts;
+  const serverAdjustedEnd = d.boundary?.adjusted_end_ts || c.end_ts;
+  adjustedStart = preserved.preserveBoundary ? preserved.adjustedStart : serverAdjustedStart;
+  adjustedEnd = preserved.preserveBoundary ? preserved.adjustedEnd : serverAdjustedEnd;
+  const originalStartSeconds = new Date(c.start_ts).getTime() / 1000;
+  const inPoint = secToHHMMSS(new Date(adjustedStart).getTime() / 1000 - originalStartSeconds);
+  const outPoint = secToHHMMSS(new Date(adjustedEnd).getTime() / 1000 - originalStartSeconds);
+  $("#in-point").value = inPoint;
+  $("#out-point").value = outPoint || secToHHMMSS(dur);
 
   // 评分维度贡献。
   let barsHtml = "";
@@ -453,9 +474,6 @@ function drawDanmakuChart(buckets, startTs, endTs, windowCtx) {
 
 // ===== 边界调整 =====
 async function adjust(side, secs) {
-  const currentIn = $("#in-point").value;
-  const currentOut = $("#out-point").value;
-
   try {
     const res = await api("POST", `/review/api/${CAND_ID}/adjust`, { adjust_s: secs, side });
     if (res.adjusted_start_ts) adjustedStart = res.adjusted_start_ts;
@@ -476,6 +494,7 @@ async function adjust(side, secs) {
       const offset = adjEnd - origStart;
       $("#out-point").value = secToHHMMSS(offset);
     }
+    boundaryRevision += 1;
     toast(`边界已调整:${side} ${secs > 0 ? "+" : ""}${secs}s`);
   } catch (e) {
     toast("调整失败:" + e.message);
@@ -524,8 +543,13 @@ async function cancelRenderJob() {
 
 async function submitReview(decision) {
   const reason = $("#review-reason").value;
+  const revision = reviewReasonRevision;
   try {
     await api("POST", `/review/api/${CAND_ID}/review`, { decision, reason });
+    if (reviewReasonRevision === revision) {
+      reviewReasonDirty = false;
+      reviewReasonRevision += 1;
+    }
     toast("审核已提交:" + decision);
     await loadReviewData();
   } catch (e) {
@@ -550,9 +574,17 @@ async function releaseCurrent() {
 }
 
 async function saveDraft(silent = false) {
+  const revision = reviewReasonRevision;
+  const reason = $("#review-reason").value;
   try {
-    await api("PUT", `/review/api/${CAND_ID}/draft`, { reason: $("#review-reason").value });
-    if (!silent) toast("草稿已保存");
+    await api("PUT", `/review/api/${CAND_ID}/draft`, { reason });
+    if (reviewReasonRevision === revision) {
+      reviewReasonDirty = false;
+      reviewReasonRevision += 1;
+      if (!silent) toast("草稿已保存");
+    } else if (!silent) {
+      toast("已保存提交时的草稿；保存期间还有新修改，请再次保存");
+    }
   } catch (e) { if (!silent) toast("草稿保存失败:" + e.message); }
 }
 
@@ -798,6 +830,15 @@ document.addEventListener("keydown", (e) => {
 });
 
 // ===== 启动 =====
+$("#review-reason").addEventListener("input", () => {
+  reviewReasonDirty = true;
+  reviewReasonRevision += 1;
+});
+window.addEventListener("beforeunload", (event) => {
+  if (!reviewReasonDirty) return;
+  event.preventDefault();
+  event.returnValue = "";
+});
 loadReviewData();
 
 window.addEventListener("resize", () => {

@@ -47,12 +47,27 @@ async def _on_session_end(session_id: int) -> None:
         session_id,
         reason="session_finalized",
     )
+    # request_session_reanalysis 会同时使整场总结失效并登记新的持久请求；
+    # 没有自动分析任务的场次仍需生成明确的空时间线总结。
+    summary_requested = reanalysis_requested
+    if not summary_requested:
+        from app.analysis.session_summary import request_session_timeline_summary
+
+        summary_requested = request_session_timeline_summary(
+            session_id,
+            reason="session_finalized_without_reanalysis",
+            force=True,
+        )
     clips_path = str(clips_dir())
     if settings_store.upload_active():
         push_notification(
             f"会话 #{session_id} 已结束。上传模块开启,成品将自动进入上传队列。",
             kind="success",
-            data={"session_id": session_id, "final_reanalysis": reanalysis_requested},
+            data={
+                "session_id": session_id,
+                "final_reanalysis": reanalysis_requested,
+                "timeline_summary": summary_requested,
+            },
         )
         return
     # 上传模块关闭:弹出(在本机文件管理器打开)切片所在目录,并通知前端。
@@ -65,6 +80,7 @@ async def _on_session_end(session_id: int) -> None:
             "ready_dir": str(ready_to_upload_dir()),
             "session_id": session_id,
             "final_reanalysis": reanalysis_requested,
+            "timeline_summary": summary_requested,
         },
     )
     logger.info("会话 {} 结束,上传关闭,已弹出切片目录: {}", session_id, clips_path)

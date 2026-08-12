@@ -5,6 +5,43 @@ let globalFeatureDirty = false;
 const dirtyRoomSections = new Set();
 const dirtyFeatureRooms = new Set();
 const openRoomDetails = new Set();
+const roomSectionRevisions = new Map();
+const featureRoomRevisions = new Map();
+let globalFeatureRevision = 0;
+let roomEditorRevision = 0;
+let featureEditorRevision = 0;
+let scheduleRoomOptionsSignature = "";
+let topicSessionOptionsSignature = "";
+let newRoomFormRevision = 0;
+let newRoomFormDirty = false;
+let scheduleFormRevision = 0;
+let scheduleFormDirty = false;
+let scheduleLoadGeneration = 0;
+let topicLoadGeneration = 0;
+
+function hasOpenRoomEditor() {
+  return [...openRoomDetails].some((key) => key.startsWith("config:"));
+}
+
+function updateRoomsDirtyHint() {
+  $("#rooms-dirty-hint").style.display = dirtyRoomSections.size > 0 || hasOpenRoomEditor() ? "" : "none";
+}
+
+function updateFeatureDirtyHint() {
+  $("#feature-dirty-hint").style.display = globalFeatureDirty || dirtyFeatureRooms.size > 0 ? "" : "none";
+}
+
+function hasRoomDraft() {
+  return dirtyRoomSections.size > 0
+    || dirtyFeatureRooms.size > 0
+    || globalFeatureDirty
+    || newRoomFormDirty
+    || scheduleFormDirty;
+}
+
+function bumpRevision(revisions, key) {
+  revisions.set(key, (revisions.get(key) || 0) + 1);
+}
 
 function roomRuntimeState(room) {
   return room.recording_state || (room.running ? "running" : "stopped");
@@ -62,17 +99,23 @@ function syncRoomRuntime(rooms) {
 
 // ----------------------------- 渲染:直播间 ----------------------------- //
 async function loadRooms() {
+  const revision = roomEditorRevision;
   const data = await api("GET", "/api/dashboard");
+  if (roomEditorRevision !== revision) {
+    syncRoomRuntime(data.rooms);
+    updateRoomsDirtyHint();
+    return;
+  }
   $("#stat-candidates").textContent = data.counts.candidates;
   $("#stat-clips").textContent = data.counts.clips;
   $("#stat-sessions").textContent = data.counts.active_sessions;
 
-  if (dirtyRoomSections.size > 0) {
+  if (dirtyRoomSections.size > 0 || hasOpenRoomEditor()) {
     syncRoomRuntime(data.rooms);
-    $("#rooms-dirty-hint").style.display = "";
+    updateRoomsDirtyHint();
     return;
   }
-  $("#rooms-dirty-hint").style.display = "none";
+  updateRoomsDirtyHint();
 
   const modes = data.modes;
   const html = data.rooms.map((r) => `
@@ -157,6 +200,8 @@ function addUnlockedSwitch(payload, key, selector) {
 
 async function saveRoom(id) {
   try {
+    const key = `controls:${id}`;
+    const revision = roomSectionRevisions.get(key) || 0;
     const payload = {
       mode: $(`#mode-${id}`).value,
       highlight_threshold: parseFloat($(`#ht-${id}`).value),
@@ -166,23 +211,39 @@ async function saveRoom(id) {
     addUnlockedSwitch(payload, "auto_threshold_enabled", `#sw-at-${id}`);
     addUnlockedSwitch(payload, "danmaku_sentiment_enabled", `#sw-ds-${id}`);
     await api("PATCH", `/api/rooms/${id}`, payload);
-    dirtyRoomSections.delete(`controls:${id}`);
+    if ((roomSectionRevisions.get(key) || 0) !== revision) {
+      updateRoomsDirtyHint();
+      toast("已保存提交时的直播间选项；保存期间还有新修改，请再次保存");
+      return;
+    }
+    dirtyRoomSections.delete(key);
+    roomEditorRevision += 1;
+    updateRoomsDirtyHint();
     toast("\u5df2\u4fdd\u5b58\u9608\u503c/\u6a21\u5f0f");
-    if (dirtyRoomSections.size === 0) await loadRooms();
+    if (dirtyRoomSections.size === 0 && !hasOpenRoomEditor()) await loadRooms();
   } catch (e) { toast("\u4fdd\u5b58\u5931\u8d25:" + e.message); }
 }
 
 async function saveRoomConfig(id) {
   try {
+    const key = `config:${id}`;
+    const revision = roomSectionRevisions.get(key) || 0;
     const hw = ($(`#hw-${id}`).value || "").split("\n").map(s => s.trim()).filter(Boolean);
     const hk = ($(`#hk-${id}`).value || "").split("\n").map(s => s.trim()).filter(Boolean);
     const al = {}; ($(`#al-${id}`).value || "").split("\n").forEach(line => { const eq = line.indexOf("="); if (eq > 0) al[line.slice(0, eq).trim()] = line.slice(eq + 1).trim(); });
     const bt = ($(`#bt-${id}`).value || "").split("\n").map(s => s.trim()).filter(Boolean);
     const highlightScorerMode = $(`#hm-${id}`).value || "inherit";
     await api("PATCH", `/api/rooms/${id}`, { room_config: { hotwords: hw, aliases: al, highlight_keywords: hk, blocked_topics: bt, highlight_scorer_mode: highlightScorerMode } });
-    dirtyRoomSections.delete(`config:${id}`);
+    if ((roomSectionRevisions.get(key) || 0) !== revision) {
+      updateRoomsDirtyHint();
+      toast("已保存提交时的房间配置；保存期间还有新修改，请再次保存");
+      return;
+    }
+    dirtyRoomSections.delete(key);
+    roomEditorRevision += 1;
+    updateRoomsDirtyHint();
     toast("\u623f\u95f4\u914d\u7f6e\u5df2\u4fdd\u5b58");
-    if (dirtyRoomSections.size === 0) await loadRooms();
+    if (dirtyRoomSections.size === 0 && !hasOpenRoomEditor()) await loadRooms();
   } catch (e) { toast("\u4fdd\u5b58\u5931\u8d25:" + e.message); }
 }
 
@@ -196,10 +257,15 @@ function pipelineSwitch(id, key, label, description, checked, disabled = false) 
 }
 
 async function loadFeatureSwitches() {
+  const revision = featureEditorRevision;
   const [data, settings] = await Promise.all([
     api("GET", "/api/dashboard"),
     api("GET", "/api/settings"),
   ]);
+  if (featureEditorRevision !== revision) {
+    updateFeatureDirtyHint();
+    return;
+  }
   if (!globalFeatureDirty) {
     $("#sw-recording-pipeline").checked = settings.recording_pipeline_enabled !== false;
     $("#sw-transcript-llm-refine").checked = settings.transcript_llm_refine_enabled !== false;
@@ -215,10 +281,10 @@ async function loadFeatureSwitches() {
       : `当前值来自 .env：ASR_TASK_MAX_CONCURRENCY=${settings.asr_task_max_concurrency_env_default || 1}。CUDA 可提高，CPU 建议保持 1。`;
   }
   if (dirtyFeatureRooms.size > 0) {
-    $("#feature-dirty-hint").style.display = "";
+    updateFeatureDirtyHint();
     return;
   }
-  $("#feature-dirty-hint").style.display = "none";
+  updateFeatureDirtyHint();
   const list = $("#feature-switches-list");
   list.innerHTML = data.rooms.length ? data.rooms.map((r) => `
     <div class="item" data-feature-room-id="${r.id}">
@@ -255,12 +321,20 @@ async function loadFeatureSwitches() {
 
 async function saveGlobalFeatureSettings() {
   try {
+    const revision = globalFeatureRevision;
     await api("PATCH", "/api/settings", {
       recording_pipeline_enabled: $("#sw-recording-pipeline").checked,
       transcript_llm_refine_enabled: $("#sw-transcript-llm-refine").checked,
       asr_task_max_concurrency: parseInt($("#asr-task-concurrency").value || "1", 10),
     });
+    if (globalFeatureRevision !== revision) {
+      updateFeatureDirtyHint();
+      toast("已保存提交时的全局功能设置；保存期间还有新修改，请再次保存");
+      return;
+    }
     globalFeatureDirty = false;
+    featureEditorRevision += 1;
+    updateFeatureDirtyHint();
     toast("已保存实时转写与 LLM 整理开关");
     await loadFeatureSwitches();
   } catch (e) { toast("保存失败:" + e.message); }
@@ -268,6 +342,8 @@ async function saveGlobalFeatureSettings() {
 
 async function saveFeatureSwitches(id) {
   try {
+    const key = String(id);
+    const revision = featureRoomRevisions.get(key) || 0;
     const payload = {
       auto_record: $(`#feature-record-${id}`).checked,
       auto_analyze: $(`#feature-analyze-${id}`).checked,
@@ -281,7 +357,14 @@ async function saveFeatureSwitches(id) {
     addUnlockedSwitch(payload, "auto_threshold_enabled", `#feature-threshold-${id}`);
     addUnlockedSwitch(payload, "danmaku_sentiment_enabled", `#feature-sentiment-${id}`);
     await api("PATCH", `/api/rooms/${id}`, payload);
-    dirtyFeatureRooms.delete(String(id));
+    if ((featureRoomRevisions.get(key) || 0) !== revision) {
+      updateFeatureDirtyHint();
+      toast("已保存提交时的直播间功能开关；保存期间还有新修改，请再次保存");
+      return;
+    }
+    dirtyFeatureRooms.delete(key);
+    featureEditorRevision += 1;
+    updateFeatureDirtyHint();
     toast("已保存该直播间的独立功能开关");
     if (dirtyFeatureRooms.size === 0) await Promise.all([loadFeatureSwitches(), loadRooms()]);
   } catch (e) { toast("保存失败:" + e.message); }
@@ -321,17 +404,23 @@ async function loadThresholdLearning(roomId) {
 
 // ----------------------------- V0.1.2 \u6e32\u67d3:\u5f55\u5236\u9884\u7ea6 ----------------------------- //
 async function loadSchedules() {
+  const generation = ++scheduleLoadGeneration;
   const data = await api("GET", "/api/dashboard");
+  if (generation !== scheduleLoadGeneration) return;
   const selectedRoom = $("#schedule-room").value;
   let roomOpts = data.rooms.map((r) =>
     `<option value="${r.id}">#${r.id} ${esc(roomDisplayName(r))}</option>`
   ).join("");
-  $("#schedule-room").innerHTML = roomOpts;
+  if (roomOpts !== scheduleRoomOptionsSignature) {
+    $("#schedule-room").innerHTML = roomOpts;
+    scheduleRoomOptionsSignature = roomOpts;
+  }
   if ([...$("#schedule-room").options].some((option) => option.value === selectedRoom)) {
     $("#schedule-room").value = selectedRoom;
   }
 
   const rows = await api("GET", "/api/schedules");
+  if (generation !== scheduleLoadGeneration) return;
   $("#schedules-list").innerHTML = rows.length ? rows.map((s) => `
     <div class="item">
       <div class="head">
@@ -353,8 +442,10 @@ async function delSchedule(id) {
 
 // ----------------------------- V0.1.6 P1 \u6e32\u67d3:\u4e3b\u9898\u7ba1\u7406 ----------------------------- //
 async function loadTopics() {
+  const generation = ++topicLoadGeneration;
   try {
     const dbData = await api("GET", "/api/dashboard");
+    if (generation !== topicLoadGeneration) return;
     const selectedSession = $("#topic-session-select").value;
     const sessions = dbData.sessions || [];
     const sessionsWithActive = sessions.filter(s => s.status === "stopped" || s.status === "recording");
@@ -362,12 +453,16 @@ async function loadTopics() {
     for (const s of sessionsWithActive) {
       selHtml += `<option value="${s.id}">\u4f1a\u8bdd #${s.id} (\u623f\u95f4 ${s.room_id}) - ${s.status}</option>`;
     }
-    $("#topic-session-select").innerHTML = selHtml;
+    if (selHtml !== topicSessionOptionsSignature) {
+      $("#topic-session-select").innerHTML = selHtml;
+      topicSessionOptionsSignature = selHtml;
+    }
     if ([...$("#topic-session-select").options].some((option) => option.value === selectedSession)) {
       $("#topic-session-select").value = selectedSession;
     }
 
     const data = await api("GET", "/api/topics");
+    if (generation !== topicLoadGeneration) return;
     const topics = data.topics || [];
     $("#topics-list").innerHTML = topics.length ? topics.map(t => `
       <div class="item">
@@ -395,18 +490,34 @@ async function toggleCollection(topicId, value) {
 
 // ----------------------------- \u4e8b\u4ef6\u7ed1\u5b9a ----------------------------- //
 $("#btn-add").addEventListener("click", async () => {
+  const revision = newRoomFormRevision;
   const url = $("#new-url").value.trim();
   const authorized = $("#new-auth").checked;
   if (!url) return toast("\u8bf7\u8f93\u5165\u76f4\u64ad\u95f4 URL \u6216\u623f\u95f4\u53f7");
   try {
     await api("POST", "/api/rooms", { url, authorized });
-    $("#new-url").value = "";
+    if (newRoomFormRevision === revision) {
+      $("#new-url").value = "";
+      newRoomFormDirty = false;
+    } else {
+      toast("已添加提交时的直播间；提交期间还有新输入，已为你保留");
+      return;
+    }
     toast("\u5df2\u6dfb\u52a0\u76f4\u64ad\u95f4");
     loadRooms();
   } catch (e) { toast("\u6dfb\u52a0\u5931\u8d25:" + e.message); }
 });
 
+function markNewRoomFormDirty() {
+  newRoomFormRevision += 1;
+  newRoomFormDirty = true;
+}
+
+$("#new-url").addEventListener("input", markNewRoomFormDirty);
+$("#new-auth").addEventListener("change", markNewRoomFormDirty);
+
 $("#btn-add-schedule").addEventListener("click", async () => {
+  const revision = scheduleFormRevision;
   const roomId = parseInt($("#schedule-room").value, 10);
   const time = $("#schedule-time").value;
   const daily = $("#schedule-daily").checked;
@@ -417,10 +528,26 @@ $("#btn-add-schedule").addEventListener("click", async () => {
       scheduled_at: new Date(time).toISOString(),
       recurrent: daily ? "daily" : "",
     });
+    if (scheduleFormRevision !== revision) {
+      toast("已创建提交时的预约；提交期间还有新修改，已为你保留");
+      return;
+    }
+    scheduleFormDirty = false;
+    $("#schedule-time").value = "";
     toast("\u5df2\u521b\u5efa\u9884\u7ea6");
     loadSchedules();
   } catch (e) { toast("\u521b\u5efa\u5931\u8d25:" + e.message); }
 });
+
+function markScheduleFormDirty() {
+  scheduleFormRevision += 1;
+  scheduleFormDirty = true;
+}
+
+$("#schedule-room").addEventListener("change", markScheduleFormDirty);
+$("#schedule-time").addEventListener("input", markScheduleFormDirty);
+$("#schedule-time").addEventListener("change", markScheduleFormDirty);
+$("#schedule-daily").addEventListener("change", markScheduleFormDirty);
 
 $("#btn-cluster").addEventListener("click", async () => {
   const sid = $("#topic-session-select").value;
@@ -438,7 +565,9 @@ function markRoomSectionDirty(event) {
   const key = section?.dataset?.roomDirtySection;
   if (!key) return;
   dirtyRoomSections.add(key);
-  $("#rooms-dirty-hint").style.display = "";
+  bumpRevision(roomSectionRevisions, key);
+  roomEditorRevision += 1;
+  updateRoomsDirtyHint();
 }
 
 function markFeatureRoomDirty(event) {
@@ -446,7 +575,9 @@ function markFeatureRoomDirty(event) {
   const roomId = room?.dataset?.featureRoomId;
   if (!roomId) return;
   dirtyFeatureRooms.add(roomId);
-  $("#feature-dirty-hint").style.display = "";
+  bumpRevision(featureRoomRevisions, roomId);
+  featureEditorRevision += 1;
+  updateFeatureDirtyHint();
 }
 
 $("#rooms-list").addEventListener("input", markRoomSectionDirty);
@@ -457,11 +588,21 @@ $("#rooms-list").addEventListener("toggle", (event) => {
   if (!key) return;
   if (detail.open) openRoomDetails.add(key);
   else openRoomDetails.delete(key);
+  roomEditorRevision += 1;
+  updateRoomsDirtyHint();
 }, true);
 $("#feature-switches-list").addEventListener("input", markFeatureRoomDirty);
 $("#feature-switches-list").addEventListener("change", markFeatureRoomDirty);
-$("#sw-recording-pipeline").addEventListener("change", () => { globalFeatureDirty = true; });
-$("#sw-transcript-llm-refine").addEventListener("change", () => { globalFeatureDirty = true; });
-$("#asr-task-concurrency").addEventListener("input", () => { globalFeatureDirty = true; });
+function markGlobalFeatureDirty() {
+  globalFeatureDirty = true;
+  globalFeatureRevision += 1;
+  featureEditorRevision += 1;
+  updateFeatureDirtyHint();
+}
 
-export { loadRooms, saveRoom, saveRoomConfig, loadFeatureSwitches, saveGlobalFeatureSettings, saveFeatureSwitches, loadThresholdLearning, loadSchedules, delSchedule, loadTopics, toggleCollection };
+$("#sw-recording-pipeline").addEventListener("change", markGlobalFeatureDirty);
+$("#sw-transcript-llm-refine").addEventListener("change", markGlobalFeatureDirty);
+$("#asr-task-concurrency").addEventListener("input", markGlobalFeatureDirty);
+$("#asr-task-concurrency").addEventListener("change", markGlobalFeatureDirty);
+
+export { loadRooms, saveRoom, saveRoomConfig, loadFeatureSwitches, saveGlobalFeatureSettings, saveFeatureSwitches, loadThresholdLearning, loadSchedules, delSchedule, loadTopics, toggleCollection, hasRoomDraft };

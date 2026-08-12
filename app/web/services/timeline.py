@@ -121,7 +121,12 @@ def list_session_timelines(*, limit: int = 30, room_db_id: int | None = None) ->
     return result
 
 
-def get_session_timeline(session_id: int, *, include_rejected: bool = False) -> dict[str, Any]:
+def get_session_timeline(
+    session_id: int,
+    *,
+    include_rejected: bool = False,
+    include_summary: bool = True,
+) -> dict[str, Any]:
     """返回一场录制的 GMT+8 时间轴与所有高光节点。"""
     with get_session() as db:
         session = db.get(RecordingSession, session_id)
@@ -152,7 +157,20 @@ def get_session_timeline(session_id: int, *, include_rejected: bool = False) -> 
             continue
         points.append(_timeline_point(session, candidate, event, rejected=rejected))
 
-    return {
+    processing_state = _processing_state(session, tasks, pending_reanalysis=pending_reanalysis)
+    from app.analysis.session_summary import (
+        ensure_session_timeline_summary_requested,
+        session_timeline_summary_view,
+        timeline_points_signature,
+    )
+
+    if include_summary and session.ended_at is not None:
+        ensure_session_timeline_summary_requested(
+            session_id,
+            timeline_points_signature(points),
+        )
+
+    result = {
         "session": {
             "session_id": session_id,
             "status": session.status,
@@ -162,7 +180,7 @@ def get_session_timeline(session_id: int, *, include_rejected: bool = False) -> 
             "ended_at_gmt8": _iso_gmt8(session.ended_at),
             "duration_s": _duration_s(session.started_at, session.ended_at),
             "segment_count": segment_count,
-            "processing_state": _processing_state(session, tasks, pending_reanalysis=pending_reanalysis),
+            "processing_state": processing_state,
             **source,
         },
         "timezone": "GMT+8",
@@ -175,6 +193,14 @@ def get_session_timeline(session_id: int, *, include_rejected: bool = False) -> 
             "total": len(candidates),
         },
     }
+    if include_summary:
+        result["whole_session_summary"] = session_timeline_summary_view(
+            session_id,
+            points,
+            processing_state=processing_state,
+            ended=session.ended_at is not None,
+        )
+    return result
 
 
 def _timeline_point(

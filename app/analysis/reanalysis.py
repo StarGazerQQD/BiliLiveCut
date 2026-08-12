@@ -155,6 +155,13 @@ def request_session_reanalysis(
             existing.updated_at = datetime.now(UTC)
         db.add(existing)
     logger.info("场次重分析已登记 session={} reason={} retranscribe={}", session_id, reason, payload["retranscribe"])
+    from app.analysis.session_summary import request_session_timeline_summary
+
+    request_session_timeline_summary(
+        session_id,
+        reason=f"reanalysis:{reason}",
+        force=True,
+    )
     return True
 
 

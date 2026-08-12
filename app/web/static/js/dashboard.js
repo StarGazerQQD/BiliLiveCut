@@ -2,6 +2,18 @@
 import { $, api, toast, esc } from "./common.js";
 
 let scheduleDirty = false;
+let scheduleRevision = 0;
+let collectionTopicDirty = false;
+let collectionTopicRevision = 0;
+
+function markScheduleDirty() {
+  scheduleDirty = true;
+  scheduleRevision += 1;
+}
+
+function hasTrendDraft() {
+  return scheduleDirty || collectionTopicDirty;
+}
 
 // ----------------------------- \u5b9a\u65f6\u91c7\u96c6\u63a7\u4ef6\u540c\u6b65 ----------------------------- //
 function renderScheduler(s) {
@@ -21,11 +33,12 @@ function renderScheduler(s) {
 
 // ----------------------------- \u6e32\u67d3:\u7f51\u611f\u8d44\u6599\u5e93 ----------------------------- //
 async function loadTrends() {
+  const revision = scheduleRevision;
   const data = await api("GET", "/api/trends?limit=30&days=7");
   $("#trends-status").innerHTML = data.enabled
     ? `\u5df2\u542f\u7528 \u00b7 \u8054\u7f51\u641c\u7d22 ${data.web_search ? "\u5f00" : "\u5173"} \u00b7 \u8fd1 ${data.days} \u5929`
     : `\u672a\u542f\u7528(\u8bbe\u7f6e TREND_ENABLED=true \u5e76\u914d\u7f6e\u5927\u6a21\u578b API \u540e\u53ef\u7528)`;
-  renderScheduler(data.scheduler || {});
+  if (scheduleRevision === revision) renderScheduler(data.scheduler || {});
   const kw = data.keywords || [];
   $("#trends-keywords").innerHTML = kw.length
     ? `<div class="tagcloud">${kw.map((k) => `<span class="tagchip" title="\u51fa\u73b0 ${k.count} \u6b21">${esc(k.keyword)} \u00b7 ${k.heat}</span>`).join("")}</div>`
@@ -142,9 +155,10 @@ function renderTrendChart(daily) {
 
 // \u4e8b\u4ef6\u7ed1\u5b9a
 ["#trend-start", "#trend-end", "#trend-interval"].forEach((sel) =>
-  $(sel).addEventListener("input", () => { scheduleDirty = true; }));
-$("#sw-trend-schedule").addEventListener("change", () => { scheduleDirty = true; });
+  $(sel).addEventListener("input", markScheduleDirty));
+$("#sw-trend-schedule").addEventListener("change", markScheduleDirty);
 $("#btn-save-schedule").addEventListener("click", async () => {
+  const revision = scheduleRevision;
   const body = {
     trend_schedule_enabled: $("#sw-trend-schedule").checked,
     trend_schedule_start: $("#trend-start").value || "03:00",
@@ -153,20 +167,32 @@ $("#btn-save-schedule").addEventListener("click", async () => {
   };
   try {
     await api("PATCH", "/api/settings", body);
+    if (scheduleRevision !== revision) {
+      toast("已保存提交时的定时采集设置；保存期间还有新修改，请再次保存");
+      return;
+    }
     scheduleDirty = false;
+    scheduleRevision += 1;
     toast("\u5df2\u4fdd\u5b58\u5b9a\u65f6\u91c7\u96c6\u8bbe\u7f6e");
-    loadTrends();
+    await loadTrends();
   } catch (e) { toast("\u4fdd\u5b58\u5931\u8d25:" + e.message); }
 });
 
 $("#btn-collect-trends").addEventListener("click", async () => {
+  const revision = collectionTopicRevision;
   const topic = $("#trends-topic").value.trim();
   toast("\u8054\u7f51\u91c7\u96c6\u4e2d,\u8bf7\u7a0d\u5019\u2026");
   try {
     const r = await api("POST", "/api/trends/collect", { topic });
+    if (collectionTopicRevision === revision) collectionTopicDirty = false;
     toast(r.enabled ? `\u91c7\u96c6\u5b8c\u6210,\u65b0\u589e/\u66f4\u65b0 ${r.saved} \u6761` : (r.note || "\u672a\u542f\u7528"));
     loadTrends();
   } catch (e) { toast("\u91c7\u96c6\u5931\u8d25:" + e.message); }
 });
 
-export { loadTrends, renderScheduler, loadAnalytics, renderTrendChart, scheduleDirty };
+$("#trends-topic").addEventListener("input", () => {
+  collectionTopicDirty = true;
+  collectionTopicRevision += 1;
+});
+
+export { loadTrends, renderScheduler, loadAnalytics, renderTrendChart, hasTrendDraft };

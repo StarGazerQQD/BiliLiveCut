@@ -1,16 +1,16 @@
 // BiliLiveCut 控制台入口:导入模块、初始化标签切换与轮询
 import { $ } from "./js/common.js";
-import { loadRooms, saveRoom, saveRoomConfig, loadFeatureSwitches, saveGlobalFeatureSettings, saveFeatureSwitches, loadThresholdLearning, loadSchedules, delSchedule, loadTopics, toggleCollection } from "./js/rooms.js";
-import { startRoom, stopRoom, resumeRoom, markHighlight, correctTranscript, cancelTranscriptCorrection, retranscribeTranscript, loadRecording, loadTranscripts, loadDanmaku } from "./js/recording.js";
-import { loadSessionTimelines, toggleSessionTimeline, requestSessionReanalysis } from "./js/timeline.js";
+import { loadRooms, saveRoom, saveRoomConfig, loadFeatureSwitches, saveGlobalFeatureSettings, saveFeatureSwitches, loadThresholdLearning, loadSchedules, delSchedule, loadTopics, toggleCollection, hasRoomDraft } from "./js/rooms.js";
+import { startRoom, stopRoom, resumeRoom, markHighlight, copyTranscriptSourceFile, correctTranscript, cancelTranscriptCorrection, retranscribeTranscript, loadRecording, loadTranscripts, loadDanmaku, hasTranscriptDraft } from "./js/recording.js";
+import { loadSessionTimelines, toggleSessionTimeline, requestSessionReanalysis, regenerateSessionSummary } from "./js/timeline.js";
 import { approveCand, rejectCand, delCand } from "./js/review.js";
 import { loadClips, publishClip, enqueueClip, rejectClip } from "./js/clips.js";
-import { loadUploads, retryUpload, pollNotifications } from "./js/publishing.js";
-import { loadTrends, loadAnalytics } from "./js/dashboard.js";
-import { loadLLM, loadLogs, loadTasks, retryTask, cancelTask, loadCookieStatus, loadTemplates, exportTemplate, detTempl, loadIntroTemplates, detIntro } from "./js/settings.js";
+import { loadUploads, retryUpload, pollNotifications, hasPublishingDraft } from "./js/publishing.js";
+import { loadTrends, loadAnalytics, hasTrendDraft } from "./js/dashboard.js";
+import { loadLLM, loadLogs, loadTasks, retryTask, cancelTask, loadCookieStatus, loadTemplates, exportTemplate, detTempl, loadIntroTemplates, detIntro, hasLLMDraft } from "./js/settings.js";
 import { loadMonitor, triggerMaintenance } from "./js/monitor.js";
 import { loadJobs, cancelJob, retryJob } from "./js/jobs.js";
-import { loadPlugins } from "./js/plugins.js";
+import { loadPlugins, hasPluginMutationPending } from "./js/plugins.js";
 
 // 挂载全局函数:供 HTML 内联 onclick 使用
 window.saveRoom = saveRoom;
@@ -23,11 +23,13 @@ window.startRoom = startRoom;
 window.stopRoom = stopRoom;
 window.resumeRoom = resumeRoom;
 window.markHighlight = markHighlight;
+window.copyTranscriptSourceFile = copyTranscriptSourceFile;
 window.correctTranscript = correctTranscript;
 window.cancelTranscriptCorrection = cancelTranscriptCorrection;
 window.retranscribeTranscript = retranscribeTranscript;
 window.toggleSessionTimeline = toggleSessionTimeline;
 window.requestSessionReanalysis = requestSessionReanalysis;
+window.regenerateSessionSummary = regenerateSessionSummary;
 window.approveCand = approveCand;
 window.rejectCand = rejectCand;
 window.delCand = delCand;
@@ -43,6 +45,21 @@ window.detIntro = detIntro;
 window.triggerMaintenance = triggerMaintenance;
 window.cancelJob = cancelJob;
 window.retryJob = retryJob;
+
+function hasUnsavedDashboardDraft() {
+  return hasRoomDraft()
+    || hasTranscriptDraft()
+    || hasTrendDraft()
+    || hasLLMDraft()
+    || hasPublishingDraft()
+    || hasPluginMutationPending();
+}
+
+window.addEventListener("beforeunload", (event) => {
+  if (!hasUnsavedDashboardDraft()) return;
+  event.preventDefault();
+  event.returnValue = "";
+});
 
 // ----------------------------- 标签切换 ----------------------------- //
 let activeTab = "rooms";

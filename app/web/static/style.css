@@ -202,6 +202,7 @@ button, .btn-link {
   font-weight: 600;
   transition: transform 120ms ease, background-color 120ms ease, border-color 120ms ease, color 120ms ease;
 }
+.btn-link { display: inline-flex; align-items: center; padding: 8px 12px; border: 1px solid var(--border); }
 button:hover, .btn-link:hover { background: var(--panel-hover); border-color: var(--border-strong); color: var(--text); }
 button:active, .btn-link:active { transform: translateY(1px); }
 button.primary, button.btn-primary { background: var(--accent-strong); border-color: var(--accent-strong); color: #fff; }
@@ -401,6 +402,9 @@ button.ok:hover { background: var(--green-soft); border-color: rgba(85, 214, 160
 .timeline-counts b { color: var(--text); font-variant-numeric: tabular-nums; }
 .timeline-detail { margin-top: 16px; padding-top: 16px; border-top: 1px solid var(--border); }
 .timeline-detail[hidden] { display: none; }
+.whole-session-summary { margin-bottom: 18px; padding: 16px; border: 1px solid rgba(120, 169, 255, 0.32); border-radius: var(--radius); background: linear-gradient(135deg, var(--accent-soft), var(--panel2)); }
+.whole-session-summary .head { align-items: flex-start; }
+.whole-session-summary-text { margin: 13px 0 0; color: var(--text-soft); line-height: 1.75; white-space: normal; }
 .session-timeline { margin: 0; padding: 0; list-style: none; }
 .timeline-point {
   display: grid;

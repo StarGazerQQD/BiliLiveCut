@@ -27,6 +27,7 @@
 </div>
   <script>
     let currentStatus = "pending";
+    let queueLoadGeneration = 0;
     const esc = value => String(value ?? "").replace(/[&<>"']/g, c => ({"&":"&amp;","<":"&lt;",">":"&gt;",'"':"&quot;","'":"&#39;"})[c]);
     async function api(url, options = {}) {
       const response = await fetch(url, {headers:{"Content-Type":"application/json"}, ...options});
@@ -35,8 +36,10 @@
       return data;
     }
     async function loadQueue() {
+      const generation = ++queueLoadGeneration;
       const mine = document.querySelector("#mine").checked ? "&mine=true" : "";
       const data = await api(`/review/api/queue?status=${currentStatus}${mine}`);
+      if (generation !== queueLoadGeneration) return;
       document.querySelector("#viewer").textContent = `${data.actor} · ${data.role}${data.blind_mode ? " · 已启用盲审" : ""}`;
       for (const key of ["pending","claimed","reviewed"]) document.querySelector(`#count-${key}`).textContent = data.counts[key];
       const root = document.querySelector("#queue");

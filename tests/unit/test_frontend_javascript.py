@@ -13,6 +13,7 @@ PROJECT_ROOT = Path(__file__).resolve().parents[2]
 STATIC_ROOT = PROJECT_ROOT / "app" / "web" / "static"
 JAVASCRIPT_FILES = tuple(sorted(STATIC_ROOT.rglob("*.js")))
 TEMPLATE_FILES = tuple(sorted((PROJECT_ROOT / "app" / "web" / "templates").glob("*.html")))
+INLINE_SCRIPT_TEMPLATES = tuple(path for path in TEMPLATE_FILES if "<script>" in path.read_text(encoding="utf-8"))
 INTERACTION_CHECK = PROJECT_ROOT / "scripts" / "check_frontend_interactions.mjs"
 
 
@@ -69,6 +70,34 @@ def test_html_template_element_ids_are_unique(template_path: Path) -> None:
     assert duplicates == [], f"{template_path.name} 存在重复 ID: {duplicates}"
 
 
+@pytest.mark.parametrize(
+    "template_path",
+    INLINE_SCRIPT_TEMPLATES,
+    ids=lambda path: path.relative_to(PROJECT_ROOT).as_posix(),
+)
+def test_inline_template_javascript_has_valid_syntax(template_path: Path) -> None:
+    """独立页面内联脚本也必须通过 JavaScript 语法解析。"""
+    node = shutil.which("node")
+    assert node is not None, "前端语法检查需要 Node.js"
+    html = template_path.read_text(encoding="utf-8")
+    source = html.split("<script>", 1)[1].split("</script>", 1)[0]
+    source = source.replace("{{ candidate_id | int }}", "1").replace("{{ topic_id | int }}", "1")
+
+    result = subprocess.run(
+        [node, "--input-type=commonjs", "--check"],
+        input=source,
+        capture_output=True,
+        text=True,
+        encoding="utf-8",
+        errors="replace",
+        timeout=30,
+        check=False,
+    )
+
+    relative_path = template_path.relative_to(PROJECT_ROOT).as_posix()
+    assert result.returncode == 0, f"{relative_path} 的内联脚本语法无效:\n{result.stderr}"
+
+
 def test_recording_pipeline_has_visible_switch_and_no_hardcoded_web_override() -> None:
     """Web 录制应采用可见全局开关，不再把 Pipeline 强制写死为开启。"""
     template = (PROJECT_ROOT / "app" / "web" / "templates" / "dashboard.html").read_text(encoding="utf-8")
@@ -91,10 +120,27 @@ def test_transcript_page_exposes_safe_retranscription_action() -> None:
     assert "window.retranscribeTranscript" in app_js
     assert 'api("PATCH", `/api/transcripts/${id}`' in recording_js
     assert "dirtyTranscriptIds.size > 0" in recording_js
+    assert "hasOpenTranscriptEditor" in recording_js
+    assert 'addEventListener("change", markTranscriptDirty)' in recording_js
     assert "transcriptEditorRevision !== revision" in recording_js
     assert "data-transcript-detail" in recording_js
     assert "openTranscriptDetails" in recording_js
+    assert "transcriptListSignature" in recording_js
     assert "window.correctTranscript" in app_js
+
+
+def test_transcript_page_shows_and_copies_source_ts_file_name() -> None:
+    """每条实时转写都应明确对应源 TS 文件并提供复制入口。"""
+    recording_js = (STATIC_ROOT / "js" / "recording.js").read_text(encoding="utf-8")
+    app_js = (STATIC_ROOT / "app.js").read_text(encoding="utf-8")
+
+    assert "source_file_name" in recording_js
+    assert "源 TS 文件" in recording_js
+    assert "copyTranscriptSourceFile" in recording_js
+    assert "/source-mp4" in recording_js
+    assert "无损导出 MP4" in recording_js
+    assert "navigator.clipboard" in recording_js
+    assert "window.copyTranscriptSourceFile" in app_js
 
 
 def test_dashboard_uses_session_timeline_as_primary_review_view() -> None:
@@ -118,6 +164,11 @@ def test_dashboard_uses_session_timeline_as_primary_review_view() -> None:
     assert "preservedDetails" in timeline_js
     assert "captureTimelineViewport" in timeline_js
     assert "restoreTimelineViewport" in timeline_js
+    assert "whole_session_summary" in timeline_js
+    assert "全场高光总结" in timeline_js
+    assert "regenerateSessionSummary" in timeline_js
+    assert "/timeline-summary" in timeline_js
+    assert "window.regenerateSessionSummary" in app_js
 
 
 def test_room_dictionary_ui_exposes_manual_and_learned_aliases() -> None:
@@ -141,6 +192,44 @@ def test_room_and_feature_forms_pause_refresh_while_dirty() -> None:
     assert "data-room-detail" in rooms_js
     assert "selectedRoom" in rooms_js
     assert "selectedSession" in rooms_js
+    assert "roomEditorRevision !== revision" in rooms_js
+    assert "featureEditorRevision !== revision" in rooms_js
+
+
+def test_all_editable_pages_guard_local_drafts_against_late_responses() -> None:
+    """轮询页和独立编辑页都应保留请求期间产生的新草稿。"""
+    dashboard_js = (STATIC_ROOT / "js" / "dashboard.js").read_text(encoding="utf-8")
+    publishing_js = (STATIC_ROOT / "js" / "publishing.js").read_text(encoding="utf-8")
+    plugin_settings_js = (STATIC_ROOT / "js" / "plugin_settings.js").read_text(encoding="utf-8")
+    review_html = (PROJECT_ROOT / "app" / "web" / "templates" / "review.html").read_text(encoding="utf-8")
+    collection_html = (PROJECT_ROOT / "app" / "web" / "templates" / "collection.html").read_text(encoding="utf-8")
+
+    assert "scheduleRevision === revision" in dashboard_js
+    assert "switchesRevision === revision" in publishing_js
+    assert "settingsRevision !== revision" in plugin_settings_js
+    assert 'addEventListener("beforeunload"' in plugin_settings_js
+    assert "reviewReasonRevision !== reasonRevision" in review_html
+    assert "preserveBoundary" in review_html
+    assert "hasCollectionDraft" in collection_html
+    assert 'addEventListener("beforeunload"' in collection_html
+
+    settings_js = (STATIC_ROOT / "js" / "settings.js").read_text(encoding="utf-8")
+    rooms_js = (STATIC_ROOT / "js" / "rooms.js").read_text(encoding="utf-8")
+    review_queue_html = (PROJECT_ROOT / "app" / "web" / "templates" / "review_queue.html").read_text(encoding="utf-8")
+    assert "_llmDirty || _llmRevision !== revision" in settings_js
+    assert "newRoomFormRevision === revision" in rooms_js
+    assert "scheduleLoadGeneration" in rooms_js
+    assert "topicLoadGeneration" in rooms_js
+    assert "queueLoadGeneration" in review_queue_html
+
+    plugins_js = (STATIC_ROOT / "js" / "plugins.js").read_text(encoding="utf-8")
+    assert "pendingPluginIds" in plugins_js
+    assert "pluginMutationRevision !== revision" in plugins_js
+    assert "reviewLoadGeneration" in review_html
+    app_js = (STATIC_ROOT / "app.js").read_text(encoding="utf-8")
+    assert "hasUnsavedDashboardDraft" in app_js
+    assert 'window.addEventListener("beforeunload"' in app_js
+    assert "hasTranscriptDraft" in app_js
 
 
 def test_frontend_module_graph_and_tab_interaction() -> None:

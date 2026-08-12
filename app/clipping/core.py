@@ -190,6 +190,7 @@ def _build_audio_filter(options: ClipOptions) -> str:
 
     * ``silenceremove``:去掉首尾静默。配合 ``areverse`` 处理尾部。
     * ``loudnorm``:EBU R128 响度标准化(I=-16 LUFS 为流媒体常用目标)。
+    * ``asetpts``:把首个保留音频采样归零，避免 TS 的 AAC 预滚污染 MP4 起点。
 
     :param options: 切片选项。
     :returns: 逗号连接的音频滤镜串;无滤镜时为空字符串。
@@ -201,6 +202,10 @@ def _build_audio_filter(options: ClipOptions) -> str:
         filters += [sr, "areverse", sr, "areverse"]
     if options.loudnorm:
         filters.append("loudnorm=I=-16:TP=-1.5:LRA=11")
+    # MPEG-TS 中音频和视频通常不会从完全相同的 PTS 起步。输出 MP4 前必须在
+    # 所有会改变音频长度的滤镜之后归零，否则 AAC 预滚会让容器先于首个视频帧
+    # 开始，剪辑软件便会把这段空窗显示成一帧黑画面。
+    filters.append("asetpts=PTS-STARTPTS")
     return ",".join(filters)
 
 
@@ -209,12 +214,15 @@ def _build_video_filter(options: ClipOptions, srt_path: Path | None) -> str:
 
     * 竖屏重构:等比缩放到不超过 1080x1920,再用黑边居中填充(避免裁切丢内容)。
     * 字幕:用 ``subtitles`` 滤镜烧录(Windows 下对路径中的冒号做转义)。
+    * ``setpts``:让首个真实视频帧从 MP4 的 0 秒开始，消除 TS 转码首帧空窗。
 
     :param options: 切片选项。
     :param srt_path: 字幕文件路径(启用字幕时)。
     :returns: 逗号连接的视频滤镜串;无滤镜时为空字符串。
     """
-    filters: list[str] = []
+    # 先归零再做画面处理，尤其确保以切片本地时间生成的 SRT 在归零后的时间轴
+    # 上烧录，不能让字幕滤镜先看到 TS 的原始非零 PTS。
+    filters: list[str] = ["setpts=PTS-STARTPTS"]
     if options.vertical:
         # decrease 保证不超出目标框;pad 居中补黑边到精确分辨率。
         filters.append(
@@ -948,7 +956,7 @@ def _run_ffmpeg_clip(
     * ``-f concat -safe 0 -i list``:用 concat demuxer 把多个 ts 当作单一输入;
     * ``-ss`` 置于输入后:对拼接流做帧精确定位(再编码,慢但准);
     * ``-t duration``:截取时长;
-    * ``-af`` / ``-vf``:音/视频后处理滤镜(见各自构造函数);
+    * ``-af`` / ``-vf``:音/视频后处理并把各自首个有效帧的时间戳归零;
     * ``-c:v libx264 -crf -preset``:H.264 编码,CRF 控质量;
     * ``-c:a aac -b:a 160k``:AAC 音频;
     * ``-movflags +faststart``:moov 前置,便于网络边下边播。
