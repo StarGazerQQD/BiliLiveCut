@@ -44,7 +44,7 @@ def extract_transcript_window(
 ) -> TranscriptWindow:
     """只返回与指定片内时间窗重叠的转写内容。
 
-    优先使用 ASR 词级时间戳。旧数据没有可用词级时间戳时，按片段时长
+    优先使用 ASR 词级时间戳。当前引擎没有返回可用词级时间戳时，按片段时长
     对正文做比例裁剪，避免把候选之后的整段内容交给文案模型。
 
     :param text: 原始片段的完整转写正文。
@@ -86,7 +86,7 @@ def extract_session_transcript_window(
     """跨连续录制分段提取一个绝对时间窗内的转写。
 
     词级时间戳会被换算为相对整个目标窗口的秒数，便于语速计算和后续
-    时间轴展示。缺少词级时间戳的旧数据仍按各分段时长比例裁剪。
+    时间轴展示。缺少词级时间戳的结果按各分段时长比例裁剪。
     """
     normalized_start = _coerce_datetime_like(start_ts, start_ts)
     normalized_end = _coerce_datetime_like(end_ts, start_ts)
@@ -143,36 +143,35 @@ def _coerce_datetime_like(value: datetime, reference: datetime) -> datetime:
 
 
 def _datetime_epoch(value: datetime) -> float:
-    """返回兼容有/无时区 UTC 时间的排序键。"""
+    """返回统一为 UTC 的排序键。"""
     return (value.replace(tzinfo=UTC) if value.tzinfo is None else value).timestamp()
 
 
 def _decode_words(words_json: str | None) -> list[dict[str, object]]:
-    """解析并保留包含有效起止时间的词级条目。"""
+    """解析当前唯一的 ``[{w,start,end}]`` 词级时间戳格式。"""
     if not words_json:
         return []
     try:
         raw = json.loads(words_json)
-    except (json.JSONDecodeError, TypeError):
-        return []
+    except (json.JSONDecodeError, TypeError) as exc:
+        raise ValueError("词时间戳不是有效 JSON") from exc
     if not isinstance(raw, list):
-        return []
+        raise ValueError("词时间戳必须是 JSON 数组")
 
     decoded: list[dict[str, object]] = []
-    for item in raw:
-        if not isinstance(item, dict):
-            continue
+    for index, item in enumerate(raw):
+        if not isinstance(item, dict) or set(item) != {"w", "start", "end"}:
+            raise ValueError(f"词时间戳第 {index} 项必须且只能包含 w/start/end")
+        if not isinstance(item["w"], str):
+            raise ValueError(f"词时间戳第 {index} 项的 w 必须是字符串")
         try:
-            start = float(item.get("start", 0.0))
-            end = float(item.get("end", start))
-        except (TypeError, ValueError):
-            continue
-        if not math.isfinite(start) or not math.isfinite(end):
-            continue
-        normalized = dict(item)
-        normalized["start"] = start
-        normalized["end"] = max(start, end)
-        decoded.append(normalized)
+            start = float(item["start"])
+            end = float(item["end"])
+        except (TypeError, ValueError) as exc:
+            raise ValueError(f"词时间戳第 {index} 项的 start/end 必须是数值") from exc
+        if not math.isfinite(start) or not math.isfinite(end) or end < start:
+            raise ValueError(f"词时间戳第 {index} 项的时间范围无效")
+        decoded.append({"w": item["w"], "start": start, "end": end})
     return decoded
 
 
@@ -186,11 +185,10 @@ def _word_overlaps(word: dict[str, object], start_s: float, end_s: float) -> boo
 
 
 def _join_word_tokens(words: list[dict[str, object]]) -> str:
-    """兼容 FunASR/Whisper 字段名并恢复中英文词间距。"""
+    """从当前 ``w`` 字段恢复中英文词间距。"""
     result = ""
     for word in words:
-        raw = word.get("w", word.get("word", word.get("text", "")))
-        token = str(raw or "")
+        token = str(word["w"])
         if not token:
             continue
         if result and _needs_ascii_space(result[-1], token[0]):

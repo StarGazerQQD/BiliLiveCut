@@ -10,7 +10,7 @@ from loguru import logger
 from sqlmodel import Session, select
 
 from app.analysis.timeline import TIMELINE_ANALYSIS_VERSION
-from app.db.models import (
+from app.db.entities import (
     AppSetting,
     ClipVariant,
     FinalClip,
@@ -25,9 +25,12 @@ from app.db.models import (
     Transcript,
 )
 from app.db.session import get_session
-from app.pipeline.stage_result import make_idempotency_key, make_pipeline_key, make_stage_key
+from app.pipeline.stage_result import make_pipeline_key, make_stage_key
+from app.web.services.review_workflow import has_review_draft
 
 _PENDING_KEY_PREFIX = "session_reanalysis:"
+_REQUEST_VERSION = 1
+_REQUEST_FIELDS = {"version", "session_id", "reason", "retranscribe", "requested_at"}
 _UNSETTLED_ANALYSIS_STAGES = {
     TaskStatus.RECORDED,
     TaskStatus.QUEUED_FOR_TRANS,
@@ -36,7 +39,7 @@ _UNSETTLED_ANALYSIS_STAGES = {
     TaskStatus.QUEUED_FOR_ANALYSIS,
     TaskStatus.ANALYZING,
 }
-_OLD_RESULT_STAGES = {TaskStatus.TRANSCRIBING, TaskStatus.TRANSCRIBED, TaskStatus.ANALYZING}
+_RESULT_WRITING_STAGES = {TaskStatus.TRANSCRIBING, TaskStatus.TRANSCRIBED, TaskStatus.ANALYZING}
 
 
 @dataclass(slots=True)
@@ -126,8 +129,11 @@ def request_session_reanalysis(
     同一场次的重复请求会合并；只要任一请求要求重新转写，最终请求就保留该要求。
     没有原始分段，或既没有流水线任务也未启用自动分析的场次不会入队。
     """
-    from app.db.models import LiveRoom, RecordingSession
+    from app.db.entities import LiveRoom, RecordingSession
 
+    reason = reason.strip()
+    if not reason:
+        raise ValueError("重分析原因不能为空")
     key = f"{_PENDING_KEY_PREFIX}{session_id}"
     with get_session() as db:
         recording = db.get(RecordingSession, session_id)
@@ -143,6 +149,7 @@ def request_session_reanalysis(
         existing = db.get(AppSetting, key)
         previous = _decode_pending_payload(existing.value if existing is not None else None)
         payload = {
+            "version": _REQUEST_VERSION,
             "session_id": session_id,
             "reason": reason[:200],
             "retranscribe": bool(retranscribe or previous.get("retranscribe", False)),
@@ -217,7 +224,7 @@ def _event_is_protected(db: Session, event: HighlightEvent) -> bool:
     """判断事件是否包含不可覆盖的人工或下游资产。"""
     if event.review_by != "auto" or _has_manual_boundary(event) or _has_review_draft(event.features_json):
         return True
-    candidate = db.get(HighlightCandidate, event.candidate_id) if event.candidate_id else None
+    candidate = db.get(HighlightCandidate, event.candidate_id)
     if event.id is not None:
         if db.exec(select(ClipVariant).where(ClipVariant.event_id == event.id)).first() is not None:
             return True
@@ -233,18 +240,11 @@ def _event_is_protected(db: Session, event: HighlightEvent) -> bool:
 
 def _has_review_draft(raw: str | None) -> bool:
     """检查候选特征中是否保存了人工审核草稿。"""
-    if not raw:
-        return False
-    try:
-        payload = json.loads(raw)
-    except (json.JSONDecodeError, TypeError):
-        return False
-    workflow = payload.get("_review_workflow", {}) if isinstance(payload, dict) else {}
-    return isinstance(workflow, dict) and isinstance(workflow.get("draft"), dict)
+    return has_review_draft(raw)
 
 
 def _has_manual_boundary(event: HighlightEvent) -> bool:
-    """只有偏离原始窗口的边界才视为人工资产；旧数据中相同值不应阻止重分析。"""
+    """只有偏离原始窗口的边界才视为人工资产。"""
     if event.adjusted_start_ts is not None and event.adjusted_start_ts != event.raw_start_ts:
         return True
     return event.adjusted_end_ts is not None and event.adjusted_end_ts != event.raw_end_ts
@@ -253,7 +253,7 @@ def _has_manual_boundary(event: HighlightEvent) -> bool:
 def _delete_auto_events(db: Session, events: list[HighlightEvent]) -> None:
     """删除确认无人工资产的旧自动分析结果。"""
     for event in events:
-        candidate = db.get(HighlightCandidate, event.candidate_id) if event.candidate_id else None
+        candidate = db.get(HighlightCandidate, event.candidate_id)
         db.delete(event)
         db.flush()
         if candidate is not None:
@@ -265,9 +265,8 @@ def _reset_task(task: SegmentTask, *, reason: str, rerun_asr: bool) -> None:
     """把非活跃任务重置到转写或分析队列。"""
     target = TaskStatus.QUEUED_FOR_TRANS if rerun_asr else TaskStatus.QUEUED_FOR_ANALYSIS
     task.stage = target
-    task.pipeline_key = task.pipeline_key or make_pipeline_key(task.segment_id)
+    task.pipeline_key = make_pipeline_key(task.segment_id)
     task.stage_key = make_stage_key(task.segment_id, target)
-    task.idempotency_key = make_idempotency_key(task.segment_id, target)
     task.candidate_id = None
     task.event_id = None
     task.clip_id = None
@@ -311,7 +310,7 @@ def _task_is_active(task: SegmentTask) -> bool:
 
 
 def _session_analysis_unsettled(session_id: int) -> bool:
-    """检查场次是否仍有可能提交旧版转写或分析结果的任务。"""
+    """检查场次是否仍有正在提交转写或分析结果的任务。"""
     with get_session() as db:
         tasks = db.exec(select(SegmentTask).where(SegmentTask.session_id == session_id)).all()
     for task in tasks:
@@ -319,29 +318,45 @@ def _session_analysis_unsettled(session_id: int) -> bool:
             return True
         if task.stage in _UNSETTLED_ANALYSIS_STAGES:
             return True
-        if task.stage == TaskStatus.TRANSIENT_FAILED and task.failed_stage in _OLD_RESULT_STAGES:
+        if task.stage == TaskStatus.TRANSIENT_FAILED and task.failed_stage in _RESULT_WRITING_STAGES:
             return True
-        if task.stage == TaskStatus.STALE and (task.failed_stage is None or task.failed_stage in _OLD_RESULT_STAGES):
+        if task.stage == TaskStatus.STALE and (
+            task.failed_stage is None or task.failed_stage in _RESULT_WRITING_STAGES
+        ):
             return True
     return False
 
 
 def _decode_pending_payload(raw: str | None) -> dict[str, object]:
+    """只接受当前版本且字段精确匹配的重分析请求。"""
     if not raw:
         return {}
     try:
         payload = json.loads(raw)
     except (json.JSONDecodeError, TypeError):
         return {}
-    return payload if isinstance(payload, dict) else {}
+    if not isinstance(payload, dict) or set(payload) != _REQUEST_FIELDS:
+        return {}
+    if payload["version"] != _REQUEST_VERSION:
+        return {}
+    if not isinstance(payload["session_id"], int) or isinstance(payload["session_id"], bool):
+        return {}
+    if not isinstance(payload["reason"], str) or not payload["reason"]:
+        return {}
+    if not isinstance(payload["retranscribe"], bool):
+        return {}
+    if not isinstance(payload["requested_at"], str) or not payload["requested_at"]:
+        return {}
+    return payload
 
 
 def _session_id_from_pending(key: str, payload: dict[str, object]) -> int | None:
     value = payload.get("session_id")
-    try:
-        return int(value if value is not None else key.removeprefix(_PENDING_KEY_PREFIX))
-    except (TypeError, ValueError):
+    if not isinstance(value, int) or isinstance(value, bool):
         return None
+    if key != f"{_PENDING_KEY_PREFIX}{value}":
+        return None
+    return value
 
 
 def _delete_pending_request(key: str) -> None:

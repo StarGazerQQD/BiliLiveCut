@@ -13,7 +13,3 @@ from app.pipeline.workers.transcribe import (  # noqa: F401
     run_transcribe,
     transcribe_compute,
 )
-
-# 后向兼容别名
-publish_compute = execute_remote_upload
-commit_publish = commit_publish_result

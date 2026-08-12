@@ -54,7 +54,7 @@ async def test_start_uses_pipeline_default_and_enables_room_analysis(
     monkeypatch: MonkeyPatch,
 ) -> None:
     """Web 默认 Pipeline 开启时必须同步 auto_analyze，否则片段回调会被跳过。"""
-    from app.db.models import LiveRoom
+    from app.db.entities import LiveRoom
     from app.db.session import get_session
     from app.web.services import rooms
 
@@ -94,7 +94,7 @@ async def test_start_uses_pipeline_default_and_enables_room_analysis(
 
 def _seed_room_session(tmp_path: Path) -> tuple[int, int, datetime]:
     """创建房间和活动会话。"""
-    from app.db.models import LiveRoom, RecordingSession, SessionStatus
+    from app.db.entities import LiveRoom, RecordingSession, SessionStatus
     from app.db.session import get_session
 
     now = datetime.now(UTC).replace(microsecond=0)
@@ -118,7 +118,7 @@ def _seed_room_session(tmp_path: Path) -> tuple[int, int, datetime]:
 
 def test_dashboard_uses_shared_recording_runtime(temp_db: None) -> None:
     """仪表盘必须读取录制控制 API 使用的同一份运行时状态。"""
-    from app.db.models import LiveRoom, SessionStatus
+    from app.db.entities import LiveRoom, SessionStatus
     from app.db.session import get_session
     from app.web import service
     from app.web.services.rooms import recorder_manager
@@ -150,7 +150,7 @@ async def test_graceful_stop_persists_pause_and_cancels_pending(
     from sqlmodel import select
 
     from app.analysis.room_config import load_room_config
-    from app.db.models import LiveRoom, RawSegment, RecordingSession, SegmentTask, SessionStatus, TaskStatus
+    from app.db.entities import LiveRoom, RawSegment, RecordingSession, SegmentTask, SessionStatus, TaskStatus
     from app.db.session import get_session
     from app.web.services.rooms import RecorderManager
 
@@ -210,7 +210,7 @@ async def test_graceful_stop_persists_pause_and_cancels_pending(
 async def test_manual_stop_suppresses_restart_without_showing_paused(temp_db: None, tmp_path: Path) -> None:
     """“停止并收尾”阻止监控器重启，但会话与界面均应显示已停止。"""
     from app.analysis.room_config import load_room_config
-    from app.db.models import LiveRoom, RecordingSession, SessionStatus
+    from app.db.entities import LiveRoom, RecordingSession, SessionStatus
     from app.db.session import get_session
     from app.web.services.rooms import RecorderManager
 
@@ -263,7 +263,7 @@ async def test_paused_stopping_session_is_not_auto_recovered(
 ) -> None:
     """进程在人工停止期间退出时,重启不会把房间再次拉起。"""
     from app.analysis.room_config import merge_room_config
-    from app.db.models import LiveRoom, RecordingSession, SessionStatus
+    from app.db.entities import LiveRoom, RecordingSession, SessionStatus
     from app.db.session import get_session
     from app.web.services import rooms
 
@@ -292,7 +292,7 @@ async def test_manual_marker_is_persisted_and_clamped_to_media(temp_db: None, tm
     """直播打点生成待审候选,会话结束时按真实媒体终点收敛。"""
     from sqlmodel import select
 
-    from app.db.models import HighlightCandidate, HighlightEvent, RawSegment
+    from app.db.entities import HighlightCandidate, HighlightEvent, RawSegment
     from app.db.session import get_session
     from app.web.services.rooms import RecorderManager, _finalize_manual_markers
 
@@ -541,7 +541,7 @@ async def test_manager_cleans_up_naturally_finished_recorder(
     monkeypatch: MonkeyPatch,
 ) -> None:
     """录制器自行结束后应移除运行任务、关闭房间标记并恢复网感采集。"""
-    from app.db.models import LiveRoom
+    from app.db.entities import LiveRoom
     from app.db.session import get_session
     from app.trends.scheduler import trend_scheduler
     from app.web.services.rooms import RecorderManager
@@ -581,7 +581,7 @@ async def test_retry_exhaustion_waits_for_a_real_offline_transition(
     from types import SimpleNamespace
 
     from app.analysis.room_config import load_room_config, merge_room_config
-    from app.db.models import LiveRoom
+    from app.db.entities import LiveRoom
     from app.db.session import get_session
     from app.pipeline import live_monitor as live_monitor_module
     from app.web import service as service_module

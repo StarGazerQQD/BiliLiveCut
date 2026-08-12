@@ -9,7 +9,7 @@ from pathlib import Path
 
 from sqlmodel import select
 
-from app.db.models import (
+from app.db.entities import (
     ClipVariant,
     RawSegment,
     RenderStatus,
@@ -18,7 +18,7 @@ from app.db.models import (
     UploadAttempt,
     UploadStatus,
 )
-from app.db.models import SegmentStatus as OldStatus
+from app.db.entities import SegmentStatus as OldStatus
 from app.db.session import get_session
 from app.pipeline.lifecycle import now_utc
 
@@ -119,34 +119,11 @@ def recover_stale() -> None:
 
 
 def recover_orphans() -> None:
-    """恢复孤立任务: stale 恢复 + 无心跳中间状态回退 + 孤立片段任务创建。"""
-    from app.pipeline.stage_result import make_idempotency_key, make_pipeline_key, make_stage_key
+    """恢复孤立任务: stale 恢复 + 孤立片段任务创建。"""
+    from app.pipeline.stage_result import make_pipeline_key, make_stage_key
 
     recover_stale()
     with get_session() as db:
-        stuck = db.exec(
-            select(SegmentTask).where(
-                SegmentTask.stage.in_(
-                    [
-                        TaskStatus.TRANSCRIBING,
-                        TaskStatus.ANALYZING,
-                        TaskStatus.RENDERING,
-                        TaskStatus.PUBLISHING,
-                    ]
-                ),
-                SegmentTask.heartbeat_at.is_(None),
-            )
-        ).all()
-        for task in stuck:
-            res = resume_stage(task.stage)
-            task.stage = res
-            task.started_at = None
-            task.next_retry_at = None
-            task.claimed_by = None
-            db.add(task)
-        if stuck:
-            _logger.info("恢复: 回退 %d 个旧格式中间状态任务。", len(stuck))
-
         existing_ids = set(db.exec(select(SegmentTask.segment_id)).all())
         orphan_segs = db.exec(
             select(RawSegment).where(
@@ -163,7 +140,6 @@ def recover_orphans() -> None:
                 stage=TaskStatus.RECORDED,
                 pipeline_key=pipeline_key,
                 stage_key=stage_key,
-                idempotency_key=make_idempotency_key(seg.id, "recorded"),
             )
             db.add(t)
         if orphan_segs:

@@ -20,7 +20,14 @@ if TYPE_CHECKING:
 
 def _seed_candidate(tmp_path: Path) -> tuple[int, datetime]:
     """创建带完整录像覆盖范围的候选。"""
-    from app.db.models import HighlightCandidate, LiveRoom, RawSegment, RecordingSession, SessionStatus
+    from app.db.entities import (
+        HighlightCandidate,
+        HighlightEvent,
+        LiveRoom,
+        RawSegment,
+        RecordingSession,
+        SessionStatus,
+    )
     from app.db.session import get_session
 
     base = datetime.now(UTC).replace(microsecond=0)
@@ -53,17 +60,26 @@ def _seed_candidate(tmp_path: Path) -> tuple[int, datetime]:
             start_ts=base + timedelta(seconds=10),
             end_ts=base + timedelta(seconds=40),
             highlight_score=0.9,
+            dedup_hash=f"review-boundary-{session.id}",
         )
         db.add(candidate)
         db.flush()
         candidate_id = candidate.id
-    assert candidate_id is not None
+        assert candidate_id is not None
+        db.add(
+            HighlightEvent(
+                candidate_id=candidate_id,
+                session_id=session.id,
+                raw_start_ts=candidate.start_ts,
+                raw_end_ts=candidate.end_ts,
+            )
+        )
     return candidate_id, base
 
 
 def test_adjust_boundary_accepts_json_and_persists(temp_db: None, tmp_path: Path) -> None:
     """边界接口接收前端 JSON,校验后持久化并能在审片数据中恢复。"""
-    from app.db.models import HighlightEvent
+    from app.db.entities import HighlightEvent
     from app.db.session import get_session
     from app.web.main import app
 
@@ -161,7 +177,7 @@ def test_rerender_uses_committed_adjusted_boundary_and_versioned_path(
 def test_validate_clip_boundary_rejects_recording_gap(temp_db: None, tmp_path: Path) -> None:
     """跨越真实录像缺口的剪辑边界必须被拒绝。"""
     from app.clipping.clipper import validate_clip_boundary
-    from app.db.models import LiveRoom, RawSegment, RecordingSession
+    from app.db.entities import LiveRoom, RawSegment, RecordingSession
     from app.db.session import get_session
 
     base = datetime.now(UTC).replace(microsecond=0)

@@ -48,10 +48,6 @@ class ClipVariant(SQLModel, table=True):
 
     id: int | None = Field(default=None, primary_key=True)
     event_id: int = Field(index=True, foreign_key="highlight_events.id", description="关联 highlight_events.id")
-    candidate_id: int | None = Field(
-        default=None, index=True, description="[已废弃 V0.1.12.2]关联 highlight_candidates.id(仅向后兼容)"
-    )  # noqa: E501
-
     variant_type: str = Field(default=ClipVariantType.SINGLE, description="版本类型")
     render_config_hash: str | None = Field(
         default=None, description="V0.1.12.5:渲染配置哈希,与 event_id+variant_type 组成唯一约束"

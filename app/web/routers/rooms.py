@@ -14,6 +14,8 @@ from app.web.services.rooms import RoomNotFoundError, RoomUpdateConflictError
 class AddRoomRequest(BaseModel):
     """添加直播间请求体。"""
 
+    model_config = ConfigDict(extra="forbid")
+
     url: str
     authorized: bool = False
 
@@ -21,7 +23,8 @@ class AddRoomRequest(BaseModel):
 class UpdateRoomRequest(BaseModel):
     """直播间配置更新请求体。"""
 
-    mode: str | None = None
+    model_config = ConfigDict(extra="forbid")
+
     highlight_threshold: float | None = None
     auto_publish_threshold: float | None = None
     authorized: bool | None = None
@@ -42,6 +45,8 @@ class UpdateRoomRequest(BaseModel):
 
 class StartRequest(BaseModel):
     """录制/流水线启动请求体。"""
+
+    model_config = ConfigDict(extra="forbid")
 
     pipeline: bool | None = None
     produce: bool = False
@@ -97,7 +102,6 @@ def patch_room(db_id: int, req: UpdateRoomRequest) -> dict[str, Any]:
         raise HTTPException(status_code=400, detail=str(exc)) from exc
     return {
         "id": room.id,
-        "mode": room.mode,
         "highlight_threshold": room.highlight_threshold,
         "title": room.title,
         "uploader_name": room.uploader_name,

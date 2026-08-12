@@ -11,7 +11,7 @@ import logging
 import time
 from typing import Any
 
-from app.db.models import RawSegment, SegmentStatus, SegmentTask, TaskStatus, Transcript
+from app.db.entities import RawSegment, SegmentStatus, SegmentTask, TaskStatus, Transcript
 from app.db.session import get_session
 from app.pipeline.lease import LeaseLostError, TaskLease, still_owns_lease
 from app.pipeline.stage_result import enqueue_next, mark_completed
@@ -262,12 +262,11 @@ def commit_transcript(lease: TaskLease, compute_result: dict[str, Any], ms: int)
             transcript = Transcript(
                 segment_id=segment_id,
                 language=compute_result.get("language"),
-                text=compute_result.get("text"),
                 words_json=compute_result.get("words_json"),
                 avg_logprob=compute_result.get("avg_logprob"),
                 auxiliary_json=compute_result.get("auxiliary_json"),
                 base_text=compute_result.get("base_text"),
-                final_text=compute_result.get("final_text"),
+                final_text=str(compute_result.get("final_text") or ""),
                 primary_backend=compute_result.get("primary_backend"),
                 primary_model_id=compute_result.get("primary_model_id"),
                 primary_model_revision=compute_result.get("primary_model_revision"),

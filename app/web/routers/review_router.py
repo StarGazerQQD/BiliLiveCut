@@ -32,7 +32,7 @@ from app.analysis.transcript_windows import extract_transcript_window
 if TYPE_CHECKING:
     from sqlmodel import Session
 
-    from app.db.models import HighlightCandidate, HighlightEvent, RawSegment, SegmentTask
+    from app.db.entities import HighlightCandidate, HighlightEvent, RawSegment, SegmentTask
 
 review_router = APIRouter(prefix="/review", tags=["review"])
 
@@ -76,42 +76,23 @@ class ReviewDraftRequest(BaseModel):
     reason: str | None = Field(default=None, max_length=2000)
 
 
-def _ensure_event(db: Session, candidate: HighlightCandidate) -> HighlightEvent:
-    """读取或创建候选对应的唯一审核事件。"""
-    from app.db.models import HighlightEvent
+def _require_event(db: Session, candidate: HighlightCandidate) -> HighlightEvent:
+    """读取候选对应的唯一审核事件；关联缺失时拒绝继续处理。"""
+    from app.db.entities import HighlightEvent
 
+    if candidate.id is None:
+        raise HTTPException(status_code=409, detail="候选数据不完整：缺少主键")
     event = db.exec(_sql_select(HighlightEvent).where(HighlightEvent.candidate_id == candidate.id)).first()
-    if event is not None:
-        if event.segment_id is None:
-            task = _latest_task(db, int(candidate.id)) if candidate.id is not None else None
-            if task is not None:
-                event.segment_id = task.segment_id
-                db.add(event)
-        return event
-    task = _latest_task(db, int(candidate.id)) if candidate.id is not None else None
-    event = HighlightEvent(
-        candidate_id=candidate.id,
-        session_id=candidate.session_id,
-        segment_id=task.segment_id if task else None,
-        raw_start_ts=candidate.start_ts,
-        raw_end_ts=candidate.end_ts,
-        adjusted_start_ts=candidate.start_ts,
-        adjusted_end_ts=candidate.end_ts,
-        rule_score=candidate.rule_score,
-        llm_score=candidate.llm_score,
-        highlight_score=candidate.highlight_score,
-        features_json=candidate.features_json,
-        reason=candidate.reason,
-        asr_text=_get_candidate_asr_text(db, candidate),
-    )
-    db.add(event)
-    db.flush()
+    if event is None:
+        raise HTTPException(status_code=409, detail="候选数据不完整：缺少审核事件，请重新分析本场直播")
+    if event.session_id != candidate.session_id:
+        raise HTTPException(status_code=409, detail="候选与审核事件不属于同一录制场次")
     return event
 
 
 def _latest_task(db: Session, candidate_id: int) -> SegmentTask | None:
     """返回候选最近的流水线任务。"""
-    from app.db.models import SegmentTask
+    from app.db.entities import SegmentTask
 
     return db.exec(
         _sql_select(SegmentTask).where(SegmentTask.candidate_id == candidate_id).order_by(SegmentTask.created_at.desc())
@@ -133,7 +114,7 @@ def _candidate_segments(
     end_ts: datetime | None = None,
 ) -> list[RawSegment]:
     """返回与候选时间范围重叠的同会话录像片段。"""
-    from app.db.models import RawSegment
+    from app.db.entities import RawSegment
 
     start = _as_utc_naive(start_ts or candidate.start_ts)
     end = _as_utc_naive(end_ts or candidate.end_ts)
@@ -165,7 +146,7 @@ def _candidate_transcript(
     end_ts: datetime | None = None,
 ) -> dict | None:
     """合并候选覆盖片段的转写，并换算为候选播放器相对时间。"""
-    from app.db.models import Transcript
+    from app.db.entities import Transcript
 
     segment_ids = [segment.id for segment in segments if segment.id is not None]
     if not segment_ids:
@@ -192,7 +173,7 @@ def _candidate_transcript(
         if segment_duration is None and segment.end_ts is not None:
             segment_duration = (_as_utc_naive(segment.end_ts) - _as_utc_naive(segment.start_ts)).total_seconds()
         window = extract_transcript_window(
-            transcript.text,
+            transcript.final_text,
             transcript.words_json,
             start_s=max(0.0, -offset),
             end_s=max(0.0, candidate_duration - offset),
@@ -321,7 +302,7 @@ def get_review_queue(
 ) -> dict:
     """返回可领取、审核中或已完成的候选队列。"""
     from app.core.config import settings
-    from app.db.models import HighlightCandidate, HighlightEvent, ReviewStatus
+    from app.db.entities import HighlightCandidate, HighlightEvent, ReviewStatus
     from app.db.session import get_session
     from app.web.services.review_workflow import claim_state, review_actor
     from app.web.services.source_identity import source_identities_for_sessions, unknown_source_identity
@@ -335,14 +316,17 @@ def get_review_queue(
         ids = [candidate.id for candidate in candidates if candidate.id is not None]
         events = db.exec(_sql_select(HighlightEvent).where(HighlightEvent.candidate_id.in_(ids))).all() if ids else []
         event_by_candidate = {event.candidate_id: event for event in events}
+        missing = [candidate_id for candidate_id in ids if candidate_id not in event_by_candidate]
+        if missing:
+            raise HTTPException(status_code=409, detail=f"候选数据不完整：缺少审核事件 candidate_ids={missing}")
         sources = source_identities_for_sessions(db, (candidate.session_id for candidate in candidates))
 
     items = []
     counts = {"pending": 0, "claimed": 0, "reviewed": 0}
     for candidate in candidates:
-        event = event_by_candidate.get(candidate.id)
+        event = event_by_candidate[candidate.id]
         claim = claim_state(event)
-        reviewed = bool(event and event.review_status != ReviewStatus.PENDING)
+        reviewed = event.review_status != ReviewStatus.PENDING
         category = "reviewed" if reviewed else ("claimed" if claim["active"] else "pending")
         counts[category] += 1
         if status != "all" and category != status:
@@ -357,7 +341,7 @@ def get_review_queue(
                 "start_ts": candidate.start_ts.isoformat(),
                 "end_ts": candidate.end_ts.isoformat(),
                 "status": category,
-                "review_status": event.review_status if event else ReviewStatus.PENDING,
+                "review_status": event.review_status,
                 "score": None if blinded else candidate.highlight_score,
                 "reason": None if blinded else candidate.reason,
                 "claim": claim,
@@ -379,7 +363,7 @@ def get_review_audit(request: Request, limit: int = 100) -> dict:
     """管理员查询人工审核审计日志。"""
     import json
 
-    from app.db.models import SystemLog
+    from app.db.entities import SystemLog
     from app.db.session import get_session
     from app.web.services.review_workflow import review_actor
 
@@ -410,7 +394,7 @@ def get_review_audit(request: Request, limit: int = 100) -> dict:
 @review_router.get("/{candidate_id}", response_class=HTMLResponse)
 async def review_page(request: Request, candidate_id: int) -> HTMLResponse:
     """审片工作台主页面。"""
-    from app.db.models import HighlightCandidate
+    from app.db.entities import HighlightCandidate
     from app.db.session import get_session
 
     with get_session() as db:
@@ -424,11 +408,10 @@ async def review_page(request: Request, candidate_id: int) -> HTMLResponse:
 @review_router.get("/api/{candidate_id}")
 def get_review_data(request: Request, candidate_id: int) -> dict:
     """获取审片所需的完整数据:候选详情+转写+弹幕解释+评分曲线+前后上下文。"""
-    from app.db.models import (
+    from app.db.entities import (
         Danmaku,
         FinalClip,
         HighlightCandidate,
-        HighlightEvent,
         RecordingSession,
     )
     from app.db.session import get_session
@@ -440,15 +423,11 @@ def get_review_data(request: Request, candidate_id: int) -> dict:
             raise HTTPException(status_code=404, detail="候选不存在")
         source = source_identities_for_sessions(db, [c.session_id]).get(c.session_id, unknown_source_identity())
 
-        event = db.exec(
-            _sql_select(HighlightEvent).where(
-                HighlightEvent.candidate_id == candidate_id,
-            )
-        ).first()
+        event = _require_event(db, c)
 
         # 候选可能跨越多个原始分段；转写必须按时间覆盖关系合并。
-        transcript_start = event.adjusted_start_ts if event and event.adjusted_start_ts else c.start_ts
-        transcript_end = event.adjusted_end_ts if event and event.adjusted_end_ts else c.end_ts
+        transcript_start = event.adjusted_start_ts or c.start_ts
+        transcript_end = event.adjusted_end_ts or c.end_ts
         transcript_data = _candidate_transcript(
             db,
             c,
@@ -559,11 +538,11 @@ def get_review_data(request: Request, candidate_id: int) -> dict:
         ]
 
     from app.core.config import settings
-    from app.db.models import ReviewStatus
+    from app.db.entities import ReviewStatus
     from app.web.services.review_workflow import public_workflow, review_actor
 
     actor, role = review_actor(request)
-    reviewed = bool(event and event.review_status != ReviewStatus.PENDING)
+    reviewed = event.review_status != ReviewStatus.PENDING
     blinded = bool(settings.review_blind_mode and role == "reviewer" and not reviewed)
     if blinded:
         for adjacent in (*prev_candidates, *next_candidates):
@@ -632,13 +611,9 @@ def get_review_data(request: Request, candidate_id: int) -> dict:
         "preview_url": f"/review/api/{candidate_id}/preview",
         "media_url": existing_clips[0]["video_url"] if existing_clips else f"/review/api/{candidate_id}/preview",
         "boundary": {
-            "event_id": event.id if event else None,
-            "adjusted_start_ts": event.adjusted_start_ts.isoformat()
-            if event and event.adjusted_start_ts
-            else c.start_ts.isoformat(),
-            "adjusted_end_ts": event.adjusted_end_ts.isoformat()
-            if event and event.adjusted_end_ts
-            else c.end_ts.isoformat(),
+            "event_id": event.id,
+            "adjusted_start_ts": (event.adjusted_start_ts or c.start_ts).isoformat(),
+            "adjusted_end_ts": (event.adjusted_end_ts or c.end_ts).isoformat(),
         },
         "workflow": public_workflow(event, actor, role),
         "viewer": {"actor": actor, "role": role, "blinded": blinded},
@@ -648,7 +623,7 @@ def get_review_data(request: Request, candidate_id: int) -> dict:
 @review_router.post("/api/{candidate_id}/claim")
 def claim_review(candidate_id: int, request: Request, payload: ClaimRequest) -> dict:
     """领取候选，防止多位审核员同时修改。"""
-    from app.db.models import HighlightCandidate
+    from app.db.entities import HighlightCandidate
     from app.db.session import get_session
     from app.web.services.review_workflow import (
         add_audit,
@@ -663,7 +638,7 @@ def claim_review(candidate_id: int, request: Request, payload: ClaimRequest) -> 
         candidate = db.get(HighlightCandidate, candidate_id)
         if candidate is None:
             raise HTTPException(status_code=404, detail="候选不存在")
-        event = _ensure_event(db, candidate)
+        event = _require_event(db, candidate)
         claim = claim_event(event, actor, role, force=payload.force)
         db.add(event)
         add_audit(db, actor=actor, action="claim", candidate_id=candidate_id, details={"force": payload.force})
@@ -673,7 +648,7 @@ def claim_review(candidate_id: int, request: Request, payload: ClaimRequest) -> 
 @review_router.post("/api/{candidate_id}/release")
 def release_review(candidate_id: int, request: Request) -> dict:
     """释放候选领取。"""
-    from app.db.models import HighlightCandidate
+    from app.db.entities import HighlightCandidate
     from app.db.session import get_session
     from app.web.services.review_workflow import (
         add_audit,
@@ -688,7 +663,7 @@ def release_review(candidate_id: int, request: Request) -> dict:
         candidate = db.get(HighlightCandidate, candidate_id)
         if candidate is None:
             raise HTTPException(status_code=404, detail="候选不存在")
-        event = _ensure_event(db, candidate)
+        event = _require_event(db, candidate)
         release_event(event, actor, role)
         db.add(event)
         add_audit(db, actor=actor, action="release", candidate_id=candidate_id)
@@ -698,7 +673,7 @@ def release_review(candidate_id: int, request: Request) -> dict:
 @review_router.put("/api/{candidate_id}/draft")
 def update_review_draft(candidate_id: int, request: Request, payload: ReviewDraftRequest) -> dict:
     """持久化当前审核草稿。"""
-    from app.db.models import HighlightCandidate
+    from app.db.entities import HighlightCandidate
     from app.db.session import get_session
     from app.web.services.review_workflow import (
         add_audit,
@@ -715,7 +690,7 @@ def update_review_draft(candidate_id: int, request: Request, payload: ReviewDraf
         candidate = db.get(HighlightCandidate, candidate_id)
         if candidate is None:
             raise HTTPException(status_code=404, detail="候选不存在")
-        event = _ensure_event(db, candidate)
+        event = _require_event(db, candidate)
         require_edit_claim(event, actor, role)
         draft = save_draft(event, actor, payload.model_dump())
         refresh_claim(event, actor)
@@ -727,7 +702,7 @@ def update_review_draft(candidate_id: int, request: Request, payload: ReviewDraf
 @review_router.post("/api/{candidate_id}/undo")
 def undo_review_action(candidate_id: int, request: Request) -> dict:
     """撤销最近一次边界或审核决策修改。"""
-    from app.db.models import HighlightCandidate
+    from app.db.entities import HighlightCandidate
     from app.db.session import get_session
     from app.web.services.review_workflow import (
         add_audit,
@@ -745,21 +720,16 @@ def undo_review_action(candidate_id: int, request: Request) -> dict:
         candidate = db.get(HighlightCandidate, candidate_id)
         if candidate is None:
             raise HTTPException(status_code=404, detail="候选不存在")
-        event = _ensure_event(db, candidate)
+        event = _require_event(db, candidate)
         require_edit_claim(event, actor, role)
         snapshot = pop_history(event)
-        event.adjusted_start_ts = _parse_saved_datetime(snapshot.get("adjusted_start_ts"))
-        event.adjusted_end_ts = _parse_saved_datetime(snapshot.get("adjusted_end_ts"))
+        event.adjusted_start_ts = _parse_saved_datetime(snapshot["adjusted_start_ts"])
+        event.adjusted_end_ts = _parse_saved_datetime(snapshot["adjusted_end_ts"])
         event.review_status = str(snapshot["review_status"])
-        event.review_reason = snapshot.get("review_reason")
+        event.review_reason = snapshot["review_reason"]
         event.review_by = str(snapshot["review_by"])
         candidate.status = str(snapshot["candidate_status"])
-        restored_task = restore_related_state(db, candidate_id, snapshot)
-        if not restored_task:
-            task = _latest_task(db, candidate_id)
-            if task is not None and snapshot.get("task_stage"):
-                task.stage = str(snapshot["task_stage"])
-                db.add(task)
+        restore_related_state(db, candidate_id, snapshot)
         refresh_claim(event, actor)
         db.add(event)
         db.add(candidate)
@@ -768,19 +738,11 @@ def undo_review_action(candidate_id: int, request: Request) -> dict:
             actor=actor,
             action="undo",
             candidate_id=candidate_id,
-            details={"undone_action": snapshot.get("action")},
+            details={"undone_action": snapshot["action"]},
         )
         restored_review_status = event.review_status
         adjusted_start_ts = event.adjusted_start_ts
         adjusted_end_ts = event.adjusted_end_ts
-        from app.analysis.session_summary import request_session_timeline_summary_in_session
-
-        request_session_timeline_summary_in_session(
-            db,
-            candidate.session_id,
-            reason="review_undo",
-            force=True,
-        )
     from app.pipeline.highlight_feedback import record_candidate_review_feedback
 
     record_candidate_review_feedback(
@@ -789,7 +751,7 @@ def undo_review_action(candidate_id: int, request: Request) -> dict:
         reviewed_by=actor,
     )
     return {
-        "undone": snapshot.get("action"),
+        "undone": snapshot["action"],
         "review_status": restored_review_status,
         "adjusted_start_ts": adjusted_start_ts.isoformat() if adjusted_start_ts else None,
         "adjusted_end_ts": adjusted_end_ts.isoformat() if adjusted_end_ts else None,
@@ -815,7 +777,7 @@ async def adjust_boundary(
     from datetime import datetime as _dt
 
     from app.clipping.clipper import ClipOptions, validate_clip_boundary
-    from app.db.models import HighlightCandidate
+    from app.db.entities import HighlightCandidate
     from app.db.session import get_session
     from app.web.services.review_workflow import (
         add_audit,
@@ -833,7 +795,7 @@ async def adjust_boundary(
         if c is None:
             raise HTTPException(status_code=404, detail="候选不存在")
 
-        event = _ensure_event(db, c)
+        event = _require_event(db, c)
         require_edit_claim(event, actor, role)
 
         # 应用调整。
@@ -866,14 +828,6 @@ async def adjust_boundary(
             candidate_id=candidate_id,
             details={"side": payload.side, "adjust_s": payload.adjust_s},
         )
-        from app.analysis.session_summary import request_session_timeline_summary_in_session
-
-        request_session_timeline_summary_in_session(
-            db,
-            c.session_id,
-            reason="review_boundary_adjusted",
-            force=True,
-        )
 
         return {
             "event_id": event.id,
@@ -903,7 +857,7 @@ async def submit_review(
     from datetime import UTC
     from datetime import datetime as _dt
 
-    from app.db.models import CandidateStatus, HighlightCandidate, ReviewStatus, TaskStatus
+    from app.db.entities import CandidateStatus, HighlightCandidate, ReviewStatus, TaskStatus
     from app.db.session import get_session
     from app.web.services.review_workflow import (
         add_audit,
@@ -946,7 +900,7 @@ async def submit_review(
         if c is None:
             raise HTTPException(status_code=404, detail="候选不存在")
 
-        event = _ensure_event(db, c)
+        event = _require_event(db, c)
         require_edit_claim(event, actor, role)
         task = _latest_task(db, candidate_id)
         push_history(
@@ -955,7 +909,6 @@ async def submit_review(
             c,
             action="submit_review",
             actor=actor,
-            include_related_state=True,
         )
 
         if is_positive:
@@ -1034,15 +987,6 @@ async def submit_review(
             details={"decision": decision, "reason": reason},
         )
         candidate_session_id = c.session_id
-        if not is_positive and decision not in (ReviewStatus.REJECTED, ReviewStatus.NOT_EXCITING):
-            from app.analysis.session_summary import request_session_timeline_summary_in_session
-
-            request_session_timeline_summary_in_session(
-                db,
-                candidate_session_id,
-                reason="review_decision_changed",
-                force=True,
-            )
 
     from app.pipeline.highlight_feedback import record_candidate_review_feedback
 
@@ -1097,7 +1041,7 @@ async def rerender_clip(candidate_id: int, request: Request) -> dict:
     :returns: 新的 clip 信息或状态。
     """
     from app.clipping.clipper import ClipOptions, validate_clip_boundary
-    from app.db.models import HighlightCandidate, HighlightEvent
+    from app.db.entities import HighlightCandidate
     from app.db.session import get_session
     from app.web.services.background_jobs import web_job_manager
     from app.web.services.review_workflow import (
@@ -1115,18 +1059,12 @@ async def rerender_clip(candidate_id: int, request: Request) -> dict:
         c = db.get(HighlightCandidate, candidate_id)
         if c is None:
             raise HTTPException(status_code=404, detail="候选不存在")
-        event = db.exec(
-            _sql_select(HighlightEvent).where(
-                HighlightEvent.candidate_id == candidate_id,
-            )
-        ).first()
-        if event is None:
-            event = _ensure_event(db, c)
+        event = _require_event(db, c)
         require_edit_claim(event, actor, role)
         refresh_claim(event, actor)
-        start_ts = event.adjusted_start_ts if event and event.adjusted_start_ts else c.start_ts
-        end_ts = event.adjusted_end_ts if event and event.adjusted_end_ts else c.end_ts
-        event_id = event.id if event else None
+        start_ts = event.adjusted_start_ts or c.start_ts
+        end_ts = event.adjusted_end_ts or c.end_ts
+        event_id = event.id
         source_label = source_identities_for_sessions(db, [c.session_id]).get(c.session_id, unknown_source_identity())[
             "source_label"
         ]
@@ -1143,7 +1081,7 @@ async def rerender_clip(candidate_id: int, request: Request) -> dict:
         db.add(event)
         add_audit(db, actor=actor, action="rerender", candidate_id=candidate_id)
 
-    version = f"review-{event_id or 'base'}-{uuid4().hex[:8]}"
+    version = f"review-{event_id}-{uuid4().hex[:8]}"
     job = await web_job_manager.enqueue(
         "review_rerender",
         {
@@ -1168,7 +1106,7 @@ async def rerender_clip(candidate_id: int, request: Request) -> dict:
 @review_router.get("/api/{candidate_id}/preview")
 def get_review_preview(candidate_id: int) -> FileResponse:
     """返回候选的按需渲染预览，不要求候选已批准或已出片。"""
-    from app.db.models import HighlightCandidate, HighlightEvent
+    from app.db.entities import HighlightCandidate, HighlightEvent
     from app.db.session import get_session
 
     with get_session() as db:
@@ -1176,8 +1114,10 @@ def get_review_preview(candidate_id: int) -> FileResponse:
         if candidate is None:
             raise HTTPException(status_code=404, detail="候选不存在")
         event = db.exec(_sql_select(HighlightEvent).where(HighlightEvent.candidate_id == candidate_id)).first()
-        start_ts = event.adjusted_start_ts if event and event.adjusted_start_ts else candidate.start_ts
-        end_ts = event.adjusted_end_ts if event and event.adjusted_end_ts else candidate.end_ts
+        if event is None:
+            raise HTTPException(status_code=409, detail="候选数据不完整：缺少审核事件，请重新分析本场直播")
+        start_ts = event.adjusted_start_ts or candidate.start_ts
+        end_ts = event.adjusted_end_ts or candidate.end_ts
 
     from loguru import logger
 
@@ -1207,7 +1147,7 @@ def get_waveform(candidate_id: int, resolution: int = 400) -> dict:
 
     from loguru import logger
 
-    from app.db.models import HighlightCandidate, HighlightEvent
+    from app.db.entities import HighlightCandidate, HighlightEvent
     from app.db.session import get_session
 
     with get_session() as db:
@@ -1215,8 +1155,10 @@ def get_waveform(candidate_id: int, resolution: int = 400) -> dict:
         if c is None:
             raise HTTPException(status_code=404, detail="候选不存在")
         event = db.exec(_sql_select(HighlightEvent).where(HighlightEvent.candidate_id == candidate_id)).first()
-        start_ts = event.adjusted_start_ts if event and event.adjusted_start_ts else c.start_ts
-        end_ts = event.adjusted_end_ts if event and event.adjusted_end_ts else c.end_ts
+        if event is None:
+            raise HTTPException(status_code=409, detail="候选数据不完整：缺少审核事件，请重新分析本场直播")
+        start_ts = event.adjusted_start_ts or c.start_ts
+        end_ts = event.adjusted_end_ts or c.end_ts
 
     try:
         file_path = str(_ensure_review_preview(candidate_id, start_ts, end_ts))
@@ -1307,17 +1249,6 @@ def get_waveform(candidate_id: int, resolution: int = 400) -> dict:
         peaks.append(round(max_val / 32768.0, 4))
 
     return {"peaks": peaks, "duration_s": round(duration_s, 2), "sample_rate": sample_rate}
-
-
-def _get_candidate_asr_text(db, candidate) -> str | None:
-    """根据候选关联的片段获取转写文本。
-
-    :param db: 数据库会话。
-    :param candidate: HighlightCandidate 实例。
-    :returns: ASR 文本或 ``None``。
-    """
-    transcript = _candidate_transcript(db, candidate, _candidate_segments(db, candidate))
-    return str(transcript["text"]) if transcript and transcript.get("text") else None
 
 
 def _parse_saved_datetime(value: object) -> datetime | None:

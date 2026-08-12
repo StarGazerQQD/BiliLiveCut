@@ -38,7 +38,6 @@ def _install_legacy_console(monkeypatch: MonkeyPatch) -> tuple[io.BytesIO, io.Te
         ("blc_portable.builders.lite", "build_exe", ["build_exe.py"], True),
         ("blc_portable.builders.full", "build_full_bundle", ["build_full_bundle.py"], False),
         ("blc_portable.payload.builder", "build_payload", ["build_payload.py"], False),
-        ("blc_portable.builders.common", "copy_source", ["build_bundle.py", "--only-source"], False),
     ),
 )
 def test_portable_cli_entrypoints_reconfigure_legacy_console(

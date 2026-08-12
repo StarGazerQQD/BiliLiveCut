@@ -9,7 +9,6 @@ from __future__ import annotations
 from app.analysis.transcription import (
     ASRSegmentResult,
     ASRTranscriptResult,
-    TranscriptionResult,
     _levenshtein_distance,
     _normalize_confidence_sentence,
     _normalize_whisper_logprob,
@@ -98,37 +97,6 @@ class TestASRTranscriptResult:
         assert result.review_triggered is False
         assert result.review_risk_score is None
         assert result.final_text_source == "primary"
-
-
-class TestTranscriptionResultBackwardCompat:
-    """旧 TranscriptionResult 向后兼容。"""
-
-    def test_from_unified(self) -> None:
-        unified = ASRTranscriptResult(
-            text="全文测试",
-            language="zh",
-            backend="paraformer",
-            final_text="全文测试",
-            base_text="全文测试",
-        )
-        legacy = TranscriptionResult.from_unified(unified)
-        assert legacy.text == "全文测试"
-        assert legacy.language == "zh"
-        assert legacy.engine == "paraformer"
-
-    def test_from_unified_with_review(self) -> None:
-        unified = ASRTranscriptResult(
-            text="原文本",
-            final_text="复核后文本",
-            language="zh",
-            backend="paraformer",
-            review_triggered=True,
-            review_backend="funasr-nano",
-            reviewed_segments=[{"original": "原文本", "reviewed": "复核后文本"}],
-        )
-        legacy = TranscriptionResult.from_unified(unified)
-        assert legacy.text == "复核后文本"
-        assert len(legacy.reviewed_segments) == 1
 
 
 class TestLevenshtein:

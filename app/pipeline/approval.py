@@ -16,7 +16,7 @@ from datetime import UTC, datetime
 from loguru import logger
 from sqlmodel import Session
 
-from app.db.models import (
+from app.db.entities import (
     CandidateStatus,
     HighlightCandidate,
     HighlightEvent,
@@ -63,6 +63,17 @@ def approve_event_and_task(
             logger.warning("approve_event_and_task: event {} 不存在, 拒绝批准 task={}", event_id, task_id)
             return False
 
+        # 当前 Schema 要求每个 Event 必须关联真实 Candidate；无论事件处于
+        # 哪个状态，都先验证关系，禁止幂等分支掩盖损坏记录。
+        candidate = db.get(HighlightCandidate, event.candidate_id)
+        if candidate is None:
+            logger.error(
+                "approve_event_and_task: event {} 关联的 candidate {} 不存在",
+                event_id,
+                event.candidate_id,
+            )
+            return False
+
         # 已拒绝 Event 不得被普通自动流程重新批准
         if event.review_status == ReviewStatus.REJECTED and source == "auto":
             logger.warning(
@@ -96,20 +107,8 @@ def approve_event_and_task(
         event.updated_at = datetime.now(UTC)
         db.add(event)
 
-        # 同步 Candidate 状态
-        if event.candidate_id:
-            candidate = db.get(HighlightCandidate, event.candidate_id)
-            if candidate:
-                candidate.status = CandidateStatus.APPROVED
-                db.add(candidate)
-                from app.analysis.session_summary import request_session_timeline_summary_in_session
-
-                request_session_timeline_summary_in_session(
-                    db,
-                    candidate.session_id,
-                    reason="review_approved",
-                    force=True,
-                )
+        candidate.status = CandidateStatus.APPROVED
+        db.add(candidate)
 
         # 同步 Task 状态
         task = db.get(SegmentTask, task_id) if task_id is not None else None

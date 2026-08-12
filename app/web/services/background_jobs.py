@@ -15,13 +15,42 @@ from loguru import logger
 from sqlmodel import select
 
 from app.core.process_control import ProcessCancelledError
-from app.db.models import AppSetting
+from app.db.entities import AppSetting
 from app.db.session import get_session
 
 JobHandler = Callable[["JobContext", dict[str, Any]], dict[str, Any] | None]
 _JOB_PREFIX = "web_job:"
+_JOB_VERSION = 1
 _TERMINAL = {"succeeded", "failed", "cancelled"}
 _ACTIVE = {"queued", "running", "cancelling"}
+_JOB_FIELDS = {
+    "version",
+    "id",
+    "type",
+    "label",
+    "owner",
+    "payload",
+    "dedup_key",
+    "cancellable_while_running",
+    "status",
+    "progress",
+    "message",
+    "result",
+    "error",
+    "attempt",
+    "created_at",
+    "updated_at",
+    "started_at",
+    "finished_at",
+    "recovered",
+}
+_BUILTIN_PAYLOAD_FIELDS = {
+    "candidate_render": {"candidate_id", "reviewed_by"},
+    "review_rerender": {"candidate_id", "start_ts", "end_ts", "version"},
+    "collection_render": {"topic_id", "event_ids", "chapter_titles", "include_chapter_cards"},
+    "clip_upload": {"clip_id"},
+    "upload_retry": {"upload_task_id"},
+}
 _JOB_LOCK = threading.RLock()
 
 
@@ -75,7 +104,7 @@ class WebJobManager:
 
         register_job_handlers(self)
         for job in list_jobs(limit=500):
-            if job["status"] == "running" and not job.get("cancellable_while_running", True):
+            if job["status"] == "running" and not job["cancellable_while_running"]:
                 _update_job(
                     job["id"],
                     status="failed",
@@ -114,7 +143,7 @@ class WebJobManager:
             if job["status"] == "queued":
                 task.cancel()
                 continue
-            if not job.get("cancellable_while_running", True):
+            if not job["cancellable_while_running"]:
                 continue
             event = self._cancel_events.get(job_id)
             if event is not None:
@@ -146,12 +175,14 @@ class WebJobManager:
                 await self.start()
             if job_type not in self._handlers:
                 raise ValueError(f"未知 Web 作业类型: {job_type}")
+        _validate_builtin_payload(job_type, payload)
         if dedup_key:
             for existing in list_jobs(limit=500):
-                if existing.get("dedup_key") == dedup_key and existing["status"] in _ACTIVE:
+                if existing["dedup_key"] == dedup_key and existing["status"] in _ACTIVE:
                     return existing
         now = _now_iso()
         job = {
+            "version": _JOB_VERSION,
             "id": uuid4().hex,
             "type": job_type,
             "label": label,
@@ -169,6 +200,7 @@ class WebJobManager:
             "updated_at": now,
             "started_at": None,
             "finished_at": None,
+            "recovered": False,
         }
         _save_job(job)
         self._schedule(job["id"])
@@ -182,7 +214,7 @@ class WebJobManager:
         _require_owner(job, actor, is_admin)
         if job["status"] in _TERMINAL:
             raise ValueError("作业已经结束")
-        if job["status"] in {"running", "cancelling"} and not job.get("cancellable_while_running", True):
+        if job["status"] in {"running", "cancelling"} and not job["cancellable_while_running"]:
             raise ValueError("该操作开始后不能安全取消，请等待结果")
         event = self._cancel_events.get(job_id)
         if event is not None:
@@ -191,7 +223,7 @@ class WebJobManager:
         return _update_job(
             job_id,
             status="cancelled",
-            progress=job.get("progress", 0),
+            progress=job["progress"],
             message="已取消等待中的作业",
             finished_at=_now_iso(),
         )
@@ -211,7 +243,7 @@ class WebJobManager:
                 "message": "等待重试",
                 "result": None,
                 "error": None,
-                "attempt": int(job.get("attempt", 1)) + 1,
+                "attempt": job["attempt"] + 1,
                 "updated_at": _now_iso(),
                 "started_at": None,
                 "finished_at": None,
@@ -293,14 +325,15 @@ def list_jobs(limit: int = 100, *, owner: str | None = None) -> list[dict[str, A
         rows = db.exec(select(AppSetting).where(AppSetting.key.startswith(_JOB_PREFIX))).all()
         jobs = [_decode_job(row.value) for row in rows]
     if owner is not None:
-        jobs = [job for job in jobs if job.get("owner") == owner]
-    jobs.sort(key=lambda item: str(item.get("updated_at", "")), reverse=True)
+        jobs = [job for job in jobs if job["owner"] == owner]
+    jobs.sort(key=lambda item: item["updated_at"], reverse=True)
     return jobs[: max(1, min(limit, 500))]
 
 
 def _save_job(job: dict[str, Any]) -> None:
     with _JOB_LOCK:
         job["updated_at"] = _now_iso()
+        _validate_job(job)
         value = json.dumps(job, ensure_ascii=False, separators=(",", ":"), default=str)
         with get_session() as db:
             key = f"{_JOB_PREFIX}{job['id']}"
@@ -324,14 +357,70 @@ def _update_job(job_id: str, **changes: Any) -> dict[str, Any]:
 
 
 def _decode_job(raw: str) -> dict[str, Any]:
-    value = json.loads(raw)
-    if not isinstance(value, dict):
-        raise ValueError("Web 作业记录损坏")
+    try:
+        value = json.loads(raw)
+    except (json.JSONDecodeError, TypeError) as exc:
+        raise ValueError("Web 作业记录不是有效 JSON") from exc
+    _validate_job(value)
     return value
 
 
+def _validate_job(value: object) -> None:
+    """只接受当前版本且字段完整的 Web 作业记录。"""
+    if not isinstance(value, dict) or set(value) != _JOB_FIELDS:
+        raise ValueError("Web 作业记录字段不符合当前格式")
+    if value["version"] != _JOB_VERSION:
+        raise ValueError(f"Web 作业记录版本必须为 {_JOB_VERSION}")
+    for field_name in ("id", "type", "label", "owner", "message"):
+        if not isinstance(value[field_name], str) or not value[field_name]:
+            raise ValueError(f"Web 作业字段 {field_name} 必须是非空字符串")
+    if not isinstance(value["payload"], dict):
+        raise ValueError("Web 作业 payload 必须是对象")
+    _validate_builtin_payload(value["type"], value["payload"])
+    if value["dedup_key"] is not None and not isinstance(value["dedup_key"], str):
+        raise ValueError("Web 作业 dedup_key 必须是字符串或 null")
+    for field_name in ("cancellable_while_running", "recovered"):
+        if not isinstance(value[field_name], bool):
+            raise ValueError(f"Web 作业字段 {field_name} 必须是布尔值")
+    if value["status"] not in _ACTIVE | _TERMINAL:
+        raise ValueError("Web 作业 status 无效")
+    if isinstance(value["progress"], bool) or not isinstance(value["progress"], int):
+        raise ValueError("Web 作业 progress 必须是整数")
+    if not 0 <= value["progress"] <= 100:
+        raise ValueError("Web 作业 progress 必须位于 0..100")
+    if isinstance(value["attempt"], bool) or not isinstance(value["attempt"], int) or value["attempt"] < 1:
+        raise ValueError("Web 作业 attempt 必须是正整数")
+    if value["result"] is not None and not isinstance(value["result"], dict):
+        raise ValueError("Web 作业 result 必须是对象或 null")
+    if value["error"] is not None and not isinstance(value["error"], str):
+        raise ValueError("Web 作业 error 必须是字符串或 null")
+    for field_name in ("created_at", "updated_at"):
+        _validate_job_datetime(value[field_name], field_name, nullable=False)
+    for field_name in ("started_at", "finished_at"):
+        _validate_job_datetime(value[field_name], field_name, nullable=True)
+
+
+def _validate_job_datetime(value: object, field_name: str, *, nullable: bool) -> None:
+    """校验作业记录中的 ISO 时间。"""
+    if value is None and nullable:
+        return
+    if not isinstance(value, str) or not value:
+        raise ValueError(f"Web 作业字段 {field_name} 必须是 ISO 时间")
+    try:
+        datetime.fromisoformat(value)
+    except ValueError as exc:
+        raise ValueError(f"Web 作业字段 {field_name} 必须是 ISO 时间") from exc
+
+
+def _validate_builtin_payload(job_type: str, payload: dict[str, Any]) -> None:
+    """内置作业只接受其当前请求字段集合。"""
+    fields = _BUILTIN_PAYLOAD_FIELDS.get(job_type)
+    if fields is not None and set(payload) != fields:
+        raise ValueError(f"Web 作业 {job_type} payload 字段不符合当前格式")
+
+
 def _require_owner(job: dict[str, Any], actor: str, is_admin: bool) -> None:
-    if not is_admin and job.get("owner") != actor:
+    if not is_admin and job["owner"] != actor:
         raise PermissionError("无权操作其他用户的作业")
 
 

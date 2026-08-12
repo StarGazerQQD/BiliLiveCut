@@ -5,11 +5,13 @@ from __future__ import annotations
 from typing import Any
 
 from fastapi import APIRouter, HTTPException
-from pydantic import BaseModel, field_validator
+from pydantic import BaseModel, ConfigDict, field_validator
 
 
 class MergeTopicsRequest(BaseModel):
     """合并主题请求体（将 source_id 并入 target_id）。"""
+
+    model_config = ConfigDict(extra="forbid")
 
     source_id: int
     target_id: int
@@ -17,6 +19,8 @@ class MergeTopicsRequest(BaseModel):
 
 class TopicUpdateRequest(BaseModel):
     """主题信息更新请求体。"""
+
+    model_config = ConfigDict(extra="forbid")
 
     title: str | None = None
     summary: str | None = None
@@ -27,6 +31,8 @@ class TopicUpdateRequest(BaseModel):
 
 class SplitTopicRequest(BaseModel):
     """拆分主题请求体（提取指定事件组成新主题）。"""
+
+    model_config = ConfigDict(extra="forbid")
 
     event_ids: list[int]
 
@@ -40,6 +46,8 @@ class SplitTopicRequest(BaseModel):
 
 class ReorderTopicRequest(BaseModel):
     """主题内视频重排序请求体。"""
+
+    model_config = ConfigDict(extra="forbid")
 
     event_ids: list[int]
 

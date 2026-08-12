@@ -24,7 +24,7 @@ def get_analytics() -> dict[str, Any]:
     from sqlmodel import func
     from sqlmodel import select as _sel
 
-    from app.db.models import (
+    from app.db.entities import (
         ClipStatus,
         FinalClip,
         HighlightCandidate,
@@ -95,7 +95,7 @@ def get_analytics() -> dict[str, Any]:
         total_raw_gb = round(total_raw_gb / (1024**3), 2)  # size_bytes → GB
 
         # --- 任务统计 ---
-        from app.db.models import SegmentTask
+        from app.db.entities import SegmentTask
 
         task_failed = db.exec(
             _sel(func.count()).select_from(SegmentTask).where(SegmentTask.stage == TaskStatus.FAILED)

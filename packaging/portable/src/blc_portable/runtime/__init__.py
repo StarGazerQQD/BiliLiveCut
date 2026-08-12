@@ -26,31 +26,31 @@ def get_app_root() -> Path:
     return Path.cwd()
 
 
-def get_runtime_dir() -> Path:
+def get_runtime_dir(app_root: Path | None = None) -> Path:
     """获取 runtime 目录。
 
     :returns: runtime 目录路径。
     """
-    return get_app_root() / "runtime"
+    return (app_root if app_root is not None else get_app_root()) / "runtime"
 
 
-def get_releases_dir() -> Path:
+def get_releases_dir(app_root: Path | None = None) -> Path:
     """获取 releases 目录。
 
     :returns: releases 目录。
     """
-    return get_runtime_dir() / "releases"
+    return get_runtime_dir(app_root) / "releases"
 
 
-def get_current_json_path() -> Path:
+def get_current_json_path(app_root: Path | None = None) -> Path:
     """获取 current.json 路径。
 
     :returns: current.json 路径。
     """
-    return get_runtime_dir() / "current.json"
+    return get_runtime_dir(app_root) / "current.json"
 
 
-def get_current_release_dir() -> Path | None:
+def get_current_release_dir(app_root: Path | None = None) -> Path | None:
     """获取当前激活的 Release 目录，比较嵌入式 identity 与 installed identity。
 
     使用内容寻址: {version}+{commit}+{payload_hash_prefix}
@@ -58,18 +58,19 @@ def get_current_release_dir() -> Path | None:
 
     :returns: Release 目录，不存在返回 None。
     """
-    current_path = get_current_json_path()
+    root = app_root if app_root is not None else get_app_root()
+    current_path = get_current_json_path(root)
     if not current_path.exists():
         return None
     from .activation import read_current_json
 
-    info = read_current_json(app_root=get_app_root())
+    info = read_current_json(app_root=root)
     if info is None:
         return None
-    rid = info.get("release_id", "")
+    rid = info["release_id"]
     if not rid:
         return None
-    d = get_releases_dir() / rid
+    d = get_releases_dir(root) / rid
     if not d.exists() or not (d / "app" / "cli.py").exists():
         return None
 
@@ -82,8 +83,12 @@ def get_current_release_dir() -> Path | None:
         embedded = json.loads(embedded_manifest_path.read_text(encoding="utf-8"))
     except (json.JSONDecodeError, OSError):
         return None
-    embedded_sha = embedded.get("payload_sha256", "")
-    installed_sha = info.get("payload_sha256", "")
+    from blc_portable.payload.manifest import MANIFEST_FORMAT_VERSION, validate_manifest_schema
+
+    if validate_manifest_schema(embedded) or embedded["format_version"] != MANIFEST_FORMAT_VERSION:
+        return None
+    embedded_sha = embedded["payload_sha256"]
+    installed_sha = info["payload_sha256"]
     if not embedded_sha or not installed_sha:
         return None
     if embedded_sha != installed_sha:
@@ -93,7 +98,7 @@ def get_current_release_dir() -> Path | None:
 
 
 def _find_embedded_manifest() -> Path | None:
-    """查找嵌入式 Payload Manifest，兼容 PyInstaller 和源码运行。"""
+    """按当前运行形态查找嵌入式 Payload Manifest。"""
     import sys as _sys
 
     if getattr(_sys, "frozen", False):
@@ -104,9 +109,9 @@ def _find_embedded_manifest() -> Path | None:
     return p if p.exists() else None
 
 
-def get_staging_dir() -> Path:
+def get_staging_dir(app_root: Path | None = None) -> Path:
     """获取 Runtime staging 目录。
 
     :returns: staging 目录路径。
     """
-    return get_runtime_dir() / "staging"
+    return get_runtime_dir(app_root) / "staging"

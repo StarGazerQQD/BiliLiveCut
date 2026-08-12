@@ -6,7 +6,7 @@ import threading
 
 from sqlalchemy import text as sa_text
 
-from app.db.models import SegmentTask
+from app.db.entities import SegmentTask
 from app.db.session import get_session
 from app.pipeline.lifecycle import _WORKER_ID, now_utc, shutdown_event
 from app.pipeline.stage_result import mark_heartbeat

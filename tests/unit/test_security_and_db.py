@@ -13,6 +13,7 @@ import os
 import subprocess
 import sys
 import tempfile
+from pathlib import Path
 from typing import TYPE_CHECKING
 
 if TYPE_CHECKING:
@@ -186,7 +187,7 @@ class TestDatabaseForeignKeys:
         """FinalClip 表存在。"""
         from sqlmodel import select
 
-        from app.db.models import FinalClip
+        from app.db.entities import FinalClip
         from app.db.session import get_session
 
         with get_session() as db:
@@ -228,11 +229,69 @@ class TestDatabaseForeignKeys:
                 db.flush()
             db.rollback()
 
-    def test_schema_version_is_2(self) -> None:
-        """CURRENT_SCHEMA_VERSION = 2 (V0.1.14.11 FK upgrade)。"""
+    def test_schema_version_is_current(self) -> None:
+        """Alpha 当前数据库只接受 Schema v4。"""
         from app.db.schema import CURRENT_SCHEMA_VERSION
 
-        assert CURRENT_SCHEMA_VERSION == 2
+        assert CURRENT_SCHEMA_VERSION == 4
+
+    def test_schema_rejects_different_app_version(self, temp_db: None) -> None:
+        """Alpha 数据库必须由当前应用版本创建。"""
+        from sqlmodel import Session
+
+        from app.db.schema import SchemaMeta, validate_schema
+        from app.db.session import engine
+
+        with Session(engine) as db:
+            meta = db.get(SchemaMeta, 1)
+            assert meta is not None
+            meta.app_version = "0.1.17.2-alpha"
+            db.add(meta)
+            db.commit()
+
+        assert validate_schema() is False
+
+    def test_schema_rejects_unexpected_table(self, temp_db: None) -> None:
+        """Alpha 数据库不得保留当前模型未定义的旧表。"""
+        from app.db.schema import _verify_actual_structure
+        from app.db.session import engine
+
+        with engine.begin() as connection:
+            connection.exec_driver_sql("CREATE TABLE obsolete_records (id INTEGER PRIMARY KEY)")
+
+        ok, message = _verify_actual_structure()
+        assert ok is False
+        assert "obsolete_records" in message
+
+    def test_schema_rejects_unexpected_column(self, temp_db: None) -> None:
+        """Alpha 数据库不得保留当前模型未定义的旧字段。"""
+        from app.db.schema import _verify_actual_structure
+        from app.db.session import engine
+
+        with engine.begin() as connection:
+            connection.exec_driver_sql("ALTER TABLE live_rooms ADD COLUMN obsolete_mode TEXT")
+
+        ok, message = _verify_actual_structure()
+        assert ok is False
+        assert "obsolete_mode" in message
+
+    def test_current_schema_enforces_required_candidate_event_and_transcript_cardinality(
+        self,
+        temp_db: None,
+    ) -> None:
+        """当前 Schema 必须直接约束候选、事件和转写的一对一关系。"""
+        from app.db.schema import _verify_critical_indexes
+        from app.db.session import engine
+
+        with engine.connect() as connection:
+            candidate_columns = {
+                row[1]: row for row in connection.exec_driver_sql("PRAGMA table_info('highlight_candidates')")
+            }
+            event_columns = {row[1]: row for row in connection.exec_driver_sql("PRAGMA table_info('highlight_events')")}
+
+        assert candidate_columns["dedup_hash"][3] == 1
+        assert event_columns["candidate_id"][3] == 1
+        assert _verify_critical_indexes() is True
 
     def test_foreign_keys_in_verify_list(self) -> None:
         """_verify_foreign_keys 包含新的 FK 检查。"""
@@ -245,12 +304,9 @@ class TestDatabaseForeignKeys:
         assert "upload_attempts" in source
         assert "final_clips" in source
 
-    def test_migration_module_imports(self) -> None:
-        """migration_v01411 模块可导入。"""
-        from app.db.migration_v01411 import run_migration, scan_orphan_records
-
-        assert callable(run_migration)
-        assert callable(scan_orphan_records)
+    def test_historical_migration_module_is_removed(self) -> None:
+        """Alpha 当前版本不再分发历史数据库迁移模块。"""
+        assert not (Path(__file__).resolve().parents[2] / "app" / "db" / "migration_v01411.py").exists()
 
 
 class TestSchemaFingerprint:
@@ -259,7 +315,7 @@ class TestSchemaFingerprint:
     def test_callable_defaults_do_not_include_memory_addresses(self) -> None:
         from sqlmodel import SQLModel
 
-        from app.db import models  # noqa: F401
+        from app.db import entities  # noqa: F401
         from app.db.schema import _serializable_default
 
         defaults = [

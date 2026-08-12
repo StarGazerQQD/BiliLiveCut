@@ -20,6 +20,8 @@ import sys
 from pathlib import Path
 
 from blc_portable.console import configure_console_encoding
+from blc_portable.engine_pack.schema import SCHEMA_VERSION as ENGINE_PACK_SCHEMA_VERSION
+from blc_portable.engine_pack.schema import ExternalMetadata
 from blc_portable.model_lock import compute_model_lock_sha256
 from blc_portable.project_license import PROJECT_LICENSE_ID, project_license_sha256
 
@@ -75,7 +77,7 @@ def check_engine_pack_info() -> None:
     - CRC32 (8 hex) / SHA-256 (64 hex) / size_bytes / filename
     - engine_pack_version 匹配
     - artifact_class 必须显式存在 — 缺失或为 fixture → 失败
-    - format_version >= 4
+    - format_version == 当前 Engine Pack Schema
     - content_manifest_sha256 / model_lock_sha256 非空且 64 hex
     - expected_engine_ids 为 [whisper, paraformer, sensevoice, funasr_nano]
     - engine_pack_api_version / model_set_version 存在
@@ -103,100 +105,38 @@ def check_engine_pack_info() -> None:
             "Run: python build_engine_pack.py --from-cache"
         )
 
-    ep_info = json.loads(ENGINE_PACK_INFO_PATH.read_text(encoding="utf-8"))
-    crc32 = str(ep_info.get("crc32", ""))
-    sha256 = str(ep_info.get("sha256", ""))
-    version = str(ep_info.get("engine_pack_version", ""))
-    filename = str(ep_info.get("filename", ""))
-    size_bytes = int(ep_info.get("size_bytes", 0))
-    content_manifest_sha = str(ep_info.get("content_manifest_sha256", ""))
-    model_lock_sha = str(ep_info.get("model_lock_sha256", ""))
-    expected_ids = list(ep_info.get("expected_engine_ids", []))
-    artifact_class = str(ep_info.get("artifact_class", ""))
-    format_version = int(ep_info.get("format_version", 0))
-    engine_pack_api_ver = int(ep_info.get("engine_pack_api_version", 0))
-    model_set_ver = int(ep_info.get("model_set_version", 0))
+    try:
+        metadata = ExternalMetadata.from_dict(json.loads(ENGINE_PACK_INFO_PATH.read_text(encoding="utf-8")))
+    except (json.JSONDecodeError, OSError, ValueError) as exc:
+        raise RuntimeError(f"Engine Pack metadata schema invalid: {exc}") from exc
 
-    errors: list[str] = []
-
-    # 1. CRC32
-    if not crc32:
-        errors.append("CRC32 is empty — build Engine Pack first")
-    elif len(crc32) != 8 or not all(c in "0123456789ABCDEF" for c in crc32):
-        errors.append(f"CRC32 invalid: {crc32} (expect 8 uppercase hex chars)")
-
-    # 2. SHA-256
-    if not sha256:
-        errors.append("SHA-256 is empty — build Engine Pack first")
-    elif len(sha256) != 64:
-        errors.append(f"SHA-256 invalid length: {len(sha256)} (expect 64 hex chars)")
-
-    # 3. Version
-    if version != RELEASE_VERSION:
-        errors.append(f"Engine Pack version mismatch: {version} != {RELEASE_VERSION}")
-
-    # 4. Filename
-    if not filename:
-        errors.append("filename is empty")
-
-    # 5. artifact_class — 必须显式存在
-    if not artifact_class:
-        errors.append("artifact_class is missing — must be explicitly 'production' or 'fixture'")
-    elif artifact_class != "production":
-        errors.append(f"artifact_class is {artifact_class!r} — production build requires 'production'")
-
-    # 6. format_version
-    if format_version < 4:
-        errors.append(f"format_version must be >= 4, got {format_version}")
-
-    # 7. Content manifest SHA-256
-    if not content_manifest_sha:
-        errors.append("content_manifest_sha256 is empty")
-    elif len(content_manifest_sha) != 64:
-        errors.append(f"content_manifest_sha256 invalid length: {len(content_manifest_sha)} (expect 64)")
-
-    # 8. Model lock SHA-256
-    if not model_lock_sha:
-        errors.append("model_lock_sha256 is empty")
-    elif len(model_lock_sha) != 64:
-        errors.append(f"model_lock_sha256 invalid length: {len(model_lock_sha)} (expect 64)")
-    else:
+    errors = metadata.validate()
+    if metadata.engine_pack_version != RELEASE_VERSION:
+        errors.append(f"Engine Pack version mismatch: {metadata.engine_pack_version} != {RELEASE_VERSION}")
+    if metadata.artifact_class != "production":
+        errors.append(f"artifact_class is {metadata.artifact_class!r} — production build requires 'production'")
+    if metadata.model_lock_sha256:
         model_lock_path = PORTABLE_DIR / "config" / "model_sources.lock.json"
         if not model_lock_path.is_file():
             errors.append(f"model lock missing: {model_lock_path}")
         else:
             expected_model_lock_sha = compute_model_lock_sha256(model_lock_path)
-            if model_lock_sha != expected_model_lock_sha:
+            if metadata.model_lock_sha256 != expected_model_lock_sha:
                 errors.append(
-                    f"model_lock_sha256 mismatch: metadata={model_lock_sha} current={expected_model_lock_sha}"
+                    "model_lock_sha256 mismatch: "
+                    f"metadata={metadata.model_lock_sha256} current={expected_model_lock_sha}"
                 )
-
-    # 9. Expected engine IDs
-    required_ids = {"whisper", "paraformer", "sensevoice", "funasr_nano"}
-    if not expected_ids:
-        errors.append("expected_engine_ids is empty")
-    else:
-        actual_ids = set(expected_ids)
-        if actual_ids != required_ids:
-            errors.append(f"expected_engine_ids mismatch: got {sorted(actual_ids)} need {sorted(required_ids)}")
-
-    # 10. Engine Pack API version
-    if engine_pack_api_ver < 1:
-        errors.append(f"engine_pack_api_version invalid: {engine_pack_api_ver}")
-    if model_set_ver < 1:
-        errors.append(f"model_set_version invalid: {model_set_ver}")
-
-    # 11. Minimum production size
-    if size_bytes < 500_000_000:
-        errors.append(f"size_bytes too small for production ({size_bytes} < 500 MB) — likely a fixture")
+    if metadata.size_bytes < 500_000_000:
+        errors.append(f"size_bytes too small for production ({metadata.size_bytes} < 500 MB) — likely a fixture")
 
     if errors:
         error_msg = "Engine Pack validation FAILED:\n  - " + "\n  - ".join(errors)
         raise RuntimeError(error_msg)
 
     print(
-        f"  Engine Pack OK: CRC32={crc32} SHA256={sha256[:16]}... "
-        f"API={engine_pack_api_ver} Models={model_set_ver} Size={size_bytes / (1024**3):.1f} GB"
+        f"  Engine Pack OK: CRC32={metadata.crc32} SHA256={metadata.sha256[:16]}... "
+        f"API={metadata.engine_pack_api_version} Models={metadata.model_set_version} "
+        f"Size={metadata.size_bytes / (1024**3):.1f} GB"
     )
 
 
@@ -209,16 +149,21 @@ def _generate_default_engine_pack_info() -> dict:
     :returns: 默认占位字典。
     """
     return {
-        "format_version": 2,
+        "format_version": ENGINE_PACK_SCHEMA_VERSION,
+        "artifact_class": "fixture",
         "engine_pack_version": RELEASE_VERSION,
-        "compatible_app": {"min": RELEASE_VERSION, "max_exclusive": "0.1.18"},
+        "portable_release_version": RELEASE_VERSION,
+        "engine_pack_api_version": ENGINE_PACK_SCHEMA_VERSION,
+        "model_set_version": 5,
         "filename": f"BiliLiveCut-EnginePack-{RELEASE_VERSION}.zip",
         "size_bytes": 0,
         "crc32": "",
         "sha256": "",
-        "manifest_sha256": "",
+        "content_manifest_sha256": "",
+        "model_lock_sha256": "",
         "source_commit": "",
         "builder_commit": "",
+        "build_timestamp": "",
         "expected_engine_ids": ["whisper", "paraformer", "sensevoice", "funasr_nano"],
     }
 
@@ -250,7 +195,7 @@ def build_exe(*, without_engine_pack: bool = False) -> Path:
     # Validate Manifest
     manifest = json.loads(MANIFEST_PATH.read_text(encoding="utf-8"))
     print(f"  Payload SHA256: {manifest['payload_sha256'][:32]}")
-    print(f"  Source: {manifest['source_commit_short']}")
+    print(f"  Source: {manifest['core_source_commit_short']}")
 
     # Read Engine Pack info
     if not without_engine_pack and ENGINE_PACK_INFO_PATH.exists():
@@ -290,8 +235,8 @@ def build_exe(*, without_engine_pack: bool = False) -> Path:
     is_fixture = os.environ.get("BLC_FIXTURE_BUILD") == "1"
     build_manifest = {
         "release_version": RELEASE_VERSION,
-        "source_commit": manifest["source_commit"],
-        "source_commit_short": manifest["source_commit_short"],
+        "source_commit": manifest["core_source_commit"],
+        "source_commit_short": manifest["core_source_commit_short"],
         "builder_commit": manifest["builder_commit"],
         "architecture": "x64",
         "artifact_type": "lite",

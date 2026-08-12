@@ -11,8 +11,6 @@ import subprocess
 from datetime import UTC, datetime
 from pathlib import Path
 
-from blc_portable.project_license import load_project_license
-
 from .manifest import (
     RELEASE_VERSION,
     SOURCE_COMMIT_FULL,
@@ -64,24 +62,6 @@ EXCLUDE_PATTERNS = [
     ".git_msg.txt",
     ".gitignore",
 ]
-
-# 允许的发布元数据覆盖文件
-ALLOWED_OVERLAY_FILES = [
-    "app/_version.py",
-    "app/_portable_release.py",
-    "app/__init__.py",
-    "pyproject.toml",
-    "LICENSE",
-    "payload_manifest.json",
-]
-
-_BASELINE_ALLOWED_DIFFERENCES = frozenset(
-    [
-        *ALLOWED_OVERLAY_FILES,
-        "setup.py",
-        "setup_c.py",
-    ]
-)
 
 
 def _git_path_list(command: list[str]) -> list[str]:
@@ -139,7 +119,7 @@ def verify_workspace_source_baseline(source_commit: str) -> None:
             *PAYLOAD_ITEMS,
         ]
     )
-    stale_paths = sorted((set(changed) | set(untracked)) - _BASELINE_ALLOWED_DIFFERENCES)
+    stale_paths = sorted(set(changed) | set(untracked))
     if stale_paths:
         preview = ", ".join(stale_paths[:12])
         suffix = f" 等 {len(stale_paths)} 个文件" if len(stale_paths) > 12 else ""
@@ -266,99 +246,22 @@ def extract_source(commit_ref: str, output_dir: Path) -> dict:
             tmp_tar.unlink()
 
 
-def apply_version_overlay(
-    staging_dir: Path,
-    *,
-    source_commit_full: str,
-    builder_commit_full: str,
-) -> list[str]:
-    """在 staging 目录中应用受控版本覆盖。
-
-    使用正则匹配任意 0.1.x 版本号/版本标签，只要不等于当前
-    RELEASE_VERSION 就替换。无需每次升版本时手动添加替换列表。
-
-    只修改:
-    - app/__init__.py: __version__ 和 __version_label__
-    - pyproject.toml: version
-    - README.md: 版本展示
-    - CHANGELOG.md: 添加版本条目
-    - setup.py / setup_c.py: version
-    - LICENSE: 当前仓库的规范项目许可证
-
-    :param staging_dir: Payload staging 目录。
-    :param source_commit_full: 写入 Payload 的业务源码完整 Commit Hash。
-    :param builder_commit_full: 写入 Payload 的构建器完整 Commit Hash。
-    :returns: 实际修改的文件列表。
-    """
-    import re
-
-    modified: list[str] = []
-
-    # 版本标签 (如 "V0.1.14.8 Alpha")
-    base_version = RELEASE_VERSION.split("-")[0] if "-" in RELEASE_VERSION else RELEASE_VERSION
-    version_label = f"V{base_version} Alpha"
-
-    # 正则: 匹配任意 0.1.X.Y[-suffix] 和 V0.1.X.Y Label
-    _version_re = re.compile(r"\b0\.1\.\d+(?:\.\d+)?(?:-[a-z]+)?\b")
-    _label_re = re.compile(r"\bV0\.1\.\d+(?:\.\d+)?\s+[A-Za-z]+\b")
-
-    def _overlay(text: str, target_version: str) -> str:
-        """将文本中所有不等于 target_version/target_label 的旧版本号替换为新版本。"""
-
-        def _ver_repl(m: re.Match) -> str:
-            return target_version if m.group(0) != target_version else m.group(0)
-
-        def _lbl_repl(m: re.Match) -> str:
-            return version_label if m.group(0) != version_label else m.group(0)
-
-        text = _label_re.sub(_lbl_repl, text)
-        text = _version_re.sub(_ver_repl, text)
-        return text
-
-    # 只操作明确的版本元数据字段，不全文替换 README/CHANGELOG
-    targets: list[tuple[str, str]] = [
-        ("app/_portable_release.py", RELEASE_VERSION),  # 优先：专属便携版本文件
-        ("app/__init__.py", RELEASE_VERSION),
-        ("pyproject.toml", RELEASE_VERSION),
-        ("setup.py", RELEASE_VERSION),
-        ("setup_c.py", base_version),  # setup_c 使用无后缀版本号
-    ]
-
-    for rel_path, target_ver in targets:
-        file_path = staging_dir / rel_path
-        if not file_path.exists():
-            continue
-        content = file_path.read_text(encoding="utf-8")
-        new_content = _overlay(content, target_ver)
-        if rel_path == "app/_portable_release.py":
-            metadata_values = {
-                "SOURCE_COMMIT": source_commit_full,
-                "SOURCE_COMMIT_SHORT": source_commit_full[:7],
-                "BUILDER_COMMIT": builder_commit_full,
-            }
-            for constant_name, value in metadata_values.items():
-                pattern = rf'^{constant_name}: str = "[^"]*"$'
-                replacement = f'{constant_name}: str = "{value}"'
-                new_content, replacement_count = re.subn(pattern, replacement, new_content, flags=re.MULTILINE)
-                if replacement_count != 1:
-                    raise RuntimeError(f"Portable 元数据常量缺失或重复: {constant_name}")
-        if new_content != content:
-            file_path.write_text(new_content, encoding="utf-8")
-            modified.append(rel_path)
-
-    license_path = staging_dir / "LICENSE"
-    license_content = load_project_license()
-    if not license_path.is_file() or license_path.read_bytes() != license_content:
-        license_path.write_bytes(license_content)
-        modified.append("LICENSE")
-
-    # 验证只修改了允许的文件
-    for f in modified:
-        if f not in ALLOWED_OVERLAY_FILES and not f.startswith("setup"):
-            raise RuntimeError(f"版本覆盖修改了非允许文件: {f}")
-
-    _logger.info("release_overlay: %d files modified: %s", len(modified), modified)
-    return modified
+def validate_release_identity(staging_dir: Path) -> None:
+    """确认源码快照本身已经声明当前发布版本，不修改快照内容。"""
+    expected = {
+        "app/__init__.py": f'__version__ = "{RELEASE_VERSION}"',
+        "pyproject.toml": f'version = "{RELEASE_VERSION}"',
+        "setup_c.py": f'version="{RELEASE_VERSION.split("-", maxsplit=1)[0]}"',
+    }
+    mismatches: list[str] = []
+    for rel_path, marker in expected.items():
+        path = staging_dir / rel_path
+        if not path.is_file() or marker not in path.read_text(encoding="utf-8"):
+            mismatches.append(rel_path)
+    if mismatches:
+        raise RuntimeError(
+            f"Payload 源码版本与当前发布版本不一致: {', '.join(mismatches)}；禁止在构建阶段改写旧源码版本"
+        )
 
 
 def verify_source_origin(
@@ -367,14 +270,14 @@ def verify_source_origin(
 ) -> None:
     """验证 staging 目录中的源码来自指定 Commit。
 
-    除受控发布元数据 Overlay 外，业务文件必须与 source_commit 完全一致。
+    业务文件必须与 source_commit 完全一致。
 
     :param staging_dir: staging 目录。
     :param source_commit: Commit Hash。
     :raises RuntimeError: 文件不一致时。
     """
-    # 只验证不属于发布元数据 Overlay 的业务文件。
     business_files = [
+        "app/__init__.py",
         "app/cli.py",
         "app/analysis/transcription/backends.py",
         "app/analysis/transcription/pipeline.py",
@@ -388,6 +291,8 @@ def verify_source_origin(
         "app/db/entities/clip.py",
         "app/db/entities/publishing.py",
         "app/pipeline/stale_recovery.py",
+        "pyproject.toml",
+        "setup_c.py",
     ]
 
     for rel_path in business_files:

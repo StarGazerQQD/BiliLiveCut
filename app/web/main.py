@@ -117,9 +117,10 @@ async def lifespan(_app: FastAPI) -> AsyncIterator[None]:
     await plugin_manager.start()
 
     # V0.1.6:启动持久化任务队列 Worker。
-    from app.pipeline.task_worker import task_worker
+    from app.pipeline.task_worker import get_worker
     from app.web.services.background_jobs import web_job_manager
 
+    task_worker = get_worker()
     await task_worker.start()
     await web_job_manager.start()
 
@@ -192,7 +193,7 @@ def _reschedule_daily(item: dict) -> None:
     """为每日预约创建下一天的副本(原记录已标记 triggered)。"""
     from datetime import timedelta
 
-    from app.db.models import RecordingSchedule, utcnow
+    from app.db.entities import RecordingSchedule, utcnow
 
     try:
         # 取原预约的时间(hour+minute),放到下一天。

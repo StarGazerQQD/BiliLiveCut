@@ -51,17 +51,6 @@ EXCLUDE_PATTERNS = [
     ".gitignore",
 ]
 
-# 允许的版本注入文件
-ALLOWED_OVERLAY_FILES = [
-    "app/_version.py",
-    "app/__init__.py",
-    "pyproject.toml",
-    "README.md",
-    "CHANGELOG.md",
-    "LICENSE",
-    "payload_manifest.json",
-]
-
 
 def get_payload_file_list(staging_dir: Path, *, base_path: Path | None = None) -> list[str]:
     """生成 Payload 文件清单 (相对于 staging_dir 的路径)。

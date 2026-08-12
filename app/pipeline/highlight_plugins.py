@@ -11,7 +11,7 @@ from sqlmodel import select
 
 from app.analysis.audio import AudioFeatures
 from app.analysis.room_config import load_room_config
-from app.db.models import Danmaku, DanmakuType, LiveRoom, RawSegment, RecordingSession, Transcript
+from app.db.entities import Danmaku, DanmakuType, LiveRoom, RawSegment, RecordingSession, Transcript
 from app.db.session import get_session
 from app.plugins.highlight import (
     HighlightAudio,
@@ -30,29 +30,32 @@ def _utc_naive(value: datetime) -> datetime:
 
 
 def _parse_words(raw: str | None) -> tuple[HighlightWord, ...] | None:
-    """容错解析主程序词时间戳。"""
+    """解析当前唯一的 ``[{w,start,end}]`` 词时间戳格式。"""
     if raw is None:
         return None
     try:
         payload = json.loads(raw)
-    except (json.JSONDecodeError, TypeError):
-        return None
+    except (json.JSONDecodeError, TypeError) as exc:
+        raise ValueError("词时间戳不是有效 JSON") from exc
     if not isinstance(payload, list):
-        return None
+        raise ValueError("词时间戳必须是 JSON 数组")
     words: list[HighlightWord] = []
-    for item in payload:
-        if not isinstance(item, dict):
-            continue
+    for index, item in enumerate(payload):
+        if not isinstance(item, dict) or set(item) != {"w", "start", "end"}:
+            raise ValueError(f"词时间戳第 {index} 项必须且只能包含 w/start/end")
+        text = item["w"]
+        if not isinstance(text, str):
+            raise ValueError(f"词时间戳第 {index} 项的 w 必须是字符串")
         try:
             start_s = float(item["start"])
             end_s = float(item["end"])
-        except (KeyError, TypeError, ValueError):
-            continue
+        except (TypeError, ValueError) as exc:
+            raise ValueError(f"词时间戳第 {index} 项的 start/end 必须是数值") from exc
         if not np.isfinite(start_s) or not np.isfinite(end_s) or end_s < start_s:
-            continue
+            raise ValueError(f"词时间戳第 {index} 项的时间范围无效")
         words.append(
             HighlightWord(
-                text=str(item.get("w", item.get("word", ""))),
+                text=text,
                 start_s=start_s,
                 end_s=end_s,
             )
@@ -158,7 +161,7 @@ def build_highlight_scoring_request(
             session_started_at=session_started_at,
             duration_s=float(duration),
             file_path=segment.file_path,
-            transcript_text=transcript.text if transcript is not None else None,
+            transcript_text=transcript.final_text if transcript is not None else None,
             words=_parse_words(transcript.words_json) if transcript is not None else None,
             asr_avg_logprob=transcript.avg_logprob if transcript is not None else None,
             asr_review_risk=transcript.review_risk_score if transcript is not None else None,

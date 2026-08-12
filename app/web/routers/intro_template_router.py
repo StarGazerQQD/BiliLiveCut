@@ -8,7 +8,7 @@ from __future__ import annotations
 from fastapi import APIRouter, HTTPException, Request
 from sqlmodel import select as _sql_select
 
-from app.db.models import IntroTemplate
+from app.db.entities import IntroTemplate
 from app.db.session import get_session
 
 router = APIRouter(prefix="/api/intro-templates", tags=["intro_templates"])

@@ -14,7 +14,7 @@ from pathlib import Path
 
 from loguru import logger
 
-from app.analysis.speedups import fast_match_keywords
+from app.accelerators.dispatcher import fast_match_keywords
 
 _KEYWORDS_PATH = Path(__file__).resolve().parents[2] / "config" / "keywords.zh.txt"
 

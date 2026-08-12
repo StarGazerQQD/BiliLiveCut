@@ -2,7 +2,7 @@
 
 流程:
 1. 从固定的当前发布基线 92618ef 提取源码 → staging/
-2. 应用受控版本 Overlay → 0.1.17.3-alpha
+2. 校验源码快照本身就是 0.1.17.3-alpha
 3. 构建 ZIP (收集 included_files 集合)
 4. 基于 included_files 生成 Manifest (文件数/Hash 与 ZIP 严格一致)
 5. 逐文件交叉校验 ZIP vs Manifest
@@ -30,8 +30,8 @@ from .manifest import (
     validate_manifest,
 )
 from .source_snapshot import (
-    apply_version_overlay,
     extract_source,
+    validate_release_identity,
     verify_source_origin,
     verify_workspace_source_baseline,
 )
@@ -281,7 +281,7 @@ def build_payload(
     builder_commit: str | None = None,
     skip_reproducible: bool = False,
 ) -> dict:
-    """构建完整 Payload: 提取 → Overlay → ZIP → Manifest → 校验。
+    """构建完整 Payload: 提取 → 身份校验 → ZIP → Manifest → 校验。
 
     所有文件级操作基于唯一的 included_files 集合。
 
@@ -309,15 +309,9 @@ def build_payload(
     _logger.info("Step 1: Extracting source from %s", SOURCE_COMMIT_SHORT)
     extract_report = extract_source(SOURCE_COMMIT_FULL, staging_dir)
 
-    # Step 2: 应用版本 Overlay
-    _logger.info("Step 2: Applying version overlay -> %s", RELEASE_VERSION)
-    overlay_files = apply_version_overlay(
-        staging_dir,
-        source_commit_full=SOURCE_COMMIT_FULL,
-        builder_commit_full=builder_commit,
-    )
-    backport_ids: list[str] = []
-
+    # Step 2: 严格验证源码版本，不允许构建期改写旧源码
+    _logger.info("Step 2: Validating source release identity -> %s", RELEASE_VERSION)
+    validate_release_identity(staging_dir)
     # Step 2.5: 编译并注入原生加速模块
     _logger.info("Step 2.5: Compiling native extensions...")
     native_results = _compile_and_copy_native_modules(staging_dir)
@@ -345,8 +339,6 @@ def build_payload(
         included_file_relpaths=included_files,
         source_commit_full=SOURCE_COMMIT_FULL,
         builder_commit_full=builder_commit,
-        release_overlays=overlay_files,
-        backport_ids=backport_ids,
         target_platform=TARGET_PLATFORM,
     )
 
@@ -392,11 +384,7 @@ def build_payload(
 
         # 完全相同的构建流程
         extract_source(SOURCE_COMMIT_FULL, verify_staging)
-        apply_version_overlay(
-            verify_staging,
-            source_commit_full=SOURCE_COMMIT_FULL,
-            builder_commit_full=builder_commit,
-        )
+        validate_release_identity(verify_staging)
         _compile_and_copy_native_modules(verify_staging)
 
         # 使用同一套 included_files 逻辑收集文件
@@ -425,8 +413,6 @@ def build_payload(
         "builder_commit_full": builder_commit,
         "source_file_count": extract_report["file_count"],
         "payload_file_count": len(included_files),
-        "release_overlay_files": overlay_files,
-        "backport_ids": backport_ids,
         "payload_sha256": hash1,
         "verified_reproducible": verified,
         "target_platform": TARGET_PLATFORM,

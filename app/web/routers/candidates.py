@@ -5,9 +5,9 @@ from __future__ import annotations
 from typing import Any, Literal
 
 from fastapi import APIRouter, HTTPException, Request
-from pydantic import BaseModel, field_validator
+from pydantic import BaseModel, ConfigDict, field_validator
 
-from app.db.models import CandidateStatus
+from app.db.entities import CandidateStatus
 from app.web import service
 
 _MAX_QUERY_LIMIT = 500
@@ -20,6 +20,8 @@ def _clamp(v, lo, hi):
 
 class BatchRequest(BaseModel):
     """批量审批/发布/删除请求体。"""
+
+    model_config = ConfigDict(extra="forbid")
 
     candidate_ids: list[int]
     action: Literal["approve", "reject", "publish", "delete"]
@@ -47,7 +49,7 @@ def get_candidates(limit: int = 50, status: str | None = None) -> list[dict[str,
 @router.post("/candidates/{candidate_id}/approve")
 async def approve_candidate(candidate_id: int, request: Request) -> dict[str, Any]:
     """把候选批准出片提交到后台作业。"""
-    from app.db.models import HighlightCandidate
+    from app.db.entities import HighlightCandidate
     from app.db.session import get_session
     from app.web.services.background_jobs import web_job_manager
     from app.web.services.review_workflow import review_actor
@@ -103,7 +105,7 @@ async def batch_candidates(request: BatchRequest, http_request: Request) -> dict
     for cid in request.candidate_ids:
         try:
             if request.action == "approve":
-                from app.db.models import HighlightCandidate
+                from app.db.entities import HighlightCandidate
                 from app.db.session import get_session
                 from app.web.services.background_jobs import web_job_manager
                 from app.web.services.review_workflow import review_actor

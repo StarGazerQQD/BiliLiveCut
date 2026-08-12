@@ -119,7 +119,7 @@ def _get_task_stats() -> dict:
 
     from sqlmodel import select
 
-    from app.db.models import SegmentTask, TaskStatus
+    from app.db.entities import SegmentTask, TaskStatus
     from app.db.session import get_session
 
     with get_session() as db:
@@ -160,7 +160,7 @@ def _get_recent_failures() -> list[dict]:
     """获取最近 20 个失败任务。"""
     from sqlmodel import select
 
-    from app.db.models import SegmentTask
+    from app.db.entities import SegmentTask
     from app.db.session import get_session
 
     with get_session() as db:

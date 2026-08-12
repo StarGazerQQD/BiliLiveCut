@@ -6,6 +6,7 @@
 from __future__ import annotations
 
 import hashlib
+import json
 import shutil
 import uuid
 import zipfile
@@ -60,16 +61,24 @@ def install_from_payload(
     :returns: 已安装的 Release 目录。
     :raises RuntimeError: 校验或安装失败时。
     """
+    from blc_portable.payload.manifest import compute_file_sha256, validate_manifest
+
+    manifest_errors = validate_manifest(manifest, zip_path)
+    if manifest_errors:
+        raise RuntimeError("Payload manifest validation failed: " + "; ".join(manifest_errors[:5]))
+
     # Level 1: Payload SHA-256
     actual_hash = compute_payload_hash(zip_path)
     if actual_hash != expected_hash:
         raise RuntimeError(f"Payload hash mismatch: actual={actual_hash[:16]} expected={expected_hash[:16]}")
 
     # Level 2: Version and commit
-    if manifest.get("release_version") != expected_version:
-        raise RuntimeError(f"Payload version mismatch: {manifest.get('release_version')} != {expected_version}")
-    if manifest.get("source_commit_short") != expected_commit:
-        raise RuntimeError(f"Source commit mismatch: {manifest.get('source_commit_short')} != {expected_commit}")
+    if manifest.get("portable_release_version") != expected_version:
+        raise RuntimeError(
+            f"Payload version mismatch: {manifest.get('portable_release_version')} != {expected_version}"
+        )
+    if manifest.get("core_source_commit_short") != expected_commit:
+        raise RuntimeError(f"Source commit mismatch: {manifest.get('core_source_commit_short')} != {expected_commit}")
 
     # Level 3: file_count must be present and non-zero
     file_count = manifest.get("file_count", 0)
@@ -85,8 +94,8 @@ def install_from_payload(
 
     from .__init__ import get_releases_dir, get_runtime_dir
 
-    releases_dir = get_releases_dir()
-    staging = get_runtime_dir() / f"staging-{uuid.uuid4().hex[:12]}"
+    releases_dir = get_releases_dir(app_root)
+    staging = get_runtime_dir(app_root) / f"staging-{uuid.uuid4().hex[:12]}"
     release_dir = releases_dir / content_release_id
 
     if staging.exists():
@@ -134,18 +143,24 @@ def install_from_payload(
                 shutil.rmtree(release_dir)
             replace_with_retry(staging, release_dir)
 
+            installed_manifest_path = release_dir / "payload_manifest.json"
+            installed_manifest_path.write_text(
+                json.dumps(manifest, ensure_ascii=False, indent=2),
+                encoding="utf-8",
+            )
+
             # 写入 current.json
-            from .verifier import write_current_json
+            from .activation import write_current_json
 
             write_current_json(
                 app_root,
                 release_id=content_release_id,
                 release_version=expected_version,
-                source_commit=manifest.get("source_commit", ""),
+                source_commit=manifest["core_source_commit"],
                 source_commit_short=expected_commit,
-                builder_commit=manifest.get("builder_commit", ""),
+                builder_commit=manifest["builder_commit"],
                 payload_sha256=actual_hash,
-                manifest_sha256=manifest.get("payload_sha256", ""),
+                manifest_sha256=compute_file_sha256(installed_manifest_path),
             )
 
         except Exception:

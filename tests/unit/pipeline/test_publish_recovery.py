@@ -9,7 +9,7 @@ from unittest.mock import patch
 
 from sqlmodel import select
 
-from app.db.models import FinalClip, SegmentTask, TaskStatus, UploadAttempt, UploadStatus, UploadTask
+from app.db.entities import FinalClip, SegmentTask, TaskStatus, UploadAttempt, UploadStatus, UploadTask
 from app.db.session import get_session
 from app.pipeline.publish_recovery import recover_publish_results
 from app.pipeline.stale_recovery import recover_stale_upload_attempts, sync_segment_task_from_attempt

@@ -10,7 +10,7 @@ from typing import TypedDict
 
 from sqlmodel import Session, select
 
-from app.db.models import LiveRoom, RecordingSession
+from app.db.entities import LiveRoom, RecordingSession
 
 
 class SourceIdentity(TypedDict):

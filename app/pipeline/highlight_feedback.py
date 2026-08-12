@@ -10,7 +10,7 @@ from typing import cast
 
 from sqlmodel import select
 
-from app.db.models import (
+from app.db.entities import (
     HighlightCandidate,
     HighlightEvent,
     RawSegment,
@@ -75,7 +75,9 @@ def build_highlight_feedback(
         if candidate is None:
             raise ValueError(f"候选不存在: id={candidate_id}")
         event = db.exec(select(HighlightEvent).where(HighlightEvent.candidate_id == candidate_id)).first()
-        if event is None or event.segment_id is None:
+        if event is None:
+            raise ValueError(f"候选数据不完整：缺少审核事件 candidate_id={candidate_id}")
+        if event.segment_id is None:
             return None
         recording = db.get(RecordingSession, candidate.session_id)
         if recording is None:

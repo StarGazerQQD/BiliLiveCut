@@ -6,7 +6,7 @@ from typing import Any
 
 from fastapi import APIRouter, HTTPException, Request
 from fastapi.responses import FileResponse
-from pydantic import BaseModel, Field
+from pydantic import BaseModel, ConfigDict, Field
 
 from app.web import service
 from app.web.services.transcripts import (
@@ -29,6 +29,8 @@ router = APIRouter()
 class TranscriptCorrectionRequest(BaseModel):
     """人工转写纠错请求。"""
 
+    model_config = ConfigDict(extra="forbid")
+
     corrected_text: str = Field(min_length=1, max_length=200_000)
     aliases: dict[str, str] = Field(default_factory=dict)
     learn_dictionary: bool = True
@@ -36,6 +38,8 @@ class TranscriptCorrectionRequest(BaseModel):
 
 class ReanalysisRequest(BaseModel):
     """场次重分析请求。"""
+
+    model_config = ConfigDict(extra="forbid")
 
     reason: str = Field(default="manual", min_length=1, max_length=200)
     retranscribe: bool = False

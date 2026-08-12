@@ -256,12 +256,6 @@ def get_cookie_info() -> dict:
 
     raw = settings_store.get_setting("bilibili_cookie", "")
 
-    # Also check .env cookie (compat)
-    if not raw:
-        from app.core.config import settings
-
-        raw = settings.bilibili_cookie
-
     # 安全摘要: 只输出 DedeUserID 值
     if not raw:
         return {"has_cookie": False}

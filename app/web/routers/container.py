@@ -5,7 +5,7 @@ from __future__ import annotations
 from typing import Any
 
 from fastapi import APIRouter, HTTPException, Request
-from pydantic import BaseModel
+from pydantic import BaseModel, ConfigDict
 
 from app.web import service
 
@@ -19,6 +19,8 @@ def _clamp(v, lo, hi):
 
 class SettingsRequest(BaseModel):
     """运行时开关与上传配置请求体。"""
+
+    model_config = ConfigDict(extra="forbid")
 
     recording_pipeline_enabled: bool | None = None
     transcript_llm_refine_enabled: bool | None = None
@@ -59,7 +61,7 @@ def get_uploads(limit: int = 50) -> list[dict[str, Any]]:
 @router.post("/clips/{clip_id}/enqueue")
 async def enqueue_upload(clip_id: int, request: Request) -> dict[str, Any]:
     """把成品上传提交到后台作业。"""
-    from app.db.models import FinalClip
+    from app.db.entities import FinalClip
     from app.db.session import get_session
     from app.web.services.background_jobs import web_job_manager
     from app.web.services.review_workflow import review_actor
@@ -82,7 +84,7 @@ async def enqueue_upload(clip_id: int, request: Request) -> dict[str, Any]:
 @router.post("/uploads/{task_id}/retry")
 async def retry_upload(task_id: int, request: Request) -> dict[str, Any]:
     """把上传重试提交到后台作业。"""
-    from app.db.models import UploadTask
+    from app.db.entities import UploadTask
     from app.db.session import get_session
     from app.web.services.background_jobs import web_job_manager
     from app.web.services.review_workflow import review_actor

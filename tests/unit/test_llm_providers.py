@@ -67,54 +67,32 @@ def test_merge_and_save_preserves_key(temp_db: None) -> None:
     provs.save_providers([_p("A", 1, key="secret-key")])
     pid = provs.load_providers()[0].id
 
+    def current_payload(api_key: str) -> dict[str, object]:
+        return {
+            "id": pid,
+            "name": "A2",
+            "base_url": "https://x/v1",
+            "model": "m",
+            "api_key": api_key,
+            "web_search_param": "",
+            "price_input_per_m": 0.0,
+            "price_output_per_m": 0.0,
+            "priority": 1,
+            "enabled": True,
+        }
+
     # 提交时 key 留空 -> 保留旧 key;另改名。
-    provs.merge_and_save(
-        [
-            {
-                "id": pid,
-                "name": "A2",
-                "base_url": "https://x/v1",
-                "model": "m",
-                "api_key": "",
-                "priority": 1,
-                "enabled": True,
-            },
-        ]
-    )
+    provs.merge_and_save([current_payload("")])
     p = provs.load_providers()[0]
     assert p.name == "A2"
     assert p.api_key == "secret-key"
 
     # 掩码占位也视为不修改。
-    provs.merge_and_save(
-        [
-            {
-                "id": pid,
-                "name": "A2",
-                "base_url": "https://x/v1",
-                "model": "m",
-                "api_key": "****key",
-                "priority": 1,
-                "enabled": True,
-            },
-        ]
-    )
+    provs.merge_and_save([current_payload("****key")])
     assert provs.load_providers()[0].api_key == "secret-key"
 
     # 提供新 key -> 更新。
-    provs.merge_and_save(
-        [
-            {
-                "id": pid,
-                "name": "A2",
-                "base_url": "https://x/v1",
-                "model": "m",
-                "api_key": "brand-new",
-                "priority": 1,
-                "enabled": True,
-            },
-        ]
-    )
+    provs.merge_and_save([current_payload("brand-new")])
     assert provs.load_providers()[0].api_key == "brand-new"
 
 
@@ -129,19 +107,25 @@ def test_public_view_masks_key(temp_db: None) -> None:
     assert view["api_key_set"] is True
 
 
-def test_load_falls_back_to_env(temp_db: None, monkeypatch: MonkeyPatch) -> None:
-    """未配置多模型时,回退到 .env 单模型配置。
+def test_load_does_not_accept_legacy_env_provider(temp_db: None, monkeypatch: MonkeyPatch) -> None:
+    """未保存当前 provider 时，旧版单模型环境变量不得被隐式迁移。"""
+    monkeypatch.setenv("LLM_API_KEY", "legacy-key")
+    monkeypatch.setenv("LLM_MODEL", "deepseek-chat")
 
-    :param temp_db: 隔离数据库夹具。
-    :param monkeypatch: pytest 夹具。
-    """
-    monkeypatch.setattr(provs.settings, "llm_api_key", "env-key", raising=False)
-    monkeypatch.setattr(provs.settings, "llm_model", "deepseek-chat", raising=False)
-    monkeypatch.setattr(provs.settings, "anthropic_api_key", "", raising=False)
-    loaded = provs.load_providers()
-    assert len(loaded) == 1
-    assert loaded[0].id == "env"
-    assert loaded[0].api_key == "env-key"
+    assert provs.load_providers() == []
+
+
+def test_merge_rejects_missing_or_unknown_provider_fields(temp_db: None) -> None:
+    """保存接口只能接受当前完整字段集，不得补齐旧版或未来字段。"""
+    current = _p("strict", 1).to_dict()
+    missing = dict(current)
+    missing.pop("web_search_param")
+    unknown = {**current, "legacy_model": "deprecated"}
+
+    with pytest.raises(ValueError, match="missing=.*web_search_param"):
+        provs.merge_providers([missing])
+    with pytest.raises(ValueError, match="unknown=.*legacy_model"):
+        provs.merge_providers([unknown])
 
 
 def test_call_text_failover(monkeypatch: MonkeyPatch) -> None:

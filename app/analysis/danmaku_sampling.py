@@ -20,7 +20,7 @@ import time
 from collections import deque
 from dataclasses import dataclass, field
 
-from app.db.models import DanmakuType
+from app.db.entities import DanmakuType
 
 # 基础保留率
 _BASE_RETAIN_RATE: dict[DanmakuType, float] = {

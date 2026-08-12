@@ -21,7 +21,7 @@ from sqlmodel import Session, select
 from app.analysis import audio as audio_mod
 from app.analysis.keywords import match_keywords
 from app.core.config import settings
-from app.db.models import (
+from app.db.entities import (
     CandidateStatus,
     HighlightCandidate,
     HighlightEvent,
@@ -422,7 +422,7 @@ def _mark_scored_direct(segment_id: int) -> None:
 
 
 def _draft_dedup_hash(draft: dict[str, Any]) -> str:
-    """为缺少业务键的兼容计算结果生成稳定候选指纹。"""
+    """为缺少业务键的异常计算结果生成稳定候选指纹。"""
     start = draft.get("start_ts")
     end = draft.get("end_ts")
     start_value = start.timestamp() if hasattr(start, "timestamp") else str(start)
@@ -638,7 +638,7 @@ def run_analyze(lease: TaskLease) -> None:
 def _score_segment_drafts(segment_id: int) -> dict[str, Any] | None:
     """对一个录制分段的多个局部峰值分别评分并执行防扎堆筛选。
 
-    返回值仍以最高分候选作为顶层结果，保持现有任务状态机兼容；其余候选
+    返回值以最高分候选作为顶层结果供任务状态机推进；其余候选
     放在 ``additional_candidates`` 中，由同一个租约事务幂等提交。
     """
     from app.analysis.timeline import suppress_clustered_drafts  # noqa: PLC0415
@@ -651,7 +651,7 @@ def _score_segment_drafts(segment_id: int) -> dict[str, Any] | None:
         transcript = db.exec(select(Transcript).where(Transcript.segment_id == segment_id)).first()
         if transcript is None:
             raise ValueError(f"片段尚未转写: id={segment_id}")
-        quality = assess_transcript_quality(transcript.text)
+        quality = assess_transcript_quality(transcript.final_text)
         if not quality.usable:
             raise ValueError(f"片段转写质量不合格，已阻止高光与 LLM 分析: segment={segment_id} reason={quality.reason}")
         file_path = segment.file_path
@@ -761,7 +761,7 @@ def _score_segment_draft(
         room_id = room.id if room else None
         threshold = room.highlight_threshold if room else settings.highlight_threshold
         has_transcript = transcript is not None
-        text = transcript.text if transcript else ""
+        text = transcript.final_text if transcript else ""
         file_path = segment.file_path
         room_auto_approve = bool(room.auto_approve) if room else False
         room_auto_approve_threshold = room.auto_approve_threshold if room else settings.highlight_auto_approve_threshold
@@ -806,7 +806,7 @@ def _score_segment_draft(
         TimedTranscriptPart(
             start_ts=item.start_ts,
             end_ts=item.end_ts,
-            text=session_transcripts[item.id].text,
+            text=session_transcripts[item.id].final_text,
             words_json=session_transcripts[item.id].words_json,
         )
         for item in session_segments
@@ -1044,59 +1044,3 @@ def _score_segment_draft(
         "config_hash": cfg.model_dump_json() if hasattr(cfg, "model_dump_json") else "",
         "highlight_plugin": plugin_payload,
     }
-
-
-# 兼容导出: _ensure_event 供 task_worker 和测试使用
-
-
-def _ensure_event(candidate_id: int) -> int | None:
-    """确保每个 HighlightCandidate 有唯一 HighlightEvent (幂等)。
-
-    此函数供 task_worker.py 和测试直接调用。
-    新 Worker 路径已内联此逻辑到 commit_highlight 中。
-
-    :param candidate_id: HighlightCandidate ID。
-    :returns: event_id 或 None。
-    """
-    from sqlalchemy.exc import IntegrityError as _IE  # noqa: PLC0415
-
-    with get_session() as db:
-        existing = db.exec(select(HighlightEvent).where(HighlightEvent.candidate_id == candidate_id)).first()
-        if existing is not None:
-            return existing.id
-        cand = db.get(HighlightCandidate, candidate_id)
-        if cand is None:
-            return None
-        task = db.exec(
-            select(SegmentTask).where(SegmentTask.candidate_id == candidate_id).order_by(SegmentTask.created_at.desc())
-        ).first()
-        event = HighlightEvent(
-            candidate_id=candidate_id,
-            session_id=cand.session_id,
-            segment_id=task.segment_id if task else None,
-            raw_start_ts=cand.start_ts,
-            raw_end_ts=cand.end_ts,
-            rule_score=cand.rule_score,
-            llm_score=cand.llm_score,
-            highlight_score=cand.highlight_score,
-            features_json=cand.features_json,
-            reason=cand.reason,
-            review_status=ReviewStatus.PENDING,
-            review_by="auto",
-        )
-        db.add(event)
-        try:
-            db.flush()
-            db.refresh(event)
-            _logger.info("auto event: eid=%s cid=%s", event.id, candidate_id)
-            return event.id
-        except _IE:
-            db.rollback()
-            _logger.info("idempotency_conflict_resolved: event cid=%s 已被并发创建", candidate_id)
-
-    with get_session() as db:
-        existing = db.exec(select(HighlightEvent).where(HighlightEvent.candidate_id == candidate_id)).first()
-        if existing is not None:
-            return existing.id
-        _logger.error("IntegrityError 后无法找到已有 Event: candidate_id=%s", candidate_id)
-        return None

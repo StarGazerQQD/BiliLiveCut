@@ -5,7 +5,7 @@ from __future__ import annotations
 import typer
 from rich.console import Console
 
-from app.db.models import LiveRoom
+from app.db.entities import LiveRoom
 from app.db.session import get_session
 
 console = Console()
@@ -27,7 +27,7 @@ def cmd_schedule(
     from datetime import datetime
 
     from app.core.config import settings as s
-    from app.db.models import RecordingSchedule
+    from app.db.entities import RecordingSchedule
 
     with get_session() as db:
         room = db.get(LiveRoom, room_id)

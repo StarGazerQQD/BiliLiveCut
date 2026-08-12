@@ -20,7 +20,7 @@ def cluster_similarity_matrix(items: list[dict]) -> list[list[float]]:
     """
     from datetime import datetime as _dt
 
-    from app.analysis.speedups import fast_char_bigrams
+    from app.accelerators.dispatcher import fast_char_bigrams
 
     n = len(items)
     if n < 2:
@@ -78,7 +78,7 @@ def _pairwise_sim(
     tsb,
 ) -> float:
     """快速两两事件相似度 — 使用预计算的 bigram Counter 和 kw set。"""
-    from app.analysis.speedups import fast_cosine_similarity
+    from app.accelerators.dispatcher import fast_cosine_similarity
 
     sim_text = 0.0
     if ta and tb and va and vb:

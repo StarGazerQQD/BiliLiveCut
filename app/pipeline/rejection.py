@@ -7,7 +7,7 @@ from datetime import UTC, datetime
 from loguru import logger
 from sqlmodel import Session, select
 
-from app.db.models import (
+from app.db.entities import (
     CandidateStatus,
     ClipStatus,
     FinalClip,
@@ -46,24 +46,17 @@ def reject_candidate_and_outputs(
     candidate = db.get(HighlightCandidate, candidate_id)
     if candidate is None:
         raise ValueError(f"候选不存在: id={candidate_id}")
+    event = db.exec(select(HighlightEvent).where(HighlightEvent.candidate_id == candidate_id)).first()
+    if event is None:
+        raise ValueError(f"候选数据不完整：缺少审核事件 candidate_id={candidate_id}")
     candidate.status = CandidateStatus.REJECTED
     db.add(candidate)
-    from app.analysis.session_summary import request_session_timeline_summary_in_session
 
-    request_session_timeline_summary_in_session(
-        db,
-        candidate.session_id,
-        reason="review_rejected",
-        force=True,
-    )
-
-    event = db.exec(select(HighlightEvent).where(HighlightEvent.candidate_id == candidate_id)).first()
-    if event is not None:
-        event.review_status = review_decision
-        event.review_reason = reason
-        event.review_by = rejected_by
-        event.updated_at = datetime.now(UTC)
-        db.add(event)
+    event.review_status = review_decision
+    event.review_reason = reason
+    event.review_by = rejected_by
+    event.updated_at = datetime.now(UTC)
+    db.add(event)
 
     cancelled_tasks = 0
     tasks = db.exec(select(SegmentTask).where(SegmentTask.candidate_id == candidate_id)).all()

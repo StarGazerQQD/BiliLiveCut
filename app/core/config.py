@@ -27,7 +27,7 @@ class Settings(BaseSettings):
     model_config = SettingsConfigDict(
         env_file=".env",
         env_file_encoding="utf-8",
-        extra="ignore",
+        extra="forbid",
         case_sensitive=False,
     )
 
@@ -133,22 +133,6 @@ class Settings(BaseSettings):
     asr_model_revision: str = "v2.0.4"
 
     # ---------- AI:大模型(OpenAI 兼容协议,境内推荐 DeepSeek/通义/Kimi/GLM) ----------
-    # provider 仅作标识;真正决定连接的是 base_url + api_key + model。
-    llm_provider: str = "deepseek"
-    llm_api_key: str = Field(default="", repr=False)  # Deprecated: 已迁移至 LLMProvider 系统
-    # OpenAI 兼容 API 的 base_url(须含 /v1 等版本前缀,视服务商而定):
-    #   DeepSeek: https://api.deepseek.com/v1
-    #   通义千问 : https://dashscope.aliyuncs.com/compatible-mode/v1
-    #   Kimi    : https://api.moonshot.cn/v1
-    #   智谱 GLM : https://open.bigmodel.cn/api/paas/v4
-    llm_base_url: str = "https://api.deepseek.com/v1"
-    llm_model: str = "deepseek-chat"
-    # 联网搜索:部分服务商(通义/Kimi/GLM)支持,以 extra_body 传递开关键名。
-    # 例如通义/Kimi 用 "enable_search";留空表示不尝试联网搜索参数。
-    llm_web_search_param: str = "enable_search"
-    # 成本护栏(每百万 token 价格,单位随你填的币种;设 0 表示不计费、不限额)。
-    llm_price_input_per_m: float = 0.0
-    llm_price_output_per_m: float = 0.0
     llm_daily_budget: float = 0.0
     # 每个录制切片完成 ASR 后，是否调用 LLM 整理正文并生成摘要。
     transcript_llm_refine_enabled: bool = True
@@ -156,21 +140,15 @@ class Settings(BaseSettings):
     # 高光复核需要同时容纳五分钟转写、模型推理和结构化判断结果。
     highlight_llm_max_tokens: int = Field(default=65536, ge=512, le=65536)
 
-    # 兼容旧配置:若未填 llm_* 而填了 anthropic_*,仍可回退读取(已废弃,仅为兼容保留)。
-    anthropic_api_key: str = Field(default="", repr=False)
-    # Deprecated: 已迁移至多 LLM 供应商系统 (app/analysis/llm_providers.py)
-    anthropic_model: str = ""  # Deprecated: 未使用,仅保留向后兼容
-    llm_daily_budget_usd: float = 0.0
-
     # ---------- 网感资料库(联网采集热门内容,供评分/文案参考) ----------
     trend_enabled: bool = False  # 是否启用网感资料库(默认关闭,按需开启)
     # 趋势采集专用 API 配置(独立于通用 LLM,可指定不同的模型/服务商)。
-    # 留空则回退到通用 LLM 配置(多模型列表或 .env LLM_* 单模型)。
+    # 留空则使用多模型列表中的首个启用项。
     trend_api_key: str = Field(default="", repr=False)  # 趋势采集专用 API Key
     trend_base_url: str = ""  # 趋势采集专用 base_url(OpenAI 兼容)
-    trend_model: str = ""  # 趋势采集专用模型名(留空则用 llm_model)
+    trend_model: str = ""  # 趋势采集专用模型名
+    trend_web_search_param: str = "enable_search"  # 专用模型的联网搜索开关键名
     trend_web_search: bool = True  # 是否启用联网搜索工具采集(关闭则仅靠模型知识)
-    trend_max_searches: int = Field(default=5, ge=1, le=20)  # 单次采集最多联网搜索次数
     trend_max_items: int = Field(default=12, ge=1, le=200)  # 单次采集解析条目上限
     trend_retention_days: int = Field(default=14, ge=1)  # 资料库保留天数
     trend_match_days: int = Field(default=7, ge=1)  # 高光/文案参考的"近期"窗口(天)

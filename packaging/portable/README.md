@@ -1,4 +1,4 @@
-# BiliLiveCut · 即插即用版（`packaging/portable/`，原 Publish-PnP）
+# BiliLiveCut · 即插即用版（`packaging/portable/`）
 
 **版本：V0.1.17.3 Alpha** (`0.1.17.3-alpha`)
 
@@ -8,7 +8,7 @@ BiliLiveCut 是一个**全自动 AI 直播切片系统**：监听 Bilibili 直�
 
 这个 `packaging/portable/` 目录是**即插即用分发版**。Launcher 内嵌了当前发布基线的完整业务源码 (Commit `92618ef`)，**双击即用，首次启动不需要从 GitHub 下载业务源码**。Full 版自带 Python 3.12、离线依赖和 FFmpeg；Lite 版需要目标电脑已有 Python 3.11/3.12，并自行满足 FFmpeg 等运行组件。
 
-> **与旧版的关键区别**：旧版 PnP 首次启动从 GitHub 下载 `main` 分支源码（不稳定，且国内访问 GitHub 经常失败）。新版源码从 **EXE 内置 Payload** 释放，版本固定、SHA-256 可校验，彻底摆脱 GitHub 依赖。
+Payload 从 **EXE 内置资源**释放，版本固定并校验 SHA-256，安装阶段不依赖 GitHub 业务源码。
 
 ---
 
@@ -18,7 +18,7 @@ BiliLiveCut 是一个**全自动 AI 直播切片系统**：监听 Bilibili 直�
 - 每个五分钟原始分段最多识别 4 个独立高光，并可跨相邻分段取前后文；成片使用动态入点和出点，不再固定为 1 分 30 秒。
 - Bilibili 弹幕默认按 `7.5` 秒接收延迟对齐画面；同场临近且相似的爆点会自动去簇，减少一个事件重复出片。
 - 实时转写支持人工校正与“错误词=正确词”房间别名；直播间手工词典和学习别名会合并传给 Fun-ASR-Nano。
-- 阈值、词典或模型变化后可按场次重分析；重新转写与重分析会保留人工审核、手工边界、草稿、成片、反馈和人工正文。
+- 阈值、词典或模型变化后可按场次重分析；当前场次存在正在运行的任务时会拒绝并提示，避免并发改写。
 - 审核反馈会形成可用的正负样本和阈值建议；日志记录房间、场次、候选、操作者、决策及当时阈值。
 - 下播需连续确认并等待可撤销的收尾延迟；单场最长时限和既有断流重试预算共同避免无人值守录制永久挂起。
 
@@ -29,7 +29,7 @@ BiliLiveCut 是一个**全自动 AI 直播切片系统**：监听 Bilibili 直�
 - 拒绝候选会原子同步审核事件、仍可取消的任务和全部未发布关联成片；拒绝记录不会继续以 `reviewing` 出现在成品队列，已经发布的外部结果不会被事后改写。
 - 主播下播或持续断流时，连续重试默认最多 20 次或 300 秒，任一先到即自动收尾；成功产出新片段后重试预算归零。
 - 转写整理与高光复核默认各允许最多 `65536` 个输出 token。长转写的局部解码复读会触发 Paraformer、Whisper 回退，LLM 只保守清理残余的 ASR/VAD 边界重复。
-- 本补丁不会静默改写已经人工审核、渲染或发布的历史数据。需要重建旧转写时请使用“实时转写 → 重新识别”；存在受保护下游资产时，服务会拒绝覆盖并说明原因。
+- Alpha 当前版不迁移其他版本的数据库、配置、Runtime、Payload 或 Engine Pack；测试新构建必须使用全新目录。
 
 ---
 
@@ -51,16 +51,11 @@ BiliLiveCut 是一个**全自动 AI 直播切片系统**：监听 Bilibili 直�
 
 本次为**架构级改造**，建立从固定 Git Commit 提取源码、嵌入 Portable EXE 的完整发行链路。彻底解决国内从 GitHub 拉取源码不稳定的问题。
 
-### 核心变化
+### 当前发行结构
 
-| 旧版 (Publish-PnP) | 新版 (packaging/portable) |
-|---|---|
-| 首次运行从 GitHub 下载 `main` 分支源码 | 首次运行从 **EXE 内置 Payload** 释放固定版本源码 |
-| 源码版本不确定（随 `main` 漂移） | 源码固定于当前发布基线 `92618ef`，SHA-256 可校验 |
-| 无 Manifest / 无法校验完整性 | 完整 `payload_manifest.json` 含逐文件 SHA-256 |
-| 无版本 Overlay 机制 | 受控 Release Metadata Overlay (仅 6 个文件可修改) |
-| 无 Runtime 原子安装 | `staging → rename` 原子切换 + `current.json` 原子更新 |
-| 单发行模式 | **Lite** (轻量化单 EXE) / **Full** (预置完整依赖) 双发行 |
+- 首次运行从 **EXE 内置 Payload** 释放固定版本源码，完整 `payload_manifest.json` 记录逐文件 SHA-256。
+- Runtime 通过 `staging → rename` 原子切换，并以当前格式的 `current.json` 记录激活状态。
+- 发行提供 **Lite**（轻量单 EXE）与 **Full**（预置完整依赖）两种形式。
 
 ### Lite vs Full
 
@@ -112,7 +107,7 @@ BiliLiveCut 是一个**全自动 AI 直播切片系统**：监听 Bilibili 直�
 - **FFmpeg 错误分类**: 瞬时网络 → 指数退避重试；磁盘满/权限 → 永久失败
 - **Bilibili 风控熔断**: `CircuitBreaker` 房间级熔断，403/412 触发后退避
 - **弹幕分级采样**: SC/互动 100% 采集，普通 30%，高密度 10%
-- **Schema v1 系统**: 轻量 schema_meta 元信息表 + SHA-256 指纹，不兼容数据库拒绝启动
+- **严格 Schema 系统**: `schema_meta` 元信息表 + SHA-256 指纹只接受当前结构；不一致的数据库拒绝启动
 - **`bililivecut doctor`**: 15 项自检命令 (PASS/WARN/FAIL)，存在 FAIL 时返回非零退出码
 - **CI 增强**: Portable Windows 运行时锁的阻断式 pip-audit + pytest-cov 覆盖率门禁 + macOS 矩阵
 - **290/290 测试通过**
@@ -176,7 +171,7 @@ Lite 和 Full 均不携带 ASR 模型。四个引擎模型统一由独立的 **E
 | SenseVoice-Small (辅助特征) | iic/SenseVoiceSmall | ModelScope | 7bf452403abd |
 | Fun-ASR-Nano (主引擎) | FunAudioLLM/Fun-ASR-Nano-2512 | ModelScope | 05201c46f1c3 |
 
-> Paraformer 额外需要 `fsmn-vad` / `ct-punc` / `campplus` 三个子模型（自动下载）。
+> Paraformer 额外需要 `fsmn-vad` / `ct-punc` 两个子模型（自动下载）。
 
 ### 使用方式
 
@@ -203,7 +198,7 @@ Lite 和 Full 均不携带 ASR 模型。四个引擎模型统一由独立的 **E
 ├── BiliLiveCut-Portable.exe
 ├── models/
 │   ├── whisper/                    # Whisper large-v3-turbo
-│   ├── paraformer/                 # Paraformer-zh + vad/punc/speaker
+│   ├── paraformer/                 # Paraformer-zh + vad/punc
 │   ├── sensevoice/                 # SenseVoice-Small
 │   ├── funasr_nano/                # Fun-ASR-Nano
 │   └── engine-pack-installed.json  # 安装清单 (自动生成)
@@ -273,7 +268,7 @@ resources/engine_pack_info.json (本地 Engine Pack 构建后可供 Lite/Full EX
 
 ### 运行依赖锁维护
 
-Portable 使用 Python 3.11 / 3.12 两套 Windows x64 完整依赖锁。锁文件覆盖直接依赖和全部传递依赖（包括大模型连通测试所需的 OpenAI 兼容 SDK），每个条目都固定为 `==` 版本并校验所选 wheel 的 SHA-256。`pip` 本身也固定为 `26.2`；Launcher 使用 `pip freeze --all` 检查版本，因此旧 `.venv` 会随其他依赖一起自动升级，而不是继续使用 Python `ensurepip` 自带的旧版本。PyPI 没有提供 wheel 的五个纯 Python 包由受控脚本从固定 SHA-256 的源码构建，构建工具版本和时间戳同样固定；这 5 个 wheel 会作为最小 bootstrap 集内嵌进 Lite EXE，避免包索引返回源码包时触发哈希不匹配。Lite 联网安装其余依赖时使用 `--only-binary=:all: --require-hashes`，不会静默回退到 sdist。
+Portable 使用 Python 3.11 / 3.12 两套 Windows x64 完整依赖锁。锁文件覆盖直接依赖和全部传递依赖（包括大模型连通测试所需的 OpenAI 兼容 SDK），每个条目都固定为 `==` 版本并校验所选 wheel 的 SHA-256。`pip` 固定为 `26.2`，Launcher 使用 `pip freeze --all` 检查当前环境；不符合当前锁的环境会重建。PyPI 没有提供 wheel 的五个纯 Python 包由受控脚本从固定 SHA-256 的源码构建，构建工具版本和时间戳同样固定；这 5 个 wheel 会作为最小 bootstrap 集内嵌进 Lite EXE。Lite 联网安装其余依赖时使用 `--only-binary=:all: --require-hashes`，不会静默回退到 sdist。
 
 ```powershell
 python -m pip install setuptools==83.0.0 wheel==0.47.0
@@ -283,17 +278,18 @@ python scripts/generate_portable_runtime_locks.py
 
 Release CI 会对两套锁执行 `pip download --require-hashes`，并分别进行 Python 3.11 和 3.12 的全新虚拟环境 `--no-index` 离线安装、`pip check` 与核心模块导入测试。它还会让 Lite 在空目录完成首次联网安装、Web 就绪与二次断网启动。Full Launcher 会自动发现安装目录下的 `vendor/wheels` 并强制使用 `--no-index --require-hashes`，无需设置 `PIP_NO_INDEX`；若 Full wheelhouse 缺失或为空则直接失败，不会回退到在线镜像。发布前还会交叉核对 Payload、Lite、Full 的版本、源码基线、构建提交与实际 SHA-256/CRC32。不要通过删除哈希、添加 `--no-deps` 或跳过离线安装来规避锁文件错误。
 
-### 方式三：开发者手动打包
+### 方式三：开发者手动构建当前发行物
 
 在一台**能联网**的机器上执行：
 
 ```powershell
 cd packaging\portable
-pip install huggingface_hub
-python build_bundle.py
+python build_payload.py
+python build_exe.py --without-engine-pack
+python build_full_bundle.py
 ```
 
-打包完成后把整个 `packaging/portable/` 目录拷到目标机，双击 `launcher.exe` 即可以预置组件启动。
+若还需独立模型包，执行 `python build_engine_pack.py --from-cache`（已有完整缓存）或 `python build_engine_pack.py`（联网下载）。构建器只接受当前版本的 Payload、Runtime 和 Engine Pack 清单。
 
 ---
 
@@ -307,7 +303,6 @@ packaging/portable/                     # ★ 即插即用分发版根目录 (�
 ├── build_exe.py                     # Lite 版构建 (PyInstaller one-file)
 ├── build_full_bundle.py             # Full 完整包构建脚本
 ├── build_payload.py                 # Payload 构建器 (92618ef → source_payload.zip)
-├── build_bundle.py                  # 兼容旧版预置打包（保留）
 ├── portable_launcher.spec           # PyInstaller 规格文件
 ├── pip.ini                          # pip 镜像源配置（阿里云 + 清华备用）
 ├── .env.example                     # 配置模板（launcher.exe 自动生成 .env）
@@ -340,7 +335,7 @@ packaging/portable/                     # ★ 即插即用分发版根目录 (�
 │   └── funasr_nano/           #   Fun-ASR-Nano (主引擎)
 ├── bin/                      # ffmpeg.exe / ffprobe.exe（首次运行下载，约 80 MB）
 │
-├── vendor/wheels/            # 预置依赖 wheel（build_bundle.py 构建时下载）
+├── vendor/wheels/            # Full 构建使用的严格哈希离线依赖
 ├── data/                     # 数据库
 ├── storage/                  # ★ 运行产物目录
 │   ├── raw/                  #   原始录制片段
@@ -455,30 +450,23 @@ WHISPER_COMPUTE_TYPE=int8                # CPU 推荐 int8
 ### 大模型（可选，用于转写梳理 / 高光复核 / 文案 / 网感采集）
 
 ```ini
-LLM_PROVIDER=deepseek                # 仅标识，不影响实际连接
-LLM_API_KEY=                         # ★ 填入 API Key 才启用大模型；留空走纯规则（零费用）
-LLM_BASE_URL=https://api.deepseek.com/v1   # 服务商 base_url，须含版本前缀
-LLM_MODEL=deepseek-chat              # 模型标识名
-LLM_WEB_SEARCH_PARAM=enable_search   # 联网搜索开关键名（DeepSeek 不支持则自动回退）
-LLM_PRICE_INPUT_PER_M=0              # 每百万 token 输入价格（0=不计费）
-LLM_PRICE_OUTPUT_PER_M=0             # 每百万 token 输出价格（0=不计费）
 LLM_DAILY_BUDGET=0                   # 每日预算上限（0=不限）
 TRANSCRIPT_LLM_REFINE_ENABLED=true   # 每个切片 ASR 后整理正文并生成概括；失败保留原始文本
 TRANSCRIPT_LLM_REFINE_MAX_TOKENS=65536  # 五分钟转写整理的最大输出预算
 HIGHLIGHT_LLM_MAX_TOKENS=65536        # 高光复核的最大输出预算（含推理 token）
 ```
 
-**多模型配置**：Web 控制台「模型」Tab 可同时添加多个服务商（DeepSeek / 通义千问 / Kimi / 智谱 GLM 等），设置优先级，某个不可用时自动降级到下一个。“测试连通”直接测试当前表单且不会保存 API Key；页面会显示每个服务商的响应或错误详情，确认无误后再点击“保存全部”。转写梳理可在「配置 → 功能开关」独立关闭，关闭后仍保留本地 ASR 原文。两类五分钟切片请求默认各预留 `65536` 个最大输出 token，实际消耗仍以服务商返回为准。
+**多模型配置**：服务商、base_url、模型、联网参数、价格和 API Key 只在 Web 控制台「模型」Tab 管理。可同时添加 DeepSeek / 通义千问 / Kimi / 智谱 GLM 等服务商并设置优先级，某个不可用时自动切换到下一个。“测试连通”直接测试当前表单且不会保存 API Key；页面会显示每个服务商的响应或错误详情，确认无误后再点击“保存全部”。旧的 `.env` `LLM_*` 字段不会被读取并会导致当前配置校验失败。转写梳理可在「配置 → 功能开关」独立关闭，关闭后仍保留本地 ASR 原文。两类五分钟切片请求默认各预留 `65536` 个最大输出 token，实际消耗仍以服务商返回为准。
 
 ### 网感资料库（可选，用于热点采集）
 
 ```ini
 TREND_ENABLED=false              # 是否启用网感资料库
-TREND_API_KEY=                   # 趋势采集专用 API Key（可与 LLM_API_KEY 不同）
-TREND_BASE_URL=                  # 趋势采集专用 base_url（留空复用 LLM_BASE_URL）
-TREND_MODEL=                     # 趋势采集专用模型（留空复用 LLM_MODEL）
+TREND_API_KEY=                   # 趋势采集专用 API Key；留空使用首个启用的大模型
+TREND_BASE_URL=                  # 趋势采集专用 base_url
+TREND_MODEL=                     # 趋势采集专用模型
 TREND_WEB_SEARCH=true            # 是否开启联网搜索（时效性强）
-TREND_MAX_SEARCHES=5             # 单次采集联网搜索次数上限
+TREND_WEB_SEARCH_PARAM=enable_search  # 专用模型的联网搜索开关键名
 TREND_MAX_ITEMS=12               # 单次采集入库条目上限（避免模型输出被截断）
 TREND_RETENTION_DAYS=14          # 资料库保留天数
 TREND_MATCH_DAYS=7               # 高光评分参考"近期"窗口（天）
@@ -498,7 +486,7 @@ AUTO_PUBLISH_THRESHOLD=0.80      # 全自动模式下直接发布的阈值（0-1
 
 > 阈值越低越容易切片（更多候选但可能含低质），越高越严格（少而精）。
 
-高光复核理由、关键词等文本特征只读取音频峰值对应的候选窗口；最终成片强制完整覆盖该分析窗口，LLM 只能向外扩展边界，静音吸附也不会向内切掉理由所描述的事件。候选审核正文和投稿文案会按最终保存的成片边界再次裁剪；已有词级时间戳时精确过滤，旧数据缺少时间戳时按片段时长比例近似裁剪。
+高光复核理由、关键词等文本特征只读取音频峰值对应的候选窗口；最终成片强制完整覆盖该分析窗口，LLM 只能向外扩展边界，静音吸附也不会向内切掉理由所描述的事件。候选审核正文和投稿文案会按最终保存的成片边界再次裁剪；词级时间戳是当前转写结果的必需数据。
 
 ### 切片后处理
 
@@ -547,7 +535,7 @@ BILIUP_UPLOAD_CMD=                          # 自定义上传命令模板
 
 拒绝候选会同步停止其未终结工作流，并从成品列表隐藏所有未发布的关联切片；已经发布的记录保留真实外部状态。审片预览与 LLM 理由使用同一候选时间窗，最终成片至少完整覆盖该窗口。
 
-> **可选增强**：在 `.env` 配置 `LLM_API_KEY` 后，高光复核和文案生成将由大模型辅助（否则走纯规则，同样可用）。
+> **可选增强**：在 Web「配置 → 大模型」启用服务商并填写 API Key 后，高光复核、整场 ASR 全局分析和文案生成将由大模型辅助（否则走纯规则；整场全局分析会明确显示不可用）。
 > **安全建议**：多人共用或暴露在局域网时，设置 `ADMIN_PASSWORD` 启用 Web 后台认证。
 
 ---
@@ -562,10 +550,10 @@ BILIUP_UPLOAD_CMD=                          # 自定义上传命令模板
 | ASR 报 `funasr` / `modelscope` 未安装 | Full 应重新校验并解压完整 ZIP；Lite 需重新完成依赖安装 |
 | ASR 主引擎无法加载 | 检查 `models/` 是否完整；无 Engine Pack 时首次需联网下载模型 |
 | 主播下播后仍显示重连 | 默认会在连续失败 20 次或 300 秒后自动收尾；检查 `RECORDING_RECONNECT_MAX_ATTEMPTS` 与 `RECORDING_RECONNECT_MAX_ELAPSED_S` 是否被设为 `0` |
-| 时间线摘要与预览内容不一致 | 确认使用 V0.1.17.3 Alpha，并在场次卡片中按需执行“按新阈值重分析”或“按新词典/模型重新转写”；受保护资产不会被静默覆盖 |
-| 拒绝候选仍出现在成品列表 | 新版拒绝操作会同步未发布关联成片；升级前形成的不一致旧记录不会自动改库，若候选仍可操作可重新拒绝，否则请先备份 `storage/blc.db` 并携带候选/成片 ID 反馈，已发布记录按设计保留 |
+| 时间线摘要与预览内容不一致 | 确认本场全部 ASR 已完成，再执行“按新阈值重分析”或“按新词典/模型重新转写”；整场总结会把全部最终 ASR 组成一次上下文后重新分析 |
+| 拒绝候选仍出现在成品列表 | 当前版拒绝操作会同步未发布关联成片；若仍出现请携带候选/成片 ID 和日志反馈 |
 | 弹幕采集提示 `code=-352` | 匿名 token 请求被平台风控拒绝；稍后重试，不要反复登录。录制与实时转写不受影响 |
-| LLM 调用报错 / 空结果 | 检查 `.env` 中 `LLM_API_KEY` 和 `LLM_BASE_URL` 是否正确 |
+| LLM 调用报错 / 空结果 | 在 Web「配置 → 大模型」检查服务商、base_url、模型和 API Key，并使用“测试连通”核验 |
 | FFmpeg 未找到 | Full 应检查 `bin/ffmpeg.exe` 与 `bin/ffprobe.exe` 是否完整；Lite 需自行准备 FFmpeg |
 | API 请求返回 401 | `.env` 中设置了 `ADMIN_PASSWORD`，浏览器需要输入用户名 `admin` + 密码 |
 | 修改 `.env` 后不生效 | 重启 `launcher.exe` |

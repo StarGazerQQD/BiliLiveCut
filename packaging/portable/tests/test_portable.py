@@ -10,7 +10,6 @@
 
 from __future__ import annotations
 
-import json
 import sys
 import tempfile
 from pathlib import Path
@@ -30,7 +29,9 @@ _src_dir = _portable_dir / "src"  # portable/src/
 sys.path.insert(0, str(_src_dir))
 sys.path.insert(0, str(_portable_dir))
 sys.path.insert(0, str(_proj_root))
+sys.path.insert(0, str(Path(__file__).resolve().parent))
 
+from payload_helpers import manifest_for_zip  # noqa: E402
 
 # ── 辅助 ──────────────────────────────────────────────────────────
 
@@ -59,16 +60,11 @@ def payload_zip() -> Path:
 
 @pytest.fixture
 def payload_manifest() -> dict:
-    """返回 Payload Manifest (版本匹配时)。"""
-    from blc_portable.payload.manifest import RELEASE_VERSION as _PV
-
-    p = _portable_dir / "dist" / "payload" / "payload_manifest.json"
-    if not p.exists():
-        pytest.skip("Manifest 未生成")
-    data = json.loads(p.read_text(encoding="utf-8"))
-    if data.get("release_version") != _PV:
-        pytest.skip(f"Manifest 版本 ({data.get('release_version')}) != 代码版本 ({_PV})，需重建 Payload")
-    return data
+    """根据现有 ZIP 生成当前 schema 的测试 Manifest。"""
+    path = _portable_dir / "dist" / "payload" / "source_payload.zip"
+    if not path.exists():
+        pytest.skip("Payload ZIP 未构建")
+    return manifest_for_zip(path)
 
 
 # ── Source Snapshot 测试 ──────────────────────────────────────────
@@ -127,39 +123,34 @@ class TestSourceSnapshot:
         assert not (staging / "build").exists()
         assert not (staging / "dist").exists()
 
-    def test_version_overlay_only_allowed(self, tmp_worktree: str) -> None:
-        """验证版本覆盖只修改允许的文件。"""
+    def test_source_snapshot_declares_current_release_identity(self, tmp_worktree: str) -> None:
+        """源码快照必须自行声明当前版本，构建阶段不再改写。"""
         from blc_portable.payload.manifest import RELEASE_VERSION, SOURCE_COMMIT_FULL
-        from blc_portable.payload.source_snapshot import apply_version_overlay, extract_source
+        from blc_portable.payload.source_snapshot import extract_source, validate_release_identity
 
-        staging = Path(tmp_worktree) / "test_overlay"
+        staging = Path(tmp_worktree) / "test_identity"
         staging.mkdir(parents=True)
         extract_source("92618ef", staging)
-        modified = apply_version_overlay(
-            staging,
-            source_commit_full=SOURCE_COMMIT_FULL,
-            builder_commit_full=SOURCE_COMMIT_FULL,
-        )
+        validate_release_identity(staging)
+        assert RELEASE_VERSION in (staging / "app" / "__init__.py").read_text(encoding="utf-8")
+        assert SOURCE_COMMIT_FULL
 
-        for f in modified:
-            assert f in [
-                "app/__init__.py",
-                "app/_portable_release.py",
-                "pyproject.toml",
-                "README.md",
-                "CHANGELOG.md",
-                "setup.py",
-                "setup_c.py",
-                "LICENSE",
-            ]
+    def test_release_identity_rejects_old_source_version(self, tmp_path: Path) -> None:
+        """构建器不得把旧版本源码伪装成当前发布版本。"""
+        from blc_portable.payload.source_snapshot import validate_release_identity
 
-        # 验证版本已更新
-        init_content = (staging / "app" / "__init__.py").read_text(encoding="utf-8")
-        assert RELEASE_VERSION in init_content
-        release_content = (staging / "app" / "_portable_release.py").read_text(encoding="utf-8")
-        assert f'SOURCE_COMMIT: str = "{SOURCE_COMMIT_FULL}"' in release_content
-        assert f'BUILDER_COMMIT: str = "{SOURCE_COMMIT_FULL}"' in release_content
-        assert (staging / "LICENSE").read_bytes() == (_portable_dir.parent.parent / "LICENSE").read_bytes()
+        files = {
+            "app/__init__.py": '__version__ = "0.1.17.2-alpha"\n',
+            "pyproject.toml": 'version = "0.1.17.2-alpha"\n',
+            "setup_c.py": 'version="0.1.17.2"\n',
+        }
+        for rel_path, content in files.items():
+            path = tmp_path / rel_path
+            path.parent.mkdir(parents=True, exist_ok=True)
+            path.write_text(content, encoding="utf-8")
+
+        with pytest.raises(RuntimeError, match="禁止在构建阶段改写旧源码版本"):
+            validate_release_identity(tmp_path)
 
     def test_source_origin_rejects_business_file_tampering(self, tmp_worktree: str) -> None:
         """验证关键业务文件偏离固定 Commit 时构建失败。"""
@@ -179,7 +170,7 @@ class TestSourceSnapshot:
         """固定基线不得静默漏掉当前业务源码修复。"""
         from blc_portable.payload import source_snapshot
 
-        outputs = iter(["app/cli.py\napp/_portable_release.py\n", ""])
+        outputs = iter(["app/cli.py\n", ""])
 
         def fake_run(*_args: object, **_kwargs: object) -> SimpleNamespace:
             return SimpleNamespace(returncode=0, stdout=next(outputs), stderr="")
@@ -189,18 +180,19 @@ class TestSourceSnapshot:
         with pytest.raises(RuntimeError, match="app/cli.py.*更新 source_commit"):
             source_snapshot.verify_workspace_source_baseline("a" * 40)
 
-    def test_workspace_baseline_allows_release_metadata_overlay(self, monkeypatch: MonkeyPatch) -> None:
-        """版本与构建身份 Overlay 可以位于业务源码基线之后。"""
+    def test_workspace_baseline_rejects_release_metadata_drift(self, monkeypatch: MonkeyPatch) -> None:
+        """发布元数据也必须已经提交到固定源码基线。"""
         from blc_portable.payload import source_snapshot
 
-        outputs = iter(["app/_portable_release.py\npyproject.toml\nsetup.py\n", ""])
+        outputs = iter(["pyproject.toml\nsetup.py\n", ""])
 
         def fake_run(*_args: object, **_kwargs: object) -> SimpleNamespace:
             return SimpleNamespace(returncode=0, stdout=next(outputs), stderr="")
 
         monkeypatch.setattr(source_snapshot.subprocess, "run", fake_run)
 
-        source_snapshot.verify_workspace_source_baseline("a" * 40)
+        with pytest.raises(RuntimeError, match="pyproject.toml.*更新 source_commit"):
+            source_snapshot.verify_workspace_source_baseline("a" * 40)
 
 
 # ── Payload 测试 ──────────────────────────────────────────────────
@@ -224,9 +216,9 @@ class TestPayload:
             validate_manifest,
         )
 
-        assert payload_manifest["release_version"] == RELEASE_VERSION
-        assert payload_manifest["source_commit"] == SOURCE_COMMIT_FULL
-        assert payload_manifest["source_commit_short"] == SOURCE_COMMIT_SHORT
+        assert payload_manifest["portable_release_version"] == RELEASE_VERSION
+        assert payload_manifest["core_source_commit"] == SOURCE_COMMIT_FULL
+        assert payload_manifest["core_source_commit_short"] == SOURCE_COMMIT_SHORT
         assert payload_manifest["format_version"] == MANIFEST_FORMAT_VERSION
         assert "payload_sha256" in payload_manifest
         assert len(payload_manifest["payload_sha256"]) == 64
@@ -356,39 +348,44 @@ class TestPayload:
 class TestRuntimeInstall:
     """测试 Runtime 原子安装。"""
 
+    @staticmethod
+    def _install(app_root: Path, payload_zip: Path, payload_manifest: dict) -> Path:
+        from blc_portable.payload.manifest import RELEASE_VERSION, SOURCE_COMMIT_SHORT
+        from blc_portable.runtime.installer import install_from_payload
+
+        return install_from_payload(
+            app_root,
+            payload_zip,
+            payload_manifest,
+            expected_hash=str(payload_manifest["payload_sha256"]),
+            expected_version=RELEASE_VERSION,
+            expected_commit=SOURCE_COMMIT_SHORT,
+        )
+
     def test_install_release(self, payload_zip: Path, payload_manifest: dict, tmp_worktree: str) -> None:
         """测试首次安装。"""
-        from blc_portable.launcher.runtime_layout import RELEASE_ID, get_release_dir, install_release
-
         app_root = Path(tmp_worktree)
-        result = install_release(payload_zip, payload_manifest, app_root)
-        assert result["installed"] is True
-        assert not result.get("already_exists")
-
-        release_dir = get_release_dir(RELEASE_ID, app_root)
+        release_dir = self._install(app_root, payload_zip, payload_manifest)
         assert release_dir.exists()
         assert (release_dir / "app" / "cli.py").exists()
 
     def test_install_skips_existing(self, payload_zip: Path, payload_manifest: dict, tmp_worktree: str) -> None:
         """测试相同 Release 不重复安装。"""
-        from blc_portable.launcher.runtime_layout import install_release
-
         app_root = Path(tmp_worktree)
-        result1 = install_release(payload_zip, payload_manifest, app_root)
-        assert result1["installed"] is True
-
-        result2 = install_release(payload_zip, payload_manifest, app_root)
-        assert result2.get("already_exists") is True
+        first = self._install(app_root, payload_zip, payload_manifest)
+        second = self._install(app_root, payload_zip, payload_manifest)
+        assert first == second
+        assert second.exists()
 
     def test_current_json_atomic(self, payload_zip: Path, payload_manifest: dict, tmp_worktree: str) -> None:
         """测试 current.json 原子写入。"""
-        from blc_portable.launcher.runtime_layout import install_release, read_current
         from blc_portable.payload.manifest import RELEASE_VERSION
+        from blc_portable.runtime.activation import read_current_json
 
         app_root = Path(tmp_worktree)
-        install_release(payload_zip, payload_manifest, app_root)
+        self._install(app_root, payload_zip, payload_manifest)
 
-        current = read_current(app_root)
+        current = read_current_json(app_root)
         assert current is not None
         assert current["release_version"] == RELEASE_VERSION
         assert current["source_commit_short"] == "92618ef"
@@ -396,13 +393,12 @@ class TestRuntimeInstall:
 
     def test_staging_not_left_behind(self, payload_zip: Path, payload_manifest: dict, tmp_worktree: str) -> None:
         """测试 staging 目录在安装后清理。"""
-        from blc_portable.launcher.runtime_layout import get_staging_dir, install_release
+        from blc_portable.runtime import get_runtime_dir
 
         app_root = Path(tmp_worktree)
-        install_release(payload_zip, payload_manifest, app_root)
+        self._install(app_root, payload_zip, payload_manifest)
 
-        staging = get_staging_dir(app_root)
-        assert not staging.exists()
+        assert not list(get_runtime_dir(app_root).glob("staging-*"))
 
 
 # ── 用户数据保护测试 ──────────────────────────────────────────────
@@ -413,30 +409,21 @@ class TestUserDataProtection:
 
     def test_env_not_overwritten(self, tmp_worktree: str) -> None:
         """测试已有 .env 不被覆盖。"""
-        from blc_portable.launcher.runtime_layout import create_env_from_template, install_release
-        from blc_portable.payload.manifest import RELEASE_VERSION
+        from blc_portable.launcher.main import ensure_env
 
         # 先安装 Release
         app_root = Path(tmp_worktree)
         payload_zip = _portable_dir / "dist" / "payload" / "source_payload.zip"
         if not payload_zip.exists():
             pytest.skip("Payload not built")
-        manifest = json.loads(
-            (_portable_dir / "dist" / "payload" / "payload_manifest.json").read_text(encoding="utf-8")
-        )
-        if manifest.get("release_version") != RELEASE_VERSION:
-            pytest.skip(
-                f"Manifest 版本 ({manifest.get('release_version')}) != 代码版本 ({RELEASE_VERSION})，需重建 Payload"
-            )
-        install_release(payload_zip, manifest, app_root)
+        manifest = manifest_for_zip(payload_zip)
+        release_dir = TestRuntimeInstall._install(app_root, payload_zip, manifest)
 
         # 创建自定义 .env
         env_path = app_root / ".env"
         env_path.write_text("MY_CUSTOM_KEY=hello", encoding="utf-8")
 
-        # 调用 create_env_from_template
-        created = create_env_from_template(app_root)
-        assert not created  # 不应覆盖
+        ensure_env(app_root, release_dir)
 
         # 验证内容不变
         content = env_path.read_text(encoding="utf-8")
@@ -468,26 +455,22 @@ class TestManifestTamperDetection:
 
     def test_manifest_tamper_detected(self, payload_zip: Path, payload_manifest: dict, tmp_worktree: str) -> None:
         """测试 Manifest 篡改被检测。"""
-        from blc_portable.launcher.runtime_layout import install_release
-
         app_root = Path(tmp_worktree)
         tampered = dict(payload_manifest)
         tampered["payload_sha256"] = "0" * 64
 
         with pytest.raises(RuntimeError, match="Manifest|Payload"):
-            install_release(payload_zip, tampered, app_root)
+            TestRuntimeInstall._install(app_root, payload_zip, tampered)
 
     def test_payload_tamper_detected(self, payload_manifest: dict, tmp_worktree: str) -> None:
         """测试 Payload ZIP 篡改被检测。"""
-        from blc_portable.launcher.runtime_layout import install_release
-
         app_root = Path(tmp_worktree)
         # 创建一个假 ZIP
         fake_zip = Path(tmp_worktree) / "fake.zip"
         fake_zip.write_text("not a real payload")
 
         with pytest.raises(RuntimeError):
-            install_release(fake_zip, payload_manifest, app_root)
+            TestRuntimeInstall._install(app_root, fake_zip, payload_manifest)
 
 
 # ── 资源路径测试 ──────────────────────────────────────────────────

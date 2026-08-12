@@ -58,7 +58,7 @@ def test_score_segment_creates_candidate(
     from datetime import UTC, datetime, timedelta
 
     from app.analysis.highlight import score_segment
-    from app.db.models import (
+    from app.db.entities import (
         LiveRoom,
         RawSegment,
         RecordingSession,
@@ -96,7 +96,7 @@ def test_score_segment_creates_candidate(
             Transcript(
                 segment_id=segment.id,
                 language="zh",
-                text="卧槽这波操作绝了,直接五杀,笑死哈哈哈",
+                final_text="卧槽这波操作绝了,直接五杀,笑死哈哈哈",
                 words_json=json.dumps(words, ensure_ascii=False),
             )
         )

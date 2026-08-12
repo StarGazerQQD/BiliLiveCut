@@ -2,8 +2,7 @@
 
     系统主要在中国大陆境内运行,故 LLM 层采用
     **OpenAI 兼容协议**,可对接境内可稳定访问的服务商(DeepSeek / 通义千问 Qwen /
-Moonshot Kimi / 智谱 GLM 等)——只需在 ``.env`` 配置 ``LLM_BASE_URL`` /
-``LLM_API_KEY`` / ``LLM_MODEL``。语音转写仍由本地 Whisper 完成,不依赖联网大模型。
+Moonshot Kimi / 智谱 GLM 等)，服务商统一在控制台配置。语音转写仍由本地模型完成。
 
 设计目标(对应"降低 AI 成本""优先稳定"):
 
@@ -33,11 +32,8 @@ from app.core.paths import storage_root
 
 
 def _daily_budget() -> float:
-    """返回每日预算(优先 ``llm_daily_budget``,回退旧 ``llm_daily_budget_usd``)。
-
-    :returns: 预算金额;0 表示不限额。
-    """
-    return settings.llm_daily_budget or settings.llm_daily_budget_usd
+    """返回每日预算；0 表示不限额。"""
+    return settings.llm_daily_budget
 
 
 @dataclass(slots=True)
@@ -354,8 +350,6 @@ def call_text(prompt: str, max_tokens: int = 512) -> str | None:
 def call_web_search(
     prompt: str,
     max_tokens: int = 2048,
-    max_searches: int = 5,  # noqa: ARG001 — 兼容旧签名;OpenAI 兼容协议按服务商内部控制
-    model: str = "",  # noqa: ARG001 — 兼容旧签名;实际模型由各 provider 决定
 ) -> str | None:
     """按优先级遍历多个大模型完成(尽力联网搜索的)文本生成,失败自动降级。
 
@@ -364,8 +358,6 @@ def call_web_search(
 
     :param prompt: 用户提示词。
     :param max_tokens: 最大输出 token 数。
-    :param max_searches: 兼容旧签名的占位参数。
-    :param model: 兼容旧签名的占位参数。
     :returns: 模型输出文本;全部不可用时返回 ``None``。
     """
     if not is_llm_enabled():
@@ -399,7 +391,6 @@ def call_web_search(
 def call_trend_search(
     prompt: str,
     max_tokens: int = 2048,
-    max_searches: int = 5,
 ) -> str | None:
     """趋势采集专用:使用 ``TREND_API_KEY`` / ``TREND_BASE_URL`` / ``TREND_MODEL`` 的独立配置。
 
@@ -409,7 +400,6 @@ def call_trend_search(
 
     :param prompt: 用户提示词。
     :param max_tokens: 最大输出 token 数。
-    :param max_searches: 最大搜索次数(兼容占位,实际取决于服务商)。
     :returns: 模型输出文本;全部不可用时返回 ``None``。
     """
     from app.analysis.llm_providers import LLMProvider
@@ -418,16 +408,15 @@ def call_trend_search(
     trend_key = settings.trend_api_key.strip()
     trend_url = settings.trend_base_url.strip()
 
-    if trend_key and trend_url:
-        from app.core.config import settings as cfg
-
+    trend_model = settings.trend_model.strip()
+    if trend_key and trend_url and trend_model:
         trend_provider = LLMProvider(
             id="trend",
             name="网感采集专用",
             base_url=trend_url,
             api_key=trend_key,
-            model=settings.trend_model or cfg.llm_model or "deepseek-chat",
-            web_search_param=cfg.llm_web_search_param,
+            model=trend_model,
+            web_search_param=settings.trend_web_search_param,
         )
         search_param = trend_provider.web_search_param.strip()
         # 1) 带联网搜索参数尝试。
@@ -454,7 +443,7 @@ def call_trend_search(
 
     # 回退:使用通用 LLM 多模型列表(含联网搜索)
     logger.info("趋势采集未配置专用 API,回退到通用 LLM。")
-    return call_web_search(prompt, max_tokens, max_searches)
+    return call_web_search(prompt, max_tokens)
 
 
 def extract_json_array(raw: str) -> list[object] | None:

@@ -124,7 +124,7 @@
           <input id="trends-topic" placeholder="采集主题(可选,如:某游戏 近期热门切片话题)" />
           <button id="btn-collect-trends" class="primary">立即联网采集</button>
         </div>
-        <p class="hint">需配置大模型 API（LLM_API_KEY 等）且 TREND_ENABLED=true。采集结果用于高光评分的「网感」维度与文案标签参考。</p>
+        <p class="hint">需在「大模型配置」中启用至少一个服务商并设置 API Key，同时令 TREND_ENABLED=true。采集结果用于高光评分的「网感」维度与文案标签参考。</p>
       </div>
 
       <div class="card">
@@ -156,7 +156,7 @@
       <div class="card timeline-intro">
         <div>
           <h3>每场直播的高光时间线</h3>
-          <p class="hint">按 GMT+8 展示动态高光节点、梗概、高频弹幕、来源证据和置信度；整场最终分析完成后，会把所有未拒绝节点整理成一段不按录制分片拆分的全场高光总结。可按新阈值重分析，或按新词典/ASR 模型重识别；人工成果不会被覆盖。</p>
+          <p class="hint">按 GMT+8 展示动态高光节点、梗概、高频弹幕、来源证据和置信度；整场最终分析完成后，会按时间组织该场全部最终 ASR，作为一个完整上下文只调用一次 LLM 生成全场高光分析，不会直接拼接分段摘要。可按新阈值重分析，或按新词典/ASR 模型重识别。</p>
         </div>
         <a class="back-link" href="/review/queue" target="_blank" rel="noopener">打开多人精审队列</a>
       </div>
@@ -284,7 +284,7 @@
         <p class="hint">
           可同时配置多个 OpenAI 兼容服务商(DeepSeek / 通义千问 / Kimi / 智谱 GLM 等)。
           系统按「优先级」从小到大依次调用,某个不可用/报错会自动降级到下一个。
-          语音识别使用本地 FunASR / Paraformer / Whisper；启用“转写 LLM 梳理”后，识别原文会交给这里配置的大模型整理并生成概括。API Key 留空表示不修改沿用旧值。
+          语音识别使用本地 FunASR / Paraformer / Whisper；启用“转写 LLM 梳理”后，识别原文会交给这里配置的大模型整理并生成概括。API Key 留空表示保留已保存值。
         </p>
         <div class="row">
           <button id="btn-add-llm">+ 新增模型</button>

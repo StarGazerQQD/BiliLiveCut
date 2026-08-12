@@ -117,7 +117,6 @@ async function loadRooms() {
   }
   updateRoomsDirtyHint();
 
-  const modes = data.modes;
   const html = data.rooms.map((r) => `
     <div class="item">
       <div class="head">
@@ -128,11 +127,6 @@ async function loadRooms() {
         <div class="actions" id="room-actions-${r.id}">${roomRuntimeActions(r)}</div>
       </div>
       <div class="thresholds" data-room-dirty-section="controls:${r.id}">
-        <label>\u5ba1\u6838\u6a21\u5f0f
-          <select id="mode-${r.id}">
-            ${modes.map((m) => `<option value="${m}" ${m === r.mode ? "selected" : ""}>${m}</option>`).join("")}
-          </select>
-        </label>
         <label>\u9ad8\u5149\u9608\u503c
           <input type="number" step="0.05" min="0" max="1" id="ht-${r.id}" value="${r.highlight_threshold}" />
         </label>
@@ -203,7 +197,6 @@ async function saveRoom(id) {
     const key = `controls:${id}`;
     const revision = roomSectionRevisions.get(key) || 0;
     const payload = {
-      mode: $(`#mode-${id}`).value,
       highlight_threshold: parseFloat($(`#ht-${id}`).value),
       auto_publish_threshold: parseFloat($(`#at-${id}`).value),
     };
@@ -219,7 +212,7 @@ async function saveRoom(id) {
     dirtyRoomSections.delete(key);
     roomEditorRevision += 1;
     updateRoomsDirtyHint();
-    toast("\u5df2\u4fdd\u5b58\u9608\u503c/\u6a21\u5f0f");
+    toast("\u5df2\u4fdd\u5b58\u76f4\u64ad\u95f4\u9009\u9879");
     if (dirtyRoomSections.size === 0 && !hasOpenRoomEditor()) await loadRooms();
   } catch (e) { toast("\u4fdd\u5b58\u5931\u8d25:" + e.message); }
 }

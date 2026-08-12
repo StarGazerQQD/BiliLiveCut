@@ -28,7 +28,7 @@ from app.core.config import settings
 from app.core.cookie import get_bilibili_cookie
 from app.core.ffmpeg_errors import FfmpegErrorType, classify_ffmpeg_error
 from app.core.paths import session_raw_dir
-from app.db.models import (
+from app.db.entities import (
     RawSegment,
     RecordingSession,
     SegmentStatus,

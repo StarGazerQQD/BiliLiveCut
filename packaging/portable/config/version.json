@@ -4,18 +4,11 @@
   "source_commit_short": "92618ef",
   "source_commit_full": "92618efcb9a3d6ec33f5ce3e0b2f46ac7e2cf55a",
   "engine_pack_version": "0.1.17.3-alpha",
-  "runtime_schema": 4,
-  "engine_pack_schema": 4,
-  "payload_schema": 4,
-  "model_lock_schema": 4,
-  "compatible_python": {
-    "min": "3.11",
-    "max_validated": "3.12"
-  },
-  "compatible_app": {
-    "min": "0.1.17.3-alpha",
-    "max_exclusive": "0.1.18"
-  },
+  "runtime_schema": 5,
+  "engine_pack_schema": 5,
+  "payload_schema": 7,
+  "model_lock_schema": 5,
+  "python_abis": ["cp311", "cp312"],
   "target_platforms": ["windows"],
   "target_architectures": ["x64"],
   "naming": {

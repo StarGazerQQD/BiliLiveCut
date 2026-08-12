@@ -64,7 +64,7 @@ def test_dashboard_and_room_crud(temp_db: None, monkeypatch: MonkeyPatch) -> Non
         assert created_room["auto_publish_threshold"] == pytest.approx(0.80)
 
         # 调整阈值与模式
-        r = client.patch(f"/api/rooms/{db_id}", json={"mode": "auto", "highlight_threshold": 0.7})
+        r = client.patch(f"/api/rooms/{db_id}", json={"highlight_threshold": 0.7})
         assert r.status_code == 200
         r = client.patch(
             f"/api/rooms/{db_id}",
@@ -73,13 +73,12 @@ def test_dashboard_and_room_crud(temp_db: None, monkeypatch: MonkeyPatch) -> Non
         assert r.status_code == 200
         room_payload = next(item for item in client.get("/api/dashboard").json()["rooms"] if item["id"] == db_id)
         assert room_payload["room_config"]["highlight_scorer_mode"] == "shadow"
-        assert r.json()["mode"] == "auto"
         assert abs(r.json()["highlight_threshold"] - 0.7) < 1e-6
 
 
 def test_room_pipeline_switches_are_independently_configurable(temp_db: None) -> None:
     """Portable Web API 应完整暴露五个房间级流水线开关。"""
-    from app.db.models import LiveRoom
+    from app.db.entities import LiveRoom
     from app.db.session import get_session
     from app.web.main import app
 
@@ -122,7 +121,7 @@ def test_room_patch_distinguishes_missing_room_and_recording_conflict(
     monkeypatch: MonkeyPatch,
 ) -> None:
     """录制中锁定字段返回冲突，只有不存在的直播间返回 404。"""
-    from app.db.models import LiveRoom
+    from app.db.entities import LiveRoom
     from app.db.session import get_session
     from app.web import service
     from app.web.main import app
@@ -167,7 +166,7 @@ def test_add_room_requires_authorization(temp_db: None, monkeypatch: MonkeyPatch
 
 def test_start_unauthorized_room_returns_400(temp_db: None) -> None:
     """对未授权房间启动录制应被拒绝(400)。"""
-    from app.db.models import LiveRoom
+    from app.db.entities import LiveRoom
     from app.db.session import get_session
     from app.web.main import app
 
@@ -186,7 +185,7 @@ def test_candidate_listing_and_reject(temp_db: None) -> None:
     """候选拒绝应同步终结任务，并从成品队列隐藏关联切片。"""
     from sqlmodel import select
 
-    from app.db.models import (
+    from app.db.entities import (
         CandidateStatus,
         ClipStatus,
         FinalClip,
@@ -208,6 +207,7 @@ def test_candidate_listing_and_reject(temp_db: None) -> None:
             end_ts=now + timedelta(seconds=30),
             highlight_score=0.8,
             reason="测试候选",
+            dedup_hash="web-candidate-listing",
         )
         db.add(cand)
         db.flush()
@@ -458,7 +458,7 @@ def test_transcript_api_exposes_summary_and_raw_asr(temp_db: None) -> None:
     """实时转写接口应返回整理结果、原始 ASR 和对应源 TS 文件名。"""
     import json
 
-    from app.db.models import RawSegment, Transcript
+    from app.db.entities import RawSegment, Transcript
     from app.db.session import get_session
     from app.web.main import app
 
@@ -475,8 +475,8 @@ def test_transcript_api_exposes_summary_and_raw_asr(temp_db: None) -> None:
             Transcript(
                 segment_id=9,
                 language="zh",
-                text="整理后的可读正文。",
-                final_text="原始没有标点的转写",
+                final_text="整理后的可读正文。",
+                base_text="原始没有标点的转写",
                 primary_backend="funasr-nano",
                 auxiliary_json=json.dumps(
                     {"transcript_refinement": {"applied": True, "summary": "片段摘要"}},
@@ -499,12 +499,12 @@ def test_transcript_api_exposes_summary_and_raw_asr(temp_db: None) -> None:
 
 def test_transcript_api_handles_missing_source_segment(temp_db: None) -> None:
     """历史转写缺少原始片段时应返回空文件名，而不是暴露错误路径。"""
-    from app.db.models import Transcript
+    from app.db.entities import Transcript
     from app.db.session import get_session
     from app.web.main import app
 
     with get_session() as db:
-        db.add(Transcript(segment_id=999, text="历史转写"))
+        db.add(Transcript(segment_id=999, final_text="历史转写"))
 
     with TestClient(app) as client:
         row = client.get("/api/transcripts?limit=1").json()[0]
@@ -520,7 +520,7 @@ def test_transcript_source_mp4_endpoint_serves_controlled_export(
     monkeypatch: MonkeyPatch,
 ) -> None:
     """源 TS 导出接口只能返回服务层生成的受控 MP4。"""
-    from app.db.models import RawSegment, Transcript
+    from app.db.entities import RawSegment, Transcript
     from app.db.session import get_session
     from app.web.main import app
     from app.web.services import transcripts as transcript_service
@@ -529,7 +529,7 @@ def test_transcript_source_mp4_endpoint_serves_controlled_export(
     exported.write_bytes(b"mp4-fixture")
     with get_session() as db:
         db.add(RawSegment(id=9, session_id=1, seq=7, file_path=str(tmp_path / "source.ts")))
-        transcript = Transcript(segment_id=9, text="原片导出")
+        transcript = Transcript(segment_id=9, final_text="原片导出")
         db.add(transcript)
         db.flush()
         transcript_id = transcript.id
@@ -556,7 +556,7 @@ def test_transcript_source_mp4_endpoint_reports_missing_transcript(temp_db: None
 
 def test_finished_session_timeline_api_exposes_and_regenerates_whole_summary(temp_db: None) -> None:
     """结束场次 API 应返回整场总结状态，并提供幂等重生成入口。"""
-    from app.db.models import LiveRoom, RecordingSession
+    from app.db.entities import LiveRoom, RecordingSession
     from app.db.session import get_session
     from app.web.main import app
 
@@ -589,7 +589,7 @@ def test_finished_session_timeline_api_exposes_and_regenerates_whole_summary(tem
 
 def test_retranscribe_api_deletes_transcript_and_requeues_segment(temp_db: None) -> None:
     """无受保护下游资产时，重新识别应原子删除旧转写并重置任务。"""
-    from app.db.models import RawSegment, SegmentStatus, SegmentTask, TaskStatus, Transcript
+    from app.db.entities import RawSegment, SegmentStatus, SegmentTask, TaskStatus, Transcript
     from app.db.session import get_session
     from app.web.main import app
 
@@ -597,7 +597,7 @@ def test_retranscribe_api_deletes_transcript_and_requeues_segment(temp_db: None)
         segment = RawSegment(session_id=1, seq=1, file_path="segment.ts", status=SegmentStatus.SCORED)
         db.add(segment)
         db.flush()
-        transcript = Transcript(segment_id=segment.id, text="被污染的旧转写")
+        transcript = Transcript(segment_id=segment.id, final_text="被污染的旧转写")
         db.add(transcript)
         task = SegmentTask(
             segment_id=segment.id,
@@ -631,7 +631,7 @@ def test_retranscribe_api_cleans_only_automatic_unrendered_analysis(temp_db: Non
     """未人工处理且未渲染的候选、事件和自动主题关联可随污染转写重建。"""
     from datetime import UTC, datetime, timedelta
 
-    from app.db.models import (
+    from app.db.entities import (
         HighlightCandidate,
         HighlightEvent,
         HighlightTopic,
@@ -649,7 +649,7 @@ def test_retranscribe_api_cleans_only_automatic_unrendered_analysis(temp_db: Non
         segment = RawSegment(session_id=2, seq=1, file_path="segment.ts")
         db.add(segment)
         db.flush()
-        transcript = Transcript(segment_id=segment.id, text="等一下" * 100)
+        transcript = Transcript(segment_id=segment.id, final_text="等一下" * 100)
         candidate = HighlightCandidate(
             session_id=2,
             peak_ts=now,
@@ -697,7 +697,7 @@ def test_retranscribe_api_preserves_manually_reviewed_assets(temp_db: None) -> N
     """存在人工审核时接口应返回冲突，且不修改任何数据。"""
     from datetime import UTC, datetime, timedelta
 
-    from app.db.models import HighlightCandidate, HighlightEvent, RawSegment, SegmentTask, TaskStatus, Transcript
+    from app.db.entities import HighlightCandidate, HighlightEvent, RawSegment, SegmentTask, TaskStatus, Transcript
     from app.db.session import get_session
     from app.web.main import app
 
@@ -706,7 +706,7 @@ def test_retranscribe_api_preserves_manually_reviewed_assets(temp_db: None) -> N
         segment = RawSegment(session_id=3, seq=1, file_path="segment.ts")
         db.add(segment)
         db.flush()
-        transcript = Transcript(segment_id=segment.id, text="旧转写")
+        transcript = Transcript(segment_id=segment.id, final_text="旧转写")
         candidate = HighlightCandidate(
             session_id=3,
             peak_ts=now,

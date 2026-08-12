@@ -1,12 +1,9 @@
 {
-  "schema_version": 2,
+  "schema_version": 5,
   "engine_pack_version": "0.1.17.3-alpha",
-  "compatible_app": {
-    "min": "0.1.17.3-alpha",
-    "max_exclusive": "0.1.18"
-  },
+  "portable_release_version": "0.1.17.3-alpha",
   "source_commit": "92618efcb9a3d6ec33f5ce3e0b2f46ac7e2cf55a",
-  "generated_at": "",
+  "generated_at": "2026-08-12T00:00:00+08:00",
   "engines": [
     {
       "engine_id": "whisper",
@@ -24,6 +21,8 @@
         "preprocessor_config.json"
       ],
       "files": {},
+      "sub_models": [],
+      "third_party_components": [],
       "license": {
         "name": "MIT",
         "spdx": "MIT",
@@ -86,27 +85,10 @@
             "verified_at": "2026-07-22",
             "redistribution_verified": true
           }
-        },
-        {
-          "engine_id": "paraformer_campplus",
-          "display_name": "CAM++ 说话人识别",
-          "hub": "modelscope",
-          "repository": "iic/speech_campplus_sv_zh-cn_16k-common",
-          "requested_revision": "v1.0.0",
-          "resolved_revision": "v1.0.0",
-          "target_subdir": "campplus",
-          "license": {
-            "name": "Apache-2.0",
-            "spdx": "Apache-2.0",
-            "source": "https://modelscope.cn/models/iic/speech_campplus_sv_zh-cn_16k-common",
-            "evidence_url": "https://modelscope.cn/models/iic/speech_campplus_sv_zh-cn_16k-common",
-            "license_file": "licenses/Apache-2.0.txt",
-            "verified_at": "2026-07-22",
-            "redistribution_verified": true
-          }
         }
       ],
       "files": {},
+      "third_party_components": [],
       "license": {
         "name": "Apache-2.0",
         "spdx": "Apache-2.0",
@@ -134,6 +116,8 @@
         "chn_jpn_yue_eng_ko_spectok.bpe.model"
       ],
       "files": {},
+      "sub_models": [],
+      "third_party_components": [],
       "license": {
         "name": "Apache-2.0",
         "spdx": "Apache-2.0",
@@ -159,6 +143,7 @@
         "multilingual.tiktoken"
       ],
       "files": {},
+      "sub_models": [],
       "third_party_components": [
         {
           "component_id": "qwen3_0_6b",

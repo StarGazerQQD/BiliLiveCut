@@ -20,7 +20,7 @@ if TYPE_CHECKING:
 
 
 def _seed_candidate() -> int:
-    from app.db.models import HighlightCandidate, LiveRoom, RecordingSession, SessionStatus
+    from app.db.entities import HighlightCandidate, HighlightEvent, LiveRoom, RecordingSession, SessionStatus
     from app.db.session import get_session
 
     now = datetime.now(UTC).replace(microsecond=0)
@@ -40,11 +40,20 @@ def _seed_candidate() -> int:
             llm_score=0.9,
             highlight_score=0.85,
             reason="model reason",
+            dedup_hash=f"review-{session.id}",
         )
         db.add(candidate)
         db.flush()
         candidate_id = candidate.id
-    assert candidate_id is not None
+        assert candidate_id is not None
+        db.add(
+            HighlightEvent(
+                candidate_id=candidate_id,
+                session_id=session.id,
+                raw_start_ts=candidate.start_ts,
+                raw_end_ts=candidate.end_ts,
+            )
+        )
     return candidate_id
 
 
@@ -108,13 +117,34 @@ def test_claim_collision_blind_queue_and_draft_privacy(review_client: TestClient
     assert bob_view["workflow"]["draft"] is None
 
 
+def test_review_workflow_rejects_old_or_partial_persisted_format(temp_db: None) -> None:
+    """审核工作流不迁移缺版本、旧 task_stage 或缺字段快照。"""
+    from app.db.entities import HighlightEvent
+    from app.web.services.review_workflow import workflow
+
+    old_workflow = {
+        "claimed_by": None,
+        "claimed_at": None,
+        "claim_expires_at": None,
+        "draft": None,
+        "history": [{"task_stage": "awaiting_review"}],
+    }
+    event = HighlightEvent(
+        candidate_id=1,
+        session_id=1,
+        features_json=json.dumps({"_review_workflow": old_workflow}),
+    )
+
+    with pytest.raises(ValueError, match="审核工作流"):
+        workflow(event)
+
+
 def test_review_submission_releases_claim_and_can_be_undone(
     review_client: TestClient,
     monkeypatch: MonkeyPatch,
 ) -> None:
     """提交决策后自动释放，重新领取后可撤销并留下审计记录。"""
-    from app.db.models import (
-        AppSetting,
+    from app.db.entities import (
         CandidateStatus,
         ClipStatus,
         FinalClip,
@@ -160,7 +190,6 @@ def test_review_submission_releases_claim_and_can_be_undone(
             clip_id=clip_id,
             stage=TaskStatus.AWAITING_PUBLISH_CONFIRMATION,
             stage_key="stage:9001:awaiting_publish_confirmation",
-            idempotency_key="9001:awaiting_publish_confirmation",
         )
         db.add(task)
         db.flush()
@@ -202,16 +231,12 @@ def test_review_submission_releases_claim_and_can_be_undone(
         clip = db.get(FinalClip, clip_id)
         task = db.get(SegmentTask, task_id)
         logs = db.exec(select(SystemLog).where(SystemLog.module == "review")).all()
-        summary_request = db.get(AppSetting, f"session_timeline_summary_request:{candidate.session_id}")
     assert candidate is not None and candidate.status == CandidateStatus.PENDING
     assert event.review_status == ReviewStatus.PENDING
     assert clip is not None and clip.status == ClipStatus.REVIEWING
     assert task is not None and task.stage == TaskStatus.AWAITING_PUBLISH_CONFIRMATION
     assert task.stage_key == "stage:9001:awaiting_publish_confirmation"
-    assert task.idempotency_key == "9001:awaiting_publish_confirmation"
     assert len(logs) >= 4
-    assert summary_request is not None
-    assert json.loads(summary_request.value)["reason"] == "review_undo"
     assert feedback_calls == [
         (candidate_id, ReviewStatus.REJECTED, "alice"),
         (candidate_id, ReviewStatus.PENDING, "alice"),
@@ -258,7 +283,7 @@ def test_review_submission_advances_linked_task_state(
     expected_stage: str,
 ) -> None:
     """人工反馈必须离开 awaiting_review，独立成片还要立即进入渲染队列。"""
-    from app.db.models import HighlightCandidate, SegmentTask, TaskStatus
+    from app.db.entities import HighlightCandidate, SegmentTask, TaskStatus
     from app.db.session import get_session
 
     candidate_id = _seed_candidate()
@@ -329,7 +354,7 @@ def test_background_candidate_render_keeps_task_lease_until_clip_is_recorded(
     """网页后台渲染必须持有心跳租约，且成功后把任务推进到成品阶段。"""
     import threading
 
-    from app.db.models import FinalClip, HighlightCandidate, HighlightEvent, SegmentTask, TaskStatus
+    from app.db.entities import FinalClip, HighlightCandidate, HighlightEvent, SegmentTask, TaskStatus
     from app.db.session import get_session
     from app.pipeline import heartbeat, orchestrator
     from app.pipeline.stale_recovery import recover_orphans
@@ -339,9 +364,7 @@ def test_background_candidate_render_keeps_task_lease_until_clip_is_recorded(
     with get_session() as db:
         candidate = db.get(HighlightCandidate, candidate_id)
         assert candidate is not None
-        event = HighlightEvent(candidate_id=candidate_id, session_id=candidate.session_id)
-        db.add(event)
-        db.flush()
+        event = db.exec(select(HighlightEvent).where(HighlightEvent.candidate_id == candidate_id)).one()
         task = SegmentTask(
             segment_id=9101,
             session_id=candidate.session_id,
@@ -349,7 +372,6 @@ def test_background_candidate_render_keeps_task_lease_until_clip_is_recorded(
             event_id=event.id,
             stage=TaskStatus.AWAITING_REVIEW,
             stage_key="stage:9101:awaiting_review",
-            idempotency_key="9101:awaiting_review",
         )
         db.add(task)
         db.flush()
@@ -448,7 +470,7 @@ def test_review_queue_page_exposes_filters_and_claim_action(review_client: TestC
 
 def test_review_data_buckets_scalar_danmaku_timestamps(review_client: TestClient) -> None:
     """审片详情应兼容 SQLModel 单列查询返回的时间戳标量。"""
-    from app.db.models import Danmaku, HighlightCandidate
+    from app.db.entities import Danmaku, HighlightCandidate
     from app.db.session import get_session
 
     candidate_id = _seed_candidate()
@@ -476,8 +498,9 @@ def test_multi_room_queues_keep_source_identity_and_candidate_transcript(
     review_client: TestClient,
 ) -> None:
     """多直播间任务不得串来源，审片转写应覆盖候选跨分段前文。"""
-    from app.db.models import (
+    from app.db.entities import (
         HighlightCandidate,
+        HighlightEvent,
         LiveRoom,
         RawSegment,
         RecordingSession,
@@ -547,20 +570,38 @@ def test_multi_room_queues_keep_source_identity_and_candidate_transcript(
         db.add(candidate_b)
         db.flush()
         db.add(
+            HighlightEvent(
+                candidate_id=candidate_a.id,
+                session_id=session_a.id,
+                segment_id=segment_a2.id,
+                raw_start_ts=candidate_a.start_ts,
+                raw_end_ts=candidate_a.end_ts,
+            )
+        )
+        db.add(
+            HighlightEvent(
+                candidate_id=candidate_b.id,
+                session_id=session_b.id,
+                segment_id=segment_b.id,
+                raw_start_ts=candidate_b.start_ts,
+                raw_end_ts=candidate_b.end_ts,
+            )
+        )
+        db.add(
             Transcript(
                 segment_id=segment_a1.id,
-                text="前文",
-                words_json=json.dumps([{"word": "前文", "start": 250, "end": 252}]),
+                final_text="前文",
+                words_json=json.dumps([{"w": "前文", "start": 250, "end": 252}]),
             )
         )
         db.add(
             Transcript(
                 segment_id=segment_a2.id,
-                text="爆点。候选结束后才发生的内容。",
+                final_text="爆点。候选结束后才发生的内容。",
                 words_json=json.dumps(
                     [
-                        {"word": "爆点", "start": 5, "end": 7},
-                        {"word": "候选结束后才发生的内容", "start": 120, "end": 125},
+                        {"w": "爆点", "start": 5, "end": 7},
+                        {"w": "候选结束后才发生的内容", "start": 120, "end": 125},
                     ]
                 ),
             )

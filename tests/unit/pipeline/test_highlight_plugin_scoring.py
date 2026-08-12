@@ -10,7 +10,7 @@ from sqlmodel import select
 
 from app.analysis.audio import AudioFeatures
 from app.core.config import settings
-from app.db.models import LiveRoom, RawSegment, RecordingSession, SystemLog, Transcript
+from app.db.entities import LiveRoom, RawSegment, RecordingSession, SystemLog, Transcript
 from app.db.session import get_session
 from app.pipeline.workers.analyze import (
     HighlightDecision,
@@ -51,7 +51,7 @@ def _seed_segment() -> tuple[int, int]:
         db.add(segment)
         db.flush()
         assert segment.id is not None
-        db.add(Transcript(segment_id=segment.id, text="测试高光", words_json="[]"))
+        db.add(Transcript(segment_id=segment.id, final_text="测试高光", words_json="[]"))
         db.commit()
         return segment.id, room.id
 
@@ -153,7 +153,7 @@ def test_llm_reason_is_limited_to_candidate_time_window(
     segment_id, _room_id = _seed_segment()
     with get_session() as db:
         transcript = db.exec(select(Transcript).where(Transcript.segment_id == segment_id)).one()
-        transcript.text = "当前爆点。候选结束后发生的另一件事。"
+        transcript.final_text = "当前爆点。候选结束后发生的另一件事。"
         transcript.words_json = json.dumps(
             [
                 {"w": "当前爆点", "start": 1.5, "end": 2.4},
@@ -229,7 +229,7 @@ def test_degenerate_transcript_is_rejected_before_audio_or_llm(
     segment_id, _room_id = _seed_segment()
     with get_session() as db:
         transcript = db.exec(select(Transcript).where(Transcript.segment_id == segment_id)).one()
-        transcript.text = "等一下我们先看看" * 20
+        transcript.final_text = "等一下我们先看看" * 20
         db.add(transcript)
 
     def fail_audio(_path: str) -> None:
@@ -274,7 +274,7 @@ def test_commit_persists_all_decluttered_candidates_and_keeps_primary_task_point
     """同一分段的多个独立爆点都应入库，任务指针只指向最高分主候选。"""
     from app.analysis import scoring_config
     from app.analysis.scoring_config import ScoringConfig
-    from app.db.models import HighlightCandidate, HighlightEvent, RawSegment, SegmentTask, TaskStatus
+    from app.db.entities import HighlightCandidate, HighlightEvent, RawSegment, SegmentTask, TaskStatus
     from app.pipeline.lease import TaskLease
     from app.pipeline.workers.analyze import commit_highlight
 
@@ -346,7 +346,7 @@ def test_commit_persists_all_decluttered_candidates_and_keeps_primary_task_point
 
 def test_commit_suppresses_cross_segment_cluster_and_completes_task(temp_db: None) -> None:
     """并发计算出的邻近跨分段候选应在提交时再去簇，且任务正常结束。"""
-    from app.db.models import HighlightCandidate, RawSegment, SegmentTask, TaskStatus
+    from app.db.entities import HighlightCandidate, RawSegment, SegmentTask, TaskStatus
     from app.pipeline.lease import TaskLease
     from app.pipeline.workers.analyze import commit_highlight
 

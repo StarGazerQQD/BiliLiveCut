@@ -21,7 +21,7 @@ import pytest
 def _get_backend_id() -> str:
     """Get current accelerator backend identifier."""
     try:
-        from app.analysis.speedups import get_backend
+        from app.accelerators.dispatcher import get_backend
 
         return get_backend()
     except Exception:
@@ -36,21 +36,21 @@ class TestAhoCorasickParity:
 
     def test_single_pattern_found(self) -> None:
         """Single pattern match works."""
-        from app.analysis.speedups import fast_match_keywords
+        from app.accelerators.dispatcher import fast_match_keywords
 
         result = fast_match_keywords("hello world", ("hello",))
         assert result == ["hello"]
 
     def test_no_match(self) -> None:
         """No patterns in text."""
-        from app.analysis.speedups import fast_match_keywords
+        from app.accelerators.dispatcher import fast_match_keywords
 
         result = fast_match_keywords("abc", ("def", "ghi"))
         assert result == []
 
     def test_multiple_patterns(self) -> None:
         """Multiple patterns matched."""
-        from app.analysis.speedups import fast_match_keywords
+        from app.accelerators.dispatcher import fast_match_keywords
 
         result = fast_match_keywords("hello world hello", ("hello", "world"))
         assert "hello" in result
@@ -58,21 +58,21 @@ class TestAhoCorasickParity:
 
     def test_fast_aho_has_match_positive(self) -> None:
         """Has match returns True."""
-        from app.analysis.speedups import fast_aho_has_match, fast_ahocorasick_build
+        from app.accelerators.dispatcher import fast_aho_has_match, fast_ahocorasick_build
 
         am = fast_ahocorasick_build(("test",))
         assert fast_aho_has_match(am, "this is a test string")
 
     def test_fast_aho_has_match_negative(self) -> None:
         """Has match returns False."""
-        from app.analysis.speedups import fast_aho_has_match, fast_ahocorasick_build
+        from app.accelerators.dispatcher import fast_aho_has_match, fast_ahocorasick_build
 
         am = fast_ahocorasick_build(("zzz",))
         assert not fast_aho_has_match(am, "hello world")
 
     def test_empty_input_handled(self) -> None:
         """Empty text and empty patterns handled gracefully."""
-        from app.analysis.speedups import fast_match_keywords
+        from app.accelerators.dispatcher import fast_match_keywords
 
         assert fast_match_keywords("", ("a",)) == []
         assert fast_match_keywords("text", ()) == []
@@ -87,28 +87,28 @@ class TestUnicode:
 
     def test_chinese_characters(self) -> None:
         """Chinese text matched correctly."""
-        from app.analysis.speedups import fast_match_keywords
+        from app.accelerators.dispatcher import fast_match_keywords
 
         result = fast_match_keywords("你好世界", ("你好",))
         assert result == ["你好"]
 
     def test_japanese_characters(self) -> None:
         """Japanese text."""
-        from app.analysis.speedups import fast_match_keywords
+        from app.accelerators.dispatcher import fast_match_keywords
 
         result = fast_match_keywords("こんにちは世界", ("世界",))
         assert result == ["世界"]
 
     def test_emoji(self) -> None:
         """Emoji handling."""
-        from app.analysis.speedups import fast_match_keywords
+        from app.accelerators.dispatcher import fast_match_keywords
 
         result = fast_match_keywords("hello 😀 world", ("😀",))
         assert result == ["😀"]
 
     def test_mixed_scripts(self) -> None:
         """Mixed CJK + ASCII + emoji."""
-        from app.analysis.speedups import fast_match_keywords
+        from app.accelerators.dispatcher import fast_match_keywords
 
         text = "BiliBili 直播 🔴 精彩内容"
         result = fast_match_keywords(text, ("直播", "BiliBili"))
@@ -124,7 +124,7 @@ class TestCharBigrams:
 
     def test_basic_bigrams(self) -> None:
         """Simple text produces correct bigrams."""
-        from app.analysis.speedups import fast_char_bigrams
+        from app.accelerators.dispatcher import fast_char_bigrams
 
         result = fast_char_bigrams("abc")
         assert isinstance(result, list)
@@ -134,7 +134,7 @@ class TestCharBigrams:
 
     def test_single_char(self) -> None:
         """Single character produces empty."""
-        from app.analysis.speedups import fast_char_bigrams
+        from app.accelerators.dispatcher import fast_char_bigrams
 
         result = fast_char_bigrams("a")
         assert isinstance(result, list)
@@ -142,21 +142,21 @@ class TestCharBigrams:
 
     def test_empty_string(self) -> None:
         """Empty string."""
-        from app.analysis.speedups import fast_char_bigrams
+        from app.accelerators.dispatcher import fast_char_bigrams
 
         result = fast_char_bigrams("")
         assert result == []
 
     def test_spaces_skipped(self) -> None:
         """Whitespace is skipped."""
-        from app.analysis.speedups import fast_char_bigrams
+        from app.accelerators.dispatcher import fast_char_bigrams
 
         result = fast_char_bigrams("a b")
         assert isinstance(result, list)
 
     def test_unicode_bigrams(self) -> None:
         """Unicode bigrams."""
-        from app.analysis.speedups import fast_char_bigrams
+        from app.accelerators.dispatcher import fast_char_bigrams
 
         result = fast_char_bigrams("你好")
         assert isinstance(result, list)
@@ -170,7 +170,7 @@ class TestCosineSimilarity:
 
     def test_identical(self) -> None:
         """Identical vectors = 1.0."""
-        from app.analysis.speedups import fast_cosine_similarity
+        from app.accelerators.dispatcher import fast_cosine_similarity
 
         v = {"a": 1, "b": 2, "c": 3}
         result = fast_cosine_similarity(v, v)
@@ -178,21 +178,21 @@ class TestCosineSimilarity:
 
     def test_orthogonal(self) -> None:
         """Orthogonal vectors = 0.0."""
-        from app.analysis.speedups import fast_cosine_similarity
+        from app.accelerators.dispatcher import fast_cosine_similarity
 
         result = fast_cosine_similarity({"a": 1}, {"b": 1})
         assert abs(result - 0.0) < 0.001
 
     def test_empty_dicts(self) -> None:
         """Empty dicts handled."""
-        from app.analysis.speedups import fast_cosine_similarity
+        from app.accelerators.dispatcher import fast_cosine_similarity
 
         result = fast_cosine_similarity({}, {"a": 1})
         assert result == 0.0
 
     def test_boundary_values(self) -> None:
         """Large difference vectors."""
-        from app.analysis.speedups import fast_cosine_similarity
+        from app.accelerators.dispatcher import fast_cosine_similarity
 
         result = fast_cosine_similarity({"a": 1000}, {"b": 1000})
         assert result == pytest.approx(0)
@@ -206,7 +206,7 @@ class TestMemeCount:
 
     def test_count_matches(self) -> None:
         """Count how many texts contain memes."""
-        from app.analysis.speedups import fast_meme_count
+        from app.accelerators.dispatcher import fast_meme_count
 
         texts = ["hello world", "goodbye world", "no match"]
         result = fast_meme_count(texts, ("hello",))
@@ -214,14 +214,14 @@ class TestMemeCount:
 
     def test_empty_inputs(self) -> None:
         """Empty texts or memes."""
-        from app.analysis.speedups import fast_meme_count
+        from app.accelerators.dispatcher import fast_meme_count
 
         assert fast_meme_count([], ("a",)) == 0
         assert fast_meme_count(["text"], ()) == 0
 
     def test_all_match(self) -> None:
         """All texts match."""
-        from app.analysis.speedups import fast_meme_count
+        from app.accelerators.dispatcher import fast_meme_count
 
         texts = ["a test", "another test", "test again"]
         result = fast_meme_count(texts, ("test",))
@@ -229,7 +229,7 @@ class TestMemeCount:
 
     def test_long_input(self) -> None:
         """Long text list."""
-        from app.analysis.speedups import fast_meme_count
+        from app.accelerators.dispatcher import fast_meme_count
 
         texts = ["text"] * 1000
         result = fast_meme_count(texts, ("text",))
@@ -250,7 +250,7 @@ class TestBackendReporting:
 
     def test_get_cluster_backend_returns_string(self) -> None:
         """Cluster backend is a string."""
-        from app.analysis.speedups import get_cluster_backend
+        from app.accelerators.dispatcher import get_cluster_backend
 
         cbid = get_cluster_backend()
         assert isinstance(cbid, str)
@@ -264,7 +264,7 @@ class TestDanmakuBaseline:
 
     def test_baseline_rate(self) -> None:
         """Basic rate calculation."""
-        from app.analysis.speedups import danmaku_baseline_rate
+        from app.accelerators.dispatcher import danmaku_baseline_rate
 
         # Cython signature: danmaku_baseline_rate(list timestamps_seconds, float bucket_s=10.0)
         result = danmaku_baseline_rate([0.0, 5.0, 10.0, 15.0])
@@ -272,7 +272,7 @@ class TestDanmakuBaseline:
 
     def test_empty_input(self) -> None:
         """Empty input handled."""
-        from app.analysis.speedups import danmaku_baseline_rate
+        from app.accelerators.dispatcher import danmaku_baseline_rate
 
         result = danmaku_baseline_rate([])
         assert result == (0.0, 0)

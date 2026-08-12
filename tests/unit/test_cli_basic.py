@@ -54,7 +54,7 @@ def test_cli_help_preserves_dependency_hints_and_current_doctor_text() -> None:
 def test_record_pipeline_default_persists_scheduler_switches(temp_db: None, monkeypatch) -> None:  # noqa: ANN001
     """CLI 未显式传参时应读取全局默认值并把 db_id 传给回调。"""
     from app.commands import record as record_cmd
-    from app.db.models import LiveRoom
+    from app.db.entities import LiveRoom
     from app.db.session import get_session
 
     with get_session() as db:

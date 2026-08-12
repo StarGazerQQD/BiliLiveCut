@@ -10,7 +10,7 @@ from datetime import UTC, datetime
 
 from sqlmodel import select
 
-from app.db.models import UploadAttempt, UploadStatus, UploadTask
+from app.db.entities import UploadAttempt, UploadStatus, UploadTask
 from app.db.session import get_session
 from app.publishing.journal import mark_replayed, read_pending_entries
 

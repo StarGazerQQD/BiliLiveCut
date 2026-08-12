@@ -29,9 +29,9 @@ def cmd_db_reset(
             console.print("[yellow]已取消。[/yellow]")
             raise typer.Exit()
 
-    from app.db.migrate import reset_db
+    from app.db.schema import reset_database
 
-    ok = reset_db(yes=yes)
+    ok = reset_database(yes=yes, backup=True)
     if ok:
         console.print("[green]数据库已重置重建。[/green]")
     else:

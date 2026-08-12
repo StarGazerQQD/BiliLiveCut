@@ -9,11 +9,12 @@
 - **web/draft-retention**: 转写纠错与房间词典在展开编辑器时即暂停列表重绘，并覆盖输入、选择框和勾选框事件；直播间配置、功能开关、网感定时设置、上传开关、LLM、插件设置、审片备注及合集章节草稿统一增加迟到响应与保存竞态保护，避免五秒轮询或保存期间继续输入时覆盖未保存内容。
 - **web/transcript-source**: 实时转写卡片显示每条 ASR 对应的源 TS 文件名，提供复制入口与无损 MP4 导出；导出以 bitstream filter 校正视频 PTS/DTS 并缓存结果，在完整保留视频帧、AAC 音频包和原始编码的同时，避免常规 TS 重封装后第一帧因视频起点晚于音频而显示黑画面；历史缺失片段会显示明确的不可用状态。
 - **clipping/first-frame-timestamp**: 主成片、审片预览和派生版本在重编码时统一把首个有效音视频帧时间轴归零，避免从 TS 起点或分段边界出片时生成首帧黑色空窗，同时保持后续音画同步。
-- **version/release**: Python、C/Cython、Rust、Portable、Engine Pack、Docker、测试与用户文档统一升级为 `0.1.17.3-alpha`，Engine Pack 兼容区间调整为 `0.1.17.3-alpha ≤ app < 0.1.18`。
+- **version/release**: Python、C/Cython、Rust、Portable、Engine Pack、Docker、测试与用户文档统一升级为 `0.1.17.3-alpha`；Alpha 发行移除旧数据库字段、旧导入门面、旧配置键与旧 Runtime/Payload/Engine Pack 清单兼容，只接受当前精确版本和当前 Schema。
+- **release/contracts**: 删除 Payload 构建期版本覆盖文件与 `release_overlays` 字段，Payload Schema 升至 7；Release 标签改为逐字符匹配当前版本真源，不再接受历史大小写写法。
 
 ### 变更
 
-- **analysis/whole-session-summary**: 录制结束并完成最终跨分片分析后，自动把同场所有未拒绝高光节点按 GMT+8 先后整理为一段连续的全场高光总结，不读取或暴露五分钟录制分片；总结请求、重启恢复和时间线签名均持久化，人工纠错或重分析会自动使旧总结失效，LLM 不可用时回退为可读的规则版时间线梳理。
+- **analysis/whole-session-summary**: 录制结束并完成最终跨分片分析后，按 GMT+8 顺序汇集同场全部最终 ASR，并将完整上下文一次性交给 LLM 做全局分析；不再拼接高光节点或分段摘要。总结请求、重启恢复和 ASR 签名均持久化，人工纠错或重分析会使旧总结失效，LLM 无有效结果时保留失败状态并按任务策略重试。
 
 ## V0.1.17.2 Alpha (2026-08-11)
 

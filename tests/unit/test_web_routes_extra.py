@@ -65,7 +65,7 @@ class TestRoomSettings:
         with TestClient(app) as client:
             r = client.patch(
                 "/api/rooms/1",
-                json={"mode": "auto", "highlight_threshold": 0.7},
+                json={"highlight_threshold": 0.7},
             )
             assert r.status_code in (200, 404)
 
@@ -94,7 +94,6 @@ class TestScheduleRoutes:
                 json={
                     "room_id": 12345,
                     "scheduled_at": "2027-01-01T00:00:00Z",
-                    "enabled": True,
                 },
             )
             assert r.status_code in (200, 201, 400, 404)

@@ -1,144 +1,110 @@
-"""Engine Pack 验证测试 — verifier.py 和元数据完整性。"""
+"""Engine Pack 当前 schema 与完整性验证测试。"""
 
 from __future__ import annotations
 
 import json
+import sys
 import zipfile
+import zlib
 from pathlib import Path
 
 import pytest
 
-_portable_dir = Path(__file__).resolve().parent.parent  # portable/
-import sys
+_portable_dir = Path(__file__).resolve().parent.parent
+sys.path.insert(0, str(_portable_dir / "src"))
+sys.path.insert(0, str(Path(__file__).resolve().parent))
 
-if str(_portable_dir / "src") not in sys.path:
-    sys.path.insert(0, str(_portable_dir / "src"))
+from engine_pack_helpers import current_manifest  # noqa: E402
 
 
 class TestVerifier:
-    """verifier.py 功能测试。"""
+    """验证 ZIP 外部摘要、当前内部 Manifest 与目录树。"""
 
     def test_verify_archive_metadata_match(self, tmp_path: Path) -> None:
-        from blc_portable.engine_pack.verifier import compute_sha256, verify_archive_metadata  # noqa: E402
+        from blc_portable.engine_pack.verifier import compute_sha256, verify_archive_metadata
 
         zip_path = tmp_path / "test.zip"
         with zipfile.ZipFile(zip_path, "w") as zf:
             zf.writestr("a.txt", "hello world")
-
-        sha = compute_sha256(zip_path)
-        import zlib
-
         crc = zlib.crc32(zip_path.read_bytes()) & 0xFFFFFFFF
 
-        errors = verify_archive_metadata(zip_path, f"{crc:08X}", sha)
-        assert errors == [], f"Expected no errors, got: {errors}"
+        assert verify_archive_metadata(zip_path, f"{crc:08X}", compute_sha256(zip_path)) == []
 
     def test_verify_archive_metadata_crc_mismatch(self, tmp_path: Path) -> None:
-        from blc_portable.engine_pack.verifier import compute_sha256, verify_archive_metadata  # noqa: E402
+        from blc_portable.engine_pack.verifier import compute_sha256, verify_archive_metadata
 
         zip_path = tmp_path / "test.zip"
         with zipfile.ZipFile(zip_path, "w") as zf:
             zf.writestr("a.txt", "hello world")
 
-        sha = compute_sha256(zip_path)
-        errors = verify_archive_metadata(zip_path, "AAAAAAAA", sha)
-        assert any("CRC32" in e for e in errors)
+        assert any(
+            "CRC32" in error for error in verify_archive_metadata(zip_path, "AAAAAAAA", compute_sha256(zip_path))
+        )
 
     def test_verify_archive_metadata_sha_mismatch(self, tmp_path: Path) -> None:
-        from blc_portable.engine_pack.verifier import verify_archive_metadata  # noqa: E402
+        from blc_portable.engine_pack.verifier import verify_archive_metadata
 
         zip_path = tmp_path / "test.zip"
         with zipfile.ZipFile(zip_path, "w") as zf:
             zf.writestr("a.txt", "hello world")
 
-        errors = verify_archive_metadata(zip_path, "AAAAAAAA", "b" * 64)
-        assert any("SHA-256" in e for e in errors)
+        assert any("SHA-256" in error for error in verify_archive_metadata(zip_path, "AAAAAAAA", "b" * 64))
 
     def test_verify_manifest_valid(self, tmp_path: Path) -> None:
-        from blc_portable.engine_pack.verifier import verify_archive_manifest  # noqa: E402
+        from blc_portable.engine_pack.manifest import ENGINE_PACK_VERSION
+        from blc_portable.engine_pack.verifier import verify_archive_manifest
 
-        manifest = {
-            "schema_version": 3,
-            "engine_pack_version": "0.1.14.9-alpha",
-            "engines": [
-                {"engine_id": "whisper", "target_path": "models/whisper"},
-                {"engine_id": "paraformer", "target_path": "models/paraformer"},
-                {"engine_id": "sensevoice", "target_path": "models/sensevoice"},
-                {"engine_id": "funasr_nano", "target_path": "models/funasr_nano"},
-            ],
-            "files": {"models/whisper/model.bin": {"size": 100, "sha256": "a" * 64}},
-            "total_files": 1,
-        }
+        raw = current_manifest({"models/whisper/model.bin": {"size": 100, "sha256": "a" * 64}})
         manifest_path = tmp_path / "manifest.json"
-        manifest_path.write_text(json.dumps(manifest))
+        manifest_path.write_text(json.dumps(raw), encoding="utf-8")
 
-        errors = verify_archive_manifest(manifest_path, "0.1.14.9-alpha")
-        assert errors == [], f"Expected no errors, got: {errors}"
+        assert verify_archive_manifest(manifest_path, ENGINE_PACK_VERSION) == []
+
+    def test_verify_manifest_rejects_legacy_schema(self, tmp_path: Path) -> None:
+        from blc_portable.engine_pack.manifest import ENGINE_PACK_VERSION
+        from blc_portable.engine_pack.verifier import verify_archive_manifest
+
+        raw = current_manifest({"models/whisper/model.bin": {"size": 100, "sha256": "a" * 64}})
+        raw["schema_version"] = raw.pop("format_version")
+        manifest_path = tmp_path / "manifest.json"
+        manifest_path.write_text(json.dumps(raw), encoding="utf-8")
+
+        errors = verify_archive_manifest(manifest_path, ENGINE_PACK_VERSION)
+        assert any("无法解析" in error for error in errors)
 
     def test_verify_manifest_version_mismatch(self, tmp_path: Path) -> None:
-        from blc_portable.engine_pack.verifier import verify_archive_manifest  # noqa: E402
+        from blc_portable.engine_pack.manifest import ENGINE_PACK_VERSION
+        from blc_portable.engine_pack.verifier import verify_archive_manifest
 
-        manifest = {
-            "schema_version": 3,
-            "engine_pack_version": "0.1.14.7-alpha",
-            "engines": [
-                {"engine_id": "whisper", "target_path": "models/whisper"},
-            ],
-            "files": {},
-            "total_files": 1,
-        }
+        raw = current_manifest({"models/whisper/model.bin": {"size": 100, "sha256": "a" * 64}})
+        raw["engine_pack_version"] = "0.0.0-alpha"
         manifest_path = tmp_path / "manifest.json"
-        manifest_path.write_text(json.dumps(manifest))
+        manifest_path.write_text(json.dumps(raw), encoding="utf-8")
 
-        errors = verify_archive_manifest(manifest_path, "0.1.14.9-alpha")
-        assert len(errors) > 0
+        assert verify_archive_manifest(manifest_path, ENGINE_PACK_VERSION)
 
     def test_verify_extracted_tree_missing_files(self, tmp_path: Path) -> None:
-        from blc_portable.engine_pack.verifier import verify_extracted_tree  # noqa: E402
+        from blc_portable.engine_pack.verifier import verify_extracted_tree
 
-        (tmp_path / "models" / "whisper").mkdir(parents=True)
-        (tmp_path / "models" / "whisper" / "model.bin").write_text("data")
-
-        manifest = {
-            "engines": [{"engine_id": "whisper", "target_path": "models/whisper"}],
-            "files": {
-                "models/whisper/model.bin": {"size": 4, "sha256": "a" * 64},
-                "models/whisper/missing.txt": {"size": 10, "sha256": "b" * 64},
-            },
-        }
-        errors = verify_extracted_tree(tmp_path, manifest)
-        assert any("缺失文件" in e for e in errors)
+        raw = current_manifest({"models/whisper/missing.txt": {"size": 10, "sha256": "b" * 64}})
+        errors = verify_extracted_tree(tmp_path, raw)
+        assert any("缺失文件" in error for error in errors)
 
     def test_verify_engine_pack_info_complete(self) -> None:
+        from blc_portable.engine_pack.schema import SCHEMA_VERSION, ExternalMetadata
+
         info_path = _portable_dir / "resources" / "engine_pack_info.json"
         if not info_path.exists():
             pytest.skip("engine_pack_info.json not found")
-        info = json.loads(info_path.read_text(encoding="utf-8"))
-        required = [
-            "format_version",
-            "engine_pack_version",
-            "crc32",
-            "sha256",
-            "content_manifest_sha256",
-            "model_lock_sha256",
-            "expected_engine_ids",
-        ]
-        for field in required:
-            assert field in info, f"Missing field: {field}"
-        assert info.get("format_version") == 4, f"format_version should be 4, got {info.get('format_version')}"
+        metadata = ExternalMetadata.from_dict(json.loads(info_path.read_text(encoding="utf-8")))
+        assert metadata.format_version == SCHEMA_VERSION
 
 
 class TestNoArchiveSelfHash:
-    """内部 Manifest 不应包含归档自身哈希。"""
+    """内部 Manifest 不携带会产生自引用的归档摘要。"""
 
-    def test_schema_version_is_3(self) -> None:
-        """Manifest 内部 schema_version 为 3，外部 manifest (DIST) 允许有 archive_hashes。"""
-        builder_py = _portable_dir / "src" / "blc_portable" / "engine_pack" / "builder.py"
-        content = builder_py.read_text(encoding="utf-8")
-        # Staging manifest must use the installer's format_version contract.
-        assert '"format_version": 4' in content
-        assert '"schema_version": 4' not in content
-        # Note comment confirms staging manifest has no archive self-hash
-        assert (
-            "避免自引用问题" in content or "archive_crc32" in content.split("schema_version")[0]
-        )  # at least 1 occurrence exists (in write_output_files or external manifest)
+    def test_current_manifest_has_no_archive_hash_fields(self) -> None:
+        raw = current_manifest()
+        assert "archive_crc32" not in raw
+        assert "archive_sha256" not in raw
+        assert "schema_version" not in raw

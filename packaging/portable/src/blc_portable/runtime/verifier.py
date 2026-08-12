@@ -10,9 +10,8 @@ import hashlib
 import json
 import sys
 from pathlib import Path
-from typing import Any
 
-from blc_portable.atomic_fs import replace_with_retry
+from blc_portable.runtime.activation import RUNTIME_SCHEMA_VERSION
 
 
 def _streaming_sha256(path: Path, chunk_size: int = 8 * 1024 * 1024) -> str:
@@ -22,50 +21,6 @@ def _streaming_sha256(path: Path, chunk_size: int = 8 * 1024 * 1024) -> str:
         while chunk := f.read(chunk_size):
             hasher.update(chunk)
     return hasher.hexdigest()
-
-
-def write_current_json(
-    app_root: Path,
-    release_id: str,
-    release_version: str,
-    source_commit: str,
-    source_commit_short: str,
-    builder_commit: str,
-    payload_sha256: str,
-    manifest_sha256: str,
-) -> None:
-    """原子写入 current.json。
-
-    :param app_root: 应用根目录。
-    :param release_id: Release ID。
-    :param release_version: 版本。
-    :param source_commit: 完整 commit hash。
-    :param source_commit_short: 短 commit hash。
-    :param builder_commit: builder commit hash。
-    :param payload_sha256: Payload SHA-256。
-    :param manifest_sha256: Manifest SHA-256。
-    """
-    from .__init__ import get_runtime_dir
-
-    current_info: dict[str, Any] = {
-        "runtime_schema": 3,
-        "release_id": release_id,
-        "release_version": release_version,
-        "source_commit": source_commit,
-        "source_commit_short": source_commit_short,
-        "builder_commit": builder_commit,
-        "payload_sha256": payload_sha256,
-        "manifest_sha256": manifest_sha256,
-        "python_abi": f"cp{sys.version_info.major}{sys.version_info.minor}",
-        "platform": sys.platform,
-        "architecture": "x64" if sys.maxsize > 2**32 else "x86",
-        "activated_at": __import__("datetime").datetime.now().strftime("%Y-%m-%dT%H:%M:%S"),
-    }
-    tmp = get_runtime_dir() / "current.json.tmp"
-    target = get_runtime_dir() / "current.json"
-    target.parent.mkdir(parents=True, exist_ok=True)
-    tmp.write_text(json.dumps(current_info, ensure_ascii=False, indent=2), encoding="utf-8")
-    replace_with_retry(tmp, target)
 
 
 def verify_runtime(app_root: Path) -> tuple[bool, list[str]]:
@@ -80,7 +35,7 @@ def verify_runtime(app_root: Path) -> tuple[bool, list[str]]:
     from .__init__ import get_current_json_path, get_releases_dir
 
     errors: list[str] = []
-    current_path = get_current_json_path()
+    current_path = get_current_json_path(app_root)
 
     # 1. current.json
     if not current_path.exists():
@@ -94,13 +49,31 @@ def verify_runtime(app_root: Path) -> tuple[bool, list[str]]:
         return False, errors
 
     # 2. Release ID
-    rid = info.get("release_id", "")
+    expected_fields = {
+        "runtime_schema",
+        "release_id",
+        "release_version",
+        "source_commit",
+        "source_commit_short",
+        "builder_commit",
+        "payload_sha256",
+        "manifest_sha256",
+        "python_abi",
+        "platform",
+        "architecture",
+        "activated_at",
+    }
+    if set(info) != expected_fields:
+        errors.append("current.json 字段不符合当前 Runtime Schema")
+        return False, errors
+
+    rid = info["release_id"]
     if not rid:
         errors.append("current.json release_id 为空")
         return False, errors
 
     # 3. Release 目录存在
-    release_dir = get_releases_dir() / rid
+    release_dir = get_releases_dir(app_root) / rid
     if not release_dir.exists():
         errors.append(f"Release 目录不存在: {release_dir}")
         return False, errors
@@ -109,25 +82,25 @@ def verify_runtime(app_root: Path) -> tuple[bool, list[str]]:
         errors.append("Release 缺少 app/cli.py")
 
     # 4. ABI 匹配
-    expected_abi = info.get("python_abi", "")
+    expected_abi = info["python_abi"]
     current_abi = f"cp{sys.version_info.major}{sys.version_info.minor}"
     if expected_abi and expected_abi != current_abi:
         errors.append(f"Python ABI 不匹配: installed={expected_abi} current={current_abi}")
 
     # 5. Platform 匹配
-    expected_platform = info.get("platform", "")
+    expected_platform = info["platform"]
     if expected_platform and expected_platform != sys.platform:
         errors.append(f"Platform 不匹配: installed={expected_platform} current={sys.platform}")
 
     # 6. Payload SHA 非空
-    payload_sha = info.get("payload_sha256", "")
+    payload_sha = info["payload_sha256"]
     if not payload_sha:
         errors.append("current.json payload_sha256 为空")
 
     # 7. Schema
-    schema = info.get("runtime_schema", 0)
-    if not isinstance(schema, int) or schema < 1:
-        errors.append(f"runtime_schema invalid: {schema}")
+    schema = info["runtime_schema"]
+    if schema != RUNTIME_SCHEMA_VERSION:
+        errors.append(f"runtime_schema invalid: {schema}, expected={RUNTIME_SCHEMA_VERSION}")
 
     return len(errors) == 0, errors
 
@@ -144,7 +117,7 @@ def verify_runtime_files(app_root: Path) -> tuple[bool, list[str]]:
     from .__init__ import get_current_release_dir
 
     errors: list[str] = []
-    release_dir = get_current_release_dir()
+    release_dir = get_current_release_dir(app_root)
     if release_dir is None:
         errors.append("No active Runtime release")
         return False, errors
@@ -160,6 +133,13 @@ def verify_runtime_files(app_root: Path) -> tuple[bool, list[str]]:
         errors.append(f"Manifest unreadable: {exc}")
         return False, errors
 
+    from blc_portable.payload.manifest import MANIFEST_FORMAT_VERSION, validate_manifest_schema
+
+    schema_errors = validate_manifest_schema(manifest)
+    if schema_errors or manifest.get("format_version") != MANIFEST_FORMAT_VERSION:
+        errors.extend(schema_errors or ["Payload manifest format_version does not match the current schema"])
+        return False, errors
+
     file_count = 0
     size_mismatch = 0
     sha_mismatch = 0
@@ -167,7 +147,7 @@ def verify_runtime_files(app_root: Path) -> tuple[bool, list[str]]:
     extra_files = 0
 
     manifest_files = set()
-    for fp_str, info in manifest.get("file_list", manifest.get("files", {})).items():
+    for fp_str, info in manifest["files"].items():
         manifest_files.add(fp_str)
         target = release_dir / fp_str
         if not target.exists():
@@ -175,16 +155,18 @@ def verify_runtime_files(app_root: Path) -> tuple[bool, list[str]]:
             errors.append(f"Missing: {fp_str}")
             continue
 
-        expected_size = int(info.get("size", 0))
+        if not isinstance(info, dict) or set(info) != {"size", "sha256"}:
+            errors.append(f"Invalid manifest file entry: {fp_str}")
+            continue
+        expected_size = info["size"]
         actual_size = target.stat().st_size
-        if expected_size and actual_size != expected_size:
+        if actual_size != expected_size:
             size_mismatch += 1
 
-        expected_hash = str(info.get("sha256", ""))
-        if expected_hash and len(expected_hash) == 64:
-            actual_hash = _streaming_sha256(target)
-            if actual_hash != expected_hash:
-                sha_mismatch += 1
+        expected_hash = info["sha256"]
+        actual_hash = _streaming_sha256(target)
+        if actual_hash != expected_hash:
+            sha_mismatch += 1
         file_count += 1
 
     # Check for extra files not in manifest

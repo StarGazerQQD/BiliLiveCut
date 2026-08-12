@@ -5,7 +5,7 @@ from __future__ import annotations
 from typing import Any
 
 from fastapi import APIRouter
-from pydantic import BaseModel
+from pydantic import BaseModel, ConfigDict
 
 from app.web import service
 
@@ -19,6 +19,8 @@ def _clamp(v, lo, hi):
 
 class TrendCollectRequest(BaseModel):
     """网感资料收集请求体。"""
+
+    model_config = ConfigDict(extra="forbid")
 
     topic: str = ""
 

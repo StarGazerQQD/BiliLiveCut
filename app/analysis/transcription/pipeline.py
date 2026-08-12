@@ -15,7 +15,6 @@
 V0.1.12.2 变更:
     - 新增 ASRSegmentResult / ASRTranscriptResult 统一结果结构, 消除各后端置信度歧义。
     - 不再给无置信度字段伪造 0.0, 改为 None。
-    - 保留 TranscriptionResult 作为向后兼容层。
 """
 
 from __future__ import annotations
@@ -50,7 +49,7 @@ from app.analysis.transcription.quality import (
     repair_local_decode_loop,
 )
 from app.core.config import settings
-from app.db.models import RawSegment, SegmentStatus, Transcript
+from app.db.entities import RawSegment, SegmentStatus, Transcript
 from app.db.session import get_session
 
 if TYPE_CHECKING:
@@ -69,7 +68,7 @@ class ASRPipeline:
         2. FunASR 无有效输出时回退 Paraformer-zh；
         3. 前两级均失败时回退 Whisper。
 
-    兼容流程:
+    调用流程:
         ``ASR_PRIMARY=paraformer`` 时保留 Paraformer 主识别、FunASR 局部复核和
         Whisper 兜底；``ASR_PRIMARY=whisper`` 时直接使用 Whisper。
     """
@@ -533,7 +532,6 @@ def transcribe_segment(
     transcript = Transcript(
         segment_id=segment_id,
         language=result.language,
-        text=display_text,
         words_json=words_json,
         avg_logprob=avg_logprob_val,
         auxiliary_json=auxiliary_json,
@@ -576,7 +574,7 @@ def transcribe_segment(
 def _build_whisper_prompt(db, segment) -> str | None:
     """从房间配置构建 hotwords prompt。"""
     from app.analysis.room_config import effective_hotwords, load_room_config
-    from app.db.models import LiveRoom, RecordingSession
+    from app.db.entities import LiveRoom, RecordingSession
 
     session = db.get(RecordingSession, segment.session_id) if segment.session_id else None
     if session is None:
@@ -595,7 +593,7 @@ def _build_whisper_prompt(db, segment) -> str | None:
 def _apply_room_aliases(text: str, segment_id: int) -> str:
     """对转写文本应用房间级 aliases 纠错。"""
     from app.analysis.room_config import apply_aliases, load_room_config
-    from app.db.models import LiveRoom, RawSegment, RecordingSession
+    from app.db.entities import LiveRoom, RawSegment, RecordingSession
     from app.db.session import get_session as _gs
 
     with _gs() as db:

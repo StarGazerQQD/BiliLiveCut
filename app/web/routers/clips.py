@@ -58,8 +58,8 @@ def confirm_manual_upload(
 
     from loguru import logger as _log
 
-    from app.db.models import ClipStatus, FinalClip, SegmentTask, SystemLog
-    from app.db.models import TaskStatus as _Ts
+    from app.db.entities import ClipStatus, FinalClip, SegmentTask, SystemLog
+    from app.db.entities import TaskStatus as _Ts
     from app.db.session import get_session
 
     with get_session() as db:

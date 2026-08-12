@@ -2,7 +2,6 @@
 
 from __future__ import annotations
 
-import asyncio
 import json
 from collections.abc import Callable
 from typing import Any
@@ -10,7 +9,7 @@ from typing import Any
 from loguru import logger
 from sqlmodel import select
 
-from app.db.models import (
+from app.db.entities import (
     CandidateStatus,
     HighlightCandidate,
     RecordingSession,
@@ -77,8 +76,7 @@ def approve_candidate_sync(
 ) -> int | None:
     """同步批准候选并出片，供后台作业线程调用。
 
-    在同一个 session 中完成审批 + produce_clip,
-    fallback 路径也同步更新 Task 状态。
+    在同一个 session 中完成审批与 ``produce_clip``；候选缺少审核事件时拒绝出片。
 
     :param candidate_id: 候选 id。
     :param reviewed_by: 发起人工批准的审核者。
@@ -86,16 +84,14 @@ def approve_candidate_sync(
     :param cancel_check: 可选的取消检查。
     :returns: 生成的 clip_id;失败返回 ``None``。
     """
-    from app.db.models import HighlightEvent, SegmentTask
-    from app.db.models import TaskStatus as _Ts
+    from app.db.entities import HighlightEvent, SegmentTask
+    from app.db.entities import TaskStatus as _Ts
     from app.pipeline.approval import approve_event_and_task
     from app.pipeline.heartbeat import start_heartbeat_thread
     from app.pipeline.highlight_feedback import record_candidate_review_feedback
     from app.pipeline.lifecycle import _WORKER_ID, now_utc
     from app.pipeline.stage_result import enqueue_next, mark_completed, mark_failed
 
-    feedback_recorded = False
-    approved_via_event = False
     claimed_task_id: int | None = None
     claimed_lease_token: str | None = None
     with get_session() as db:
@@ -113,24 +109,19 @@ def approve_candidate_sync(
             )
         ).first()
 
-        # V0.1.12.8: 统一审批, 传入外层 db session
-        if event is not None:
-            approved_via_event = approve_event_and_task(
-                task_id=task.id if task is not None else None,
-                event_id=event.id,
-                approved_by=reviewed_by,
-                reason=None,
-                source="human",
-                review_decision="approved_solo",
-                db=db,
-            )
-        else:
-            # fallback: 更新 Candidate + Task 状态
-            set_candidate_status(candidate_id, CandidateStatus.APPROVED, reviewed_by=reviewed_by)
-            feedback_recorded = True
-            if task is not None:
-                task.stage = _Ts.APPROVED
-                db.add(task)
+        if event is None:
+            raise ValueError(f"候选数据不完整：缺少审核事件 candidate_id={candidate_id}")
+        approved = approve_event_and_task(
+            task_id=task.id if task is not None else None,
+            event_id=event.id,
+            approved_by=reviewed_by,
+            reason=None,
+            source="human",
+            review_decision="approved_solo",
+            db=db,
+        )
+        if not approved:
+            raise RuntimeError(f"候选审批状态提交失败: candidate_id={candidate_id}")
 
         if task is not None and task.stage in (_Ts.APPROVED, _Ts.APPROVED_WAITING_RENDER):
             import uuid
@@ -148,12 +139,11 @@ def approve_candidate_sync(
             db.add(task)
             claimed_task_id = task.id
 
-    if approved_via_event and not feedback_recorded:
-        record_candidate_review_feedback(
-            candidate_id,
-            decision=ReviewStatus.APPROVED_SOLO,
-            reviewed_by=reviewed_by,
-        )
+    record_candidate_review_feedback(
+        candidate_id,
+        decision=ReviewStatus.APPROVED_SOLO,
+        reviewed_by=reviewed_by,
+    )
 
     from app.pipeline.orchestrator import produce_clip
 
@@ -200,11 +190,6 @@ def approve_candidate_sync(
     return clip.id if clip else None
 
 
-async def approve_candidate(candidate_id: int) -> int | None:
-    """向后兼容的异步批准入口。"""
-    return await asyncio.to_thread(approve_candidate_sync, candidate_id)
-
-
 def delete_candidate(candidate_id: int) -> None:
     """删除候选。
 
@@ -213,14 +198,6 @@ def delete_candidate(candidate_id: int) -> None:
     with get_session() as db:
         cand = db.get(HighlightCandidate, candidate_id)
         if cand is not None:
-            from app.analysis.session_summary import request_session_timeline_summary_in_session
-
-            request_session_timeline_summary_in_session(
-                db,
-                cand.session_id,
-                reason="candidate_deleted",
-                force=True,
-            )
             db.delete(cand)
 
 

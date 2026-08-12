@@ -9,7 +9,7 @@ from typing import TYPE_CHECKING
 from sqlmodel import select
 
 from app.core.config import settings
-from app.db.models import (
+from app.db.entities import (
     HighlightCandidate,
     RawSegment,
     RecordingSession,
@@ -18,7 +18,7 @@ from app.db.models import (
     TaskStatus,
     Transcript,
 )
-from app.db.models import SegmentStatus as OldStatus
+from app.db.entities import SegmentStatus as OldStatus
 from app.db.session import get_session
 from app.pipeline.heartbeat import clear_heartbeat_if_own, start_heartbeat_thread
 from app.pipeline.lease import LeaseLostError, TaskLease, still_owns_lease
@@ -45,7 +45,7 @@ def room_cfg_from_task(task: SegmentTask) -> dict[str, bool | float]:
     :param task: SegmentTask 实例。
     :returns: 包含 auto_analyze/auto_render/auto_approve/auto_upload 等键的字典。
     """
-    from app.db.models import LiveRoom, RecordingSession
+    from app.db.entities import LiveRoom, RecordingSession
 
     with get_session() as db:
         session = db.get(RecordingSession, task.session_id)

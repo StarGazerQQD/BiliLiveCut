@@ -329,8 +329,17 @@ try {
     authorized: true,
     running: false,
     recording_state: "stopped",
-    room_config: {},
-    mode: "manual",
+    room_config: {
+      hotwords: [],
+      aliases: {},
+      learned_aliases: {},
+      highlight_keywords: [],
+      blocked_topics: [],
+      recording_paused: false,
+      recording_auto_restart_suppressed: false,
+      recording_wait_for_next_live: false,
+      highlight_scorer_mode: "inherit",
+    },
     highlight_threshold: 0.6,
     auto_publish_threshold: 0.8,
     schedule_enabled: false,
@@ -375,7 +384,6 @@ try {
     assert.equal(element(id).disabled, true, `${id} remained editable after recording started`);
   }
 
-  element("mode-1").value = "semi";
   element("ht-1").value = "0.72";
   element("at-1").value = "0.84";
   for (const id of ["sw-se-1", "sw-at-1", "sw-ds-1"]) {
@@ -390,7 +398,7 @@ try {
     .find((entry) => entry.path === "/api/rooms/1" && entry.options.method === "PATCH");
   assert.ok(roomSaveRequest, "room settings save was not requested");
   const roomSavePayload = JSON.parse(roomSaveRequest.options.body || "null");
-  assert.equal(roomSavePayload.mode, "semi");
+  assert.ok(!("mode" in roomSavePayload), "room save submitted removed mode field");
   assert.ok(!("schedule_enabled" in roomSavePayload), "room save submitted a locked schedule switch");
   assert.ok(!("auto_threshold_enabled" in roomSavePayload), "room save submitted a locked threshold switch");
   assert.ok(!("danmaku_sentiment_enabled" in roomSavePayload), "room save submitted a locked sentiment switch");

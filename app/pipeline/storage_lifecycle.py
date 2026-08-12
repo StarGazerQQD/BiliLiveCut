@@ -210,7 +210,7 @@ def cleanup_rejected_candidates() -> int:
     """
     from sqlmodel import select
 
-    from app.db.models import CandidateStatus, FinalClip, HighlightCandidate
+    from app.db.entities import CandidateStatus, FinalClip, HighlightCandidate
     from app.db.session import get_session
 
     cleaned = 0
@@ -261,7 +261,7 @@ def run_disk_maintenance() -> dict:
     result["cleaned_raw"] = cleanup_old_raw_files()
     result["cleaned_rejected"] = cleanup_rejected_candidates()
 
-    # 安全检查(兼容旧接口)。
+    # 安全检查。
     safe, msg = check_disk_safe()
     result["safe"] = safe
     result["safe_message"] = msg

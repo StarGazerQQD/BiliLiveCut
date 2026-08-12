@@ -176,7 +176,7 @@ def test_scoring_config_defaults() -> None:
 def test_danmaku_baseline_accepts_sqlmodel_scalar_rows(temp_db: None) -> None:
     """SQLModel 标量查询返回 datetime 时，弹幕基线不得按单元素元组解包。"""
     from app.analysis.highlight import _danmaku_baseline
-    from app.db.models import Danmaku
+    from app.db.entities import Danmaku
     from app.db.session import get_session
 
     window_start = datetime.now(UTC)

@@ -18,7 +18,7 @@ from sqlmodel import select
 from app.analysis.room_config import load_room_config
 from app.core.config import settings
 from app.core.cookie import get_bilibili_cookie
-from app.db.models import LiveRoom
+from app.db.entities import LiveRoom
 from app.db.session import get_session
 from app.sources.bilibili.client import BilibiliLiveClient
 
@@ -259,7 +259,7 @@ class LiveMonitor:
             )
             self._started_at[db_id] = asyncio.get_event_loop().time()
             # 从 RecordingSession 获取重连次数。
-            from app.db.models import RecordingSession
+            from app.db.entities import RecordingSession
 
             with get_session() as db:
                 session = db.exec(

@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+import pytest
+
 from app.analysis.room_config import (
     apply_aliases,
     is_blocked_topic,
@@ -104,20 +106,25 @@ class TestRoomConfig:
 
     @staticmethod
     def test_load_defaults_when_empty_json() -> None:
-        """空 JSON 时返回默认值。"""
+        """空 JSON 属于非当前格式，必须拒绝。"""
 
         class FakeRoom:
             room_config_json = "{}"
 
-        cfg = load_room_config(FakeRoom())  # type: ignore[arg-type]
-        assert cfg["hotwords"] == []
+        with pytest.raises(ValueError, match="缺少当前格式字段"):
+            load_room_config(FakeRoom())  # type: ignore[arg-type]
 
     @staticmethod
     def test_load_valid_json() -> None:
         """加载完整配置。"""
 
         class FakeRoom:
-            room_config_json = '{"hotwords":["审判","翻盘"],"aliases":{"thp":"审判"},"highlight_keywords":["名场面"],"blocked_topics":["广告"]}'
+            room_config_json = (
+                '{"hotwords":["审判","翻盘"],"aliases":{"thp":"审判"},'
+                '"learned_aliases":{},"highlight_keywords":["名场面"],"blocked_topics":["广告"],'
+                '"recording_paused":false,"recording_auto_restart_suppressed":false,'
+                '"recording_wait_for_next_live":false,"highlight_scorer_mode":"inherit"}'
+            )
 
         cfg = load_room_config(FakeRoom())  # type: ignore[arg-type]
         assert cfg["hotwords"] == ["审判", "翻盘"]
@@ -126,32 +133,30 @@ class TestRoomConfig:
         assert cfg["blocked_topics"] == ["广告"]
 
     @staticmethod
-    def test_load_invalid_json_falls_back() -> None:
-        """无效 JSON 回退默认。"""
+    def test_load_invalid_json_is_rejected() -> None:
+        """无效 JSON 必须被拒绝，不能按旧数据静默修复。"""
 
         class FakeRoom:
             room_config_json = "{bad json"
 
-        cfg = load_room_config(FakeRoom())  # type: ignore[arg-type]
-        assert cfg["hotwords"] == []
+        with pytest.raises(ValueError, match="不是有效 JSON"):
+            load_room_config(FakeRoom())  # type: ignore[arg-type]
 
     @staticmethod
-    def test_load_malformed_legacy_fields_keeps_valid_values() -> None:
-        """旧配置的畸形词典字段不能阻断录制，其他有效设置仍应保留。"""
+    def test_load_malformed_or_unknown_fields_is_rejected() -> None:
+        """畸形字段和未知字段不得被静默降级或保留。"""
 
         class FakeRoom:
             room_config_json = (
-                '{"hotwords":"not-a-list","aliases":[],"highlight_keywords":["名场面"],'
-                '"highlight_scorer_mode":"invalid","recording_paused":"false","future_flag":true}'
+                '{"hotwords":[],"aliases":{},"learned_aliases":{},'
+                '"highlight_keywords":["名场面"],"blocked_topics":[],'
+                '"recording_paused":false,"recording_auto_restart_suppressed":false,'
+                '"recording_wait_for_next_live":false,"highlight_scorer_mode":"inherit",'
+                '"future_flag":true}'
             )
 
-        cfg = load_room_config(FakeRoom())  # type: ignore[arg-type]
-        assert cfg["hotwords"] == []
-        assert cfg["aliases"] == {}
-        assert cfg["highlight_keywords"] == ["名场面"]
-        assert cfg["highlight_scorer_mode"] == "inherit"
-        assert cfg["recording_paused"] is False
-        assert cfg["future_flag"] is True
+        with pytest.raises(ValueError, match="未知字段"):
+            load_room_config(FakeRoom())  # type: ignore[arg-type]
 
 
 class TestApplyAliases:

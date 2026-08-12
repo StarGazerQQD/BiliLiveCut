@@ -23,7 +23,7 @@ from app.analysis.transcript_windows import extract_transcript_window
 from app.clipping.clipper import select_covering_segments
 from app.core.config import settings
 from app.core.paths import ready_to_upload_dir
-from app.db.models import (
+from app.db.entities import (
     ClipStatus,
     FinalClip,
     HighlightCandidate,
@@ -109,8 +109,10 @@ def gather_clip_text(candidate_id: int) -> tuple[str, str]:
         reason = cand.reason or ""
         session_id = cand.session_id
         event = db.exec(select(HighlightEvent).where(HighlightEvent.candidate_id == candidate_id)).first()
-        start_ts = event.adjusted_start_ts if event and event.adjusted_start_ts else cand.start_ts
-        end_ts = event.adjusted_end_ts if event and event.adjusted_end_ts else cand.end_ts
+        if event is None:
+            raise ValueError(f"候选数据不完整：缺少审核事件 candidate_id={candidate_id}")
+        start_ts = event.adjusted_start_ts or cand.start_ts
+        end_ts = event.adjusted_end_ts or cand.end_ts
 
     segments = select_covering_segments(session_id, start_ts, end_ts)
     seg_ids = [s.id for s in segments if s.id is not None]
@@ -132,7 +134,7 @@ def gather_clip_text(candidate_id: int) -> tuple[str, str]:
             segment_end = _as_utc_naive(segment.end_ts)
             duration = max(0.0, (segment_end - segment_start).total_seconds())
         window = extract_transcript_window(
-            transcript.text,
+            transcript.final_text,
             transcript.words_json,
             start_s=max(0.0, (window_start - segment_start).total_seconds()),
             end_s=max(0.0, (window_end - segment_start).total_seconds()),
@@ -277,7 +279,7 @@ def _decide_status(
     :param auto_approve_threshold: 自动批准分数阈值。
     :param score: 候选综合分。
     :param worth_publishing: 文案判断是否值得发布。
-    :returns: :class:`~app.db.models.ClipStatus` 之一。
+    :returns: :class:`~app.db.entities.ClipStatus` 之一。
     """
     if worth_publishing and auto_approve and score >= auto_approve_threshold:
         return ClipStatus.READY

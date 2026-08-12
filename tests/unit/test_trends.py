@@ -7,7 +7,7 @@ from datetime import timedelta
 from typing import TYPE_CHECKING
 
 from app.analysis import llm as llm_mod
-from app.db.models import TrendItem, utcnow
+from app.db.entities import TrendItem, utcnow
 from app.db.session import get_session
 from app.trends import collector as collector_mod
 from app.trends import store

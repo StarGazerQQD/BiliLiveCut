@@ -11,7 +11,35 @@ from typing import Any
 import pytest
 from fastapi.testclient import TestClient
 
-from app.web.services.background_jobs import JobContext, WebJobManager, get_job
+from app.web.services.background_jobs import JobContext, WebJobManager, _decode_job, get_job
+
+
+def _stored_job(**overrides: Any) -> dict[str, Any]:
+    """构造当前且唯一的持久化 Web 作业格式。"""
+    now = datetime.now(UTC).isoformat()
+    value: dict[str, Any] = {
+        "version": 1,
+        "id": "stored-job",
+        "type": "test_job",
+        "label": "stored",
+        "owner": "tester",
+        "payload": {},
+        "dedup_key": None,
+        "cancellable_while_running": True,
+        "status": "queued",
+        "progress": 0,
+        "message": "queued",
+        "result": None,
+        "error": None,
+        "attempt": 1,
+        "created_at": now,
+        "updated_at": now,
+        "started_at": None,
+        "finished_at": None,
+        "recovered": False,
+    }
+    value.update(overrides)
+    return value
 
 
 async def _wait_for_status(job_id: str, statuses: set[str], timeout_s: float = 5) -> dict[str, Any]:
@@ -116,24 +144,19 @@ async def test_background_job_deduplicates_active_operation(temp_db: None) -> No
 @pytest.mark.asyncio
 async def test_background_job_recovers_safe_running_operation(temp_db: None) -> None:
     """服务重启后安全的渲染类作业会重新排队执行。"""
-    from app.db.models import AppSetting
+    from app.db.entities import AppSetting
     from app.db.session import get_session
 
-    now = datetime.now(UTC).isoformat()
-    stored = {
-        "id": "recover-job",
-        "type": "test_recover",
-        "label": "recover",
-        "owner": "tester",
-        "payload": {"value": 7},
-        "status": "running",
-        "progress": 50,
-        "message": "old process",
-        "attempt": 1,
-        "created_at": now,
-        "updated_at": now,
-        "cancellable_while_running": True,
-    }
+    stored = _stored_job(
+        id="recover-job",
+        type="test_recover",
+        label="recover",
+        owner="tester",
+        payload={"value": 7},
+        status="running",
+        progress=50,
+        message="interrupted process",
+    )
     with get_session() as db:
         db.add(AppSetting(key="web_job:recover-job", value=json.dumps(stored)))
 
@@ -150,24 +173,19 @@ async def test_background_job_recovers_safe_running_operation(temp_db: None) -> 
 @pytest.mark.asyncio
 async def test_background_job_does_not_replay_cancelling_operation(temp_db: None) -> None:
     """服务重启后保留原取消意图，不重新执行正在取消的作业。"""
-    from app.db.models import AppSetting
+    from app.db.entities import AppSetting
     from app.db.session import get_session
 
-    now = datetime.now(UTC).isoformat()
-    stored = {
-        "id": "cancelling-job",
-        "type": "test_cancel_recovery",
-        "label": "cancel recovery",
-        "owner": "tester",
-        "payload": {},
-        "status": "cancelling",
-        "progress": 50,
-        "message": "stopping",
-        "attempt": 1,
-        "created_at": now,
-        "updated_at": now,
-        "cancellable_while_running": True,
-    }
+    stored = _stored_job(
+        id="cancelling-job",
+        type="test_cancel_recovery",
+        label="cancel recovery",
+        owner="tester",
+        payload={},
+        status="cancelling",
+        progress=50,
+        message="stopping",
+    )
     with get_session() as db:
         db.add(AppSetting(key="web_job:cancelling-job", value=json.dumps(stored)))
 
@@ -215,25 +233,29 @@ async def test_running_upload_is_not_cancelled_or_replayed(temp_db: None) -> Non
 
 def test_reviewer_can_only_read_own_job(temp_db: None, monkeypatch: pytest.MonkeyPatch) -> None:
     """审核员可轮询自己的作业，但不能读取其他人的作业。"""
-    from app.db.models import AppSetting
+    from app.db.entities import AppSetting
     from app.db.session import get_session
     from app.web import main
 
     now = datetime.now(UTC).isoformat()
-    payload = {
-        "id": "owned-job",
-        "type": "review_rerender",
-        "label": "owned",
-        "owner": "alice",
-        "payload": {},
-        "status": "succeeded",
-        "progress": 100,
-        "message": "done",
-        "attempt": 1,
-        "created_at": now,
-        "updated_at": now,
-        "finished_at": now,
-    }
+    payload = _stored_job(
+        id="owned-job",
+        type="review_rerender",
+        label="owned",
+        owner="alice",
+        payload={
+            "candidate_id": 1,
+            "start_ts": now,
+            "end_ts": now,
+            "version": "review-current",
+        },
+        status="succeeded",
+        progress=100,
+        message="done",
+        result={},
+        started_at=now,
+        finished_at=now,
+    )
     with get_session() as db:
         db.add(AppSetting(key="web_job:owned-job", value=json.dumps(payload)))
 
@@ -249,3 +271,20 @@ def test_reviewer_can_only_read_own_job(temp_db: None, monkeypatch: pytest.Monke
     assert own.status_code == 200
     assert other.status_code == 403
     assert admin.status_code == 200
+
+
+@pytest.mark.parametrize(
+    "mutate",
+    [
+        lambda value: value.pop("version"),
+        lambda value: value.update({"version": 0}),
+        lambda value: value.update({"legacy_status": "queued"}),
+    ],
+)
+def test_background_job_rejects_non_current_persisted_format(mutate: Any) -> None:
+    """旧版本、缺字段和额外字段的作业记录不得被补写或迁移。"""
+    payload = _stored_job()
+    mutate(payload)
+
+    with pytest.raises(ValueError, match="Web 作业"):
+        _decode_job(json.dumps(payload))

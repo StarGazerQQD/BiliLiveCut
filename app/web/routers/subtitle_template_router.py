@@ -12,7 +12,7 @@ from fastapi.responses import PlainTextResponse
 from loguru import logger
 from sqlmodel import select as _sql_select
 
-from app.db.models import SubtitleTemplate
+from app.db.entities import SubtitleTemplate
 from app.db.session import get_session
 
 router = APIRouter(prefix="/api/templates", tags=["subtitle_templates"])

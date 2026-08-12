@@ -9,7 +9,7 @@ from __future__ import annotations
 import random
 from datetime import UTC, datetime, timedelta
 
-from app.db.models import SegmentTask, TaskStatus
+from app.db.entities import SegmentTask, TaskStatus
 
 _RETRY_BASE_S = 10
 _RETRY_MAX_S = 600
@@ -114,11 +114,6 @@ def make_stage_key(segment_id: int, stage: str) -> str:
     return f"stage:{segment_id}:{stage}"
 
 
-def make_idempotency_key(segment_id: int, stage: str) -> str:
-    """[后向兼容] 旧幂等键。"""
-    return f"{segment_id}:{stage}"
-
-
 def _jitter(base: float, jitter_s: float = _RETRY_JITTER_S) -> float:
     return base + random.uniform(0, jitter_s)
 
@@ -188,7 +183,6 @@ def enqueue_next(
         raise ValueError(f"非法转换: {current} -> {next_stage}")
     task.stage = next_stage
     task.stage_key = make_stage_key(task.segment_id, next_stage)
-    task.idempotency_key = make_idempotency_key(task.segment_id, next_stage)
     task.attempts = 0
     task.last_error = None
     task.error_is_permanent = False

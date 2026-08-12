@@ -26,7 +26,7 @@ class TestModelCatalogIsSingleSource:
     def test_catalog_exists_and_valid(self) -> None:
         """验证 catalog JSON 存在且格式有效。"""
         cat = _load_catalog()
-        assert cat["schema_version"] == 2
+        assert cat["schema_version"] == 5
         assert "engines" in cat
         assert len(cat["engines"]) >= 4
 

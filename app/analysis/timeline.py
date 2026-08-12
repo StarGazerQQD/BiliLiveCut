@@ -10,7 +10,7 @@ from typing import Any
 from sqlmodel import select
 
 from app.core.config import settings
-from app.db.models import Danmaku, DanmakuType
+from app.db.entities import Danmaku, DanmakuType
 from app.db.session import get_session
 
 TIMELINE_ANALYSIS_VERSION = 1
