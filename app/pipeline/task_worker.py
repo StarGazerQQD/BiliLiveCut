@@ -10,7 +10,7 @@
   - lease.py         — TaskLease / LeaseLostError / still_owns_lease
   - workers/         — 各阶段 compute / commit / run 实现
 
-本文件保留: TaskWorker 主类、调度循环、任务生命周期入口、兼容门面。
+本文件保留 TaskWorker 主类、调度循环与任务生命周期入口。
 """
 
 from __future__ import annotations
@@ -24,7 +24,7 @@ from loguru import logger
 from sqlmodel import select
 
 from app.core.config import settings
-from app.db.models import (
+from app.db.entities import (
     RawSegment,
     SegmentTask,
     TaskStatus,
@@ -33,11 +33,9 @@ from app.db.session import get_session
 
 # ── 从子模块导入 ────────────────────────────────────────────────
 from app.pipeline.claiming import pop_and_claim
-from app.pipeline.heartbeat import clear_heartbeat_if_own, start_heartbeat_thread
 from app.pipeline.lifecycle import (
     _WORKER_ID,
     cleanup_subprocesses,
-    now_utc,
     shutdown_event,
 )
 from app.pipeline.scheduler import (
@@ -49,12 +47,10 @@ from app.pipeline.scheduler import (
     advance_transcribed,
     execute_task,
     retry_expired,
-    room_cfg_from_task,
 )
 from app.pipeline.stage_result import (
     active_stage,
     enqueue_next,
-    mark_failed,
 )
 from app.pipeline.stale_recovery import (
     recover_orphans,
@@ -89,7 +85,7 @@ def create_task(segment_id: int, session_id: int) -> SegmentTask | None:
     """
     from sqlalchemy.exc import IntegrityError
 
-    from app.pipeline.stage_result import make_idempotency_key, make_pipeline_key, make_stage_key
+    from app.pipeline.stage_result import make_pipeline_key, make_stage_key
 
     pipeline_key = make_pipeline_key(segment_id)
     stage_key = make_stage_key(segment_id, "recorded")
@@ -106,21 +102,12 @@ def create_task(segment_id: int, session_id: int) -> SegmentTask | None:
         if existing is not None:
             _logger.debug("pipeline_key 已存在: segment={} task={} stage={}", segment_id, existing.id, existing.stage)
             return None
-        old_key = make_idempotency_key(segment_id, "recorded")
-        existing_old = db.exec(select(SegmentTask).where(SegmentTask.idempotency_key == old_key)).first()
-        if existing_old is not None:
-            existing_old.pipeline_key = pipeline_key
-            db.add(existing_old)
-            _logger.info("后向兼容: 为旧任务 {} 补充 pipeline_key", existing_old.id)
-            return None
-
         task = SegmentTask(
             segment_id=segment_id,
             session_id=session_id,
             stage=TaskStatus.RECORDED,
             pipeline_key=pipeline_key,
             stage_key=stage_key,
-            idempotency_key=old_key,
         )
         db.add(task)
         try:
@@ -419,69 +406,8 @@ class TaskWorker:
         return counts
 
 
-# ═══════════════════════════════════════════════════
-# 后向兼容导出
-# ═══════════════════════════════════════════════════
-
-# 任务生命周期 API (可直接从原 task_worker 路径导入)
-_task_counts = task_counts
-_RETRY_BASE_S: int = 10
-_RETRY_MAX_S: int = 600
-_RETRY_JITTER_S: float = 5.0
-_HEARTBEAT_POLL_S: int = 5
-
-# 阶段推进 (旧名称兼容)
-_room_cfg_from_task = room_cfg_from_task
-_advance_recorded = advance_recorded
-_advance_transcribed = advance_transcribed
-_advance_candidate = advance_candidate
-_advance_awaiting_review = advance_awaiting_review
-_advance_approved = advance_approved
-_advance_rendered = advance_rendered
-_retry_expired = retry_expired
-
-# 领取
-_pop_and_claim = pop_and_claim
-
-# 心跳
-_start_heartbeat_thread = start_heartbeat_thread
-_clear_heartbeat_if_own = clear_heartbeat_if_own
-
-# 恢复
-_resume_stage = resume_stage
-_recover_stale = recover_stale
-_recover_orphans = recover_orphans
-
-# 生命周期
-_now = now_utc
-_cleanup_subprocesses = cleanup_subprocesses
-
-# 执行
-_execute_task = execute_task
-
-# stage_result 兼容 (被测试和外部引用)
-from app.pipeline.stage_result import (  # noqa: E402, F401, I001
-    can_transition,
-    make_idempotency_key,
-    make_pipeline_key,
-    make_stage_key,
-    mark_active,
-    mark_failed as _mark_failed_for_export,
-)
-from app.pipeline.workers.analyze import _ensure_event  # noqa: E402, F401, I001
-
-# 后向兼容: 旧名称
-_can_transition = can_transition
-_make_idempotency_key = make_idempotency_key
-_make_pipeline_key = make_pipeline_key
-_make_stage_key = make_stage_key
-
-# old mark_failed exports for backward compat
-mark_failed = _mark_failed_for_export  # noqa: F811
-
 # 全局单例
 _app: TaskWorker | None = None
-task_worker: TaskWorker | None = None  # 后向兼容: 模块级实例
 
 
 def get_worker() -> TaskWorker:
@@ -493,14 +419,3 @@ def get_worker() -> TaskWorker:
     if _app is None:
         _app = TaskWorker()
     return _app
-
-
-# 后向兼容: 模块级实例引用 get_worker 的返回值
-def _ensure_instance() -> TaskWorker:
-    global task_worker
-    if task_worker is None:
-        task_worker = get_worker()
-    return task_worker
-
-
-task_worker = _ensure_instance()

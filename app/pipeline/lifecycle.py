@@ -3,7 +3,6 @@
 from __future__ import annotations
 
 import random
-import sys as _sys
 import threading
 import time as _time
 import uuid
@@ -23,28 +22,6 @@ _task_resources: dict[int, dict[str, int | float]] = {}
 _task_resources_lock: threading.Lock = threading.Lock()
 
 _RETRY_JITTER_S: float = 5.0
-
-
-class _ShutdownProxy:
-    """后向兼容: 代理 _shutting_down bool 到 shutdown_event.is_set()。"""
-
-    def __bool__(self) -> bool:
-        return shutdown_event.is_set()
-
-    def __eq__(self, other: object) -> bool:
-        return bool(self) == bool(other)
-
-    def __ne__(self, other: object) -> bool:
-        return bool(self) != bool(other)
-
-    def __repr__(self) -> str:
-        return str(bool(self))
-
-
-# 后向兼容: 模块级 _shutting_down (只读, 通过代理同步)
-_module = _sys.modules[__name__]
-_shutting_down = _ShutdownProxy()
-_module._shutting_down = _shutting_down
 
 
 def now_utc() -> datetime:

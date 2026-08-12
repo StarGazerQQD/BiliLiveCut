@@ -12,7 +12,7 @@ router = APIRouter()
 @router.get("/events/{event_id}/variants")
 def list_variants(event_id: int) -> list[dict[str, Any]]:
     """列出某事件的所有成品版本。"""
-    from app.db.models import ClipVariant
+    from app.db.entities import ClipVariant
     from app.db.session import get_session
 
     with get_session() as db:

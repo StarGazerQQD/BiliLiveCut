@@ -31,22 +31,21 @@ class TestAtomicClaim:
 
     def test_single_worker_claims_successfully(self, test_db) -> None:
         """单 Worker 领取 queued 任务成功。"""
-        from app.db.models import SegmentTask, TaskStatus
+        from app.db.entities import SegmentTask, TaskStatus
         from app.db.session import get_session
-        from app.pipeline.task_worker import _pop_and_claim
+        from app.pipeline.claiming import pop_and_claim
 
         with get_session() as db:
             task = SegmentTask(
                 segment_id=1,
                 session_id=1,
                 stage=TaskStatus.QUEUED_FOR_TRANS,
-                idempotency_key="1:queued_for_transcription",
             )
             db.add(task)
             db.flush()
             tid = task.id
 
-        claimed = _pop_and_claim(TaskStatus.QUEUED_FOR_TRANS)
+        claimed = pop_and_claim(TaskStatus.QUEUED_FOR_TRANS)
         assert claimed is not None
         assert claimed.id == tid
         assert claimed.stage == TaskStatus.TRANSCRIBING
@@ -54,16 +53,15 @@ class TestAtomicClaim:
 
     def test_concurrent_claim_only_one_succeeds(self, test_db) -> None:
         """两个 Worker 并发领取, 只有一个成功。"""
-        from app.db.models import SegmentTask, TaskStatus
+        from app.db.entities import SegmentTask, TaskStatus
         from app.db.session import get_session
-        from app.pipeline.task_worker import _pop_and_claim
+        from app.pipeline.claiming import pop_and_claim
 
         with get_session() as db:
             task = SegmentTask(
                 segment_id=2,
                 session_id=1,
                 stage=TaskStatus.QUEUED_FOR_ANALYSIS,
-                idempotency_key="2:queued_for_analysis",
             )
             db.add(task)
             db.flush()
@@ -71,7 +69,7 @@ class TestAtomicClaim:
         results: list = [None, None]
 
         def worker(idx: int) -> None:
-            results[idx] = _pop_and_claim(TaskStatus.QUEUED_FOR_ANALYSIS)
+            results[idx] = pop_and_claim(TaskStatus.QUEUED_FOR_ANALYSIS)
 
         t1 = threading.Thread(target=worker, args=(0,))
         t2 = threading.Thread(target=worker, args=(1,))
@@ -86,24 +84,23 @@ class TestAtomicClaim:
 
     def test_already_claimed_task_not_claimed_again(self, test_db) -> None:
         """已被领取的任务不能再次被领取。"""
-        from app.db.models import SegmentTask, TaskStatus
+        from app.db.entities import SegmentTask, TaskStatus
         from app.db.session import get_session
-        from app.pipeline.task_worker import _pop_and_claim
+        from app.pipeline.claiming import pop_and_claim
 
         with get_session() as db:
             task = SegmentTask(
                 segment_id=3,
                 session_id=1,
                 stage=TaskStatus.QUEUED_FOR_TRANS,
-                idempotency_key="3:queued_for_transcription",
             )
             db.add(task)
             db.flush()
 
-        first = _pop_and_claim(TaskStatus.QUEUED_FOR_TRANS)
+        first = pop_and_claim(TaskStatus.QUEUED_FOR_TRANS)
         assert first is not None
 
-        second = _pop_and_claim(TaskStatus.QUEUED_FOR_TRANS)
+        second = pop_and_claim(TaskStatus.QUEUED_FOR_TRANS)
         assert second is None  # 已被领取, 不应重复
 
 
@@ -117,9 +114,9 @@ class TestAutoSwitches:
 
     def test_auto_analyze_off_stays_recorded(self, test_db) -> None:
         """auto_analyze=false → 不进入转写队列。"""
-        from app.db.models import LiveRoom, RawSegment, RecordingSession, SegmentTask, TaskStatus
+        from app.db.entities import LiveRoom, RawSegment, RecordingSession, SegmentTask, TaskStatus
         from app.db.session import get_session
-        from app.pipeline.task_worker import _advance_recorded
+        from app.pipeline.scheduler import advance_recorded
 
         with get_session() as db:
             room = LiveRoom(id=9001, input_url="test", auto_analyze=False)
@@ -129,11 +126,10 @@ class TestAutoSwitches:
                 segment_id=7001,
                 session_id=8001,
                 stage=TaskStatus.RECORDED,
-                idempotency_key="7001:recorded",
             )
             db.add_all([room, sess, seg, task])
 
-        _advance_recorded()
+        advance_recorded()
 
         with get_session() as db:
             t = db.get(SegmentTask, task.id)
@@ -142,9 +138,9 @@ class TestAutoSwitches:
 
     def test_auto_analyze_on_advances_to_trans_queue(self, test_db) -> None:
         """auto_analyze=true → 进入转写队列。"""
-        from app.db.models import LiveRoom, RawSegment, RecordingSession, SegmentTask, TaskStatus
+        from app.db.entities import LiveRoom, RawSegment, RecordingSession, SegmentTask, TaskStatus
         from app.db.session import get_session
-        from app.pipeline.task_worker import _advance_recorded
+        from app.pipeline.scheduler import advance_recorded
 
         with get_session() as db:
             room = LiveRoom(id=9002, input_url="test", auto_analyze=True)
@@ -154,11 +150,10 @@ class TestAutoSwitches:
                 segment_id=7002,
                 session_id=8002,
                 stage=TaskStatus.RECORDED,
-                idempotency_key="7002:recorded",
             )
             db.add_all([room, sess, seg, task])
 
-        _advance_recorded()
+        advance_recorded()
 
         with get_session() as db:
             t = db.get(SegmentTask, task.id)
@@ -167,9 +162,9 @@ class TestAutoSwitches:
 
     def test_auto_render_off_stays_approved_waiting_render(self, test_db) -> None:
         """auto_render=false → APPROVED → APPROVED_WAITING_RENDER。"""
-        from app.db.models import LiveRoom, RecordingSession, SegmentTask, TaskStatus
+        from app.db.entities import LiveRoom, RecordingSession, SegmentTask, TaskStatus
         from app.db.session import get_session
-        from app.pipeline.task_worker import _advance_approved
+        from app.pipeline.scheduler import advance_approved
 
         with get_session() as db:
             room = LiveRoom(id=9003, input_url="test", auto_render=False)
@@ -179,11 +174,10 @@ class TestAutoSwitches:
                 session_id=8003,
                 stage=TaskStatus.APPROVED,
                 candidate_id=5001,
-                idempotency_key="7003:approved",
             )
             db.add_all([room, sess, task])
 
-        _advance_approved()
+        advance_approved()
 
         with get_session() as db:
             t = db.get(SegmentTask, task.id)
@@ -193,7 +187,7 @@ class TestAutoSwitches:
 
     def test_auto_approve_off_stays_awaiting_review(self, test_db) -> None:
         """auto_approve=false → 留在 awaiting_review。"""
-        from app.db.models import (
+        from app.db.entities import (
             HighlightCandidate,
             LiveRoom,
             RecordingSession,
@@ -201,7 +195,7 @@ class TestAutoSwitches:
             TaskStatus,
         )
         from app.db.session import get_session
-        from app.pipeline.task_worker import _advance_awaiting_review
+        from app.pipeline.scheduler import advance_awaiting_review
 
         with get_session() as db:
             room = LiveRoom(id=9004, input_url="test", auto_approve=False)
@@ -213,17 +207,17 @@ class TestAutoSwitches:
                 start_ts=_now(),
                 end_ts=_now(),
                 highlight_score=0.9,
+                dedup_hash="scheduler-review-disabled-5002",
             )
             task = SegmentTask(
                 segment_id=7004,
                 session_id=8004,
                 stage=TaskStatus.AWAITING_REVIEW,
                 candidate_id=5002,
-                idempotency_key="7004:awaiting_review",
             )
             db.add_all([room, sess, cand, task])
 
-        _advance_awaiting_review()
+        advance_awaiting_review()
 
         with get_session() as db:
             t = db.get(SegmentTask, task.id)
@@ -232,7 +226,7 @@ class TestAutoSwitches:
 
     def test_auto_approve_on_with_high_score_advances(self, test_db) -> None:
         """auto_approve=true + 高分 → 自动批准 (V0.1.12.7: 需 event_id+Event)。"""
-        from app.db.models import (
+        from app.db.entities import (
             HighlightCandidate,
             HighlightEvent,
             LiveRoom,
@@ -242,7 +236,7 @@ class TestAutoSwitches:
             TaskStatus,
         )
         from app.db.session import get_session
-        from app.pipeline.task_worker import _advance_awaiting_review
+        from app.pipeline.scheduler import advance_awaiting_review
 
         with get_session() as db:
             room = LiveRoom(id=9005, input_url="test", auto_approve=True, auto_approve_threshold=0.80)
@@ -254,6 +248,7 @@ class TestAutoSwitches:
                 start_ts=_now(),
                 end_ts=_now(),
                 highlight_score=0.95,
+                dedup_hash="scheduler-auto-approved-5003",
             )
             event = HighlightEvent(
                 id=7705,
@@ -269,11 +264,10 @@ class TestAutoSwitches:
                 stage=TaskStatus.AWAITING_REVIEW,
                 candidate_id=5003,
                 event_id=7705,
-                idempotency_key="7005:awaiting_review",
             )
             db.add_all([room, sess, cand, event, task])
 
-        _advance_awaiting_review()
+        advance_awaiting_review()
 
         with get_session() as db:
             t = db.get(SegmentTask, task.id)
@@ -282,7 +276,7 @@ class TestAutoSwitches:
 
     def test_auto_approve_on_low_score_stays(self, test_db) -> None:
         """auto_approve=true 但分数 < 阈值 → 不批准。"""
-        from app.db.models import (
+        from app.db.entities import (
             HighlightCandidate,
             LiveRoom,
             RecordingSession,
@@ -290,7 +284,7 @@ class TestAutoSwitches:
             TaskStatus,
         )
         from app.db.session import get_session
-        from app.pipeline.task_worker import _advance_awaiting_review
+        from app.pipeline.scheduler import advance_awaiting_review
 
         with get_session() as db:
             room = LiveRoom(id=9006, input_url="test", auto_approve=True, auto_approve_threshold=0.85)
@@ -302,17 +296,17 @@ class TestAutoSwitches:
                 start_ts=_now(),
                 end_ts=_now(),
                 highlight_score=0.60,
+                dedup_hash="scheduler-low-score-5004",
             )
             task = SegmentTask(
                 segment_id=7006,
                 session_id=8006,
                 stage=TaskStatus.AWAITING_REVIEW,
                 candidate_id=5004,
-                idempotency_key="7006:awaiting_review",
             )
             db.add_all([room, sess, cand, task])
 
-        _advance_awaiting_review()
+        advance_awaiting_review()
 
         with get_session() as db:
             t = db.get(SegmentTask, task.id)
@@ -330,9 +324,9 @@ class TestHeartbeat:
 
     def test_active_heartbeat_not_stale(self, test_db) -> None:
         """任务有活跃心跳, 即使超过 stale timeout 也不被恢复。"""
-        from app.db.models import SegmentTask, TaskStatus
+        from app.db.entities import SegmentTask, TaskStatus
         from app.db.session import get_session
-        from app.pipeline.task_worker import _recover_stale
+        from app.pipeline.stale_recovery import recover_stale
 
         with get_session() as db:
             task = SegmentTask(
@@ -341,13 +335,12 @@ class TestHeartbeat:
                 stage=TaskStatus.TRANSCRIBING,
                 heartbeat_at=_now() - timedelta(seconds=10),  # 10s 前, 但 stale timeout=120s
                 claimed_by="worker-1",
-                idempotency_key="100:transcribing",
             )
             db.add(task)
             db.flush()
             tid = task.id
 
-        _recover_stale()
+        recover_stale()
 
         with get_session() as db:
             t = db.get(SegmentTask, tid)
@@ -357,9 +350,9 @@ class TestHeartbeat:
 
     def test_expired_heartbeat_triggers_stale_recovery(self, test_db) -> None:
         """心跳超时 → 进入 stale 恢复。"""
-        from app.db.models import SegmentTask, TaskStatus
+        from app.db.entities import SegmentTask, TaskStatus
         from app.db.session import get_session
-        from app.pipeline.task_worker import _recover_stale
+        from app.pipeline.stale_recovery import recover_stale
 
         with get_session() as db:
             task = SegmentTask(
@@ -369,13 +362,12 @@ class TestHeartbeat:
                 heartbeat_at=_now() - timedelta(seconds=200),  # 远超 120s
                 claimed_by="worker-old",
                 failed_stage=TaskStatus.RENDERING,
-                idempotency_key="101:rendering",
             )
             db.add(task)
             db.flush()
             tid = task.id
 
-        _recover_stale()
+        recover_stale()
 
         with get_session() as db:
             t = db.get(SegmentTask, tid)
@@ -392,22 +384,23 @@ class TestStatusMachine:
     """状态转换矩阵。"""
 
     def test_can_transition_rejects_illegal(self) -> None:
-        from app.pipeline.task_worker import TaskStatus, _can_transition
+        from app.db.entities import TaskStatus
+        from app.pipeline.stage_result import can_transition
 
-        assert not _can_transition(TaskStatus.COMPLETED, TaskStatus.TRANSCRIBING)
-        assert not _can_transition(TaskStatus.AWAITING_REVIEW, TaskStatus.TRANSCRIBED)
-        assert _can_transition(TaskStatus.RECORDED, TaskStatus.QUEUED_FOR_TRANS)
-        assert _can_transition(TaskStatus.AWAITING_REVIEW, TaskStatus.APPROVED)
-        assert not _can_transition(TaskStatus.APPROVED, TaskStatus.COMPLETED)  # V0.1.12.5: 不再直接跳转
-        assert _can_transition(TaskStatus.APPROVED, TaskStatus.QUEUED_FOR_RENDER)
-        assert _can_transition(TaskStatus.RENDERING, TaskStatus.RENDERED)
-        assert _can_transition(TaskStatus.RENDERED, TaskStatus.QUEUED_FOR_PUBLISH)
+        assert not can_transition(TaskStatus.COMPLETED, TaskStatus.TRANSCRIBING)
+        assert not can_transition(TaskStatus.AWAITING_REVIEW, TaskStatus.TRANSCRIBED)
+        assert can_transition(TaskStatus.RECORDED, TaskStatus.QUEUED_FOR_TRANS)
+        assert can_transition(TaskStatus.AWAITING_REVIEW, TaskStatus.APPROVED)
+        assert not can_transition(TaskStatus.APPROVED, TaskStatus.COMPLETED)  # V0.1.12.5: 不再直接跳转
+        assert can_transition(TaskStatus.APPROVED, TaskStatus.QUEUED_FOR_RENDER)
+        assert can_transition(TaskStatus.RENDERING, TaskStatus.RENDERED)
+        assert can_transition(TaskStatus.RENDERED, TaskStatus.QUEUED_FOR_PUBLISH)
 
     def test_enqueue_next_resets_attempts(self, test_db) -> None:
         """enqueue_next 重置 attempts=0。"""
-        from app.db.models import SegmentTask, TaskStatus
+        from app.db.entities import SegmentTask, TaskStatus
         from app.db.session import get_session
-        from app.pipeline.task_worker import enqueue_next
+        from app.pipeline.stage_result import enqueue_next
 
         with get_session() as db:
             task = SegmentTask(
@@ -416,7 +409,6 @@ class TestStatusMachine:
                 stage=TaskStatus.RECORDED,
                 attempts=3,
                 last_error="old error",
-                idempotency_key="200:recorded",
             )
             db.add(task)
             db.flush()
@@ -441,7 +433,7 @@ class TestUniqueConstraints:
         """重复 pipeline_key 应被数据库拒绝 (V0.1.12.5)。"""
         from sqlalchemy.exc import IntegrityError
 
-        from app.db.models import SegmentTask, TaskStatus
+        from app.db.entities import SegmentTask, TaskStatus
         from app.db.session import get_session
 
         with get_session() as db:
@@ -451,7 +443,6 @@ class TestUniqueConstraints:
                 stage=TaskStatus.RECORDED,
                 pipeline_key="pipeline:300",
                 stage_key="stage:300:recorded",
-                idempotency_key="300:recorded",
             )
             db.add(t1)
             db.flush()  # OK
@@ -462,7 +453,6 @@ class TestUniqueConstraints:
                 stage=TaskStatus.RECORDED,
                 pipeline_key="pipeline:300",  # 与 t1 的 pipeline_key 重复
                 stage_key="stage:301:recorded",
-                idempotency_key="301:recorded",
             )
             db.add(t2)
             with pytest.raises(IntegrityError):
@@ -473,7 +463,7 @@ class TestUniqueConstraints:
         """重复 segment_id 应被数据库拒绝 (V0.1.12.5)。"""
         from sqlalchemy.exc import IntegrityError
 
-        from app.db.models import SegmentTask, TaskStatus
+        from app.db.entities import SegmentTask, TaskStatus
         from app.db.session import get_session
 
         with get_session() as db:
@@ -483,7 +473,6 @@ class TestUniqueConstraints:
                 stage=TaskStatus.RECORDED,
                 pipeline_key="pipeline:400",
                 stage_key="stage:400:recorded",
-                idempotency_key="400:recorded",
             )
             db.add(t1)
             db.flush()  # OK
@@ -494,7 +483,6 @@ class TestUniqueConstraints:
                 stage=TaskStatus.RECORDED,
                 pipeline_key="pipeline:401",
                 stage_key="stage:401:recorded",
-                idempotency_key="401:recorded",
             )
             db.add(t2)
             with pytest.raises(IntegrityError):
@@ -503,7 +491,7 @@ class TestUniqueConstraints:
 
     def test_create_task_idempotent(self, test_db) -> None:
         """create_task 对同一 segment 只创建一次。"""
-        from app.db.models import RawSegment
+        from app.db.entities import RawSegment
         from app.db.session import get_session
         from app.pipeline.task_worker import create_task
 
@@ -514,52 +502,6 @@ class TestUniqueConstraints:
         assert first is not None
         second = create_task(400, 1)
         assert second is None  # 幂等
-
-    def test_ensure_event_creates_once(self, test_db) -> None:
-        """_ensure_event 同一 candidate 只创建一次 Event。"""
-        from app.db.models import HighlightCandidate
-        from app.db.session import get_session
-        from app.pipeline.task_worker import _ensure_event
-
-        with get_session() as db:
-            cand = HighlightCandidate(
-                id=600,
-                session_id=1,
-                peak_ts=_now(),
-                start_ts=_now(),
-                end_ts=_now(),
-                highlight_score=0.8,
-            )
-            db.add(cand)
-
-        eid1 = _ensure_event(600)
-        assert eid1 is not None
-        eid2 = _ensure_event(600)
-        assert eid1 == eid2  # 幂等
-
-    def test_event_id_different_from_candidate_id(self, test_db) -> None:
-        """Event.id != Candidate.id。"""
-        from app.db.models import HighlightCandidate
-        from app.db.session import get_session
-
-        with get_session() as db:
-            cand = HighlightCandidate(
-                id=601,
-                session_id=1,
-                peak_ts=_now(),
-                start_ts=_now(),
-                end_ts=_now(),
-                highlight_score=0.7,
-            )
-            db.add(cand)
-            db.flush()
-
-        from app.pipeline.task_worker import _ensure_event
-
-        eid = _ensure_event(601)
-        assert eid is not None
-        # 确认不是同一个 ID (虽然 SQLite 自增可能碰巧, 但不应该被设计成相同)
-        assert eid != 601 or eid == 1  # 如果是 1 说明是第一个 Event
 
 
 # ═══════════════════════════════════════════════════
@@ -572,7 +514,7 @@ class TestRetry:
 
     def test_retry_from_rendering_goes_to_render_queue(self, test_db) -> None:
         """渲染失败后重试 → queued_for_render。"""
-        from app.db.models import SegmentTask, TaskStatus
+        from app.db.entities import SegmentTask, TaskStatus
         from app.db.session import get_session
         from app.pipeline.task_worker import retry_task
 
@@ -583,7 +525,6 @@ class TestRetry:
                 stage=TaskStatus.FAILED,
                 failed_stage=TaskStatus.RENDERING,
                 attempts=2,
-                idempotency_key="500:failed",
             )
             db.add(task)
             db.flush()
@@ -599,16 +540,15 @@ class TestRetry:
 
     def test_mark_failed_records_failed_stage(self, test_db) -> None:
         """mark_failed 记录 failed_stage。"""
-        from app.db.models import SegmentTask, TaskStatus
+        from app.db.entities import SegmentTask, TaskStatus
         from app.db.session import get_session
-        from app.pipeline.task_worker import mark_failed
+        from app.pipeline.stage_result import mark_failed
 
         with get_session() as db:
             task = SegmentTask(
                 segment_id=501,
                 session_id=1,
                 stage=TaskStatus.RENDERING,
-                idempotency_key="501:rendering",
             )
             db.add(task)
             db.flush()
@@ -656,12 +596,12 @@ class TestASRFallback:
 
 
 # ═══════════════════════════════════════════════════
-# 数据迁移
+# 当前数据库 Schema
 # ═══════════════════════════════════════════════════
 
 
-class TestDataMigration:
-    """版本化迁移。"""
+class TestStrictSchema:
+    """当前 Schema 严格校验入口。"""
 
     def test_schema_module_loadable(self) -> None:
         """Schema 校验模块可正常导入。"""

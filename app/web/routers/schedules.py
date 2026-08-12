@@ -5,13 +5,15 @@ from __future__ import annotations
 from typing import Any
 
 from fastapi import APIRouter, HTTPException
-from pydantic import BaseModel
+from pydantic import BaseModel, ConfigDict
 
 from app.web import service
 
 
 class ScheduleRequest(BaseModel):
     """录制预约请求体。"""
+
+    model_config = ConfigDict(extra="forbid")
 
     room_id: int
     scheduled_at: str

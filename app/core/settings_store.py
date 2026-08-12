@@ -7,7 +7,7 @@
 
 from __future__ import annotations
 
-from app.db.models import AppSetting
+from app.db.entities import AppSetting
 from app.db.session import get_session
 
 # 运行时开关默认值(全部保守:不自动、不启用 biliup)。
@@ -49,7 +49,7 @@ def set_setting(key: str, value: str) -> None:
     :param key: 设置键。
     :param value: 设置值(字符串)。
     """
-    from app.db.models import utcnow
+    from app.db.entities import utcnow
 
     with get_session() as db:
         row = db.get(AppSetting, key)

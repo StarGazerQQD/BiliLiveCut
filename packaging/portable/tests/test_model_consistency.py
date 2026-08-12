@@ -139,11 +139,14 @@ class TestModelCatalogSingleSource:
             (subdir / "model.bin").write_bytes(b"fixture")
 
         errors = validate_prepared_models(tmp_path)
-        assert any("campplus" in error for error in errors)
+        assert any("removed sub-model directory present: cam++" in error for error in errors)
 
     def test_fixture_uses_current_submodel_and_component_layout(self, tmp_path: Path) -> None:
         from blc_portable.engine_pack.builder import build_fixture
 
         build_fixture(tmp_path)
-        assert (tmp_path / "models" / "paraformer" / "campplus" / "model_metadata.json").is_file()
+        assert (tmp_path / "models" / "paraformer" / "fsmn-vad" / "model_metadata.json").is_file()
+        assert (tmp_path / "models" / "paraformer" / "ct-punc" / "model_metadata.json").is_file()
+        assert not (tmp_path / "models" / "paraformer" / "campplus").exists()
+        assert not (tmp_path / "models" / "paraformer" / "cam++").exists()
         assert (tmp_path / "models" / "funasr_nano" / "Qwen3-0.6B" / "component_metadata.json").is_file()

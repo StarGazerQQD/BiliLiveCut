@@ -14,9 +14,10 @@ from datetime import datetime
 from loguru import logger
 
 from app.analysis.highlight import score_segment
-from app.analysis.transcribe import TranscriberBackend, transcribe_segment
+from app.analysis.transcription.models import TranscriberBackend
+from app.analysis.transcription.pipeline import transcribe_segment
 from app.core.config import settings
-from app.db.models import FinalClip, HighlightCandidate, RawSegment
+from app.db.entities import FinalClip, HighlightCandidate, RawSegment
 
 
 def process_segment_sync(
@@ -51,7 +52,7 @@ def _read_room_config(room_id: int | None) -> dict:
             "auto_approve_threshold": settings.highlight_auto_approve_threshold,
             "review_threshold": settings.highlight_review_threshold,
         }
-    from app.db.models import LiveRoom
+    from app.db.entities import LiveRoom
     from app.db.session import get_session as _gs
 
     with _gs() as _db:

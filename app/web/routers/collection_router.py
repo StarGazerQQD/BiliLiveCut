@@ -7,7 +7,7 @@ from pathlib import Path
 from fastapi import APIRouter, HTTPException, Request
 from fastapi.responses import HTMLResponse
 from fastapi.templating import Jinja2Templates
-from pydantic import BaseModel
+from pydantic import BaseModel, ConfigDict
 
 collection_router = APIRouter(prefix="/collection", tags=["collection"])
 
@@ -15,12 +15,16 @@ collection_router = APIRouter(prefix="/collection", tags=["collection"])
 class ReorderEventsRequest(BaseModel):
     """重排事件请求。"""
 
+    model_config = ConfigDict(extra="forbid")
+
     event_ids: list[int]
     chapter_titles: dict[str, str] | None = None
 
 
 class RenderCollectionRequest(BaseModel):
     """渲染合集请求。"""
+
+    model_config = ConfigDict(extra="forbid")
 
     event_ids: list[int]
     chapter_titles: list[str] | None = None

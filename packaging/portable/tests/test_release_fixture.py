@@ -1,4 +1,4 @@
-"""Release fixture isolation tests (V0.1.16)."""
+"""Release fixture isolation tests (V0.1.17.3 Alpha)."""
 
 from __future__ import annotations
 
@@ -63,18 +63,19 @@ def test_release_tag_is_exact_and_matches_project_version() -> None:
     assert "complete release version pattern" in content
     assert "PROJECT_VERSION=" in content
     assert 'TAG_VERSION="${TAG_INPUT#v}"' in content
-    assert 'NORMALIZED_TAG_VERSION="${TAG_VERSION,,}"' in content
-    assert 'if [ "$NORMALIZED_TAG_VERSION" != "${PROJECT_VERSION,,}" ]' in content
+    assert "NORMALIZED_TAG_VERSION" not in content
+    assert 'if [ "$TAG_VERSION" != "$PROJECT_VERSION" ]' in content
 
 
-def test_release_title_case_prerelease_tag_remains_prerelease() -> None:
-    """历史 -Alpha 标签通过校验后仍必须创建为 GitHub prerelease。"""
+def test_release_only_accepts_canonical_lowercase_prerelease_tag() -> None:
+    """当前 Alpha 标签必须使用版本真源规定的小写预发布后缀。"""
     release_yml = _PROJ_ROOT / ".github" / "workflows" / "release.yml"
     content = release_yml.read_text(encoding="utf-8")
 
-    assert 'if [[ "$NORMALIZED_TAG_VERSION" =~ -(alpha|beta|rc)' in content
+    assert 'if [[ "$TAG_VERSION" =~ -(alpha|beta|rc)' in content
     assert 'echo "prerelease=$PRERELEASE"' in content
     assert "prerelease: ${{ steps.tag.outputs.prerelease == 'true' }}" in content
+    assert "NORMALIZED_TAG_VERSION" not in content
     assert "contains(steps.tag.outputs.tag, 'alpha')" not in content
 
 
@@ -106,6 +107,11 @@ def test_release_workflow_never_builds_fixture_artifacts() -> None:
     content = release_yml.read_text(encoding="utf-8")
     assert "BLC_FIXTURE_BUILD" not in content
     assert "BLC_CI_BUILD" not in content
+
+    full_builder = (_PROJ_ROOT / "packaging" / "portable" / "src" / "blc_portable" / "builders" / "full.py").read_text(
+        encoding="utf-8"
+    )
+    assert "BLC_CI_BUILD" not in full_builder
 
 
 def test_release_workflow_explicitly_omits_undistributed_engine_pack() -> None:

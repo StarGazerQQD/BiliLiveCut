@@ -18,7 +18,7 @@ from app.core.config import settings
 from app.core.cookie import get_bilibili_cookie
 from app.core.osutil import open_path
 from app.core.paths import clips_dir, ready_to_upload_dir
-from app.db.models import (
+from app.db.entities import (
     HighlightCandidate,
     HighlightEvent,
     LiveRoom,
@@ -599,7 +599,7 @@ class RoomUpdateConflictError(ValueError):
 
 
 def update_room(db_id: int, fields: dict[str, Any]) -> LiveRoom:
-    """更新直播间的可调参数(阈值、模式、授权等)。
+    """更新直播间的可调参数(阈值、开关、授权等)。
 
     仅允许更新白名单字段,避免越权写入。
 
@@ -610,7 +610,6 @@ def update_room(db_id: int, fields: dict[str, Any]) -> LiveRoom:
     :raises RoomUpdateConflictError: 录制中尝试修改锁定字段时。
     """
     allowed = {
-        "mode",
         "highlight_threshold",
         "auto_publish_threshold",
         "authorized",
@@ -674,7 +673,7 @@ async def auto_recover_interrupted_sessions() -> list[int]:
     """
     from datetime import timedelta
 
-    from app.db.models import utcnow
+    from app.db.entities import utcnow
 
     cutoff = utcnow() - timedelta(hours=settings.auto_recover_max_age_hours)
     with get_session() as db:

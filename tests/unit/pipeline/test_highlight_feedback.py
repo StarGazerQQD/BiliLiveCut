@@ -8,7 +8,7 @@ from typing import TYPE_CHECKING
 
 import pytest
 
-from app.db.models import (
+from app.db.entities import (
     HighlightCandidate,
     HighlightEvent,
     LiveRoom,
@@ -68,6 +68,7 @@ def _seed_plugin_candidate(*, valid_metadata: bool = True) -> int:
             end_ts=segment.end_ts,
             highlight_score=0.9,
             features_json=json.dumps(metadata),
+            dedup_hash=f"highlight-feedback-{recording.id}-{valid_metadata}",
         )
         db.add(candidate)
         db.flush()

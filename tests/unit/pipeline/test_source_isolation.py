@@ -7,7 +7,7 @@ import pytest
 
 def test_create_task_rejects_missing_or_cross_session_segment(temp_db: None) -> None:
     """任务只能绑定已存在且属于同会话的原始分段。"""
-    from app.db.models import RawSegment
+    from app.db.entities import RawSegment
     from app.db.session import get_session
     from app.pipeline.task_worker import create_task
 

@@ -75,7 +75,7 @@ def _db_sink(message: object) -> None:
     try:
         record = message.record  # type: ignore[attr-defined]
         # 延迟导入,规避循环依赖(db -> logging)。
-        from app.db.models import SystemLog
+        from app.db.entities import SystemLog
         from app.db.session import get_session
 
         with get_session() as db:

@@ -228,17 +228,16 @@ def check_ci_bypass(audit: AuditResult) -> None:
         audit.check(
             "release.yml tag 与项目版本严格匹配",
             "PROJECT_VERSION=" in content
-            and 'NORMALIZED_TAG_VERSION="${TAG_VERSION,,}"' in content
-            and 'if [ "$NORMALIZED_TAG_VERSION" != "${PROJECT_VERSION,,}" ]' in content
+            and 'if [ "$TAG_VERSION" != "$PROJECT_VERSION" ]' in content
             and "complete release version pattern" in content,
             "tag 必须完整匹配版本语法并等于项目版本真源",
         )
         audit.check(
-            "release.yml 预发布标签大小写兼容",
-            'if [[ "$NORMALIZED_TAG_VERSION" =~ -(alpha|beta|rc)' in content
+            "release.yml 预发布标签严格使用当前小写格式",
+            'if [[ "$TAG_VERSION" =~ -(alpha|beta|rc)' in content
             and 'echo "prerelease=$PRERELEASE"' in content
             and "prerelease: ${{ steps.tag.outputs.prerelease == 'true' }}" in content,
-            "历史 -Alpha/-Beta/-RC 标签必须保持 GitHub prerelease 属性",
+            "预发布标签必须使用当前小写格式并保持 GitHub prerelease 属性",
         )
         audit.check(
             "release.yml FFmpeg 下载具备重试与备用源",
@@ -466,10 +465,8 @@ def check_engine_pack_metadata(audit: AuditResult) -> None:
     ):
         audit.check(
             f"engine_pack_info.{field}",
-            field in info or "manifest_sha256" in info,
-            ""
-            if (field in info or (field == "content_manifest_sha256" and "manifest_sha256" in info))
-            else f"缺少字段 '{field}'",
+            field in info,
+            "" if field in info else f"缺少字段 '{field}'",
         )
 
     audit.check("engine_pack_info.crc32 non-empty", bool(info.get("crc32", "")), "CRC32 为空 — 正式构建必须失败")
@@ -490,9 +487,9 @@ def check_engine_pack_metadata(audit: AuditResult) -> None:
             f"artifact_class={artifact_class} — 必须为 'production' 或 'fixture'",
         )
     audit.check(
-        "engine_pack_info.format_version >= 4",
-        info.get("format_version", 0) >= 4,
-        f"format_version={info.get('format_version', 0)} — 需 >= 4",
+        "engine_pack_info.format_version == 5",
+        info.get("format_version") == 5,
+        f"format_version={info.get('format_version')} — 当前版本必须为 5",
     )
     model_lock_path = REPO_ROOT / "packaging" / "portable" / "config" / "model_sources.lock.json"
     expected_model_lock_sha = compute_model_lock_sha256(model_lock_path) if model_lock_path.is_file() else ""

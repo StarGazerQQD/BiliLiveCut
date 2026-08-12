@@ -12,7 +12,7 @@ from __future__ import annotations
 from sqlmodel import select
 
 from app.core.config import settings
-from app.db.models import HighlightCandidate, LiveRoom, RecordingSession, ReviewStatus, ThresholdFeedback
+from app.db.entities import HighlightCandidate, LiveRoom, RecordingSession, ReviewStatus, ThresholdFeedback
 from app.db.session import get_session
 
 
@@ -238,7 +238,7 @@ def _current_threshold(room_id: int) -> float:
 
 
 def _scalar_score(value: object) -> float:
-    """兼容 SQLModel 单列查询返回标量或 Row 的不同版本。"""
+    """把当前 SQLModel 单列查询结果转换为浮点数。"""
     if isinstance(value, (float, int)):
         return float(value)
     try:
@@ -248,8 +248,8 @@ def _scalar_score(value: object) -> float:
 
 
 def _feedback_action(decision: str) -> str | None:
-    if decision in ReviewStatus.POSITIVE or decision == "approved":
+    if decision in ReviewStatus.POSITIVE:
         return "approved"
-    if decision in {ReviewStatus.REJECTED, ReviewStatus.NOT_EXCITING, "rejected"}:
+    if decision in {ReviewStatus.REJECTED, ReviewStatus.NOT_EXCITING}:
         return "rejected"
     return None

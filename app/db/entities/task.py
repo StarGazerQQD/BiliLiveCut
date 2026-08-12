@@ -50,11 +50,6 @@ class SegmentTask(SQLModel, table=True):
         default=None, index=True, description="阶段级幂等键(stage:{segment_id}:{stage}:{config_hash}),防阶段内重复"
     )
 
-    # 后向兼容: 保留旧 idempotency_key 直到迁移完成
-    idempotency_key: str | None = Field(
-        default=None, index=True, description="[已废弃]旧幂等键,迁移到 pipeline_key + stage_key"
-    )  # noqa: E501
-
     attempts: int = Field(default=0, description="当前阶段已尝试次数")
     max_retries: int = Field(default=5, description="当前阶段最大重试次数(默认5)")
     next_retry_at: datetime | None = Field(default=None, description="下次重试时间(指数退避,含随机抖动)")

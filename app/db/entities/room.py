@@ -6,7 +6,7 @@ from datetime import datetime
 
 from sqlmodel import Field, SQLModel
 
-from app.db.entities.base import RoomMode, SessionStatus, utcnow
+from app.db.entities.base import SessionStatus, utcnow
 
 
 class LiveRoom(SQLModel, table=True):
@@ -20,16 +20,12 @@ class LiveRoom(SQLModel, table=True):
     room_id: int | None = Field(default=None, index=True, description="归一化后的真实房间号")
     uploader_name: str | None = Field(default=None, description="主播名")
     title: str | None = Field(default=None, description="直播间标题")
-    mode: str = Field(
-        default=RoomMode.MANUAL, description="[已废弃 V0.1.6]审核模式:manual/semi/auto;请改用 auto_* 开关"
-    )  # noqa: E501
-    # 保留历史模型默认值以维持 Schema 指纹；正式创建入口会显式写入当前推荐值。
     highlight_threshold: float = Field(default=0.65, description="进入候选池的综合评分阈值")
     auto_publish_threshold: float = Field(default=0.85, description="自动发布阈值")
     enabled: bool = Field(default=False, description="是否启用监控/录制")
     authorized: bool = Field(default=False, description="是否已确认拥有录制授权(合规闸)")
 
-    # V0.1.6: 独立自动化开关(替代旧 mode)。
+    # 独立自动化开关。
     auto_record: bool = Field(default=False, description="是否允许自动开始录制")
     auto_analyze: bool = Field(default=False, description="是否自动执行转写+高光分析")
     auto_render: bool = Field(default=False, description="是否自动生成切片成品")

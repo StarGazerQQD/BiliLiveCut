@@ -4,6 +4,8 @@ from __future__ import annotations
 
 import json
 
+import pytest
+
 from app.analysis.transcript_windows import extract_transcript_window
 
 
@@ -31,7 +33,7 @@ def test_extract_transcript_window_uses_word_timestamps() -> None:
 
 
 def test_extract_transcript_window_falls_back_to_proportional_slice() -> None:
-    """旧转写没有词级时间戳时仍不得返回整段后续正文。"""
+    """当前引擎没有词级时间戳时仍不得返回整段后续正文。"""
     result = extract_transcript_window(
         "甲乙丙丁戊己庚辛壬癸",
         None,
@@ -61,3 +63,15 @@ def test_extract_transcript_window_keeps_precise_empty_window_empty() -> None:
     assert result.text == ""
     assert result.precise is True
     assert result.words == []
+
+
+def test_extract_transcript_window_rejects_old_word_field() -> None:
+    """旧 word 字段不得被当作当前 w 字段继续读取。"""
+    with pytest.raises(ValueError, match="w/start/end"):
+        extract_transcript_window(
+            "旧字段",
+            json.dumps([{"word": "旧字段", "start": 0, "end": 1}], ensure_ascii=False),
+            start_s=0,
+            end_s=1,
+            duration_s=1,
+        )

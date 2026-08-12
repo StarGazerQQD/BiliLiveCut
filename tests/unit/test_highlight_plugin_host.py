@@ -8,7 +8,7 @@ import pytest
 
 from app.analysis.audio import AudioFeatures
 from app.analysis.room_config import merge_room_config
-from app.db.models import Danmaku, LiveRoom, RawSegment, RecordingSession, Transcript
+from app.db.entities import Danmaku, LiveRoom, RawSegment, RecordingSession, Transcript
 from app.db.session import get_session
 from app.pipeline.highlight_plugins import build_highlight_scoring_request
 
@@ -16,11 +16,8 @@ from app.pipeline.highlight_plugins import build_highlight_scoring_request
 def test_host_builds_complete_highlight_request_without_exposing_orm(temp_db: None) -> None:
     started_at = datetime(2026, 1, 2, 12, 0, 0)
     with get_session() as db:
-        room = LiveRoom(
-            input_url="https://live.bilibili.com/123",
-            room_id=123,
-            room_config_json=json.dumps({"highlight_scorer_mode": "shadow"}),
-        )
+        room = LiveRoom(input_url="https://live.bilibili.com/123", room_id=123)
+        room.room_config_json = json.dumps(merge_room_config(room, {"highlight_scorer_mode": "shadow"}))
         db.add(room)
         db.flush()
         assert room.id is not None
@@ -42,11 +39,10 @@ def test_host_builds_complete_highlight_request_without_exposing_orm(temp_db: No
         db.add(
             Transcript(
                 segment_id=segment.id,
-                text="高光测试",
+                final_text="高光测试",
                 words_json=json.dumps(
                     [
                         {"w": "高光", "start": 0.0, "end": 0.8},
-                        {"w": "无效", "start": 2.0, "end": 1.0},
                     ]
                 ),
                 avg_logprob=-0.2,
@@ -100,6 +96,49 @@ def test_host_builds_complete_highlight_request_without_exposing_orm(temp_db: No
     assert request.audio is not None
     assert request.audio.rms_peak == 1.0
     assert request.audio.silence_ratio == 0.1
+
+
+def test_host_rejects_non_current_word_timestamp_fields(temp_db: None) -> None:
+    """ASR 词时间戳只接受 w/start/end，不读取旧 word 字段。"""
+    started_at = datetime(2026, 1, 2, 12, 0, 0)
+    with get_session() as db:
+        room = LiveRoom(input_url="https://live.bilibili.com/456", room_id=456)
+        db.add(room)
+        db.flush()
+        recording = RecordingSession(room_id=room.id, started_at=started_at)
+        db.add(recording)
+        db.flush()
+        segment = RawSegment(
+            session_id=recording.id,
+            seq=0,
+            file_path="segment.mp4",
+            start_ts=started_at,
+            end_ts=started_at + timedelta(seconds=30),
+            duration_s=30.0,
+        )
+        db.add(segment)
+        db.flush()
+        db.add(
+            Transcript(
+                segment_id=segment.id,
+                final_text="旧字段",
+                words_json=json.dumps([{"word": "旧字段", "start": 0.0, "end": 1.0}]),
+            )
+        )
+        db.flush()
+        segment_id = segment.id
+    assert segment_id is not None
+    audio = AudioFeatures(
+        sample_rate=16000,
+        hop_s=0.1,
+        times=np.asarray([0.0]),
+        rms=np.asarray([0.2]),
+        duration_s=30.0,
+        silences=[],
+    )
+
+    with pytest.raises(ValueError, match="w/start/end"):
+        build_highlight_scoring_request(segment_id, audio_features=audio, rule_score=0.1)
 
 
 def test_room_config_rejects_invalid_highlight_scorer_mode(temp_db: None) -> None:

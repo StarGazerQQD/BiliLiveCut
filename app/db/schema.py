@@ -1,10 +1,10 @@
-"""轻量 Schema 管理与校验。
+"""当前数据库 Schema 的创建与严格校验。
 
-替代旧的版本化迁移框架。核心原则:
+核心原则:
 
 * Alpha 阶段不兼容旧数据库时拒绝启动, 不自动迁移;
 * Schema 由当前 SQLModel/SQLAlchemy 模型确定性创建;
-* 使用 SHA-256 指纹 + 版本号双重验证兼容性;
+* 使用 SHA-256 指纹 + 版本号双重验证一致性;
 * 数据库不存在时创建; 存在的数据库校验通过后启动;
 * 任何校验失败均阻止应用启动。
 
@@ -38,7 +38,7 @@ def _get_settings():
 
 # ── 常量 ──────────────────────────────────────────────────
 
-CURRENT_SCHEMA_VERSION = 2  # V0.1.14.11: Added UploadTask/UploadAttempt FKs
+CURRENT_SCHEMA_VERSION = 4
 
 # ── Schema 元信息表 ──────────────────────────────────────
 
@@ -70,7 +70,7 @@ def compute_schema_fingerprint() -> str:
 
     :returns: SHA-256 十六进制字符串。
     """
-    from app.db import models  # noqa: F401 — 确保所有模型已注册
+    from app.db import entities  # noqa: F401 — 确保所有模型已注册
 
     tables_info: dict[str, dict] = {}
 
@@ -241,7 +241,7 @@ def create_schema(db: Session) -> None:
 
     :param db: 活动的数据库会话。
     """
-    from app.db import models  # noqa: F401
+    from app.db import entities  # noqa: F401
 
     # 创建全部表
     SQLModel.metadata.create_all(_get_engine())
@@ -271,7 +271,7 @@ def create_schema(db: Session) -> None:
 
 
 def validate_schema() -> bool:
-    """校验当前数据库 Schema 是否与程序兼容。
+    """校验数据库是否精确符合当前程序 Schema。
 
     校验项:
     1. schema_meta 表存在
@@ -282,7 +282,7 @@ def validate_schema() -> bool:
     6. 外键约束开启
     7. PRAGMA integrity_check 通过
 
-    :returns: True 表示兼容可启动; False 表示应拒绝启动。
+    :returns: True 表示可启动；False 表示应拒绝启动。
     """
     try:
         # 1. 检查 schema_meta 是否存在
@@ -291,7 +291,7 @@ def validate_schema() -> bool:
                 "SELECT name FROM sqlite_master WHERE type='table' AND name='schema_meta'"
             ).fetchone()
             if not table_check:
-                logger.error("数据库缺少 schema_meta 表 (可能来自旧版本)")
+                logger.error("数据库缺少当前版本要求的 schema_meta 表")
                 return False
 
         # 2. 读取元信息
@@ -303,6 +303,7 @@ def validate_schema() -> bool:
 
             stored_version = meta.schema_version
             stored_fingerprint = meta.schema_fingerprint
+            stored_app_version = meta.app_version
 
         # 3. 版本比较
         if stored_version != CURRENT_SCHEMA_VERSION:
@@ -310,6 +311,15 @@ def validate_schema() -> bool:
                 "Schema 版本不匹配: 数据库={} 程序={}",
                 stored_version,
                 CURRENT_SCHEMA_VERSION,
+            )
+            return False
+
+        current_app_version = _app_version_str()
+        if stored_app_version != current_app_version:
+            logger.error(
+                "数据库应用版本不匹配: 数据库={} 程序={}",
+                stored_app_version,
+                current_app_version,
             )
             return False
 
@@ -340,12 +350,11 @@ def validate_schema() -> bool:
                 logger.error("数据库完整性检查失败: {}", result[0])
                 return False
 
-        # 8. V0.1.13: 验证实际数据库中存在所有预期表/列 (结构化比较)
+        # 8. 验证实际数据库与当前模型具有完全一致的表和列
         actual_fp = compute_actual_schema_fingerprint()
-        # 不直接比较不同计算方式的指纹, 而是确保实际 DB 包含所有预期结构
         ok, msg = _verify_actual_structure()
         if not ok:
-            logger.error("实际数据库结构不完整: {}", msg)
+            logger.error("实际数据库结构不匹配: {}", msg)
             return False
 
         logger.info(
@@ -442,43 +451,67 @@ def _stored_version() -> int:
 
 
 def _verify_critical_indexes() -> bool:
-    """校验关键唯一索引存在。
+    """按精确列集合校验当前 Schema 的全部关键唯一约束。
 
-    - 单列唯一/索引: 按 SQLAlchemy 自动生成的索引名后缀匹配。
-    - 复合唯一约束: SQLite 使用 sqlite_autoindex_<table>_<n> 命名, 检查其存在即可。
+    SQLite 会为表级 ``UniqueConstraint`` 生成不稳定的自动索引名，因此这里只
+    比较约束的唯一性和列集合，不依赖索引名，也不接受“同表任意唯一索引”冒充
+    当前业务约束。
 
-    :returns: True 表示全部关键索引存在。
+    :returns: True 表示全部关键唯一约束精确存在。
     """
-    single_col = [
-        ("segment_tasks", "segment_id", "SegmentTask.segment_id 唯一"),
-        ("highlight_events", "candidate_id", "HighlightEvent.candidate_id 唯一"),
-        ("transcripts", "segment_id", "Transcript.segment_id 索引"),
-    ]
-    composite = [
-        ("highlight_candidates", "HighlightCandidate(dedup_hash) 唯一"),
-        ("highlight_topics", "HighlightTopic(event_id, topic_id) 唯一"),
-        ("upload_tasks", "UploadTask(clip_id, uploader) 唯一"),
-        ("clip_variants", "ClipVariant 三维唯一"),
-    ]
+    expected_unique = {
+        "segment_tasks": {
+            frozenset({"segment_id"}): "SegmentTask.segment_id 唯一",
+            frozenset({"pipeline_key"}): "SegmentTask.pipeline_key 唯一",
+        },
+        "highlight_candidates": {
+            frozenset({"dedup_hash"}): "HighlightCandidate.dedup_hash 唯一",
+        },
+        "highlight_events": {
+            frozenset({"candidate_id"}): "HighlightEvent.candidate_id 唯一",
+        },
+        "transcripts": {
+            frozenset({"segment_id"}): "Transcript.segment_id 唯一",
+        },
+        "highlight_topics": {
+            frozenset({"event_id", "topic_id"}): "HighlightTopic(event_id, topic_id) 唯一",
+        },
+        "upload_tasks": {
+            frozenset({"clip_id", "uploader"}): "UploadTask(clip_id, uploader) 唯一",
+        },
+        "upload_attempts": {
+            frozenset({"upload_task_id", "publish_generation"}): (
+                "UploadAttempt(upload_task_id, publish_generation) 唯一"
+            ),
+        },
+        "clip_variants": {
+            frozenset({"event_id", "variant_type", "render_config_hash"}): "ClipVariant 三维唯一",
+        },
+    }
 
     all_ok = True
     try:
         with _get_engine().connect() as conn:
-            for table, suffix, desc in single_col:
+            for table, constraints in expected_unique.items():
                 rows = conn.exec_driver_sql(f"PRAGMA index_list('{table}')").fetchall()
-                if not any(suffix in (row[1] or "") for row in rows):
-                    logger.error("关键索引缺失: {} ({})", desc, table)
-                    all_ok = False
-                else:
-                    logger.debug("索引存在: {} ({})", desc, table)
-
-            for table, desc in composite:
-                rows = conn.exec_driver_sql(f"PRAGMA index_list('{table}')").fetchall()
-                if not any((row[1] or "").startswith("sqlite_autoindex_") and row[2] == 1 for row in rows):
-                    logger.error("关键唯一约束缺失: {} ({})", desc, table)
-                    all_ok = False
-                else:
-                    logger.debug("唯一约束存在: {} ({})", desc, table)
+                actual_unique: set[frozenset[str]] = set()
+                for row in rows:
+                    if not bool(row[2]):
+                        continue
+                    index_name = str(row[1])
+                    index_columns = conn.exec_driver_sql(f"PRAGMA index_info('{index_name}')").fetchall()
+                    actual_unique.add(frozenset(str(column[2]) for column in index_columns))
+                for expected_columns, description in constraints.items():
+                    if expected_columns not in actual_unique:
+                        logger.error(
+                            "关键唯一约束缺失: {} table={} columns={}",
+                            description,
+                            table,
+                            sorted(expected_columns),
+                        )
+                        all_ok = False
+                    else:
+                        logger.debug("唯一约束存在: {} ({})", description, table)
     except Exception as exc:
         logger.error("索引验证异常: {}", exc)
         return False
@@ -487,12 +520,12 @@ def _verify_critical_indexes() -> bool:
 
 
 def _verify_actual_structure() -> tuple[bool, str]:
-    """验证实际数据库结构是否包含所有预期表和列 (V0.1.13)。
+    """验证实际数据库与当前模型具有完全一致的表和列。
 
     从 SQLModel metadata 获取预期结构, 与 PRAGMA 读取的实际结构比较。
     不比较 SQLite 自动生成的名字, 只验证表/列/约束的逻辑存在。
 
-    :returns: (ok, error_message) — ok=True 表示实际结构包含所有预期元素。
+    :returns: (ok, error_message) — ok=True 表示实际结构精确匹配。
     """
     try:
         expected = {}  # table -> set of column names
@@ -509,6 +542,9 @@ def _verify_actual_structure() -> tuple[bool, str]:
         missing_tables = set(expected) - actual_tables
         if missing_tables:
             return False, f"缺少表: {missing_tables}"
+        unexpected_tables = actual_tables - set(expected)
+        if unexpected_tables:
+            return False, f"存在未定义表: {unexpected_tables}"
 
         # 检查每个表的列
         with _get_engine().connect() as conn:
@@ -518,6 +554,9 @@ def _verify_actual_structure() -> tuple[bool, str]:
                 missing_cols = expected_cols - actual_cols
                 if missing_cols:
                     return False, f"表 {tname} 缺少列: {missing_cols}"
+                unexpected_cols = actual_cols - expected_cols
+                if unexpected_cols:
+                    return False, f"表 {tname} 存在未定义列: {unexpected_cols}"
 
         return True, "OK"
     except Exception as exc:

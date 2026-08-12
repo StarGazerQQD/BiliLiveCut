@@ -159,7 +159,7 @@ def generate_copywriter_for_topic(topic_id: int) -> dict | None:
     """
     from sqlmodel import select
 
-    from app.db.models import HighlightCandidate, HighlightTopic, Topic
+    from app.db.entities import HighlightCandidate, HighlightTopic, Topic
     from app.db.session import get_session
 
     with get_session() as db:

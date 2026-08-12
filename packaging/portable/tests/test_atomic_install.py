@@ -55,35 +55,43 @@ class TestAtomicInstall:
 
     def test_installed_manifest_write_then_read(self) -> None:
         from blc_portable.engine_pack.installer import (  # noqa: E402
+            _collect_files_info,
             _read_installed_manifest,
             _write_installed_manifest,
         )
+        from blc_portable.engine_pack.manifest import ENGINE_PACK_VERSION, SOURCE_COMMIT_FULL  # noqa: E402
 
         with tempfile.TemporaryDirectory() as tmpdir:
             models_dir = Path(tmpdir) / "models"
             models_dir.mkdir()
-            files_info = {
-                "whisper": {"target_path": "models/whisper", "file_count": 8, "total_size": 1600000000},
-                "paraformer": {"target_path": "models/paraformer", "file_count": 40, "total_size": 1200000000},
-            }
+            for engine_id in ("whisper", "paraformer"):
+                engine_dir = models_dir / engine_id
+                engine_dir.mkdir()
+                (engine_dir / "model.bin").write_bytes(engine_id.encode())
+            files_info = _collect_files_info(models_dir, ["whisper", "paraformer"])
             _write_installed_manifest(
                 models_dir,
-                "0.1.14.9-alpha",
+                ENGINE_PACK_VERSION,
                 ["whisper", "paraformer"],
                 files_info,
-                zip_sha256="abc123",
-                source_commit="92618ef",
+                zip_sha256="a" * 64,
+                source_commit=SOURCE_COMMIT_FULL,
+                installation_source="engine_pack",
             )
             manifest = _read_installed_manifest(models_dir)
             assert manifest is not None
-            assert manifest["engine_pack_version"] == "0.1.14.9-alpha"
-            assert manifest["zip_sha256"] == "abc123"
+            assert manifest["engine_pack_version"] == ENGINE_PACK_VERSION
+            assert manifest["installation_source"] == "engine_pack"
+            assert manifest["zip_sha256"] == "a" * 64
+            assert manifest["source_commit"] == SOURCE_COMMIT_FULL
 
     def test_installed_manifest_version_check(self) -> None:
         from blc_portable.engine_pack.installer import (  # noqa: E402
+            _collect_files_info,
             _write_installed_manifest,
             check_installed_models,
         )
+        from blc_portable.engine_pack.manifest import ENGINE_PACK_VERSION, SOURCE_COMMIT_FULL  # noqa: E402
 
         with tempfile.TemporaryDirectory() as tmpdir:
             models_dir = Path(tmpdir) / "models"
@@ -93,16 +101,19 @@ class TestAtomicInstall:
                 (models_dir / eng / "model.txt").write_text("test")
             _write_installed_manifest(
                 models_dir,
-                "0.1.14.9-alpha",
+                ENGINE_PACK_VERSION,
                 ["whisper", "paraformer", "sensevoice", "funasr_nano"],
-                {
-                    e: {"target_path": f"models/{e}", "file_count": 1, "total_size": 4}
-                    for e in ("whisper", "paraformer", "sensevoice", "funasr_nano")
-                },
+                _collect_files_info(
+                    models_dir,
+                    ["whisper", "paraformer", "sensevoice", "funasr_nano"],
+                ),
+                zip_sha256=None,
+                source_commit=SOURCE_COMMIT_FULL,
+                installation_source="online_download",
             )
-            ok1, _ = check_installed_models(models_dir, "0.1.14.9-alpha")
+            ok1, _ = check_installed_models(models_dir, ENGINE_PACK_VERSION)
             assert ok1
-            ok2, _ = check_installed_models(models_dir, "0.1.14.7-alpha")
+            ok2, _ = check_installed_models(models_dir, "0.1.17.2-alpha")
             assert not ok2
 
     def test_not_installed_returns_false(self) -> None:
@@ -114,6 +125,7 @@ class TestAtomicInstall:
 
     def test_rollback_on_move_failure(self) -> None:
         from blc_portable.engine_pack.installer import install_models_dir_from_staging  # noqa: E402
+        from blc_portable.engine_pack.manifest import ENGINE_PACK_VERSION  # noqa: E402
 
         with tempfile.TemporaryDirectory() as tmpdir:
             app_root = Path(tmpdir)
@@ -129,6 +141,6 @@ class TestAtomicInstall:
             old_content = (models / "old_model.txt").read_text()
             assert old_content == "old"
 
-            result = install_models_dir_from_staging(app_root, staging, "0.1.14.9-alpha", ["whisper"], {})
+            result = install_models_dir_from_staging(app_root, staging, ENGINE_PACK_VERSION, ["whisper"])
             # Should succeed since staging relocation is straightforward
             assert result is True

@@ -157,7 +157,7 @@ def main() -> int:
 
     if not check_rust():
         print("\n  [build_rust] 提示: 无 Rust 环境,跳过编译。")
-        print("  项目将自动使用纯 Python 回退 (_speedups_round2_py)。")
+        print("  项目将自动使用 app.accelerators.python_fallback 的纯 Python 实现。")
         return 1
 
     if not build():

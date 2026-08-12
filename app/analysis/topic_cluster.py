@@ -26,12 +26,12 @@ from collections import Counter
 from loguru import logger
 from sqlmodel import select
 
-from app.analysis.speedups import (
+from app.accelerators.dispatcher import (
     cluster_similarity_matrix,
     fast_char_bigrams,
     fast_cosine_similarity,
 )
-from app.db.models import (
+from app.db.entities import (
     HighlightCandidate,
     HighlightTopic,
     Topic,
@@ -228,7 +228,7 @@ def cluster_candidates(session_id: int) -> list[dict]:
         # 尝试取转写文本:通过时间范围匹配 RawSegment 再关联 Transcript。
         asr_text = ""
         with get_session() as db:
-            from app.db.models import RawSegment, Transcript
+            from app.db.entities import RawSegment, Transcript
 
             for seg in db.exec(
                 select(Transcript).where(

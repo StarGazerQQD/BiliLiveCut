@@ -111,7 +111,6 @@ def collect_trends(topic: str = "") -> list[TrendRecord]:
         raw = llm_mod.call_trend_search(
             prompt,
             max_tokens=4096,
-            max_searches=settings.trend_max_searches,
         )
     else:
         raw = llm_mod.call_text(prompt, max_tokens=4096)

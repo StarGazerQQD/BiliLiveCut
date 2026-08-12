@@ -19,16 +19,19 @@ class Transcript(SQLModel, table=True):
     __tablename__ = "transcripts"
 
     id: int | None = Field(default=None, primary_key=True)
-    segment_id: int = Field(index=True, description="所属 raw_segments.id")
+    segment_id: int = Field(
+        index=True,
+        description="所属 raw_segments.id",
+        sa_column_kwargs={"unique": True},
+    )
     language: str | None = Field(default=None, description="识别语言")
-    text: str = Field(default="", description="转写全文 (兼容; 等同 final_text)")
     words_json: str | None = Field(default=None, description="词级时间戳 JSON: [{w,start,end}]")
     avg_logprob: float | None = Field(default=None, description="平均置信度")
     auxiliary_json: str | None = Field(default=None, description="V0.1.12: SenseVoice 辅助特征 JSON")
 
     # V0.1.12.2 新增字段 —— ASR 追踪
     base_text: str | None = Field(default=None, description="主引擎原始文本")
-    final_text: str | None = Field(default=None, description="复核后最终文本")
+    final_text: str = Field(default="", description="复核、整理或人工纠错后的最终文本")
     primary_backend: str | None = Field(default=None, description="主引擎名 (paraformer/whisper/none)")
     primary_model_id: str | None = Field(default=None, description="主模型 ID")
     primary_model_revision: str | None = Field(default=None, description="主模型 revision")
@@ -44,5 +47,5 @@ class Transcript(SQLModel, table=True):
 
     created_at: datetime = Field(default_factory=utcnow)
 
-    # V0.1.12.4: 每个片段每种主引擎只有一个正式转录结果 (幂等)
+    # 每个片段只能有一个正式转写结果。
     __table_args__ = {"sqlite_autoincrement": True}

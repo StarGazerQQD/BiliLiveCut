@@ -26,7 +26,7 @@ from sqlmodel import select
 
 from app.core import settings_store
 from app.core.config import settings
-from app.db.models import (
+from app.db.entities import (
     FinalClip,
     UploadStatus,
     UploadTask,
@@ -426,7 +426,7 @@ def _finish_task(
     :param error: 错误信息。
     :returns: 更新后的任务。
     """
-    from app.db.models import ClipStatus
+    from app.db.entities import ClipStatus
 
     with get_session() as db:
         task = db.get(UploadTask, task_id)

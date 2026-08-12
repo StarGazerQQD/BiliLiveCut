@@ -15,7 +15,7 @@ from app.analysis.session_summary import (
     recover_running_session_summary_requests,
     request_session_timeline_summary,
 )
-from app.db.models import (
+from app.db.entities import (
     AppSetting,
     CandidateStatus,
     HighlightCandidate,
@@ -26,6 +26,7 @@ from app.db.models import (
     ReviewStatus,
     SegmentTask,
     TaskStatus,
+    Transcript,
 )
 from app.db.session import get_session
 from app.web.services.timeline import get_session_timeline, list_session_timelines
@@ -48,15 +49,24 @@ def _seed_timeline() -> int:
         db.add(session)
         db.flush()
         assert session.id is not None
+        segment = RawSegment(
+            session_id=session.id,
+            seq=0,
+            file_path="timeline_000.ts",
+            start_ts=started_at,
+            end_ts=started_at + timedelta(minutes=5),
+            duration_s=300,
+            status="scored",
+        )
+        db.add(segment)
+        db.flush()
+        assert segment.id is not None
         db.add(
-            RawSegment(
-                session_id=session.id,
-                seq=0,
-                file_path="timeline.ts",
-                start_ts=started_at,
-                end_ts=started_at + timedelta(minutes=5),
-                duration_s=300,
-                status="scored",
+            Transcript(
+                segment_id=segment.id,
+                base_text="主播开场介绍挑战规则。",
+                final_text="主播开场介绍挑战规则。",
+                final_text_source="primary",
             )
         )
         timeline_features = json.dumps(
@@ -173,11 +183,11 @@ def test_session_timeline_can_include_rejected_nodes_and_list_overview(temp_db: 
     assert sum(1 for point in expanded["points"] if point["rejected"]) == 1
 
 
-def test_whole_session_summary_uses_visible_timeline_in_gmt8_order(
+def test_whole_session_summary_analyzes_all_final_asr_once_in_time_order(
     temp_db: None,
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    """整场总结只能消费未拒绝时间点，并用 GMT+8 时钟按先后整理。"""
+    """整场总结必须按时间聚合全部最终 ASR，并只调用一次 LLM。"""
     from app.analysis import llm
 
     session_id = _seed_timeline()
@@ -185,25 +195,25 @@ def test_whole_session_summary_uses_visible_timeline_in_gmt8_order(
         pending = db.get(AppSetting, f"session_reanalysis:{session_id}")
         assert pending is not None
         db.delete(pending)
-        earlier = HighlightCandidate(
+        later_segment = RawSegment(
             session_id=session_id,
-            peak_ts=datetime(2026, 8, 5, 11, 15, tzinfo=UTC),
-            start_ts=datetime(2026, 8, 5, 11, 14, tzinfo=UTC),
-            end_ts=datetime(2026, 8, 5, 11, 16, tzinfo=UTC),
-            highlight_score=0.76,
-            reason="开场铺垫",
-            dedup_hash="summary-earlier",
+            seq=1,
+            file_path=r"D:\recordings\timeline_001.ts",
+            start_ts=datetime(2026, 8, 5, 11, 5, tzinfo=UTC),
+            end_ts=datetime(2026, 8, 5, 11, 10, tzinfo=UTC),
+            duration_s=300,
+            status="scored",
         )
-        db.add(earlier)
+        db.add(later_segment)
         db.flush()
+        assert later_segment.id is not None
         db.add(
-            HighlightEvent(
-                candidate_id=earlier.id,
-                session_id=session_id,
-                raw_start_ts=earlier.start_ts,
-                raw_end_ts=earlier.end_ts,
-                reason="主播先介绍挑战规则",
-                review_status=ReviewStatus.PENDING,
+            Transcript(
+                segment_id=later_segment.id,
+                base_text="挑战中途出现反转，主播最终成功。",
+                final_text="挑战中途出现反转，主播最终成功。",
+                auxiliary_json=json.dumps({"segment_summary": "不得进入整场分析的分段摘要"}, ensure_ascii=False),
+                final_text_source="review",
             )
         )
 
@@ -212,26 +222,30 @@ def test_whole_session_summary_uses_visible_timeline_in_gmt8_order(
     def fake_call_text(prompt: str, max_tokens: int) -> str:
         prompts.append(prompt)
         assert max_tokens == 65536
-        return '{"summary":"- 19:15:00，主播介绍挑战规则。\\n- 19:45:00，主播完成关键反转。"}'
+        return '{"summary":"19:00:00 主播先介绍挑战规则，19:05:00 挑战反转并成功。"}'
 
     monkeypatch.setattr(llm, "call_text", fake_call_text)
     result = build_session_timeline_summary(session_id)
 
     assert result["source"] == "llm"
-    assert result["point_count"] == 2
-    assert result["summary"] == "19:15:00，主播介绍挑战规则。 19:45:00，主播完成关键反转。"
+    assert result["analysis_basis"] == "full_session_asr"
+    assert result["transcript_count"] == 2
+    assert result["summary"] == "19:00:00 主播先介绍挑战规则，19:05:00 挑战反转并成功。"
     assert len(prompts) == 1
-    assert prompts[0].index("19:15:00") < prompts[0].index("19:45:00")
-    assert "19:45:00" in prompts[0]
+    assert prompts[0].index("[19:00:00][timeline_000.ts]") < prompts[0].index("[19:05:00][timeline_001.ts]")
+    assert "主播开场介绍挑战规则" in prompts[0]
+    assert "挑战中途出现反转" in prompts[0]
     assert "候选梗概" not in prompts[0]
-    assert "严格按 GMT+8 时间从早到晚" in prompts[0]
+    assert "不得进入整场分析的分段摘要" not in prompts[0]
+    assert "只调用一次分析" in prompts[0]
+    assert "不得把各个 ASR 块分别摘抄后直接拼接" in prompts[0]
 
 
-def test_whole_session_summary_waits_for_final_analysis_and_persists_rule_fallback(
+def test_whole_session_summary_waits_for_final_analysis_and_retries_empty_llm_result(
     temp_db: None,
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    """请求应等待最终重分析稳定，LLM 不可用时仍持久化规则版总结。"""
+    """请求应等待分析稳定；LLM 空结果不得降级为摘要拼接。"""
     from app.analysis import llm
 
     session_id = _seed_timeline()
@@ -243,7 +257,6 @@ def test_whole_session_summary_waits_for_final_analysis_and_persists_rule_fallba
             segment_id=db.exec(select(RawSegment.id).where(RawSegment.session_id == session_id)).first(),
             session_id=session_id,
             stage=TaskStatus.ANALYZING,
-            idempotency_key="summary-wait",
             pipeline_key="summary-wait-pipeline",
         )
         db.add(task)
@@ -260,15 +273,18 @@ def test_whole_session_summary_waits_for_final_analysis_and_persists_rule_fallba
     monkeypatch.setattr(llm, "call_text", lambda *_args, **_kwargs: None)
     claim = claim_pending_session_summary()
     assert claim is not None
-    assert execute_session_summary_claim(claim) is True
+    assert execute_session_summary_claim(claim) is False
 
     payload = get_session_timeline(session_id)
     summary = payload["whole_session_summary"]
-    assert summary["status"] == "ready"
-    assert summary["source"] == "rules"
-    assert "19:45:00" in summary["summary"]
-    assert "本场共记录 1 个高光" in summary["summary"]
-    assert summary["generated_at"].endswith("+08:00")
+    assert summary["status"] == "pending"
+    assert summary["source"] is None
+    with get_session() as db:
+        request = db.get(AppSetting, f"session_timeline_summary_request:{session_id}")
+        assert request is not None
+        request_payload = json.loads(request.value)
+    assert request_payload["attempts"] == 1
+    assert "未返回有效 summary" in request_payload["last_error"]
 
 
 def test_timeline_view_requests_missing_summary_for_finished_session(temp_db: None) -> None:
@@ -312,11 +328,13 @@ def test_whole_session_summary_recovers_running_request_and_rejects_stale_claim(
         session_summary,
         "build_session_timeline_summary",
         lambda _session_id: {
-            "version": 1,
+            "version": 2,
             "session_id": session_id,
-            "timeline_signature": "stale",
-            "point_count": 1,
-            "source": "rules",
+            "analysis_basis": "full_session_asr",
+            "transcript_signature": "stale",
+            "transcript_count": 1,
+            "character_count": 10,
+            "source": "llm",
             "summary": "旧线程结果",
             "generated_at": datetime.now(UTC).isoformat(),
         },

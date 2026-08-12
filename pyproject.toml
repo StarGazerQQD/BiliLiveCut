@@ -39,10 +39,6 @@ asr-funasr = [
 asr-all = [
     "bili-live-cut[asr-whisper,asr-funasr]",
 ]
-# 向后兼容别名: 等效 asr-all。
-asr = [
-    "bili-live-cut[asr-all]",
-]
 # 阶段3+:文案与高光 LLM 复核(OpenAI 兼容协议,境内对接 DeepSeek/通义/Kimi/GLM)。
 llm = [
     "openai>=1.40",

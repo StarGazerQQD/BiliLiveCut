@@ -20,7 +20,6 @@ import shutil
 import sys
 import tempfile
 import zipfile
-import zlib
 from collections.abc import Generator
 from pathlib import Path
 from typing import TYPE_CHECKING, Any
@@ -37,9 +36,11 @@ _src_dir = _portable_dir / "src"  # portable/src/
 sys.path.insert(0, str(_portable_dir))
 sys.path.insert(0, str(_proj_root))
 sys.path.insert(0, str(_src_dir))
+sys.path.insert(0, str(Path(__file__).resolve().parent))
 
 from blc_portable.engine_pack.manifest import MANIFEST_FORMAT_VERSION  # noqa: E402
 from blc_portable.payload.manifest import RELEASE_VERSION as _EP_RELEASE_VERSION  # noqa: E402
+from engine_pack_helpers import current_tree_manifest, installed_manifest  # noqa: E402
 
 # ── 测试辅助 ────────────────────────────────────────────────
 
@@ -69,31 +70,7 @@ def fixture_engine_pack() -> Generator[Path, None, None]:
             (eng_dir / "model.bin").write_bytes(b"fixture-model-data-" + eng.encode() * 10)
             (eng_dir / "config.json").write_text('{"_fixture": true}', encoding="utf-8")
 
-        manifest: dict[str, Any] = {
-            "format_version": MANIFEST_FORMAT_VERSION,
-            "engine_pack_version": _EP_RELEASE_VERSION,
-            "portable_release_version": _EP_RELEASE_VERSION,
-            "source_commit": "92618efcb9a3d6ec33f5ce3e0b2f46ac7e2cf55a",
-            "source_commit_short": "92618ef",
-            "archive_filename": "test.engine.pack.zip",
-            "archive_crc32": "",
-            "archive_sha256": "",
-            "total_files": 8,
-            "engines": [
-                {
-                    "engine_id": e,
-                    "engine_name": e,
-                    "model_id": e,
-                    "hub": "modelscope",
-                    "revision": "v2.0.4",
-                    "target_path": f"models/{e}",
-                    "model_repo": None,
-                    "sub_models": [],
-                }
-                for e in engines
-            ],
-            "files": {},
-        }
+        manifest = current_tree_manifest(staging)
         (staging / "engine-pack-manifest.json").write_text(
             json.dumps(manifest, ensure_ascii=False, indent=2), encoding="utf-8"
         )
@@ -102,35 +79,6 @@ def fixture_engine_pack() -> Generator[Path, None, None]:
         zip_path = pack_dir / "test.engine.pack.zip"
 
         # 先计算 SHA-256 (打包后)
-        with zipfile.ZipFile(str(zip_path), "w", zipfile.ZIP_DEFLATED) as zf:
-            for f in sorted(staging.rglob("*")):
-                if f.is_file():
-                    zf.write(f, f.relative_to(staging).as_posix())
-
-        # 计算 archive 级别的 SHA-256 和 CRC32
-        import hashlib
-
-        sha256_hasher = hashlib.sha256()
-        crc_val = 0
-        with open(str(zip_path), "rb") as f:
-            while True:
-                chunk = f.read(8 * 1024 * 1024)
-                if not chunk:
-                    break
-                sha256_hasher.update(chunk)
-                crc_val = zlib.crc32(chunk, crc_val)
-
-        archive_sha256 = sha256_hasher.hexdigest()
-        archive_crc32 = f"{crc_val & 0xFFFFFFFF:08X}"
-
-        # 更新 manifest 并重新打包
-        manifest["archive_crc32"] = archive_crc32
-        manifest["archive_sha256"] = archive_sha256
-        (staging / "engine-pack-manifest.json").write_text(
-            json.dumps(manifest, ensure_ascii=False, indent=2), encoding="utf-8"
-        )
-
-        zip_path.unlink()
         with zipfile.ZipFile(str(zip_path), "w", zipfile.ZIP_DEFLATED) as zf:
             for f in sorted(staging.rglob("*")):
                 if f.is_file():
@@ -183,40 +131,39 @@ class TestEnginePackManifest:
 
     def test_engines_definition(self) -> None:
         """四引擎定义列表-中四个引擎都存在。"""
-        from blc_portable.engine_pack.manifest import ENGINES
+        from model_catalog import load_engines
 
-        ids = [e["engine_id"] for e in ENGINES]
+        ids = [engine.engine_id for engine in load_engines()]
         assert "whisper" in ids
         assert "paraformer" in ids
         assert "sensevoice" in ids
         assert "funasr_nano" in ids
 
     def test_paraformer_has_sub_models(self) -> None:
-        """Paraformer 包含三个子模型 (fsmn-vad / ct-punc / cam++)."""
-        from blc_portable.engine_pack.manifest import ENGINES
+        """Paraformer 当前锁定 FSMN-VAD 与 CT-Transformer 标点子模型。"""
+        from model_catalog import get_engine_by_id
 
-        pfm = next(e for e in ENGINES if e["engine_id"] == "paraformer")
-        subs = pfm.get("sub_models", [])
-        sub_ids = [s["model_id"] for s in subs]
+        pfm = get_engine_by_id("paraformer")
+        assert pfm is not None
+        sub_ids = [sub.repository for sub in pfm.sub_models]
         # model_catalog 使用完整仓库 ID
         assert any("fsmn_vad" in sid.lower() for sid in sub_ids), f"缺少 fsmn-vad: {sub_ids}"
         assert any("ct-punc" in sid.lower() or "punc_ct" in sid.lower() for sid in sub_ids), f"缺少 ct-punc: {sub_ids}"
-        assert any("campplus" in sid.lower() or "cam_" in sid.lower() for sid in sub_ids), f"缺少 cam++: {sub_ids}"
 
     def test_create_manifest(self) -> None:
         """create_manifest 生成有效的 Manifest。"""
         from blc_portable.engine_pack.manifest import create_manifest
 
         m = create_manifest(
-            source_commit="92618efcb9a3d6ec33f5ce3e0b2f46ac7e2cf55a",
-            archive_crc32="1234ABCD",
-            archive_sha256="a" * 64,
+            source_commit="8a6add048dd7d38595a35e567ec3a870bab2bf22",
+            builder_commit="b" * 40,
             file_list={},
+            fixture=True,
         )
 
         assert m.format_version == MANIFEST_FORMAT_VERSION
         assert m.engine_pack_version == _EP_RELEASE_VERSION
-        assert m.archive_crc32 == "1234ABCD"
+        assert m.fixture is True
         assert len(m.engines) == 4
         assert m.get_engine_ids() == ["whisper", "paraformer", "sensevoice", "funasr_nano"]
 
@@ -225,10 +172,10 @@ class TestEnginePackManifest:
         from blc_portable.engine_pack.manifest import create_manifest, validate_manifest
 
         m = create_manifest(
-            source_commit="92618efcb9a3d6ec33f5ce3e0b2f46ac7e2cf55a",
-            archive_crc32="1234ABCD",
-            archive_sha256="a" * 64,
+            source_commit="8a6add048dd7d38595a35e567ec3a870bab2bf22",
+            builder_commit="b" * 40,
             file_list={},
+            fixture=True,
         )
         errors = validate_manifest(m)
         assert errors == []
@@ -241,33 +188,30 @@ class TestEnginePackManifest:
             format_version=MANIFEST_FORMAT_VERSION,
             engine_pack_version=_EP_RELEASE_VERSION,
             portable_release_version=_EP_RELEASE_VERSION,
-            source_commit="92618efcb9a3d6ec33f5ce3e0b2f46ac7e2cf55a",
-            source_commit_short="92618ef",
-            archive_filename="test.zip",
-            archive_crc32="1234ABCD",
-            archive_sha256="a" * 64,
+            source_commit="8a6add048dd7d38595a35e567ec3a870bab2bf22",
+            source_commit_short="8a6add0",
+            builder_commit="b" * 40,
+            fixture=True,
             engines=[],
+            total_files=0,
+            files={},
         )
         errors = validate_manifest(m)
         assert len(errors) > 0
 
-    def test_validate_crc32_format(self) -> None:
-        """CRC32 格式应为 8 位大写十六进制。"""
-        from blc_portable.engine_pack.manifest import EnginePackManifest, validate_manifest
+    def test_legacy_archive_fields_are_rejected(self) -> None:
+        """旧版内部归档哈希字段不得再被解析。"""
+        from blc_portable.engine_pack.manifest import EnginePackManifest, create_manifest
 
-        m = EnginePackManifest(
-            format_version=MANIFEST_FORMAT_VERSION,
-            engine_pack_version=_EP_RELEASE_VERSION,
-            portable_release_version=_EP_RELEASE_VERSION,
-            source_commit="92618efcb9a3d6ec33f5ce3e0b2f46ac7e2cf55a",
-            source_commit_short="92618ef",
-            archive_filename="test.zip",
-            archive_crc32="123",
-            archive_sha256="a" * 64,
-            engines=[],
-        )
-        errors = validate_manifest(m)
-        assert any("crc32" in e.lower() for e in errors)
+        raw = create_manifest(
+            source_commit="8a6add048dd7d38595a35e567ec3a870bab2bf22",
+            builder_commit="b" * 40,
+            file_list={},
+            fixture=True,
+        ).to_dict()
+        raw["archive_crc32"] = "1234ABCD"
+        with pytest.raises(ValueError, match="未知字段"):
+            EnginePackManifest.from_dict(raw)
 
     def test_get_engine_pack_info(self) -> None:
         """get_engine_pack_info 返回内置信息。"""
@@ -443,15 +387,8 @@ class TestCheckInstalledModels:
             (models_dir / eng).mkdir(exist_ok=True)
             (models_dir / eng / "model.bin").write_bytes(b"test")
 
-        (models_dir / "engine-pack-installed.json").write_text(
-            json.dumps(
-                {
-                    "engine_pack_version": "0.1.13.0-alpha",
-                    "engines_installed": ["whisper", "paraformer", "sensevoice", "funasr_nano"],
-                }
-            ),
-            encoding="utf-8",
-        )
+        manifest = installed_manifest(models_dir, version="0.1.13.0-alpha")
+        (models_dir / "engine-pack-installed.json").write_text(json.dumps(manifest), encoding="utf-8")
 
         ok1, _ = check_installed_models(models_dir, _EP_RELEASE_VERSION)
         assert not ok1
@@ -465,15 +402,8 @@ class TestCheckInstalledModels:
             (models_dir / eng).mkdir(exist_ok=True)
             (models_dir / eng / "model.bin").write_bytes(b"test")
 
-        (models_dir / "engine-pack-installed.json").write_text(
-            json.dumps(
-                {
-                    "engine_pack_version": _EP_RELEASE_VERSION,
-                    "engines_installed": ["whisper", "paraformer", "sensevoice", "funasr_nano"],
-                }
-            ),
-            encoding="utf-8",
-        )
+        manifest = installed_manifest(models_dir, version=_EP_RELEASE_VERSION)
+        (models_dir / "engine-pack-installed.json").write_text(json.dumps(manifest), encoding="utf-8")
 
         ok2, _ = check_installed_models(models_dir, _EP_RELEASE_VERSION)
         assert ok2

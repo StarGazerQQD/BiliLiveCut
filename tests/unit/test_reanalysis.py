@@ -12,7 +12,7 @@ from app.analysis.reanalysis import (
     queue_session_reanalysis,
     request_session_reanalysis,
 )
-from app.db.models import (
+from app.db.entities import (
     AppSetting,
     CandidateStatus,
     HighlightCandidate,
@@ -55,7 +55,7 @@ def _seed_session() -> tuple[int, int, int, int]:
             )
             db.add(segment)
             db.flush()
-            transcript = Transcript(segment_id=segment.id, text=f"第{seq}段转写", final_text=f"第{seq}段转写")
+            transcript = Transcript(segment_id=segment.id, final_text=f"第{seq}段转写")
             db.add(transcript)
             candidate = HighlightCandidate(
                 session_id=session.id,
@@ -206,7 +206,7 @@ def test_manual_transcript_correction_learns_room_alias_and_requeues_analysis(te
         )
         db.add(segment)
         db.flush()
-        transcript = Transcript(segment_id=segment.id, text="查里斯进房", final_text="查里斯进房")
+        transcript = Transcript(segment_id=segment.id, final_text="查里斯进房")
         db.add(transcript)
         db.flush()
         transcript_id = transcript.id
@@ -227,7 +227,7 @@ def test_manual_transcript_correction_learns_room_alias_and_requeues_analysis(te
     with get_session() as db:
         transcript = db.get(Transcript, transcript_id)
         assert transcript is not None
-        assert transcript.text == "查理斯进房"
+        assert transcript.final_text == "查理斯进房"
         assert transcript.final_text_source == "manual"
         assert transcript.words_json is None
         room = db.get(LiveRoom, room_id)

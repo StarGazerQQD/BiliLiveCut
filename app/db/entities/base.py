@@ -13,14 +13,6 @@ def utcnow() -> datetime:
     return datetime.now(UTC)
 
 
-class RoomMode:
-    """直播间审核模式。"""
-
-    MANUAL = "manual"  # 候选需人工审核才发布
-    SEMI = "semi"  # 高置信自动、中置信待审
-    AUTO = "auto"  # 达阈值自动发布
-
-
 class SessionStatus:
     """录制会话状态。"""
 
@@ -84,9 +76,6 @@ class ReviewStatus:
     SENSITIVE = "sensitive"  # 涉及敏感内容
     REJECTED = "rejected"  # 拒绝
     PENDING = "pending"  # 待审
-
-    # V0.1.12.7: 向后兼容别名
-    APPROVED = "approved_solo"  # 兼容旧代码中的 ReviewStatus.APPROVED
 
     # 正面状态集合(可用于统计)。
     POSITIVE = {APPROVED_SOLO, APPROVED_COLLECTION, IN_COLLECTION}

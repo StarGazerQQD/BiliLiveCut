@@ -13,6 +13,8 @@ import json
 from pathlib import Path
 from typing import Any
 
+from .manifest import ENGINE_PACK_VERSION, EnginePackManifest, load_manifest, validate_manifest
+
 
 def compute_sha256(path: Path, chunk_size: int = 8 * 1024 * 1024) -> str:
     """流式计算文件 SHA-256。
@@ -91,7 +93,7 @@ def verify_archive_manifest(
     校验: Manifest 存在、schema/version 有效、engine IDs 完整、file list 非空。
 
     :param manifest_path: Manifest 文件路径。
-    :param expected_version: 期望版本 (None 跳过版本检查)。
+    :param expected_version: 期望版本；None 时使用当前 Engine Pack 版本。
     :param expected_engine_ids: 期望引擎 ID 集合 (None 使用默认四引擎)。
     :returns: 错误列表，空列表表示通过。
     """
@@ -102,25 +104,20 @@ def verify_archive_manifest(
         return errors
 
     try:
-        manifest = json.loads(manifest_path.read_text(encoding="utf-8"))
-    except (json.JSONDecodeError, OSError) as exc:
+        parsed = load_manifest(manifest_path)
+    except (json.JSONDecodeError, OSError, ValueError) as exc:
         errors.append(f"Manifest 无法解析: {exc}")
         return errors
 
-    # Schema version
-    schema = manifest.get("schema_version", manifest.get("format_version"))
-    if not isinstance(schema, int) or schema < 1:
-        errors.append(f"Manifest schema_version 无效: {schema}")
-
     # Version
-    ep_version = manifest.get("engine_pack_version", "")
-    if not ep_version:
-        errors.append("Manifest engine_pack_version 为空")
-    elif expected_version and ep_version != expected_version:
-        errors.append(f"Engine Pack 版本不匹配: {ep_version} != {expected_version}")
+    current_version = expected_version if expected_version is not None else ENGINE_PACK_VERSION
+    if parsed.engine_pack_version != current_version:
+        errors.append(f"Engine Pack 版本不匹配: {parsed.engine_pack_version} != {current_version}")
+    if parsed.portable_release_version != current_version:
+        errors.append(f"Portable 版本不匹配: {parsed.portable_release_version} != {current_version}")
 
     # Engine IDs
-    engine_ids = {e.get("engine_id", "") for e in manifest.get("engines", [])}
+    engine_ids = set(parsed.get_engine_ids())
     default_engines = {"whisper", "paraformer", "sensevoice", "funasr_nano"}
     check_ids = expected_engine_ids if expected_engine_ids is not None else default_engines
     if engine_ids != check_ids:
@@ -132,24 +129,15 @@ def verify_archive_manifest(
             errors.append(f"Manifest 包含额外引擎: {extra}")
 
     # File list
-    files = manifest.get("files", {})
-    total = manifest.get("total_files", 0)
-    if total == 0:
+    if parsed.total_files == 0:
         errors.append("Manifest total_files 为 0")
-    if len(files) != total:
-        errors.append(f"Manifest files 数量不一致: declared={total} actual={len(files)}")
-
-    for engine in manifest.get("engines", []):
-        tp = engine.get("target_path", "")
-        if not tp:
-            errors.append(f"引擎 {engine.get('engine_id', '?')} target_path 为空")
 
     return errors
 
 
 def verify_extracted_tree(
     extracted_dir: Path,
-    manifest: dict[str, Any],
+    manifest: EnginePackManifest | dict[str, Any],
 ) -> list[str]:
     """验证解压后的目录树与 Manifest 完全一致。
 
@@ -161,12 +149,21 @@ def verify_extracted_tree(
     :returns: 错误列表，空列表表示通过。
     """
     errors: list[str] = []
+    if isinstance(manifest, dict):
+        try:
+            parsed = EnginePackManifest.from_dict(manifest)
+        except ValueError as exc:
+            return [f"Manifest 格式无效: {exc}"]
+    else:
+        parsed = manifest
+
+    manifest_errors = validate_manifest(parsed)
+    if manifest_errors:
+        return [f"Manifest 校验失败: {error}" for error in manifest_errors]
 
     # 1. 引擎目录存在性
-    for engine in manifest.get("engines", []):
-        tp = engine.get("target_path", "")
-        if not tp:
-            continue
+    for engine in parsed.engines:
+        tp = engine.target_path
         ep = extracted_dir / tp
         if not ep.exists():
             errors.append(f"缺少引擎目录: {tp}")
@@ -174,7 +171,7 @@ def verify_extracted_tree(
             errors.append(f"引擎目录为空: {tp}")
 
     # 2. 逐文件检查
-    files = manifest.get("files", {})
+    files = parsed.files
     missing_files = []
     size_mismatch = []
     sha_mismatch = []
@@ -185,16 +182,15 @@ def verify_extracted_tree(
             missing_files.append(rel_path)
             continue
 
-        expected_size = int(info.get("size", 0))
+        expected_size = info["size"]
         actual_size = target.stat().st_size
-        if expected_size and actual_size != expected_size:
+        if actual_size != expected_size:
             size_mismatch.append(f"{rel_path}: expected={expected_size} actual={actual_size}")
 
-        expected_hash = str(info.get("sha256", ""))
-        if expected_hash and len(expected_hash) == 64:
-            actual_hash = compute_sha256(target)
-            if actual_hash != expected_hash:
-                sha_mismatch.append(f"{rel_path}: expected={expected_hash[:16]}... actual={actual_hash[:16]}...")
+        expected_hash = info["sha256"]
+        actual_hash = compute_sha256(target)
+        if actual_hash != expected_hash:
+            sha_mismatch.append(f"{rel_path}: expected={expected_hash[:16]}... actual={actual_hash[:16]}...")
 
     if missing_files:
         errors.append(f"缺失文件 ({len(missing_files)}): {missing_files[:5]}{'...' if len(missing_files) > 5 else ''}")
@@ -255,7 +251,7 @@ def verify_engine_pack_complete(
 
     # 3. 如果 Manifest 解析成功，验证解压树
     try:
-        manifest = json.loads(manifest_path.read_text(encoding="utf-8"))
+        manifest = load_manifest(manifest_path)
         tree_errors = verify_extracted_tree(manifest_path.parent, manifest)
         all_errors.extend(tree_errors)
     except (json.JSONDecodeError, OSError):

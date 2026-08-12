@@ -7,7 +7,7 @@ from pathlib import Path
 from fastapi import APIRouter, HTTPException
 from fastapi.responses import FileResponse
 
-from app.db.models import FinalClip
+from app.db.entities import FinalClip
 from app.db.session import get_session
 
 router = APIRouter()

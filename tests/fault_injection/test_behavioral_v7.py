@@ -31,7 +31,7 @@ class TestApprovalConsistency:
 
     def test_auto_approve_updates_task_event_candidate(self, temp_db) -> None:
         """自动批准同时更新 Task.stage + Event.review_status + Candidate.status."""
-        from app.db.models import (
+        from app.db.entities import (
             CandidateStatus,
             HighlightCandidate,
             HighlightEvent,
@@ -55,6 +55,7 @@ class TestApprovalConsistency:
                 end_ts=_now(),
                 highlight_score=0.90,
                 status=CandidateStatus.PENDING,
+                dedup_hash="approval-auto-6601",
             )
             event = HighlightEvent(
                 id=7701,
@@ -70,7 +71,6 @@ class TestApprovalConsistency:
                 stage=TaskStatus.AWAITING_REVIEW,
                 candidate_id=6601,
                 event_id=7701,
-                idempotency_key="5501:awaiting_review",
             )
             db.add_all([room, sess, cand, event, task])
 
@@ -93,7 +93,7 @@ class TestApprovalConsistency:
 
     def test_approve_rejects_when_event_not_found(self, temp_db) -> None:
         """Event 不存在时批准失败。"""
-        from app.db.models import SegmentTask, TaskStatus
+        from app.db.entities import SegmentTask, TaskStatus
         from app.db.session import get_session
         from app.pipeline.approval import approve_event_and_task
 
@@ -102,7 +102,6 @@ class TestApprovalConsistency:
                 segment_id=5502,
                 session_id=1,
                 stage=TaskStatus.AWAITING_REVIEW,
-                idempotency_key="5502:awaiting_review",
             )
             db.add(task)
 
@@ -111,13 +110,22 @@ class TestApprovalConsistency:
 
     def test_approve_blocks_rejected_event_from_auto(self, temp_db) -> None:
         """已拒绝 Event 不得被自动流程重新批准。"""
-        from app.db.models import HighlightEvent, ReviewStatus, SegmentTask, TaskStatus
+        from app.db.entities import HighlightCandidate, HighlightEvent, ReviewStatus, SegmentTask, TaskStatus
         from app.db.session import get_session
         from app.pipeline.approval import approve_event_and_task
 
         with get_session() as db:
+            candidate = HighlightCandidate(
+                id=6603,
+                session_id=1,
+                peak_ts=_now(),
+                start_ts=_now(),
+                end_ts=_now(),
+                dedup_hash="approval-rejected-6603",
+            )
             event = HighlightEvent(
                 id=7703,
+                candidate_id=candidate.id,
                 session_id=1,
                 raw_start_ts=_now(),
                 raw_end_ts=_now(),
@@ -128,22 +136,30 @@ class TestApprovalConsistency:
                 session_id=1,
                 stage=TaskStatus.AWAITING_REVIEW,
                 event_id=7703,
-                idempotency_key="5503:awaiting_review",
             )
-            db.add_all([event, task])
+            db.add_all([candidate, event, task])
 
         ok = approve_event_and_task(task_id=task.id, event_id=7703, source="auto")
         assert not ok
 
     def test_approve_idempotent_on_already_approved(self, temp_db) -> None:
         """已批准 Event 重复批准幂等跳过。"""
-        from app.db.models import HighlightEvent, ReviewStatus, SegmentTask, TaskStatus
+        from app.db.entities import HighlightCandidate, HighlightEvent, ReviewStatus, SegmentTask, TaskStatus
         from app.db.session import get_session
         from app.pipeline.approval import approve_event_and_task
 
         with get_session() as db:
+            candidate = HighlightCandidate(
+                id=6604,
+                session_id=1,
+                peak_ts=_now(),
+                start_ts=_now(),
+                end_ts=_now(),
+                dedup_hash="approval-idempotent-6604",
+            )
             event = HighlightEvent(
                 id=7704,
+                candidate_id=candidate.id,
                 session_id=1,
                 raw_start_ts=_now(),
                 raw_end_ts=_now(),
@@ -154,16 +170,15 @@ class TestApprovalConsistency:
                 session_id=1,
                 stage=TaskStatus.APPROVED,
                 event_id=7704,
-                idempotency_key="5504:approved",
             )
-            db.add_all([event, task])
+            db.add_all([candidate, event, task])
 
         ok = approve_event_and_task(task_id=task.id, event_id=7704, source="auto")
         assert ok  # 幂等成功
 
     def test_approve_secondary_candidate_without_task_updates_event_and_candidate(self, temp_db) -> None:
         """同分段第二候选没有独立任务时仍应完整批准，不能留下 pending 事件。"""
-        from app.db.models import CandidateStatus, HighlightCandidate, HighlightEvent, ReviewStatus
+        from app.db.entities import CandidateStatus, HighlightCandidate, HighlightEvent, ReviewStatus
         from app.db.session import get_session
         from app.pipeline.approval import approve_event_and_task
 
@@ -175,6 +190,7 @@ class TestApprovalConsistency:
                 start_ts=_now(),
                 end_ts=_now(),
                 status=CandidateStatus.PENDING,
+                dedup_hash="approval-secondary-6605",
             )
             event = HighlightEvent(
                 id=7705,
@@ -205,7 +221,7 @@ class TestUploadResultMapping:
 
     def test_success_maps_to_completed(self, temp_db) -> None:
         """SUCCESS → COMPLETED."""
-        from app.db.models import SegmentTask, TaskStatus
+        from app.db.entities import SegmentTask, TaskStatus
         from app.db.session import get_session
         from app.pipeline.approval import apply_upload_result
 
@@ -214,7 +230,6 @@ class TestUploadResultMapping:
                 segment_id=5505,
                 session_id=1,
                 stage=TaskStatus.PUBLISHING,
-                idempotency_key="5505:publishing",
             )
             db.add(task)
 
@@ -232,7 +247,7 @@ class TestUploadResultMapping:
 
     def test_failed_maps_to_transient_failed(self, temp_db) -> None:
         """FAILED → TRANSIENT_FAILED."""
-        from app.db.models import SegmentTask, TaskStatus
+        from app.db.entities import SegmentTask, TaskStatus
         from app.db.session import get_session
         from app.pipeline.approval import apply_upload_result
 
@@ -241,7 +256,6 @@ class TestUploadResultMapping:
                 segment_id=5506,
                 session_id=1,
                 stage=TaskStatus.PUBLISHING,
-                idempotency_key="5506:publishing",
             )
             db.add(task)
 
@@ -260,7 +274,7 @@ class TestUploadResultMapping:
 
     def test_skipped_maps_to_awaiting_confirmation(self, temp_db) -> None:
         """SKIPPED → AWAITING_PUBLISH_CONFIRMATION."""
-        from app.db.models import SegmentTask, TaskStatus
+        from app.db.entities import SegmentTask, TaskStatus
         from app.db.session import get_session
         from app.pipeline.approval import apply_upload_result
 
@@ -269,7 +283,6 @@ class TestUploadResultMapping:
                 segment_id=5507,
                 session_id=1,
                 stage=TaskStatus.PUBLISHING,
-                idempotency_key="5507:publishing",
             )
             db.add(task)
 
@@ -295,7 +308,7 @@ class TestManualUploader:
 
     def test_manual_upload_not_published(self, temp_db, tmp_path: Path) -> None:
         """ManualUploader 导出后 FinalClip 不标记 PUBLISHED。"""
-        from app.db.models import ClipStatus, FinalClip
+        from app.db.entities import ClipStatus, FinalClip
         from app.db.session import get_session
         from app.publishing.uploader import enqueue_and_upload
 
@@ -333,7 +346,7 @@ class TestIntegrityErrorIdempotency:
 
     def test_create_task_idempotent_on_duplicate(self, temp_db) -> None:
         """同 segment_id 的 create_task 第二次调用返回 None。"""
-        from app.db.models import RawSegment, RecordingSession, SegmentStatus
+        from app.db.entities import RawSegment, RecordingSession, SegmentStatus
         from app.db.session import get_session
         from app.pipeline.task_worker import create_task
 
@@ -353,28 +366,6 @@ class TestIntegrityErrorIdempotency:
 
         t2 = create_task(8001, 1)
         assert t2 is None  # 幂等: 返回 None
-
-    def test_ensure_event_idempotent(self, temp_db) -> None:
-        """同 candidate_id 的 _ensure_event 两次调用返回同一个 event_id。"""
-        from app.db.models import HighlightCandidate
-        from app.db.session import get_session
-        from app.pipeline.task_worker import _ensure_event
-
-        with get_session() as db:
-            cand = HighlightCandidate(
-                id=8002,
-                session_id=1,
-                peak_ts=_now(),
-                start_ts=_now(),
-                end_ts=_now(),
-                highlight_score=0.85,
-            )
-            db.add(cand)
-
-        eid1 = _ensure_event(8002)
-        eid2 = _ensure_event(8002)
-        assert eid1 is not None
-        assert eid1 == eid2
 
 
 # ═══════════════════════════════════════════════════

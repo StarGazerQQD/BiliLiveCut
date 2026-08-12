@@ -28,7 +28,7 @@ import brotli
 from loguru import logger
 
 from app.core.config import settings
-from app.db.models import Danmaku, DanmakuType
+from app.db.entities import Danmaku, DanmakuType
 from app.db.session import get_session
 from app.sources.bilibili.client import (
     BilibiliError,

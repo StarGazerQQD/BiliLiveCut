@@ -7,7 +7,7 @@ from typing import Any
 from sqlmodel import select
 
 from app.core.config import settings
-from app.db.models import (
+from app.db.entities import (
     LiveRoom,
     RecordingSchedule,
 )
@@ -109,7 +109,7 @@ def get_due_schedules() -> list[dict[str, Any]]:
 
     :returns: 到期预约列表。
     """
-    from app.db.models import utcnow
+    from app.db.entities import utcnow
 
     now = utcnow()
     with get_session() as db:

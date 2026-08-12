@@ -30,7 +30,7 @@ from blc_portable.console import configure_console_encoding
 APP_NAME = "BiliLiveCut"
 VERSION = "V0.1.17.3 Alpha"
 RELEASE_VERSION = "0.1.17.3-alpha"
-SOURCE_COMMIT_SHORT = "92618ef"
+SOURCE_COMMIT_SHORT = "8a6add0"
 # NOTE: RELEASE_ID 将在获得 Payload SHA-256 后动态生成 (内容寻址)
 SUPPORTED_PYTHON_VERSIONS = frozenset({(3, 11), (3, 12)})
 
@@ -77,7 +77,7 @@ def get_payload_zip() -> Path:
 
 
 def get_payload_manifest() -> dict[str, Any]:
-    """Read embedded Manifest。
+    """Read and validate the current embedded Payload Manifest。
 
     :returns: Manifest dict。
     :raises RuntimeError: 找不到时。
@@ -85,11 +85,20 @@ def get_payload_manifest() -> dict[str, Any]:
     p = get_bundled_resource_path("payload_manifest.json")
     if p is None:
         raise RuntimeError("Built-in Manifest not found (payload_manifest.json).")
-    return json.loads(p.read_text(encoding="utf-8"))
+    try:
+        manifest = json.loads(p.read_text(encoding="utf-8"))
+    except (json.JSONDecodeError, OSError) as exc:
+        raise RuntimeError(f"Built-in Manifest is unreadable: {exc}") from exc
+    from blc_portable.payload.manifest import MANIFEST_FORMAT_VERSION, validate_manifest_schema
+
+    errors = validate_manifest_schema(manifest)
+    if errors or manifest["format_version"] != MANIFEST_FORMAT_VERSION:
+        raise RuntimeError("Built-in Manifest does not match the current Payload schema")
+    return manifest
 
 
 def get_engine_pack_info() -> dict[str, Any] | None:
-    """Read embedded Engine Pack info。
+    """Read and validate current embedded Engine Pack metadata。
 
     :returns: Engine Pack info dict, None if not embedded。
     """
@@ -97,9 +106,15 @@ def get_engine_pack_info() -> dict[str, Any] | None:
     if p is None:
         return None
     try:
-        return json.loads(p.read_text(encoding="utf-8"))
-    except (json.JSONDecodeError, OSError):
-        return None
+        from blc_portable.engine_pack.schema import ExternalMetadata
+
+        metadata = ExternalMetadata.from_dict(json.loads(p.read_text(encoding="utf-8")))
+    except (json.JSONDecodeError, OSError, ValueError) as exc:
+        raise RuntimeError(f"Embedded Engine Pack metadata is invalid: {exc}") from exc
+    errors = metadata.validate()
+    if errors:
+        raise RuntimeError("Embedded Engine Pack metadata validation failed: " + "; ".join(errors))
+    return metadata.to_dict()
 
 
 # -- Runtime management ──────────────────────────────────────────
@@ -424,7 +439,6 @@ def _build_service_command(venv_python: Path) -> list[str]:
 def install_dependencies(
     venv_python: Path,
     app_root: Path,
-    req_file: Path | None = None,
     *,
     source_dir: Path | None = None,
 ) -> None:
@@ -432,7 +446,6 @@ def install_dependencies(
 
     :param venv_python: venv python path.
     :param app_root: app root dir.
-    :param req_file: [deprecated] requirements file path, no longer used.
     :param source_dir: Installed Runtime source used for the ``app.cli`` smoke check.
     """
     lock_file = _find_lock_file(venv_python)
@@ -548,22 +561,23 @@ def prepare_models(app_root: Path, user_engine_pack_path: str | None = None) -> 
         install_from_engine_pack,
     )
 
-    MODEL_ENGINE_PACK_VERSION = "0.1.17.3-alpha"
-
     # Read embedded Engine Pack info
     pack_info = get_engine_pack_info()
     if pack_info is None:
+        from blc_portable.engine_pack.manifest import ARCHIVE_FILENAME, ENGINE_PACK_VERSION
+
+        # 官方 Lite/Full 可按当前版本显式省略本地包摘要并走在线安装。
         pack_info = {
-            "engine_pack_version": MODEL_ENGINE_PACK_VERSION,
-            "filename": f"BiliLiveCut-EnginePack-{MODEL_ENGINE_PACK_VERSION}.zip",
+            "engine_pack_version": ENGINE_PACK_VERSION,
+            "filename": ARCHIVE_FILENAME,
             "crc32": "",
-            "expected_engine_ids": ["whisper", "paraformer", "sensevoice", "funasr_nano"],
+            "sha256": "",
         }
 
-    expected_filename = str(pack_info.get("filename", ""))
-    expected_crc32 = str(pack_info.get("crc32", ""))
-    expected_sha256 = str(pack_info.get("sha256", ""))
-    expected_version = str(pack_info.get("engine_pack_version", MODEL_ENGINE_PACK_VERSION))
+    expected_filename = pack_info["filename"]
+    expected_crc32 = pack_info["crc32"]
+    expected_sha256 = pack_info["sha256"]
+    expected_version = pack_info["engine_pack_version"]
 
     # 1. 检查已安装模型
     models_dir = app_root / "models"
@@ -695,7 +709,7 @@ def _run_doctor(app_root: Path) -> int:
     # 2. Payload
     try:
         manifest = get_payload_manifest()
-        _check("Payload Manifest readable", True, f"v{manifest.get('release_version')}")
+        _check("Payload Manifest readable", True, f"v{manifest.get('portable_release_version')}")
     except RuntimeError:
         _check("Payload Manifest readable", False, "not readable")
 

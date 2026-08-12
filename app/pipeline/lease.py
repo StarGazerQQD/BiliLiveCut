@@ -9,7 +9,7 @@ from dataclasses import dataclass
 
 from sqlmodel import Session
 
-from app.db.models import SegmentTask
+from app.db.entities import SegmentTask
 
 
 class LeaseLostError(RuntimeError):

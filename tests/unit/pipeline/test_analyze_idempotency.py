@@ -20,9 +20,9 @@ import pytest
 from sqlalchemy.exc import IntegrityError as _IntegrityError
 from sqlmodel import select
 
+from app.db.entities import HighlightCandidate as HC
+from app.db.entities import HighlightEvent as HE
 from app.db.entities.base import CandidateStatus
-from app.db.models import HighlightCandidate as HC
-from app.db.models import HighlightEvent as HE
 from app.db.session import get_session
 from app.pipeline.workers.analyze import (
     _draft_dedup_hash,

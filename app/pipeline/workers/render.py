@@ -13,7 +13,7 @@ from pathlib import Path
 from typing import Any
 
 from app.clipping.paths import build_backup_path, build_final_clip_path, build_lease_partial_path
-from app.db.models import (
+from app.db.entities import (
     CandidateStatus,
     ClipStatus,
     ClipVariant,

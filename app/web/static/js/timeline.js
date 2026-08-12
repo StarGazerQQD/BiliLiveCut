@@ -165,7 +165,7 @@ function renderTimelinePoint(point) {
 function renderWholeSessionSummary(data) {
   const summary = data.whole_session_summary || { status: "missing" };
   const ready = summary.status === "ready";
-  const source = summary.source === "llm" ? "LLM 按时间线整理" : "规则按时间线整理";
+  const source = summary.source === "llm" ? "LLM 整场 ASR 分析" : "本场无可分析 ASR";
   const generatedAt = summary.generated_at ? formatGmt8(summary.generated_at) : "";
   const message = SUMMARY_STATUS_LABELS[summary.status] || "等待生成";
   return `
@@ -174,7 +174,7 @@ function renderWholeSessionSummary(data) {
         <div>
           <div class="title">全场高光总结</div>
           <div class="sub">${ready
-            ? `${esc(source)} · ${Number(summary.point_count) || 0} 个高光节点${generatedAt ? ` · ${esc(generatedAt)}` : ""}`
+            ? `${esc(source)} · ${Number(summary.transcript_count) || 0} 个转写块 · ${Number(summary.character_count) || 0} 字${generatedAt ? ` · ${esc(generatedAt)}` : ""}`
             : esc(message)}</div>
         </div>
         ${data.session?.ended_at
@@ -182,8 +182,8 @@ function renderWholeSessionSummary(data) {
           : ""}
       </div>
       ${ready
-        ? `<p class="whole-session-summary-text">${esc(summary.summary || "本场没有识别到可总结的高光节点。").replace(/\n/g, "<br>")}</p>`
-        : `<p class="muted">${esc(summary.error || message)}。页面会随处理进度自动更新，不会按五分钟录制分段拆开。</p>`}
+        ? `<p class="whole-session-summary-text">${esc(summary.summary || "本场没有可供分析的最终 ASR 文本。").replace(/\n/g, "<br>")}</p>`
+        : `<p class="muted">${esc(summary.error || message)}。页面会随处理进度自动更新；生成时会把全场最终 ASR 组织为一个完整上下文，只做一次全局分析。</p>`}
     </section>`;
 }
 

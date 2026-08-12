@@ -3,14 +3,13 @@
 提供:
 
 * :data:`engine` —— 全局 SQLModel/SQLAlchemy 引擎(SQLite);
-* :func:`init_db` —— 建表或校验 Schema (V0.1.12.9: 使用 Schema 系统, 移除迁移框架);
+* :func:`init_db` —— 建表或校验当前 Schema;
 * :func:`get_session` —— 上下文管理器,自动提交/回滚/关闭。
 
 SQLite 在多线程访问时需要 ``check_same_thread=False``;录制与下游任务
 运行在不同线程/进程时由各自获取独立连接。
 
-V0.1.12.9: 移除 _migrate_add_columns、_migrate_old_mode_to_switches
-和所有迁移相关逻辑。Schema 创建由 app.db.schema 统一管理。
+Schema 创建与严格校验由 :mod:`app.db.schema` 统一管理。
 """
 
 from __future__ import annotations
@@ -56,7 +55,7 @@ if _db_url.startswith("sqlite"):
 
 
 def init_db() -> None:
-    """初始化数据库 — 创建新数据库或校验已有数据库 (V0.1.12.9)。
+    """初始化数据库：创建新数据库或校验当前 Schema。
 
     流程:
     1. 数据库文件不存在 → app.db.schema.assure_schema() 创建全部表
@@ -66,7 +65,7 @@ def init_db() -> None:
 
     :raises RuntimeError: Schema 不兼容或校验失败时。
     """
-    from app.db import models  # noqa: F401
+    from app.db import entities  # noqa: F401
     from app.db.schema import assure_schema
 
     assure_schema()

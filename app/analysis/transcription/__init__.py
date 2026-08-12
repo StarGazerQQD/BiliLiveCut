@@ -19,10 +19,8 @@ from app.analysis.transcription.models import (  # noqa: F401
     ASRTranscriptResult,
     EmotionEvent,
     TranscriberBackend,
-    TranscriptionResult,
     Word,
     _segment_to_confidence,
-    _unified_to_legacy,
 )
 from app.analysis.transcription.pipeline import (  # noqa: F401
     ASRPipeline,

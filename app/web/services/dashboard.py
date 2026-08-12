@@ -6,14 +6,13 @@ from typing import Any
 
 from sqlmodel import select
 
-from app.db.models import (
+from app.db.entities import (
     Danmaku,
     FinalClip,
     HighlightCandidate,
     LiveRoom,
     RawSegment,
     RecordingSession,
-    RoomMode,
     SegmentStatus,
     SessionStatus,
 )
@@ -50,7 +49,6 @@ def dashboard_state() -> dict[str, Any]:
     return {
         "rooms": [_room_dict(r, recorder_manager.status(r.id)) for r in rooms],
         "counts": {"candidates": n_candidates, "clips": n_clips, "active_sessions": len(sessions)},
-        "modes": [RoomMode.MANUAL, RoomMode.SEMI, RoomMode.AUTO],
     }
 
 
@@ -64,7 +62,6 @@ def _room_dict(room: LiveRoom, runtime: dict[str, Any]) -> dict[str, Any]:
         "input_url": room.input_url,
         "title": room.title,
         "uploader_name": room.uploader_name,
-        "mode": room.mode,
         "highlight_threshold": room.highlight_threshold,
         "auto_publish_threshold": room.auto_publish_threshold,
         # V0.1.6: 独立自动化开关。

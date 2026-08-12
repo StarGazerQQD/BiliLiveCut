@@ -13,7 +13,7 @@ from sqlmodel import select
 
 from app.core.config import settings
 from app.core.cookie import get_bilibili_cookie
-from app.db.models import LiveRoom
+from app.db.entities import LiveRoom
 from app.db.session import get_session
 from app.db.session import init_db as _init_db
 from app.recording.recorder import Recorder
@@ -89,13 +89,12 @@ def cmd_list_rooms() -> None:
         return
 
     table = Table(title="已登记直播间")
-    for col in ("db_id", "room_id", "mode", "enabled", "authorized", "input_url"):
+    for col in ("db_id", "room_id", "enabled", "authorized", "input_url"):
         table.add_column(col)
     for r in rooms:
         table.add_row(
             str(r.id),
             str(r.room_id),
-            r.mode,
             str(r.enabled),
             str(r.authorized),
             r.input_url,

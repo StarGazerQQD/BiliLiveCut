@@ -12,7 +12,7 @@ from uuid import uuid4
 
 from sqlmodel import Session, select
 
-from app.db.models import (
+from app.db.entities import (
     ClipVariant,
     FinalClip,
     HighlightCandidate,
@@ -28,7 +28,7 @@ from app.db.models import (
     Transcript,
 )
 from app.db.session import get_session
-from app.pipeline.stage_result import make_idempotency_key, make_pipeline_key, make_stage_key
+from app.pipeline.stage_result import make_pipeline_key, make_stage_key
 
 
 class TranscriptNotFoundError(LookupError):
@@ -69,11 +69,11 @@ def correct_transcript(
         segment = db.get(RawSegment, transcript.segment_id)
         if segment is None:
             raise TranscriptNotFoundError("转写对应的原始片段不存在")
-        from app.db.models import LiveRoom, RecordingSession
+        from app.db.entities import LiveRoom, RecordingSession
 
         session = db.get(RecordingSession, segment.session_id)
         room = db.get(LiveRoom, session.room_id) if session is not None else None
-        original = transcript.final_text or transcript.text
+        original = transcript.final_text
         inferred = derive_aliases_from_correction(original, corrected)
         learned = {**inferred, **(aliases or {})}
         if learn_dictionary and room is not None and learned:
@@ -89,7 +89,6 @@ def correct_transcript(
             "original_text": original,
             "learned_aliases": learned if learn_dictionary else {},
         }
-        transcript.text = corrected
         transcript.final_text = corrected
         transcript.final_text_source = "manual"
         transcript.words_json = None
@@ -355,8 +354,8 @@ def list_transcripts(limit: int = 30) -> list[dict[str, Any]]:
                 "id": transcript.id,
                 "segment_id": transcript.segment_id,
                 "language": transcript.language,
-                "text": transcript.text,
-                "raw_text": transcript.final_text or transcript.text,
+                "text": transcript.final_text,
+                "raw_text": transcript.base_text or transcript.final_text,
                 "summary": str(refinement.get("summary", "")),
                 "llm_refined": refinement.get("applied") is True,
                 "primary_backend": transcript.primary_backend,
@@ -409,10 +408,17 @@ def retranscribe_transcript(transcript_id: int) -> dict[str, int]:
 
         candidate = db.get(HighlightCandidate, task.candidate_id) if task and task.candidate_id else None
         event = db.get(HighlightEvent, task.event_id) if task and task.event_id else None
-        if event is None and candidate is not None and candidate.id is not None:
-            event = db.exec(select(HighlightEvent).where(HighlightEvent.candidate_id == candidate.id)).first()
-        if candidate is None and event is not None and event.candidate_id is not None:
-            candidate = db.get(HighlightCandidate, event.candidate_id)
+        if task is not None and task.candidate_id is not None and candidate is None:
+            raise TranscriptRetranscribeConflict("任务关联的候选不存在，不能自动重转写")
+        if task is not None and task.event_id is not None and event is None:
+            raise TranscriptRetranscribeConflict("任务关联的审核事件不存在，不能自动重转写")
+        if candidate is not None:
+            if event is None:
+                raise TranscriptRetranscribeConflict("候选缺少审核事件，不能自动重转写")
+            if event.candidate_id != candidate.id or event.session_id != candidate.session_id:
+                raise TranscriptRetranscribeConflict("候选与审核事件关联不一致，不能自动重转写")
+        elif event is not None:
+            raise TranscriptRetranscribeConflict("审核事件缺少任务候选关联，不能自动重转写")
 
         _assert_downstream_is_discardable(db, task, candidate, event)
 
@@ -445,7 +451,6 @@ def retranscribe_transcript(transcript_id: int) -> dict[str, int]:
                 stage=TaskStatus.QUEUED_FOR_TRANS,
                 pipeline_key=make_pipeline_key(segment.id),
                 stage_key=make_stage_key(segment.id, TaskStatus.QUEUED_FOR_TRANS),
-                idempotency_key=make_idempotency_key(segment.id, TaskStatus.QUEUED_FOR_TRANS),
             )
         else:
             _reset_task_for_transcription(task)
@@ -503,9 +508,8 @@ def _assert_downstream_is_discardable(
 def _reset_task_for_transcription(task: SegmentTask) -> None:
     """清除旧阶段状态并重新排队转写，同时保留流程级幂等键。"""
     task.stage = TaskStatus.QUEUED_FOR_TRANS
-    task.pipeline_key = task.pipeline_key or make_pipeline_key(task.segment_id)
+    task.pipeline_key = make_pipeline_key(task.segment_id)
     task.stage_key = make_stage_key(task.segment_id, TaskStatus.QUEUED_FOR_TRANS)
-    task.idempotency_key = make_idempotency_key(task.segment_id, TaskStatus.QUEUED_FOR_TRANS)
     task.failed_stage = None
     task.attempts = 0
     task.next_retry_at = None

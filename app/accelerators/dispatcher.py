@@ -1,7 +1,7 @@
 """BiliLiveCut 加速模块 — 统一分派层.
 
 优先加载编译扩展，若不可用则回退到纯 Python 实现。
-业务代码应通过 app.analysis.speedups 导入，该模块将此分派器完整重导出。
+业务代码直接通过本模块导入加速实现。
 
 加速链 (优先级从高到低):
   第一轮 — Aho-Corasick + 余弦相似度 + bigram

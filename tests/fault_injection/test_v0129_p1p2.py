@@ -109,7 +109,7 @@ class TestDanmakuSampling:
     def test_super_chat_always_kept(self) -> None:
         """SC 应始终保留。"""
         from app.analysis.danmaku_sampling import DanmakuSampler
-        from app.db.models import DanmakuType
+        from app.db.entities import DanmakuType
 
         sampler = DanmakuSampler()
         kept = sum(1 for _ in range(100) if sampler.should_keep(DanmakuType.SUPERCHAT))
@@ -118,7 +118,7 @@ class TestDanmakuSampling:
     def test_interact_always_kept(self) -> None:
         """互动应始终保留。"""
         from app.analysis.danmaku_sampling import DanmakuSampler
-        from app.db.models import DanmakuType
+        from app.db.entities import DanmakuType
 
         sampler = DanmakuSampler()
         kept = sum(1 for _ in range(100) if sampler.should_keep(DanmakuType.INTERACT))
@@ -127,7 +127,7 @@ class TestDanmakuSampling:
     def test_normal_danmaku_sampled(self) -> None:
         """普通弹幕应按比例采样。"""
         from app.analysis.danmaku_sampling import DanmakuSampler
-        from app.db.models import DanmakuType
+        from app.db.entities import DanmakuType
 
         sampler = DanmakuSampler()
         kept = sum(1 for _ in range(1000) if sampler.should_keep(DanmakuType.DANMAKU))
@@ -137,7 +137,7 @@ class TestDanmakuSampling:
     def test_high_density_reduces_normal_rate(self) -> None:
         """高密度下普通弹幕保留率降低。"""
         from app.analysis.danmaku_sampling import DanmakuSampler
-        from app.db.models import DanmakuType
+        from app.db.entities import DanmakuType
 
         sampler = DanmakuSampler()
         # 模拟高密度: 记录 2000 条弹幕 (远大于 1000/min)
@@ -268,7 +268,7 @@ class TestDanmakuSamplingIntegration:
     def test_gift_high_retention(self) -> None:
         """礼物应有高保留率。"""
         from app.analysis.danmaku_sampling import DanmakuSampler
-        from app.db.models import DanmakuType
+        from app.db.entities import DanmakuType
 
         sampler = DanmakuSampler()
         kept = sum(1 for _ in range(200) if sampler.should_keep(DanmakuType.GIFT))
@@ -277,7 +277,7 @@ class TestDanmakuSamplingIntegration:
     def test_other_medium_retention(self) -> None:
         """其他类型应有中等保留率。"""
         from app.analysis.danmaku_sampling import DanmakuSampler
-        from app.db.models import DanmakuType
+        from app.db.entities import DanmakuType
 
         sampler = DanmakuSampler()
         kept = sum(1 for _ in range(200) if sampler.should_keep(DanmakuType.OTHER))

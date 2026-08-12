@@ -9,7 +9,7 @@ from typing import Any
 from sqlmodel import select
 
 from app.analysis.timeline import source_signals
-from app.db.models import (
+from app.db.entities import (
     AppSetting,
     CandidateStatus,
     HighlightCandidate,
@@ -64,7 +64,7 @@ def list_session_timelines(*, limit: int = 30, room_db_id: int | None = None) ->
         pending_rows = db.exec(select(AppSetting).where(AppSetting.key.in_(pending_keys))).all()
         sources = source_identities_for_sessions(db, session_ids)
 
-    events_by_candidate = {event.candidate_id: event for event in events}
+    events_by_candidate = _event_map(candidate_ids, events)
     candidates_by_session: dict[int, list[HighlightCandidate]] = defaultdict(list)
     tasks_by_session: dict[int, list[SegmentTask]] = defaultdict(list)
     segment_counts: dict[int, int] = defaultdict(int)
@@ -89,12 +89,12 @@ def list_session_timelines(*, limit: int = 30, room_db_id: int | None = None) ->
         rejected_count = 0
         pending_review_count = 0
         for candidate in session_candidates:
-            event = events_by_candidate.get(candidate.id)
+            event = events_by_candidate[candidate.id]
             if _candidate_is_rejected(candidate, event):
                 rejected_count += 1
                 continue
             visible_count += 1
-            if event is None or event.review_status == ReviewStatus.PENDING:
+            if event.review_status == ReviewStatus.PENDING:
                 pending_review_count += 1
         result.append(
             {
@@ -143,7 +143,7 @@ def get_session_timeline(
             if candidate_ids
             else []
         )
-        event_by_candidate = {event.candidate_id: event for event in events}
+        event_by_candidate = _event_map(candidate_ids, events)
         tasks = db.exec(select(SegmentTask).where(SegmentTask.session_id == session_id)).all()
         segment_count = len(db.exec(select(RawSegment.id).where(RawSegment.session_id == session_id)).all())
         pending_reanalysis = db.get(AppSetting, f"{_PENDING_REANALYSIS_PREFIX}{session_id}") is not None
@@ -151,7 +151,7 @@ def get_session_timeline(
 
     points = []
     for candidate in candidates:
-        event = event_by_candidate.get(candidate.id)
+        event = event_by_candidate[candidate.id]
         rejected = _candidate_is_rejected(candidate, event)
         if rejected and not include_rejected:
             continue
@@ -161,14 +161,10 @@ def get_session_timeline(
     from app.analysis.session_summary import (
         ensure_session_timeline_summary_requested,
         session_timeline_summary_view,
-        timeline_points_signature,
     )
 
     if include_summary and session.ended_at is not None:
-        ensure_session_timeline_summary_requested(
-            session_id,
-            timeline_points_signature(points),
-        )
+        ensure_session_timeline_summary_requested(session_id)
 
     result = {
         "session": {
@@ -188,7 +184,7 @@ def get_session_timeline(
         "counts": {
             "visible": sum(1 for point in points if not point["rejected"]),
             "rejected": sum(
-                1 for candidate in candidates if _candidate_is_rejected(candidate, event_by_candidate.get(candidate.id))
+                1 for candidate in candidates if _candidate_is_rejected(candidate, event_by_candidate[candidate.id])
             ),
             "total": len(candidates),
         },
@@ -196,7 +192,6 @@ def get_session_timeline(
     if include_summary:
         result["whole_session_summary"] = session_timeline_summary_view(
             session_id,
-            points,
             processing_state=processing_state,
             ended=session.ended_at is not None,
         )
@@ -206,11 +201,11 @@ def get_session_timeline(
 def _timeline_point(
     session: RecordingSession,
     candidate: HighlightCandidate,
-    event: HighlightEvent | None,
+    event: HighlightEvent,
     *,
     rejected: bool,
 ) -> dict[str, Any]:
-    payload = decode_features(event.features_json if event and event.features_json else candidate.features_json)
+    payload = decode_features(event.features_json or candidate.features_json)
     timeline = payload.get("timeline") if isinstance(payload.get("timeline"), dict) else {}
     model_features = payload.get("features") if isinstance(payload.get("features"), dict) else payload
     raw_signals = timeline.get("source_signals")
@@ -222,17 +217,17 @@ def _timeline_point(
         signals = source_signals(numeric_features)
     raw_danmaku = timeline.get("representative_danmaku")
     danmaku = _representative_danmaku_payload(raw_danmaku)
-    start_ts = event.adjusted_start_ts if event and event.adjusted_start_ts else candidate.start_ts
-    end_ts = event.adjusted_end_ts if event and event.adjusted_end_ts else candidate.end_ts
+    start_ts = event.adjusted_start_ts or candidate.start_ts
+    end_ts = event.adjusted_end_ts or candidate.end_ts
     confidence = timeline.get("confidence")
     confidence_value = float(confidence) if isinstance(confidence, (float, int)) else float(candidate.highlight_score)
-    review_status = event.review_status if event else ReviewStatus.PENDING
-    summary = event.reason if event and event.reason else candidate.reason
+    review_status = event.review_status
+    summary = event.reason or candidate.reason
     plugin = payload.get("highlight_plugin") if isinstance(payload.get("highlight_plugin"), dict) else None
     analysis_window = payload.get("analysis_window") if isinstance(payload.get("analysis_window"), dict) else None
     return {
         "candidate_id": candidate.id,
-        "event_id": event.id if event else None,
+        "event_id": event.id,
         "clock_gmt8": _clock_gmt8(candidate.peak_ts),
         "peak_at_gmt8": _iso_gmt8(candidate.peak_ts),
         "start_at_gmt8": _iso_gmt8(start_ts),
@@ -262,10 +257,17 @@ def _timeline_point(
     }
 
 
-def _candidate_is_rejected(candidate: HighlightCandidate, event: HighlightEvent | None) -> bool:
-    return candidate.status == CandidateStatus.REJECTED or bool(
-        event is not None and event.review_status in _REJECTED_REVIEWS
-    )
+def _candidate_is_rejected(candidate: HighlightCandidate, event: HighlightEvent) -> bool:
+    return candidate.status == CandidateStatus.REJECTED or event.review_status in _REJECTED_REVIEWS
+
+
+def _event_map(candidate_ids: list[int], events: list[HighlightEvent]) -> dict[int, HighlightEvent]:
+    """验证并返回当前候选与审核事件的一对一映射。"""
+    event_by_candidate = {event.candidate_id: event for event in events}
+    missing = [candidate_id for candidate_id in candidate_ids if candidate_id not in event_by_candidate]
+    if missing:
+        raise RuntimeError(f"候选数据不完整：缺少审核事件 candidate_ids={missing}")
+    return event_by_candidate
 
 
 def _processing_state(

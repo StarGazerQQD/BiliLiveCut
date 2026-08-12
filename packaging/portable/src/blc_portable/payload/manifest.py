@@ -1,39 +1,102 @@
 """Payload Manifest 规范 — 定义 Portable Payload 的元数据格式。
 
-格式版本 5，新增身份拆分、目标平台、Engine Pack API 版本字段。
+格式版本 7，只保留当前身份、平台与 Engine Pack 契约字段。
 Manifest 只描述 ZIP 内实际存在的文件，不包含未入包的文件。
 
 字段语义:
 - portable_release_version: Portable 发布版本 (如 0.1.17.3-alpha)
-- core_source_commit / core_source_commit_short: 固定业务源码基线 92618ef
+- core_source_commit / core_source_commit_short: 固定业务源码基线 8a6add0
 - core_api_level: 业务源码的 schema version
 - builder_commit: 构建工具 commit
-- payload_schema: Manifest 格式版本 (本文件)
-- applied_backports: 已应用的回移补丁 ID 列表
+- format_version: Manifest 当前且唯一的格式版本
 - engine_pack_api_version: Engine Pack 接口契约版本 (version.json engine_pack_schema)
 - model_set_version: 模型锁版本 (version.json model_lock_schema)
 - target_platform: 目标平台 (win_x64 / linux_x64)
 - python_abi: 目标 Python ABI (cp311 / cp312)
-
-兼容性:
-- release_version 保留但语义为 portable_release_version
-- source_commit / source_commit_short 保留但语义为 core_source_commit
 """
 
 from __future__ import annotations
 
 import hashlib
-import json
 import sys
 from pathlib import Path
 from typing import Any
 
 from blc_portable.project_license import PROJECT_LICENSE_ID, project_license_sha256
 
-SOURCE_COMMIT_SHORT = "92618ef"
-SOURCE_COMMIT_FULL = "92618efcb9a3d6ec33f5ce3e0b2f46ac7e2cf55a"
+SOURCE_COMMIT_SHORT = "8a6add0"
+SOURCE_COMMIT_FULL = "8a6add048dd7d38595a35e567ec3a870bab2bf22"
 RELEASE_VERSION = "0.1.17.3-alpha"
-MANIFEST_FORMAT_VERSION = 5
+MANIFEST_FORMAT_VERSION = 7
+_MANIFEST_FIELDS = {
+    "format_version",
+    "portable_release_version",
+    "core_source_commit",
+    "core_source_commit_short",
+    "core_api_level",
+    "builder_commit",
+    "engine_pack_api_version",
+    "model_set_version",
+    "target_platform",
+    "python_abi",
+    "payload_sha256",
+    "files",
+    "file_count",
+    "project_license",
+    "project_license_sha256",
+    "source_tree_sha256",
+}
+
+
+def validate_manifest_schema(manifest: object) -> list[str]:
+    """验证 Payload Manifest 当前 schema，不访问 ZIP 内容。"""
+    errors: list[str] = []
+    if not isinstance(manifest, dict):
+        return ["Manifest 根节点必须是对象"]
+    missing = _MANIFEST_FIELDS - set(manifest)
+    unknown = set(manifest) - _MANIFEST_FIELDS
+    if missing:
+        errors.append(f"Manifest 缺少必需字段: {sorted(missing)}")
+    if unknown:
+        errors.append(f"Manifest 包含未知字段: {sorted(unknown)}")
+    if errors:
+        return errors
+
+    integer_fields = {
+        "format_version",
+        "core_api_level",
+        "engine_pack_api_version",
+        "model_set_version",
+        "file_count",
+    }
+    for field in integer_fields:
+        value = manifest[field]
+        if not isinstance(value, int) or isinstance(value, bool):
+            errors.append(f"Manifest {field} 必须是整数")
+    string_fields = _MANIFEST_FIELDS - integer_fields - {"files"}
+    for field in string_fields:
+        if not isinstance(manifest[field], str) or not manifest[field]:
+            errors.append(f"Manifest {field} 必须是非空字符串")
+    if not isinstance(manifest["files"], dict) or not manifest["files"]:
+        errors.append("Manifest files 必须是非空对象")
+    if errors:
+        return errors
+
+    for rel_path, file_info in manifest["files"].items():
+        if not isinstance(rel_path, str) or not rel_path:
+            errors.append("Manifest files 包含无效路径")
+            continue
+        if not isinstance(file_info, dict) or set(file_info) != {"sha256", "size"}:
+            errors.append(f"Manifest files[{rel_path}] 必须且只能包含 sha256/size")
+            continue
+        size = file_info["size"]
+        sha256 = file_info["sha256"]
+        if not isinstance(size, int) or isinstance(size, bool) or size < 0:
+            errors.append(f"Manifest files[{rel_path}].size 无效")
+        if not isinstance(sha256, str) or len(sha256) != 64:
+            errors.append(f"Manifest files[{rel_path}].sha256 无效")
+    return errors
+
 
 # Cached version.json values
 _VERSION_JSON: dict[str, Any] | None = None
@@ -47,23 +110,28 @@ def _load_version_json() -> dict[str, Any]:
     global _VERSION_JSON
     if _VERSION_JSON is None:
         vp = Path(__file__).resolve().parent.parent.parent.parent / "config" / "version.json"
-        _VERSION_JSON = json.loads(vp.read_text(encoding="utf-8"))
+        config_dir = str(vp.parent)
+        if config_dir not in sys.path:
+            sys.path.insert(0, config_dir)
+        from version_loader import get_full_config
+
+        _VERSION_JSON = get_full_config()
     return _VERSION_JSON
 
 
 def _get_engine_pack_api_version() -> int:
     """Get engine_pack_schema from version.json."""
-    return int(_load_version_json().get("engine_pack_schema", 4))
+    return int(_load_version_json()["engine_pack_schema"])
 
 
 def _get_model_set_version() -> int:
     """Get model_lock_schema from version.json."""
-    return int(_load_version_json().get("model_lock_schema", 4))
+    return int(_load_version_json()["model_lock_schema"])
 
 
 def _get_core_api_level() -> int:
     """Get runtime_schema (core API level) from version.json."""
-    return int(_load_version_json().get("runtime_schema", 4))
+    return int(_load_version_json()["runtime_schema"])
 
 
 def _get_python_abi() -> str:
@@ -161,8 +229,6 @@ def create_manifest(
     included_file_relpaths: list[str],
     source_commit_full: str,
     builder_commit_full: str,
-    release_overlays: list[str],
-    backport_ids: list[str] | None = None,
     target_platform: str = "win_x64",
 ) -> dict[str, Any]:
     """生成完整的 Payload Manifest。
@@ -174,8 +240,6 @@ def create_manifest(
     :param included_file_relpaths: ZIP 内实际包含的文件路径列表。
     :param source_commit_full: 业务源码基线完整 Commit Hash。
     :param builder_commit_full: 构建工具完整 Commit Hash。
-    :param release_overlays: 发布元数据覆盖文件列表。
-    :param backport_ids: 已应用的 backport ID 列表。
     :param target_platform: 目标平台 (win_x64 / linux_x64)。
     :returns: Manifest 字典。
     """
@@ -183,19 +247,15 @@ def create_manifest(
     payload_sha256 = compute_payload_sha256(payload_zip_path)
     source_tree_sha256 = compute_source_tree_sha256(staging_dir, included_file_relpaths)
 
-    bp = backport_ids or []
-
     manifest: dict[str, Any] = {
         # ── Schema ──
         "format_version": MANIFEST_FORMAT_VERSION,
-        "payload_schema": MANIFEST_FORMAT_VERSION,
-        # ── 身份 (新字段) ──
+        # ── 身份 ──
         "portable_release_version": RELEASE_VERSION,
         "core_source_commit": source_commit_full,
         "core_source_commit_short": SOURCE_COMMIT_SHORT,
         "core_api_level": _get_core_api_level(),
         "builder_commit": builder_commit_full,
-        "applied_backports": bp,
         "engine_pack_api_version": _get_engine_pack_api_version(),
         "model_set_version": _get_model_set_version(),
         "project_license": PROJECT_LICENSE_ID,
@@ -203,19 +263,10 @@ def create_manifest(
         # ── 平台 ──
         "target_platform": target_platform,
         "python_abi": _get_python_abi(),
-        # ── 兼容旧字段 ──
-        "release_version": RELEASE_VERSION,
-        "source_commit": source_commit_full,
-        "source_commit_short": SOURCE_COMMIT_SHORT,
-        "backport_ids": bp,
-        "architecture": target_platform,
-        "python_version": _get_python_abi(),
-        "schema_version": _get_core_api_level(),
         # ── 校验 ──
         "payload_sha256": payload_sha256,
         "source_tree_sha256": source_tree_sha256,
         "file_count": len(included_file_relpaths),
-        "release_overlays": release_overlays,
         "files": file_entries,
     }
     return manifest
@@ -244,32 +295,32 @@ def validate_manifest(
     errors: list[str] = []
 
     # ── 1. 必需字段 ──
-    required = [
-        "format_version",
-        "release_version",
-        "source_commit",
-        "payload_sha256",
-        "files",
-        "file_count",
-        "project_license",
-        "project_license_sha256",
-    ]
-    for field in required:
-        if field not in manifest:
-            errors.append(f"Manifest 缺少必需字段: {field}")
+    errors.extend(validate_manifest_schema(manifest))
+    if errors:
+        return errors
 
     # ── 2. 版本 / Commit 一致性 ──
-    if manifest.get("release_version") != RELEASE_VERSION:
-        errors.append(f"release_version 不匹配: manifest={manifest.get('release_version')} expected={RELEASE_VERSION}")
-
-    if manifest.get("source_commit") != SOURCE_COMMIT_FULL:
+    if manifest.get("format_version") != MANIFEST_FORMAT_VERSION:
         errors.append(
-            f"source_commit 不匹配: manifest={manifest.get('source_commit', '')[:8]} expected={SOURCE_COMMIT_FULL[:8]}"
+            f"format_version 不匹配: manifest={manifest.get('format_version')} expected={MANIFEST_FORMAT_VERSION}"
         )
 
-    if manifest.get("source_commit_short") != SOURCE_COMMIT_SHORT:
+    if manifest.get("portable_release_version") != RELEASE_VERSION:
         errors.append(
-            f"source_commit_short 不匹配: {manifest.get('source_commit_short')} expected={SOURCE_COMMIT_SHORT}"
+            "portable_release_version 不匹配: "
+            f"manifest={manifest.get('portable_release_version')} expected={RELEASE_VERSION}"
+        )
+
+    if manifest.get("core_source_commit") != SOURCE_COMMIT_FULL:
+        errors.append(
+            "core_source_commit 不匹配: "
+            f"manifest={manifest['core_source_commit'][:8]} expected={SOURCE_COMMIT_FULL[:8]}"
+        )
+
+    if manifest.get("core_source_commit_short") != SOURCE_COMMIT_SHORT:
+        errors.append(
+            "core_source_commit_short 不匹配: "
+            f"{manifest.get('core_source_commit_short')} expected={SOURCE_COMMIT_SHORT}"
         )
 
     if manifest.get("project_license") != PROJECT_LICENSE_ID:
@@ -295,10 +346,7 @@ def validate_manifest(
         errors.append(f"Payload SHA-256 不匹配: actual={actual_payload_sha[:16]} manifest={expected_payload_sha[:16]}")
 
     # ── 4. 逐文件交叉校验 ──
-    manifest_files: dict[str, dict[str, Any]] = manifest.get("files", {})
-    if not isinstance(manifest_files, dict) or not manifest_files:
-        errors.append("Manifest 'files' 为空或格式错误")
-        return errors
+    manifest_files: dict[str, dict[str, Any]] = manifest["files"]
     license_entry = manifest_files.get("LICENSE", {})
     if license_entry.get("sha256") != expected_license_sha256:
         errors.append("Manifest 中的 LICENSE 缺失或 SHA-256 与项目许可证不一致")
@@ -327,8 +375,8 @@ def validate_manifest(
         return errors
 
     # 4a. file_count 一致
-    expected_count = manifest.get("file_count", 0)
-    if isinstance(expected_count, int) and expected_count != zip_file_count:
+    expected_count = manifest["file_count"]
+    if expected_count != zip_file_count:
         errors.append(f"file_count 不一致: manifest={expected_count} zip={zip_file_count}")
 
     # 4b. Manifest 声明的文件数与实际一致
@@ -362,23 +410,21 @@ def validate_manifest(
                     errors.append(f"ZIP 文件未在 Manifest 中: {rel_path}")
                 continue
 
-            expected_sha = file_info.get("sha256", "")
-            expected_size = file_info.get("size", 0)
+            expected_sha = file_info["sha256"]
+            expected_size = file_info["size"]
 
-            if expected_size:
-                actual_size = zf.getinfo(rel_path).file_size
-                if actual_size != expected_size:
-                    size_mismatches += 1
-                    if size_mismatches <= max_errors:
-                        errors.append(f"Size 不一致: {rel_path} manifest={expected_size} zip={actual_size}")
+            actual_size = zf.getinfo(rel_path).file_size
+            if actual_size != expected_size:
+                size_mismatches += 1
+                if size_mismatches <= max_errors:
+                    errors.append(f"Size 不一致: {rel_path} manifest={expected_size} zip={actual_size}")
 
-            if expected_sha and len(expected_sha) == 64:
-                actual_content = zf.read(rel_path)
-                actual_sha = compute_sha256(actual_content)
-                if actual_sha != expected_sha:
-                    sha_mismatches += 1
-                    if sha_mismatches <= max_errors:
-                        errors.append(f"SHA-256 不一致: {rel_path} manifest={expected_sha[:16]} zip={actual_sha[:16]}")
+            actual_content = zf.read(rel_path)
+            actual_sha = compute_sha256(actual_content)
+            if actual_sha != expected_sha:
+                sha_mismatches += 1
+                if sha_mismatches <= max_errors:
+                    errors.append(f"SHA-256 不一致: {rel_path} manifest={expected_sha[:16]} zip={actual_sha[:16]}")
 
     if missing:
         errors.append(f"ZIP 中 {missing} 个文件不在 Manifest 中")
@@ -402,11 +448,13 @@ def cross_verify_installed(
     :param manifest: 已解析的 Manifest 字典。
     :returns: 错误列表。空列表表示通过。
     """
-    errors: list[str] = []
+    errors = validate_manifest_schema(manifest)
+    if errors:
+        return errors
     installed_dir = installed_dir.resolve()
 
-    manifest_files: dict[str, dict[str, Any]] = manifest.get("files", {})
-    expected_count = manifest.get("file_count", len(manifest_files))
+    manifest_files: dict[str, dict[str, Any]] = manifest["files"]
+    expected_count = manifest["file_count"]
 
     if not manifest_files:
         errors.append("Manifest 'files' 为空")
@@ -436,29 +484,27 @@ def cross_verify_installed(
 
         actual_files.add(rel_path)
 
-        expected_sha = file_info.get("sha256", "")
-        expected_size = file_info.get("size", 0)
+        expected_sha = file_info["sha256"]
+        expected_size = file_info["size"]
 
-        if expected_size:
-            actual_size = target.stat().st_size
-            if actual_size != expected_size:
-                size_mismatches += 1
-                if size_mismatches <= max_detail:
-                    errors.append(f"Size 不一致: {rel_path} manifest={expected_size} actual={actual_size}")
+        actual_size = target.stat().st_size
+        if actual_size != expected_size:
+            size_mismatches += 1
+            if size_mismatches <= max_detail:
+                errors.append(f"Size 不一致: {rel_path} manifest={expected_size} actual={actual_size}")
 
-        if expected_sha and len(expected_sha) == 64:
-            actual_sha = compute_file_sha256(target)
-            if actual_sha != expected_sha:
-                hash_mismatches += 1
-                if hash_mismatches <= max_detail:
-                    errors.append(f"SHA-256 不一致: {rel_path} manifest={expected_sha[:16]} actual={actual_sha[:16]}")
+        actual_sha = compute_file_sha256(target)
+        if actual_sha != expected_sha:
+            hash_mismatches += 1
+            if hash_mismatches <= max_detail:
+                errors.append(f"SHA-256 不一致: {rel_path} manifest={expected_sha[:16]} actual={actual_sha[:16]}")
 
     # 检查额外文件
     extra_files = 0
     for p in installed_dir.rglob("*"):
         if p.is_file():
             rel = p.relative_to(installed_dir).as_posix()
-            if rel not in manifest_files and rel != "payload_manifest.json":
+            if rel not in manifest_files:
                 extra_files += 1
                 if extra_files <= max_detail:
                     errors.append(f"额外文件 (不在 Manifest 中): {rel}")
@@ -476,7 +522,7 @@ def cross_verify_installed(
     # 文件数量检查
     expected_count_val = expected_count
     actual_count = len(actual_files)
-    if expected_count_val and actual_count != expected_count_val:
+    if actual_count != expected_count_val:
         errors.append(f"文件数量不一致: manifest={expected_count_val} actual={actual_count}")
 
     return errors

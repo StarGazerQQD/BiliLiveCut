@@ -122,7 +122,7 @@ def build_full_bundle() -> Path:
             missing.append("bin/ffprobe.exe")
 
     if missing:
-        is_fixture = os.environ.get("BLC_FIXTURE_BUILD") == "1" or os.environ.get("BLC_CI_BUILD") == "1"
+        is_fixture = os.environ.get("BLC_FIXTURE_BUILD") == "1"
         if is_fixture:
             print("\n  [WARNING] Full offline bundle is missing (fixture mode, continuing):")
             for m in missing:
@@ -278,7 +278,7 @@ Source:
 
         checksums = {
             "release_version": RELEASE_VERSION,
-            "source_commit": manifest["source_commit"],
+            "source_commit": manifest["core_source_commit"],
             "exe_sha256": exe_sha256.hexdigest(),
             "engine_pack_crc32": engine_pack_crc32,
             "project_license": PROJECT_LICENSE_ID,
@@ -298,8 +298,8 @@ Source:
         zip_sha256, zip_crc32 = _compute_archive_hashes(zip_path)
         build_manifest = {
             "release_version": RELEASE_VERSION,
-            "source_commit": manifest["source_commit"],
-            "source_commit_short": manifest["source_commit_short"],
+            "source_commit": manifest["core_source_commit"],
+            "source_commit_short": manifest["core_source_commit_short"],
             "builder_commit": manifest["builder_commit"],
             "architecture": "x64",
             "artifact_type": "full",

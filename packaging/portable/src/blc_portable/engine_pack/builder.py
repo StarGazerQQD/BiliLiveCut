@@ -37,6 +37,14 @@ from pathlib import Path
 from typing import Any
 
 from blc_portable.console import configure_console_encoding
+from blc_portable.engine_pack.manifest import (
+    ARCHIVE_FILENAME,
+    ENGINE_PACK_VERSION,
+    SOURCE_COMMIT_SHORT,
+    create_manifest,
+    load_manifest,
+)
+from blc_portable.engine_pack.schema import SCHEMA_VERSION, ExternalMetadata
 from blc_portable.model_lock import compute_model_lock_sha256
 
 # ── 常量 ───────────────────────────────────────────────────
@@ -47,10 +55,6 @@ BUILD_DIR = PORTABLE_DIR / "build" / "engine-pack"
 DIST_DIR = PORTABLE_DIR / "dist" / "engine-pack"
 RESOURCES_DIR = PORTABLE_DIR / "resources"
 LICENSES_DIR = PORTABLE_DIR / "licenses"
-
-ENGINE_PACK_VERSION = "0.1.17.3-alpha"
-SOURCE_COMMIT_SHORT = "92618ef"
-ARCHIVE_NAME = f"BiliLiveCut-EnginePack-{ENGINE_PACK_VERSION}"
 
 CHUNK_SIZE = 8 * 1024 * 1024
 MIN_PRODUCTION_ARCHIVE_BYTES = 500 * 1024 * 1024
@@ -104,21 +108,18 @@ def _get_engines_for_build() -> list[dict[str, Any]]:
             "target_path": e.target_path,
             "required_files": e.required_files,
             "license": _license_to_dict(e.license),
-        }
-        if e.hub == "huggingface":
-            d["repo_id"] = e.repository
-        if e.sub_models:
-            d["sub_models"] = [
+            "model_repo": e.repository if e.hub == "huggingface" else None,
+            "sub_models": [
                 {
                     "model_id": s.repository,
-                    "revision": s.resolved_revision if s.resolved_revision else None,
-                    "target_subdir": s.target_subdir if s.target_subdir else s.repository.rsplit("/", 1)[-1],
+                    "hub": s.hub,
+                    "revision": s.resolved_revision or None,
+                    "target_subdir": s.target_subdir,
                     "license": _license_to_dict(s.license),
                 }
                 for s in e.sub_models
-            ]
-        if e.third_party_components:
-            d["third_party_components"] = [
+            ],
+            "third_party_components": [
                 {
                     "component_id": component.component_id,
                     "display_name": component.display_name,
@@ -128,7 +129,10 @@ def _get_engines_for_build() -> list[dict[str, Any]]:
                     "license": _license_to_dict(component.license),
                 }
                 for component in e.third_party_components
-            ]
+            ],
+        }
+        if e.hub == "huggingface":
+            d["repo_id"] = e.repository
         raw.append(d)
     return raw
 
@@ -271,6 +275,11 @@ def validate_prepared_models(staging: Path) -> list[str]:
             component_dir = target / target_subdir
             if not component_dir.is_dir() or not any(path.is_file() for path in component_dir.rglob("*")):
                 errors.append(f"engine {engine_id}: component directory missing or empty: {target_subdir}")
+
+        if engine_id == "paraformer":
+            for removed_subdir in ("cam++", "campplus"):
+                if (target / removed_subdir).exists():
+                    errors.append(f"engine paraformer: removed sub-model directory present: {removed_subdir}")
 
     return errors
 
@@ -456,9 +465,9 @@ def self_verify(archive_path: Path, manifest: dict[str, Any]) -> bool:
         from .manifest import load_manifest
         from .verifier import verify_extracted_tree
 
-        load_manifest(verify_dir / "engine-pack-manifest.json")
+        parsed = load_manifest(verify_dir / "engine-pack-manifest.json")
 
-        errors = verify_extracted_tree(verify_dir, manifest)
+        errors = verify_extracted_tree(verify_dir, parsed)
         if errors:
             for e in errors:
                 print(f"  [FAIL] {e}")
@@ -519,13 +528,9 @@ def write_output_files(
     DIST_DIR.mkdir(parents=True, exist_ok=True)
 
     manifest_path = DIST_DIR / "engine-pack-manifest.json"
+    parsed_manifest = load_manifest(content_manifest_path)
     manifest_bytes = content_manifest_path.read_bytes()
-    manifest = json.loads(manifest_bytes)
-    file_count = int(manifest.get("total_files", 0))
-    if file_count != len(manifest.get("files", {})):
-        raise RuntimeError(
-            f"Content Manifest file count mismatch: declared={file_count} actual={len(manifest.get('files', {}))}"
-        )
+    file_count = parsed_manifest.total_files
     manifest_path.write_bytes(manifest_bytes)
 
     (DIST_DIR / "CRC32SUMS.txt").write_text(f"{crc32_val}  {archive_path.name}\n", encoding="utf-8")
@@ -567,26 +572,24 @@ def write_output_files(
 
     # Load version.json for schema version cross-references
     version_json_path = PORTABLE_DIR / "config" / "version.json"
-    engine_pack_api_version = 4
-    model_set_version = 4
-    payload_schema_version = 4
-    if version_json_path.exists():
-        vj = json.loads(version_json_path.read_text(encoding="utf-8"))
-        engine_pack_api_version = int(vj.get("engine_pack_schema", 4))
-        model_set_version = int(vj.get("model_lock_schema", 4))
-        payload_schema_version = int(vj.get("payload_schema", 4))
+    if not version_json_path.is_file():
+        raise RuntimeError(f"version.json missing: {version_json_path}")
+    vj = json.loads(version_json_path.read_text(encoding="utf-8"))
+    engine_pack_api_version = int(vj["engine_pack_schema"])
+    model_set_version = int(vj["model_lock_schema"])
+    if engine_pack_api_version != SCHEMA_VERSION:
+        raise RuntimeError(f"engine_pack_schema mismatch: version.json={engine_pack_api_version} code={SCHEMA_VERSION}")
 
     # artifact_class 必须显式存在 — 禁止缺失后默认为 production
     artifact_class = "fixture" if is_fixture else "production"
 
     engine_pack_info: dict[str, Any] = {
-        "format_version": 4,
+        "format_version": SCHEMA_VERSION,
         "artifact_class": artifact_class,
         "engine_pack_version": ENGINE_PACK_VERSION,
+        "portable_release_version": ENGINE_PACK_VERSION,
         "engine_pack_api_version": engine_pack_api_version,
         "model_set_version": model_set_version,
-        "payload_schema_version": payload_schema_version,
-        "compatible_app": {"min": ENGINE_PACK_VERSION, "max_exclusive": "0.1.18"},
         "filename": archive_path.name,
         "size_bytes": total_size,
         "crc32": crc32_val,
@@ -598,6 +601,10 @@ def write_output_files(
         "build_timestamp": datetime.datetime.now().strftime("%Y-%m-%dT%H:%M:%S"),
         "expected_engine_ids": ["whisper", "paraformer", "sensevoice", "funasr_nano"],
     }
+    metadata = ExternalMetadata.from_dict(engine_pack_info)
+    metadata_errors = metadata.validate()
+    if metadata_errors:
+        raise RuntimeError("Engine Pack metadata validation FAILED:\n  " + "\n  ".join(metadata_errors))
 
     # Production validation: reject empty hash fields
     if not is_fixture:
@@ -728,7 +735,7 @@ def build_engine_pack(fixture: bool = False, from_cache: bool = False) -> dict[s
     staging = BUILD_DIR / f"staging-{uuid.uuid4().hex[:8]}"
     staging.mkdir(parents=True, exist_ok=True)
 
-    archive_path = DIST_DIR / f"{ARCHIVE_NAME}.zip"
+    archive_path = DIST_DIR / ARCHIVE_FILENAME
 
     # ── 阶段 1: 准备模型 ──
     if fixture:
@@ -750,33 +757,12 @@ def build_engine_pack(fixture: bool = False, from_cache: bool = False) -> dict[s
 
     file_list = build_file_list(staging)
 
-    manifest_data: dict[str, Any] = {
-        "format_version": 4,
-        "engine_pack_version": ENGINE_PACK_VERSION,
-        "portable_release_version": ENGINE_PACK_VERSION,
-        "compatible_app": {"min": ENGINE_PACK_VERSION, "max_exclusive": "0.1.18"},
-        "source_commit": source_commit,
-        "source_commit_short": SOURCE_COMMIT_SHORT,
-        "builder_commit": builder_head,
-        "total_files": len(file_list),
-        "fixture": fixture,
-        "engines": [
-            {
-                "engine_id": e["engine_id"],
-                "engine_name": e["engine_name"],
-                "model_id": e["model_id"],
-                "hub": e["hub"],
-                "revision": e.get("revision"),
-                "target_path": e["target_path"],
-                "license": e["license"],
-                "model_repo": e.get("repo_id"),
-                "sub_models": e.get("sub_models", []),
-                "third_party_components": e.get("third_party_components", []),
-            }
-            for e in _get_engines_for_build()
-        ],
-        "files": file_list,
-    }
+    manifest_data = create_manifest(
+        source_commit,
+        builder_head,
+        file_list,
+        fixture=fixture,
+    ).to_dict()
     # 注意: 内部 Manifest 不包含 archive_crc32/archive_sha256 (避免自引用问题)。
     #       最终 ZIP 的外部哈希保存在 engine_pack_info.json 和 SHA256SUMS.txt 中。
     (staging / "engine-pack-manifest.json").write_text(

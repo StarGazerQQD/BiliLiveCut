@@ -25,7 +25,7 @@ class PluginManifest(BaseModel):
     id: str = Field(pattern=r"^[a-z][a-z0-9_-]{0,63}$")
     name: str = Field(min_length=1, max_length=80)
     version: str = Field(min_length=1, max_length=40)
-    api_version: str = Field(default=PLUGIN_API_VERSION, min_length=1, max_length=20)
+    api_version: str = Field(min_length=1, max_length=20)
     entrypoint: str = Field(min_length=3, max_length=180)
     description: str = Field(default="", max_length=500)
     settings_page: bool = True

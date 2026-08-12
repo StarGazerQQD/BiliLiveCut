@@ -123,6 +123,24 @@ async def test_invalid_manifest_is_reported_without_import(temp_db: None, tmp_pa
 
 
 @pytest.mark.asyncio
+async def test_manifest_without_current_api_version_is_rejected(temp_db: None, tmp_path: Path) -> None:
+    """插件清单不得为缺失的 api_version 补当前默认值。"""
+    directory = _write_plugin(tmp_path)
+    manifest_path = directory / "plugin.json"
+    manifest = json.loads(manifest_path.read_text(encoding="utf-8"))
+    manifest.pop("api_version")
+    manifest_path.write_text(json.dumps(manifest, ensure_ascii=False), encoding="utf-8")
+    manager = PluginManager(tmp_path)
+
+    await manager.start()
+    payload = manager.list_payload()
+
+    assert payload["plugins"] == []
+    assert "api_version" in payload["scan_errors"][0]["error"]
+    await manager.stop()
+
+
+@pytest.mark.asyncio
 async def test_enabled_state_is_restored_on_next_manager_start(temp_db: None, tmp_path: Path) -> None:
     _write_plugin(tmp_path)
     first = PluginManager(tmp_path)

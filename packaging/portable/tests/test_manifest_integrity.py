@@ -12,7 +12,6 @@
 from __future__ import annotations
 
 import hashlib
-import json
 import shutil
 import sys
 import tempfile
@@ -26,6 +25,7 @@ import pytest
 _src_dir = str(Path(__file__).resolve().parent.parent / "src")
 if _src_dir not in sys.path:
     sys.path.insert(0, _src_dir)
+sys.path.insert(0, str(Path(__file__).resolve().parent))
 
 _portable_dir = Path(__file__).resolve().parent.parent
 PAYLOAD_DIR = _portable_dir / "dist" / "payload"
@@ -40,8 +40,10 @@ def _has_payload() -> bool:
 
 
 def _load_manifest() -> dict[str, Any]:
-    """加载当前 Manifest。"""
-    return json.loads(MANIFEST_PATH.read_text(encoding="utf-8"))
+    """根据现有 ZIP 生成当前 schema Manifest。"""
+    from payload_helpers import manifest_for_zip
+
+    return manifest_for_zip(PAYLOAD_ZIP)
 
 
 # ── Fixtures ────────────────────────────────────────────
@@ -161,25 +163,27 @@ class TestIdentityFields:
     """验证 Manifest 包含所有要求的身份字段。"""
 
     REQUIRED_IDENTITY = [
+        "format_version",
         "portable_release_version",
         "core_source_commit",
         "core_source_commit_short",
         "core_api_level",
         "builder_commit",
-        "payload_schema",
-        "applied_backports",
         "engine_pack_api_version",
         "model_set_version",
         "target_platform",
         "python_abi",
         "project_license",
         "project_license_sha256",
+        "source_tree_sha256",
     ]
 
-    COMPAT_FIELDS = [
+    REMOVED_FIELDS = [
         "release_version",
         "source_commit",
         "source_commit_short",
+        "payload_schema",
+        "applied_backports",
         "backport_ids",
         "architecture",
         "python_version",
@@ -191,31 +195,27 @@ class TestIdentityFields:
         for field in self.REQUIRED_IDENTITY:
             assert field in manifest, f"Missing identity field: {field}"
 
-    def test_all_compat_fields_present(self, manifest: dict) -> None:
-        """验证所有旧兼容字段都存在。"""
-        for field in self.COMPAT_FIELDS:
-            assert field in manifest, f"Missing compat field: {field}"
+    def test_removed_compat_fields_are_absent(self, manifest: dict) -> None:
+        """旧别名和 Backport 字段不得继续出现在当前 Manifest。"""
+        for field in self.REMOVED_FIELDS:
+            assert field not in manifest, f"Removed field still present: {field}"
 
     def test_core_source_commit_is_current_baseline(self, manifest: dict) -> None:
         """验证 core_source_commit 是当前 Portable 源码基线。"""
-        assert manifest["core_source_commit"] == "92618efcb9a3d6ec33f5ce3e0b2f46ac7e2cf55a"
-        assert manifest["core_source_commit_short"] == "92618ef"
-        assert manifest["source_commit"] == manifest["core_source_commit"]
-        assert manifest["source_commit_short"] == "92618ef"
+        assert manifest["core_source_commit"] == "8a6add048dd7d38595a35e567ec3a870bab2bf22"
+        assert manifest["core_source_commit_short"] == "8a6add0"
 
     def test_portable_version_matches_release(self, manifest: dict) -> None:
-        """验证 portable_release_version == release_version。"""
-        assert manifest["portable_release_version"] == manifest["release_version"]
+        """验证 Portable 发布版本是当前唯一版本字段。"""
+        from blc_portable.payload.manifest import RELEASE_VERSION
+
+        assert manifest["portable_release_version"] == RELEASE_VERSION
 
     def test_target_platform_is_win_x64(self, manifest: dict) -> None:
         """验证 target_platform 不是 builder 平台。"""
         assert manifest["target_platform"] == "win_x64", (
             f"target_platform should be win_x64, got {manifest['target_platform']}"
         )
-
-    def test_backport_ids_match(self, manifest: dict) -> None:
-        """验证 applied_backports == backport_ids。"""
-        assert manifest["applied_backports"] == manifest["backport_ids"]
 
     def test_no_generated_at(self, manifest: dict) -> None:
         """验证不包含 generated_at (破坏可复现性)。"""
@@ -462,30 +462,32 @@ class TestWrongIdentity:
 
         manifest = _load_manifest()
         tampered = dict(manifest)
-        tampered["source_commit"] = "e" * 40
-        tampered["source_commit_short"] = "eeeeeee"
+        tampered["core_source_commit"] = "e" * 40
+        tampered["core_source_commit_short"] = "eeeeeee"
 
         errors = validate_manifest(tampered, PAYLOAD_ZIP)
         assert errors, "Wrong source_commit should be detected"
-        assert any("source_commit" in e for e in errors), f"Expected source_commit error, got: {errors}"
+        assert any("core_source_commit" in e for e in errors), f"Expected source commit error, got: {errors}"
 
     def test_wrong_version_detected(self) -> None:
-        """验证错误的 release_version 被检测。"""
+        """验证错误的 portable_release_version 被检测。"""
         from blc_portable.payload.manifest import validate_manifest
 
         manifest = _load_manifest()
         tampered = dict(manifest)
-        tampered["release_version"] = "0.1.14.99-fake"
+        tampered["portable_release_version"] = "0.1.14.99-fake"
 
         errors = validate_manifest(tampered, PAYLOAD_ZIP)
         assert errors, "Wrong release_version should be detected"
-        assert any("release_version" in e for e in errors), f"Expected release_version error, got: {errors}"
+        assert any("portable_release_version" in e for e in errors), f"Expected version error, got: {errors}"
 
-    def test_latest_baseline_requires_no_backports(self) -> None:
-        """验证当前源码基线不再叠加历史 Backport。"""
+    def test_legacy_backport_fields_are_rejected(self) -> None:
+        """旧 Backport 字段会被严格 schema 拒绝。"""
+        from blc_portable.payload.manifest import validate_manifest
+
         manifest = _load_manifest()
-        assert manifest["applied_backports"] == []
-        assert manifest["backport_ids"] == []
+        manifest["applied_backports"] = []
+        assert any("未知字段" in error for error in validate_manifest(manifest, PAYLOAD_ZIP))
 
 
 # ── 路径安全 ──────────────────────────────────────────
@@ -497,6 +499,8 @@ class TestPathSafety:
     def test_absolute_path_blocked(self) -> None:
         """验证绝对路径的 ZIP 条目被检测。"""
         from blc_portable.payload.manifest import validate_manifest
+        from blc_portable.project_license import load_project_license
+        from payload_helpers import manifest_for_zip
 
         with tempfile.TemporaryDirectory() as tmp:
             tmp = Path(tmp)
@@ -505,28 +509,16 @@ class TestPathSafety:
                 zf.writestr("/etc/hosts", b"malicious")
                 # 也要有一个合法文件让 file_count 检查通过其他关
                 zf.writestr("app/cli.py", b"#!/usr/bin/env python")
+                zf.writestr("LICENSE", load_project_license())
 
-            # 应该至少有绝对路径错误
-            result = validate_manifest(
-                {
-                    "release_version": "0.1.14.11-alpha",
-                    "source_commit": "7" * 40,
-                    "source_commit_short": "92618ef",
-                    "format_version": 5,
-                    "payload_sha256": "0" * 64,
-                    "file_count": 1,
-                    "files": {
-                        "app/cli.py": {"sha256": hashlib.sha256(b"#!/usr/bin/env python").hexdigest(), "size": 22}
-                    },
-                },
-                bad_zip,
-            )
-            # 至少应该有错误
-            assert result, "Bad ZIP should produce errors"
+            result = validate_manifest(manifest_for_zip(bad_zip), bad_zip)
+            assert any("绝对路径" in error for error in result)
 
     def test_dot_dot_blocked(self) -> None:
         """验证 .. 路径遍历的 ZIP 条目被检测。"""
         from blc_portable.payload.manifest import validate_manifest
+        from blc_portable.project_license import load_project_license
+        from payload_helpers import manifest_for_zip
 
         with tempfile.TemporaryDirectory() as tmp:
             tmp = Path(tmp)
@@ -534,20 +526,10 @@ class TestPathSafety:
             with zipfile.ZipFile(bad_zip, "w", zipfile.ZIP_DEFLATED) as zf:
                 zf.writestr("../../windows/system32/evil.dll", b"payload")
                 zf.writestr("app/cli.py", b"ok")
+                zf.writestr("LICENSE", load_project_license())
 
-            result = validate_manifest(
-                {
-                    "release_version": "0.1.14.11-alpha",
-                    "source_commit": "7" * 40,
-                    "source_commit_short": "92618ef",
-                    "format_version": 5,
-                    "payload_sha256": "0" * 64,
-                    "file_count": 1,
-                    "files": {"app/cli.py": {"sha256": hashlib.sha256(b"ok").hexdigest(), "size": 2}},
-                },
-                bad_zip,
-            )
-            assert result, "ZIP with .. traversal should produce errors"
+            result = validate_manifest(manifest_for_zip(bad_zip), bad_zip)
+            assert any("路径遍历" in error for error in result)
 
 
 # ── 可复现性 ──────────────────────────────────────────
@@ -581,10 +563,12 @@ class TestReproducibility:
 class TestManifestFormatVersion:
     """验证 Manifest 格式版本字段。"""
 
-    def test_format_version_is_5(self, manifest: dict) -> None:
-        """验证 format_version 升级到 5。"""
-        assert manifest["format_version"] == 5, f"Expected format_version=5, got {manifest['format_version']}"
+    def test_format_version_is_current(self, manifest: dict) -> None:
+        """验证 format_version 使用当前唯一版本。"""
+        from blc_portable.payload.manifest import MANIFEST_FORMAT_VERSION
 
-    def test_payload_schema_matches_format_version(self, manifest: dict) -> None:
-        """验证 payload_schema == format_version。"""
-        assert manifest["payload_schema"] == manifest["format_version"], "payload_schema should equal format_version"
+        assert manifest["format_version"] == MANIFEST_FORMAT_VERSION
+
+    def test_payload_schema_alias_is_absent(self, manifest: dict) -> None:
+        """旧 payload_schema 别名已移除。"""
+        assert "payload_schema" not in manifest

@@ -15,7 +15,6 @@
 V0.1.12.2 变更:
     - 新增 ASRSegmentResult / ASRTranscriptResult 统一结果结构, 消除各后端置信度歧义。
     - 不再给无置信度字段伪造 0.0, 改为 None。
-    - 保留 TranscriptionResult 作为向后兼容层。
 """
 
 from __future__ import annotations
@@ -131,49 +130,6 @@ def _segment_to_confidence(seg: ASRSegmentResult) -> float | None:
     if seg.confidence_available and seg.normalized_confidence is not None:
         return seg.normalized_confidence
     return None
-
-
-# ═══════════════════════════════════════════════════════════
-# 向后兼容: 保留旧 TranscriptionResult
-# ═══════════════════════════════════════════════════════════
-
-
-@dataclass(slots=True)
-class TranscriptionResult:
-    """[向后兼容] 旧转写结果, 内部自动从 ASRTranscriptResult 转换。
-
-    V0.1.12.2 新增代码应使用 :class:`ASRTranscriptResult`。
-    """
-
-    text: str
-    language: str
-    words: list[Word] = field(default_factory=list)
-    avg_logprob: float = 0.0
-    emotions: list[EmotionEvent] = field(default_factory=list)
-    reviewed_segments: list[dict] = field(default_factory=list)
-    engine: str = "paraformer"
-
-    @classmethod
-    def from_unified(cls, unified: ASRTranscriptResult) -> TranscriptionResult:
-        """从统一结果转换。"""
-        return cls(
-            text=unified.final_text or unified.text,
-            language=unified.language or "zh",
-            words=[w for seg in unified.segments for w in seg.words],
-            avg_logprob=(
-                unified.segments[0].raw_confidence
-                if unified.segments and unified.segments[0].confidence_type == "avg_logprob"
-                else 0.0
-            ),
-            emotions=unified.emotions,
-            reviewed_segments=unified.reviewed_segments,
-            engine=unified.backend,
-        )
-
-
-def _unified_to_legacy(unified: ASRTranscriptResult) -> TranscriptionResult:
-    """快速转换: 统一结果 → 向后兼容结果。"""
-    return TranscriptionResult.from_unified(unified)
 
 
 # ═══════════════════════════════════════════════════════════

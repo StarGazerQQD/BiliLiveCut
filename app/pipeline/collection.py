@@ -28,7 +28,7 @@ from sqlmodel import select
 from app.core.config import settings
 from app.core.paths import clips_dir
 from app.core.process_control import ProcessCancelledError, run_cancellable
-from app.db.models import (
+from app.db.entities import (
     ClipStatus,
     ClipVariant,
     ClipVariantType,
@@ -369,7 +369,7 @@ def render_collection(
                 )
             ).first()
             if event_link:
-                from app.db.models import CandidateStatus
+                from app.db.entities import CandidateStatus
 
                 cand = db.get(HighlightCandidate, eid)
                 if cand:

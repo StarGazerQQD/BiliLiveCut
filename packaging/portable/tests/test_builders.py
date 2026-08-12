@@ -52,17 +52,21 @@ class TestLiteBuilder:
         (resources_dir / "engine_pack_info.json").write_text(
             json.dumps(
                 {
-                    "format_version": 4,
+                    "format_version": 5,
                     "artifact_class": "production",
                     "engine_pack_version": lite.RELEASE_VERSION,
-                    "engine_pack_api_version": 4,
-                    "model_set_version": 4,
-                    "filename": "BiliLiveCut-EnginePack.zip",
+                    "portable_release_version": lite.RELEASE_VERSION,
+                    "engine_pack_api_version": 5,
+                    "model_set_version": 5,
+                    "filename": f"BiliLiveCut-EnginePack-{lite.RELEASE_VERSION}.zip",
                     "size_bytes": 500_000_000,
                     "crc32": "1234ABCD",
                     "sha256": "a" * 64,
                     "content_manifest_sha256": "b" * 64,
                     "model_lock_sha256": "c" * 64,
+                    "source_commit": "d" * 40,
+                    "builder_commit": "e" * 40,
+                    "build_timestamp": "2026-08-12T00:00:00",
                     "expected_engine_ids": ["whisper", "paraformer", "sensevoice", "funasr_nano"],
                 }
             ),
@@ -186,7 +190,6 @@ class TestFullBuilder:
             build_full_bundle()
 
     def test_full_fixture_ok(self, monkeypatch: pytest.MonkeyPatch) -> None:
-        monkeypatch.setenv("BLC_CI_BUILD", "1")  # Legacy support
         monkeypatch.setenv("BLC_FIXTURE_BUILD", "1")
         # Should not crash at import time
         from blc_portable.builders.full import build_full_bundle  # noqa: E402

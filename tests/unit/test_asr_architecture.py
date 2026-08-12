@@ -53,13 +53,6 @@ class TestTypeIdentity:
 
         assert m_type is b_type, "Word differs"
 
-    def test_transcription_result_is_same_object(self) -> None:
-        """TranscriptionResult 在公共 API 中是同一对象。"""
-        from app.analysis.transcription import TranscriptionResult as b_type
-        from app.analysis.transcription.models import TranscriptionResult as m_type
-
-        assert m_type is b_type, "TranscriptionResult differs"
-
     def test_transcriber_backend_is_same_object(self) -> None:
         """TranscriberBackend 在公共 API 中是同一对象。"""
         from app.analysis.transcription import TranscriberBackend as b_type
@@ -245,20 +238,12 @@ class TestFacadeTypeConsistency:
             "ASRSegmentResult",
             "EmotionEvent",
             "Word",
-            "TranscriptionResult",
             "TranscriberBackend",
             "FunASRBackend",
             "FasterWhisperBackend",
             "ASRPipeline",
         ]:
             assert hasattr(t, name), f"__init__.py missing export: {name}"
-
-    def test_legacy_facade_exports_protocol_from_models(self) -> None:
-        """兼容入口必须从唯一模型定义处导出转写协议。"""
-        from app.analysis.transcribe import TranscriberBackend as facade_type
-        from app.analysis.transcription.models import TranscriberBackend as model_type
-
-        assert facade_type is model_type
 
     def test_models_are_single_source(self) -> None:
         """数据模型只在 models.py 中定义，不在 backends.py / pipeline.py 重复。"""
@@ -275,7 +260,6 @@ class TestFacadeTypeConsistency:
             "ASRSegmentResult",
             "EmotionEvent",
             "Word",
-            "TranscriptionResult",
             "TranscriberBackend",
         ]:
             in_models = _count_class_in_file(base / "models.py", cls_name)

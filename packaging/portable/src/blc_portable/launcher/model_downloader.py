@@ -254,7 +254,6 @@ def download_all_engines(app_root: Path) -> dict[str, Any]:
             staging_dir,
             "0.1.17.3-alpha",
             installed_engines,
-            files_info,
         )
 
         if not ok:

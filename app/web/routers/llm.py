@@ -5,13 +5,15 @@ from __future__ import annotations
 from typing import Any
 
 from fastapi import APIRouter
-from pydantic import BaseModel
+from pydantic import BaseModel, ConfigDict
 
 from app.web import service
 
 
 class LLMProviderIn(BaseModel):
     """大模型提供商配置项。"""
+
+    model_config = ConfigDict(extra="forbid")
 
     id: str = ""
     name: str = ""
@@ -28,6 +30,8 @@ class LLMProviderIn(BaseModel):
 class LLMProvidersRequest(BaseModel):
     """大模型提供商批量设置请求体。"""
 
+    model_config = ConfigDict(extra="forbid")
+
     providers: list[LLMProviderIn]
 
 
@@ -42,7 +46,7 @@ def get_llm_providers() -> dict[str, Any]:
 
 @router.put("/llm-providers")
 def put_llm_providers(req: LLMProvidersRequest) -> dict[str, Any]:
-    """保存多大模型配置(按优先级失败回退;未填 key 沿用旧值)。"""
+    """保存多大模型配置(按优先级失败回退；未填 key 保留已保存值)。"""
     return service.save_llm_providers([p.model_dump() for p in req.providers])
 
 

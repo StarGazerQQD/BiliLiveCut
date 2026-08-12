@@ -21,7 +21,7 @@ from sqlmodel import select
 
 from app.analysis import audio as audio_mod
 from app.core.config import settings
-from app.db.models import (
+from app.db.entities import (
     HighlightCandidate,
     RawSegment,
     SegmentStatus,
@@ -361,7 +361,7 @@ def _fast_meme_hit_count(texts: list[str], memes: tuple[str, ...]) -> int:
     :param memes: 梗词元组。
     :returns: 命中条数。
     """
-    from app.analysis.speedups import fast_meme_count
+    from app.accelerators.dispatcher import fast_meme_count
 
     return fast_meme_count(texts, memes)
 
@@ -374,7 +374,7 @@ def _fetch_window_danmaku_texts(session_id: int, start_n: object, end_n: object)
     :param end_n: 窗口结束(datetime,已去时区)。
     :returns: 时间窗内的弹幕文本列表。
     """
-    from app.db.models import Danmaku
+    from app.db.entities import Danmaku
 
     with get_session() as db:
         rows = db.exec(
@@ -585,7 +585,7 @@ def _danmaku_baseline(
     from datetime import datetime as _datetime
     from datetime import timedelta
 
-    from app.db.models import Danmaku
+    from app.db.entities import Danmaku
 
     def _n(dt: _datetime) -> _datetime:
         return dt.replace(tzinfo=None) if getattr(dt, "tzinfo", None) else dt
@@ -627,7 +627,7 @@ def _danmaku_baseline(
         return 0.0, 0
 
     # V0.1.10: 使用加速版分桶+中位数 (排序→float 秒→分桶→速率→中位数)。
-    from app.analysis.speedups import danmaku_baseline_rate
+    from app.accelerators.dispatcher import danmaku_baseline_rate
 
     timestamps_sorted = sorted(_n(ts) for ts in rows)  # type: ignore[arg-type]
     base_ts = timestamps_sorted[0]
@@ -649,7 +649,7 @@ def _danmaku_score(session_id: int, start_ts: object, end_ts: object) -> float:
     """
     from datetime import datetime as _datetime
 
-    from app.db.models import Danmaku
+    from app.db.entities import Danmaku
 
     if start_ts is None or end_ts is None:
         return 0.0
@@ -718,7 +718,7 @@ def danmaku_score_explain(session_id: int, start_ts: object, end_ts: object) -> 
     """
     from datetime import datetime as _datetime
 
-    from app.db.models import Danmaku
+    from app.db.entities import Danmaku
 
     if start_ts is None or end_ts is None:
         return {"window_count": 0, "window_rate": 0.0, "baseline_rate": 0.0, "ratio": 0.0, "score": 0.0}

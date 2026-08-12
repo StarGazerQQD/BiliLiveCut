@@ -9,7 +9,7 @@ import pytest
 from app.analysis.highlight import candidate_time_bounds, contiguous_recording_range, contiguous_recording_start
 from app.analysis.scoring_config import ScoringConfig
 from app.core.config import Settings
-from app.db.models import LiveRoom
+from app.db.entities import LiveRoom
 
 
 def test_candidate_time_bounds_keeps_sixty_seconds_of_available_context() -> None:
@@ -164,7 +164,7 @@ def test_candidate_time_bounds_accepts_mixed_utc_representations() -> None:
 
 def test_contiguous_recording_start_stops_at_stream_gap() -> None:
     """前文扩展不得跨越断流缺口。"""
-    from app.db.models import RawSegment
+    from app.db.entities import RawSegment
 
     base = datetime(2026, 8, 2, tzinfo=UTC)
     before_gap = RawSegment(
@@ -197,7 +197,7 @@ def test_contiguous_recording_start_stops_at_stream_gap() -> None:
 
 def test_contiguous_recording_range_includes_recorded_following_segments() -> None:
     """已录制的相邻后续分段可作为跨片段候选的尾部。"""
-    from app.db.models import RawSegment
+    from app.db.entities import RawSegment
 
     base = datetime(2026, 8, 2, tzinfo=UTC)
     previous = RawSegment(

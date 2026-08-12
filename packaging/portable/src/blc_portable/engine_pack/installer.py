@@ -23,6 +23,20 @@ from blc_portable.atomic_fs import replace_with_retry
 
 CHUNK_SIZE = 8 * 1024 * 1024  # 8 MB 流式块大小
 INSTALLED_MANIFEST_NAME = "engine-pack-installed.json"
+INSTALLED_MANIFEST_SCHEMA = 5
+_INSTALLED_MANIFEST_FIELDS = {
+    "schema_version",
+    "engine_pack_version",
+    "installation_source",
+    "zip_sha256",
+    "engine_ids",
+    "file_count",
+    "total_size_bytes",
+    "installed_at",
+    "source_commit",
+    "files",
+}
+_ENGINE_FILE_FIELDS = {"target_path", "file_count", "total_size", "files"}
 
 
 def compute_crc32(path: Path) -> str:
@@ -123,8 +137,9 @@ def _write_installed_manifest(
     engine_pack_version: str,
     engines: list[str],
     files_info: dict[str, dict[str, object]],
-    zip_sha256: str = "",
-    source_commit: str = "",
+    zip_sha256: str | None,
+    source_commit: str,
+    installation_source: str,
 ) -> None:
     """原子写入已安装模型清单。
 
@@ -132,14 +147,16 @@ def _write_installed_manifest(
     :param engine_pack_version: Engine Pack 版本。
     :param engines: 已安装引擎列表。
     :param files_info: 引擎文件信息。
-    :param zip_sha256: ZIP SHA-256。
+    :param zip_sha256: ZIP SHA-256；在线下载时为 None。
     :param source_commit: 源码 Commit。
+    :param installation_source: ``engine_pack`` 或 ``online_download``。
     """
     import datetime
 
     info: dict[str, Any] = {
-        "schema_version": 4,
+        "schema_version": INSTALLED_MANIFEST_SCHEMA,
         "engine_pack_version": engine_pack_version,
+        "installation_source": installation_source,
         "zip_sha256": zip_sha256,
         "engine_ids": engines,
         "file_count": sum(int(f.get("file_count", 0)) for f in files_info.values()),  # type: ignore[arg-type]
@@ -152,6 +169,106 @@ def _write_installed_manifest(
     target = models_dir / INSTALLED_MANIFEST_NAME
     tmp.write_text(json.dumps(info, ensure_ascii=False, indent=2), encoding="utf-8")
     replace_with_retry(tmp, target)
+
+
+def _collect_files_info(models_dir: Path, engines: list[str]) -> dict[str, dict[str, object]]:
+    """对当前安装的全部模型文件生成严格、可重哈希的清单。"""
+    result: dict[str, dict[str, object]] = {}
+    for engine_id in engines:
+        engine_dir = models_dir / engine_id
+        file_entries: dict[str, dict[str, object]] = {}
+        for path in sorted(engine_dir.rglob("*")):
+            if not path.is_file():
+                continue
+            rel_path = path.relative_to(engine_dir).as_posix()
+            file_entries[rel_path] = {
+                "size": path.stat().st_size,
+                "sha256": compute_sha256(path),
+            }
+        result[engine_id] = {
+            "target_path": f"models/{engine_id}",
+            "file_count": len(file_entries),
+            "total_size": sum(int(entry["size"]) for entry in file_entries.values()),
+            "files": file_entries,
+        }
+    return result
+
+
+def _validate_installed_manifest(installed: dict[str, Any], expected_version: str) -> list[str]:
+    """验证当前且唯一的已安装模型清单格式。"""
+    errors: list[str] = []
+    if set(installed) != _INSTALLED_MANIFEST_FIELDS:
+        missing = _INSTALLED_MANIFEST_FIELDS - set(installed)
+        unknown = set(installed) - _INSTALLED_MANIFEST_FIELDS
+        if missing:
+            errors.append(f"Installed manifest missing fields: {sorted(missing)}")
+        if unknown:
+            errors.append(f"Installed manifest unknown fields: {sorted(unknown)}")
+        return errors
+    if installed["schema_version"] != INSTALLED_MANIFEST_SCHEMA:
+        errors.append(
+            f"Installed manifest schema mismatch: {installed['schema_version']} != {INSTALLED_MANIFEST_SCHEMA}"
+        )
+    if installed["engine_pack_version"] != expected_version:
+        errors.append(f"Version mismatch: installed={installed['engine_pack_version']} expected={expected_version}")
+    source = installed["installation_source"]
+    if source not in {"engine_pack", "online_download"}:
+        errors.append(f"Invalid installation_source: {source}")
+    zip_sha256 = installed["zip_sha256"]
+    if source == "engine_pack" and (not isinstance(zip_sha256, str) or len(zip_sha256) != 64):
+        errors.append("Engine Pack installation requires a 64-character zip_sha256")
+    if source == "online_download" and zip_sha256 is not None:
+        errors.append("Online installation zip_sha256 must be null")
+    if not isinstance(installed["source_commit"], str) or len(installed["source_commit"]) != 40:
+        errors.append("Installed manifest source_commit invalid")
+    engine_ids = installed["engine_ids"]
+    if not isinstance(engine_ids, list) or any(not isinstance(item, str) or not item for item in engine_ids):
+        errors.append("Installed manifest engine_ids invalid")
+        return errors
+    files = installed["files"]
+    if not isinstance(files, dict) or set(files) != set(engine_ids):
+        errors.append("Installed manifest files must exactly match engine_ids")
+        return errors
+    actual_file_count = 0
+    actual_total_size = 0
+    for engine_id, engine_info in files.items():
+        if not isinstance(engine_info, dict) or set(engine_info) != _ENGINE_FILE_FIELDS:
+            errors.append(f"Installed manifest files[{engine_id}] fields invalid")
+            continue
+        if engine_info["target_path"] != f"models/{engine_id}":
+            errors.append(f"Installed manifest files[{engine_id}].target_path invalid")
+        entries = engine_info["files"]
+        if not isinstance(entries, dict) or not entries:
+            errors.append(f"Installed manifest files[{engine_id}].files must be non-empty")
+            continue
+        engine_size = 0
+        for rel_path, entry in entries.items():
+            if not isinstance(rel_path, str) or not rel_path:
+                errors.append(f"Installed manifest files[{engine_id}] contains invalid path")
+                continue
+            if not isinstance(entry, dict) or set(entry) != {"size", "sha256"}:
+                errors.append(f"Installed manifest file entry invalid: {engine_id}/{rel_path}")
+                continue
+            size = entry["size"]
+            sha256 = entry["sha256"]
+            if not isinstance(size, int) or isinstance(size, bool) or size < 0:
+                errors.append(f"Installed manifest size invalid: {engine_id}/{rel_path}")
+                continue
+            if not isinstance(sha256, str) or len(sha256) != 64:
+                errors.append(f"Installed manifest sha256 invalid: {engine_id}/{rel_path}")
+                continue
+            engine_size += size
+        if engine_info["file_count"] != len(entries):
+            errors.append(f"Installed manifest file_count invalid: {engine_id}")
+        if engine_info["total_size"] != engine_size:
+            errors.append(f"Installed manifest total_size invalid: {engine_id}")
+        actual_file_count += len(entries)
+        actual_total_size += engine_size
+    if installed["file_count"] != actual_file_count:
+        errors.append("Installed manifest aggregate file_count invalid")
+    if installed["total_size_bytes"] != actual_total_size:
+        errors.append("Installed manifest aggregate total_size_bytes invalid")
+    return errors
 
 
 def check_installed_models(
@@ -183,10 +300,11 @@ def check_installed_models(
         errors.append("engine-pack-installed.json 不存在")
         return False, errors
 
-    if installed.get("engine_pack_version") != expected_version:
-        errors.append(f"Version mismatch: installed={installed.get('engine_pack_version')} expected={expected_version}")
+    errors.extend(_validate_installed_manifest(installed, expected_version))
+    if errors:
+        return False, errors
 
-    installed_engines = set(installed.get("engine_ids", installed.get("engines_installed", [])))
+    installed_engines = set(installed["engine_ids"])
     expected = {"whisper", "paraformer", "sensevoice", "funasr_nano"}
     if installed_engines != expected:
         missing = expected - installed_engines
@@ -206,10 +324,7 @@ def check_installed_models(
 
     # ── Full rehash mode ──
     if full_rehash and not errors:
-        files_manifest = installed.get("files", {})
-        if not files_manifest:
-            errors.append("Installed manifest has no 'files' section — cannot rehash")
-            return False, errors
+        files_manifest = installed["files"]
 
         sha_mismatches = 0
         size_mismatches = 0
@@ -218,7 +333,7 @@ def check_installed_models(
 
         manifest_file_set: set[str] = set()
         for engine_id, engine_info in files_manifest.items():
-            engine_files = engine_info.get("files", {})
+            engine_files = engine_info["files"]
             for rel_path, file_entry in engine_files.items():
                 full_rel = f"{engine_id}/{rel_path}"
                 manifest_file_set.add(full_rel)
@@ -228,25 +343,22 @@ def check_installed_models(
                     errors.append(f"Missing: {full_rel}")
                     continue
 
-                expected_sha = file_entry.get("sha256", "")
-                expected_size = file_entry.get("size", 0)
+                expected_sha = file_entry["sha256"]
+                expected_size = file_entry["size"]
 
-                if expected_size:
-                    actual_size = target.stat().st_size
-                    if actual_size != expected_size:
-                        size_mismatches += 1
-                        if size_mismatches <= max_detail:
-                            errors.append(f"Size mismatch: {full_rel} expected={expected_size} actual={actual_size}")
+                actual_size = target.stat().st_size
+                if actual_size != expected_size:
+                    size_mismatches += 1
+                    if size_mismatches <= max_detail:
+                        errors.append(f"Size mismatch: {full_rel} expected={expected_size} actual={actual_size}")
 
-                if expected_sha and len(expected_sha) == 64:
-                    actual_sha = compute_sha256(target)
-                    if actual_sha != expected_sha:
-                        sha_mismatches += 1
-                        if sha_mismatches <= max_detail:
-                            errors.append(
-                                f"SHA-256 mismatch: {full_rel} expected={expected_sha[:16]}... "
-                                f"actual={actual_sha[:16]}..."
-                            )
+                actual_sha = compute_sha256(target)
+                if actual_sha != expected_sha:
+                    sha_mismatches += 1
+                    if sha_mismatches <= max_detail:
+                        errors.append(
+                            f"SHA-256 mismatch: {full_rel} expected={expected_sha[:16]}... actual={actual_sha[:16]}..."
+                        )
 
         # Check for extra files
         for engine_id in expected:
@@ -343,34 +455,17 @@ def install_from_engine_pack(
                     raise RuntimeError(f"Engine Pack 缺少引擎目录: {engine.target_path}")
 
             # 5. 逐文件校验 + 多余文件检测 (使用共用 verifier)
-            if manifest.files:
-                print(f"  逐文件 SHA-256 校验 ({manifest.total_files} 文件) ...")
-                from .verifier import verify_extracted_tree
+            print(f"  逐文件 SHA-256 校验 ({manifest.total_files} 文件) ...")
+            from .verifier import verify_extracted_tree
 
-                manifest_dict: dict[str, Any] = {
-                    "engines": [{"target_path": e.target_path, "engine_id": e.engine_id} for e in manifest.engines],
-                    "files": {
-                        fp_str: {"size": int(info.get("size", 0)), "sha256": str(info.get("sha256", ""))}
-                        for fp_str, info in manifest.files.items()
-                    },
-                }
-                errors = verify_extracted_tree(staging_dir, manifest_dict)
-                if errors:
-                    raise RuntimeError("Engine Pack 校验失败:\n  " + "\n  ".join(errors))
+            errors = verify_extracted_tree(staging_dir, manifest)
+            if errors:
+                raise RuntimeError("Engine Pack 校验失败:\n  " + "\n  ".join(errors))
 
             # 6. 引擎信息
             installed_engines: list[str] = []
-            files_info: dict[str, dict[str, object]] = {}
             for engine in manifest.engines:
                 installed_engines.append(engine.engine_id)
-                ep = staging_dir / engine.target_path
-                fc = sum(1 for _ in ep.rglob("*") if _.is_file())
-                ts = sum(f.stat().st_size for f in ep.rglob("*") if f.is_file())
-                files_info[engine.engine_id] = {
-                    "target_path": engine.target_path,
-                    "file_count": fc,
-                    "total_size": ts,
-                }
 
             # 7. Atomic directory transaction: models.new -> switch -> verify
             print("  Atomic model installation...")
@@ -389,7 +484,16 @@ def install_from_engine_pack(
                         if item.is_dir():
                             shutil.move(str(item), str(models_new / item.name))
                 shutil.move(str(manifest_path), str(models_new / "engine-pack-content-manifest.json"))
-                _write_installed_manifest(models_new, expected_version, installed_engines, files_info)
+                files_info = _collect_files_info(models_new, installed_engines)
+                _write_installed_manifest(
+                    models_new,
+                    expected_version,
+                    installed_engines,
+                    files_info,
+                    zip_sha256=actual_sha256,
+                    source_commit=manifest.source_commit,
+                    installation_source="engine_pack",
+                )
                 if models_dir.exists() and any(models_dir.iterdir()):
                     backup_dir = app_root / f"models.backup-{uuid.uuid4().hex[:8]}"
                     shutil.move(str(models_dir), str(backup_dir))
@@ -433,7 +537,6 @@ def install_models_dir_from_staging(
     staging_dir: Path,
     engine_pack_version: str,
     installed_engines: list[str],
-    files_info: dict[str, dict[str, object]],
 ) -> bool:
     """将 staging 目录原子替换为 models/ (在线下载后调用)。
 
@@ -441,7 +544,6 @@ def install_models_dir_from_staging(
     :param staging_dir: 已完成校验的 staging 目录。
     :param engine_pack_version: Engine Pack 版本。
     :param installed_engines: 已安装引擎列表。
-    :param files_info: 文件信息。
     :returns: True 成功, False 失败且已回滚。
     """
     models_dir = app_root / "models"
@@ -462,7 +564,23 @@ def install_models_dir_from_staging(
                     dest.unlink(missing_ok=True)
             shutil.move(str(item), str(dest))
 
-        _write_installed_manifest(models_dir, engine_pack_version, installed_engines, files_info)
+        import sys
+
+        config_dir = str(Path(__file__).resolve().parent.parent.parent.parent / "config")
+        if config_dir not in sys.path:
+            sys.path.insert(0, config_dir)
+        from version_loader import get_source_commit_full
+
+        files_info = _collect_files_info(models_dir, installed_engines)
+        _write_installed_manifest(
+            models_dir,
+            engine_pack_version,
+            installed_engines,
+            files_info,
+            zip_sha256=None,
+            source_commit=get_source_commit_full(),
+            installation_source="online_download",
+        )
 
         if backup_dir and backup_dir.exists():
             shutil.rmtree(str(backup_dir), ignore_errors=True)

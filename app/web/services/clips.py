@@ -11,7 +11,7 @@ from sqlmodel import select
 from app.core import settings_store
 from app.core.osutil import open_path
 from app.core.paths import clips_dir
-from app.db.models import (
+from app.db.entities import (
     ClipStatus,
     FinalClip,
 )

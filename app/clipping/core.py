@@ -25,13 +25,13 @@ from pathlib import Path
 from loguru import logger
 from sqlmodel import select
 
-from app.analysis.speedups import group_srt_blocks
+from app.accelerators.dispatcher import group_srt_blocks
 from app.clipping.models import ClipOptions
 from app.core.config import settings
 from app.core.ffmpeg_errors import classify_ffmpeg_error
 from app.core.paths import clips_dir
 from app.core.process_control import ProcessCancelledError, run_cancellable
-from app.db.models import (
+from app.db.entities import (
     CandidateStatus,
     ClipStatus,
     ClipVariant,
@@ -274,7 +274,7 @@ def _render_intro_outro_cards(
     """
     from datetime import date
 
-    from app.db.models import HighlightCandidate, LiveRoom, RecordingSession
+    from app.db.entities import HighlightCandidate, LiveRoom, RecordingSession
 
     cards: list[Path] = []
 
@@ -460,7 +460,7 @@ def _build_srt(segments: list[RawSegment], cut_offset: float, duration: float) -
     max_ms = 5000
     line_gap = 200
     with get_session() as db:
-        from app.db.models import SubtitleTemplate
+        from app.db.entities import SubtitleTemplate
 
         tmpl = db.exec(
             select(SubtitleTemplate).where(SubtitleTemplate.is_default == True)  # noqa: E712
@@ -812,41 +812,19 @@ def produce_clip(
 
 
 def _resolve_event_id(db, candidate_id: int) -> int:
-    """解析真实 HighlightEvent ID (V0.1.12.5: 删除 candidate_id 回退)。
+    """解析真实 HighlightEvent ID。
 
     :param db: SQLModel session。
     :param candidate_id: HighlightCandidate ID。
-    :returns: HighlightEvent ID;若尚无 Event,自动创建并返回。
-    :raises ValueError: candidate 不存在时,不再回退 candidate_id。
+    :returns: HighlightEvent ID。
+    :raises ValueError: candidate 没有对应 HighlightEvent 时。
     """
-    from app.db.models import HighlightEvent as HE
-    from app.db.models import ReviewStatus
+    from app.db.entities import HighlightEvent as HE
 
     event = db.exec(select(HE).where(HE.candidate_id == candidate_id)).first()
-    if event is not None:
-        return event.id
-    # 候选可能尚未创建 Event（非 TaskWorker 路径进入）。
-    cand = db.get(HighlightCandidate, candidate_id)
-    if cand is None:
-        raise ValueError(f"candidate_id={candidate_id} 不存在, 无法解析 event_id")
-    new_event = HE(
-        candidate_id=candidate_id,
-        session_id=cand.session_id,
-        raw_start_ts=cand.start_ts,
-        raw_end_ts=cand.end_ts,
-        rule_score=cand.rule_score,
-        llm_score=cand.llm_score,
-        highlight_score=cand.highlight_score,
-        features_json=cand.features_json,
-        reason=cand.reason,
-        review_status=ReviewStatus.PENDING,
-        review_by="auto",
-    )
-    db.add(new_event)
-    db.flush()
-    db.refresh(new_event)
-    logger.info("_resolve_event_id:auto-created event_id={} for candidate_id={}", new_event.id, candidate_id)
-    return new_event.id
+    if event is None or event.id is None:
+        raise ValueError(f"candidate_id={candidate_id} 没有 HighlightEvent")
+    return event.id
 
 
 def _create_clip_variants(
@@ -1124,7 +1102,7 @@ def _render_variants(
     if counterpart_subtitle:
         # 主干无字幕 → 渲染带字幕版:用候选关联的 session 查找 segments 构建 SRT。
         counterpart_srt: Path | None = None
-        from app.db.models import HighlightCandidate as HC
+        from app.db.entities import HighlightCandidate as HC
 
         with get_session() as db:
             cand = db.get(HC, clip.candidate_id)

@@ -2,7 +2,7 @@
 
 from __future__ import annotations
 
-from app.db.models import LiveRoom, RoomMode
+from app.db.entities import LiveRoom
 
 
 def test_create_and_query_room(temp_db: None) -> None:
@@ -23,6 +23,5 @@ def test_create_and_query_room(temp_db: None) -> None:
     with get_session() as db:
         fetched = db.exec(select(LiveRoom).where(LiveRoom.room_id == 123)).first()
         assert fetched is not None
-        assert fetched.mode == RoomMode.MANUAL
         assert fetched.enabled is False
         assert fetched.authorized is True

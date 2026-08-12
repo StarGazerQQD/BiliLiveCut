@@ -18,7 +18,7 @@ from app.clipping.clipper import (
     _run_ffmpeg_clip,
     _write_concat_list,
 )
-from app.db.models import ClipStatus, RawSegment
+from app.db.entities import ClipStatus, RawSegment
 from app.publishing.copywriter import _decide_status, _fallback_copy, gather_clip_text
 
 if TYPE_CHECKING:
@@ -95,7 +95,7 @@ def test_gather_clip_text_excludes_content_after_final_window(temp_db: None) -> 
     import json
     from datetime import UTC, datetime, timedelta
 
-    from app.db.models import HighlightCandidate, HighlightEvent, RawSegment, RecordingSession, Transcript
+    from app.db.entities import HighlightCandidate, HighlightEvent, RawSegment, RecordingSession, Transcript
     from app.db.session import get_session
 
     base = datetime(2026, 8, 3, 12, 0, tzinfo=UTC)
@@ -116,7 +116,7 @@ def test_gather_clip_text_excludes_content_after_final_window(temp_db: None) -> 
         db.add(
             Transcript(
                 segment_id=segment.id,
-                text="片头闲聊。真正的成片正文。成片结束后才发生的下一件事。",
+                final_text="片头闲聊。真正的成片正文。成片结束后才发生的下一件事。",
                 words_json=json.dumps(
                     [
                         {"w": "片头闲聊", "start": 20, "end": 25},
@@ -285,7 +285,7 @@ def test_lossless_source_export_rebases_video_without_dropping_packets(
 ) -> None:
     """源 TS 无损导出应校准首个画面，同时完整保留音视频包。"""
     from app.core import paths as path_module
-    from app.db.models import Transcript
+    from app.db.entities import Transcript
     from app.db.session import get_session
     from app.web.services import transcripts as transcript_service
 
@@ -300,7 +300,7 @@ def test_lossless_source_export_rebases_video_without_dropping_packets(
         segment = RawSegment(session_id=1, seq=0, file_path=str(source))
         db.add(segment)
         db.flush()
-        transcript = Transcript(segment_id=segment.id, text="无损导出")
+        transcript = Transcript(segment_id=segment.id, final_text="无损导出")
         db.add(transcript)
         db.flush()
         transcript_id = transcript.id
@@ -389,9 +389,10 @@ def test_produce_clip_end_to_end(
 
     from app.clipping.clipper import produce_clip
     from app.core.paths import ready_to_upload_dir
-    from app.db.models import (
+    from app.db.entities import (
         FinalClip,
         HighlightCandidate,
+        HighlightEvent,
         LiveRoom,
         RawSegment,
         RecordingSession,
@@ -425,7 +426,7 @@ def test_produce_clip_end_to_end(
             Transcript(
                 segment_id=seg.id,
                 language="zh",
-                text="这波操作绝了五杀",
+                final_text="这波操作绝了五杀",
                 words_json=json.dumps([{"w": "绝了", "start": 1.0, "end": 1.5}]),
             )
         )
@@ -436,9 +437,23 @@ def test_produce_clip_end_to_end(
             start_ts=base + timedelta(seconds=1),
             end_ts=base + timedelta(seconds=4),
             highlight_score=0.9,
+            dedup_hash="produce-clip-copy",
         )
         db.add(cand)
         db.flush()
+        db.add(
+            HighlightEvent(
+                candidate_id=cand.id,
+                session_id=session.id,
+                segment_id=seg.id,
+                raw_start_ts=cand.start_ts,
+                raw_end_ts=cand.end_ts,
+                adjusted_start_ts=cand.start_ts,
+                adjusted_end_ts=cand.end_ts,
+                highlight_score=cand.highlight_score,
+                asr_text="这波操作绝了五杀",
+            )
+        )
         cand_id = cand.id
 
     clip = produce_clip(cand_id)

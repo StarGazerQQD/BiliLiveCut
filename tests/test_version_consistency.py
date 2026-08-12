@@ -62,28 +62,25 @@ def test_all_declared_versions_match_release_metadata() -> None:
     full_content = full_path.read_text(encoding="utf-8")
     assert f'RELEASE_VERSION = "{expected_version}"' in full_content, "builders/full.py 版本不匹配"
 
-    # engine_pack/builder.py
+    # engine_pack/builder.py：不得重复硬编码版本，必须复用 Manifest 的当前版本真源。
     ep_builder_path = REPO_ROOT / "packaging" / "portable" / "src" / "blc_portable" / "engine_pack" / "builder.py"
     ep_builder_content = ep_builder_path.read_text(encoding="utf-8")
-    assert f'ENGINE_PACK_VERSION = "{expected_version}"' in ep_builder_content, "engine_pack/builder.py 版本不匹配"
+    assert "from blc_portable.engine_pack.manifest import (" in ep_builder_content
+    assert "    ENGINE_PACK_VERSION," in ep_builder_content
+    assert 'ENGINE_PACK_VERSION = "' not in ep_builder_content
 
-    # engine_pack/manifest.py (now uses version_loader function call)
+    # engine_pack/manifest.py 使用统一版本加载器。
     ep_manifest_path = REPO_ROOT / "packaging" / "portable" / "src" / "blc_portable" / "engine_pack" / "manifest.py"
     ep_manifest_content = ep_manifest_path.read_text(encoding="utf-8")
-    assert "ENGINE_PACK_VERSION = _ver_ep_version" in ep_manifest_content, (
-        "engine_pack/manifest.py 应使用 version_loader"
-    )
+    assert "    get_engine_pack_version," in ep_manifest_content
+    assert "ENGINE_PACK_VERSION = get_engine_pack_version()" in ep_manifest_content
+    assert 'ENGINE_PACK_VERSION = "' not in ep_manifest_content
 
     # launcher/main.py
     launcher_path = REPO_ROOT / "packaging" / "portable" / "src" / "blc_portable" / "launcher" / "main.py"
     launcher_content = launcher_path.read_text(encoding="utf-8")
     assert f'RELEASE_VERSION = "{expected_version}"' in launcher_content, "launcher/main.py 版本不匹配"
     assert f'VERSION = "{expected_label}"' in launcher_content, "launcher/main.py 版本标签不匹配"
-
-    # launcher/runtime_layout.py
-    rl_path = REPO_ROOT / "packaging" / "portable" / "src" / "blc_portable" / "launcher" / "runtime_layout.py"
-    rl_content = rl_path.read_text(encoding="utf-8")
-    assert f'RELEASE_VERSION = "{expected_version}"' in rl_content, "runtime_layout.py 版本不匹配"
 
     # Engine Pack spec
     spec_path = REPO_ROOT / "packaging" / "portable" / "specs" / "portable_launcher.spec"
@@ -99,8 +96,8 @@ def test_version_json_is_valid() -> None:
     assert "source_commit_full" in cfg
     assert len(cfg["source_commit_short"]) == 7
     assert len(cfg["source_commit_full"]) == 40
-    assert cfg["compatible_python"]["min"] in ("3.11",)
-    assert cfg["compatible_python"]["max_validated"] in ("3.12",)
+    assert cfg["python_abis"] == ["cp311", "cp312"]
+    assert "compatible_python" not in cfg
 
 
 def test_portable_source_identity_matches_version_metadata() -> None:
@@ -115,19 +112,14 @@ def test_portable_source_identity_matches_version_metadata() -> None:
     model_lock = json.loads((portable_dir / "config" / "model_sources.lock.json").read_text(encoding="utf-8"))
     assert model_lock["source_commit"] == source_full
 
-    backports = json.loads((portable_dir / "backports" / "backports.json").read_text(encoding="utf-8"))
-    assert backports["source_commit"] == source_full
-
     manifest_content = (portable_dir / "src" / "blc_portable" / "payload" / "manifest.py").read_text(encoding="utf-8")
     assert f'SOURCE_COMMIT_FULL = "{source_full}"' in manifest_content
     assert f'SOURCE_COMMIT_SHORT = "{source_short}"' in manifest_content
 
-    release_content = (REPO_ROOT / "app" / "_portable_release.py").read_text(encoding="utf-8")
-    assert f'SOURCE_COMMIT: str = "{source_full}"' in release_content
-    assert f'SOURCE_COMMIT_SHORT: str = "{source_short}"' in release_content
-
     engine_pack_info = json.loads((portable_dir / "resources" / "engine_pack_info.json").read_text(encoding="utf-8"))
     assert engine_pack_info["source_commit"] == source_full
+
+    assert not (REPO_ROOT / "app" / "_portable_release.py").exists()
 
 
 def test_runtime_release_id_contains_payload_hash() -> None:

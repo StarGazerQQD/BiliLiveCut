@@ -7,7 +7,7 @@ from typing import Any
 
 from sqlmodel import select
 
-from app.db.models import (
+from app.db.entities import (
     UploadTask,
 )
 from app.db.session import get_session

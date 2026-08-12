@@ -7,7 +7,7 @@ from rich.console import Console
 from rich.table import Table
 from sqlmodel import select
 
-from app.db.models import FinalClip, HighlightCandidate
+from app.db.entities import FinalClip, HighlightCandidate
 from app.db.session import get_session
 
 console = Console()
@@ -20,7 +20,7 @@ def cmd_transcribe(
 
     :param segment_id: ``raw_segments`` 主键。
     """
-    from app.analysis.transcribe import transcribe_segment
+    from app.analysis.transcription.pipeline import transcribe_segment
 
     t = transcribe_segment(segment_id)
     console.print(f"[green]转写完成[/green] transcript_id={t.id} 语言={t.language}")

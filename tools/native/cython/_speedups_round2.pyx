@@ -47,7 +47,7 @@ def cluster_similarity_matrix(list items):
         text = item.get("asr_text", "") or ""
         texts.append(text)
         # 预计算 bigram Counter (使用已加速的 fast_char_bigrams)
-        from app.analysis.speedups import fast_char_bigrams
+        from app.accelerators.dispatcher import fast_char_bigrams
         from collections import Counter
         bigrams = fast_char_bigrams(text)
         bigram_vecs.append(Counter(bigrams))
@@ -78,7 +78,7 @@ cdef double _event_sim_fast(
     cdef double sim_text, sim_kw, time_sim, score
 
     # 文本相似度 (Counter A + Counter B → fast_cosine_similarity 已用 C 重写)
-    from app.analysis.speedups import fast_cosine_similarity
+    from app.accelerators.dispatcher import fast_cosine_similarity
     import math
 
     if not text_a or not text_b or not vec_a or not vec_b:

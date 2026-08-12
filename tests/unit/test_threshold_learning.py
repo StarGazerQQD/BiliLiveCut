@@ -8,12 +8,13 @@ import pytest
 from sqlmodel import select
 
 from app.analysis.threshold_learning import (
+    _feedback_action,
     compute_recommended_threshold,
     feedback_summary,
     record_feedback,
     sync_candidate_feedback,
 )
-from app.db.models import HighlightCandidate, LiveRoom, RecordingSession, ThresholdFeedback
+from app.db.entities import HighlightCandidate, LiveRoom, RecordingSession, ThresholdFeedback
 from app.db.session import get_session
 
 
@@ -97,3 +98,9 @@ def test_room_switch_disables_feedback_persistence(temp_db: None) -> None:
     assert result["enabled"] is False
     with get_session() as db:
         assert db.exec(select(ThresholdFeedback)).all() == []
+
+
+def test_legacy_generic_approval_is_not_a_learning_decision() -> None:
+    """旧版 generic approved 不得被映射为当前细粒度审核决策。"""
+    assert _feedback_action("approved") is None
+    assert _feedback_action("approved_solo") == "approved"
