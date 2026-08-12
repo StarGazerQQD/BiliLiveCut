@@ -102,6 +102,14 @@ def approve_event_and_task(
             if candidate:
                 candidate.status = CandidateStatus.APPROVED
                 db.add(candidate)
+                from app.analysis.session_summary import request_session_timeline_summary_in_session
+
+                request_session_timeline_summary_in_session(
+                    db,
+                    candidate.session_id,
+                    reason="review_approved",
+                    force=True,
+                )
 
         # 同步 Task 状态
         task = db.get(SegmentTask, task_id) if task_id is not None else None

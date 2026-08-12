@@ -101,12 +101,15 @@ const modelsTab = element("models-tab", ["tab"]);
 modelsTab.dataset.tab = "models";
 const featuresTab = element("features-tab", ["tab"]);
 featuresTab.dataset.tab = "features";
-const tabs = [roomsTab, candidatesTab, modelsTab, featuresTab];
+const transcriptsTab = element("transcripts-tab", ["tab"]);
+transcriptsTab.dataset.tab = "transcripts";
+const tabs = [roomsTab, candidatesTab, modelsTab, featuresTab, transcriptsTab];
 const roomsPanel = element("tab-rooms", ["panel", "active"]);
 const candidatesPanel = element("tab-candidates", ["panel"]);
 const modelsPanel = element("tab-models", ["panel"]);
 const featuresPanel = element("tab-features", ["panel"]);
-const panels = [roomsPanel, candidatesPanel, modelsPanel, featuresPanel];
+const transcriptsPanel = element("tab-transcripts", ["panel"]);
+const panels = [roomsPanel, candidatesPanel, modelsPanel, featuresPanel, transcriptsPanel];
 
 const llmDraftFields = new Map([
   [".llm-name", { value: "草稿模型" }],
@@ -125,6 +128,10 @@ const llmDraftRow = {
 };
 
 globalThis.window = globalThis;
+const windowListeners = new Map();
+globalThis.addEventListener = (type, listener) => {
+  windowListeners.set(type, listener);
+};
 globalThis.document = {
   querySelector(selector) {
     return selector.startsWith("#") ? element(selector.slice(1)) : element(selector);
@@ -183,6 +190,36 @@ const sessionTimelineRows = [{
   rejected_count: 1,
   processing_state: "ready",
 }];
+const transcriptRows = [
+  {
+    id: 41,
+    session_id: 21,
+    segment_id: 301,
+    source_label: "测试主播 · 房间 23771139",
+    source_file_name: "part000_00301.ts",
+    text: "服务器转写正文",
+    raw_text: "服务器原始 ASR",
+    llm_refined: true,
+    summary: "片段概括",
+    language: "zh",
+    primary_backend: "funasr",
+    created_at: "2026-08-12T10:00:00+08:00",
+  },
+  {
+    id: 42,
+    session_id: 21,
+    segment_id: 302,
+    source_label: "测试主播 · 房间 23771139",
+    source_file_name: "part000_00302.ts",
+    text: "第二条服务器转写正文",
+    raw_text: "第二条服务器原始 ASR",
+    llm_refined: false,
+    summary: "第二段概括",
+    language: "zh",
+    primary_backend: "funasr",
+    created_at: "2026-08-12T10:05:00+08:00",
+  },
+];
 globalThis.fetch = async (path, options = {}) => {
   const requestPath = String(path);
   requests.push(requestPath);
@@ -204,6 +241,13 @@ globalThis.fetch = async (path, options = {}) => {
       session: sessionTimelineRows[0],
       timezone: "GMT+8",
       counts: { visible: 1, rejected: 0, total: 1 },
+      whole_session_summary: {
+        status: "ready",
+        point_count: 1,
+        source: "llm",
+        generated_at: "2026-08-05T20:01:00+08:00",
+        summary: "19:45:10，主播完成测试高光，观众用“名场面”集中回应。",
+      },
       points: [{
         candidate_id: 31,
         clock_gmt8: "19:45:10",
@@ -222,10 +266,19 @@ globalThis.fetch = async (path, options = {}) => {
     };
   } else if (requestPath === "/api/sessions/21/reanalyze") {
     payload = { session_id: 21, requested: true };
+  } else if (requestPath === "/api/sessions/21/timeline-summary") {
+    payload = { session_id: 21, requested: true };
   } else if (requestPath === "/api/llm-providers") {
     payload = { providers: [], active_count: 0 };
   } else if (requestPath === "/api/llm-providers/test") {
     payload = { results: [{ id: "draft", name: "草稿模型", ok: true, detail: "pong" }] };
+  } else if (requestPath.startsWith("/api/transcripts?")) {
+    payload = transcriptRows;
+  } else if (requestPath === "/api/transcripts/41") {
+    if (options.method === "PATCH") {
+      transcriptRows[0].text = JSON.parse(options.body || "{}").corrected_text;
+    }
+    payload = { transcript: transcriptRows[0], learned_aliases: { "查里斯": "查理斯" } };
   } else if (requestPath === "/api/rooms/1/start") {
     dashboardRooms[0].running = true;
     dashboardRooms[0].recording_state = "starting";
@@ -264,6 +317,7 @@ try {
   assert.equal(typeof globalThis.saveFeatureSwitches, "function", "feature-switch save action was not exported");
   assert.equal(typeof globalThis.saveGlobalFeatureSettings, "function", "global feature save action was not exported");
   assert.equal(typeof globalThis.toggleSessionTimeline, "function", "timeline expand action was not exported");
+  assert.equal(typeof globalThis.regenerateSessionSummary, "function", "timeline summary action was not exported");
   assert.equal(typeof globalThis.correctTranscript, "function", "transcript correction action was not exported");
   assert.ok(element("btn-add").listeners.has("click"), "add-room button handler was not registered");
 
@@ -381,6 +435,8 @@ try {
   const timelineList = element("timeline-list");
   const timelineDetail = element("timeline-detail-21");
   assert.match(timelineDetail.innerHTML, /测试高光梗概/);
+  assert.match(timelineDetail.innerHTML, /全场高光总结/);
+  assert.match(timelineDetail.innerHTML, /19:45:10，主播完成测试高光/);
   assert.match(timelineDetail.innerHTML, /名场面/);
   assert.match(timelineDetail.innerHTML, /跨片段/);
 
@@ -425,6 +481,14 @@ try {
   assert.ok(reanalysisRequest, "session reanalysis was not requested");
   assert.equal(JSON.parse(reanalysisRequest.options.body).retranscribe, false);
 
+  const summaryRequestOffset = requestDetails.length;
+  await globalThis.regenerateSessionSummary(21);
+  await settle();
+  const summaryRequest = requestDetails
+    .slice(summaryRequestOffset)
+    .find((entry) => entry.path === "/api/sessions/21/timeline-summary" && entry.options.method === "POST");
+  assert.ok(summaryRequest, "whole-session timeline summary was not requested");
+
   await modelsTab.emit("click");
   await settle();
   const llmList = element("llm-list");
@@ -451,9 +515,139 @@ try {
   const testPayload = JSON.parse(testRequest.options.body || "null");
   assert.equal(testPayload.providers[0].api_key, "draft-secret", "connectivity test ignored draft API key");
   assert.match(element("llm-test-results").innerHTML, /pong/, "connectivity result detail was not rendered");
+  await element("btn-save-llm").emit("click");
+  await settle();
+
+  await transcriptsTab.emit("click");
+  await settle();
+  const transcriptList = element("transcripts-list");
+  assert.match(transcriptList.innerHTML, /服务器转写正文/, "transcript editor was not rendered");
+  assert.match(transcriptList.innerHTML, /part000_00301\.ts/, "transcript did not show its source TS file name");
+  const transcriptMarkupBeforeEdit = transcriptList.innerHTML;
+  const transcriptWritesBeforePoll = transcriptList.innerHTMLWriteCount;
+  globalThis.scrollX = 18;
+  globalThis.scrollY = 420;
+  await transcriptsTab.emit("click");
+  await settle();
+  assert.equal(
+    transcriptList.innerHTMLWriteCount,
+    transcriptWritesBeforePoll,
+    "unchanged transcript polling rebuilt the list before editing started",
+  );
+  assert.equal(globalThis.scrollY, 420, "unchanged transcript polling displaced the reading position");
+  const correctionDetail = {
+    open: true,
+    dataset: { transcriptDetail: "correction:41" },
+    closest(selector) {
+      assert.equal(selector, "[data-transcript-detail]");
+      return this;
+    },
+  };
+  await transcriptList.emit("toggle", correctionDetail);
+  const cleanBeforeUnload = {
+    defaultPrevented: false,
+    preventDefault() { this.defaultPrevented = true; },
+    returnValue: undefined,
+  };
+  windowListeners.get("beforeunload")(cleanBeforeUnload);
+  assert.equal(cleanBeforeUnload.defaultPrevented, false, "opening an unchanged transcript editor triggered a leave warning");
+  transcriptRows[0].text = "轮询返回的新正文";
+  await transcriptsTab.emit("click");
+  await settle();
+  assert.equal(
+    transcriptList.innerHTML,
+    transcriptMarkupBeforeEdit,
+    "opening transcript correction did not protect the editor before the first keystroke",
+  );
+  assert.equal(element("transcripts-dirty-hint").style.display, "", "open transcript editor hint was not shown");
+
+  element("transcript-text-41").value = "人工纠正后的正文";
+  element("transcript-aliases-41").value = "查里斯=查理斯";
+  element("transcript-learn-41").checked = false;
+  const dirtyTranscriptControl = {
+    closest(selector) {
+      assert.equal(selector, "[data-transcript-editor]");
+      return { dataset: { transcriptEditor: "41" } };
+    },
+  };
+  await transcriptList.emit("change", dirtyTranscriptControl);
+  const secondCorrectionDetail = {
+    open: true,
+    dataset: { transcriptDetail: "correction:42" },
+    closest(selector) {
+      assert.equal(selector, "[data-transcript-detail]");
+      return this;
+    },
+  };
+  await transcriptList.emit("toggle", secondCorrectionDetail);
+  element("transcript-text-42").value = "第二条尚未保存的人工纠正";
+  element("transcript-aliases-42").value = "土豆=马铃薯";
+  element("transcript-learn-42").checked = false;
+  const secondDirtyTranscriptControl = {
+    closest(selector) {
+      assert.equal(selector, "[data-transcript-editor]");
+      return { dataset: { transcriptEditor: "42" } };
+    },
+  };
+  await transcriptList.emit("input", secondDirtyTranscriptControl);
+  const dirtyBeforeUnload = {
+    defaultPrevented: false,
+    preventDefault() { this.defaultPrevented = true; },
+    returnValue: undefined,
+  };
+  windowListeners.get("beforeunload")(dirtyBeforeUnload);
+  assert.equal(dirtyBeforeUnload.defaultPrevented, true, "unsaved transcript correction did not block navigation");
+  assert.equal(dirtyBeforeUnload.returnValue, "", "unsaved transcript correction did not request browser confirmation");
+  await transcriptsTab.emit("click");
+  await settle();
+  assert.equal(
+    transcriptList.innerHTML,
+    transcriptMarkupBeforeEdit,
+    "transcript checkbox or select changes were discarded by polling",
+  );
+  const transcriptSaveOffset = requestDetails.length;
+  await globalThis.correctTranscript(41);
+  await settle();
+  const transcriptSaveRequest = requestDetails
+    .slice(transcriptSaveOffset)
+    .find((entry) => entry.path === "/api/transcripts/41" && entry.options.method === "PATCH");
+  assert.ok(transcriptSaveRequest, "transcript correction save was not requested");
+  const transcriptSavePayload = JSON.parse(transcriptSaveRequest.options.body || "null");
+  assert.equal(transcriptSavePayload.corrected_text, "人工纠正后的正文");
+  assert.deepEqual(transcriptSavePayload.aliases, { "查里斯": "查理斯" });
+  assert.equal(transcriptSavePayload.learn_dictionary, false);
+  assert.equal(
+    transcriptList.innerHTML,
+    transcriptMarkupBeforeEdit,
+    "saving one correction rebuilt the list and discarded another transcript draft",
+  );
+  assert.equal(element("transcript-editor-41").open, false, "saved transcript editor remained open");
+  assert.equal(element("transcript-text-42").value, "第二条尚未保存的人工纠正");
+  assert.equal(element("transcript-aliases-42").value, "土豆=马铃薯");
+  assert.equal(element("transcript-learn-42").checked, false);
+  const stillDirtyBeforeUnload = {
+    defaultPrevented: false,
+    preventDefault() { this.defaultPrevented = true; },
+    returnValue: undefined,
+  };
+  windowListeners.get("beforeunload")(stillDirtyBeforeUnload);
+  assert.equal(
+    stillDirtyBeforeUnload.defaultPrevented,
+    true,
+    "saving one correction cleared the leave guard for another transcript draft",
+  );
+  await globalThis.cancelTranscriptCorrection(42);
+  await settle();
+  const savedBeforeUnload = {
+    defaultPrevented: false,
+    preventDefault() { this.defaultPrevented = true; },
+    returnValue: undefined,
+  };
+  windowListeners.get("beforeunload")(savedBeforeUnload);
+  assert.equal(savedBeforeUnload.defaultPrevented, false, "saved transcript correction still blocked navigation");
 
   console.log(
-    "PASS: frontend module graph, timeline scroll retention, session timeline expansion/reanalysis, room/model draft preservation, locked room switches, feature switches and draft connectivity test",
+    "PASS: frontend module graph, timeline scroll retention, session timeline expansion/reanalysis, transcript/room/model draft retention, locked switches and draft connectivity test",
   );
 } finally {
   await rm(temporaryRoot, { recursive: true, force: true });

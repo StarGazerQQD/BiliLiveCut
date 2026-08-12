@@ -773,6 +773,14 @@ def undo_review_action(candidate_id: int, request: Request) -> dict:
         restored_review_status = event.review_status
         adjusted_start_ts = event.adjusted_start_ts
         adjusted_end_ts = event.adjusted_end_ts
+        from app.analysis.session_summary import request_session_timeline_summary_in_session
+
+        request_session_timeline_summary_in_session(
+            db,
+            candidate.session_id,
+            reason="review_undo",
+            force=True,
+        )
     from app.pipeline.highlight_feedback import record_candidate_review_feedback
 
     record_candidate_review_feedback(
@@ -857,6 +865,14 @@ async def adjust_boundary(
             action="adjust_boundary",
             candidate_id=candidate_id,
             details={"side": payload.side, "adjust_s": payload.adjust_s},
+        )
+        from app.analysis.session_summary import request_session_timeline_summary_in_session
+
+        request_session_timeline_summary_in_session(
+            db,
+            c.session_id,
+            reason="review_boundary_adjusted",
+            force=True,
         )
 
         return {
@@ -1018,6 +1034,15 @@ async def submit_review(
             details={"decision": decision, "reason": reason},
         )
         candidate_session_id = c.session_id
+        if not is_positive and decision not in (ReviewStatus.REJECTED, ReviewStatus.NOT_EXCITING):
+            from app.analysis.session_summary import request_session_timeline_summary_in_session
+
+            request_session_timeline_summary_in_session(
+                db,
+                candidate_session_id,
+                reason="review_decision_changed",
+                force=True,
+            )
 
     from app.pipeline.highlight_feedback import record_candidate_review_feedback
 

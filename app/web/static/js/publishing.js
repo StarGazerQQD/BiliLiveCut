@@ -2,12 +2,19 @@
 import { $, api, toast, esc, badge } from "./common.js";
 
 let switchesDirty = false;
+let switchesRevision = 0;
+let switchesSaving = false;
 let lastNotifyId = 0;
+
+function hasPublishingDraft() {
+  return switchesDirty || switchesSaving;
+}
 
 // ----------------------------- \u6e32\u67d3:\u4e0a\u4f20\u961f\u5217 ----------------------------- //
 async function loadUploads() {
+  const revision = switchesRevision;
   const s = await api("GET", "/api/settings");
-  if (!switchesDirty) {
+  if (!switchesDirty && switchesRevision === revision) {
     $("#sw-biliup").checked = s.biliup_enabled;
     $("#sw-auto").checked = s.auto_upload;
   }
@@ -34,15 +41,28 @@ async function loadUploads() {
 
 async function saveSwitch() {
   switchesDirty = true;
+  switchesRevision += 1;
+  if (switchesSaving) return;
+  switchesSaving = true;
   try {
-    await api("PATCH", "/api/settings", {
-      biliup_enabled: $("#sw-biliup").checked,
-      auto_upload: $("#sw-auto").checked,
-    });
-    toast("\u5df2\u4fdd\u5b58\u4e0a\u4f20\u5f00\u5173");
-  } catch (e) { toast(e.message); }
-  finally { switchesDirty = false; }
-  loadUploads();
+    while (switchesDirty) {
+      const revision = switchesRevision;
+      await api("PATCH", "/api/settings", {
+        biliup_enabled: $("#sw-biliup").checked,
+        auto_upload: $("#sw-auto").checked,
+      });
+      if (switchesRevision === revision) {
+        switchesDirty = false;
+        switchesRevision += 1;
+        toast("\u5df2\u4fdd\u5b58\u4e0a\u4f20\u5f00\u5173");
+      }
+    }
+  } catch (e) {
+    toast(e.message);
+  } finally {
+    switchesSaving = false;
+  }
+  if (!switchesDirty) await loadUploads();
 }
 
 async function retryUpload(id) {
@@ -73,4 +93,4 @@ $("#btn-open-dir").addEventListener("click", async () => {
   catch (e) { toast(e.message); }
 });
 
-export { loadUploads, saveSwitch, retryUpload, pollNotifications, lastNotifyId };
+export { loadUploads, saveSwitch, retryUpload, pollNotifications, lastNotifyId, hasPublishingDraft };

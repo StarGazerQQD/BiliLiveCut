@@ -1,6 +1,13 @@
 // BiliLiveCut 插件中心：发现、启停与设置页入口
 import { $, api, toast, esc, badge } from "./common.js";
 
+const pendingPluginIds = new Set();
+let pluginMutationRevision = 0;
+
+function hasPluginMutationPending() {
+  return pendingPluginIds.size > 0;
+}
+
 function pluginRow(plugin) {
   const state = plugin.loaded ? "running" : plugin.error ? "error" : "disabled";
   return `
@@ -27,6 +34,8 @@ function bindPluginActions(root) {
     const toggle = item.querySelector(".plugin-toggle");
     const settings = item.querySelector(".plugin-settings");
     toggle.addEventListener("change", async () => {
+      pendingPluginIds.add(pluginId);
+      pluginMutationRevision += 1;
       toggle.disabled = true;
       try {
         await api("PATCH", `/api/plugins/${encodeURIComponent(pluginId)}`, { enabled: toggle.checked });
@@ -35,6 +44,8 @@ function bindPluginActions(root) {
         toggle.checked = !toggle.checked;
         toast("插件状态更新失败：" + error.message);
       } finally {
+        pendingPluginIds.delete(pluginId);
+        pluginMutationRevision += 1;
         await loadPlugins();
       }
     });
@@ -47,8 +58,10 @@ function bindPluginActions(root) {
 async function loadPlugins() {
   const root = $("#plugins-list");
   if (!root) return;
+  const revision = pluginMutationRevision;
   try {
     const data = await api("GET", "/api/plugins");
+    if (pendingPluginIds.size > 0 || pluginMutationRevision !== revision) return;
     const errors = (data.scan_errors || []).map((error) => `
       <div class="item plugin-scan-error">
         <div class="title">无法读取 ${esc(error.directory)}</div>
@@ -59,6 +72,7 @@ async function loadPlugins() {
       : `${errors}<div class="empty">插件目录中尚未发现有效的 plugin.json。</div>`;
     bindPluginActions(root);
   } catch (error) {
+    if (pendingPluginIds.size > 0 || pluginMutationRevision !== revision) return;
     root.innerHTML = `<div class="empty">插件列表加载失败：${esc(error.message)}</div>`;
   }
 }
@@ -75,4 +89,4 @@ async function refreshPlugins() {
 
 $("#btn-refresh-plugins")?.addEventListener("click", refreshPlugins);
 
-export { loadPlugins };
+export { loadPlugins, hasPluginMutationPending };

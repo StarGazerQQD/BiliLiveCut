@@ -3,7 +3,34 @@ import { $, api, toast, esc, badge, DANMAKU_TYPE_LABEL } from "./common.js";
 
 const dirtyTranscriptIds = new Set();
 const openTranscriptDetails = new Set();
+const transcriptRevisions = new Map();
+const transcriptSnapshots = new Map();
 let transcriptEditorRevision = 0;
+let transcriptListSignature = "";
+
+function hasOpenTranscriptEditor() {
+  return [...openTranscriptDetails].some((key) => key.startsWith("correction:"));
+}
+
+function transcriptEditorProtected() {
+  return dirtyTranscriptIds.size > 0 || hasOpenTranscriptEditor();
+}
+
+function hasTranscriptDraft() {
+  return dirtyTranscriptIds.size > 0;
+}
+
+function transcriptRevision(id) {
+  return transcriptRevisions.get(id) || 0;
+}
+
+function bumpTranscriptRevision(id) {
+  transcriptRevisions.set(id, transcriptRevision(id) + 1);
+}
+
+function updateTranscriptDirtyHint() {
+  $("#transcripts-dirty-hint").style.display = transcriptEditorProtected() ? "" : "none";
+}
 
 // ----------------------------- \u542f\u52a8/\u505c\u6b62\u5f55\u5236 ----------------------------- //
 async function startRoom(id) {
@@ -74,31 +101,43 @@ async function loadRecording() {
 }
 
 // ----------------------------- \u6e32\u67d3:\u5b9e\u65f6\u8f6c\u5199 ----------------------------- //
-async function loadTranscripts() {
-  if (dirtyTranscriptIds.size > 0) {
-    $("#transcripts-dirty-hint").style.display = "";
+async function loadTranscripts(forceRender = false) {
+  if (transcriptEditorProtected()) {
+    updateTranscriptDirtyHint();
     return;
   }
-  $("#transcripts-dirty-hint").style.display = "none";
+  updateTranscriptDirtyHint();
   const revision = transcriptEditorRevision;
   const rows = await api("GET", "/api/transcripts?limit=30");
-  if (dirtyTranscriptIds.size > 0 || transcriptEditorRevision !== revision) {
-    $("#transcripts-dirty-hint").style.display = dirtyTranscriptIds.size > 0 ? "" : "none";
+  if (transcriptEditorProtected() || transcriptEditorRevision !== revision) {
+    updateTranscriptDirtyHint();
     return;
   }
+  const signature = JSON.stringify(rows);
+  if (!forceRender && signature === transcriptListSignature && $("#transcripts-list").innerHTML) return;
+  const viewport = {
+    x: Number(window.scrollX ?? window.pageXOffset ?? 0),
+    y: Number(window.scrollY ?? window.pageYOffset ?? 0),
+  };
+  transcriptSnapshots.clear();
+  rows.forEach((row) => transcriptSnapshots.set(Number(row.id), { text: row.text || "" }));
   $("#transcripts-list").innerHTML = rows.length ? rows.map((t) => {
     const rawDetailKey = `raw:${t.id}`;
     const correctionDetailKey = `correction:${t.id}`;
     const rawDetails = t.llm_refined && t.raw_text && t.raw_text !== t.text
       ? `<details data-transcript-detail="${rawDetailKey}" ${openTranscriptDetails.has(rawDetailKey) ? "open" : ""} style="margin-top:8px"><summary class="muted">查看原始 ASR</summary><div class="txt muted">${esc(t.raw_text)}</div></details>`
       : "";
+    const sourceFile = t.source_file_name
+      ? `<div class="sub" style="margin-top:6px"><b>源 TS 文件：</b><code id="transcript-source-file-${t.id}">${esc(t.source_file_name)}</code> <button type="button" class="secondary" onclick="copyTranscriptSourceFile(${t.id})">复制文件名</button> <a class="btn-link" href="/api/transcripts/${t.id}/source-mp4" download>无损导出 MP4</a></div>`
+      : `<div class="sub" style="margin-top:6px"><b>源 TS 文件：</b>原始片段记录不可用</div>`;
     return `
-    <div class="item">
+    <div class="item" id="transcript-item-${t.id}">
       <div class="sub">${esc(t.source_label || "未知来源")} · 会话 #${t.session_id ?? "-"} · 片段 #${t.segment_id} · ${esc(t.language || "")} · ${esc(t.primary_backend || "")} · ${esc(t.created_at || "")}</div>
-      <div class="txt">${esc(t.text) || "(\u7a7a)"}</div>
+      ${sourceFile}
+      <div class="txt" id="transcript-final-${t.id}">${esc(t.text) || "(\u7a7a)"}</div>
       ${t.summary ? `<div class="sub" style="margin-top:8px"><b>片段概括：</b>${esc(t.summary)}</div>` : ""}
       ${rawDetails}
-      <details class="transcript-correction" data-transcript-editor="${t.id}" data-transcript-detail="${correctionDetailKey}" ${openTranscriptDetails.has(correctionDetailKey) ? "open" : ""} style="margin-top:8px">
+      <details class="transcript-correction" id="transcript-editor-${t.id}" data-transcript-editor="${t.id}" data-transcript-detail="${correctionDetailKey}" ${openTranscriptDetails.has(correctionDetailKey) ? "open" : ""} style="margin-top:8px">
         <summary>人工纠错并学习房间词典</summary>
         <label class="editor-label">纠正后的全文
           <textarea id="transcript-text-${t.id}" rows="6">${esc(t.text || "")}</textarea>
@@ -116,6 +155,27 @@ async function loadTranscripts() {
       </details>
     </div>`;
   }).join("") : `<div class="empty">\u6682\u65e0\u8f6c\u5199\u3002\u8bf7\u5728\u300c\u914d\u7f6e \u2192 \u529f\u80fd\u5f00\u5173\u300d\u542f\u7528\u201c\u5f55\u5236\u5b9e\u65f6\u8f6c\u5199\u201d\uff0c\u6216\u5728 CLI \u4f7f\u7528 --pipeline\u3002</div>`;
+  transcriptListSignature = signature;
+  if (typeof window.scrollTo === "function") {
+    const restore = () => window.scrollTo(viewport.x, viewport.y);
+    if (typeof window.requestAnimationFrame === "function") window.requestAnimationFrame(restore);
+    else restore();
+  }
+}
+
+async function copyTranscriptSourceFile(id) {
+  const filename = $(`#transcript-source-file-${id}`)?.textContent?.trim();
+  if (!filename) {
+    toast("源 TS 文件名不可用");
+    return;
+  }
+  try {
+    if (!navigator.clipboard?.writeText) throw new Error("Clipboard API unavailable");
+    await navigator.clipboard.writeText(filename);
+    toast(`已复制源 TS 文件名：${filename}`);
+  } catch (_error) {
+    window.prompt("复制源 TS 文件名：", filename);
+  }
 }
 
 function parseTranscriptAliases(value) {
@@ -132,8 +192,30 @@ function parseTranscriptAliases(value) {
   return aliases;
 }
 
+function closeTranscriptEditor(id, text) {
+  const detail = $(`#transcript-editor-${id}`);
+  if (detail) detail.open = false;
+  const textInput = $(`#transcript-text-${id}`);
+  if (textInput && text !== undefined) textInput.value = text;
+  const aliasesInput = $(`#transcript-aliases-${id}`);
+  if (aliasesInput) aliasesInput.value = "";
+  const learnInput = $(`#transcript-learn-${id}`);
+  if (learnInput) learnInput.checked = true;
+  openTranscriptDetails.delete(`correction:${id}`);
+}
+
+async function settleTranscriptEditor(id, text) {
+  dirtyTranscriptIds.delete(id);
+  bumpTranscriptRevision(id);
+  transcriptEditorRevision += 1;
+  closeTranscriptEditor(id, text);
+  updateTranscriptDirtyHint();
+  if (!transcriptEditorProtected()) await loadTranscripts(true);
+}
+
 async function correctTranscript(id) {
   try {
+    const revision = transcriptRevision(id);
     const correctedText = $(`#transcript-text-${id}`).value.trim();
     if (!correctedText) throw new Error("纠正后的转写不能为空");
     const aliases = parseTranscriptAliases($(`#transcript-aliases-${id}`).value);
@@ -142,20 +224,22 @@ async function correctTranscript(id) {
       aliases,
       learn_dictionary: $(`#transcript-learn-${id}`).checked,
     });
-    dirtyTranscriptIds.delete(id);
-    openTranscriptDetails.delete(`correction:${id}`);
-    transcriptEditorRevision += 1;
     const learnedCount = Object.keys(result.learned_aliases || {}).length;
+    if (transcriptRevision(id) !== revision) {
+      updateTranscriptDirtyHint();
+      toast(`已保存提交时的转写${learnedCount ? `，学习 ${learnedCount} 条房间词典` : ""}；保存期间还有新修改，请再次保存`);
+      return;
+    }
+    transcriptSnapshots.set(id, { text: correctedText });
+    const finalText = $(`#transcript-final-${id}`);
+    if (finalText) finalText.textContent = correctedText;
     toast(`转写已保存并请求整场重分析${learnedCount ? `，学习 ${learnedCount} 条房间词典` : ""}`);
-    await loadTranscripts();
+    await settleTranscriptEditor(id, correctedText);
   } catch (e) { toast("保存纠错失败：" + e.message); }
 }
 
 async function cancelTranscriptCorrection(id) {
-  dirtyTranscriptIds.delete(id);
-  openTranscriptDetails.delete(`correction:${id}`);
-  transcriptEditorRevision += 1;
-  await loadTranscripts();
+  await settleTranscriptEditor(id, transcriptSnapshots.get(id)?.text || "");
 }
 
 async function retranscribeTranscript(id) {
@@ -164,19 +248,28 @@ async function retranscribeTranscript(id) {
     const result = await api("POST", `/api/transcripts/${id}/retranscribe`);
     dirtyTranscriptIds.delete(id);
     openTranscriptDetails.delete(`correction:${id}`);
+    transcriptSnapshots.delete(id);
+    bumpTranscriptRevision(id);
     transcriptEditorRevision += 1;
+    updateTranscriptDirtyHint();
     toast(`片段 #${result.segment_id} 已重新加入转写队列`);
-    await loadTranscripts();
+    if (transcriptEditorProtected()) $(`#transcript-item-${id}`)?.remove();
+    else await loadTranscripts(true);
   } catch (e) { toast("重新识别失败:" + e.message); }
 }
 
-$("#transcripts-list").addEventListener("input", (event) => {
+function markTranscriptDirty(event) {
   const editor = event.target.closest?.("[data-transcript-editor]");
   if (!editor) return;
-  dirtyTranscriptIds.add(Number(editor.dataset.transcriptEditor));
+  const id = Number(editor.dataset.transcriptEditor);
+  dirtyTranscriptIds.add(id);
+  bumpTranscriptRevision(id);
   transcriptEditorRevision += 1;
-  $("#transcripts-dirty-hint").style.display = "";
-});
+  updateTranscriptDirtyHint();
+}
+
+$("#transcripts-list").addEventListener("input", markTranscriptDirty);
+$("#transcripts-list").addEventListener("change", markTranscriptDirty);
 
 $("#transcripts-list").addEventListener("toggle", (event) => {
   const detail = event.target.closest?.("[data-transcript-detail]");
@@ -184,7 +277,9 @@ $("#transcripts-list").addEventListener("toggle", (event) => {
   if (!key) return;
   if (detail.open) openTranscriptDetails.add(key);
   else openTranscriptDetails.delete(key);
+  if (key.startsWith("correction:")) bumpTranscriptRevision(Number(key.split(":", 2)[1]));
   transcriptEditorRevision += 1;
+  updateTranscriptDirtyHint();
 }, true);
 
 // ----------------------------- \u6e32\u67d3:\u5f39\u5e55\u70ed\u5ea6 ----------------------------- //
@@ -204,4 +299,4 @@ async function loadDanmaku() {
     </div>`).join("") : `<div class="empty">\u6682\u65e0\u5f39\u5e55\u8bb0\u5f55\u3002</div>`;
 }
 
-export { startRoom, stopRoom, resumeRoom, markHighlight, correctTranscript, cancelTranscriptCorrection, retranscribeTranscript, loadRecording, loadTranscripts, loadDanmaku };
+export { startRoom, stopRoom, resumeRoom, markHighlight, copyTranscriptSourceFile, correctTranscript, cancelTranscriptCorrection, retranscribeTranscript, loadRecording, loadTranscripts, loadDanmaku, hasTranscriptDraft };

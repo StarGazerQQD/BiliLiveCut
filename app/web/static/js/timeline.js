@@ -26,6 +26,16 @@ const SIGNAL_LABELS = {
   trend: "网感趋势",
 };
 
+const SUMMARY_STATUS_LABELS = {
+  recording: "录制结束后自动生成",
+  waiting: "等待最终分析完成",
+  pending: "等待生成",
+  generating: "正在生成",
+  missing: "等待生成",
+  stale: "时间线已更新，等待重生成",
+  failed: "生成失败",
+};
+
 function formatGmt8(value) {
   if (!value) return "进行中";
   return String(value).replace("T", " ").slice(0, 19);
@@ -152,12 +162,38 @@ function renderTimelinePoint(point) {
     </li>`;
 }
 
+function renderWholeSessionSummary(data) {
+  const summary = data.whole_session_summary || { status: "missing" };
+  const ready = summary.status === "ready";
+  const source = summary.source === "llm" ? "LLM 按时间线整理" : "规则按时间线整理";
+  const generatedAt = summary.generated_at ? formatGmt8(summary.generated_at) : "";
+  const message = SUMMARY_STATUS_LABELS[summary.status] || "等待生成";
+  return `
+    <section class="whole-session-summary" aria-label="全场高光总结">
+      <div class="head">
+        <div>
+          <div class="title">全场高光总结</div>
+          <div class="sub">${ready
+            ? `${esc(source)} · ${Number(summary.point_count) || 0} 个高光节点${generatedAt ? ` · ${esc(generatedAt)}` : ""}`
+            : esc(message)}</div>
+        </div>
+        ${data.session?.ended_at
+          ? `<button class="secondary" onclick="regenerateSessionSummary(${Number(data.session.session_id)})">重新生成</button>`
+          : ""}
+      </div>
+      ${ready
+        ? `<p class="whole-session-summary-text">${esc(summary.summary || "本场没有识别到可总结的高光节点。").replace(/\n/g, "<br>")}</p>`
+        : `<p class="muted">${esc(summary.error || message)}。页面会随处理进度自动更新，不会按五分钟录制分段拆开。</p>`}
+    </section>`;
+}
+
 function renderTimelineDetail(data) {
   const points = data.points || [];
+  const wholeSummary = renderWholeSessionSummary(data);
   if (!points.length) {
-    return `<div class="empty">本场尚无${$("#timeline-include-rejected").checked ? "" : "未拒绝的"}高光节点；可等待分析完成或按新配置重分析。</div>`;
+    return `${wholeSummary}<div class="empty">本场尚无${$("#timeline-include-rejected").checked ? "" : "未拒绝的"}高光节点；可等待分析完成或按新配置重分析。</div>`;
   }
-  return `<ol class="session-timeline" aria-label="${esc(sourceLabel(data.session))} 的高光时间线">${points.map(renderTimelinePoint).join("")}</ol>`;
+  return `${wholeSummary}<ol class="session-timeline" aria-label="${esc(sourceLabel(data.session))} 的高光时间线">${points.map(renderTimelinePoint).join("")}</ol>`;
 }
 
 async function loadTimelineDetail(
@@ -246,6 +282,15 @@ async function requestSessionReanalysis(sessionId, retranscribe = false) {
   } catch (error) { toast("重分析请求失败：" + error.message); }
 }
 
+async function regenerateSessionSummary(sessionId) {
+  try {
+    await api("POST", `/api/sessions/${sessionId}/timeline-summary`, {});
+    toast(`会话 #${sessionId} 的全场高光总结已加入队列`);
+    expandedSessions.add(sessionId);
+    await loadSessionTimelines(true);
+  } catch (error) { toast("整场总结请求失败：" + error.message); }
+}
+
 $("#timeline-room-filter").addEventListener("change", () => loadSessionTimelines());
 $("#timeline-include-rejected").addEventListener("change", () => loadSessionTimelines());
 $("#btn-refresh-timeline").addEventListener("click", () => loadSessionTimelines());
@@ -257,4 +302,4 @@ $("#timeline-list").addEventListener("toggle", (event) => {
   else expandedProvenanceCandidates.delete(candidateId);
 }, true);
 
-export { loadSessionTimelines, toggleSessionTimeline, requestSessionReanalysis };
+export { loadSessionTimelines, toggleSessionTimeline, requestSessionReanalysis, regenerateSessionSummary };

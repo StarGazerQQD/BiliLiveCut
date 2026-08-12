@@ -80,6 +80,13 @@ const $$ = s => document.querySelectorAll(s);
 let collectionData = null;
 let eventOrder = [];
 let renderJobId = null;
+const chapterTitleDrafts = new Map();
+let orderDirty = false;
+let chapterSettingsDirty = false;
+let collectionRevision = 0;
+let orderRevision = 0;
+
+function hasCollectionDraft(){return orderDirty||chapterSettingsDirty}
 
 function toast(m){const e=$("#toast");e.textContent=m;e.classList.add("show");setTimeout(()=>e.classList.remove("show"),2500)}
 function pad(n){return String(n).padStart(2,"0")}
@@ -97,6 +104,7 @@ async function loadData(){
 
 function render(){
   const d=collectionData;
+  $$(".ch-title").forEach(el=>chapterTitleDrafts.set(String(el.dataset.eid),el.value));
   $("#topic-title").textContent=d.topic.title||"未命名主题";
   $("#topic-summary").textContent=d.topic.summary||"";
   $("#sum-count").textContent=d.events.length;
@@ -118,7 +126,7 @@ function render(){
         <div class="title">#${e.candidate_id} · ${(e.score||0).toFixed(2)}分 ${esc(e.reason||"")}</div>
         <div class="sub">${e.clip?esc(e.clip.title)||"":"(无成品)"}</div>
       </div>
-      <input class="ch-title" placeholder="章节标题" value="" data-idx="${i}" />
+      <input class="ch-title" placeholder="章节标题" value="${esc(chapterTitleDrafts.get(String(e.event_id))||"")}" data-idx="${i}" data-eid="${e.event_id}" />
       <span class="dur">${e.duration_s?s=>(Math.floor(s/60)+":"+String(Math.floor(s%60)).padStart(2,"0"))(e.duration_s):"--"}</span>
     </li>`).join("");
 
@@ -133,6 +141,7 @@ function render(){
       e.preventDefault();el.classList.remove("dragover");
       const from=dragIdx,to=+el.dataset.idx;
       if(from===to)return;
+      orderDirty=true;orderRevision+=1;collectionRevision+=1;
       const evs=collectionData.events;
       const[moved]=evs.splice(from,1);evs.splice(to,0,moved);
       eventOrder=evs.map(e=>e.event_id);
@@ -142,13 +151,16 @@ function render(){
 }
 
 async function saveOrder(){
+  const revision=orderRevision;
   try{
     await api("POST",`/collection/api/${TOPIC_ID}/reorder`,{event_ids:eventOrder});
-    toast("顺序已保存");
+    if(orderRevision===revision){orderDirty=false;toast("顺序已保存")}
+    else toast("已保存提交时的顺序；保存期间还有新排序，请再次保存");
   }catch(e){toast("保存失败:"+e.message)}
 }
 
 async function doRender(){
+  const revision=collectionRevision;
   const titles=[];
   $$(".ch-title").forEach(el=>titles.push(el.value||""));
   const cards=$("#ch-cards").checked;
@@ -159,6 +171,7 @@ async function doRender(){
       chapter_titles:titles,
       include_chapter_cards:cards,
     });
+    if(collectionRevision===revision){orderDirty=false;chapterSettingsDirty=false}
     renderJobId=res.job.id;
     $("#btn-cancel-render").style.display="";
     toast("合集渲染已在后台开始");
@@ -213,8 +226,19 @@ async function generateCopywriter(){
   }catch(e){toast("文案生成失败:"+e.message)}
 }
 
-function esc(s){if(!s)return"";return s.replace(/&/g,"&amp;").replace(/</g,"&lt;").replace(/>/g,"&gt;")}
+function esc(s){if(!s)return"";return s.replace(/&/g,"&amp;").replace(/</g,"&lt;").replace(/>/g,"&gt;").replace(/"/g,"&quot;").replace(/'/g,"&#39;")}
 
+$("#event-list").addEventListener("input",event=>{
+  if(!event.target.classList.contains("ch-title"))return;
+  chapterTitleDrafts.set(String(event.target.dataset.eid),event.target.value);
+  chapterSettingsDirty=true;collectionRevision+=1;
+});
+$("#ch-cards").addEventListener("change",()=>{chapterSettingsDirty=true;collectionRevision+=1});
+window.addEventListener("beforeunload",event=>{
+  if(!hasCollectionDraft())return;
+  event.preventDefault();
+  event.returnValue="";
+});
 loadData();
 </script>
 </body>

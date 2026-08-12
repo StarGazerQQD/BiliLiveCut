@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import json
 import shutil
 import subprocess
 from pathlib import Path
@@ -14,8 +15,10 @@ from app.clipping.clipper import (
     _build_audio_filter,
     _build_video_filter,
     _group_srt,
+    _run_ffmpeg_clip,
+    _write_concat_list,
 )
-from app.db.models import ClipStatus
+from app.db.models import ClipStatus, RawSegment
 from app.publishing.copywriter import _decide_status, _fallback_copy, gather_clip_text
 
 if TYPE_CHECKING:
@@ -28,21 +31,25 @@ _HAS_FFMPEG = shutil.which(settings.ffmpeg_path) is not None
 
 # ----------------------------- 纯逻辑 ----------------------------- #
 def test_build_audio_filter() -> None:
-    """启用 loudnorm 时滤镜串包含 loudnorm;关闭去静音时不含 silenceremove。"""
+    """音频后处理必须在最后归零时间轴。"""
     af = _build_audio_filter(ClipOptions(loudnorm=True, remove_silence=False))
     assert "loudnorm" in af
     assert "silenceremove" not in af
+    assert af.endswith("asetpts=PTS-STARTPTS")
     af2 = _build_audio_filter(ClipOptions(loudnorm=False, remove_silence=True))
     assert "silenceremove" in af2
     assert "areverse" in af2
+    assert af2.endswith("asetpts=PTS-STARTPTS")
+    assert _build_audio_filter(ClipOptions(loudnorm=False, remove_silence=False)) == "asetpts=PTS-STARTPTS"
 
 
 def test_build_video_filter_vertical() -> None:
-    """竖屏选项生成缩放+补边滤镜。"""
+    """视频滤镜始终归零首帧，竖屏选项另生成缩放与补边。"""
     vf = _build_video_filter(ClipOptions(vertical=True), None)
     assert "scale=1080:1920" in vf
     assert "pad=1080:1920" in vf
-    assert _build_video_filter(ClipOptions(vertical=False), None) == ""
+    assert vf.startswith("setpts=PTS-STARTPTS")
+    assert _build_video_filter(ClipOptions(vertical=False), None) == "setpts=PTS-STARTPTS"
 
 
 def test_group_srt_format() -> None:
@@ -187,6 +194,187 @@ def _make_test_ts(path: Path, duration: int = 6) -> bool:
         str(path),
     ]
     return subprocess.run(cmd, capture_output=True).returncode == 0 and path.exists()
+
+
+def _video_start_times(path: Path) -> tuple[float, float]:
+    """返回视频流起点和首个实际解码帧的 PTS。"""
+    stream_cmd = [
+        settings.ffprobe_path,
+        "-v",
+        "error",
+        "-select_streams",
+        "v:0",
+        "-show_entries",
+        "stream=start_time",
+        "-of",
+        "json",
+        str(path),
+    ]
+    stream_data = json.loads(subprocess.run(stream_cmd, capture_output=True, check=True, text=True).stdout)
+    frame_cmd = [
+        settings.ffprobe_path,
+        "-v",
+        "error",
+        "-select_streams",
+        "v:0",
+        "-read_intervals",
+        "%+#1",
+        "-show_entries",
+        "frame=pts_time",
+        "-of",
+        "json",
+        str(path),
+    ]
+    frame_data = json.loads(subprocess.run(frame_cmd, capture_output=True, check=True, text=True).stdout)
+    return float(stream_data["streams"][0]["start_time"]), float(frame_data["frames"][0]["pts_time"])
+
+
+def _stream_packet_count(path: Path, stream: str) -> int:
+    """返回指定流的 packet 数量，用于验证无损导出没有丢包。"""
+    command = [
+        settings.ffprobe_path,
+        "-v",
+        "error",
+        "-select_streams",
+        stream,
+        "-count_packets",
+        "-show_entries",
+        "stream=nb_read_packets",
+        "-of",
+        "json",
+        str(path),
+    ]
+    data = json.loads(subprocess.run(command, capture_output=True, check=True, text=True).stdout)
+    return int(data["streams"][0]["nb_read_packets"])
+
+
+@pytest.mark.skipif(not _HAS_FFMPEG, reason="需要 FFmpeg")
+def test_ts_to_mp4_starts_on_real_video_frame(tmp_path: Path) -> None:
+    """TS 的 AAC 预滚不得让 MP4 在首个真实画面之前产生黑帧空窗。"""
+    ts_file = tmp_path / "source.ts"
+    assert _make_test_ts(ts_file, duration=3), "生成测试 TS 失败"
+    segment = RawSegment(session_id=1, seq=0, file_path=str(ts_file))
+    concat_list = _write_concat_list([segment], tmp_path)
+    output = tmp_path / "normalized.mp4"
+
+    _run_ffmpeg_clip(
+        concat_list,
+        output,
+        0.0,
+        2.0,
+        ClipOptions(
+            loudnorm=False,
+            remove_silence=False,
+            vertical=False,
+            subtitle=False,
+            preset="veryfast",
+        ),
+        None,
+    )
+
+    stream_start, first_frame_pts = _video_start_times(output)
+    assert stream_start == pytest.approx(0.0, abs=0.001)
+    assert first_frame_pts == pytest.approx(0.0, abs=0.001)
+
+
+@pytest.mark.skipif(not _HAS_FFMPEG, reason="需要 FFmpeg")
+def test_lossless_source_export_rebases_video_without_dropping_packets(
+    temp_db: None,
+    tmp_path: Path,
+    monkeypatch: MonkeyPatch,
+) -> None:
+    """源 TS 无损导出应校准首个画面，同时完整保留音视频包。"""
+    from app.core import paths as path_module
+    from app.db.models import Transcript
+    from app.db.session import get_session
+    from app.web.services import transcripts as transcript_service
+
+    storage_root = tmp_path / "storage"
+    source_dir = storage_root / "raw" / "session_1"
+    source_dir.mkdir(parents=True)
+    source = source_dir / "source.ts"
+    assert _make_test_ts(source, duration=3), "生成测试 TS 失败"
+    monkeypatch.setattr(path_module.settings, "storage_root", str(storage_root))
+
+    with get_session() as db:
+        segment = RawSegment(session_id=1, seq=0, file_path=str(source))
+        db.add(segment)
+        db.flush()
+        transcript = Transcript(segment_id=segment.id, text="无损导出")
+        db.add(transcript)
+        db.flush()
+        transcript_id = transcript.id
+
+    source_video_packets = _stream_packet_count(source, "v:0")
+    source_audio_packets = _stream_packet_count(source, "a:0")
+    output = transcript_service.remux_transcript_source(transcript_id)
+    stream_start, first_frame_pts = _video_start_times(output)
+
+    assert output.parent == (storage_root / "clips" / "source_exports").resolve()
+    assert stream_start == pytest.approx(0.0, abs=0.001)
+    assert first_frame_pts == pytest.approx(0.0, abs=0.001)
+    assert _stream_packet_count(output, "v:0") == source_video_packets
+    assert _stream_packet_count(output, "a:0") == source_audio_packets
+    assert transcript_service.remux_transcript_source(transcript_id) == output
+
+
+def test_source_export_cleanup_does_not_fail_when_old_download_is_open(
+    tmp_path: Path,
+    monkeypatch: MonkeyPatch,
+) -> None:
+    """Windows 正在下载旧缓存时，清理失败不得推翻已成功的新导出。"""
+    from app.web.services import transcripts as transcript_service
+
+    source = tmp_path / "source.ts"
+    source.write_bytes(b"ts")
+    export_root = tmp_path / "exports"
+    export_root.mkdir()
+    output = export_root / "segment_7_new.mp4"
+    stale = export_root / "segment_7_old.mp4"
+    stale.write_bytes(b"old")
+
+    monkeypatch.setattr(transcript_service, "_probe_stream_start_times", lambda _source: (1.5, 1.45))
+
+    def fake_run(command, **_kwargs):
+        Path(command[-1]).write_bytes(b"new")
+        return subprocess.CompletedProcess(command, 0, b"", b"")
+
+    original_unlink = Path.unlink
+
+    def guarded_unlink(path: Path, *, missing_ok: bool = False) -> None:
+        if path == stale:
+            raise PermissionError("download in progress")
+        original_unlink(path, missing_ok=missing_ok)
+
+    monkeypatch.setattr(transcript_service.subprocess, "run", fake_run)
+    monkeypatch.setattr(Path, "unlink", guarded_unlink)
+
+    transcript_service._render_source_export(source, output, 7, export_root)
+
+    assert output.read_bytes() == b"new"
+    assert stale.read_bytes() == b"old"
+
+
+def test_source_export_reports_missing_ffmpeg(tmp_path: Path, monkeypatch: MonkeyPatch) -> None:
+    """FFmpeg 不可执行时应返回领域错误，并清理未完成文件。"""
+    from app.web.services import transcripts as transcript_service
+
+    source = tmp_path / "source.ts"
+    source.write_bytes(b"ts")
+    export_root = tmp_path / "exports"
+    export_root.mkdir()
+    output = export_root / "segment_8_new.mp4"
+    monkeypatch.setattr(transcript_service, "_probe_stream_start_times", lambda _source: (1.5, 1.45))
+    monkeypatch.setattr(
+        transcript_service.subprocess,
+        "run",
+        lambda *_args, **_kwargs: (_ for _ in ()).throw(FileNotFoundError("ffmpeg")),
+    )
+
+    with pytest.raises(transcript_service.TranscriptMediaError, match="无法启动 FFmpeg"):
+        transcript_service._render_source_export(source, output, 8, export_root)
+
+    assert not list(export_root.glob("*.partial.mp4"))
 
 
 @pytest.mark.skipif(not _HAS_FFMPEG, reason="需要 FFmpeg")

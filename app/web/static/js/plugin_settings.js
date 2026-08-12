@@ -3,6 +3,16 @@ import { $, api, esc } from "./common.js";
 
 const root = $("#plugin-settings-root");
 const pluginId = root.dataset.pluginId;
+let settingsDirty = false;
+let settingsRevision = 0;
+
+function markSettingsDirty() {
+  settingsDirty = true;
+  settingsRevision += 1;
+  const status = $("#plugin-settings-status");
+  status.textContent = "有未保存的修改。";
+  status.className = "hint warn";
+}
 
 function settingControl(field) {
   const id = `plugin-setting-${field.key}`;
@@ -22,15 +32,19 @@ function settingControl(field) {
   return `<div class="plugin-setting-field"><label for="${id}">${esc(field.label)}</label>${control}${field.description ? `<small>${esc(field.description)}</small>` : ""}</div>`;
 }
 
-async function loadSettings() {
+async function loadSettings(force = false) {
+  if (settingsDirty && !force) return;
+  const revision = settingsRevision;
   try {
     const data = await api("GET", `/api/plugins/${encodeURIComponent(pluginId)}/settings`);
+    if (settingsDirty || settingsRevision !== revision) return;
     $("#plugin-settings-form").innerHTML = data.fields.length
       ? data.fields.map(settingControl).join("")
       : '<div class="empty">该插件没有可配置项。</div>';
-    $("#plugin-settings-status").textContent = "";
+    if (!force) $("#plugin-settings-status").textContent = "";
     $("#btn-save-plugin-settings").disabled = data.fields.length === 0;
   } catch (error) {
+    if (settingsDirty || settingsRevision !== revision) return;
     $("#plugin-settings-form").innerHTML = `<div class="empty">${esc(error.message)}</div>`;
     $("#plugin-settings-status").textContent = "请返回插件中心启用插件后再设置。";
     $("#btn-save-plugin-settings").disabled = true;
@@ -38,6 +52,7 @@ async function loadSettings() {
 }
 
 async function saveSettings() {
+  const revision = settingsRevision;
   const values = {};
   root.querySelectorAll("[data-key]").forEach((control) => {
     if (control.dataset.kind === "boolean") values[control.dataset.key] = control.checked;
@@ -47,14 +62,27 @@ async function saveSettings() {
   const status = $("#plugin-settings-status");
   try {
     await api("PATCH", `/api/plugins/${encodeURIComponent(pluginId)}/settings`, { values });
+    if (settingsRevision !== revision) {
+      status.textContent = "已保存提交时的设置；保存期间还有新修改，请再次保存。";
+      status.className = "hint warn";
+      return;
+    }
+    settingsDirty = false;
     status.textContent = "设置已保存。";
     status.className = "hint ok";
-    await loadSettings();
+    await loadSettings(true);
   } catch (error) {
     status.textContent = "保存失败：" + error.message;
     status.className = "hint warn";
   }
 }
 
+$("#plugin-settings-form").addEventListener("input", markSettingsDirty);
+$("#plugin-settings-form").addEventListener("change", markSettingsDirty);
 $("#btn-save-plugin-settings").addEventListener("click", saveSettings);
+window.addEventListener("beforeunload", (event) => {
+  if (!settingsDirty) return;
+  event.preventDefault();
+  event.returnValue = "";
+});
 loadSettings();

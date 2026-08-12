@@ -190,6 +190,20 @@ def cmd_record(
 
     async def _on_end(session_id: int) -> None:
         """会话结束:上传模块关闭时弹出切片目录。"""
+        if pipeline_enabled:
+            from app.analysis.reanalysis import request_session_reanalysis
+            from app.analysis.session_summary import request_session_timeline_summary
+
+            reanalysis_requested = request_session_reanalysis(
+                session_id,
+                reason="session_finalized",
+            )
+            if not reanalysis_requested:
+                request_session_timeline_summary(
+                    session_id,
+                    reason="session_finalized_without_reanalysis",
+                    force=True,
+                )
         from app.core import settings_store
         from app.core.osutil import open_path
         from app.core.paths import clips_dir

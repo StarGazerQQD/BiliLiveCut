@@ -242,6 +242,7 @@ class TaskWorker:
         self._analyzing: set[asyncio.Task[None]] = set()
         self._rendering: set[asyncio.Task[None]] = set()
         self._publishing: set[asyncio.Task[None]] = set()
+        self._session_summaries: set[asyncio.Task[bool]] = set()
         self._main_task: asyncio.Task[None] | None = None
         self._running: bool = False
         _logger.info("TaskWorker init worker_id={}", _WORKER_ID)
@@ -253,6 +254,9 @@ class TaskWorker:
         shutdown_event.clear()
         self._running = True
         recover_orphans()
+        from app.analysis.session_summary import recover_running_session_summary_requests
+
+        recover_running_session_summary_requests()
         self._main_task = asyncio.create_task(self._loop())
         from app.core.settings_store import asr_task_max_concurrency
 
@@ -276,6 +280,7 @@ class TaskWorker:
             ("analyzing", self._analyzing),
             ("rendering", self._rendering),
             ("publishing", self._publishing),
+            ("session_summaries", self._session_summaries),
         ]:
             pending = {t for t in coll if not t.done()}
             if pending:
@@ -308,6 +313,7 @@ class TaskWorker:
                 advance_awaiting_review()
                 advance_approved()
                 advance_rendered()
+                await self._dispatch_session_summaries()
                 # V0.1.13: Disk protection
                 from app.pipeline.storage_lifecycle import is_safe_for_new_tasks
 
@@ -329,11 +335,27 @@ class TaskWorker:
                 self._analyzing = {t for t in self._analyzing if not t.done()}
                 self._rendering = {t for t in self._rendering if not t.done()}
                 self._publishing = {t for t in self._publishing if not t.done()}
+                self._session_summaries = {t for t in self._session_summaries if not t.done()}
             except asyncio.CancelledError:
                 break
             except Exception as exc:
                 _logger.warning("tick error: {}", exc)
             await asyncio.sleep(2)
+
+    async def _dispatch_session_summaries(self) -> None:
+        """串行领取整场总结，避免与分段分析争用 LLM 和数据库写入。"""
+        if self._session_summaries:
+            return
+        from app.analysis.session_summary import (
+            claim_pending_session_summary,
+            execute_session_summary_claim,
+        )
+
+        claim = claim_pending_session_summary()
+        if claim is None:
+            return
+        task = asyncio.create_task(asyncio.to_thread(execute_session_summary_claim, claim))
+        self._session_summaries.add(task)
 
     async def _dispatch(
         self,

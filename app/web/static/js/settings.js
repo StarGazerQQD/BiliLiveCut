@@ -12,6 +12,10 @@ function markLLMDirty() {
   if (status && !status.textContent.includes("\u672a\u4fdd\u5b58")) status.textContent += " \u00b7 \u6709\u672a\u4fdd\u5b58\u66f4\u6539";
 }
 
+function hasLLMDraft() {
+  return _llmDirty;
+}
+
 function llmRow(p) {
   p = p || {};
   const keyPlaceholder = p.api_key_set ? "\u5df2\u914d\u7f6e (\u7559\u7a7a\u4e0d\u6539)" : "\u586b\u5199 API Key";
@@ -37,7 +41,7 @@ async function loadLLM(force = false) {
   if (_llmDirty && !force) return;
   const revision = _llmRevision;
   const data = await api("GET", "/api/llm-providers");
-  if (!force && (_llmDirty || _llmRevision !== revision)) return;
+  if (_llmDirty || _llmRevision !== revision) return;
   $("#llm-status").textContent = `\u5df2\u914d\u7f6e ${data.providers.length} \u4e2a \u00b7 \u53ef\u7528 ${data.active_count} \u4e2a(\u6309\u4f18\u5148\u7ea7\u4ece\u5c0f\u5230\u5927\u8c03\u7528)`;
   $("#llm-list").innerHTML = data.providers.length
     ? data.providers.map(llmRow).join("")
@@ -332,4 +336,4 @@ document.addEventListener("DOMContentLoaded", () => {
   if (btnClear) btnClear.addEventListener("click", clearCookie);
 });
 
-export { loadLLM, collectLLM, llmRow, loadLogs, loadTasks, retryTask, cancelTask, loadCookieStatus, doLogin, clearCookie, loadTemplates, exportTemplate, detTempl, loadIntroTemplates, detIntro };
+export { loadLLM, collectLLM, llmRow, loadLogs, loadTasks, retryTask, cancelTask, loadCookieStatus, doLogin, clearCookie, loadTemplates, exportTemplate, detTempl, loadIntroTemplates, detIntro, hasLLMDraft };
