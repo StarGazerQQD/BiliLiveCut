@@ -155,7 +155,7 @@ class TestEnginePackManifest:
         from blc_portable.engine_pack.manifest import create_manifest
 
         m = create_manifest(
-            source_commit="92618efcb9a3d6ec33f5ce3e0b2f46ac7e2cf55a",
+            source_commit="8a6add048dd7d38595a35e567ec3a870bab2bf22",
             builder_commit="b" * 40,
             file_list={},
             fixture=True,
@@ -172,7 +172,7 @@ class TestEnginePackManifest:
         from blc_portable.engine_pack.manifest import create_manifest, validate_manifest
 
         m = create_manifest(
-            source_commit="92618efcb9a3d6ec33f5ce3e0b2f46ac7e2cf55a",
+            source_commit="8a6add048dd7d38595a35e567ec3a870bab2bf22",
             builder_commit="b" * 40,
             file_list={},
             fixture=True,
@@ -188,8 +188,8 @@ class TestEnginePackManifest:
             format_version=MANIFEST_FORMAT_VERSION,
             engine_pack_version=_EP_RELEASE_VERSION,
             portable_release_version=_EP_RELEASE_VERSION,
-            source_commit="92618efcb9a3d6ec33f5ce3e0b2f46ac7e2cf55a",
-            source_commit_short="92618ef",
+            source_commit="8a6add048dd7d38595a35e567ec3a870bab2bf22",
+            source_commit_short="8a6add0",
             builder_commit="b" * 40,
             fixture=True,
             engines=[],
@@ -204,7 +204,7 @@ class TestEnginePackManifest:
         from blc_portable.engine_pack.manifest import EnginePackManifest, create_manifest
 
         raw = create_manifest(
-            source_commit="92618efcb9a3d6ec33f5ce3e0b2f46ac7e2cf55a",
+            source_commit="8a6add048dd7d38595a35e567ec3a870bab2bf22",
             builder_commit="b" * 40,
             file_list={},
             fixture=True,

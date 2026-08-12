@@ -202,8 +202,8 @@ class TestIdentityFields:
 
     def test_core_source_commit_is_current_baseline(self, manifest: dict) -> None:
         """验证 core_source_commit 是当前 Portable 源码基线。"""
-        assert manifest["core_source_commit"] == "92618efcb9a3d6ec33f5ce3e0b2f46ac7e2cf55a"
-        assert manifest["core_source_commit_short"] == "92618ef"
+        assert manifest["core_source_commit"] == "8a6add048dd7d38595a35e567ec3a870bab2bf22"
+        assert manifest["core_source_commit_short"] == "8a6add0"
 
     def test_portable_version_matches_release(self, manifest: dict) -> None:
         """验证 Portable 发布版本是当前唯一版本字段。"""
