@@ -1,5 +1,5 @@
 # BiliLiveCut Release 工作流 (V0.1.17.3 Alpha)
-# 触发: 推送 v* 标签 (如 v0.1.17.3-alpha)
+# 触发: 推送 v* 标签 (如 v0.1.17.3-Alpha)
 #   1) 全量测试 + release_audit
 #   2) 构建源码包 (sdist + wheel)
 #   3) 构建 Payload + 契约验证
@@ -16,7 +16,7 @@ on:
   workflow_dispatch:
     inputs:
       tag:
-        description: "发布 tag 名称 (如 v0.1.17.3-alpha, 必须 v* 格式且指向当前 SHA)"
+        description: "发布 tag 名称 (如 v0.1.17.3-Alpha, 必须 v* 格式且指向当前 SHA)"
         required: true
         type: string
 
@@ -46,15 +46,16 @@ jobs:
           echo "Validating tag: $TAG_INPUT"
 
           TAG_VERSION="${TAG_INPUT#v}"
-          if [[ ! "$TAG_VERSION" =~ ^[0-9]+\.[0-9]+\.[0-9]+(\.[0-9]+)?(-(alpha|beta|rc)(\.[0-9]+)?)?$ ]]; then
+          if [[ ! "$TAG_VERSION" =~ ^[0-9]+\.[0-9]+\.[0-9]+(\.[0-9]+)?(-(Alpha|Beta|RC)(\.[0-9]+)?)?$ ]]; then
             echo "FAIL: tag '$TAG_INPUT' does not match the complete release version pattern"
-            echo "Example: v0.1.17.3-alpha"
+            echo "Example: v0.1.17.3-Alpha"
             exit 1
           fi
 
           PROJECT_VERSION=$(python -c "import json; print(json.load(open('packaging/portable/config/version.json', encoding='utf-8'))['release_version'])")
-          if [ "$TAG_VERSION" != "$PROJECT_VERSION" ]; then
-            echo "FAIL: tag version '$TAG_VERSION' does not match project version '$PROJECT_VERSION'"
+          EXPECTED_TAG_VERSION="${PROJECT_VERSION%-alpha}-Alpha"
+          if [ "$TAG_VERSION" != "$EXPECTED_TAG_VERSION" ]; then
+            echo "FAIL: tag version '$TAG_VERSION' does not match expected release tag '$EXPECTED_TAG_VERSION'"
             exit 1
           fi
 
@@ -676,9 +677,8 @@ jobs:
           else
             TAG="${GITHUB_REF#refs/tags/}"
           fi
-          TAG_VERSION="${TAG#v}"
           PRERELEASE=false
-          if [[ "$TAG_VERSION" =~ -(alpha|beta|rc)(\.[0-9]+)?$ ]]; then
+          if [[ "$TAG" =~ -(Alpha|Beta|RC)(\.[0-9]+)?$ ]]; then
             PRERELEASE=true
           fi
           echo "tag=$TAG" >> $GITHUB_OUTPUT

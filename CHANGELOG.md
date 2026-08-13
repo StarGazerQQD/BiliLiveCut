@@ -11,6 +11,7 @@
 - **clipping/first-frame-timestamp**: 主成片、审片预览和派生版本在重编码时统一把首个有效音视频帧时间轴归零，避免从 TS 起点或分段边界出片时生成首帧黑色空窗，同时保持后续音画同步。
 - **version/release**: Python、C/Cython、Rust、Portable、Engine Pack、Docker、测试与用户文档统一升级为 `0.1.17.3-alpha`；Alpha 发行移除旧数据库字段、旧导入门面、旧配置键与旧 Runtime/Payload/Engine Pack 清单兼容，只接受当前精确版本和当前 Schema。
 - **release/contracts**: 删除 Payload 构建期版本覆盖文件与 `release_overlays` 字段，Payload Schema 升至 7；Release 标签改为逐字符匹配当前版本真源，不再接受历史大小写写法。
+- **release/tag-contract**: 明确区分内部 PEP 版本 `0.1.17.3-alpha` 与唯一的 GitHub Release 标签 `v0.1.17.3-Alpha`；标签由版本真源显式映射并逐字符校验，不再因文档规定的外部标签大小写而阻断发布。
 
 ### 变更
 

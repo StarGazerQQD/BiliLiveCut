@@ -228,16 +228,17 @@ def check_ci_bypass(audit: AuditResult) -> None:
         audit.check(
             "release.yml tag 与项目版本严格匹配",
             "PROJECT_VERSION=" in content
-            and 'if [ "$TAG_VERSION" != "$PROJECT_VERSION" ]' in content
+            and 'EXPECTED_TAG_VERSION="${PROJECT_VERSION%-alpha}-Alpha"' in content
+            and 'if [ "$TAG_VERSION" != "$EXPECTED_TAG_VERSION" ]' in content
             and "complete release version pattern" in content,
-            "tag 必须完整匹配版本语法并等于项目版本真源",
+            "tag 必须完整匹配语法，并由内部版本真源唯一映射为外部 -Alpha 标签",
         )
         audit.check(
-            "release.yml 预发布标签严格使用当前小写格式",
-            'if [[ "$TAG_VERSION" =~ -(alpha|beta|rc)' in content
+            "release.yml 预发布标签严格使用当前 GitHub 格式",
+            'if [[ "$TAG" =~ -(Alpha|Beta|RC)' in content
             and 'echo "prerelease=$PRERELEASE"' in content
             and "prerelease: ${{ steps.tag.outputs.prerelease == 'true' }}" in content,
-            "预发布标签必须使用当前小写格式并保持 GitHub prerelease 属性",
+            "预发布标签必须使用唯一的 TitleCase GitHub 格式并保持 prerelease 属性",
         )
         audit.check(
             "release.yml FFmpeg 下载具备重试与备用源",
