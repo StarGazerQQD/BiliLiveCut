@@ -131,12 +131,9 @@ def verify_release_artifacts(
 
     if not COMMIT_RE.fullmatch(expected_builder_commit):
         raise RuntimeError(f"Expected builder commit is not a full lowercase Git SHA: {expected_builder_commit!r}")
-    for field in ("release_version", "portable_release_version"):
-        _require_equal(f"payload.{field}", payload.get(field), version)
-    for field in ("source_commit", "core_source_commit"):
-        _require_equal(f"payload.{field}", payload.get(field), source_commit)
-    for field in ("source_commit_short", "core_source_commit_short"):
-        _require_equal(f"payload.{field}", payload.get(field), source_short)
+    _require_equal("payload.portable_release_version", payload.get("portable_release_version"), version)
+    _require_equal("payload.core_source_commit", payload.get("core_source_commit"), source_commit)
+    _require_equal("payload.core_source_commit_short", payload.get("core_source_commit_short"), source_short)
     _require_equal("payload.builder_commit", payload.get("builder_commit"), expected_builder_commit)
     _require_equal("payload.project_license", payload.get("project_license"), PROJECT_LICENSE_ID)
     _require_equal("payload.project_license_sha256", payload.get("project_license_sha256"), license_sha256)

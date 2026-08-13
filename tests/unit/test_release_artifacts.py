@@ -44,11 +44,8 @@ def _build_release_fixture(tmp_path: Path) -> tuple[Path, Path, Path, str]:
         archive.writestr("app/fixture.py", b"payload")
     payload_sha256 = hashlib.sha256(payload_zip.read_bytes()).hexdigest()
     payload_manifest = {
-        "release_version": version,
         "portable_release_version": version,
-        "source_commit": source_commit,
         "core_source_commit": source_commit,
-        "source_commit_short": source_short,
         "core_source_commit_short": source_short,
         "builder_commit": builder_commit,
         "payload_sha256": payload_sha256,
@@ -62,10 +59,10 @@ def _build_release_fixture(tmp_path: Path) -> tuple[Path, Path, Path, str]:
     lite_sha256, lite_crc32 = _write_sums(lite_dir, lite)
     bootstrap_wheels = {entry["wheel_filename"]: entry["wheel_sha256"] for entry in bootstrap_entries}
     lite_manifest = {
-        **{
-            key: payload_manifest[key]
-            for key in ("release_version", "source_commit", "builder_commit", "payload_sha256")
-        },
+        "release_version": version,
+        "source_commit": source_commit,
+        "builder_commit": payload_manifest["builder_commit"],
+        "payload_sha256": payload_manifest["payload_sha256"],
         "artifact_type": "lite",
         "artifact_sha256": lite_sha256,
         "artifact_crc32": lite_crc32,
@@ -95,10 +92,10 @@ def _build_release_fixture(tmp_path: Path) -> tuple[Path, Path, Path, str]:
         )
     full_sha256, full_crc32 = _write_sums(full_dir, full)
     full_manifest = {
-        **{
-            key: payload_manifest[key]
-            for key in ("release_version", "source_commit", "builder_commit", "payload_sha256")
-        },
+        "release_version": version,
+        "source_commit": source_commit,
+        "builder_commit": payload_manifest["builder_commit"],
+        "payload_sha256": payload_manifest["payload_sha256"],
         "artifact_type": "full",
         "artifact_sha256": full_sha256,
         "artifact_crc32": full_crc32,
@@ -118,6 +115,19 @@ def test_release_artifact_identity_accepts_coherent_build(tmp_path: Path) -> Non
         full_dir,
         expected_builder_commit=builder_commit,
     )
+
+
+def test_release_artifact_fixture_uses_current_payload_schema(tmp_path: Path) -> None:
+    """发布制品测试夹具不得重新引入当前 Payload Schema 已删除的旧身份字段。"""
+    payload_dir, _lite_dir, _full_dir, _builder_commit = _build_release_fixture(tmp_path)
+    payload_manifest = json.loads((payload_dir / "payload_manifest.json").read_text(encoding="utf-8"))
+
+    assert "release_version" not in payload_manifest
+    assert "source_commit" not in payload_manifest
+    assert "source_commit_short" not in payload_manifest
+    assert payload_manifest["portable_release_version"]
+    assert payload_manifest["core_source_commit"]
+    assert payload_manifest["core_source_commit_short"]
 
 
 def test_release_artifact_identity_rejects_tampered_lite(tmp_path: Path) -> None:
