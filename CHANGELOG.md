@@ -12,6 +12,7 @@
 - **version/release**: Python、C/Cython、Rust、Portable、Engine Pack、Docker、测试与用户文档统一升级为 `0.1.17.3-alpha`；Alpha 发行移除旧数据库字段、旧导入门面、旧配置键与旧 Runtime/Payload/Engine Pack 清单兼容，只接受当前精确版本和当前 Schema。
 - **release/contracts**: 删除 Payload 构建期版本覆盖文件与 `release_overlays` 字段，Payload Schema 升至 7；Release 标签改为逐字符匹配当前版本真源，不再接受历史大小写写法。
 - **release/tag-contract**: 明确区分内部 PEP 版本 `0.1.17.3-alpha` 与唯一的 GitHub Release 标签 `v0.1.17.3-Alpha`；标签由版本真源显式映射并逐字符校验，不再因文档规定的外部标签大小写而阻断发布。
+- **release/payload-contract**: Release 的 Payload Manifest 校验改为读取版本配置中的 `payload_schema` 真源，避免 Schema 升级后工作流仍使用旧硬编码版本而阻断发布。
 
 ### 变更
 

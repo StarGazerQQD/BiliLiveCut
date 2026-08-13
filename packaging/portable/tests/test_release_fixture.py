@@ -191,6 +191,15 @@ def test_release_payload_contract_uses_version_config_source_baseline() -> None:
     assert 'manifest["core_source_commit_short"] == version_config["source_commit_short"]' in content
 
 
+def test_release_payload_contract_uses_current_schema_source() -> None:
+    """Release workflow 的 Payload Schema 校验必须引用版本配置真源。"""
+    release_yml = _PROJ_ROOT / ".github" / "workflows" / "release.yml"
+    content = release_yml.read_text(encoding="utf-8")
+
+    assert 'manifest["format_version"] == version_config["payload_schema"]' in content
+    assert 'manifest["format_version"] == 5' not in content
+
+
 def test_release_workflow_uploads_crc32() -> None:
     """Release workflow 必须上传 CRC32SUMS。"""
     release_yml = _PROJ_ROOT / ".github" / "workflows" / "release.yml"
