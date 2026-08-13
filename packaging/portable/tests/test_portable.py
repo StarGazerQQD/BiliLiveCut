@@ -294,6 +294,30 @@ class TestPayload:
 
         assert (app_root / ".env").read_text(encoding="utf-8") == template_content
 
+    def test_portable_env_omits_launcher_only_pip_settings(self, tmp_path: Path) -> None:
+        """Launcher 的 pip 镜像配置不得进入应用严格校验的 .env。"""
+        from blc_portable.launcher.main import ensure_env
+
+        source_dir = tmp_path / "release"
+        source_dir.mkdir()
+        (source_dir / ".env.example").write_text(
+            "APP_ENV=dev\n"
+            "PIP_INDEX_URL=https://example.invalid/simple/\n"
+            "PIP_EXTRA_INDEX_URL=https://backup.invalid/simple/\n"
+            "STORAGE_ROOT=./storage\n",
+            encoding="utf-8",
+        )
+        app_root = tmp_path / "portable"
+        app_root.mkdir()
+
+        ensure_env(app_root, source_dir)
+
+        generated = (app_root / ".env").read_text(encoding="utf-8")
+        assert "APP_ENV=dev" in generated
+        assert "STORAGE_ROOT=./storage" in generated
+        assert "PIP_INDEX_URL=" not in generated
+        assert "PIP_EXTRA_INDEX_URL=" not in generated
+
     def test_full_first_run_rejects_payload_without_env_template(self, tmp_path: Path) -> None:
         """模板缺失时必须明确失败，禁止静默跳过配置初始化。"""
         from blc_portable.launcher.main import ensure_env
