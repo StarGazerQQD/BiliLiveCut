@@ -193,7 +193,10 @@ def ensure_env(app_root: Path, source_dir: Path) -> None:
     if not template.is_file():
         raise FileNotFoundError(f"Portable source is missing required environment template: {template}")
 
-    env_path.write_text(template.read_text(encoding="utf-8"), encoding="utf-8")
+    template_lines = template.read_text(encoding="utf-8").splitlines()
+    launcher_only_prefixes = ("PIP_INDEX_URL=", "PIP_EXTRA_INDEX_URL=")
+    app_lines = [line for line in template_lines if not line.startswith(launcher_only_prefixes)]
+    env_path.write_text("\n".join(app_lines) + "\n", encoding="utf-8")
     print("  .env created from template")
 
 

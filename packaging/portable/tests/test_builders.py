@@ -161,6 +161,21 @@ class TestLiteBuilder:
         assert "Copyright (c) 2026 StarGazerQQD" in PROJECT_LICENSE_PATH.read_text(encoding="utf-8")
         assert project_license_sha256() == hashlib.sha256(PROJECT_LICENSE_PATH.read_bytes()).hexdigest()
 
+    def test_project_license_uses_embedded_resource_when_frozen(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """冻结启动器必须从 PyInstaller 资源目录读取内嵌项目许可证。"""
+        from blc_portable import project_license
+
+        embedded_license = tmp_path / "LICENSE"
+        embedded_content = project_license.PROJECT_LICENSE_PATH.read_bytes() + b"\nEmbedded frozen resource marker\n"
+        embedded_license.write_bytes(embedded_content)
+        monkeypatch.setattr(sys, "frozen", True, raising=False)
+        monkeypatch.setattr(sys, "_MEIPASS", str(tmp_path), raising=False)
+
+        assert project_license.load_project_license() == embedded_content
+        assert project_license.project_license_sha256() == hashlib.sha256(embedded_content).hexdigest()
+
     def test_project_license_rejects_wrong_holder(self, tmp_path: Path) -> None:
         """错误版权声明不得进入 Portable 发布制品。"""
         from blc_portable.project_license import load_project_license
