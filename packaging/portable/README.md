@@ -445,6 +445,10 @@ WHISPER_DEVICE=cpu                       # Whisper 设备
 WHISPER_COMPUTE_TYPE=int8                # CPU 推荐 int8
 ```
 
+若显式配置的 `WHISPER_COMPUTE_TYPE` 不受当前 CPU/CUDA 后端支持，Whisper
+兜底会记录一次明确告警并改用 CTranslate2 的 `auto` 类型重试；模型损坏、CUDA
+驱动不匹配和显存不足等其他错误仍会原样报告。
+
 录制 TS 会先转换为 16 kHz 单声道 PCM WAV，Nano 再复用 Engine Pack 中的 FSMN-VAD 拆句。空输出、整段重复退化或长正文中的局部解码循环会依次切换 Paraformer、Whisper；最终仍不合格时不会落库，也不会调用 LLM 或高光分析。LLM 整理会保守清除残余的 ASR/VAD 边界复读，并保留有语义的强调、复述和口头禅。实时转写页可对历史污染结果执行“重新识别”，人工审核、确认主题与成片资产不会被自动覆盖。
 
 ### 大模型（可选，用于转写梳理 / 高光复核 / 文案 / 网感采集）
