@@ -1,7 +1,7 @@
 """Payload 构建器 — 构建 source_payload.zip 和完整 Manifest。
 
 流程:
-1. 从固定的当前发布基线 8a6add0 提取源码 → staging/
+1. 从固定的当前发布基线 80a392a 提取源码 → staging/
 2. 校验源码快照本身就是 0.1.17.3-alpha
 3. 构建 ZIP (收集 included_files 集合)
 4. 基于 included_files 生成 Manifest (文件数/Hash 与 ZIP 严格一致)

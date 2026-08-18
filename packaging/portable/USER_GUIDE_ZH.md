@@ -245,6 +245,7 @@ ASR_TASK_MAX_CONCURRENCY=1
 ```
 
 先证明录制链路正常，再单独测试 GPU。启用 CUDA 后可逐步把“ASR 分段并行数”从 1 提高；每提高一个并行任务都会增加一套模型实例，错误的 CUDA 配置或过高并行可能导致模型加载失败或显存不足。
+如果显式设置的 `WHISPER_COMPUTE_TYPE` 不受当前 CPU/CUDA 支持，Whisper 兜底会自动改用 CTranslate2 `auto` 并记录告警；CUDA 驱动、模型文件或显存本身的错误不会被该回退隐藏。
 
 ## 8. 添加直播间并完成第一次录制
 

@@ -6,7 +6,7 @@
 
 BiliLiveCut 是一个**全自动 AI 直播切片系统**：监听 Bilibili 直播间 → 实时录制 + 转写 → 生成场次高光时间线 → 审核动态切片 → 生成剪辑成品 + 文案。
 
-这个 `packaging/portable/` 目录是**即插即用分发版**。Launcher 内嵌了当前发布基线的完整业务源码 (Commit `8a6add0`)，**双击即用，首次启动不需要从 GitHub 下载业务源码**。Full 版自带 Python 3.12、离线依赖和 FFmpeg；Lite 版需要目标电脑已有 Python 3.11/3.12，并自行满足 FFmpeg 等运行组件。
+这个 `packaging/portable/` 目录是**即插即用分发版**。Launcher 内嵌了当前发布基线的完整业务源码 (Commit `80a392a`)，**双击即用，首次启动不需要从 GitHub 下载业务源码**。Full 版自带 Python 3.12、离线依赖和 FFmpeg；Lite 版需要目标电脑已有 Python 3.11/3.12，并自行满足 FFmpeg 等运行组件。
 
 Payload 从 **EXE 内置资源**释放，版本固定并校验 SHA-256，安装阶段不依赖 GitHub 业务源码。
 
@@ -256,7 +256,7 @@ resources/engine_pack_info.json (本地 Engine Pack 构建后可供 Lite/Full EX
 | ⑥ | 生成 `.env` 配置 | — | 含合理默认值 |
 
 > **断点续跑**：任何一步失败或中断，再次双击自动从断点继续。
-> **源码固定**：本次发布源码来源固定为 Commit `8a6add0`，不随 GitHub 上游变动。
+> **源码固定**：本次发布源码来源固定为 Commit `80a392a`，不随 GitHub 上游变动。
 
 4. 部署完成后打开 **Web 管理控制台**（默认 `http://127.0.0.1:8000`；未自动弹出时请手动访问）
 
@@ -302,7 +302,7 @@ packaging/portable/                     # ★ 即插即用分发版根目录 (�
 ├── launcher.py                      # launcher.exe 的 Python 源码（可选，便于审查）
 ├── build_exe.py                     # Lite 版构建 (PyInstaller one-file)
 ├── build_full_bundle.py             # Full 完整包构建脚本
-├── build_payload.py                 # Payload 构建器 (8a6add0 → source_payload.zip)
+├── build_payload.py                 # Payload 构建器 (80a392a → source_payload.zip)
 ├── portable_launcher.spec           # PyInstaller 规格文件
 ├── pip.ini                          # pip 镜像源配置（阿里云 + 清华备用）
 ├── .env.example                     # 配置模板（launcher.exe 自动生成 .env）
@@ -317,7 +317,7 @@ packaging/portable/                     # ★ 即插即用分发版根目录 (�
 └── README.md                        # 本文件
 ```
 
-> **源码去哪了？** `app/` `config/` `pyproject.toml` 等业务文件**不在分发目录中**，而是内嵌在 `launcher.exe` 内部作为 **source_payload.zip**（从当前发布基线 Commit `8a6add0` 提取，SHA-256 可校验）。`launcher.exe` 首次运行时自动将 Payload 解压到 `runtime/releases/` 目录。PnP 目录始终保持最小体积，源码不受工作区未提交内容影响。
+> **源码去哪了？** `app/` `config/` `pyproject.toml` 等业务文件**不在分发目录中**，而是内嵌在 `launcher.exe` 内部作为 **source_payload.zip**（从当前发布基线 Commit `80a392a` 提取，SHA-256 可校验）。`launcher.exe` 首次运行时自动将 Payload 解压到 `runtime/releases/` 目录。PnP 目录始终保持最小体积，源码不受工作区未提交内容影响。
 
 ### 运行时动态生成（首次启动后）
 
@@ -444,6 +444,10 @@ WHISPER_MODEL=small                      # Whisper 兜底模型
 WHISPER_DEVICE=cpu                       # Whisper 设备
 WHISPER_COMPUTE_TYPE=int8                # CPU 推荐 int8
 ```
+
+若显式配置的 `WHISPER_COMPUTE_TYPE` 不受当前 CPU/CUDA 后端支持，Whisper
+兜底会记录一次明确告警并改用 CTranslate2 的 `auto` 类型重试；模型损坏、CUDA
+驱动不匹配和显存不足等其他错误仍会原样报告。
 
 录制 TS 会先转换为 16 kHz 单声道 PCM WAV，Nano 再复用 Engine Pack 中的 FSMN-VAD 拆句。空输出、整段重复退化或长正文中的局部解码循环会依次切换 Paraformer、Whisper；最终仍不合格时不会落库，也不会调用 LLM 或高光分析。LLM 整理会保守清除残余的 ASR/VAD 边界复读，并保留有语义的强调、复述和口头禅。实时转写页可对历史污染结果执行“重新识别”，人工审核、确认主题与成片资产不会被自动覆盖。
 

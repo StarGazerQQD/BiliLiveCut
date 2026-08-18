@@ -838,7 +838,28 @@ def _load_whisper_model(model_size: str, device: str, compute_type: str):  # noq
         device,
         compute_type,
     )
-    return WhisperModel(model_size, device=device, compute_type=compute_type)
+    try:
+        return WhisperModel(model_size, device=device, compute_type=compute_type)
+    except ValueError as exc:
+        if not _is_unsupported_compute_type_error(exc, compute_type):
+            raise
+
+        logger.warning(
+            "Whisper compute_type={} 不受 device={} 支持，改用 CTranslate2 auto 重试: {}",
+            compute_type,
+            device,
+            exc,
+        )
+        return WhisperModel(model_size, device=device, compute_type="auto")
+
+
+def _is_unsupported_compute_type_error(exc: ValueError, compute_type: str) -> bool:
+    """Return whether CTranslate2 rejected the requested computation type."""
+    requested = compute_type.strip().lower()
+    if not requested or requested in {"auto", "default"}:
+        return False
+    message = str(exc).strip().lower()
+    return message.startswith(f"requested {requested} compute type")
 
 
 # ═══════════════════════════════════════════════════════════
