@@ -7,6 +7,85 @@ const transcriptRevisions = new Map();
 const transcriptSnapshots = new Map();
 let transcriptEditorRevision = 0;
 let transcriptListSignature = "";
+let danmakuListSignature = "";
+let sessionHistory = [];
+let transcriptSessionOptionsSignature = "";
+let danmakuSessionOptionsSignature = "";
+
+const TRANSCRIPT_SESSION_STORAGE_KEY = "bililivecut.transcripts.session-id";
+const DANMAKU_SESSION_STORAGE_KEY = "bililivecut.danmaku.session-id";
+let transcriptSelectedSessionId = readStoredSessionId(TRANSCRIPT_SESSION_STORAGE_KEY);
+let danmakuSelectedSessionId = readStoredSessionId(DANMAKU_SESSION_STORAGE_KEY);
+
+function readStoredSessionId(key) {
+  try {
+    return window.sessionStorage?.getItem(key) ?? null;
+  } catch (_error) {
+    return null;
+  }
+}
+
+function storeSessionId(key, value) {
+  try {
+    window.sessionStorage?.setItem(key, value);
+  } catch (_error) {
+    // 禁用 Web Storage 时仍保留当前页面内的选择。
+  }
+}
+
+function sessionOptionLabel(row, countField, countLabel) {
+  const started = String(row.started_at_gmt8 || row.started_at || "时间未知").replace("T", " ").slice(0, 19);
+  const source = row.source_label || `房间 ${row.room_id || "未知"}`;
+  return `${source} · ${started} · 会话 #${row.session_id} · ${row[countField] || 0} ${countLabel}`;
+}
+
+function selectedSessionRow(selectedId) {
+  return sessionHistory.find((row) => String(row.session_id) === String(selectedId || ""));
+}
+
+function renderSessionSelect(kind) {
+  const isTranscript = kind === "transcript";
+  if (isTranscript && transcriptEditorProtected()) return;
+
+  const select = $(`#${kind}-session-select`);
+  const countField = isTranscript ? "transcript_count" : "danmaku_count";
+  const countLabel = isTranscript ? "条转写" : "条弹幕";
+  let selectedId = isTranscript ? transcriptSelectedSessionId : danmakuSelectedSessionId;
+  const hasStoredSelection = selectedId !== null
+    && sessionHistory.some((row) => String(row.session_id) === String(selectedId));
+  if (!hasStoredSelection) selectedId = sessionHistory.length ? String(sessionHistory[0].session_id) : "";
+
+  const optionsSignature = JSON.stringify(sessionHistory.map((row) => [
+    row.session_id,
+    row.source_label,
+    row.started_at_gmt8,
+    row.status,
+    row[countField],
+  ]));
+  const previousSignature = isTranscript ? transcriptSessionOptionsSignature : danmakuSessionOptionsSignature;
+  if (optionsSignature !== previousSignature || !select.innerHTML) {
+    select.innerHTML = sessionHistory.length
+      ? sessionHistory.map((row) => `<option value="${row.session_id}">${esc(sessionOptionLabel(row, countField, countLabel))}</option>`).join("")
+      : `<option value="">暂无录制场次</option>`;
+    if (isTranscript) transcriptSessionOptionsSignature = optionsSignature;
+    else danmakuSessionOptionsSignature = optionsSignature;
+  }
+  select.value = selectedId;
+
+  const row = selectedSessionRow(selectedId);
+  $(`#${kind}-session-meta`).textContent = row
+    ? `${row.source_label || "未知来源"} · ${row.status || "状态未知"} · ${row.transcript_count || 0} 条转写 · ${row.danmaku_count || 0} 条弹幕`
+    : "暂无可查看的录制场次。";
+  if (isTranscript) transcriptSelectedSessionId = selectedId;
+  else danmakuSelectedSessionId = selectedId;
+  if (selectedId) storeSessionId(isTranscript ? TRANSCRIPT_SESSION_STORAGE_KEY : DANMAKU_SESSION_STORAGE_KEY, selectedId);
+}
+
+async function loadSessionHistory() {
+  sessionHistory = await api("GET", "/api/sessions/history");
+  renderSessionSelect("transcript");
+  renderSessionSelect("danmaku");
+}
 
 function hasOpenTranscriptEditor() {
   return [...openTranscriptDetails].some((key) => key.startsWith("correction:"));
@@ -107,13 +186,22 @@ async function loadTranscripts(forceRender = false) {
     return;
   }
   updateTranscriptDirtyHint();
+  await loadSessionHistory();
   const revision = transcriptEditorRevision;
-  const rows = await api("GET", "/api/transcripts?limit=30");
-  if (transcriptEditorProtected() || transcriptEditorRevision !== revision) {
+  const selectedSessionId = transcriptSelectedSessionId;
+  const query = selectedSessionId
+    ? `/api/transcripts?limit=500&session_id=${encodeURIComponent(selectedSessionId)}`
+    : "/api/transcripts?limit=30";
+  const rows = await api("GET", query);
+  if (
+    transcriptEditorProtected()
+    || transcriptEditorRevision !== revision
+    || transcriptSelectedSessionId !== selectedSessionId
+  ) {
     updateTranscriptDirtyHint();
     return;
   }
-  const signature = JSON.stringify(rows);
+  const signature = `${selectedSessionId || "all"}:${JSON.stringify(rows)}`;
   if (!forceRender && signature === transcriptListSignature && $("#transcripts-list").innerHTML) return;
   const viewport = {
     x: Number(window.scrollX ?? window.pageXOffset ?? 0),
@@ -282,9 +370,34 @@ $("#transcripts-list").addEventListener("toggle", (event) => {
   updateTranscriptDirtyHint();
 }, true);
 
+$("#transcript-session-select").addEventListener("change", async (event) => {
+  if (transcriptEditorProtected()) {
+    event.target.value = transcriptSelectedSessionId || "";
+    updateTranscriptDirtyHint();
+    toast("请先保存或取消当前转写纠错，再切换录制场次");
+    return;
+  }
+  transcriptSelectedSessionId = String(event.target.value || "");
+  storeSessionId(TRANSCRIPT_SESSION_STORAGE_KEY, transcriptSelectedSessionId);
+  transcriptListSignature = "";
+  await loadTranscripts(true);
+});
+
 // ----------------------------- \u6e32\u67d3:\u5f39\u5e55\u70ed\u5ea6 ----------------------------- //
 async function loadDanmaku() {
-  const data = await api("GET", "/api/danmaku?limit=60");
+  await loadSessionHistory();
+  const selectedSessionId = danmakuSelectedSessionId;
+  const query = selectedSessionId
+    ? `/api/danmaku?limit=500&session_id=${encodeURIComponent(selectedSessionId)}`
+    : "/api/danmaku?limit=60";
+  const data = await api("GET", query);
+  if (danmakuSelectedSessionId !== selectedSessionId) return;
+  const signature = `${selectedSessionId || "all"}:${JSON.stringify(data)}`;
+  if (signature === danmakuListSignature && $("#danmaku-list").innerHTML) return;
+  const viewport = {
+    x: Number(window.scrollX ?? window.pageXOffset ?? 0),
+    y: Number(window.scrollY ?? window.pageYOffset ?? 0),
+  };
   const sessions = data.sessions || [];
   $("#danmaku-sessions").innerHTML = sessions.length ? sessions.map((s) => `
     <div class="item">
@@ -297,6 +410,19 @@ async function loadDanmaku() {
       <div class="sub">${esc(d.source_label || "未知来源")} · 会话 #${d.session_id} · ${DANMAKU_TYPE_LABEL[d.type] || d.type} · ${esc(d.user || "匿名")} · ${esc(d.ts || "")}</div>
       <div class="txt">${esc(d.content) || "(\u65e0\u6587\u672c)"}</div>
     </div>`).join("") : `<div class="empty">\u6682\u65e0\u5f39\u5e55\u8bb0\u5f55\u3002</div>`;
+  danmakuListSignature = signature;
+  if (typeof window.scrollTo === "function") {
+    const restore = () => window.scrollTo(viewport.x, viewport.y);
+    if (typeof window.requestAnimationFrame === "function") window.requestAnimationFrame(restore);
+    else restore();
+  }
 }
+
+$("#danmaku-session-select").addEventListener("change", async (event) => {
+  danmakuSelectedSessionId = String(event.target.value || "");
+  storeSessionId(DANMAKU_SESSION_STORAGE_KEY, danmakuSelectedSessionId);
+  danmakuListSignature = "";
+  await loadDanmaku();
+});
 
 export { startRoom, stopRoom, resumeRoom, markHighlight, copyTranscriptSourceFile, correctTranscript, cancelTranscriptCorrection, retranscribeTranscript, loadRecording, loadTranscripts, loadDanmaku, hasTranscriptDraft };

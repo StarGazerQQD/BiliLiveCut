@@ -252,7 +252,7 @@ def download_all_engines(app_root: Path) -> dict[str, Any]:
         ok = install_models_dir_from_staging(
             app_root,
             staging_dir,
-            "0.1.17.3-alpha",
+            "0.1.17.4-alpha",
             installed_engines,
         )
 

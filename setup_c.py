@@ -24,7 +24,7 @@ if not _skip:
 
 setup(
     name="bili_live_cut_c",
-    version="0.1.17.3",
+    version="0.1.17.4",
     py_modules=[],
     ext_modules=_extensions,
 )

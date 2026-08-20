@@ -2,6 +2,18 @@
 
 ## 未发布
 
+## V0.1.17.4 Alpha (2026-08-20)
+
+### 修复
+
+- **web/session-history**: “实时转写”和“弹幕热度”改为按完整录制场次历史选择，不再用固定最近条数把旧记录挤出可见范围；两个页面分别记住当前场次，内容没有变化时跳过列表重绘。
+- **web/transcript-session-draft**: 转写纠错编辑器展开或存在未保存内容时锁定场次切换并暂停轮询重绘，避免切换下拉或五秒刷新丢失正文、词典别名和勾选状态。
+- **recording/room-metadata-refresh**: 每次手动、预约或自动流程真正开始新录制前重新查询直播间标题和主播名；详情查询失败时保留最近一次成功资料且不阻断已授权录制。
+
+### 变更
+
+- **version/release**: Python、C/Cython、Rust、Portable、Engine Pack、Docker、工作流、测试与用户文档统一升级为 `0.1.17.4-alpha`；GitHub Release 标签固定为 `v0.1.17.4-Alpha`。
+
 ## V0.1.17.3 Alpha (2026-08-12)
 
 ### 修复

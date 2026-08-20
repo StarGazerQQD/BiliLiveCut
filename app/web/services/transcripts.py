@@ -5,20 +5,24 @@ from __future__ import annotations
 import json
 import subprocess
 import threading
+from datetime import UTC, datetime, timedelta, timezone
 from difflib import SequenceMatcher
 from pathlib import Path
 from typing import Any
 from uuid import uuid4
 
+from sqlalchemy import func
 from sqlmodel import Session, select
 
 from app.db.entities import (
     ClipVariant,
+    Danmaku,
     FinalClip,
     HighlightCandidate,
     HighlightEvent,
     HighlightTopic,
     RawSegment,
+    RecordingSession,
     SegmentStatus,
     SegmentTask,
     TaskStatus,
@@ -45,6 +49,7 @@ class TranscriptMediaError(RuntimeError):
 
 _SOURCE_EXPORT_LOCKS: dict[int, threading.Lock] = {}
 _SOURCE_EXPORT_LOCKS_GUARD = threading.Lock()
+_GMT8 = timezone(timedelta(hours=8), name="GMT+8")
 
 
 def correct_transcript(
@@ -317,16 +322,88 @@ def _probe_stream_start_times(source: Path) -> tuple[float | None, float | None]
     return video_start, min(starts) if starts else None
 
 
-def list_transcripts(limit: int = 30) -> list[dict[str, Any]]:
+def list_recording_session_history() -> list[dict[str, Any]]:
+    """返回全部录制场次及其转写、弹幕数量，供历史选择器使用。
+
+    该查询不设置“最近 N 场”上限，避免较早场次再次因为列表截断而不可访问。
+
+    :returns: 按开录时间倒序排列的场次摘要。
+    """
+    with get_session() as db:
+        sessions = db.exec(
+            select(RecordingSession).order_by(RecordingSession.started_at.desc())  # type: ignore[attr-defined]
+        ).all()
+        session_ids = [session.id for session in sessions if session.id is not None]
+        if not session_ids:
+            return []
+
+        transcript_rows = db.exec(
+            select(RawSegment.session_id, func.count(Transcript.id))
+            .join(Transcript, Transcript.segment_id == RawSegment.id)
+            .where(RawSegment.session_id.in_(session_ids))
+            .group_by(RawSegment.session_id)
+        ).all()
+        danmaku_rows = db.exec(
+            select(Danmaku.session_id, func.count(Danmaku.id))
+            .where(Danmaku.session_id.in_(session_ids))
+            .group_by(Danmaku.session_id)
+        ).all()
+        from app.web.services.source_identity import source_identities_for_sessions, unknown_source_identity
+
+        sources = source_identities_for_sessions(db, session_ids)
+
+    transcript_counts = {int(session_id): int(count) for session_id, count in transcript_rows}
+    danmaku_counts = {int(session_id): int(count) for session_id, count in danmaku_rows}
+    return [
+        {
+            "session_id": int(session.id),
+            "status": session.status,
+            "started_at": _iso_utc(session.started_at),
+            "ended_at": _iso_utc(session.ended_at),
+            "started_at_gmt8": _iso_gmt8(session.started_at),
+            "ended_at_gmt8": _iso_gmt8(session.ended_at),
+            "transcript_count": transcript_counts.get(int(session.id), 0),
+            "danmaku_count": danmaku_counts.get(int(session.id), 0),
+            **sources.get(int(session.id), unknown_source_identity()),
+        }
+        for session in sessions
+        if session.id is not None
+    ]
+
+
+def _as_utc(value: datetime) -> datetime:
+    """把数据库时间规范化为带 UTC 时区的时间。"""
+    if value.tzinfo is None:
+        return value.replace(tzinfo=UTC)
+    return value.astimezone(UTC)
+
+
+def _iso_utc(value: datetime | None) -> str | None:
+    """返回带时区的 UTC ISO 时间。"""
+    return _as_utc(value).isoformat() if value is not None else None
+
+
+def _iso_gmt8(value: datetime | None) -> str | None:
+    """返回 GMT+8 ISO 时间。"""
+    return _as_utc(value).astimezone(_GMT8).isoformat() if value is not None else None
+
+
+def list_transcripts(limit: int = 30, session_id: int | None = None) -> list[dict[str, Any]]:
     """列出最近的转写文本(用于"实时转写"视图)。
 
     :param limit: 数量上限。
+    :param session_id: 仅查询指定录制场次；为空时返回全局最近记录。
     :returns: 转写字典列表(按时间降序)。
     """
     with get_session() as db:
+        statement = select(Transcript)
+        if session_id is not None:
+            statement = statement.join(RawSegment, RawSegment.id == Transcript.segment_id).where(
+                RawSegment.session_id == session_id
+            )
         rows = db.exec(
-            select(Transcript).order_by(Transcript.created_at.desc())  # type: ignore[attr-defined]
-        ).all()[:limit]
+            statement.order_by(Transcript.created_at.desc()).limit(limit)  # type: ignore[attr-defined]
+        ).all()
         segments = {
             segment.id: segment
             for segment in db.exec(select(RawSegment).where(RawSegment.id.in_([row.segment_id for row in rows]))).all()

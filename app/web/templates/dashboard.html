@@ -103,15 +103,30 @@
       <div class="card">
         <h3>转写纠错与房间词典</h3>
         <p class="hint">可直接修正 ASR 文本，并用“错误词=正确词”回流当前直播间词典。保存后会保留人工审核成果，并安全重分析整场录制。</p>
+        <label>录制场次
+          <select id="transcript-session-select">
+            <option value="">正在加载录制场次...</option>
+          </select>
+        </label>
+        <p class="hint" id="transcript-session-meta">可查看数据库中保留的全部历史场次，不再只显示最近 30 条转写。</p>
       </div>
-      <p class="hint" id="transcripts-dirty-hint" style="display:none">正在人工纠错或存在未保存修改，已暂停转写列表重绘；保存或取消后恢复。</p>
+      <p class="hint" id="transcripts-dirty-hint" style="display:none">正在人工纠错或存在未保存修改，已暂停转写列表重绘并锁定场次切换；保存或取消后恢复。</p>
       <div id="transcripts-list"></div>
     </section>
 
     <!-- 弹幕热度 -->
     <section id="tab-danmaku" class="panel">
+      <div class="card">
+        <h3>弹幕记录</h3>
+        <label>录制场次
+          <select id="danmaku-session-select">
+            <option value="">正在加载录制场次...</option>
+          </select>
+        </label>
+        <p class="hint" id="danmaku-session-meta">选择一场录制，查看该场的弹幕统计和弹幕列表。</p>
+      </div>
       <div id="danmaku-sessions"></div>
-      <h3 style="margin:18px 0 8px">最近弹幕</h3>
+      <h3 style="margin:18px 0 8px">本场弹幕</h3>
       <div id="danmaku-list"></div>
     </section>
 

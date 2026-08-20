@@ -59,6 +59,12 @@ def get_session_timelines(limit: int = 30, room_db_id: int | None = None) -> lis
     return list_session_timelines(limit=limit, room_db_id=room_db_id)
 
 
+@router.get("/sessions/history")
+def get_session_history() -> list[dict[str, Any]]:
+    """返回全部录制场次及转写、弹幕数量，供历史列表选择。"""
+    return service.list_recording_session_history()
+
+
 @router.get("/sessions/{session_id}/timeline")
 def get_session_timeline(session_id: int, include_rejected: bool = False) -> dict[str, Any]:
     """返回指定录制场次的 GMT+8 高光时间轴。"""
@@ -87,10 +93,10 @@ def regenerate_session_timeline_summary(session_id: int) -> dict[str, int | bool
 
 
 @router.get("/transcripts")
-def get_transcripts(limit: int = 30) -> list[dict[str, Any]]:
-    """返回最近转写文本。"""
+def get_transcripts(limit: int = 30, session_id: int | None = None) -> list[dict[str, Any]]:
+    """返回全局最近或指定场次的转写文本。"""
     limit = _clamp(limit, 1, _MAX_QUERY_LIMIT)
-    return service.list_transcripts(limit=limit)
+    return service.list_transcripts(limit=limit, session_id=session_id)
 
 
 @router.get("/transcripts/{transcript_id}/source-mp4")
