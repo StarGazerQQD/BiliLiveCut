@@ -4,8 +4,12 @@ from __future__ import annotations
 
 import json
 from pathlib import Path
+from typing import TYPE_CHECKING
 
 import pytest
+
+if TYPE_CHECKING:
+    from pytest import MonkeyPatch
 
 _portable_dir = Path(__file__).resolve().parent.parent  # portable/
 import sys
@@ -150,3 +154,27 @@ class TestModelCatalogSingleSource:
         assert not (tmp_path / "models" / "paraformer" / "campplus").exists()
         assert not (tmp_path / "models" / "paraformer" / "cam++").exists()
         assert (tmp_path / "models" / "funasr_nano" / "Qwen3-0.6B" / "component_metadata.json").is_file()
+
+    def test_cache_copy_filters_removed_paraformer_submodels(
+        self,
+        tmp_path: Path,
+        monkeypatch: MonkeyPatch,
+    ) -> None:
+        from blc_portable.engine_pack import builder
+
+        cache = tmp_path / ".model_cache" / "paraformer"
+        for subdir_name in ("fsmn-vad", "ct-punc", "cam++", "campplus"):
+            subdir = cache / subdir_name
+            subdir.mkdir(parents=True)
+            (subdir / "model.bin").write_bytes(b"fixture")
+        (cache / "config.json").write_text("{}", encoding="utf-8")
+
+        monkeypatch.setattr(builder, "PORTABLE_DIR", tmp_path)
+        staging = tmp_path / "staging"
+        builder.copy_from_cache(staging)
+
+        target = staging / "models" / "paraformer"
+        assert (target / "fsmn-vad" / "model.bin").is_file()
+        assert (target / "ct-punc" / "model.bin").is_file()
+        assert not (target / "cam++").exists()
+        assert not (target / "campplus").exists()
