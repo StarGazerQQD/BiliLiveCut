@@ -103,13 +103,16 @@ const featuresTab = element("features-tab", ["tab"]);
 featuresTab.dataset.tab = "features";
 const transcriptsTab = element("transcripts-tab", ["tab"]);
 transcriptsTab.dataset.tab = "transcripts";
-const tabs = [roomsTab, candidatesTab, modelsTab, featuresTab, transcriptsTab];
+const danmakuTab = element("danmaku-tab", ["tab"]);
+danmakuTab.dataset.tab = "danmaku";
+const tabs = [roomsTab, candidatesTab, modelsTab, featuresTab, transcriptsTab, danmakuTab];
 const roomsPanel = element("tab-rooms", ["panel", "active"]);
 const candidatesPanel = element("tab-candidates", ["panel"]);
 const modelsPanel = element("tab-models", ["panel"]);
 const featuresPanel = element("tab-features", ["panel"]);
 const transcriptsPanel = element("tab-transcripts", ["panel"]);
-const panels = [roomsPanel, candidatesPanel, modelsPanel, featuresPanel, transcriptsPanel];
+const danmakuPanel = element("tab-danmaku", ["panel"]);
+const panels = [roomsPanel, candidatesPanel, modelsPanel, featuresPanel, transcriptsPanel, danmakuPanel];
 
 const llmDraftFields = new Map([
   [".llm-name", { value: "草稿模型" }],
@@ -128,6 +131,11 @@ const llmDraftRow = {
 };
 
 globalThis.window = globalThis;
+const sessionStorageValues = new Map();
+globalThis.sessionStorage = {
+  getItem(key) { return sessionStorageValues.has(key) ? sessionStorageValues.get(key) : null; },
+  setItem(key, value) { sessionStorageValues.set(key, String(value)); },
+};
 const windowListeners = new Map();
 globalThis.addEventListener = (type, listener) => {
   windowListeners.set(type, listener);
@@ -190,6 +198,26 @@ const sessionTimelineRows = [{
   rejected_count: 1,
   processing_state: "ready",
 }];
+const sessionHistoryRows = [
+  {
+    session_id: 21,
+    room_id: 23771139,
+    source_label: "测试主播 · 房间 23771139",
+    status: "finished",
+    started_at_gmt8: "2026-08-05T19:00:00+08:00",
+    transcript_count: 2,
+    danmaku_count: 2,
+  },
+  {
+    session_id: 20,
+    room_id: 23771139,
+    source_label: "测试主播 · 房间 23771139",
+    status: "finished",
+    started_at_gmt8: "2026-08-04T19:00:00+08:00",
+    transcript_count: 1,
+    danmaku_count: 1,
+  },
+];
 const transcriptRows = [
   {
     id: 41,
@@ -234,6 +262,8 @@ globalThis.fetch = async (path, options = {}) => {
     };
   } else if (requestPath.startsWith("/api/notifications")) {
     payload = [];
+  } else if (requestPath === "/api/sessions/history") {
+    payload = sessionHistoryRows;
   } else if (requestPath.startsWith("/api/sessions/timeline")) {
     payload = sessionTimelineRows;
   } else if (requestPath.startsWith("/api/sessions/21/timeline")) {
@@ -274,6 +304,24 @@ globalThis.fetch = async (path, options = {}) => {
     payload = { results: [{ id: "draft", name: "草稿模型", ok: true, detail: "pong" }] };
   } else if (requestPath.startsWith("/api/transcripts?")) {
     payload = transcriptRows;
+  } else if (requestPath.startsWith("/api/danmaku?")) {
+    const selectedSessionId = requestPath.includes("session_id=20") ? 20 : 21;
+    payload = {
+      sessions: [{
+        session_id: selectedSessionId,
+        source_label: "测试主播 · 房间 23771139",
+        count: selectedSessionId === 20 ? 1 : 2,
+        intensity: selectedSessionId === 20 ? 0.4 : 0.8,
+      }],
+      recent: [{
+        session_id: selectedSessionId,
+        source_label: "测试主播 · 房间 23771139",
+        type: "message",
+        user: "观众",
+        ts: "2026-08-05T19:45:10+08:00",
+        content: selectedSessionId === 20 ? "上一场弹幕" : "本场弹幕",
+      }],
+    };
   } else if (requestPath === "/api/transcripts/41") {
     if (options.method === "PATCH") {
       transcriptRows[0].text = JSON.parse(options.body || "{}").corrected_text;
@@ -497,6 +545,26 @@ try {
     .find((entry) => entry.path === "/api/sessions/21/timeline-summary" && entry.options.method === "POST");
   assert.ok(summaryRequest, "whole-session timeline summary was not requested");
 
+  await danmakuTab.emit("click");
+  await settle();
+  const danmakuSelect = element("danmaku-session-select");
+  assert.equal(danmakuSelect.value, "21", "danmaku page did not default to the latest recording session");
+  assert.match(element("danmaku-list").innerHTML, /本场弹幕/);
+  danmakuSelect.value = "20";
+  await danmakuSelect.emit("change");
+  await settle();
+  assert.equal(danmakuSelect.value, "20", "danmaku session selection was not retained after loading");
+  assert.match(element("danmaku-list").innerHTML, /上一场弹幕/);
+  const danmakuWritesBeforePoll = element("danmaku-list").innerHTMLWriteCount;
+  await danmakuTab.emit("click");
+  await settle();
+  assert.equal(danmakuSelect.value, "20", "danmaku polling reset the selected recording session");
+  assert.equal(
+    element("danmaku-list").innerHTMLWriteCount,
+    danmakuWritesBeforePoll,
+    "unchanged danmaku polling rebuilt the selected session list",
+  );
+
   await modelsTab.emit("click");
   await settle();
   const llmList = element("llm-list");
@@ -529,6 +597,8 @@ try {
   await transcriptsTab.emit("click");
   await settle();
   const transcriptList = element("transcripts-list");
+  const transcriptSessionSelect = element("transcript-session-select");
+  assert.equal(transcriptSessionSelect.value, "21", "transcript page did not default to the latest recording session");
   assert.match(transcriptList.innerHTML, /服务器转写正文/, "transcript editor was not rendered");
   assert.match(transcriptList.innerHTML, /part000_00301\.ts/, "transcript did not show its source TS file name");
   const transcriptMarkupBeforeEdit = transcriptList.innerHTML;
@@ -579,6 +649,19 @@ try {
     },
   };
   await transcriptList.emit("change", dirtyTranscriptControl);
+  transcriptSessionSelect.value = "20";
+  await transcriptSessionSelect.emit("change");
+  await settle();
+  assert.equal(
+    transcriptSessionSelect.value,
+    "21",
+    "unsaved transcript correction allowed the recording session to change",
+  );
+  assert.equal(
+    transcriptList.innerHTML,
+    transcriptMarkupBeforeEdit,
+    "blocked transcript session change discarded the dirty editor",
+  );
   const secondCorrectionDetail = {
     open: true,
     dataset: { transcriptDetail: "correction:42" },

@@ -11,7 +11,7 @@
 
 输出:
     dist/engine-pack/
-    ├── BiliLiveCut-EnginePack-0.1.17.3-alpha.zip
+    ├── BiliLiveCut-EnginePack-0.1.17.4-alpha.zip
     ├── engine-pack-manifest.json
     ├── CRC32SUMS.txt
     ├── SHA256SUMS.txt
@@ -665,9 +665,12 @@ def copy_from_cache(staging: Path) -> None:
         # 使用 copytree 复制 (robocopy 在 Windows 上可能更快但需要额外处理)
         fc = 0
         ts = 0
+        excluded_top_level_dirs = {"cam++", "campplus"} if cache_name == "paraformer" else set()
         for f in src.rglob("*"):
             if f.is_file():
                 rel = f.relative_to(src)
+                if rel.parts and rel.parts[0] in excluded_top_level_dirs:
+                    continue
                 dst_file = dst / rel
                 dst_file.parent.mkdir(parents=True, exist_ok=True)
                 shutil.copy2(str(f), str(dst_file))

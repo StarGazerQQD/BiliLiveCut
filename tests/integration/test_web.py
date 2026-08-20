@@ -281,6 +281,78 @@ def test_danmaku_overview(temp_db: None) -> None:
         assert "sessions" in data
 
 
+def test_session_history_and_lists_can_select_old_recordings(temp_db: None) -> None:
+    """场次历史不得受最近条数挤压，转写和弹幕都可按旧场次查询。"""
+    from app.db.entities import Danmaku, LiveRoom, RawSegment, RecordingSession, Transcript
+    from app.db.session import get_session
+    from app.web.main import app
+
+    with get_session() as db:
+        room = LiveRoom(
+            input_url="history-room",
+            room_id=778899,
+            uploader_name="历史主播",
+            title="当前直播标题",
+            authorized=True,
+        )
+        db.add(room)
+        db.flush()
+        old_session = RecordingSession(
+            room_id=int(room.id),
+            status="stopped",
+            started_at=datetime(2026, 8, 1, 10, 0, tzinfo=UTC),
+            ended_at=datetime(2026, 8, 1, 12, 0, tzinfo=UTC),
+        )
+        recent_session = RecordingSession(
+            room_id=int(room.id),
+            status="stopped",
+            started_at=datetime(2026, 8, 19, 10, 0, tzinfo=UTC),
+            ended_at=datetime(2026, 8, 19, 11, 0, tzinfo=UTC),
+        )
+        db.add(old_session)
+        db.add(recent_session)
+        db.flush()
+        old_segment = RawSegment(session_id=int(old_session.id), seq=0, file_path="old.ts")
+        recent_segment = RawSegment(session_id=int(recent_session.id), seq=0, file_path="recent.ts")
+        db.add(old_segment)
+        db.add(recent_segment)
+        db.flush()
+        db.add(Transcript(segment_id=int(old_segment.id), final_text="旧场次转写"))
+        db.add(Transcript(segment_id=int(recent_segment.id), final_text="新场次转写"))
+        db.add(
+            Danmaku(
+                session_id=int(old_session.id),
+                room_id=778899,
+                content="旧场次弹幕",
+            )
+        )
+        db.add(
+            Danmaku(
+                session_id=int(recent_session.id),
+                room_id=778899,
+                content="新场次弹幕",
+            )
+        )
+        old_session_id = int(old_session.id)
+        recent_session_id = int(recent_session.id)
+
+    with TestClient(app) as client:
+        history_response = client.get("/api/sessions/history")
+        transcripts_response = client.get(f"/api/transcripts?limit=500&session_id={old_session_id}")
+        danmaku_response = client.get(f"/api/danmaku?limit=500&session_id={old_session_id}")
+
+    assert history_response.status_code == 200
+    history = history_response.json()
+    assert [row["session_id"] for row in history] == [recent_session_id, old_session_id]
+    assert history[1]["transcript_count"] == 1
+    assert history[1]["danmaku_count"] == 1
+    assert history[1]["started_at_gmt8"].startswith("2026-08-01T18:00:00")
+    assert transcripts_response.status_code == 200
+    assert [row["text"] for row in transcripts_response.json()] == ["旧场次转写"]
+    assert danmaku_response.status_code == 200
+    assert [row["content"] for row in danmaku_response.json()["recent"]] == ["旧场次弹幕"]
+
+
 def test_task_listing_returns_worker_stats(temp_db: None) -> None:
     """任务列表接口应返回可序列化的 Worker 统计，而不是调用属性。"""
     from app.web.main import app

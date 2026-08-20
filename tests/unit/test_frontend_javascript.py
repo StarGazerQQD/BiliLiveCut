@@ -112,6 +112,7 @@ def test_recording_pipeline_has_visible_switch_and_no_hardcoded_web_override() -
 
 def test_transcript_page_exposes_safe_retranscription_action() -> None:
     """实时转写页应暴露带确认提示的重转写操作。"""
+    template = (PROJECT_ROOT / "app" / "web" / "templates" / "dashboard.html").read_text(encoding="utf-8")
     recording_js = (STATIC_ROOT / "js" / "recording.js").read_text(encoding="utf-8")
     app_js = (STATIC_ROOT / "app.js").read_text(encoding="utf-8")
 
@@ -126,6 +127,10 @@ def test_transcript_page_exposes_safe_retranscription_action() -> None:
     assert "data-transcript-detail" in recording_js
     assert "openTranscriptDetails" in recording_js
     assert "transcriptListSignature" in recording_js
+    assert 'id="transcript-session-select"' in template
+    assert "/api/sessions/history" in recording_js
+    assert "transcriptSelectedSessionId" in recording_js
+    assert "请先保存或取消当前转写纠错" in recording_js
     assert "window.correctTranscript" in app_js
 
 
@@ -141,6 +146,18 @@ def test_transcript_page_shows_and_copies_source_ts_file_name() -> None:
     assert "无损导出 MP4" in recording_js
     assert "navigator.clipboard" in recording_js
     assert "window.copyTranscriptSourceFile" in app_js
+
+
+def test_danmaku_page_selects_and_retains_recording_session() -> None:
+    """弹幕页应按录制场次筛选，并在轮询刷新时保留用户选择。"""
+    template = (PROJECT_ROOT / "app" / "web" / "templates" / "dashboard.html").read_text(encoding="utf-8")
+    recording_js = (STATIC_ROOT / "js" / "recording.js").read_text(encoding="utf-8")
+
+    assert 'id="danmaku-session-select"' in template
+    assert "danmakuSelectedSessionId" in recording_js
+    assert "DANMAKU_SESSION_STORAGE_KEY" in recording_js
+    assert "session_id=${encodeURIComponent(selectedSessionId)}" in recording_js
+    assert "danmakuListSignature" in recording_js
 
 
 def test_dashboard_uses_session_timeline_as_primary_review_view() -> None:

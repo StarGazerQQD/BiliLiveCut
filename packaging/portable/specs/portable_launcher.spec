@@ -2,7 +2,7 @@
 """PyInstaller spec for BiliLiveCut Portable Launcher.
 
 内嵌资源:
-- source_payload.zip (80a392a 业务源码)
+- source_payload.zip (97e39df 业务源码)
 - payload_manifest.json
 - engine_pack_info.json (四引擎模型包信息, 含 CRC32)
 - LICENSE (BiliLiveCut 项目 MIT License)
@@ -88,7 +88,7 @@ exe = EXE(
     a.binaries,
     a.datas,
     [],
-    name="BiliLiveCut-Portable-Lite-v0.1.17.3-alpha-x64",
+    name="BiliLiveCut-Portable-Lite-v0.1.17.4-alpha-x64",
     debug=False,
     bootloader_ignore_signals=False,
     strip=False,

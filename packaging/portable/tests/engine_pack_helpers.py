@@ -71,7 +71,7 @@ def installed_manifest(
         "file_count": file_count,
         "total_size_bytes": total_size,
         "installed_at": "2026-08-12T00:00:00",
-        "source_commit": "80a392acf36240e6cbdd857869b463ae51cfa095",
+        "source_commit": "97e39df3a9b24d35eca7ec6cb862291dadfad6e2",
         "files": files,
     }
 

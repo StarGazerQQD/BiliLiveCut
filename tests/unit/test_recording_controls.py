@@ -66,6 +66,24 @@ async def test_start_uses_pipeline_default_and_enables_room_analysis(
     assert room_id is not None
 
     callback_args: dict[str, object] = {}
+    metadata_requests: list[tuple[str, bool]] = []
+
+    class FakeClient:
+        async def __aenter__(self) -> FakeClient:
+            return self
+
+        async def __aexit__(self, *_args: object) -> None:
+            return None
+
+        async def get_room_info(self, room_ref: str, *, include_detail: bool) -> object:
+            from types import SimpleNamespace
+
+            metadata_requests.append((room_ref, include_detail))
+            return SimpleNamespace(
+                room_id=202,
+                title="开录前最新标题",
+                uploader_name="最新主播名",
+            )
 
     def fake_callback(**kwargs: object) -> object:
         callback_args.update(kwargs)
@@ -78,6 +96,8 @@ async def test_start_uses_pipeline_default_and_enables_room_analysis(
     monkeypatch.setattr(rooms.settings_store, "recording_pipeline_enabled", lambda: True)
     monkeypatch.setattr("app.pipeline.orchestrator.make_pipeline_callback", fake_callback)
     monkeypatch.setattr(rooms, "Recorder", StartRecorder)
+    monkeypatch.setattr(rooms, "BilibiliLiveClient", lambda **_kwargs: FakeClient())
+    monkeypatch.setattr(rooms, "get_bilibili_cookie", lambda: "")
 
     manager = rooms.RecorderManager()
     await manager.start(room_id, pipeline=None, produce=False)
@@ -86,10 +106,59 @@ async def test_start_uses_pipeline_default_and_enables_room_analysis(
             updated = db.get(LiveRoom, room_id)
             assert updated is not None
             assert updated.auto_analyze is True
+            assert updated.title == "开录前最新标题"
+            assert updated.uploader_name == "最新主播名"
         assert manager.status(room_id)["pipeline_enabled"] is True
         assert callback_args == {"produce": False, "room_id": room_id}
+        assert metadata_requests == [("202", True)]
     finally:
         await manager.stop(room_id, mode="force")
+
+
+@pytest.mark.asyncio
+async def test_metadata_refresh_failure_preserves_cached_room_info(
+    temp_db: None,
+    monkeypatch: MonkeyPatch,
+) -> None:
+    """开录前资料查询失败时保留缓存标题，不得破坏房间配置。"""
+    from app.db.entities import LiveRoom
+    from app.db.session import get_session
+    from app.web.services import rooms
+
+    with get_session() as db:
+        room = LiveRoom(
+            input_url="metadata-fallback",
+            room_id=303,
+            authorized=True,
+            title="缓存标题",
+            uploader_name="缓存主播",
+        )
+        db.add(room)
+        db.flush()
+        room_id = room.id
+    assert room_id is not None
+
+    class FailingClient:
+        async def __aenter__(self) -> FailingClient:
+            return self
+
+        async def __aexit__(self, *_args: object) -> None:
+            return None
+
+        async def get_room_info(self, _room_ref: str, *, include_detail: bool) -> object:
+            assert include_detail is True
+            raise RuntimeError("metadata unavailable")
+
+    monkeypatch.setattr(rooms, "BilibiliLiveClient", lambda **_kwargs: FailingClient())
+    monkeypatch.setattr(rooms, "get_bilibili_cookie", lambda: "")
+
+    await rooms._refresh_room_metadata_before_recording(room_id)  # noqa: SLF001
+
+    with get_session() as db:
+        room = db.get(LiveRoom, room_id)
+        assert room is not None
+        assert room.title == "缓存标题"
+        assert room.uploader_name == "缓存主播"
 
 
 def _seed_room_session(tmp_path: Path) -> tuple[int, int, datetime]:
