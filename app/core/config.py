@@ -139,6 +139,8 @@ class Settings(BaseSettings):
     transcript_llm_refine_max_tokens: int = Field(default=65536, ge=128, le=65536)
     # 高光复核需要同时容纳五分钟转写、模型推理和结构化判断结果。
     highlight_llm_max_tokens: int = Field(default=65536, ge=512, le=65536)
+    # EventEnricher 解释完整证据束并返回严格结构化 JSON。
+    hotspot_enrichment_llm_max_tokens: int = Field(default=65536, ge=512, le=65536)
 
     # ---------- 网感资料库(联网采集热门内容,供评分/文案参考) ----------
     trend_enabled: bool = False  # 是否启用网感资料库(默认关闭,按需开启)

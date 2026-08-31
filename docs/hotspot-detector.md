@@ -16,6 +16,7 @@ HOTSPOT_EVENT_MERGE_GAP_S=30
 HOTSPOT_EVENT_CONFIRM_DELAY_S=60
 HOTSPOT_EVENT_SEMANTIC_OVERLAP_THRESHOLD=0.20
 HOTSPOT_RECORDING_GAP_TOLERANCE_S=1
+HOTSPOT_ENRICHMENT_LLM_MAX_TOKENS=65536
 HOTSPOT_ASR_ENABLED=true
 HOTSPOT_ASR_PRE_ROLL_S=35
 HOTSPOT_ASR_POST_ROLL_S=55
@@ -41,6 +42,12 @@ BACKGROUND_ASR_PRIORITY=100
 事件生命周期协调同样在该事务内完成。新事件先进入 `provisional`，同键观测或跨窗合并继续扩展边界时进入 `enriching`。相邻事件只有在录制媒体连续，且时间重叠或语义/信号连续时才会合并；跨分段的后继键保留为 `status=merged` 的别名并通过 `merged_into_id` 指向最早主事件，已排队的局部 ASR 因此仍能写回正确主事件。活动直播中，观察时间超过最新事件结尾 60 秒后进入 `confirmed`；已确认事件如果再次向前或向后扩展会重新进入 `enriching`，避免把仍在继续的爆点提前冻结。场次已经停止时，最后一次观察会直接确认剩余事件。没有新热点的后续分段也会推进确认状态。
 
 代表弹幕不再只取全局频次前两名。选择器会确定性地保留一条高频 reaction、一条与人物/话题相关的信息型内容，以及容量允许时的一条幽默代表；每条仍保存出现次数，并在事件内部额外记录选择角色。
+
+## EventEnricher 与证据约束
+
+EventEnricher 只回答“刚才发生了什么”，不修改 `heat_score`、`clip_score`、事件边界或生命周期。它把事件局部 ASR、相邻分段转写、代表弹幕、音频、SenseVoice、趋势及未来可扩展证据整理为带稳定 `evidence_id` 的内容寻址 Evidence Bundle，再要求 LLM 返回严格的 `title/summary/category/entities/semantic_confidence/evidence_ids` JSON。
+
+提交前会校验字段集合、类别、长度、实体与数字是否出现在被引用证据中、证据引用是否真实可用，以及叙述与证据的词面覆盖。仅由弹幕支持的说法必须明确归因给“弹幕/观众”；只有音频等非文本信号时拒绝生成具体事实。语义置信度按 ASR 质量与证据覆盖率设置上限，不能用热度替代。LLM 不可用或输出越界时写入保守回退摘要；LLM 调用期间证据发生变化则 fingerprint 不匹配，陈旧结果不会提交。实体与证据引用保存在 `features_json.event_enrichment`，无需增加数据库列。
 
 ## ASR 双向融合与降级语义
 

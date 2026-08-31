@@ -53,6 +53,7 @@ def test_settings_fields_boundary_values() -> None:
     assert s.transcript_llm_refine_enabled is True
     assert s.transcript_llm_refine_max_tokens == 65536
     assert s.highlight_llm_max_tokens == 65536
+    assert s.hotspot_enrichment_llm_max_tokens == 65536
     assert s.highlight_min_post_roll_s == 30.0
     assert s.asr_primary_max_concurrency >= 1
     assert s.asr_task_max_concurrency == 1
@@ -175,10 +176,12 @@ def test_transcript_refinement_env_and_runtime_override(temp_db: None, monkeypat
     monkeypatch.setenv("TRANSCRIPT_LLM_REFINE_ENABLED", "false")
     monkeypatch.setenv("TRANSCRIPT_LLM_REFINE_MAX_TOKENS", "20000")
     monkeypatch.setenv("HIGHLIGHT_LLM_MAX_TOKENS", "24000")
+    monkeypatch.setenv("HOTSPOT_ENRICHMENT_LLM_MAX_TOKENS", "32000")
     configured = Settings(_env_file=None)
     assert configured.transcript_llm_refine_enabled is False
     assert configured.transcript_llm_refine_max_tokens == 20000
     assert configured.highlight_llm_max_tokens == 24000
+    assert configured.hotspot_enrichment_llm_max_tokens == 32000
 
     monkeypatch.setattr(settings, "transcript_llm_refine_enabled", False)
     assert settings_store.transcript_llm_refine_enabled() is False
