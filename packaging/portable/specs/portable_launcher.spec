@@ -14,12 +14,13 @@ import sys
 from pathlib import Path
 
 _here = Path(SPECPATH).parent  # spec 在 specs/ 下，上溯一级到 packaging/portable/
+_project_root = _here.parent.parent
 
 # 入口脚本
 _entry = str(_here / "src" / "blc_portable" / "launcher" / "main.py")
 # 模块搜索路径
 _config_dir = _here / "config"
-_pathex = [str(_here / "src"), str(_config_dir)]
+_pathex = [str(_here / "src"), str(_project_root), str(_config_dir)]
 
 # Payload 资源
 _payload_zip = str(_here / "dist" / "payload" / "source_payload.zip")

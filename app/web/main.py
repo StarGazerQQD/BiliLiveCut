@@ -225,8 +225,10 @@ app = FastAPI(
 # 页面浏览(GET /)和静态资源不受影响。
 # 请求头格式: Authorization: Basic <base64(admin:<密码>)>
 import base64 as _base64  # noqa: E402
+import ipaddress as _ipaddress  # noqa: E402
 import json as _json  # noqa: E402
 import secrets as _secrets  # noqa: E402
+from urllib.parse import urlsplit as _urlsplit  # noqa: E402
 
 from starlette.middleware.base import BaseHTTPMiddleware as _BaseMiddleware  # noqa: E402
 from starlette.responses import JSONResponse as _JSONResponse  # noqa: E402
@@ -314,7 +316,45 @@ class _AuthMiddleware(_BaseMiddleware):
         :param host: 客户端 IP 地址字符串。
         :returns: ``True`` 表示是 loopback 地址或测试客户端。
         """
-        return host in ("127.0.0.1", "::1", "localhost", "testclient") or host.startswith("127.")
+        normalized = host.strip().lower()
+        if normalized in ("localhost", "testclient"):
+            return True
+        try:
+            return _ipaddress.ip_address(normalized).is_loopback
+        except ValueError:
+            return False
+
+    @staticmethod
+    def _parse_authority(authority: str) -> tuple[str, str] | None:
+        """使用标准 URL 解析器读取 ``host[:port]``，包括 bracket IPv6。"""
+        authority = authority.strip()
+        if not authority or any(char.isspace() for char in authority):
+            return None
+        try:
+            parsed = _urlsplit(f"//{authority}")
+            if parsed.path or parsed.query or parsed.fragment or parsed.username is not None:
+                return None
+            hostname = parsed.hostname
+            port = parsed.port
+        except ValueError:
+            return None
+        if not hostname or authority.endswith(":"):
+            return None
+        return hostname.lower(), str(port) if port is not None else ""
+
+    @classmethod
+    def _is_local_authority(cls, authority: str) -> bool:
+        """判断 Host authority 是否明确指向本机 loopback。"""
+        parsed = cls._parse_authority(authority)
+        if parsed is None:
+            return False
+        hostname, _port = parsed
+        if hostname == "localhost":
+            return True
+        try:
+            return _ipaddress.ip_address(hostname).is_loopback
+        except ValueError:
+            return False
 
     def _is_modifying(self, request: Request) -> bool:
         """检查请求是否为状态修改类请求 (POST/PUT/PATCH/DELETE)。"""
@@ -346,13 +386,10 @@ class _AuthMiddleware(_BaseMiddleware):
 
         # ── Build expected from request ──
         scheme = request.url.scheme or "http"
-        host_headers = request.headers.get("Host", "")
-        if host_headers:
-            hostname = host_headers.split(":")[0]
-            port_hint = host_headers.split(":")[1] if ":" in host_headers else ""
-        else:
-            hostname = request.url.hostname or ""
-            port_hint = str(request.url.port or "")
+        authority = self._parse_authority(request.headers.get("Host", ""))
+        if authority is None:
+            return False
+        hostname, port_hint = authority
 
         # Effective port: explicit port on Host header, or default for scheme
         effective_port = port_hint if port_hint else ("443" if scheme == "https" else "80")
@@ -371,8 +408,8 @@ class _AuthMiddleware(_BaseMiddleware):
 
         return origin_port_for_compare == expected_port_for_compare
 
-    @staticmethod
-    def _parse_origin(origin: str) -> tuple[str, str, str] | None:
+    @classmethod
+    def _parse_origin(cls, origin: str) -> tuple[str, str, str] | None:
         """Parse an Origin header into (scheme, normalized_host, port).
 
         Handles:
@@ -388,40 +425,24 @@ class _AuthMiddleware(_BaseMiddleware):
         if not origin:
             return None
 
-        # Split scheme
-        if "://" not in origin:
+        try:
+            parsed = _urlsplit(origin)
+        except ValueError:
             return None
-        scheme, rest = origin.split("://", 1)
-        scheme = scheme.lower()
-        if scheme not in ("http", "https"):
+        scheme = parsed.scheme.lower()
+        if (
+            scheme not in ("http", "https")
+            or not parsed.netloc
+            or parsed.path not in ("", "/")
+            or parsed.query
+            or parsed.fragment
+        ):
             return None
-
-        # Split host:port
-        rest = rest.rstrip("/")
-        host_part = rest
-        port = ""
-
-        # Handle IPv6 bracket: [::1]:8080
-        if rest.startswith("["):
-            end_bracket = rest.find("]")
-            if end_bracket == -1:
-                return None
-            host_part = rest[1:end_bracket]
-            after = rest[end_bracket + 1 :]
-            if after.startswith(":"):
-                port = after[1:]
-            elif after:
-                return None  # garbage after bracket
-        else:
-            if ":" in rest:
-                parts = rest.rsplit(":", 1)
-                host_part, port = parts[0], parts[1]
-
-        # Validate hostname is not empty
-        if not host_part:
+        authority = cls._parse_authority(parsed.netloc)
+        if authority is None:
             return None
-
-        return (scheme, host_part, port)
+        hostname, port = authority
+        return scheme, hostname, port
 
     async def dispatch(self, request: Request, call_next):
         path = request.url.path
@@ -441,6 +462,14 @@ class _AuthMiddleware(_BaseMiddleware):
                 logger.warning("access_denied: non-loopback request without ADMIN_PASSWORD from {}", client_ip)
                 return _JSONResponse(
                     {"detail": "安全策略: 未设置 ADMIN_PASSWORD 时仅允许本机访问管理接口。"},
+                    status_code=403,
+                )
+            host_header = request.headers.get("Host", "")
+            test_authority = client_ip == "testclient" and host_header.lower() == "testserver"
+            if not test_authority and not self._is_local_authority(host_header):
+                logger.warning("access_denied: non-loopback Host without ADMIN_PASSWORD: {}", host_header or "-")
+                return _JSONResponse(
+                    {"detail": "安全策略: 未设置 ADMIN_PASSWORD 时 Host 必须明确指向本机。"},
                     status_code=403,
                 )
             # Even loopback + no password: enforce CSRF on modifying requests

@@ -2,8 +2,12 @@
 
 from __future__ import annotations
 
+import os
+
 import typer
 from rich.console import Console
+
+from config.launcher_settings import APP_ROOT_ENV, WEB_PORT_ENV, LauncherConfigError, validate_web_port
 
 console = Console()
 
@@ -24,6 +28,14 @@ def cmd_serve(
     except ImportError as exc:
         console.print('[red]未安装 Web 依赖。请执行: pip install -e ".[web]"[/red]')
         raise typer.Exit(code=1) from exc
+
+    try:
+        actual_port = validate_web_port(port)
+    except LauncherConfigError as exc:
+        console.print(f"[red]{exc}[/red]")
+        raise typer.Exit(code=1) from exc
+    os.environ[WEB_PORT_ENV] = str(actual_port)
+    os.environ.setdefault(APP_ROOT_ENV, str(os.getcwd()))
 
     # P0: non-loopback requires password
     from app.core.config import settings as _srv_cfg
@@ -49,8 +61,8 @@ def cmd_serve(
             )
             raise typer.Exit(code=1) from None
 
-    console.print(f"[green]控制台启动中[/green] -> http://{host}:{port}")
-    uvicorn.run("app.web.main:app", host=host, port=port, reload=reload)
+    console.print(f"[green]控制台启动中[/green] -> http://{host}:{actual_port}")
+    uvicorn.run("app.web.main:app", host=host, port=actual_port, reload=reload)
 
 
 # 注册列表

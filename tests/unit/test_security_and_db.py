@@ -86,6 +86,26 @@ class TestCsrfOriginParsing:
 
         assert _AuthMiddleware._parse_origin("ftp://example.com") is None
 
+    def test_parse_authority_supports_loopback_ipv4_hostname_and_ipv6(self) -> None:
+        """Host authority 统一支持三种本机写法及显式端口。"""
+        from app.web.main import _AuthMiddleware
+
+        assert _AuthMiddleware._parse_authority("localhost:8080") == ("localhost", "8080")
+        assert _AuthMiddleware._parse_authority("127.0.0.1:8000") == ("127.0.0.1", "8000")
+        assert _AuthMiddleware._parse_authority("[::1]:9000") == ("::1", "9000")
+        assert _AuthMiddleware._is_local_authority("localhost:8080")
+        assert _AuthMiddleware._is_local_authority("127.0.0.1:8000")
+        assert _AuthMiddleware._is_local_authority("[::1]:9000")
+
+    def test_parse_authority_rejects_arbitrary_or_malformed_hosts(self) -> None:
+        """无密码模式不能把任意域名或畸形 authority 当作 localhost。"""
+        from app.web.main import _AuthMiddleware
+
+        assert not _AuthMiddleware._is_local_authority("example.com:8000")
+        assert _AuthMiddleware._parse_authority("[::1") is None
+        assert _AuthMiddleware._parse_authority("localhost:") is None
+        assert _AuthMiddleware._parse_authority("user@localhost:8000") is None
+
     def test_parse_origin_trailing_slash(self) -> None:
         """Trailing slash stripped。"""
         from app.web.main import _AuthMiddleware

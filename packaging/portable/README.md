@@ -260,7 +260,9 @@ resources/engine_pack_info.json (本地 Engine Pack 构建后可供 Lite/Full EX
 > **断点续跑**：模型下载 staging 以引擎内容指纹持久化；每个引擎完成后立即独立原子提交。后续引擎失败或进程中断不会回滚已经成功的引擎，再次双击只续传未完成部分。
 > **源码固定**：本次发布源码来源固定为 Commit `abae819`，不随 GitHub 上游变动。
 
-4. 部署完成后打开 **Web 管理控制台**（默认 `http://127.0.0.1:8000`；未自动弹出时请手动访问）
+4. 部署完成后按 Launcher 输出的地址打开 **Web 管理控制台**（首次默认 `http://127.0.0.1:8000`；未自动弹出时请手动访问）
+
+Web 端口可在控制台“配置 → 功能开关 → Web 管理端口”保存为 `1..65535`。保存不会热重绑当前服务；重启 Launcher 后才使用新端口。持久化文件是安装根目录的 `config/launcher.json`，位于内容寻址 Runtime 之外，因此业务源码升级或 Runtime 修复不会覆盖它。损坏 JSON 只会告警并回退到默认端口，Launcher 不会覆盖损坏现场；配置端口被占用时也会直接报错，不会随机选择其他端口。
 
 > **Web 认证**：如需保护管理后台，在 `.env` 中设置 `ADMIN_PASSWORD=你的密码`。所有 API 操作将要求输入 Basic Auth（用户名固定为 `admin`）。
 
@@ -278,7 +280,7 @@ python scripts/build_portable_runtime_wheels.py --output-dir packaging/portable/
 python scripts/generate_portable_runtime_locks.py
 ```
 
-Release CI 会对两套锁执行 `pip download --require-hashes`，并分别进行 Python 3.11 和 3.12 的全新虚拟环境 `--no-index` 离线安装、`pip check` 与核心模块导入测试。它还会让冻结的 Lite Launcher 在空目录真实经过 Runtime 安装、`.venv` 依赖安装和在线模型 helper 边界；CI 专用 tiny provider 只替换数 GB 的远端模型字节，不绕开逐引擎 staging、内容指纹和原子提交。Smoke 会在第 2 个引擎注入 Hub 故障，确认重启复用已完成引擎，再验证无 Engine Pack 的严格离线启动、联网重建损坏的 Lite `.venv` 且不改写持久化模型，以及实际 Python 3.14 被明确拒绝且不被删除。Lite 只内嵌 bootstrap wheels，完整 `.venv` 损坏后仍需联网按锁文件恢复依赖；Full 的完整 wheelhouse 才支持依赖离线重装。tiny provider 同时要求 `CI=true` 与专用开关，普通用户进程无法启用。Full Launcher 会自动发现安装目录下的 `vendor/wheels` 并强制使用 `--no-index --require-hashes`，无需设置 `PIP_NO_INDEX`；若 Full wheelhouse 缺失或为空则直接失败，不会回退到在线镜像。发布前还会交叉核对 Payload、Lite、Full 的版本、源码基线、构建提交与实际 SHA-256/CRC32。不要通过删除哈希、添加 `--no-deps` 或跳过离线安装来规避锁文件错误。
+Release CI 会对两套锁执行 `pip download --require-hashes`，并分别进行 Python 3.11 和 3.12 的全新虚拟环境 `--no-index` 离线安装、`pip check` 与核心模块导入测试。它还会让冻结的 Lite Launcher 在空目录真实经过 Runtime 安装、`.venv` 依赖安装和在线模型 helper 边界；CI 专用 tiny provider 只替换数 GB 的远端模型字节，不绕开逐引擎 staging、内容指纹和原子提交。Smoke 会写入一个非默认持久化 Web 端口并核对 Launcher 命令、运行时设置 API 与重启状态，再在第 2 个引擎注入 Hub 故障，确认重启复用已完成引擎，并验证无 Engine Pack 的严格离线启动、联网重建损坏的 Lite `.venv` 且不改写持久化模型，以及实际 Python 3.14 被明确拒绝且不被删除。Lite 只内嵌 bootstrap wheels，完整 `.venv` 损坏后仍需联网按锁文件恢复依赖；Full 的完整 wheelhouse 才支持依赖离线重装。tiny provider 同时要求 `CI=true` 与专用开关，普通用户进程无法启用。Full Launcher 会自动发现安装目录下的 `vendor/wheels` 并强制使用 `--no-index --require-hashes`，无需设置 `PIP_NO_INDEX`；若 Full wheelhouse 缺失或为空则直接失败，不会回退到在线镜像。发布前还会交叉核对 Payload、Lite、Full 的版本、源码基线、构建提交与实际 SHA-256/CRC32。不要通过删除哈希、添加 `--no-deps` 或跳过离线安装来规避锁文件错误。
 
 ### 方式三：开发者手动构建当前发行物
 

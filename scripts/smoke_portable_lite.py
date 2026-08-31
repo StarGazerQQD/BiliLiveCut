@@ -18,7 +18,6 @@ from collections.abc import Mapping
 from pathlib import Path
 from typing import BinaryIO
 
-WEB_URL = "http://127.0.0.1:8000/"
 REPO_ROOT = Path(__file__).resolve().parent.parent
 VERSION_CONFIG = REPO_ROOT / "packaging" / "portable" / "config" / "version.json"
 
@@ -43,11 +42,18 @@ def _required_file(directory: Path, filename: str, label: str) -> Path:
     return path.resolve()
 
 
-def _port_is_open() -> bool:
-    """Return whether the fixed Portable Web port already has a listener."""
+def _port_is_open(web_port: int) -> bool:
+    """Return whether the selected Portable Web port already has a listener."""
     with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as client:
         client.settimeout(1)
-        return client.connect_ex(("127.0.0.1", 8000)) == 0
+        return client.connect_ex(("127.0.0.1", web_port)) == 0
+
+
+def _available_web_port() -> int:
+    """Ask Windows for a currently available loopback port for this smoke run."""
+    with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as probe:
+        probe.bind(("127.0.0.1", 0))
+        return int(probe.getsockname()[1])
 
 
 def _print_log(path: Path) -> None:
@@ -58,7 +64,7 @@ def _print_log(path: Path) -> None:
 
 
 def _stop_process_tree(process: subprocess.Popen[bytes] | None) -> None:
-    """Stop a launcher and its service child without leaving port 8000 occupied."""
+    """Stop a launcher and its service child."""
     if process is None or process.poll() is not None:
         return
     if sys.platform == "win32":
@@ -77,7 +83,7 @@ def _stop_process_tree(process: subprocess.Popen[bytes] | None) -> None:
         process.wait(timeout=10)
 
 
-def _wait_ready(process: subprocess.Popen[bytes], timeout_seconds: int, phase: str) -> None:
+def _wait_ready(process: subprocess.Popen[bytes], timeout_seconds: int, phase: str, web_port: int) -> None:
     """Wait until the Portable Web root responds successfully."""
     deadline = time.monotonic() + timeout_seconds
     while time.monotonic() < deadline:
@@ -85,8 +91,15 @@ def _wait_ready(process: subprocess.Popen[bytes], timeout_seconds: int, phase: s
         if return_code is not None:
             raise RuntimeError(f"Lite {phase} launcher exited before Web became ready (exit={return_code})")
         try:
-            with urllib.request.urlopen(WEB_URL, timeout=5) as response:  # noqa: S310 - fixed localhost URL
+            web_url = f"http://127.0.0.1:{web_port}/"
+            with urllib.request.urlopen(web_url, timeout=5) as response:  # noqa: S310 - fixed localhost host
                 if response.status == 200:
+                    with urllib.request.urlopen(f"{web_url}api/settings", timeout=5) as settings_response:  # noqa: S310
+                        settings = json.loads(settings_response.read().decode("utf-8"))
+                    if settings.get("web_port") != web_port or settings.get("current_web_port") != web_port:
+                        raise RuntimeError(f"Lite {phase} did not expose the configured/current Web port")
+                    if settings.get("restart_required") is not False:
+                        raise RuntimeError(f"Lite {phase} incorrectly requires another restart")
                     return
         except (OSError, urllib.error.URLError):
             time.sleep(2)
@@ -129,6 +142,7 @@ def _run_phase(
     work_dir: Path,
     phase: str,
     timeout_seconds: int,
+    web_port: int,
     environment: Mapping[str, str] | None = None,
 ) -> str:
     """Start one launcher phase, require Web readiness, then stop it."""
@@ -138,7 +152,7 @@ def _run_phase(
     try:
         with stdout_path.open("wb") as stdout, stderr_path.open("wb") as stderr:
             process = _start_launcher(executable, arguments, work_dir, stdout, stderr, environment)
-            _wait_ready(process, timeout_seconds, phase)
+            _wait_ready(process, timeout_seconds, phase, web_port)
     finally:
         _stop_process_tree(process)
         _print_log(stdout_path)
@@ -183,13 +197,13 @@ def _run_expected_failure(
     return output
 
 
-def _wait_port_closed(timeout_seconds: int = 20) -> None:
-    """Wait for the stopped service tree to release the fixed Web port."""
+def _wait_port_closed(web_port: int, timeout_seconds: int = 20) -> None:
+    """Wait for the stopped service tree to release the selected Web port."""
     deadline = time.monotonic() + timeout_seconds
-    while _port_is_open() and time.monotonic() < deadline:
+    while _port_is_open(web_port) and time.monotonic() < deadline:
         time.sleep(1)
-    if _port_is_open():
-        raise RuntimeError("Port 8000 remained occupied after the Lite launcher stopped")
+    if _port_is_open(web_port):
+        raise RuntimeError(f"Port {web_port} remained occupied after the Lite launcher stopped")
 
 
 def _installed_manifest(root: Path) -> dict[str, object]:
@@ -219,8 +233,9 @@ def run_smoke(
     """Exercise interrupted online provisioning, reuse, offline and recovery."""
     if sys.platform != "win32":
         raise RuntimeError("Lite executable smoke testing requires Windows")
-    if _port_is_open():
-        raise RuntimeError("Port 8000 is already in use before Lite smoke testing")
+    web_port = _available_web_port()
+    if _port_is_open(web_port):
+        raise RuntimeError(f"Port {web_port} is already in use before Lite smoke testing")
 
     parent = work_parent.resolve() if work_parent else None
     if parent:
@@ -229,6 +244,12 @@ def run_smoke(
         root = Path(temporary)
         local_executable = root / "BiliLiveCut.exe"
         shutil.copy2(executable, local_executable)
+        launcher_config = root / "config" / "launcher.json"
+        launcher_config.parent.mkdir(parents=True)
+        launcher_config.write_text(
+            json.dumps({"schema": 1, "web_port": web_port}, ensure_ascii=False, indent=2) + "\n",
+            encoding="utf-8",
+        )
 
         base_python = Path(getattr(sys, "_base_executable", sys.executable)).resolve()
         if sys.version_info[:2] not in {(3, 11), (3, 12)} or not base_python.is_file():
@@ -270,15 +291,18 @@ def run_smoke(
         assert isinstance(interrupted_engines, dict)
         whisper_record = interrupted_engines["whisper"]
 
-        _wait_port_closed()
-        _run_phase(
+        _wait_port_closed(web_port)
+        resume_output = _run_phase(
             local_executable,
             [],
             root,
             "resume-provisioning",
             first_timeout_seconds,
+            web_port,
             provider_environment,
         )
+        if f"http://127.0.0.1:{web_port}" not in resume_output:
+            raise RuntimeError("Lite Launcher output did not report the persisted Web port")
         for relative in (
             "runtime/current.json",
             ".venv/Scripts/python.exe",
@@ -299,17 +323,18 @@ def run_smoke(
         venv_python = root / ".venv" / "Scripts" / "python.exe"
         subprocess.run([str(venv_python), "-m", "pip", "check"], cwd=root, check=True, timeout=120)
 
-        _wait_port_closed()
+        _wait_port_closed(web_port)
         _run_phase(
             local_executable,
             ["--offline"],
             root,
             "second-offline",
             second_timeout_seconds,
+            web_port,
             launcher_environment,
         )
 
-        _wait_port_closed()
+        _wait_port_closed(web_port)
         models_before_recovery = _installed_manifest(root)["engines"]
         assert isinstance(models_before_recovery, dict)
         venv_python.write_bytes(b"corrupt release-smoke interpreter")
@@ -319,6 +344,7 @@ def run_smoke(
             root,
             "damaged-venv-recovery",
             recovery_timeout_seconds,
+            web_port,
             provider_environment,
         )
         models_after_recovery = _installed_manifest(root)["engines"]

@@ -17,6 +17,7 @@ import json
 import os
 import re
 import shutil
+import socket
 import subprocess
 import sys
 import traceback
@@ -25,6 +26,7 @@ from pathlib import Path
 from typing import Any
 
 from blc_portable.console import configure_console_encoding
+from config.launcher_settings import APP_ROOT_ENV, WEB_PORT_ENV, load_launcher_config
 
 # -- Constants ──────────────────────────────────────────────────
 APP_NAME = "BiliLiveCut"
@@ -175,7 +177,7 @@ def ensure_data_dirs(app_root: Path) -> None:
 
     :param app_root: app root dir。
     """
-    for d in ["data", "storage", "models", "vendor", "bin", "logs"]:
+    for d in ["config", "data", "storage", "models", "vendor", "bin", "logs"]:
         (app_root / d).mkdir(parents=True, exist_ok=True)
 
 
@@ -599,8 +601,8 @@ def _run_import_smoke(venv_python: Path, module: str, source_dir: Path | None = 
     print(output or f"  ok: {module}")
 
 
-def _build_service_command(venv_python: Path) -> list[str]:
-    """Build the service command without relying on ``app.cli`` module execution."""
+def _build_service_command(venv_python: Path, web_port: int) -> list[str]:
+    """Build the loopback service command with the resolved launch-time port."""
     return [
         str(venv_python),
         "-c",
@@ -609,8 +611,23 @@ def _build_service_command(venv_python: Path) -> list[str]:
         "--host",
         "127.0.0.1",
         "--port",
-        "8000",
+        str(web_port),
     ]
+
+
+def _ensure_web_port_available(web_port: int) -> None:
+    """在启动 Web 子进程前显式拒绝已占用的 loopback 端口。
+
+    :param web_port: 已解析并校验的监听端口。
+    :raises RuntimeError: 端口无法绑定时。
+    """
+    try:
+        with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as probe:
+            probe.bind(("127.0.0.1", web_port))
+    except OSError as exc:
+        raise RuntimeError(
+            f"Web 端口 {web_port} 无法绑定（可能已被占用）。请在设置页修改端口并重启 Launcher。"
+        ) from exc
 
 
 def install_dependencies(
@@ -1188,6 +1205,8 @@ def run_launcher(args: argparse.Namespace) -> int:
 
         # 1. ensure persistent data dirs
         ensure_data_dirs(app_root)
+        launcher_config = load_launcher_config(app_root, warn=lambda message: print(f"  [WARNING] {message}"))
+        web_port = launcher_config.web_port
 
         # 2. check/install Runtime
         source_dir = get_current_release_dir()
@@ -1230,9 +1249,10 @@ def run_launcher(args: argparse.Namespace) -> int:
 
         # 7. 启动 Web
         print("[6/6] Starting Web console...")
+        _ensure_web_port_available(web_port)
         print()
         print("=" * 60)
-        print("  Browser will open: http://127.0.0.1:8000")
+        print(f"  Browser will open: http://127.0.0.1:{web_port}")
         print("  Press Ctrl+C to stop")
         print("=" * 60)
         print()
@@ -1245,6 +1265,8 @@ def run_launcher(args: argparse.Namespace) -> int:
             env["PATH"] = str(bin_dir) + os.pathsep + env.get("PATH", "")
 
         env["BLC_PORTABLE"] = "1"
+        env[APP_ROOT_ENV] = str(app_root)
+        env[WEB_PORT_ENV] = str(web_port)
         env["BLC_SOURCE_DIR"] = str(source_dir)
         env["PYTHONPATH"] = str(source_dir)
 
@@ -1256,7 +1278,9 @@ def run_launcher(args: argparse.Namespace) -> int:
         if models_dir.exists():
             env["BLC_MODELS_DIR"] = str(models_dir)
 
-        result = subprocess.run(_build_service_command(venv_python), env=env, cwd=str(app_root))
+        result = subprocess.run(_build_service_command(venv_python, web_port), env=env, cwd=str(app_root))
+        if result.returncode != 0:
+            print(f"[ERROR] Web 服务在 127.0.0.1:{web_port} 启动或运行失败（exit={result.returncode}）。")
         return result.returncode
 
     except KeyboardInterrupt:

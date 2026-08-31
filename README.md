@@ -374,6 +374,8 @@ pip install -e ".[web]" `
 python -m app.cli serve              # 默认 http://127.0.0.1:8000
 ```
 
+Portable Launcher 的 Web 端口可在“配置 → 功能开关 → Web 管理端口”保存，范围为 `1..65535`。配置写入安装根目录的 `config/launcher.json`，只在下次启动 Launcher 时生效；页面会同时显示已保存端口、当前实际端口和是否需要重启。端口被占用时会明确失败，不会随机切换端口。无密码模式仍只监听并接受 `localhost`、`127.0.0.0/8` 或 `[::1]` authority；远程部署必须设置 `ADMIN_PASSWORD`。
+
 功能概览：**直播间管理 / 录制状态 / 实时转写 / 候选审核（横屏审片工作台）/ 成品切片 / 主题管理 / 合集编辑 / 插件中心 / 运维面板 / 任务队列监控 / 上传设置**。
 
 插件默认从 `./storage/plugins` 读取，可通过 `PLUGIN_DIR` 修改。扫描只读取 `plugin.json`，入口代码仅在管理员显式启用后执行；插件与主程序同进程运行，因此只应启用可信插件。开发接口、清单 Schema 和最小示例见 [`plugin/README.md`](plugin/README.md)。

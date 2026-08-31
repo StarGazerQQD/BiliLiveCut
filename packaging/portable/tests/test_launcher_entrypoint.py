@@ -36,11 +36,92 @@ def test_service_command_calls_typer_app_explicitly(tmp_path: Path) -> None:
     from blc_portable.launcher.main import _build_service_command
 
     venv_python = tmp_path / ".venv" / "Scripts" / "python.exe"
-    command = _build_service_command(venv_python)
+    command = _build_service_command(venv_python, 8080)
 
     assert command[:3] == [str(venv_python), "-c", "from app.cli import app; app()"]
-    assert command[3:] == ["serve", "--host", "127.0.0.1", "--port", "8000"]
+    assert command[3:] == ["serve", "--host", "127.0.0.1", "--port", "8080"]
     assert "-m" not in command
+
+
+def test_launcher_rejects_occupied_web_port_without_changing_config(tmp_path: Path) -> None:
+    """配置端口被占用时必须显式失败，且不得随机回退或改写配置。"""
+    import socket
+
+    from blc_portable.launcher.main import _ensure_web_port_available
+
+    from config.launcher_settings import launcher_config_path, save_launcher_config
+
+    with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as occupied:
+        occupied.bind(("127.0.0.1", 0))
+        occupied.listen()
+        port = occupied.getsockname()[1]
+        save_launcher_config(tmp_path, web_port=port)
+        before = launcher_config_path(tmp_path).read_bytes()
+
+        with pytest.raises(RuntimeError, match=rf"Web 端口 {port} 无法绑定"):
+            _ensure_web_port_available(port)
+
+    assert launcher_config_path(tmp_path).read_bytes() == before
+
+
+def test_launcher_uses_persisted_port_for_command_and_runtime_env(
+    tmp_path: Path,
+    monkeypatch: MonkeyPatch,
+) -> None:
+    """重启 Launcher 后，持久化端口必须同时进入 CLI 与实际端口环境变量。"""
+    from blc_portable.launcher import main as launcher_module
+
+    from config.launcher_settings import save_launcher_config
+
+    source_dir = tmp_path / "runtime" / "releases" / "current"
+    source_dir.mkdir(parents=True)
+    venv_python = tmp_path / ".venv" / "Scripts" / "python.exe"
+    venv_python.parent.mkdir(parents=True)
+    venv_python.write_bytes(b"fixture")
+    save_launcher_config(tmp_path, web_port=8080)
+    captured: dict[str, object] = {}
+
+    monkeypatch.chdir(tmp_path)
+    monkeypatch.setattr(launcher_module, "get_app_root", lambda: tmp_path)
+    monkeypatch.setattr(launcher_module, "get_current_release_dir", lambda: source_dir)
+    monkeypatch.setattr(launcher_module, "ensure_env", lambda _root, _source: None)
+    monkeypatch.setattr(launcher_module, "prepare_venv", lambda _root: venv_python)
+    monkeypatch.setattr(launcher_module, "install_dependencies", lambda *_args, **_kwargs: None)
+    monkeypatch.setattr(
+        launcher_module,
+        "prepare_models",
+        lambda *_args, **_kwargs: {"source": "installed", "network_requests": 0},
+    )
+    monkeypatch.setattr(launcher_module, "_ensure_web_port_available", lambda _port: None)
+
+    def fake_run(command: list[str], **kwargs: object):
+        captured["command"] = command
+        captured["env"] = kwargs["env"]
+        return launcher_module.subprocess.CompletedProcess(command, 0)
+
+    monkeypatch.setattr(launcher_module.subprocess, "run", fake_run)
+
+    assert launcher_module.run_launcher(launcher_module.build_parser().parse_args([])) == 0
+    assert captured["command"] == launcher_module._build_service_command(venv_python, 8080)
+    env = captured["env"]
+    assert isinstance(env, dict)
+    assert env["BLC_WEB_PORT"] == "8080"
+    assert env["BLC_APP_ROOT"] == str(tmp_path)
+
+
+def test_runtime_repair_preserves_launcher_port(tmp_path: Path) -> None:
+    """Runtime 更新/修复只替换 runtime，持久化 Launcher 配置必须保留。"""
+    from blc_portable.launcher.main import _repair_runtime
+
+    from config.launcher_settings import load_launcher_config, save_launcher_config
+
+    release = tmp_path / "runtime" / "releases" / "old"
+    release.mkdir(parents=True)
+    save_launcher_config(tmp_path, web_port=8080)
+
+    _repair_runtime(tmp_path)
+
+    assert load_launcher_config(tmp_path).web_port == 8080
 
 
 def test_launcher_version_python_entrypoint() -> None:

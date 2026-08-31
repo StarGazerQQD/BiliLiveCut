@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import os
 import subprocess
 import sys
 
@@ -49,6 +50,29 @@ def test_cli_help_preserves_dependency_hints_and_current_doctor_text() -> None:
     assert "asr 可选依赖" in result.output
     assert "web 可选依赖" in result.output
     assert "V0.1.13" not in result.output
+
+
+def test_serve_exports_actual_cli_port_to_application(monkeypatch) -> None:  # noqa: ANN001
+    """直接 CLI 的显式端口必须成为设置 API 看到的本次实际端口。"""
+    import uvicorn
+
+    from app.commands.serve import cmd_serve
+
+    captured: dict[str, object] = {}
+
+    def fake_run(app: str, **kwargs: object) -> None:
+        captured["app"] = app
+        captured.update(kwargs)
+
+    monkeypatch.delenv("BLC_APP_ROOT", raising=False)
+    monkeypatch.delenv("BLC_WEB_PORT", raising=False)
+    monkeypatch.setattr(uvicorn, "run", fake_run)
+
+    cmd_serve(host="127.0.0.1", port=8080, reload=False)
+
+    assert captured == {"app": "app.web.main:app", "host": "127.0.0.1", "port": 8080, "reload": False}
+    assert os.environ["BLC_WEB_PORT"] == "8080"
+    assert os.environ["BLC_APP_ROOT"] == os.getcwd()
 
 
 def test_record_pipeline_default_persists_scheduler_switches(temp_db: None, monkeypatch) -> None:  # noqa: ANN001
