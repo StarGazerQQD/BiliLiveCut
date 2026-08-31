@@ -20,14 +20,20 @@ _RETRY_JITTER_S = 5
 # ═══════════════════════════════════════════════════
 
 _VALID_TRANSITIONS: dict[str, set[str]] = {
-    TaskStatus.RECORDED: {TaskStatus.QUEUED_FOR_TRANS},
+    TaskStatus.RECORDED: {TaskStatus.QUEUED_FOR_TRANS, TaskStatus.QUEUED_FOR_ANALYSIS},
     TaskStatus.QUEUED_FOR_TRANS: {TaskStatus.TRANSCRIBING},
-    TaskStatus.TRANSCRIBING: {TaskStatus.TRANSCRIBED, TaskStatus.TRANSIENT_FAILED, TaskStatus.FAILED},
+    TaskStatus.TRANSCRIBING: {
+        TaskStatus.QUEUED_FOR_TRANS,
+        TaskStatus.TRANSCRIBED,
+        TaskStatus.TRANSIENT_FAILED,
+        TaskStatus.FAILED,
+    },
     TaskStatus.TRANSCRIBED: {TaskStatus.QUEUED_FOR_ANALYSIS},
     TaskStatus.QUEUED_FOR_ANALYSIS: {TaskStatus.ANALYZING},
     TaskStatus.ANALYZING: {
         TaskStatus.CANDIDATE_CREATED,
         TaskStatus.COMPLETED,
+        TaskStatus.QUEUED_FOR_TRANS,
         TaskStatus.TRANSIENT_FAILED,
         TaskStatus.FAILED,
     },
@@ -56,6 +62,7 @@ _VALID_TRANSITIONS: dict[str, set[str]] = {
         TaskStatus.QUEUED_FOR_ANALYSIS,
         TaskStatus.QUEUED_FOR_RENDER,
         TaskStatus.QUEUED_FOR_PUBLISH,
+        TaskStatus.TRANSCRIBED,
         TaskStatus.FAILED,
     },
     TaskStatus.STALE: {

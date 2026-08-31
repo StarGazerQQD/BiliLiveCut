@@ -245,3 +245,22 @@ def test_default_thresholds_are_candidate_friendly_without_schema_drift() -> Non
     assert room.review_threshold == pytest.approx(0.50)
     assert room.auto_approve_threshold == pytest.approx(0.82)
     assert ScoringConfig().pre_roll_s == pytest.approx(60)
+
+
+def test_event_first_asr_priority_defaults_and_order_validation() -> None:
+    """局部、近实时和后台 ASR 必须保持严格优先级顺序。"""
+    configured = Settings(_env_file=None)
+
+    assert configured.hotspot_asr_priority == 10
+    assert configured.near_live_asr_priority == 50
+    assert configured.background_asr_priority == 100
+    assert configured.hotspot_asr_pre_roll_s == pytest.approx(35)
+    assert configured.hotspot_asr_post_roll_s == pytest.approx(55)
+
+    with pytest.raises(ValueError, match="ASR 优先级"):
+        Settings(
+            _env_file=None,
+            hotspot_asr_priority=50,
+            near_live_asr_priority=10,
+            background_asr_priority=100,
+        )

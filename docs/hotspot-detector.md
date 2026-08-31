@@ -12,6 +12,12 @@ HOTSPOT_BASELINE_WINDOW_S=90
 HOTSPOT_DETECTOR_TICK_S=20
 HOTSPOT_MIN_BASELINE_BUCKETS=3
 HOTSPOT_DETECTION_THRESHOLD=0.55
+HOTSPOT_ASR_ENABLED=true
+HOTSPOT_ASR_PRE_ROLL_S=35
+HOTSPOT_ASR_POST_ROLL_S=55
+HOTSPOT_ASR_PRIORITY=10
+NEAR_LIVE_ASR_PRIORITY=50
+BACKGROUND_ASR_PRIORITY=100
 ```
 
 ## 信号与缺失证据
@@ -27,3 +33,21 @@ HOTSPOT_DETECTION_THRESHOLD=0.55
 ## 幂等与事务
 
 稳定事件键由场次、检测器版本与峰值 tick 生成。同一分析任务重试会复用并刷新尚未进入候选链的 provisional 记录；写入与分析任务状态推进共享一个数据库事务，租约失效时不会留下热点。
+
+## ASR 双向融合与降级语义
+
+流水线先用非语义信号执行检测，不再要求 `Transcript` 先存在。热点峰值会生成相对原始分段的 attention window，默认覆盖峰值前 35 秒到后 55 秒，并按以下顺序领取 ASR 工作负载：
+
+1. 热点局部 ASR（priority 10），快速补充当前事件语义；
+2. 近实时完整 ASR（priority 50）；
+3. 历史/后台完整 ASR（priority 100），继续服务历史记录、搜索、字幕和整场总结。
+
+局部识别与完整识别是同一 `SegmentTask` 的两个持久阶段，复用现有租约、资源预算和幂等键；局部证据提交后会重新排队完整识别，不会在同一个 Worker 调用内串行占用资源。局部结果以稳定 evidence id 写回 `HotspotEvent`，检测器重跑时会保留这项证据。
+
+ASR 质量只决定语义证据状态：
+
+- 可用正文记为 `available`，可进入关键词、语速、趋势和 LLM；
+- 低质量正文记为 `degraded` 并保留诊断，不进入语义评分或 LLM；
+- 后端耗尽重试记为 `unavailable`，任务仍进入候选分析。
+
+在 `degraded` 或 `unavailable` 状态下，弹幕、音频和 SenseVoice 仍可独立形成高热度事件；由于缺少可靠语义，后续标题与摘要必须采用保守表述。

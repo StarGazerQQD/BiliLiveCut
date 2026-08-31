@@ -12,7 +12,7 @@ import logging
 import time
 from collections.abc import Mapping
 from dataclasses import dataclass
-from datetime import timedelta
+from datetime import datetime, timedelta
 from enum import StrEnum
 from typing import Any
 
@@ -32,6 +32,7 @@ from app.db.entities import (
     ReviewStatus,
     SegmentStatus,
     SegmentTask,
+    SessionStatus,
     SystemLog,
     TaskStatus,
     Transcript,
@@ -40,6 +41,7 @@ from app.db.session import get_session
 from app.pipeline.highlight_plugins import build_highlight_scoring_request
 from app.pipeline.lease import LeaseLostError, TaskLease, still_owns_lease
 from app.pipeline.stage_result import enqueue_next, mark_completed, mark_failed
+from app.pipeline.task_context import event_first_context, update_event_first_context
 from app.plugins.highlight import HighlightDispatch
 from app.plugins.manager import plugin_manager
 
@@ -53,6 +55,7 @@ class HighlightDecision(StrEnum):
     BELOW_THRESHOLD = "below_threshold"
     DUPLICATE = "duplicate"
     SKIPPED = "skipped"
+    SIGNAL_PASS = "signal_pass"
 
 
 @dataclass(frozen=True)
@@ -156,6 +159,7 @@ def analyze_compute(task_id: int) -> dict[str, Any]:
         if task is None:
             return {"error": "task not found", "decision": HighlightDecision.SKIPPED}
         segment_id = task.segment_id
+        analysis_pass = event_first_context(task.context_json).get("analysis_pass")
         segment = db.get(RawSegment, segment_id)
         if segment is not None and segment.session_id != task.session_id:
             return {
@@ -186,6 +190,14 @@ def analyze_compute(task_id: int) -> dict[str, Any]:
         hotspot_payloads = [draft.to_payload() for draft in hotspot_drafts]
     except (OSError, RuntimeError, TypeError, ValueError) as exc:
         _logger.exception("hotspot_detection_failed: segment=%s error=%s", segment_id, exc)
+
+    if analysis_pass == "detect":
+        return {
+            "decision": HighlightDecision.SIGNAL_PASS,
+            "segment_id": segment_id,
+            "session_id": session_id,
+            "hotspot_drafts": hotspot_payloads,
+        }
 
     try:
         draft = _score_segment_drafts(segment_id, audio_features=audio_features)
@@ -261,6 +273,31 @@ def commit_highlight(lease: TaskLease, compute_result: dict[str, Any], ms: int) 
                     raw_hotspots,
                     expected_session_id=task.session_id,
                 )
+
+            if decision == HighlightDecision.SIGNAL_PASS:
+                attention_windows = _build_hotspot_attention_windows(segment, raw_hotspots)
+                has_attention = settings.hotspot_asr_enabled and bool(attention_windows)
+                task.context_json = update_event_first_context(
+                    task.context_json,
+                    analysis_pass="candidate",
+                    asr_mode="hotspot" if has_attention else "background",
+                    asr_evidence_state="pending",
+                    attention_windows=attention_windows if has_attention else [],
+                    detector_completed_at=time.time(),
+                )
+                task.priority = _next_asr_priority(db, task.session_id, hotspot=has_attention)
+                task.processing_time_ms = ms
+                enqueue_next(task, TaskStatus.QUEUED_FOR_TRANS)
+                db.add(task)
+                db.commit()
+                _logger.info(
+                    "signal_pass_committed segment=%s hotspots=%s attention=%s next_priority=%s",
+                    segment_id,
+                    len(raw_hotspots),
+                    len(attention_windows),
+                    task.priority,
+                )
+                return
             _record_plugin_dispatch(db, compute_result)
 
             # ── BELOW_THRESHOLD ──────────────────────────
@@ -502,6 +539,63 @@ def _mark_scored_direct(segment_id: int) -> None:
         _mark_scored_in_db(db, segment_id)
 
 
+def _build_hotspot_attention_windows(
+    segment: RawSegment,
+    hotspots: list[Mapping[str, object]],
+) -> list[dict[str, object]]:
+    """把本段 provisional 热点转换为可恢复的局部 ASR 窗口。"""
+    if segment.start_ts is None:
+        return []
+    if segment.end_ts is not None:
+        duration_s = max(0.0, (segment.end_ts - segment.start_ts).total_seconds())
+    else:
+        duration_s = float(segment.duration_s or settings.segment_duration_s)
+    windows: list[dict[str, object]] = []
+    seen: set[str] = set()
+    for hotspot in hotspots:
+        event_key = hotspot.get("event_key")
+        peak_ts = hotspot.get("peak_ts")
+        if not isinstance(event_key, str) or not event_key or event_key in seen:
+            continue
+        if not isinstance(peak_ts, datetime):
+            continue
+        try:
+            peak_offset_s = (peak_ts - segment.start_ts).total_seconds()
+        except TypeError:
+            peak_value = peak_ts.replace(tzinfo=None)
+            start_value = segment.start_ts.replace(tzinfo=None)
+            peak_offset_s = (peak_value - start_value).total_seconds()
+        start_offset_s = max(0.0, peak_offset_s - settings.hotspot_asr_pre_roll_s)
+        end_offset_s = min(duration_s, peak_offset_s + settings.hotspot_asr_post_roll_s)
+        if end_offset_s - start_offset_s < 1.0:
+            continue
+        seen.add(event_key)
+        windows.append(
+            {
+                "event_key": event_key,
+                "start_offset_s": round(start_offset_s, 3),
+                "end_offset_s": round(end_offset_s, 3),
+                "status": "pending",
+            }
+        )
+    return windows
+
+
+def _next_asr_priority(db: Session, session_id: int, *, hotspot: bool) -> int:
+    """按热点、近直播、历史后台三档返回持久化任务优先级。"""
+    if hotspot:
+        return settings.hotspot_asr_priority
+    session = db.get(RecordingSession, session_id)
+    if session is not None and session.status in {
+        SessionStatus.STARTING,
+        SessionStatus.RECORDING,
+        SessionStatus.RECONNECTING,
+        SessionStatus.RECONNECTED,
+    }:
+        return settings.near_live_asr_priority
+    return settings.background_asr_priority
+
+
 def _draft_dedup_hash(draft: dict[str, Any]) -> str:
     """为缺少业务键的异常计算结果生成稳定候选指纹。"""
     start = draft.get("start_ts")
@@ -727,18 +821,11 @@ def _score_segment_drafts(
     放在 ``additional_candidates`` 中，由同一个租约事务幂等提交。
     """
     from app.analysis.timeline import suppress_clustered_drafts  # noqa: PLC0415
-    from app.analysis.transcription.quality import assess_transcript_quality  # noqa: PLC0415
 
     with get_session() as db:
         segment = db.get(RawSegment, segment_id)
         if segment is None:
             raise ValueError(f"片段不存在: id={segment_id}")
-        transcript = db.exec(select(Transcript).where(Transcript.segment_id == segment_id)).first()
-        if transcript is None:
-            raise ValueError(f"片段尚未转写: id={segment_id}")
-        quality = assess_transcript_quality(transcript.final_text)
-        if not quality.usable:
-            raise ValueError(f"片段转写质量不合格，已阻止高光与 LLM 分析: segment={segment_id} reason={quality.reason}")
         file_path = segment.file_path
 
     features = audio_features or audio_mod.analyze_audio(file_path)
@@ -826,6 +913,7 @@ def _score_segment_draft(
         _danmaku_score as _dm_score,
     )
     from app.analysis.scoring_config import get_scoring_config  # noqa: PLC0415
+    from app.analysis.transcription.quality import assess_transcript_quality  # noqa: PLC0415
 
     cfg = get_scoring_config()
 
@@ -855,24 +943,19 @@ def _score_segment_draft(
         session_segments = db.exec(
             select(RawSegment).where(RawSegment.session_id == segment.session_id).order_by(RawSegment.seq.asc())
         ).all()
+        loaded_transcripts = db.exec(
+            select(Transcript).where(Transcript.segment_id.in_([item.id for item in session_segments]))
+        ).all()
         session_transcripts = {
-            item.segment_id: item
-            for item in db.exec(
-                select(Transcript).where(Transcript.segment_id.in_([item.id for item in session_segments]))
-            ).all()
+            item.segment_id: item for item in loaded_transcripts if assess_transcript_quality(item.final_text).usable
         }
         available_start, available_end = contiguous_recording_range(session_segments, segment)
 
-    if not has_transcript:
-        raise ValueError(f"片段尚未转写: id={segment_id}")
-
-    from app.analysis.transcription.quality import assess_transcript_quality  # noqa: PLC0415
-
-    transcript_quality = assess_transcript_quality(text)
-    if not transcript_quality.usable:
-        raise ValueError(
-            f"片段转写质量不合格，已阻止高光与 LLM 分析: segment={segment_id} reason={transcript_quality.reason}"
-        )
+    transcript_quality = assess_transcript_quality(text) if has_transcript else None
+    asr_evidence_state = (
+        "unavailable" if transcript_quality is None else ("available" if transcript_quality.usable else "degraded")
+    )
+    asr_evidence_reason = transcript_quality.reason if transcript_quality is not None else "missing_transcript"
 
     # 1) 规则特征
     feats = audio_features or audio_mod.analyze_audio(file_path)
@@ -913,14 +996,20 @@ def _score_segment_draft(
     )
 
     danmaku_start_ts, danmaku_end_ts = align_danmaku_window(analysis_start_ts, analysis_end_ts)
-    kw_score, kw_hits = match_keywords(judgement_text)
+    semantic_text_available = bool(judgement_text.strip())
+    kw_score, kw_hits = match_keywords(judgement_text) if semantic_text_available else (0.0, [])
     features: dict[str, float] = {
         "volume": feats.volume_score(),
-        "keywords": kw_score,
-        "speech_rate": speech_rate_score(analysis_window.words, analysis_duration_s),
-        "laughter": laughter_score(judgement_text),
         "danmaku": _dm_score(session_id, danmaku_start_ts, danmaku_end_ts),
     }
+    if semantic_text_available:
+        features.update(
+            {
+                "keywords": kw_score,
+                "speech_rate": speech_rate_score(analysis_window.words, analysis_duration_s),
+                "laughter": laughter_score(judgement_text),
+            }
+        )
     if use_dm_sentiment:
         features["danmaku_sentiment"] = danmaku_sentiment_score(
             session_id,
@@ -934,7 +1023,7 @@ def _score_segment_draft(
         if audio_evt_score > 0:
             features["audio_events"] = audio_evt_score
     trend_hits: list[str] = []
-    if settings.trend_enabled:
+    if settings.trend_enabled and semantic_text_available:
         trend_score, trend_hits = _trend_score(judgement_text)
         features["trend"] = trend_score
     rule_score = weighted_rule_score(features, cfg.weights)
@@ -991,9 +1080,20 @@ def _score_segment_draft(
     # 3) LLM 复核
     top_danmaku = representative_danmaku(session_id, analysis_start_ts, analysis_end_ts)
     danmaku_summary = "；".join(str(item["text"]) for item in top_danmaku)
-    judgement = llm_mod.judge_highlight(judgement_text, features, danmaku_summary, analysis_start_s)
+    judgement = (
+        llm_mod.judge_highlight(judgement_text, features, danmaku_summary, analysis_start_s)
+        if semantic_text_available
+        else None
+    )
     llm_score = judgement.score if judgement else None
-    reason = judgement.reason if judgement else "规则命中(未启用/未触发 LLM)"
+    if judgement is not None:
+        reason = judgement.reason
+    elif asr_evidence_state == "degraded":
+        reason = "ASR 语义证据质量较低，依据音频与互动信号命中"
+    elif asr_evidence_state == "unavailable":
+        reason = "ASR 语义证据不可用，依据音频与互动信号命中"
+    else:
+        reason = "规则命中(未启用/未触发 LLM)"
     highlight_score = fuse_scores(primary_score, llm_score, cfg.alpha, cfg.beta)
 
     # 终分不足 — 不写 DB, 返回显式决策。
@@ -1083,6 +1183,14 @@ def _score_segment_draft(
                 "keyword_hits": kw_hits,
                 "audio": _audio_meta(feats),
                 "danmaku_explain": danmaku_explain,
+                "asr_evidence": {
+                    "state": asr_evidence_state,
+                    "reason": asr_evidence_reason,
+                    "semantic_window_available": semantic_text_available,
+                    "repetition_ratio": (
+                        round(transcript_quality.repetition_ratio, 6) if transcript_quality is not None else None
+                    ),
+                },
                 "timeline": {
                     "analysis_version": TIMELINE_ANALYSIS_VERSION,
                     "confidence": confidence,

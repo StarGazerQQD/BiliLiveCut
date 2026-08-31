@@ -297,6 +297,63 @@ def test_builder_compensates_danmaku_receive_lag(
     assert buckets[1].danmaku_count == 0
 
 
+def test_builder_excludes_degraded_asr_but_keeps_sensevoice(temp_db: None) -> None:
+    """低质量正文不能污染语义信号，但同次识别的非语义音频事件仍可用。"""
+    from app.db.entities import RawSegment, Transcript
+    from app.db.session import get_session
+
+    session_id, _room_id = _create_recording()
+    with get_session() as db:
+        segment = RawSegment(
+            session_id=session_id,
+            seq=0,
+            file_path="segment.ts",
+            start_ts=_START,
+            end_ts=_START + timedelta(seconds=120),
+            duration_s=120.0,
+        )
+        db.add(segment)
+        db.flush()
+        assert segment.id is not None
+        segment_id = segment.id
+        db.add(
+            Transcript(
+                segment_id=segment_id,
+                final_text="高能高能高能高能高能高能高能高能",
+                words_json='[{"w":"高能","start":20,"end":25}]',
+                auxiliary_json=json.dumps(
+                    {
+                        "asr_quality": {
+                            "state": "degraded",
+                            "usable": False,
+                            "reason": "degenerate_repetition",
+                        },
+                        "emotions": [
+                            {
+                                "type": "surprise",
+                                "start": 20,
+                                "end": 25,
+                                "confidence": 0.9,
+                            }
+                        ],
+                    },
+                    ensure_ascii=False,
+                ),
+            )
+        )
+
+    buckets, _actual_session_id = build_segment_signal_buckets(
+        segment_id,
+        audio_features=None,
+        config=_CONFIG,
+    )
+
+    assert all(bucket.asr_text is None for bucket in buckets)
+    assert all(bucket.asr_keyword_score is None for bucket in buckets)
+    assert buckets[2].sensevoice_intensity is not None
+    assert buckets[2].sensevoice_intensity > 0
+
+
 def test_provisional_persistence_is_idempotent_and_refreshes_retry(
     temp_db: None,
 ) -> None:
@@ -443,6 +500,7 @@ def test_analyze_compute_detects_hotspot_before_missing_asr_gate(
             session_id=session_id,
             stage=TaskStatus.QUEUED_FOR_ANALYSIS,
             pipeline_key=f"pipeline:{segment.id}",
+            context_json='{"event_first":{"analysis_pass":"detect"}}',
         )
         db.add(task)
         db.flush()
@@ -465,7 +523,6 @@ def test_analyze_compute_detects_hotspot_before_missing_asr_gate(
 
     result = analyze.analyze_compute(task_id)
 
-    assert result["decision"] == HighlightDecision.SKIPPED
-    assert "片段尚未转写" in str(result["error"])
+    assert result["decision"] == HighlightDecision.SIGNAL_PASS
     assert isinstance(result["hotspot_drafts"], list)
     assert len(result["hotspot_drafts"]) == 1

@@ -18,6 +18,7 @@ from sqlmodel import Session, select
 
 from app.analysis.keywords import match_keywords
 from app.analysis.timeline import datetime_epoch
+from app.analysis.transcription.quality import assess_transcript_quality
 from app.core.config import settings
 from app.db.entities import Danmaku, DanmakuType, HotspotStatus, RawSegment, Transcript
 from app.db.entities.base import utcnow
@@ -469,14 +470,49 @@ def persist_provisional_hotspots(
             event.semantic_confidence = _required_float(payload, "semantic_confidence")
             event.evidence_coverage = _required_float(payload, "evidence_coverage")
             event.features_json = _optional_str(payload.get("features_json"))
-            event.evidence_json = _optional_str(payload.get("evidence_json"))
-            event.transcript_text = _optional_str(payload.get("transcript_text"))
+            event.evidence_json = _merge_attention_evidence(
+                event.evidence_json,
+                _optional_str(payload.get("evidence_json")),
+            )
+            transcript_text = _optional_str(payload.get("transcript_text"))
+            if transcript_text:
+                event.transcript_text = transcript_text
             event.updated_at = utcnow()
             db.add(event)
         if event.id is None:
             raise RuntimeError("HotspotEvent 写入后缺少主键")
         persisted.append(event.id)
     return persisted
+
+
+def _merge_attention_evidence(existing: str | None, incoming: str | None) -> str | None:
+    """Detector 刷新证据时保留已提交的热点局部 ASR 证据。"""
+    if not incoming:
+        return existing
+    try:
+        old_payload = json.loads(existing) if existing else {}
+        new_payload = json.loads(incoming)
+    except (json.JSONDecodeError, TypeError):
+        return incoming
+    if not isinstance(old_payload, dict) or not isinstance(new_payload, dict):
+        return incoming
+    old_items = old_payload.get("items")
+    new_items = new_payload.get("items")
+    if not isinstance(old_items, list) or not isinstance(new_items, list):
+        return incoming
+    incoming_ids = {item.get("id") for item in new_items if isinstance(item, dict)}
+    preserved = [
+        item
+        for item in old_items
+        if isinstance(item, dict)
+        and isinstance(item.get("id"), str)
+        and str(item["id"]).startswith("hotspot-asr:")
+        and item.get("id") not in incoming_ids
+    ]
+    if not preserved:
+        return incoming
+    new_payload["items"] = [*new_items, *preserved]
+    return json.dumps(new_payload, ensure_ascii=False, allow_nan=False, separators=(",", ":"))
 
 
 class _BucketBuilder:
@@ -607,7 +643,7 @@ def _fill_transcript(
     duration_s: float,
     bucket_s: float,
 ) -> None:
-    if transcript is None or transcript.words_json is None:
+    if transcript is None or transcript.words_json is None or not _transcript_semantic_usable(transcript):
         return
     try:
         words = json.loads(transcript.words_json)
@@ -629,6 +665,24 @@ def _fill_transcript(
         index = _bucket_index((start_s + end_s) / 2.0, duration_s, bucket_s, len(builders))
         if index is not None and word:
             builders[index].asr_words.append(word)
+
+
+def _transcript_semantic_usable(transcript: Transcript) -> bool:
+    """只把通过质量分类的正文作为热点语义证据。"""
+    if transcript.auxiliary_json:
+        try:
+            auxiliary = json.loads(transcript.auxiliary_json)
+        except (json.JSONDecodeError, TypeError):
+            auxiliary = None
+        if isinstance(auxiliary, dict):
+            quality = auxiliary.get("asr_quality")
+            if isinstance(quality, dict):
+                state = quality.get("state")
+                if state == "available":
+                    return True
+                if state in {"degraded", "unavailable"}:
+                    return False
+    return assess_transcript_quality(transcript.final_text or "").usable
 
 
 def _fill_sensevoice(

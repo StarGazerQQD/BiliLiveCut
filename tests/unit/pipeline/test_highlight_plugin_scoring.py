@@ -5,7 +5,6 @@ from datetime import datetime, timedelta
 from typing import TYPE_CHECKING
 
 import numpy as np
-import pytest
 from sqlmodel import select
 
 from app.analysis.audio import AudioFeatures
@@ -219,12 +218,12 @@ def test_llm_reason_is_limited_to_candidate_time_window(
     }
 
 
-def test_degenerate_transcript_is_rejected_before_audio_or_llm(
+def test_degenerate_transcript_uses_non_semantic_signals_without_llm(
     temp_db: None,
     monkeypatch: MonkeyPatch,
 ) -> None:
-    """历史污染转写不得继续进入音频特征、插件或 LLM 分析。"""
-    from app.pipeline.workers import analyze
+    """历史污染转写降级为非语义证据，音频/弹幕评分继续且跳过 LLM。"""
+    from app.analysis import llm
 
     segment_id, _room_id = _seed_segment()
     with get_session() as db:
@@ -232,13 +231,23 @@ def test_degenerate_transcript_is_rejected_before_audio_or_llm(
         transcript.final_text = "等一下我们先看看" * 20
         db.add(transcript)
 
-    def fail_audio(_path: str) -> None:
-        raise AssertionError("退化文本不得进入高光特征计算")
+    _patch_rule_scoring(monkeypatch, rule_score=0.8)
+    monkeypatch.setattr(plugin_manager, "has_capability", lambda _capability: False)
 
-    monkeypatch.setattr(analyze.audio_mod, "analyze_audio", fail_audio)
+    def fail_llm(*_args: object) -> None:
+        raise AssertionError("退化文本不得进入 LLM")
 
-    with pytest.raises(ValueError, match="已阻止高光与 LLM 分析"):
-        _score_segment_draft(segment_id)
+    monkeypatch.setattr(llm, "judge_highlight", fail_llm)
+    result = _score_segment_draft(segment_id)
+
+    assert result is not None
+    assert result["decision"] == HighlightDecision.CANDIDATE
+    assert result["reason"] == "ASR 语义证据质量较低，依据音频与互动信号命中"
+    metadata = json.loads(result["features_json"])
+    assert metadata["asr_evidence"]["state"] == "degraded"
+    assert "keywords" not in metadata["features"]
+    assert "volume" in metadata["features"]
+    assert "danmaku" in metadata["features"]
 
 
 def test_commit_records_plugin_fallback_as_structured_log(temp_db: None) -> None:

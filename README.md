@@ -62,7 +62,7 @@
 - 修复弹幕基线把 SQLModel 标量时间误当元组解包、低分分析无法从 `analyzing` 直接结束、趋势 JSON 截断后整批丢弃，以及高光理由截断后已生成评分丢失的问题。
 - 趋势采集单次最多请求 12 条，并只抢救截断前已完整闭合的 JSON 对象，避免猜测或写入半条数据。
 - Paraformer 只加载当前 Engine Pack 契约中的主模型、FSMN-VAD 和 CT-Transformer 标点模型；旧 CAM++ 快照与旧 Manifest 不再接受。
-- 五分钟 TS 在识别前会转为 16 kHz 单声道 WAV，Fun-ASR-Nano 使用 FSMN-VAD 按默认不超过 30 秒拆句；整段退化或长正文中的局部解码复读会自动切换 Paraformer、Whisper，仍不合格的文本不会进入 LLM 或高光分析。LLM 整理会保守清除残余的 ASR/VAD 边界复读，并保留有语义的强调、复述和口头禅。
+- 五分钟 TS 在识别前会转为 16 kHz 单声道 WAV，Fun-ASR-Nano 使用 FSMN-VAD 按默认不超过 30 秒拆句；整段退化或长正文中的局部解码复读会自动切换 Paraformer、Whisper。仍不合格的文本会以 `degraded` 语义证据落库并跳过 LLM，但音频、弹幕与 SenseVoice 热点分析继续；ASR 完全不可用时也不会阻断自动切片。
 - 实时转写页支持“重新识别”：仅清理可安全重建的自动分析结果；人工审核、确认主题、渲染或发布数据均受保护，不会被覆盖。
 - DeepSeek 思考模式只返回推理过程而没有最终正文时，会记录非敏感的结束原因与 token 统计，并关闭思考模式重试一次；推理过程不会写入转写或文案，空正文也不再被连通测试误报为成功。
 
@@ -205,7 +205,7 @@ V0.1.15 最终形成 Lite 单 EXE、Full 离线包、内容寻址 Runtime、安�
 | **次级回退** | Paraformer-zh | FunASR 无有效输出时补充中文识别、标点与时间戳 |
 | **最终兜底** | Whisper large-v3 / turbo | 前两级失败时自动回退 |
 
-录制 TS 会先标准化为 16 kHz 单声道 PCM WAV；Fun-ASR-Nano 复用 Paraformer 随包的 FSMN-VAD，默认把单句限制在 30 秒（`ASR_VAD_MAX_SEGMENT_S`）。主引擎出现空输出、整段重复退化或长正文中的局部解码循环时自动回退；最终输出仍不合格时停止该任务，禁止污染文本进入 LLM 和高光分析。通过 `ASR_PRIMARY=paraformer` 或 `ASR_PRIMARY=whisper` 可切换主路径。全部模型懒加载，按 flags 独立启用/禁用。
+录制 TS 会先标准化为 16 kHz 单声道 PCM WAV；Fun-ASR-Nano 复用 Paraformer 随包的 FSMN-VAD，默认把单句限制在 30 秒（`ASR_VAD_MAX_SEGMENT_S`）。主引擎出现空输出、整段重复退化或长正文中的局部解码循环时自动回退；最终输出仍不合格时按 `degraded` 保存，只隔离 ASR 语义与 LLM，不再停止热点任务。通过 `ASR_PRIMARY=paraformer` 或 `ASR_PRIMARY=whisper` 可切换主路径。全部模型懒加载，按 flags 独立启用/禁用。
 
 ## V0.1.11 新特性：数据一致性与流水线稳定性
 
@@ -348,7 +348,7 @@ HIGHLIGHT_LLM_MAX_TOKENS=65536      # 高光复核的最大输出预算（含推
 
 **工作原理与成本控制**：先用零成本规则特征（音量峰值、关键词、语速突增、音频特征、弹幕热度）算出 `rule_score`；只有超过初筛阈值才调用大模型复核。新直播间默认初筛/候选/人工审核阈值为 `0.28/0.38/0.32`，自动批准/发布阈值为 `0.72/0.80`，也可通过 `.env` 的 `HIGHLIGHT_*_THRESHOLD` 与 `AUTO_PUBLISH_THRESHOLD` 调整；房间级值可在“功能开关”中调整。Web「配置 → 大模型」没有启用服务商时自动走**纯规则模式**，完全可用、零费用。
 
-Event-first 热点层会先按 10 秒信号桶、90 秒直播自身滚动基线和 20 秒检测 tick 生成 `provisional HotspotEvent`。弹幕、音频、SenseVoice、可选 ASR 与缓存趋势按可用证据动态归一化，因此尚无 ASR 不会把热点分数拉成零；详细参数和证据字段见 [热点检测器说明](docs/hotspot-detector.md)。
+Event-first 热点层会先按 10 秒信号桶、90 秒直播自身滚动基线和 20 秒检测 tick 生成 `provisional HotspotEvent`。弹幕、音频、SenseVoice、可选 ASR 与缓存趋势按可用证据动态归一化，因此尚无 ASR 不会把热点分数拉成零。热点峰值会反向生成默认前 35 秒、后 55 秒的高优先级局部 ASR；完成后仍保留后台完整 ASR，用于历史、搜索、字幕与整场总结。详细参数和证据字段见 [热点检测器说明](docs/hotspot-detector.md)。
 
 > **大模型选型（境内）**：系统采用 **OpenAI 兼容协议**，可在 Web「配置 → 大模型」同时配置 DeepSeek / 通义千问 / Kimi / 智谱 GLM，并按优先级执行运行时故障切换。
 

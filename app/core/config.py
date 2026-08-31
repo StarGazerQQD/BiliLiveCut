@@ -170,6 +170,13 @@ class Settings(BaseSettings):
     hotspot_detector_tick_s: float = Field(default=20.0, ge=15.0, le=30.0)
     hotspot_min_baseline_buckets: int = Field(default=3, ge=2, le=12)
     hotspot_detection_threshold: float = Field(default=0.55, ge=0.0, le=1.0)
+    # 热点局部 ASR 先于普通/历史完整转写；数值越小的任务越先被领取。
+    hotspot_asr_enabled: bool = True
+    hotspot_asr_pre_roll_s: float = Field(default=35.0, ge=0.0, le=180.0)
+    hotspot_asr_post_roll_s: float = Field(default=55.0, ge=0.0, le=180.0)
+    hotspot_asr_priority: int = Field(default=10, ge=0, le=1000)
+    near_live_asr_priority: int = Field(default=50, ge=0, le=1000)
+    background_asr_priority: int = Field(default=100, ge=0, le=1000)
     auto_publish_threshold: float = Field(default=0.80, ge=0.0, le=1.0)
 
     # ---------- 切片后处理 ----------
@@ -281,6 +288,10 @@ class Settings(BaseSettings):
             raise ValueError("hotspot_detector_tick_s 必须是 hotspot_bucket_s 的整数倍")
         if self.hotspot_min_baseline_buckets >= int(baseline_ratio):
             raise ValueError("hotspot_min_baseline_buckets 必须小于滚动基线的 bucket 数")
+        if not (self.hotspot_asr_priority < self.near_live_asr_priority < self.background_asr_priority):
+            raise ValueError(
+                "ASR 优先级必须满足 hotspot_asr_priority < near_live_asr_priority < background_asr_priority"
+            )
 
         return self
 
