@@ -355,7 +355,7 @@ def check_distribution_config(audit: AuditResult) -> None:
         "sdist 包含第三方许可证与声明",
         "recursive-include packaging/portable/licenses *.txt *.md" in manifest,
     )
-    audit.check("sdist 排除 Cython 生成文件", "exclude tools/native/cython/_speedups_round2.c" in manifest)
+    audit.check("sdist 排除 Cython 生成文件", "exclude tools/native/cython/_cython_speedups.c" in manifest)
 
     release_gate = release_gate_path.read_text(encoding="utf-8")
     audit.check(

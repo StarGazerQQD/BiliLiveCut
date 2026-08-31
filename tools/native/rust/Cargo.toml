@@ -2,10 +2,10 @@
 name = "bili-live-cut-rust"
 version = "0.1.18-alpha.0"
 edition = "2021"
-description = "BiliLiveCut Rust 加速模块 — O(N**2) 聚类矩阵并行计算"
+description = "BiliLiveCut Rust 加速模块 — 聚类矩阵与弹幕文本特征"
 
 [lib]
-name = "_rust_cluster"
+name = "_rust_speedups"
 crate-type = ["cdylib"]
 
 [dependencies]

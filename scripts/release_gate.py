@@ -125,9 +125,9 @@ def main() -> int:  # noqa: D103
 
         abi = m["python_abi"]
         required_native = {
-            f"app/analysis/_c_speedups.{abi}-win_amd64.pyd",
-            f"app/analysis/_speedups_round2.{abi}-win_amd64.pyd",
-            "app/analysis/_rust_cluster.pyd",
+            f"app/accelerators/_c_speedups.{abi}-win_amd64.pyd",
+            f"app/accelerators/_cython_speedups.{abi}-win_amd64.pyd",
+            "app/accelerators/_rust_speedups.pyd",
         }
         missing_native = sorted(required_native - entries)
         if missing_native:

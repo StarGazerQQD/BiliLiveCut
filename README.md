@@ -229,13 +229,20 @@ V0.1.15 最终形成 Lite 单 EXE、Full 离线包、内容寻址 Runtime、安�
 
 ### C / Rust / Cython 加速模块
 
-自 V0.1.9 起，高频 CPU 热点使用多语言加速，优先级：Rust → Cython → C → 纯 Python。
+高频 CPU 热点统一由 `app.accelerators.dispatcher` 按函数分派；编译扩展只存在于
+`app.accelerators` 命名空间，缺少对应扩展时回退到同语义 Python 参考实现。
 
 - **Aho-Corasick 多模式匹配** 20–50×（C）
 - **余弦相似度 / 字符 bigram** 3–8×（C）
 - **聚类矩阵 O(N²)** 5–15× 纯 Python / **30–80× Rust+rayon** 并行
+- **弹幕复读率 / 情绪强度 / 高频代表消息**（Rust）
 - **弹幕基线分桶 + 中位数** 10–30×（Cython）
 - **SRT 字幕组装** 3–8×（Cython）
+- **音频局部峰值筛选 / 连续静音区间**（Cython）
+- **热点滚动历史稳健增幅**（Cython）
+
+完整原生化清单、未原生化边界及后端诊断方式见
+[原生加速模块](docs/native-acceleration.md)。
 
 ```powershell
 # 自动检测：pip install -e . 自动尝试编译；失败 → 自动回退 Python 实现

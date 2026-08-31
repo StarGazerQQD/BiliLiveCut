@@ -146,15 +146,18 @@ Payload 从 **EXE 内置资源**释放，版本固定并校验 SHA-256，安装�
 - **Aho-Corasick 多模式匹配** 20–50×（C）
 - **余弦相似度 / 字符 bigram** 3–8×（C）
 - **聚类矩阵 O(N²)** 5–15× 纯 Python / 30–80× Rust+rayon 并行
+- **弹幕复读率 / 情绪强度 / 高频代表消息**（Rust）
 - **弹幕基线分桶 + 中位数** 10–30×（Cython）
 - **SRT 字幕组装** 3–8×（Cython）
+- **音频局部峰值筛选 / 连续静音区间**（Cython）
+- **热点滚动历史稳健增幅**（Cython）
 
 - **C 扩展编译**: 安装 [Visual Studio Build Tools](https://visualstudio.microsoft.com/zh-hans/downloads/)（勾选「C++ 桌面开发」），然后:
   ```powershell
   python setup_c.py build_ext --inplace
   ```
 - **Rust 编译 (可选)**: 安装 [Rust](https://rustup.rs) 后运行 `python tools/native/build_rust.py`
-- **启动确认**: 查看日志确认后端 — `加速模块(cluster): Rust+rayon 已加载` / `Cython 已加载` / `使用纯 Python 后备`
+- **启动确认**: 查看日志中的 `app.accelerators._c_speedups`、`_cython_speedups`、`_rust_speedups` 加载结果；Full Bundle 冒烟会强制确认三种当前原生后端均已启用。
 
 ---
 

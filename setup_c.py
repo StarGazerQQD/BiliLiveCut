@@ -15,7 +15,7 @@ _extensions = []
 
 if not _skip:
     _c_speedups = Extension(
-        "app.analysis._c_speedups",
+        "app.accelerators._c_speedups",
         sources=["tools/native/c/_c_speedups.c"],
         extra_compile_args=(["/O2", "/fp:fast", "/utf-8"] if sys.platform == "win32" else ["-O3", "-ffast-math"]),
         extra_link_args=(["/Brepro"] if sys.platform == "win32" else []),

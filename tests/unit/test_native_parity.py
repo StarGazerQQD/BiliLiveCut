@@ -11,6 +11,7 @@ Coverage:
 
 from __future__ import annotations
 
+import importlib.util
 from types import ModuleType
 
 import pytest
@@ -255,6 +256,25 @@ class TestBackendReporting:
         cbid = get_cluster_backend()
         assert isinstance(cbid, str)
 
+    def test_current_native_namespace_is_reported(self) -> None:
+        """Cython 与 Rust 后端均应有独立诊断结果。"""
+        from app.accelerators.dispatcher import get_cython_backend, get_rust_backend
+
+        assert get_cython_backend() in ("Cython", "python")
+        assert get_rust_backend() in ("Rust+rayon", "python")
+
+    @pytest.mark.parametrize(
+        "module_name",
+        (
+            "app.analysis._c_speedups",
+            "app.analysis._speedups_round2",
+            "app.analysis._rust_cluster",
+        ),
+    )
+    def test_legacy_native_modules_are_not_exposed(self, module_name: str) -> None:
+        """旧原生模块路径不得继续充当兼容入口。"""
+        assert importlib.util.find_spec(module_name) is None
+
 
 # ── Danmaku baseline rate ───────────────────────────
 
@@ -284,10 +304,10 @@ class TestCythonRound2Parity:
     @staticmethod
     def _native_module() -> ModuleType | None:
         try:
-            from app.analysis import _speedups_round2
+            from app.accelerators import _cython_speedups
         except ImportError:
             return None
-        return _speedups_round2
+        return _cython_speedups
 
     def test_epoch_danmaku_buckets_match_fallback(self) -> None:
         """Unix epoch 秒不得因 float32 收窄破坏十秒分桶。"""
@@ -320,3 +340,86 @@ class TestCythonRound2Parity:
         assert native.group_srt_blocks(words, max_chars=20, line_gap_ms=200) == fallback.group_srt_blocks(
             words, max_chars=20, line_gap_ms=200
         )
+
+    def test_audio_peak_selection_matches_fallback(self) -> None:
+        """局部峰值筛选必须与 Python 参考实现一致。"""
+        import numpy as np
+
+        native = self._native_module()
+        if native is None:
+            return
+        from app.accelerators.python_fallback import speedups_round2 as fallback
+
+        times = np.asarray([0.0, 10.0, 20.0, 30.0, 40.0], dtype=np.float64)
+        rms = np.asarray([0.1, 0.9, 0.2, 1.0, 0.1], dtype=np.float64)
+        assert native.audio_peak_offsets(times, rms, 3, 15.0, 0.15) == fallback.audio_peak_offsets(
+            times,
+            rms,
+            3,
+            15.0,
+            0.15,
+        )
+
+    def test_silence_ranges_match_fallback(self) -> None:
+        """连续静音区间边界必须与 Python 参考实现一致。"""
+        import numpy as np
+
+        native = self._native_module()
+        if native is None:
+            return
+        from app.accelerators.python_fallback import speedups_round2 as fallback
+
+        times = np.arange(8, dtype=np.float64) * 0.1
+        rms = np.asarray([1.0, 0.1, 0.1, 0.1, 0.1, 1.0, 0.1, 1.0], dtype=np.float64)
+        assert native.find_silence_ranges(times, rms) == fallback.find_silence_ranges(times, rms)
+
+    def test_robust_uplift_matches_fallback(self) -> None:
+        """滚动历史稳健增幅必须与 Python 参考实现一致。"""
+        import numpy as np
+
+        native = self._native_module()
+        if native is None:
+            return
+        from app.accelerators.python_fallback import speedups_round2 as fallback
+
+        history = np.asarray([10.0, 11.0, 9.0, 10.5, 10.0], dtype=np.float64)
+        assert native.robust_relative_uplift(30.0, history) == pytest.approx(
+            fallback.robust_relative_uplift(30.0, history)
+        )
+
+
+class TestRustHotspotParity:
+    """Rust 弹幕文本特征必须与 Python 参考实现保持一致。"""
+
+    def test_danmaku_text_features_match_fallback(self) -> None:
+        try:
+            from app.accelerators import _rust_speedups
+        except ImportError:
+            return
+        from app.accelerators.python_fallback import speedups_round2 as fallback
+
+        texts = ["高能!", "日常", "高能!", "笑死", "日常"]
+        tokens = ["高能", "笑死"]
+        native = _rust_speedups.danmaku_text_features(texts, tokens)
+        reference = fallback.danmaku_text_features(texts, tokens)
+        assert native[:3] == pytest.approx(reference[:3])
+        assert tuple(native[3]) == reference[3]
+
+    def test_cluster_matrix_matches_fallback_for_whitespace(self) -> None:
+        """Rust bigram 必须与当前跳过空白的文本语义一致。"""
+        try:
+            from app.accelerators import _rust_speedups
+        except ImportError:
+            return
+        from app.accelerators.python_fallback import speedups_round2 as fallback
+
+        items = [
+            {"asr_text": "a b", "keywords": ["x"], "start_ts": None},
+            {"asr_text": "ab", "keywords": ["x"], "start_ts": None},
+        ]
+        native = _rust_speedups.cluster_similarity_matrix(
+            [item["asr_text"] for item in items],
+            [item["keywords"] for item in items],
+            [None, None],
+        )
+        assert native == fallback.cluster_similarity_matrix(items)

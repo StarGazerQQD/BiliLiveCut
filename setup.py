@@ -11,26 +11,26 @@ _extensions = []
 if not _skip_extensions:
     # 第一轮: C 直接编译 (Aho-Corasick + 余弦相似度 + bigram)。
     _c_speedups = Extension(
-        "app.analysis._c_speedups",
+        "app.accelerators._c_speedups",
         sources=["tools/native/c/_c_speedups.c"],
         extra_compile_args=(["/O2", "/fp:fast", "/utf-8"] if sys.platform == "win32" else ["-O3", "-ffast-math"]),
         extra_link_args=(["/Brepro"] if sys.platform == "win32" else []),
     )
     _extensions.append(_c_speedups)
 
-    # 第二轮: Cython 编译 (聚类矩阵 + 弹幕基线 + SRT)。
+    # Cython: 聚类、音频数值热点、滚动基线、弹幕基线与 SRT。
     try:
         from Cython.Build import cythonize  # noqa: F401
 
         _r2 = Extension(
-            "app.analysis._speedups_round2",
-            sources=["tools/native/cython/_speedups_round2.pyx"],
+            "app.accelerators._cython_speedups",
+            sources=["tools/native/cython/_cython_speedups.pyx"],
             extra_compile_args=(["/O2", "/utf-8"] if sys.platform == "win32" else ["-O3", "-ffast-math"]),
             extra_link_args=(["/Brepro"] if sys.platform == "win32" else []),
         )
         _extensions.append(_r2)
     except ImportError:
-        # Cython 未安装:跳过第二轮编译,加速分派层自动回退 Python
+        # Cython 未安装：跳过编译，由加速分派层使用 Python 参考实现。
         pass
 
 setup(

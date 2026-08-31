@@ -54,7 +54,7 @@ def test_sdist_manifest_contains_runtime_and_audit_inputs() -> None:
         "recursive-include tests",
         "recursive-include tools",
         "include packaging/docker/Dockerfile",
-        "exclude tools/native/cython/_speedups_round2.c",
+        "exclude tools/native/cython/_cython_speedups.c",
     ):
         assert rule in manifest
     for prune in (

@@ -22,7 +22,7 @@ from app.accelerators.python_fallback import speedups_round2 as fb2
 def _has_native() -> bool:
     """Check if native C extension is available for parity tests."""
     try:
-        import app.analysis._c_speedups  # noqa: F401
+        import app.accelerators._c_speedups  # noqa: F401
 
         return True
     except ImportError:
@@ -531,6 +531,34 @@ class TestDanmakuBaselineRate:
         assert isinstance(total, int)
 
 
+class TestNumericHotspotFallbacks:
+    """新增音频与滚动基线 Python 参考实现。"""
+
+    def test_audio_peak_offsets_are_separated(self) -> None:
+        times = [0.0, 10.0, 20.0, 30.0, 40.0]
+        rms = [0.1, 0.9, 0.2, 1.0, 0.1]
+        assert fb2.audio_peak_offsets(times, rms, limit=3, min_distance_s=15.0) == [10.0, 30.0]
+
+    def test_audio_peak_offsets_handle_empty_and_invalid_limit(self) -> None:
+        assert fb2.audio_peak_offsets([], [], limit=4) == []
+        assert fb2.audio_peak_offsets([0.0], [1.0], limit=0) == []
+
+    def test_find_silence_ranges_handles_trailing_range(self) -> None:
+        times = [index * 0.1 for index in range(8)]
+        rms = [1.0, 0.1, 0.1, 0.1, 1.0, 0.1, 0.1, 0.1]
+        assert fb2.find_silence_ranges(times, rms) == [(0.1, 0.30000000000000004), (0.5, 0.7000000000000001)]
+
+    def test_robust_relative_uplift_filters_non_finite_history(self) -> None:
+        value = fb2.robust_relative_uplift(30.0, [10.0, float("nan"), 11.0, 9.0])
+        assert 0.0 < value <= 1.0
+        assert fb2.robust_relative_uplift(float("nan"), [10.0]) == 0.0
+
+    def test_danmaku_text_features_preserve_first_seen_ties(self) -> None:
+        result = fb2.danmaku_text_features(["乙", "甲", "乙!", "甲"], ["乙"])
+        assert result[0] == 0.5
+        assert result[3] == ("甲", "乙", "乙!")
+
+
 class TestGroupSrtBlocks:
     """group_srt_blocks behavior."""
 
@@ -704,12 +732,12 @@ class TestNativeFallbackParity:
     """
 
     def _native_match_keywords(self, text, patterns):
-        import app.analysis._c_speedups as nc
+        import app.accelerators._c_speedups as nc
 
         return nc.fast_match_keywords(text, tuple(patterns))
 
     def _native_meme_count(self, texts, memes):
-        import app.analysis._c_speedups as nc
+        import app.accelerators._c_speedups as nc
 
         return nc.fast_meme_count(texts, tuple(memes))
 
@@ -762,7 +790,7 @@ class TestNativeFallbackParity:
         """Cosine similarity parity (native vs fallback)."""
         if not _NATIVE_AVAILABLE:
             return
-        import app.analysis._c_speedups as nc
+        import app.accelerators._c_speedups as nc
 
         v = {"a": 1.0, "b": 2.0, "c": 3.0}
         n_result = nc.fast_cosine_similarity(v, v)
@@ -773,7 +801,7 @@ class TestNativeFallbackParity:
         """Char bigrams parity."""
         if not _NATIVE_AVAILABLE:
             return
-        import app.analysis._c_speedups as nc
+        import app.accelerators._c_speedups as nc
 
         n_result = nc.fast_char_bigrams("hello")
         f_result = fb.fast_char_bigrams("hello")
@@ -785,7 +813,7 @@ class TestNativeFallbackParity:
         """Has match parity."""
         if not _NATIVE_AVAILABLE:
             return
-        import app.analysis._c_speedups as nc
+        import app.accelerators._c_speedups as nc
 
         n_am = nc.fast_ahocorasick_build(("test",))
         f_am = fb.fast_ahocorasick_build(("test",))

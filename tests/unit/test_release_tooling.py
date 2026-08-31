@@ -164,8 +164,8 @@ def test_rust_build_streams_cargo_output(monkeypatch: MonkeyPatch, tmp_path: Pat
     (rust_source / "Cargo.toml").write_text("[package]\nname='fixture'\n", encoding="utf-8")
     source_suffix = ".dll" if sys.platform == "win32" else ".so"
     destination_suffix = ".pyd" if sys.platform == "win32" else ".so"
-    (release_dir / f"_rust_cluster{source_suffix}").write_bytes(b"native")
-    target_dir = tmp_path / "analysis"
+    (release_dir / f"_rust_speedups{source_suffix}").write_bytes(b"native")
+    target_dir = tmp_path / "accelerators"
 
     observed_kwargs: dict[str, object] = {}
 
@@ -181,7 +181,7 @@ def test_rust_build_streams_cargo_output(monkeypatch: MonkeyPatch, tmp_path: Pat
     assert "capture_output" not in observed_kwargs
     assert observed_kwargs["env"]["PYO3_PYTHON"] == sys.executable  # type: ignore[index]
     assert "PYO3_USE_ABI3_FORWARD_COMPATIBILITY" not in observed_kwargs["env"]  # type: ignore[operator]
-    assert (target_dir / f"_rust_cluster{destination_suffix}").read_bytes() == b"native"
+    assert (target_dir / f"_rust_speedups{destination_suffix}").read_bytes() == b"native"
 
 
 def test_windows_payload_jobs_run_on_windows_and_verify_native_modules() -> None:

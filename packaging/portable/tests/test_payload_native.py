@@ -22,15 +22,15 @@ def _prepare_builder(monkeypatch: MonkeyPatch, tmp_path: Path) -> tuple[ModuleTy
     from blc_portable.payload import builder
 
     portable_root = tmp_path / "packaging" / "portable"
-    analysis_dir = tmp_path / "app" / "analysis"
+    accelerator_dir = tmp_path / "app" / "accelerators"
     portable_root.mkdir(parents=True)
-    analysis_dir.mkdir(parents=True)
+    accelerator_dir.mkdir(parents=True)
 
     monkeypatch.setattr(builder, "PORTABLE_ROOT", portable_root)
     monkeypatch.setattr(builder.sys, "platform", "win32")
     monkeypatch.setattr(builder, "_windows_extension_suffix", lambda: ".cp312-win_amd64.pyd")
     monkeypatch.setattr(builder.importlib.util, "find_spec", lambda _name: object())
-    return builder, analysis_dir
+    return builder, accelerator_dir
 
 
 def test_payload_native_build_rejects_non_windows_host(monkeypatch: MonkeyPatch, tmp_path: Path) -> None:
@@ -44,7 +44,7 @@ def test_payload_native_build_rejects_non_windows_host(monkeypatch: MonkeyPatch,
 
 def test_payload_native_build_rejects_false_success(monkeypatch: MonkeyPatch, tmp_path: Path) -> None:
     """构建命令返回零但目标文件缺失时必须失败。"""
-    builder, _analysis_dir = _prepare_builder(monkeypatch, tmp_path)
+    builder, _accelerator_dir = _prepare_builder(monkeypatch, tmp_path)
 
     def fake_run(*_args: object, **_kwargs: object) -> SimpleNamespace:
         return SimpleNamespace(returncode=0, stdout="", stderr="")
@@ -56,14 +56,14 @@ def test_payload_native_build_rejects_false_success(monkeypatch: MonkeyPatch, tm
 
 def test_payload_native_build_requires_rust(monkeypatch: MonkeyPatch, tmp_path: Path) -> None:
     """Release 契约要求 Rust 时，构建器不得把 Rust 编译失败当作成功。"""
-    builder, analysis_dir = _prepare_builder(monkeypatch, tmp_path)
+    builder, accelerator_dir = _prepare_builder(monkeypatch, tmp_path)
 
     def fake_run(command: list[str], **_kwargs: object) -> SimpleNamespace:
         script_name = Path(command[1]).name
         if script_name == "setup_c.py":
-            (analysis_dir / "_c_speedups.cp312-win_amd64.pyd").write_bytes(b"c")
+            (accelerator_dir / "_c_speedups.cp312-win_amd64.pyd").write_bytes(b"c")
         elif script_name == "setup.py":
-            (analysis_dir / "_speedups_round2.cp312-win_amd64.pyd").write_bytes(b"cython")
+            (accelerator_dir / "_cython_speedups.cp312-win_amd64.pyd").write_bytes(b"cython")
         return SimpleNamespace(returncode=0, stdout="", stderr="")
 
     monkeypatch.setattr(subprocess, "run", fake_run)
@@ -73,14 +73,14 @@ def test_payload_native_build_requires_rust(monkeypatch: MonkeyPatch, tmp_path: 
 
 def test_payload_native_build_copies_only_current_windows_abi(monkeypatch: MonkeyPatch, tmp_path: Path) -> None:
     """只复制当前 ABI 的 Windows 模块，排除旧 ABI 与 Linux 产物。"""
-    builder, analysis_dir = _prepare_builder(monkeypatch, tmp_path)
+    builder, accelerator_dir = _prepare_builder(monkeypatch, tmp_path)
     expected = {
-        "setup_c.py": analysis_dir / "_c_speedups.cp312-win_amd64.pyd",
-        "setup.py": analysis_dir / "_speedups_round2.cp312-win_amd64.pyd",
-        "build_rust.py": analysis_dir / "_rust_cluster.pyd",
+        "setup_c.py": accelerator_dir / "_c_speedups.cp312-win_amd64.pyd",
+        "setup.py": accelerator_dir / "_cython_speedups.cp312-win_amd64.pyd",
+        "build_rust.py": accelerator_dir / "_rust_speedups.pyd",
     }
-    (analysis_dir / "_speedups_round2.cp314-win_amd64.pyd").write_bytes(b"old")
-    (analysis_dir / "_c_speedups.cpython-312-x86_64-linux-gnu.so").write_bytes(b"foreign")
+    (accelerator_dir / "_cython_speedups.cp314-win_amd64.pyd").write_bytes(b"old")
+    (accelerator_dir / "_c_speedups.cpython-312-x86_64-linux-gnu.so").write_bytes(b"foreign")
 
     def fake_run(command: list[str], **_kwargs: object) -> SimpleNamespace:
         script_name = Path(command[1]).name
@@ -94,9 +94,9 @@ def test_payload_native_build_copies_only_current_windows_abi(monkeypatch: Monke
     result = builder._compile_and_copy_native_modules(staging_dir)
 
     assert result == {"c": True, "cython": True, "rust": True}
-    copied = {path.name for path in (staging_dir / "app" / "analysis").iterdir()}
+    copied = {path.name for path in (staging_dir / "app" / "accelerators").iterdir()}
     assert copied == {
         "_c_speedups.cp312-win_amd64.pyd",
-        "_speedups_round2.cp312-win_amd64.pyd",
-        "_rust_cluster.pyd",
+        "_cython_speedups.cp312-win_amd64.pyd",
+        "_rust_speedups.pyd",
     }

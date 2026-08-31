@@ -169,13 +169,13 @@ def _windows_extension_suffix() -> str:
     return suffix
 
 
-def _expected_windows_native_modules(analysis_dir: Path) -> dict[str, Path]:
+def _expected_windows_native_modules(accelerator_dir: Path) -> dict[str, Path]:
     """返回当前 Python ABI 对应的 Windows 原生模块路径。"""
     suffix = _windows_extension_suffix()
     return {
-        "c": analysis_dir / f"_c_speedups{suffix}",
-        "cython": analysis_dir / f"_speedups_round2{suffix}",
-        "rust": analysis_dir / "_rust_cluster.pyd",
+        "c": accelerator_dir / f"_c_speedups{suffix}",
+        "cython": accelerator_dir / f"_cython_speedups{suffix}",
+        "rust": accelerator_dir / "_rust_speedups.pyd",
     }
 
 
@@ -184,9 +184,9 @@ def _compile_and_copy_native_modules(staging_dir: Path) -> dict[str, bool]:
     import subprocess as _sp
 
     repo_root = PORTABLE_ROOT.parent.parent
-    analysis_dir = repo_root / "app" / "analysis"
-    staging_analysis = staging_dir / "app" / "analysis"
-    staging_analysis.mkdir(parents=True, exist_ok=True)
+    accelerator_dir = repo_root / "app" / "accelerators"
+    staging_accelerators = staging_dir / "app" / "accelerators"
+    staging_accelerators.mkdir(parents=True, exist_ok=True)
     results = {"c": False, "cython": False, "rust": False}
 
     if TARGET_PLATFORM != "win_x64":
@@ -194,7 +194,7 @@ def _compile_and_copy_native_modules(staging_dir: Path) -> dict[str, bool]:
     if sys.platform != "win32":
         raise RuntimeError(f"{TARGET_PLATFORM} Payload 必须在 Windows 构建，当前平台为 {sys.platform}")
 
-    expected = _expected_windows_native_modules(analysis_dir)
+    expected = _expected_windows_native_modules(accelerator_dir)
 
     def _run_build(name: str, command: list[str], timeout: int) -> bool:
         """运行单个原生构建，并以目标文件实际存在作为成功条件。"""
@@ -267,7 +267,7 @@ def _compile_and_copy_native_modules(staging_dir: Path) -> dict[str, bool]:
     for name, source in expected.items():
         if not results[name]:
             continue
-        destination = staging_analysis / source.name
+        destination = staging_accelerators / source.name
         shutil.copy2(source, destination)
         _logger.info("Copied native module: %s (%d bytes)", source.name, destination.stat().st_size)
 

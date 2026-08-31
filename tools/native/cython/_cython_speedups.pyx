@@ -1,9 +1,12 @@
-"""BiliLiveCut 第二轮 C 加速模块 — Cython 源码 (V0.1.10).
+"""BiliLiveCut Cython 数值与字幕热点加速模块。
 
-覆盖三个剩余 CPU 热点:
+覆盖六个 CPU 热点:
 1. cluster_similarity_matrix — O(N²) 聚类矩阵构建
 2. danmaku_baseline_rate — 弹幕基线分桶 + 中位数
 3. group_srt_blocks — 词条聚合为 SRT 字幕
+4. audio_peak_offsets — 音频局部峰值筛选
+5. find_silence_ranges — RMS 连续静音区间提取
+6. robust_relative_uplift — 滚动历史稳健增幅
 
 编译:
     python setup_c.py build_ext --inplace
@@ -11,12 +14,176 @@
 """
 
 cimport cython
-from libc.math cimport fmod
+from libc.math cimport fabs, isfinite, log2
 from cpython cimport PyFloat_AsDouble
 
 
 # ============================================================================
-# 1. O(N²) 聚类相似度矩阵
+# 0. 共享数值辅助函数
+# ============================================================================
+
+cdef double _median(list values):
+    """返回非空数值列表的中位数。"""
+    cdef list ordered = sorted(values)
+    cdef Py_ssize_t size = len(ordered)
+    if size % 2:
+        return PyFloat_AsDouble(ordered[size // 2])
+    return (
+        PyFloat_AsDouble(ordered[size // 2 - 1])
+        + PyFloat_AsDouble(ordered[size // 2])
+    ) / 2.0
+
+
+cdef double _clamp01(double value):
+    """把数值限制到闭区间 [0, 1]。"""
+    if value < 0.0:
+        return 0.0
+    if value > 1.0:
+        return 1.0
+    return value
+
+
+# ============================================================================
+# 1. 音频峰值与静音区间
+# ============================================================================
+
+def audio_peak_offsets(
+    const double[::1] times,
+    const double[::1] rms,
+    int limit=4,
+    double min_distance_s=25.0,
+    double min_prominence=0.15,
+):
+    """选择按能量排序且彼此分离的局部峰值。"""
+    cdef Py_ssize_t size = times.shape[0]
+    cdef Py_ssize_t rms_size = rms.shape[0]
+    cdef Py_ssize_t index, chosen_index, selected_pos
+    cdef Py_ssize_t global_index = 0
+    cdef double value, global_value, baseline, threshold, offset
+    cdef double minimum_distance = max(0.0, min_distance_s)
+    cdef list values
+    cdef list candidates
+    cdef list ranked = []
+    cdef list selected = []
+    cdef list result
+    cdef object entry
+
+    if rms_size < size:
+        size = rms_size
+    if size == 0 or limit <= 0:
+        return []
+
+    global_value = rms[0]
+    for index in range(1, size):
+        if rms[index] > global_value:
+            global_value = rms[index]
+            global_index = index
+
+    values = [rms[index] for index in range(size)]
+    baseline = _median(values)
+    threshold = baseline + max(0.0, min_prominence) * max(1.0 - baseline, 0.0)
+    candidates = [global_index]
+    for index in range(1, size - 1):
+        value = rms[index]
+        if (
+            index != global_index
+            and value >= threshold
+            and value >= rms[index - 1]
+            and value > rms[index + 1]
+        ):
+            candidates.append(index)
+
+    for entry in candidates:
+        index = <Py_ssize_t>entry
+        ranked.append((-rms[index], index))
+    ranked.sort()
+
+    for entry in ranked:
+        index = <Py_ssize_t>entry[1]
+        offset = times[index]
+        for selected_pos in range(len(selected)):
+            chosen_index = <Py_ssize_t>selected[selected_pos]
+            if fabs(offset - times[chosen_index]) < minimum_distance:
+                break
+        else:
+            selected.append(index)
+            if len(selected) >= limit:
+                break
+
+    result = [times[<Py_ssize_t>entry] for entry in selected]
+    result.sort()
+    return result
+
+
+def find_silence_ranges(
+    const double[::1] times,
+    const double[::1] rms,
+    double threshold_ratio=0.15,
+    double min_silence_s=0.3,
+):
+    """从 RMS 包络中提取满足最短持续时间的连续静音区间。"""
+    cdef Py_ssize_t size = times.shape[0]
+    cdef Py_ssize_t rms_size = rms.shape[0]
+    cdef Py_ssize_t index
+    cdef Py_ssize_t start_index = -1
+    cdef double hop_s
+    cdef list silences = []
+
+    if rms_size < size:
+        size = rms_size
+    if size == 0:
+        return []
+    hop_s = times[1] - times[0] if size > 1 else 0.1
+
+    for index in range(size):
+        if rms[index] < threshold_ratio:
+            if start_index < 0:
+                start_index = index
+        elif start_index >= 0:
+            if (index - start_index) * hop_s >= min_silence_s:
+                silences.append((times[start_index], times[index - 1]))
+            start_index = -1
+
+    if start_index >= 0 and (size - start_index) * hop_s >= min_silence_s:
+        silences.append((times[start_index], times[size - 1]))
+    return silences
+
+
+# ============================================================================
+# 2. 滚动历史稳健增幅
+# ============================================================================
+
+def robust_relative_uplift(double current, const double[::1] history):
+    """按当前场次历史的中位数与 MAD 计算稳健相对增幅。"""
+    cdef list clean = []
+    cdef list deviations
+    cdef Py_ssize_t index
+    cdef double value, baseline, mad, scale
+    cdef double ratio_score, relative_score, robust_score
+
+    if not isfinite(current):
+        return 0.0
+    for index in range(history.shape[0]):
+        value = history[index]
+        if isfinite(value):
+            clean.append(value)
+    if not clean:
+        return 0.0
+
+    baseline = _median(clean)
+    if current <= baseline:
+        return 0.0
+    deviations = [fabs(PyFloat_AsDouble(value) - baseline) for value in clean]
+    mad = _median(deviations)
+    scale = max(1e-3, fabs(baseline) * 0.10)
+    ratio_score = log2((current + scale) / (baseline + scale)) / 3.0
+    relative_score = ((current - baseline) / (fabs(baseline) + scale)) / 2.0
+    robust_score = 0.0 if mad <= 1e-9 else ((current - baseline) / (1.4826 * mad)) / 6.0
+    return _clamp01(max(ratio_score, relative_score, robust_score))
+
+
+# ============================================================================
+# 3. O(N²) 聚类相似度矩阵
 # ============================================================================
 
 def cluster_similarity_matrix(list items):
@@ -124,7 +291,7 @@ cdef double _event_sim_fast(
 
 
 # ============================================================================
-# 2. 弹幕基线分桶 + 中位数计算
+# 4. 弹幕基线分桶 + 中位数计算
 # ============================================================================
 
 def danmaku_baseline_rate(list timestamps_seconds, double bucket_s=10.0):
@@ -163,7 +330,7 @@ def danmaku_baseline_rate(list timestamps_seconds, double bucket_s=10.0):
 
 
 # ============================================================================
-# 3. 词条聚合为 SRT 字幕块
+# 5. 词条聚合为 SRT 字幕块
 # ============================================================================
 
 def group_srt_blocks(
