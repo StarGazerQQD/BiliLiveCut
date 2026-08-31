@@ -184,6 +184,23 @@ def test_release_full_cli_smoke_uses_offline_venv() -> None:
     assert "Push-Location $root" in content[full_smoke_start:full_smoke_end]
 
 
+def test_release_full_smoke_exposes_launcher_config_without_shadowing_payload() -> None:
+    """Full smoke 必须解析 Launcher 配置，同时优先导入已构建 Payload。"""
+    release_yml = _PROJ_ROOT / ".github" / "workflows" / "release.yml"
+    workflow = yaml.safe_load(release_yml.read_text(encoding="utf-8"))
+    full_step = next(
+        step
+        for step in workflow["jobs"]["smoke-test"]["steps"]
+        if step.get("name") == "Full Bundle offline install test"
+    )
+    full_smoke = full_step["run"]
+
+    assert '$repoRoot = (Resolve-Path ".").Path' in full_smoke
+    assert "$pathSeparator = [System.IO.Path]::PathSeparator" in full_smoke
+    assert '$env:PYTHONPATH = "$launcherSource$pathSeparator$repoRoot"' in full_smoke
+    assert '$env:PYTHONPATH = "$runtimeSource$pathSeparator$launcherSource$pathSeparator$repoRoot"' in full_smoke
+
+
 def test_release_runs_frozen_full_launcher_through_model_preparation() -> None:
     """Release smoke must execute the frozen Full launcher with a non-distributed Fixture pack."""
     release_yml = _PROJ_ROOT / ".github" / "workflows" / "release.yml"

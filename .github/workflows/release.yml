@@ -575,8 +575,10 @@ jobs:
             & "$root\portable-python\python.exe" -m venv $venv
             if ($LASTEXITCODE -ne 0) { throw "Bundled Python cannot create a venv" }
             $venvPython = "$venv\Scripts\python.exe"
+            $repoRoot = (Resolve-Path ".").Path
             $launcherSource = (Resolve-Path "packaging/portable/src").Path
-            $env:PYTHONPATH = $launcherSource
+            $pathSeparator = [System.IO.Path]::PathSeparator
+            $env:PYTHONPATH = "$launcherSource$pathSeparator$repoRoot"
             $env:BLC_SMOKE_VENV_PYTHON = $venvPython
             $env:BLC_SMOKE_APP_ROOT = $root
             $env:BLC_SMOKE_SOURCE_DIR = $runtimeSource
@@ -594,7 +596,7 @@ jobs:
             if ($LASTEXITCODE -ne 0) { throw "Full Bundle locked pip version check failed" }
             & $venvPython -c "import brotli, fastapi, funasr, loguru, modelscope, playwright, pydantic_settings, sqlmodel, torch, torchaudio, uvicorn"
             if ($LASTEXITCODE -ne 0) { throw "Full Bundle runtime import smoke failed" }
-            $env:PYTHONPATH = "$runtimeSource$([System.IO.Path]::PathSeparator)$launcherSource"
+            $env:PYTHONPATH = "$runtimeSource$pathSeparator$launcherSource$pathSeparator$repoRoot"
             Push-Location $root
             try {
               & $venvPython -c "from pathlib import Path; from app.cli import app; import app.cli; source = Path(r'$runtimeSource').resolve(); actual = Path(app.cli.__file__).resolve(); assert actual.is_relative_to(source), f'app.cli loaded from {actual}'; print('app.cli import OK:', actual)"
