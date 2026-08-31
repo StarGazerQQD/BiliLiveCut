@@ -250,10 +250,10 @@ class TestDatabaseForeignKeys:
             db.rollback()
 
     def test_schema_version_is_current(self) -> None:
-        """Alpha 当前数据库只接受 Schema v4。"""
+        """0.1.18 当前数据库使用 Schema v5。"""
         from app.db.schema import CURRENT_SCHEMA_VERSION
 
-        assert CURRENT_SCHEMA_VERSION == 4
+        assert CURRENT_SCHEMA_VERSION == 5
 
     def test_schema_rejects_different_app_version(self, temp_db: None) -> None:
         """Alpha 数据库必须由当前应用版本创建。"""
@@ -323,6 +323,8 @@ class TestDatabaseForeignKeys:
         assert "upload_tasks" in source
         assert "upload_attempts" in source
         assert "final_clips" in source
+        assert "hotspot_events" in source
+        assert "recording_sessions" in source
 
     def test_historical_migration_module_is_removed(self) -> None:
         """Alpha 当前版本不再分发历史数据库迁移模块。"""

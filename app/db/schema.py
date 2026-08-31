@@ -1,20 +1,22 @@
-"""当前数据库 Schema 的创建与严格校验。
+"""当前数据库 Schema 的创建、严格校验与受限升级。
 
 核心原则:
 
-* Alpha 阶段不兼容旧数据库时拒绝启动, 不自动迁移;
+* 仅允许 0.1.17.x Schema v4 安全升级到 0.1.18 Schema v5;
 * Schema 由当前 SQLModel/SQLAlchemy 模型确定性创建;
 * 使用 SHA-256 指纹 + 版本号双重验证一致性;
-* 数据库不存在时创建; 存在的数据库校验通过后启动;
+* 数据库不存在时创建; 存在的数据库升级或校验通过后启动;
 * 任何校验失败均阻止应用启动。
 
-不包含迁移、备份、ALTER TABLE 或旧数据修复逻辑。
+不提供通用迁移框架，也不接受 v4 -> v5 之外的历史数据库。
 """
 
 from __future__ import annotations
 
 import hashlib
 import json
+import re
+from collections.abc import Collection
 from datetime import UTC, datetime
 from pathlib import Path
 
@@ -38,7 +40,11 @@ def _get_settings():
 
 # ── 常量 ──────────────────────────────────────────────────
 
-CURRENT_SCHEMA_VERSION = 4
+LEGACY_SCHEMA_VERSION = 4
+CURRENT_SCHEMA_VERSION = 5
+
+_LEGACY_APP_VERSION_RE = re.compile(r"^0\.1\.17(?:\.\d+)?-alpha$", re.IGNORECASE)
+_TARGET_APP_VERSION_RE = re.compile(r"^0\.1\.18(?:\.\d+)?-alpha$", re.IGNORECASE)
 
 # ── Schema 元信息表 ──────────────────────────────────────
 
@@ -70,12 +76,36 @@ def compute_schema_fingerprint() -> str:
 
     :returns: SHA-256 十六进制字符串。
     """
+    return _compute_model_schema_fingerprint()
+
+
+def compute_legacy_v4_fingerprint() -> str:
+    """重建 0.1.17.x Schema v4 的模型指纹。
+
+    v5 只新增 ``hotspot_events``；对 ``schema_meta.schema_version`` 的模型默认值
+    恢复为 4 后，所得指纹必须与 0.1.17.x 数据库记录精确一致。
+    """
+    return _compute_model_schema_fingerprint(
+        excluded_tables={"hotspot_events"},
+        schema_version_override=LEGACY_SCHEMA_VERSION,
+    )
+
+
+def _compute_model_schema_fingerprint(
+    *,
+    excluded_tables: Collection[str] = (),
+    schema_version_override: int | None = None,
+) -> str:
+    """按当前模型计算指纹，可精确重建受支持的 v4 基线。"""
     from app.db import entities  # noqa: F401 — 确保所有模型已注册
 
     tables_info: dict[str, dict] = {}
+    excluded = set(excluded_tables)
 
     for table in sorted(SQLModel.metadata.sorted_tables, key=lambda t: t.name):
         tname = table.name
+        if tname in excluded:
+            continue
         # 列信息
         columns: list[dict] = []
         for col in sorted(table.columns, key=lambda c: c.name):
@@ -86,6 +116,8 @@ def compute_schema_fingerprint() -> str:
                 "default": _serializable_default(col.default),
                 "primary_key": col.primary_key,
             }
+            if schema_version_override is not None and tname == "schema_meta" and col.name == "schema_version":
+                col_info["default"] = json.dumps(schema_version_override)
             columns.append(col_info)
 
         # 唯一约束 (从表约束中提取, 排序以保证稳定)
@@ -382,10 +414,11 @@ def validate_schema() -> bool:
 
 
 def assure_schema() -> None:
-    """确保数据库 Schema 可用 — 创建或校验。
+    """确保数据库 Schema 可用 — 创建、受限升级或校验。
 
     - 数据库不存在 → 创建全部表并写入 schema_meta
-    - 数据库存在 → 校验; 不兼容则抛出 RuntimeError
+    - 0.1.17.x Schema v4 → 备份并迁移至 v5
+    - 其他已存在数据库 → 严格校验; 不兼容则抛出 RuntimeError
 
     :raises RuntimeError: Schema 不兼容时。
     """
@@ -407,16 +440,64 @@ def assure_schema() -> None:
         logger.info("数据库创建并校验成功: {}", db_path)
         return
 
-    # 数据库已存在 — 校验
-    if not validate_schema():
+    # 数据库已存在 — 仅允许 0.1.18 对精确 v4 基线执行一次升级。
+    stored_meta = _stored_schema_meta()
+    if (
+        stored_meta is not None
+        and stored_meta[0] == LEGACY_SCHEMA_VERSION
+        and _TARGET_APP_VERSION_RE.fullmatch(_app_version_str()) is not None
+    ):
+        _migrate_supported_legacy_schema(db_path, stored_meta)
+
+    if validate_schema():
+        return
+
+    raise RuntimeError(
+        "\n当前数据库 Schema 与程序不兼容。\n"
+        f"\n数据库版本: {_stored_version()}"
+        f"\n程序要求版本: {CURRENT_SCHEMA_VERSION}"
+        "\n\n仅支持从未修改的 0.1.17.x Schema v4 自动升级。"
+        "\n数据库已被修改、版本更旧或升级校验失败时会拒绝启动。"
+        f"\n\n数据库路径:\n{db_path}\n"
+    )
+
+
+def _migrate_supported_legacy_schema(
+    db_path: Path,
+    stored_meta: tuple[int, str, str],
+) -> None:
+    """验证精确 v4 基线后执行唯一受支持的迁移。"""
+    from app.db.migration_v0180 import migrate_v4_to_v5
+
+    stored_version, stored_fingerprint, stored_app_version = stored_meta
+    if stored_version != LEGACY_SCHEMA_VERSION:
+        raise RuntimeError(f"不支持的迁移来源 Schema: {stored_version}")
+    if _LEGACY_APP_VERSION_RE.fullmatch(stored_app_version) is None:
+        raise RuntimeError(f"不支持的迁移来源应用版本: {stored_app_version}")
+
+    expected_legacy_fingerprint = compute_legacy_v4_fingerprint()
+    if stored_fingerprint != expected_legacy_fingerprint:
         raise RuntimeError(
-            "\n当前数据库 Schema 与程序不兼容。\n"
-            f"\n数据库版本: {_stored_version()}"
-            f"\n程序要求版本: {CURRENT_SCHEMA_VERSION}"
-            "\n\n当前项目仍处于 Alpha 阶段, 不提供数据库自动升级。"
-            "\n请备份需要的数据后删除数据库并重新启动。"
-            f"\n\n数据库路径:\n{db_path}\n"
+            "0.1.17.x Schema v4 指纹不匹配，拒绝迁移: "
+            f"database={stored_fingerprint[:16]} expected={expected_legacy_fingerprint[:16]}"
         )
+
+    structure_ok, structure_message = _verify_actual_structure(excluded_tables={"hotspot_events"})
+    if not structure_ok:
+        raise RuntimeError(f"0.1.17.x Schema v4 结构不匹配，拒绝迁移: {structure_message}")
+    if not _verify_critical_indexes(include_hotspot=False):
+        raise RuntimeError("0.1.17.x Schema v4 关键索引不完整，拒绝迁移")
+    if not _verify_foreign_keys(include_hotspot=False):
+        raise RuntimeError("0.1.17.x Schema v4 外键不完整，拒绝迁移")
+
+    migrate_v4_to_v5(
+        engine=_get_engine(),
+        db_path=db_path,
+        legacy_app_version=stored_app_version,
+        legacy_fingerprint=stored_fingerprint,
+        target_app_version=_app_version_str(),
+        target_fingerprint=compute_schema_fingerprint(),
+    )
 
 
 # ── 辅助函数 ──────────────────────────────────────────────
@@ -450,7 +531,19 @@ def _stored_version() -> int:
         return -1
 
 
-def _verify_critical_indexes() -> bool:
+def _stored_schema_meta() -> tuple[int, str, str] | None:
+    """读取迁移判断所需的单行 Schema 元数据。"""
+    try:
+        with Session(_get_engine()) as db:
+            meta = db.get(SchemaMeta, 1)
+            if meta is None:
+                return None
+            return meta.schema_version, meta.schema_fingerprint, meta.app_version
+    except Exception:
+        return None
+
+
+def _verify_critical_indexes(*, include_hotspot: bool = True) -> bool:
     """按精确列集合校验当前 Schema 的全部关键唯一约束。
 
     SQLite 会为表级 ``UniqueConstraint`` 生成不稳定的自动索引名，因此这里只
@@ -488,6 +581,11 @@ def _verify_critical_indexes() -> bool:
             frozenset({"event_id", "variant_type", "render_config_hash"}): "ClipVariant 三维唯一",
         },
     }
+    if include_hotspot:
+        expected_unique["hotspot_events"] = {
+            frozenset({"event_key"}): "HotspotEvent.event_key 唯一",
+            frozenset({"candidate_id"}): "HotspotEvent.candidate_id 唯一",
+        }
 
     all_ok = True
     try:
@@ -512,6 +610,18 @@ def _verify_critical_indexes() -> bool:
                         all_ok = False
                     else:
                         logger.debug("唯一约束存在: {} ({})", description, table)
+            if include_hotspot:
+                rows = conn.exec_driver_sql("PRAGMA index_list('hotspot_events')").fetchall()
+                indexed_columns = {
+                    tuple(
+                        str(column[2]) for column in conn.exec_driver_sql(f"PRAGMA index_info('{row[1]}')").fetchall()
+                    )
+                    for row in rows
+                }
+                required = ("session_id", "status", "peak_ts")
+                if required not in indexed_columns:
+                    logger.error("关键热点索引缺失: hotspot_events{}", required)
+                    all_ok = False
     except Exception as exc:
         logger.error("索引验证异常: {}", exc)
         return False
@@ -519,7 +629,7 @@ def _verify_critical_indexes() -> bool:
     return all_ok
 
 
-def _verify_actual_structure() -> tuple[bool, str]:
+def _verify_actual_structure(*, excluded_tables: Collection[str] = ()) -> tuple[bool, str]:
     """验证实际数据库与当前模型具有完全一致的表和列。
 
     从 SQLModel metadata 获取预期结构, 与 PRAGMA 读取的实际结构比较。
@@ -528,8 +638,11 @@ def _verify_actual_structure() -> tuple[bool, str]:
     :returns: (ok, error_message) — ok=True 表示实际结构精确匹配。
     """
     try:
+        excluded = set(excluded_tables)
         expected = {}  # table -> set of column names
         for table in SQLModel.metadata.sorted_tables:
+            if table.name in excluded:
+                continue
             expected[table.name] = {col.name for col in table.columns}
 
         with _get_engine().connect() as conn:
@@ -563,23 +676,55 @@ def _verify_actual_structure() -> tuple[bool, str]:
         return False, f"结构验证异常: {exc}"
 
 
-def _verify_foreign_keys() -> bool:
-    """校验关键表的外键存在 (V0.1.14.11 增加 UploadTask/UploadAttempt FK)。"""
+def _verify_foreign_keys(*, include_hotspot: bool = True) -> bool:
+    """按列精确校验当前 Schema 的关键外键。"""
     fk_checks = [
-        ("clip_variants", "highlight_events", "ClipVariant.event_id -> HighlightEvent"),
-        ("highlight_topics", "highlight_events", "HighlightTopic.event_id -> HighlightEvent"),
-        ("highlight_topics", "topics", "HighlightTopic.topic_id -> Topic"),
-        ("upload_tasks", "final_clips", "UploadTask.clip_id -> FinalClip"),
-        ("upload_attempts", "upload_tasks", "UploadAttempt.upload_task_id -> UploadTask"),
-        ("upload_attempts", "final_clips", "UploadAttempt.clip_id -> FinalClip"),
+        ("clip_variants", "event_id", "highlight_events", "id", "ClipVariant.event_id -> HighlightEvent"),
+        ("highlight_topics", "event_id", "highlight_events", "id", "HighlightTopic.event_id -> HighlightEvent"),
+        ("highlight_topics", "topic_id", "topics", "id", "HighlightTopic.topic_id -> Topic"),
+        ("upload_tasks", "clip_id", "final_clips", "id", "UploadTask.clip_id -> FinalClip"),
+        (
+            "upload_attempts",
+            "upload_task_id",
+            "upload_tasks",
+            "id",
+            "UploadAttempt.upload_task_id -> UploadTask",
+        ),
+        ("upload_attempts", "clip_id", "final_clips", "id", "UploadAttempt.clip_id -> FinalClip"),
     ]
+    if include_hotspot:
+        fk_checks.extend(
+            [
+                (
+                    "hotspot_events",
+                    "session_id",
+                    "recording_sessions",
+                    "id",
+                    "HotspotEvent.session_id -> RecordingSession",
+                ),
+                (
+                    "hotspot_events",
+                    "candidate_id",
+                    "highlight_candidates",
+                    "id",
+                    "HotspotEvent.candidate_id -> HighlightCandidate",
+                ),
+                (
+                    "hotspot_events",
+                    "merged_into_id",
+                    "hotspot_events",
+                    "id",
+                    "HotspotEvent.merged_into_id -> HotspotEvent",
+                ),
+            ]
+        )
 
     all_ok = True
     try:
         with _get_engine().connect() as conn:
-            for table, ref_table, desc in fk_checks:
+            for table, column, ref_table, ref_column, desc in fk_checks:
                 fk_rows = conn.exec_driver_sql(f"PRAGMA foreign_key_list('{table}')").fetchall()
-                found = any(row[2] == ref_table for row in fk_rows)
+                found = any(row[2] == ref_table and row[3] == column and row[4] == ref_column for row in fk_rows)
                 if not found:
                     logger.warning("外键缺失: {}", desc)
                     all_ok = False
