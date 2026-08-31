@@ -110,7 +110,7 @@ def legacy_installed_manifest(models_dir: Path, *, version: str = "0.1.17.4-alph
         "file_count": sum(int(info["file_count"]) for info in files.values()),
         "total_size_bytes": sum(int(info["total_size"]) for info in files.values()),
         "installed_at": "2026-08-12T00:00:00",
-        "source_commit": "97e39df3a9b24d35eca7ec6cb862291dadfad6e2",
+        "source_commit": "abae819cbf3f7b444cdd5414b23bd5c75095a9e2",
         "files": files,
     }
 
