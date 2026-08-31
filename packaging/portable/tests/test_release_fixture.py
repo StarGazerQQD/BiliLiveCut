@@ -52,6 +52,15 @@ def test_release_workflow_rejects_actual_python_314_without_mutation() -> None:
     assert "unsupported Python 3\\.14" in content
     assert "$beforeHash" in content and "$afterHash" in content
     assert "Frozen Launcher actual Python 3.14 rejection OK" in content
+    workflow = yaml.safe_load(content)
+    python314_step = next(
+        step
+        for step in workflow["jobs"]["smoke-test"]["steps"]
+        if step.get("name") == "Frozen Launcher rejects an actual Python 3.14 venv"
+    )
+    assert python314_step["run"].rstrip().endswith("exit 0"), (
+        "Expected Python 3.14 rejection must be normalized to a successful smoke step"
+    )
 
 
 def test_release_gate_runs_production_provisioning_orchestration() -> None:
