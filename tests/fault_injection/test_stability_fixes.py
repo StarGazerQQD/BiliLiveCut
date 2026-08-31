@@ -136,8 +136,10 @@ class TestAutoSwitches:
             assert t is not None
             assert t.stage == TaskStatus.RECORDED  # 未推进
 
-    def test_auto_analyze_on_advances_to_trans_queue(self, test_db) -> None:
-        """auto_analyze=true → 进入转写队列。"""
+    def test_auto_analyze_on_advances_to_signal_pass(self, test_db) -> None:
+        """auto_analyze=true → 先进入无 ASR 信号检测队列。"""
+        import json
+
         from app.db.entities import LiveRoom, RawSegment, RecordingSession, SegmentTask, TaskStatus
         from app.db.session import get_session
         from app.pipeline.scheduler import advance_recorded
@@ -158,7 +160,8 @@ class TestAutoSwitches:
         with get_session() as db:
             t = db.get(SegmentTask, task.id)
             assert t is not None
-            assert t.stage == TaskStatus.QUEUED_FOR_TRANS
+            assert t.stage == TaskStatus.QUEUED_FOR_ANALYSIS
+            assert json.loads(t.context_json)["event_first"]["analysis_pass"] == "detect"
 
     def test_auto_render_off_stays_approved_waiting_render(self, test_db) -> None:
         """auto_render=false → APPROVED → APPROVED_WAITING_RENDER。"""

@@ -48,6 +48,18 @@ class CandidateStatus:
     CLEANED = "cleaned"  # V0.1.7 P3:已清理
 
 
+class HotspotStatus:
+    """热点事件状态。"""
+
+    PROVISIONAL = "provisional"
+    ENRICHING = "enriching"
+    CONFIRMED = "confirmed"
+    MERGED = "merged"
+    DISMISSED = "dismissed"
+
+    ALL = {PROVISIONAL, ENRICHING, CONFIRMED, MERGED, DISMISSED}
+
+
 class ClipStatus:
     """成品切片状态。"""
 

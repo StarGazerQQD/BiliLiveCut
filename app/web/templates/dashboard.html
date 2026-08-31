@@ -252,10 +252,10 @@
       <div class="card">
         <div class="head">
           <div>
-            <h3>录制实时转写</h3>
+            <h3>全局运行设置</h3>
             <p class="hint" id="recording-pipeline-hint">载入中…</p>
           </div>
-          <button class="primary" onclick="saveGlobalFeatureSettings()">保存全局开关</button>
+          <button class="primary" onclick="saveGlobalFeatureSettings()">保存全局设置</button>
         </div>
         <label class="switch-row" style="align-items:flex-start">
           <input type="checkbox" id="sw-recording-pipeline" />
@@ -272,6 +272,13 @@
           </label>
           <span class="muted" id="asr-task-concurrency-hint">CUDA 可设置多个并行；每个并行使用独立模型实例，显存占用近似倍增。CPU 建议保持 1。</span>
         </div>
+        <div class="row" style="margin-top:10px;align-items:center">
+          <label>Web 管理端口
+            <input id="web-port" type="number" min="1" max="65535" step="1" style="width:100px" />
+          </label>
+          <span class="muted" id="web-port-hint">载入中…</span>
+        </div>
+        <p class="hint">端口设置只在下次启动 Launcher 时生效；当前服务不会热重绑，也不会自动改用随机端口。</p>
       </div>
       <p class="hint" id="feature-dirty-hint" style="display:none">检测到未保存的全局或直播间功能设置，自动刷新不会覆盖当前表单；保存后恢复。</p>
       <div id="feature-switches-list"></div>

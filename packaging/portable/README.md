@@ -1,28 +1,28 @@
 # BiliLiveCut · 即插即用版（`packaging/portable/`）
 
-**版本：V0.1.17.4 Alpha** (`0.1.17.4-alpha`)
+**版本：V0.1.18.0 Alpha** (`0.1.18.0-alpha`)
 
 > **普通用户请先阅读：[Portable 小白使用说明](USER_GUIDE_ZH.md)**。该说明按 Windows 用户从下载、校验、解压、首次启动到第一次录制的顺序编写。
 
 BiliLiveCut 是一个**全自动 AI 直播切片系统**：监听 Bilibili 直播间 → 实时录制 + 转写 → 生成场次高光时间线 → 审核动态切片 → 生成剪辑成品 + 文案。
 
-这个 `packaging/portable/` 目录是**即插即用分发版**。Launcher 内嵌了当前发布基线的完整业务源码 (Commit `97e39df`)，**双击即用，首次启动不需要从 GitHub 下载业务源码**。Full 版自带 Python 3.12、离线依赖和 FFmpeg；Lite 版需要目标电脑已有 Python 3.11/3.12，并自行满足 FFmpeg 等运行组件。
+这个 `packaging/portable/` 目录是**即插即用分发版**。Launcher 内嵌了当前发布基线的完整业务源码 (Commit `9615a8b`)，**双击即用，首次启动不需要从 GitHub 下载业务源码**。Full 版自带 Python 3.12、离线依赖和 FFmpeg；Lite 版需要目标电脑已有 Python 3.11/3.12，并自行满足 FFmpeg 等运行组件。
 
 Payload 从 **EXE 内置资源**释放，版本固定并校验 SHA-256，安装阶段不依赖 GitHub 业务源码。
 
 ---
 
-## V0.1.17.4 Alpha：场次时间线与可校正分析
+## V0.1.18.0 Alpha：Event-first 热点与模型资产复用
 
-- 控制台按录制场次生成 GMT+8 时间线；每个高光节点展示时刻、摘要、1～2 条代表弹幕、置信度、来源信号及审核入口，默认隐藏已拒绝节点。
-- 每个五分钟原始分段最多识别 4 个独立高光，并可跨相邻分段取前后文；成片使用动态入点和出点，不再固定为 1 分 30 秒。
-- Bilibili 弹幕默认按 `7.5` 秒接收延迟对齐画面；同场临近且相似的爆点会自动去簇，减少一个事件重复出片。
-- 实时转写支持人工校正与“错误词=正确词”房间别名；直播间手工词典和学习别名会合并传给 Fun-ASR-Nano。
-- 实时转写和弹幕页面可分别按完整录制场次历史筛选并记住选择；转写编辑期间锁定场次切换，五秒轮询不会覆盖未保存内容。
-- 每次新录制实际开始前重新获取直播间标题和主播名；查询失败时保留最近成功资料且不中断已授权录制。
-- 阈值、词典或模型变化后可按场次重分析；当前场次存在正在运行的任务时会拒绝并提示，避免并发改写。
-- 审核反馈会形成可用的正负样本和阈值建议；日志记录房间、场次、候选、操作者、决策及当时阈值。
-- 下播需连续确认并等待可撤销的收尾延迟；单场最长时限和既有断流重试预算共同避免无人值守录制永久挂起。
+- 弹幕、音频、SenseVoice、ASR 与趋势先形成带稳定 ID 的热点事件；ASR 缺失或质量不足不再阻断自动切片，缺失证据会重归一化而不是记零分。
+- 热点可以跨连续原始分段更新和合并，一个分段也可以保留多个无关事件；真实录制缺口是不可跨越的媒体边界。
+- EventEnricher 只依据带 ID 的证据束生成标题、摘要和语义置信度；ClipScorer 再按完整事件判断是否生成候选，并从事件前后文确定动态边界。
+- GMT+8 场次时间线展示所有活动热点。低于成片阈值的事件仍显示来源评分与代表弹幕，但明确标记为“仅时间线，不生成视频”；有候选的事件才进入既有精审、渲染和发布流程。
+- 首次在线模型准备由 `.venv` Python 子进程执行并一次性预检下载依赖；程序管理的损坏 venv 会自动重建，真实不支持的 Python 会明确拒绝，准备中断可续跑。
+- Engine Pack 与应用版本解耦。四个模型按不可变来源和逐引擎内容指纹独立复用/更新；版本号、ZIP 名称、构建时间和应用提交只作溯源，不决定兼容性。
+- 经过审计的 `0.1.17.4-alpha` 模型清单可原地重哈希并零网络迁移；同样内容也可来自旧 `models/`、Engine Pack、在线下载或另一台机器复制的有效目录。
+- 设置页可保存下次启动 Web 端口；当前服务保持原端口，重启后 Launcher 从根目录 `config/launcher.json` 读取并仍只监听 `127.0.0.1`。
+- 0.1.17.4 数据库可幂等迁移到 0.1.18，已有房间、场次、原片、转写、候选、审核与成片全部保留。
 
 ## V0.1.16.5 Alpha：严重正确性修复
 
@@ -31,7 +31,7 @@ Payload 从 **EXE 内置资源**释放，版本固定并校验 SHA-256，安装�
 - 拒绝候选会原子同步审核事件、仍可取消的任务和全部未发布关联成片；拒绝记录不会继续以 `reviewing` 出现在成品队列，已经发布的外部结果不会被事后改写。
 - 主播下播或持续断流时，连续重试默认最多 20 次或 300 秒，任一先到即自动收尾；成功产出新片段后重试预算归零。
 - 转写整理与高光复核默认各允许最多 `65536` 个输出 token。长转写的局部解码复读会触发 Paraformer、Whisper 回退，LLM 只保守清理残余的 ASR/VAD 边界重复。
-- Alpha 当前版不迁移其他版本的数据库、配置、Runtime、Payload 或 Engine Pack；测试新构建必须使用全新目录。
+- Alpha 当前版不迁移其他版本的配置、Runtime 或 Payload；数据库只支持经过测试的 `0.1.17.4-alpha` → `0.1.18.0-alpha` 幂等迁移。Engine Pack 是独立的持久资产：兼容性由逐引擎内容指纹决定，版本号和文件名不参与判断；经过审计的 `0.1.17.4-alpha` 已安装模型清单会先完整重哈希，再原地升级为内容寻址清单。
 
 ---
 
@@ -72,7 +72,7 @@ Payload 从 **EXE 内置资源**释放，版本固定并校验 SHA-256，安装�
 | **模型** | 不含模型，通过独立 **Engine Pack** 或在线下载安装 | 不含模型，通过独立 **Engine Pack** 或在线下载安装 |
 | **适用场景** | 熟悉 Python/FFmpeg 的高级用户 | 普通用户、小规模分发测试 |
 
-> **模型策略**: Lite 和 Full 均不携带四引擎 ASR 模型。模型统一由独立的 **Portable Engine Pack** 提供。将 Engine Pack ZIP 放在程序同级目录，首次启动时会安全解压并按内部 Manifest 逐文件校验 SHA-256；本地嵌入了正式元数据的构建还会校验外部 CRC32/SHA-256。无本地包时自动在线下载全部四个引擎模型。
+> **模型策略**: Lite 和 Full 均不携带四引擎 ASR 模型。模型统一由独立的 **Portable Engine Pack** 提供。将任一版本的 Engine Pack ZIP 放在程序同级目录，首次启动会安全解压、按内部 Manifest 逐文件校验 SHA-256，再用不可变仓库 revision 的内容指纹判断每个引擎能否复用；本地嵌入了正式元数据的同名构建还会校验外部 CRC32/SHA-256。无兼容本地包时仅在线下载缺失或内容变化的引擎。
 
 ---
 
@@ -177,21 +177,21 @@ Lite 和 Full 均不携带 ASR 模型。四个引擎模型统一由独立的 **E
 
 ### 使用方式
 
-1. 下载 BiliLiveCut-EnginePack-0.1.17.4-alpha.zip
+1. 下载 BiliLiveCut-EnginePack-0.1.18.0-alpha.zip（兼容性按内容身份判断，旧文件名本身不会使模型失效）
 2. 放在 Launcher EXE **同级目录** (或 packages/ 子目录)
 3. 双击启动 Launcher → 自动 **CRC32 校验** → 校验通过即离线安装 (网络请求 0)
-4. 无本地包或校验失败 → 自动**全量在线下载**四个引擎模型
+4. 无可用本地包或包校验失败 → 扫描既有 `models/`，只在线准备缺失或身份变化的引擎
 
 ### CRC32 校验
 
 | 行为 | 说明 |
 |------|------|
 | CRC32 匹配 | 解压安装，**完全离线**，网络请求 → 0 |
-| CRC32 不匹配 | 不使用包内任何模型，**全量在线下载**四个引擎 |
-| 本地包缺失 | **全量在线下载**四个引擎 |
-| 内部 Hash 失败 | 即便 CRC32 正确，也**全量在线下载** |
+| CRC32 不匹配 | 拒绝该 ZIP，保留既有有效模型，只在线准备缺失/变化的引擎 |
+| 本地包缺失 | 扫描既有模型，逐引擎复用或在线准备 |
+| 内部 Hash 失败 | 拒绝不可信 ZIP，不破坏已经提交的有效模型 |
 
-任何时候不允许混合本地包与在线模型。四个引擎必须作为一个整体安装。
+四个引擎独立校验、独立 staging、独立提交。Engine Pack、上个版本遗留目录、在线下载和人工复制的有效模型最终进入同一内容寻址资产体系；单个引擎失败不会回滚其他成功模型。
 
 ### 模型安装目录
 
@@ -220,7 +220,7 @@ python build_engine_pack.py --from-cache  # 从已验证缓存构建
 
 输出:
 
-- dist/engine-pack/BiliLiveCut-EnginePack-0.1.17.4-alpha.zip
+- dist/engine-pack/BiliLiveCut-EnginePack-0.1.18.0-alpha.zip
 - dist/engine-pack/engine-pack-manifest.json
 - dist/engine-pack/CRC32SUMS.txt
 - dist/engine-pack/SHA256SUMS.txt
@@ -253,14 +253,16 @@ resources/engine_pack_info.json (本地 Engine Pack 构建后可供 Lite/Full EX
 | ① | 释放源码 Payload | ~426 KB | 从 EXE 内置 Payload 释放 `app/` `config/` `pyproject.toml` `setup.py` 等，**无需 GitHub** |
 | ② | 创建虚拟环境 | — | `.venv` 隔离 Python 依赖 |
 | ③ | 安装依赖 | ~500 MB | 内嵌 5 个经哈希校验的 bootstrap wheel，其余依赖从用户配置的 Python 包索引下载且只接受二进制 wheel |
-| ④ | 模型准备 | — | 检查 Engine Pack → CRC32 校验安装 → 无本地包则在线下载四引擎模型 |
+| ④ | 模型准备 | — | 迁移/检查内容指纹 → 校验本地 Engine Pack → 逐引擎复用或在线补齐 |
 | ⑤ | 检查 FFmpeg | — | Lite 当前不内置 FFmpeg；需要系统 PATH 可用，或在 `bin/` 提供 `ffmpeg.exe`/`ffprobe.exe` |
 | ⑥ | 生成 `.env` 配置 | — | 含合理默认值 |
 
-> **断点续跑**：任何一步失败或中断，再次双击自动从断点继续。
-> **源码固定**：本次发布源码来源固定为 Commit `97e39df`，不随 GitHub 上游变动。
+> **断点续跑**：模型下载 staging 以引擎内容指纹持久化；每个引擎完成后立即独立原子提交。后续引擎失败或进程中断不会回滚已经成功的引擎，再次双击只续传未完成部分。
+> **源码固定**：本次发布源码来源固定为 Commit `9615a8b`，不随 GitHub 上游变动。
 
-4. 部署完成后打开 **Web 管理控制台**（默认 `http://127.0.0.1:8000`；未自动弹出时请手动访问）
+4. 部署完成后按 Launcher 输出的地址打开 **Web 管理控制台**（首次默认 `http://127.0.0.1:8000`；未自动弹出时请手动访问）
+
+Web 端口可在控制台“配置 → 功能开关 → Web 管理端口”保存为 `1..65535`。保存不会热重绑当前服务；重启 Launcher 后才使用新端口。持久化文件是安装根目录的 `config/launcher.json`，位于内容寻址 Runtime 之外，因此业务源码升级或 Runtime 修复不会覆盖它。损坏 JSON 只会告警并回退到默认端口，Launcher 不会覆盖损坏现场；配置端口被占用时也会直接报错，不会随机选择其他端口。
 
 > **Web 认证**：如需保护管理后台，在 `.env` 中设置 `ADMIN_PASSWORD=你的密码`。所有 API 操作将要求输入 Basic Auth（用户名固定为 `admin`）。
 
@@ -278,7 +280,7 @@ python scripts/build_portable_runtime_wheels.py --output-dir packaging/portable/
 python scripts/generate_portable_runtime_locks.py
 ```
 
-Release CI 会对两套锁执行 `pip download --require-hashes`，并分别进行 Python 3.11 和 3.12 的全新虚拟环境 `--no-index` 离线安装、`pip check` 与核心模块导入测试。它还会让 Lite 在空目录完成首次联网安装、Web 就绪与二次断网启动。Full Launcher 会自动发现安装目录下的 `vendor/wheels` 并强制使用 `--no-index --require-hashes`，无需设置 `PIP_NO_INDEX`；若 Full wheelhouse 缺失或为空则直接失败，不会回退到在线镜像。发布前还会交叉核对 Payload、Lite、Full 的版本、源码基线、构建提交与实际 SHA-256/CRC32。不要通过删除哈希、添加 `--no-deps` 或跳过离线安装来规避锁文件错误。
+Release CI 会对两套锁执行 `pip download --require-hashes`，并分别进行 Python 3.11 和 3.12 的全新虚拟环境 `--no-index` 离线安装、`pip check` 与核心模块导入测试。它还会让冻结的 Lite Launcher 在空目录真实经过 Runtime 安装、`.venv` 依赖安装和在线模型 helper 边界；CI 专用 tiny provider 只替换数 GB 的远端模型字节，不绕开逐引擎 staging、内容指纹和原子提交。Smoke 会写入一个非默认持久化 Web 端口并核对 Launcher 命令、运行时设置 API 与重启状态，再在第 2 个引擎注入 Hub 故障，确认重启复用已完成引擎，并验证无 Engine Pack 的严格离线启动、联网重建损坏的 Lite `.venv` 且不改写持久化模型，以及实际 Python 3.14 被明确拒绝且不被删除。Lite 只内嵌 bootstrap wheels，完整 `.venv` 损坏后仍需联网按锁文件恢复依赖；Full 的完整 wheelhouse 才支持依赖离线重装。tiny provider 同时要求 `CI=true` 与专用开关，普通用户进程无法启用。Full Launcher 会自动发现安装目录下的 `vendor/wheels` 并强制使用 `--no-index --require-hashes`，无需设置 `PIP_NO_INDEX`；若 Full wheelhouse 缺失或为空则直接失败，不会回退到在线镜像。发布前还会交叉核对 Payload、Lite、Full 的版本、源码基线、构建提交与实际 SHA-256/CRC32。不要通过删除哈希、添加 `--no-deps` 或跳过离线安装来规避锁文件错误。
 
 ### 方式三：开发者手动构建当前发行物
 
@@ -291,7 +293,7 @@ python build_exe.py --without-engine-pack
 python build_full_bundle.py
 ```
 
-若还需独立模型包，执行 `python build_engine_pack.py --from-cache`（已有完整缓存）或 `python build_engine_pack.py`（联网下载）。构建器只接受当前版本的 Payload、Runtime 和 Engine Pack 清单。
+若还需独立模型包，执行 `python build_engine_pack.py --from-cache`（已有完整缓存）或 `python build_engine_pack.py`（联网下载）。构建器仍生成当前发行版审计元数据，但 Launcher 的模型兼容性只取决于逐引擎内容指纹。
 
 ---
 
@@ -304,7 +306,7 @@ packaging/portable/                     # ★ 即插即用分发版根目录 (�
 ├── launcher.py                      # launcher.exe 的 Python 源码（可选，便于审查）
 ├── build_exe.py                     # Lite 版构建 (PyInstaller one-file)
 ├── build_full_bundle.py             # Full 完整包构建脚本
-├── build_payload.py                 # Payload 构建器 (97e39df → source_payload.zip)
+├── build_payload.py                 # Payload 构建器 (9615a8b → source_payload.zip)
 ├── portable_launcher.spec           # PyInstaller 规格文件
 ├── pip.ini                          # pip 镜像源配置（阿里云 + 清华备用）
 ├── .env.example                     # 配置模板（launcher.exe 自动生成 .env）
@@ -319,7 +321,7 @@ packaging/portable/                     # ★ 即插即用分发版根目录 (�
 └── README.md                        # 本文件
 ```
 
-> **源码去哪了？** `app/` `config/` `pyproject.toml` 等业务文件**不在分发目录中**，而是内嵌在 `launcher.exe` 内部作为 **source_payload.zip**（从当前发布基线 Commit `97e39df` 提取，SHA-256 可校验）。`launcher.exe` 首次运行时自动将 Payload 解压到 `runtime/releases/` 目录。PnP 目录始终保持最小体积，源码不受工作区未提交内容影响。
+> **源码去哪了？** `app/` `config/` `pyproject.toml` 等业务文件**不在分发目录中**，而是内嵌在 `launcher.exe` 内部作为 **source_payload.zip**（从当前发布基线 Commit `9615a8b` 提取，SHA-256 可校验）。`launcher.exe` 首次运行时自动将 Payload 解压到 `runtime/releases/` 目录。PnP 目录始终保持最小体积，源码不受工作区未提交内容影响。
 
 ### 运行时动态生成（首次启动后）
 
@@ -327,7 +329,7 @@ packaging/portable/                     # ★ 即插即用分发版根目录 (�
 ├── runtime/                  # ★ Runtime 版本管理
 │   ├── current.json          #   当前激活的 Release 信息
 │   └── releases/
-│       └── 0.1.17.4-alpha+<source-sha>+<payload-hash>/  # 内容寻址的固定版本源码
+│       └── 0.1.18.0-alpha+<source-sha>+<payload-hash>/  # 内容寻址的固定版本源码
 │
 ├── .venv/                    # Python 虚拟环境（launcher.exe 自动创建）
 ├── models/                   # 四引擎 ASR 模型 (由 Engine Pack 或在线下载安装)
@@ -552,7 +554,7 @@ BILIUP_UPLOAD_CMD=                          # 自定义上传命令模板
 |------|------|
 | 启动报 `python` 不是命令 | Full 应检查 `portable-python/python.exe`；Lite 需安装 Python 3.11/3.12 并加入 PATH |
 | Payload 释放失败 | 检查 EXE 完整性，SHA-256 不匹配时自动拒绝安装 |
-| 下载模型卡住不动 | 关闭窗口重新双击，模型支持断点续传 |
+| 下载模型卡住不动 | 关闭窗口重新双击；已完成引擎和带完成标记的指纹 staging 会直接复用，未完成引擎由 SDK 续传 |
 | ASR 报 `funasr` / `modelscope` 未安装 | Full 应重新校验并解压完整 ZIP；Lite 需重新完成依赖安装 |
 | ASR 主引擎无法加载 | 检查 `models/` 是否完整；无 Engine Pack 时首次需联网下载模型 |
 | 主播下播后仍显示重连 | 默认会在连续失败 20 次或 300 秒后自动收尾；检查 `RECORDING_RECONNECT_MAX_ATTEMPTS` 与 `RECORDING_RECONNECT_MAX_ELAPSED_S` 是否被设为 `0` |
@@ -570,7 +572,7 @@ BILIUP_UPLOAD_CMD=                          # 自定义上传命令模板
 
 ## 回主工程
 
-此 `packaging/portable/` 目录是**发布给最终用户的即插即用版本**，源码固定于 `v0.1.17.4-Alpha` 的发布基线 Commit。
+此 `packaging/portable/` 目录是**发布给最终用户的即插即用版本**，源码固定于 `v0.1.18.0-Alpha` 的发布基线 Commit。
 
 - **主仓库**: `D:\Vibe\BiliLiveCut\README.md`
 - **完整变更日志**: `D:\Vibe\BiliLiveCut\CHANGELOG.md`

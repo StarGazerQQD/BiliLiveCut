@@ -399,6 +399,36 @@ def validate_manifest(manifest: EnginePackManifest) -> list[str]:
     return errors
 
 
+def validate_installable_manifest(manifest: EnginePackManifest) -> list[str]:
+    """Validate archive structure without coupling content to an app release.
+
+    An Engine Pack produced by an older BiliLiveCut release remains usable when
+    every engine has the same immutable content identity.  Version, artifact
+    filename, build time and source commit are therefore deliberately not part
+    of this install-time validation; :mod:`blc_portable.engine_pack.installer`
+    compares per-engine fingerprints against the current model catalog.
+    """
+    errors: list[str] = []
+    if manifest.format_version != MANIFEST_FORMAT_VERSION:
+        errors.append(f"format_version 不支持: {manifest.format_version}")
+    if len(manifest.source_commit) != 40 or manifest.source_commit_short != manifest.source_commit[:7]:
+        errors.append("source_commit/source_commit_short 无效")
+    if len(manifest.builder_commit) != 40:
+        errors.append("builder_commit 无效")
+    if manifest.total_files != len(manifest.files):
+        errors.append(f"文件数不一致: declared={manifest.total_files} actual={len(manifest.files)}")
+    engine_ids = manifest.get_engine_ids()
+    if len(engine_ids) != len(set(engine_ids)):
+        errors.append("引擎 ID 重复")
+    for engine in manifest.engines:
+        if not engine.engine_id or not engine.model_id or not engine.target_path:
+            errors.append(f"引擎定义不完整: {engine.engine_id or '?'}")
+        target = Path(engine.target_path)
+        if target.is_absolute() or ".." in target.parts:
+            errors.append(f"引擎 {engine.engine_id} target_path 无效")
+    return errors
+
+
 def load_manifest(path: Path) -> EnginePackManifest:
     """加载且严格校验当前内容清单。"""
     data = json.loads(path.read_text(encoding="utf-8"))
@@ -406,6 +436,18 @@ def load_manifest(path: Path) -> EnginePackManifest:
         raise ValueError("Manifest 根节点必须是对象")
     manifest = EnginePackManifest.from_dict(data)
     errors = validate_manifest(manifest)
+    if errors:
+        raise ValueError("Manifest 校验失败:\n" + "\n".join(f"  - {error}" for error in errors))
+    return manifest
+
+
+def load_manifest_for_install(path: Path) -> EnginePackManifest:
+    """Load a structurally valid pack for content-identity installation."""
+    data = json.loads(path.read_text(encoding="utf-8"))
+    if not isinstance(data, dict):
+        raise ValueError("Manifest 根节点必须是对象")
+    manifest = EnginePackManifest.from_dict(data)
+    errors = validate_installable_manifest(manifest)
     if errors:
         raise ValueError("Manifest 校验失败:\n" + "\n".join(f"  - {error}" for error in errors))
     return manifest

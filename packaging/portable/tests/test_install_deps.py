@@ -248,6 +248,56 @@ def test_import_smoke_reports_original_stderr(tmp_path: Path, monkeypatch: pytes
     assert isinstance(exc_info.value.__cause__, _sp.CalledProcessError)
 
 
+def test_dependency_preflight_checks_model_sdks_once(monkeypatch: pytest.MonkeyPatch) -> None:
+    """Python ABI and both model SDKs are checked by one managed-interpreter process."""
+    from blc_portable.launcher import main  # noqa: E402
+
+    calls: list[list[str]] = []
+
+    def _fake_run(args: list[str], **_kwargs: object) -> _sp.CompletedProcess[str]:
+        calls.append(args)
+        return _sp.CompletedProcess(args, 0, stdout="Python 3.12; 8 modules\n", stderr="")
+
+    monkeypatch.setattr(main.subprocess, "run", _fake_run)
+
+    main._run_dependency_preflight(Path(sys.executable))
+
+    assert len(calls) == 1
+    script = calls[0][-1]
+    assert "import huggingface_hub" in script
+    assert "import modelscope" in script
+    assert "unsupported Python" in script
+
+
+def test_dependency_preflight_reports_interpreter_streams_and_root_error(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """A failed preflight produces one actionable top-level diagnostic."""
+    from blc_portable.launcher import main  # noqa: E402
+
+    interpreter = Path("C:/portable/.venv/Scripts/python.exe")
+
+    def _fake_run(args: list[str], **_kwargs: object) -> _sp.CompletedProcess[str]:
+        return _sp.CompletedProcess(
+            args,
+            7,
+            stdout="probe-started",
+            stderr="ModuleNotFoundError: No module named 'modelscope'",
+        )
+
+    monkeypatch.setattr(main.subprocess, "run", _fake_run)
+
+    with pytest.raises(RuntimeError) as exc_info:
+        main._run_dependency_preflight(interpreter)
+
+    message = str(exc_info.value)
+    assert f"Interpreter: {interpreter}" in message
+    assert "Return code: 7" in message
+    assert "stdout:\nprobe-started" in message
+    assert "stderr:\nModuleNotFoundError" in message
+    assert "Root exception: child preflight exited with code 7" in message
+
+
 def test_install_dependencies_rejects_full_bundle_without_wheelhouse(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:

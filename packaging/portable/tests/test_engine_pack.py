@@ -88,6 +88,22 @@ def fixture_engine_pack() -> Generator[Path, None, None]:
         yield zip_path
 
 
+def _rewrite_pack_manifest(source: Path, destination: Path, mutate: Any) -> Path:
+    """Copy a fixture pack while mutating only release/identity metadata."""
+    extracted = destination.parent / f"{destination.stem}-tree"
+    with zipfile.ZipFile(source) as archive:
+        archive.extractall(extracted)
+    manifest_path = extracted / "engine-pack-manifest.json"
+    manifest = json.loads(manifest_path.read_text(encoding="utf-8"))
+    mutate(manifest)
+    manifest_path.write_text(json.dumps(manifest, ensure_ascii=False, indent=2), encoding="utf-8")
+    with zipfile.ZipFile(destination, "w", zipfile.ZIP_DEFLATED) as archive:
+        for path in sorted(extracted.rglob("*")):
+            if path.is_file():
+                archive.write(path, path.relative_to(extracted).as_posix())
+    return destination
+
+
 class TestEnginePackConsole:
     """Engine Pack CLI 控制台兼容性回归测试。"""
 
@@ -152,10 +168,10 @@ class TestEnginePackManifest:
 
     def test_create_manifest(self) -> None:
         """create_manifest 生成有效的 Manifest。"""
-        from blc_portable.engine_pack.manifest import create_manifest
+        from blc_portable.engine_pack.manifest import SOURCE_COMMIT_FULL, create_manifest
 
         m = create_manifest(
-            source_commit="97e39df3a9b24d35eca7ec6cb862291dadfad6e2",
+            source_commit=SOURCE_COMMIT_FULL,
             builder_commit="b" * 40,
             file_list={},
             fixture=True,
@@ -169,10 +185,10 @@ class TestEnginePackManifest:
 
     def test_validate_manifest_valid(self) -> None:
         """完整 Manifest 校验通过。"""
-        from blc_portable.engine_pack.manifest import create_manifest, validate_manifest
+        from blc_portable.engine_pack.manifest import SOURCE_COMMIT_FULL, create_manifest, validate_manifest
 
         m = create_manifest(
-            source_commit="97e39df3a9b24d35eca7ec6cb862291dadfad6e2",
+            source_commit=SOURCE_COMMIT_FULL,
             builder_commit="b" * 40,
             file_list={},
             fixture=True,
@@ -182,14 +198,19 @@ class TestEnginePackManifest:
 
     def test_validate_manifest_missing_engine(self) -> None:
         """缺少引擎时校验报错。"""
-        from blc_portable.engine_pack.manifest import EnginePackManifest, validate_manifest
+        from blc_portable.engine_pack.manifest import (
+            SOURCE_COMMIT_FULL,
+            SOURCE_COMMIT_SHORT,
+            EnginePackManifest,
+            validate_manifest,
+        )
 
         m = EnginePackManifest(
             format_version=MANIFEST_FORMAT_VERSION,
             engine_pack_version=_EP_RELEASE_VERSION,
             portable_release_version=_EP_RELEASE_VERSION,
-            source_commit="97e39df3a9b24d35eca7ec6cb862291dadfad6e2",
-            source_commit_short="97e39df",
+            source_commit=SOURCE_COMMIT_FULL,
+            source_commit_short=SOURCE_COMMIT_SHORT,
             builder_commit="b" * 40,
             fixture=True,
             engines=[],
@@ -201,10 +222,10 @@ class TestEnginePackManifest:
 
     def test_legacy_archive_fields_are_rejected(self) -> None:
         """旧版内部归档哈希字段不得再被解析。"""
-        from blc_portable.engine_pack.manifest import EnginePackManifest, create_manifest
+        from blc_portable.engine_pack.manifest import SOURCE_COMMIT_FULL, EnginePackManifest, create_manifest
 
         raw = create_manifest(
-            source_commit="97e39df3a9b24d35eca7ec6cb862291dadfad6e2",
+            source_commit=SOURCE_COMMIT_FULL,
             builder_commit="b" * 40,
             file_list={},
             fixture=True,
@@ -256,23 +277,22 @@ class TestCRC32:
 class TestEnginePackInstall:
     """本地 Engine Pack 安装测试。"""
 
-    def test_find_local_engine_pack(self, tmp_app_root: Path, fixture_engine_pack: Path) -> None:
+    def test_find_local_engine_packs(self, tmp_app_root: Path, fixture_engine_pack: Path) -> None:
         """在 app_root 下能找到 Engine Pack。"""
-        from blc_portable.engine_pack.installer import find_local_engine_pack
+        from blc_portable.engine_pack.installer import find_local_engine_packs
 
         dest = tmp_app_root / fixture_engine_pack.name
         shutil.copy2(str(fixture_engine_pack), str(dest))
 
-        result = find_local_engine_pack(tmp_app_root, fixture_engine_pack.name)
-        assert result is not None
-        assert result.name == fixture_engine_pack.name
+        result = find_local_engine_packs(tmp_app_root, fixture_engine_pack.name)
+        assert [item.name for item in result] == [fixture_engine_pack.name]
 
     def test_find_local_not_found(self, tmp_app_root: Path) -> None:
         """找不到时应返回 None。"""
-        from blc_portable.engine_pack.installer import find_local_engine_pack
+        from blc_portable.engine_pack.installer import find_local_engine_packs
 
-        result = find_local_engine_pack(tmp_app_root, "nonexistent.zip")
-        assert result is None
+        result = find_local_engine_packs(tmp_app_root, "nonexistent.zip")
+        assert result == []
 
     def test_crc32_match_install(self, tmp_app_root: Path, fixture_engine_pack: Path) -> None:
         """CRC32 匹配时应成功安装，网络请求为 0。"""
@@ -289,7 +309,6 @@ class TestEnginePackInstall:
             dest,
             expected_crc32=crc32_val,
             expected_sha256=sha256_val,
-            expected_version=_EP_RELEASE_VERSION,
         )
 
         assert result["source"] == "engine_pack"
@@ -305,7 +324,9 @@ class TestEnginePackInstall:
         installed = models_dir / "engine-pack-installed.json"
         assert installed.exists()
         info = json.loads(installed.read_text(encoding="utf-8"))
-        assert info["engine_pack_version"] == _EP_RELEASE_VERSION
+        assert info["schema_version"] == 6
+        assert len(info["model_set_fingerprint"]) == 64
+        assert "engine_pack_version" not in info
 
     def test_user_supplied_pack_without_embedded_digests(self, tmp_app_root: Path, fixture_engine_pack: Path) -> None:
         """No-pack launchers accept local packs after complete internal-manifest verification."""
@@ -319,11 +340,72 @@ class TestEnginePackInstall:
             dest,
             expected_crc32="",
             expected_sha256="",
-            expected_version=_EP_RELEASE_VERSION,
         )
 
         assert result["source"] == "engine_pack"
         assert result["network_requests"] == 0
+
+    def test_older_release_pack_reuses_identical_content(
+        self,
+        tmp_app_root: Path,
+        fixture_engine_pack: Path,
+        tmp_path: Path,
+    ) -> None:
+        """0.1.17 archive metadata is irrelevant when all engine fingerprints match."""
+        from blc_portable.engine_pack.installer import install_from_engine_pack
+
+        old_pack = _rewrite_pack_manifest(
+            fixture_engine_pack,
+            tmp_path / "BiliLiveCut-EnginePack-0.1.17.4-alpha.zip",
+            lambda manifest: manifest.update(
+                {
+                    "engine_pack_version": "0.1.17.4-alpha",
+                    "portable_release_version": "0.1.17.4-alpha",
+                }
+            ),
+        )
+
+        result = install_from_engine_pack(tmp_app_root, old_pack, "", "")
+
+        assert result["network_requests"] == 0
+        assert set(result["installed_engines"]) == {"whisper", "paraformer", "sensevoice", "funasr_nano"}
+
+    def test_second_install_only_replaces_stale_engine(
+        self,
+        tmp_app_root: Path,
+        fixture_engine_pack: Path,
+    ) -> None:
+        """Valid engines remain untouched when one fingerprint is stale."""
+        from blc_portable.engine_pack.installer import install_from_engine_pack
+
+        install_from_engine_pack(tmp_app_root, fixture_engine_pack, "", "")
+        installed_path = tmp_app_root / "models" / "engine-pack-installed.json"
+        installed = json.loads(installed_path.read_text(encoding="utf-8"))
+        installed["engines"]["whisper"]["content_fingerprint"] = "0" * 64
+        installed_path.write_text(json.dumps(installed), encoding="utf-8")
+
+        result = install_from_engine_pack(tmp_app_root, fixture_engine_pack, "", "")
+
+        assert result["installed_engines"] == ["whisper"]
+        assert set(result["reused_engines"]) == {"paraformer", "sensevoice", "funasr_nano"}
+
+    def test_pack_with_changed_model_revision_is_rejected(
+        self,
+        tmp_app_root: Path,
+        fixture_engine_pack: Path,
+        tmp_path: Path,
+    ) -> None:
+        """Release-independent reuse still rejects a changed upstream snapshot."""
+        from blc_portable.engine_pack.installer import install_from_engine_pack
+
+        incompatible = _rewrite_pack_manifest(
+            fixture_engine_pack,
+            tmp_path / "incompatible.zip",
+            lambda manifest: manifest["engines"][0].update({"revision": "f" * 40}),
+        )
+
+        with pytest.raises(RuntimeError, match="content fingerprint mismatch: whisper"):
+            install_from_engine_pack(tmp_app_root, incompatible, "", "")
 
     def test_crc32_mismatch_raises(self, tmp_app_root: Path, fixture_engine_pack: Path) -> None:
         """CRC32 不匹配时应抛出 RuntimeError。"""
@@ -339,7 +421,6 @@ class TestEnginePackInstall:
                 dest,
                 expected_crc32="DEADBEEF",
                 expected_sha256=sha256_val,
-                expected_version=_EP_RELEASE_VERSION,
             )
 
     def test_bad_crc32_does_not_install_models(self, tmp_app_root: Path, fixture_engine_pack: Path) -> None:
@@ -356,7 +437,6 @@ class TestEnginePackInstall:
                 dest,
                 expected_crc32="DEADBEEF",
                 expected_sha256=sha256_val,
-                expected_version=_EP_RELEASE_VERSION,
             )
         except RuntimeError:
             pass
@@ -375,11 +455,11 @@ class TestCheckInstalledModels:
         """未安装时返回 False。"""
         from blc_portable.engine_pack.installer import check_installed_models
 
-        ok, _ = check_installed_models(tmp_app_root / "models", _EP_RELEASE_VERSION)
+        ok, _ = check_installed_models(tmp_app_root / "models")
         assert not ok
 
-    def test_version_mismatch(self, tmp_app_root: Path) -> None:
-        """版本不匹配时返回 False。"""
+    def test_release_version_does_not_invalidate_content(self, tmp_app_root: Path) -> None:
+        """应用版本变化不应让相同模型内容失效。"""
         from blc_portable.engine_pack.installer import check_installed_models
 
         models_dir = tmp_app_root / "models"
@@ -387,11 +467,11 @@ class TestCheckInstalledModels:
             (models_dir / eng).mkdir(exist_ok=True)
             (models_dir / eng / "model.bin").write_bytes(b"test")
 
-        manifest = installed_manifest(models_dir, version="0.1.13.0-alpha")
+        manifest = installed_manifest(models_dir)
         (models_dir / "engine-pack-installed.json").write_text(json.dumps(manifest), encoding="utf-8")
 
-        ok1, _ = check_installed_models(models_dir, _EP_RELEASE_VERSION)
-        assert not ok1
+        ok1, _ = check_installed_models(models_dir)
+        assert ok1
 
     def test_installed_and_valid(self, tmp_app_root: Path) -> None:
         """正确安装时返回 True。"""
@@ -402,10 +482,10 @@ class TestCheckInstalledModels:
             (models_dir / eng).mkdir(exist_ok=True)
             (models_dir / eng / "model.bin").write_bytes(b"test")
 
-        manifest = installed_manifest(models_dir, version=_EP_RELEASE_VERSION)
+        manifest = installed_manifest(models_dir)
         (models_dir / "engine-pack-installed.json").write_text(json.dumps(manifest), encoding="utf-8")
 
-        ok2, _ = check_installed_models(models_dir, _EP_RELEASE_VERSION)
+        ok2, _ = check_installed_models(models_dir)
         assert ok2
 
 

@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import json
 from collections import defaultdict
 from datetime import UTC, datetime, timedelta, timezone
 from typing import Any
@@ -14,6 +15,8 @@ from app.db.entities import (
     CandidateStatus,
     HighlightCandidate,
     HighlightEvent,
+    HotspotEvent,
+    HotspotStatus,
     RawSegment,
     RecordingSession,
     ReviewStatus,
@@ -28,6 +31,11 @@ from app.web.services.source_identity import source_identities_for_sessions, unk
 _GMT8 = timezone(timedelta(hours=8), name="GMT+8")
 _PENDING_REANALYSIS_PREFIX = "session_reanalysis:"
 _REJECTED_REVIEWS = {ReviewStatus.REJECTED, ReviewStatus.NOT_EXCITING}
+_VISIBLE_HOTSPOT_STATUSES = {
+    HotspotStatus.PROVISIONAL,
+    HotspotStatus.ENRICHING,
+    HotspotStatus.CONFIRMED,
+}
 _PROCESSING_STAGES = {
     TaskStatus.RECORDED,
     TaskStatus.QUEUED_FOR_TRANS,
@@ -52,6 +60,12 @@ def list_session_timelines(*, limit: int = 30, room_db_id: int | None = None) ->
         if not session_ids:
             return []
         candidates = db.exec(select(HighlightCandidate).where(HighlightCandidate.session_id.in_(session_ids))).all()
+        hotspots = db.exec(
+            select(HotspotEvent).where(
+                HotspotEvent.session_id.in_(session_ids),
+                HotspotEvent.status.in_(_VISIBLE_HOTSPOT_STATUSES),
+            )
+        ).all()
         candidate_ids = [candidate.id for candidate in candidates if candidate.id is not None]
         events = (
             db.exec(select(HighlightEvent).where(HighlightEvent.candidate_id.in_(candidate_ids))).all()
@@ -66,10 +80,13 @@ def list_session_timelines(*, limit: int = 30, room_db_id: int | None = None) ->
 
     events_by_candidate = _event_map(candidate_ids, events)
     candidates_by_session: dict[int, list[HighlightCandidate]] = defaultdict(list)
+    hotspots_by_session: dict[int, list[HotspotEvent]] = defaultdict(list)
     tasks_by_session: dict[int, list[SegmentTask]] = defaultdict(list)
     segment_counts: dict[int, int] = defaultdict(int)
     for candidate in candidates:
         candidates_by_session[candidate.session_id].append(candidate)
+    for hotspot in hotspots:
+        hotspots_by_session[hotspot.session_id].append(hotspot)
     for task in tasks:
         tasks_by_session[task.session_id].append(task)
     for segment in segments:
@@ -85,6 +102,10 @@ def list_session_timelines(*, limit: int = 30, room_db_id: int | None = None) ->
         if session.id is None:
             continue
         session_candidates = candidates_by_session.get(session.id, [])
+        session_hotspots = hotspots_by_session.get(session.id, [])
+        linked_candidate_ids = {
+            hotspot.candidate_id for hotspot in session_hotspots if hotspot.candidate_id is not None
+        }
         visible_count = 0
         rejected_count = 0
         pending_review_count = 0
@@ -107,6 +128,10 @@ def list_session_timelines(*, limit: int = 30, room_db_id: int | None = None) ->
                 "duration_s": _duration_s(session.started_at, session.ended_at),
                 "segment_count": segment_counts.get(session.id, 0),
                 "highlight_count": visible_count,
+                "hotspot_count": len(session_hotspots),
+                "hotspot_only_count": sum(hotspot.candidate_id is None for hotspot in session_hotspots),
+                "timeline_count": len(session_hotspots)
+                + sum(candidate.id not in linked_candidate_ids for candidate in session_candidates),
                 "pending_review_count": pending_review_count,
                 "rejected_count": rejected_count,
                 "processing_state": _processing_state(
@@ -137,6 +162,14 @@ def get_session_timeline(
             .where(HighlightCandidate.session_id == session_id)
             .order_by(HighlightCandidate.peak_ts.asc())
         ).all()
+        hotspots = db.exec(
+            select(HotspotEvent)
+            .where(
+                HotspotEvent.session_id == session_id,
+                HotspotEvent.status.in_(_VISIBLE_HOTSPOT_STATUSES),
+            )
+            .order_by(HotspotEvent.peak_ts.asc(), HotspotEvent.id.asc())
+        ).all()
         candidate_ids = [candidate.id for candidate in candidates if candidate.id is not None]
         events = (
             db.exec(select(HighlightEvent).where(HighlightEvent.candidate_id.in_(candidate_ids))).all()
@@ -149,13 +182,30 @@ def get_session_timeline(
         pending_reanalysis = db.get(AppSetting, f"{_PENDING_REANALYSIS_PREFIX}{session_id}") is not None
         source = source_identities_for_sessions(db, [session_id]).get(session_id, unknown_source_identity())
 
-    points = []
+    candidate_by_id = {candidate.id: candidate for candidate in candidates if candidate.id is not None}
+    linked_candidate_ids = {hotspot.candidate_id for hotspot in hotspots if hotspot.candidate_id is not None}
+    all_points: list[dict[str, Any]] = []
+    for hotspot in hotspots:
+        candidate = candidate_by_id.get(hotspot.candidate_id)
+        event = event_by_candidate.get(hotspot.candidate_id) if hotspot.candidate_id is not None else None
+        rejected = candidate is not None and event is not None and _candidate_is_rejected(candidate, event)
+        all_points.append(
+            _hotspot_timeline_point(
+                session,
+                hotspot,
+                candidate,
+                event,
+                rejected=rejected,
+            )
+        )
     for candidate in candidates:
+        if candidate.id in linked_candidate_ids:
+            continue
         event = event_by_candidate[candidate.id]
         rejected = _candidate_is_rejected(candidate, event)
-        if rejected and not include_rejected:
-            continue
-        points.append(_timeline_point(session, candidate, event, rejected=rejected))
+        all_points.append(_timeline_point(session, candidate, event, rejected=rejected))
+    all_points.sort(key=lambda point: (float(point["offset_s"]), int(point.get("hotspot_event_id") or 0)))
+    points = [point for point in all_points if include_rejected or not point["rejected"]]
 
     processing_state = _processing_state(session, tasks, pending_reanalysis=pending_reanalysis)
     from app.analysis.session_summary import (
@@ -183,10 +233,11 @@ def get_session_timeline(
         "points": points,
         "counts": {
             "visible": sum(1 for point in points if not point["rejected"]),
-            "rejected": sum(
-                1 for candidate in candidates if _candidate_is_rejected(candidate, event_by_candidate[candidate.id])
-            ),
-            "total": len(candidates),
+            "rejected": sum(1 for point in all_points if point["rejected"]),
+            "total": len(all_points),
+            "hotspots": len(hotspots),
+            "hotspot_only": sum(point["candidate_id"] is None for point in all_points),
+            "candidates": sum(point["candidate_id"] is not None for point in all_points),
         },
     }
     if include_summary:
@@ -196,6 +247,76 @@ def get_session_timeline(
             ended=session.ended_at is not None,
         )
     return result
+
+
+def _hotspot_timeline_point(
+    session: RecordingSession,
+    hotspot: HotspotEvent,
+    candidate: HighlightCandidate | None,
+    event: HighlightEvent | None,
+    *,
+    rejected: bool,
+) -> dict[str, Any]:
+    """把一等热点事件转换为时间线节点，并可选附加既有候选审核入口。"""
+    event_features = decode_features(hotspot.features_json)
+    candidate_features = decode_features(candidate.features_json) if candidate is not None else {}
+    candidate_timeline = (
+        candidate_features.get("timeline") if isinstance(candidate_features.get("timeline"), dict) else {}
+    )
+    clip_metadata = (
+        event_features.get("event_clip_score") if isinstance(event_features.get("event_clip_score"), dict) else {}
+    )
+    lifecycle = event_features.get("event_lifecycle") if isinstance(event_features.get("event_lifecycle"), dict) else {}
+    candidate_start = event.adjusted_start_ts if event is not None else None
+    candidate_end = event.adjusted_end_ts if event is not None else None
+    if candidate is not None:
+        candidate_start = candidate_start or candidate.start_ts
+        candidate_end = candidate_end or candidate.end_ts
+    return {
+        "point_type": "hotspot",
+        "hotspot_event_id": hotspot.id,
+        "candidate_id": candidate.id if candidate is not None else None,
+        "event_id": event.id if event is not None else None,
+        "event_status": hotspot.status,
+        "clock_gmt8": _clock_gmt8(hotspot.peak_ts),
+        "peak_at_gmt8": _iso_gmt8(hotspot.peak_ts),
+        "start_at_gmt8": _iso_gmt8(hotspot.start_ts),
+        "end_at_gmt8": _iso_gmt8(hotspot.end_ts),
+        "offset_s": round((_as_utc(hotspot.peak_ts) - _as_utc(session.started_at)).total_seconds(), 3),
+        "duration_s": round(max(0.0, (_as_utc(hotspot.end_ts) - _as_utc(hotspot.start_ts)).total_seconds()), 3),
+        "title": hotspot.title or hotspot.summary or "待补全热点事件",
+        "summary": hotspot.summary or hotspot.title or "事件语义证据不足，请结合代表弹幕和来源信号确认。",
+        "representative_danmaku": _representative_danmaku_json(hotspot.representative_danmaku_json),
+        "confidence": round(max(0.0, min(1.0, float(hotspot.semantic_confidence))), 3),
+        "heat_score": round(max(0.0, min(1.0, float(hotspot.heat_score))), 4),
+        "clip_score": round(max(0.0, min(1.0, float(hotspot.clip_score))), 4),
+        "semantic_confidence": round(max(0.0, min(1.0, float(hotspot.semantic_confidence))), 4),
+        "evidence_coverage": round(max(0.0, min(1.0, float(hotspot.evidence_coverage))), 4),
+        "source_signals": _hotspot_source_signals(event_features, candidate_features),
+        "review_status": event.review_status if event is not None else None,
+        "candidate_status": candidate.status if candidate is not None else None,
+        "rejected": rejected,
+        "review_url": f"/review/{candidate.id}" if candidate is not None else None,
+        "preview_url": f"/review/api/{candidate.id}/preview" if candidate is not None else None,
+        "provenance": {
+            "event_key": hotspot.event_key,
+            "detector_version": event_features.get("detector_version"),
+            "event_version": lifecycle.get("version"),
+            "clip_scorer_version": candidate_features.get("clip_scorer_version"),
+            "rule_score": round(float(candidate.rule_score), 4) if candidate is not None else 0.0,
+            "llm_score": round(float(candidate.llm_score), 4) if candidate is not None else 0.0,
+            "highlight_score": round(float(candidate.highlight_score), 4) if candidate is not None else 0.0,
+            "heat_score": round(float(hotspot.heat_score), 4),
+            "clip_score": round(float(hotspot.clip_score), 4),
+            "semantic_confidence": round(float(hotspot.semantic_confidence), 4),
+            "evidence_coverage": round(float(hotspot.evidence_coverage), 4),
+            "scoring_components": clip_metadata.get("components", {}),
+            "dynamic_bounds": bool(candidate_timeline.get("dynamic_bounds", False)),
+            "cross_segment": bool(candidate_timeline.get("cross_segment", False)),
+            "candidate_start_at_gmt8": _iso_gmt8(candidate_start),
+            "candidate_end_at_gmt8": _iso_gmt8(candidate_end),
+        },
+    }
 
 
 def _timeline_point(
@@ -226,6 +347,8 @@ def _timeline_point(
     plugin = payload.get("highlight_plugin") if isinstance(payload.get("highlight_plugin"), dict) else None
     analysis_window = payload.get("analysis_window") if isinstance(payload.get("analysis_window"), dict) else None
     return {
+        "point_type": "legacy_candidate",
+        "hotspot_event_id": None,
         "candidate_id": candidate.id,
         "event_id": event.id,
         "clock_gmt8": _clock_gmt8(candidate.peak_ts),
@@ -234,6 +357,7 @@ def _timeline_point(
         "end_at_gmt8": _iso_gmt8(end_ts),
         "offset_s": round((_as_utc(candidate.peak_ts) - _as_utc(session.started_at)).total_seconds(), 3),
         "duration_s": round(max(0.0, (_as_utc(end_ts) - _as_utc(start_ts)).total_seconds()), 3),
+        "title": summary or "待生成高光梗概",
         "summary": summary or "待生成高光梗概",
         "representative_danmaku": danmaku,
         "confidence": round(max(0.0, min(1.0, confidence_value)), 3),
@@ -307,6 +431,48 @@ def _representative_danmaku_payload(value: object) -> list[dict[str, object]]:
         count = item.get("count", 1)
         result.append({"text": text, "count": max(1, int(count)) if isinstance(count, (int, float)) else 1})
     return result
+
+
+def _representative_danmaku_json(raw: str | None) -> list[dict[str, object]]:
+    """解析热点事件持久化的代表弹幕。"""
+    try:
+        value = json.loads(raw) if raw else []
+    except (json.JSONDecodeError, TypeError):
+        return []
+    return _representative_danmaku_payload(value)
+
+
+def _hotspot_source_signals(
+    event_features: dict[str, Any],
+    candidate_features: dict[str, Any],
+) -> list[str]:
+    """从事件 tick 与候选评分特征中提取稳定、可读的证据信号标签。"""
+    values: dict[str, list[float]] = defaultdict(list)
+    candidate_scores = candidate_features.get("signal_scores")
+    if isinstance(candidate_scores, dict):
+        for name, value in candidate_scores.items():
+            if isinstance(value, (int, float)):
+                values[str(name)].append(float(value))
+    ticks = event_features.get("ticks")
+    if isinstance(ticks, list):
+        for tick in ticks:
+            if not isinstance(tick, dict):
+                continue
+            scores = tick.get("modality_scores")
+            if not isinstance(scores, dict):
+                continue
+            for name, value in scores.items():
+                if isinstance(value, (int, float)):
+                    values[str(name)].append(float(value))
+    labels = {
+        "danmaku": "弹幕高峰",
+        "audio": "音频峰值",
+        "sensevoice": "SenseVoice",
+        "asr": "ASR 语义",
+        "trend": "趋势信号",
+    }
+    result = [labels[name] for name in labels if values.get(name) and max(values[name]) >= 0.20]
+    return result or ["热点检测"]
 
 
 def _as_utc(value: datetime) -> datetime:

@@ -17,7 +17,9 @@ class TestStateMachine:
         [
             # 正向链路。
             (TaskStatus.RECORDED, TaskStatus.QUEUED_FOR_TRANS, True),
+            (TaskStatus.RECORDED, TaskStatus.QUEUED_FOR_ANALYSIS, True),
             (TaskStatus.QUEUED_FOR_TRANS, TaskStatus.TRANSCRIBING, True),
+            (TaskStatus.TRANSCRIBING, TaskStatus.QUEUED_FOR_TRANS, True),
             (TaskStatus.TRANSCRIBING, TaskStatus.TRANSCRIBED, True),
             (TaskStatus.TRANSCRIBING, TaskStatus.FAILED, True),
             (TaskStatus.TRANSCRIBING, TaskStatus.TRANSIENT_FAILED, True),
@@ -25,6 +27,7 @@ class TestStateMachine:
             (TaskStatus.QUEUED_FOR_ANALYSIS, TaskStatus.ANALYZING, True),
             (TaskStatus.ANALYZING, TaskStatus.CANDIDATE_CREATED, True),
             (TaskStatus.ANALYZING, TaskStatus.COMPLETED, True),
+            (TaskStatus.ANALYZING, TaskStatus.QUEUED_FOR_TRANS, True),
             (TaskStatus.ANALYZING, TaskStatus.FAILED, True),
             (TaskStatus.CANDIDATE_CREATED, TaskStatus.AWAITING_REVIEW, True),
             (TaskStatus.CANDIDATE_CREATED, TaskStatus.REVIEWED_WAITING_ACTION, True),
@@ -48,6 +51,7 @@ class TestStateMachine:
             (TaskStatus.AWAITING_REVIEW, TaskStatus.CANCELLED, True),
             (TaskStatus.TRANSIENT_FAILED, TaskStatus.QUEUED_FOR_PUBLISH, True),
             (TaskStatus.TRANSIENT_FAILED, TaskStatus.QUEUED_FOR_TRANS, True),
+            (TaskStatus.TRANSIENT_FAILED, TaskStatus.TRANSCRIBED, True),
             (TaskStatus.TRANSIENT_FAILED, TaskStatus.FAILED, True),
             # 非法转换。
             (TaskStatus.RECORDED, TaskStatus.TRANSCRIBING, False),

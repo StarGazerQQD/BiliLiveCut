@@ -139,6 +139,8 @@ class Settings(BaseSettings):
     transcript_llm_refine_max_tokens: int = Field(default=65536, ge=128, le=65536)
     # 高光复核需要同时容纳五分钟转写、模型推理和结构化判断结果。
     highlight_llm_max_tokens: int = Field(default=65536, ge=512, le=65536)
+    # EventEnricher 解释完整证据束并返回严格结构化 JSON。
+    hotspot_enrichment_llm_max_tokens: int = Field(default=65536, ge=512, le=65536)
 
     # ---------- 网感资料库(联网采集热门内容,供评分/文案参考) ----------
     trend_enabled: bool = False  # 是否启用网感资料库(默认关闭,按需开启)
@@ -164,6 +166,24 @@ class Settings(BaseSettings):
     highlight_min_post_roll_s: float = Field(default=30.0, ge=0.0, le=180.0)
     # B 站弹幕接收时间通常晚于画面爆点；评分查询窗口向后平移此秒数。
     danmaku_event_lag_s: float = Field(default=7.5, ge=0.0, le=60.0)
+    # Event-first 热点检测器的统一时间参数；三者必须按 bucket 整数对齐。
+    hotspot_bucket_s: float = Field(default=10.0, ge=5.0, le=10.0)
+    hotspot_baseline_window_s: float = Field(default=90.0, ge=60.0, le=120.0)
+    hotspot_detector_tick_s: float = Field(default=20.0, ge=15.0, le=30.0)
+    hotspot_min_baseline_buckets: int = Field(default=3, ge=2, le=12)
+    hotspot_detection_threshold: float = Field(default=0.55, ge=0.0, le=1.0)
+    # 事件级协调：跨分段合并、稳定确认与录制连续性边界。
+    hotspot_event_merge_gap_s: float = Field(default=30.0, ge=0.0, le=120.0)
+    hotspot_event_confirm_delay_s: float = Field(default=60.0, ge=0.0, le=600.0)
+    hotspot_event_semantic_overlap_threshold: float = Field(default=0.20, ge=0.0, le=1.0)
+    hotspot_recording_gap_tolerance_s: float = Field(default=1.0, ge=0.0, le=10.0)
+    # 热点局部 ASR 先于普通/历史完整转写；数值越小的任务越先被领取。
+    hotspot_asr_enabled: bool = True
+    hotspot_asr_pre_roll_s: float = Field(default=35.0, ge=0.0, le=180.0)
+    hotspot_asr_post_roll_s: float = Field(default=55.0, ge=0.0, le=180.0)
+    hotspot_asr_priority: int = Field(default=10, ge=0, le=1000)
+    near_live_asr_priority: int = Field(default=50, ge=0, le=1000)
+    background_asr_priority: int = Field(default=100, ge=0, le=1000)
     auto_publish_threshold: float = Field(default=0.80, ge=0.0, le=1.0)
 
     # ---------- 切片后处理 ----------
@@ -266,6 +286,19 @@ class Settings(BaseSettings):
         # biliup_upload_cmd 如果非空,必须包含 {file} 占位符
         if self.biliup_upload_cmd and "{file}" not in self.biliup_upload_cmd:
             raise ValueError(f"biliup_upload_cmd 必须包含 {{file}} 占位符,当前值: {self.biliup_upload_cmd}")
+
+        baseline_ratio = self.hotspot_baseline_window_s / self.hotspot_bucket_s
+        tick_ratio = self.hotspot_detector_tick_s / self.hotspot_bucket_s
+        if not baseline_ratio.is_integer():
+            raise ValueError("hotspot_baseline_window_s 必须是 hotspot_bucket_s 的整数倍")
+        if not tick_ratio.is_integer():
+            raise ValueError("hotspot_detector_tick_s 必须是 hotspot_bucket_s 的整数倍")
+        if self.hotspot_min_baseline_buckets >= int(baseline_ratio):
+            raise ValueError("hotspot_min_baseline_buckets 必须小于滚动基线的 bucket 数")
+        if not (self.hotspot_asr_priority < self.near_live_asr_priority < self.background_asr_priority):
+            raise ValueError(
+                "ASR 优先级必须满足 hotspot_asr_priority < near_live_asr_priority < background_asr_priority"
+            )
 
         return self
 

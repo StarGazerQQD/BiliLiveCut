@@ -17,6 +17,7 @@ import json
 import os
 import re
 import shutil
+import socket
 import subprocess
 import sys
 import traceback
@@ -25,12 +26,13 @@ from pathlib import Path
 from typing import Any
 
 from blc_portable.console import configure_console_encoding
+from config.launcher_settings import APP_ROOT_ENV, WEB_PORT_ENV, load_launcher_config
 
 # -- Constants ──────────────────────────────────────────────────
 APP_NAME = "BiliLiveCut"
-VERSION = "V0.1.17.4 Alpha"
-RELEASE_VERSION = "0.1.17.4-alpha"
-SOURCE_COMMIT_SHORT = "97e39df"
+VERSION = "V0.1.18.0 Alpha"
+RELEASE_VERSION = "0.1.18.0-alpha"
+SOURCE_COMMIT_SHORT = "9615a8b"
 # NOTE: RELEASE_ID 将在获得 Payload SHA-256 后动态生成 (内容寻址)
 SUPPORTED_PYTHON_VERSIONS = frozenset({(3, 11), (3, 12)})
 
@@ -175,7 +177,7 @@ def ensure_data_dirs(app_root: Path) -> None:
 
     :param app_root: app root dir。
     """
-    for d in ["data", "storage", "models", "vendor", "bin", "logs"]:
+    for d in ["config", "data", "storage", "models", "vendor", "bin", "logs"]:
         (app_root / d).mkdir(parents=True, exist_ok=True)
 
 
@@ -272,30 +274,87 @@ def _find_portable_python(app_root: Path) -> Path | None:
     return None
 
 
+def _managed_venv_metadata_valid(
+    venv_dir: Path,
+    expected_version: tuple[int, int] | None = None,
+) -> bool:
+    """Return whether a managed venv has complete, usable metadata.
+
+    :param venv_dir: Managed virtual-environment directory.
+    :param expected_version: Optional runnable interpreter version to match.
+    :returns: Whether ``pyvenv.cfg`` identifies an existing interpreter home
+        and a syntactically valid, matching Python version.
+    """
+    config_path = venv_dir / "pyvenv.cfg"
+    try:
+        fields = {
+            key.strip().lower(): value.strip()
+            for line in config_path.read_text(encoding="utf-8").splitlines()
+            if "=" in line
+            for key, value in (line.split("=", 1),)
+        }
+    except OSError:
+        return False
+    home_text = fields.get("home", "")
+    version_text = fields.get("version", "")
+    try:
+        parsed_version = tuple(int(part) for part in version_text.split(".")[:2])
+    except ValueError:
+        return False
+    if len(parsed_version) != 2 or not Path(home_text).is_dir():
+        return False
+    return expected_version is None or parsed_version == expected_version
+
+
 def prepare_venv(app_root: Path) -> Path:
-    """Prepare virtual environment。
+    """Prepare the application-managed virtual environment.
+
+    A runnable 3.11/3.12 environment is reused.  A runnable environment with
+    another ABI is rejected explicitly because replacing it could hide an
+    unsupported user/runtime selection.  An incomplete or unreadable
+    ``<app_root>/.venv`` is safe to rebuild because that exact directory is
+    owned by the Portable launcher.
 
     :param app_root: app root dir。
     :returns: venv python path。
     """
+    venv_dir = app_root / VENV_DIR
     if sys.platform == "win32":
-        venv_python = app_root / VENV_DIR / "Scripts" / "python.exe"
+        venv_python = venv_dir / "Scripts" / "python.exe"
     else:
-        venv_python = app_root / VENV_DIR / "bin" / "python"
+        venv_python = venv_dir / "bin" / "python"
 
     if venv_python.exists():
         existing_version = _python_version(venv_python)
         if existing_version in SUPPORTED_PYTHON_VERSIONS:
-            return venv_python
-        version_text = ".".join(str(part) for part in existing_version) if existing_version else "unknown"
-        raise RuntimeError(
-            f"Existing virtual environment uses unsupported Python {version_text}. "
-            "Only Python 3.11 and 3.12 are supported. Back up and remove .venv, then retry."
-        )
+            if _managed_venv_metadata_valid(venv_dir, existing_version):
+                return venv_python
+            print("  managed .venv metadata is incomplete; rebuilding it safely...")
+            _remove_managed_venv(app_root, venv_dir)
+        elif existing_version is not None:
+            version_text = ".".join(str(part) for part in existing_version)
+            raise RuntimeError(
+                f"Existing virtual environment uses unsupported Python {version_text}. "
+                "Only Python 3.11 and 3.12 are supported."
+            )
+        else:
+            print("  managed .venv is unreadable; rebuilding it safely...")
+            _remove_managed_venv(app_root, venv_dir)
+    elif venv_dir.exists():
+        print("  managed .venv is incomplete; rebuilding it safely...")
+        _remove_managed_venv(app_root, venv_dir)
 
     portable_py = _find_portable_python(app_root)
-    system_py = portable_py if portable_py and _python_version(portable_py) in SUPPORTED_PYTHON_VERSIONS else None
-    system_py = system_py or _find_system_python()
+    if portable_py is not None:
+        portable_version = _python_version(portable_py)
+        if portable_version not in SUPPORTED_PYTHON_VERSIONS:
+            version_text = ".".join(str(part) for part in portable_version) if portable_version else "unreadable"
+            raise RuntimeError(
+                f"Bundled Portable Python is unsupported ({version_text}). Only Python 3.11 and 3.12 are supported."
+            )
+        system_py = portable_py
+    else:
+        system_py = _find_system_python()
     if system_py is None:
         raise RuntimeError(
             "Compatible Python 3.11/3.12 not found. Install Python or place Portable Python in portable-python/.\n"
@@ -309,12 +368,84 @@ def prepare_venv(app_root: Path) -> Path:
 
     print(f"  Python: {system_py} ({py_ver})")
     print("  creating venv...")
-    subprocess.run(
-        [str(system_py), "-m", "venv", str(app_root / VENV_DIR)],
-        check=True,
-        timeout=120,
-    )
+    command = [str(system_py), "-m", "venv", str(venv_dir)]
+    try:
+        result = subprocess.run(command, capture_output=True, text=True, timeout=120)
+    except (OSError, subprocess.SubprocessError) as exc:
+        if venv_dir.exists():
+            _remove_managed_venv(app_root, venv_dir)
+        raise RuntimeError(
+            _format_process_failure(
+                "Virtual environment creation failed",
+                system_py,
+                returncode=None,
+                stdout="",
+                stderr="",
+                root_exception=f"{type(exc).__name__}: {exc}",
+            )
+        ) from exc
+    if result.returncode != 0:
+        if venv_dir.exists():
+            _remove_managed_venv(app_root, venv_dir)
+        raise RuntimeError(
+            _format_process_failure(
+                "Virtual environment creation failed",
+                system_py,
+                returncode=result.returncode,
+                stdout=result.stdout,
+                stderr=result.stderr,
+                root_exception=f"process exited with code {result.returncode}",
+            )
+        )
+    created_version = _python_version(venv_python)
+    if created_version not in SUPPORTED_PYTHON_VERSIONS or not _managed_venv_metadata_valid(
+        venv_dir,
+        created_version,
+    ):
+        if venv_dir.exists():
+            _remove_managed_venv(app_root, venv_dir)
+        raise RuntimeError(
+            "Virtual environment creation completed without a runnable Python 3.11/3.12 "
+            "interpreter and complete pyvenv.cfg metadata."
+        )
     return venv_python
+
+
+def _remove_managed_venv(app_root: Path, candidate: Path) -> None:
+    """Remove only the exact ``<app_root>/.venv`` directory.
+
+    :param app_root: Portable application root.
+    :param candidate: Directory proposed for removal.
+    :raises RuntimeError: If the candidate is outside the managed location.
+    """
+    expected = (app_root.resolve() / VENV_DIR).resolve()
+    actual = candidate.resolve()
+    if actual != expected:
+        raise RuntimeError(f"Refusing to remove non-managed virtual environment: {candidate}")
+    if candidate.exists():
+        shutil.rmtree(candidate)
+
+
+def _format_process_failure(
+    title: str,
+    interpreter: Path,
+    *,
+    returncode: int | None,
+    stdout: str | None,
+    stderr: str | None,
+    root_exception: str,
+) -> str:
+    """Build one actionable root-cause report for a child Python failure."""
+    return "\n".join(
+        (
+            title,
+            f"Interpreter: {interpreter}",
+            f"Return code: {returncode if returncode is not None else 'not started'}",
+            f"stdout:\n{(stdout or '').strip() or '<empty>'}",
+            f"stderr:\n{(stderr or '').strip() or '<empty>'}",
+            f"Root exception: {root_exception}",
+        )
+    )
 
 
 def _find_lock_file(venv_python: Path) -> Path:
@@ -371,6 +502,51 @@ def _find_bootstrap_wheelhouse() -> Path | None:
     return None
 
 
+def _run_dependency_preflight(venv_python: Path) -> None:
+    """Validate the supported ABI and all provisioning/runtime imports once.
+
+    The check deliberately runs as one child process so a first-launch failure
+    has one root report instead of a cascade of per-module warnings.
+
+    :param venv_python: Python executable from the managed virtual environment.
+    :raises RuntimeError: If Python or any required module is unavailable.
+    """
+    script = (
+        "import sys; "
+        "supported={(3,11),(3,12)}; version=sys.version_info[:2]; "
+        "assert version in supported, f'unsupported Python {version[0]}.{version[1]}'; "
+        "import fastapi; import uvicorn; import sqlmodel; import pydantic; "
+        "import playwright; import openai; import huggingface_hub; import modelscope; "
+        "print(f'Python {version[0]}.{version[1]}; 8 modules')"
+    )
+    command = [str(venv_python), "-c", script]
+    try:
+        result = subprocess.run(command, capture_output=True, text=True, timeout=60)
+    except (OSError, subprocess.SubprocessError) as exc:
+        raise RuntimeError(
+            _format_process_failure(
+                "Dependency preflight failed",
+                venv_python,
+                returncode=None,
+                stdout="",
+                stderr="",
+                root_exception=f"{type(exc).__name__}: {exc}",
+            )
+        ) from exc
+    if result.returncode != 0:
+        raise RuntimeError(
+            _format_process_failure(
+                "Dependency preflight failed",
+                venv_python,
+                returncode=result.returncode,
+                stdout=result.stdout,
+                stderr=result.stderr,
+                root_exception=f"child preflight exited with code {result.returncode}",
+            )
+        )
+    print(f"  dependency preflight OK: {(result.stdout or '').strip() or 'Python and 8 modules'}")
+
+
 def _run_import_smoke(venv_python: Path, module: str, source_dir: Path | None = None) -> None:
     """Import one runtime module and expose the original failure details.
 
@@ -425,8 +601,8 @@ def _run_import_smoke(venv_python: Path, module: str, source_dir: Path | None = 
     print(output or f"  ok: {module}")
 
 
-def _build_service_command(venv_python: Path) -> list[str]:
-    """Build the service command without relying on ``app.cli`` module execution."""
+def _build_service_command(venv_python: Path, web_port: int) -> list[str]:
+    """Build the loopback service command with the resolved launch-time port."""
     return [
         str(venv_python),
         "-c",
@@ -435,8 +611,23 @@ def _build_service_command(venv_python: Path) -> list[str]:
         "--host",
         "127.0.0.1",
         "--port",
-        "8000",
+        str(web_port),
     ]
+
+
+def _ensure_web_port_available(web_port: int) -> None:
+    """在启动 Web 子进程前显式拒绝已占用的 loopback 端口。
+
+    :param web_port: 已解析并校验的监听端口。
+    :raises RuntimeError: 端口无法绑定时。
+    """
+    try:
+        with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as probe:
+            probe.bind(("127.0.0.1", web_port))
+    except OSError as exc:
+        raise RuntimeError(
+            f"Web 端口 {web_port} 无法绑定（可能已被占用）。请在设置页修改端口并重启 Launcher。"
+        ) from exc
 
 
 def install_dependencies(
@@ -532,10 +723,11 @@ def install_dependencies(
             timeout=600,
         )
 
-    # Always run import checks, including on subsequent launches where versions match.
-    print("  import smoke check...")
-    for mod in ("fastapi", "uvicorn", "sqlmodel", "pydantic", "playwright", "openai"):
-        _run_import_smoke(venv_python, mod)
+    # Always run one import/ABI preflight, including on subsequent launches
+    # where package versions already match.  Provisioning dependencies are
+    # part of the same root-cause report.
+    print("  dependency preflight...")
+    _run_dependency_preflight(venv_python)
     if source_dir is not None:
         _run_import_smoke(venv_python, "app.cli", source_dir)
     print("  deps install complete")
@@ -544,32 +736,48 @@ def install_dependencies(
 # -- Model preparation ──────────────────────────────────────────────
 
 
-def prepare_models(app_root: Path, user_engine_pack_path: str | None = None) -> dict[str, Any]:
-    """Model prep orchestration — installed -> Engine Pack -> online download。
+def _provisioner_paths() -> tuple[Path, Path]:
+    """Return import and configuration roots for the external provisioner."""
+    if getattr(sys, "frozen", False):
+        bundle_root = Path(sys._MEIPASS)  # type: ignore[attr-defined]
+        source_root = bundle_root / "provisioner"
+        config_root = bundle_root / "provisioner-config"
+    else:
+        portable_root = Path(__file__).resolve().parents[3]
+        source_root = portable_root / "src"
+        config_root = portable_root / "config"
+    if not (source_root / "blc_portable" / "launcher" / "model_downloader.py").is_file():
+        raise RuntimeError(f"Provisioning helper source is missing: {source_root}")
+    if not (config_root / "model_sources.lock.json").is_file():
+        raise RuntimeError(f"Provisioning model configuration is missing: {config_root}")
+    return source_root, config_root
 
-    1. check installed models -> version match = reuse
-    2. find local Engine Pack -> CRC32 passes = install from pack (zero network)
-    3. local pack invalid -> full online download (N requests)
-    4. no local pack -> full online download
 
-    Never mix local pack with online models。
+def prepare_models(
+    venv_python: Path,
+    app_root: Path,
+    user_engine_pack_path: str | None = None,
+    *,
+    offline: bool = False,
+    fallback_online: bool = False,
+) -> dict[str, Any]:
+    """Run all model provisioning in the managed virtual environment.
 
-    :param app_root: app root dir。
-    :param user_engine_pack_path: 用户通过 --engine-pack 指定的路径。
-    :returns: 模型准备信息字典。
+    The frozen launcher is only an orchestrator.  Third-party model SDKs and
+    all provisioning code execute under ``venv_python`` after dependency
+    installation has completed.
+
+    :param venv_python: Managed virtual-environment interpreter.
+    :param app_root: Portable application root.
+    :param user_engine_pack_path: Optional explicitly selected Engine Pack.
+    :param offline: Block online model downloads.
+    :param fallback_online: Allow an invalid explicit pack to fall back online.
+    :returns: Structured provisioning result.
     """
-    from blc_portable.engine_pack.installer import (
-        check_installed_models,
-        find_local_engine_pack,
-        install_from_engine_pack,
-    )
-
-    # Read embedded Engine Pack info
     pack_info = get_engine_pack_info()
     if pack_info is None:
         from blc_portable.engine_pack.manifest import ARCHIVE_FILENAME, ENGINE_PACK_VERSION
 
-        # 官方 Lite/Full 可按当前版本显式省略本地包摘要并走在线安装。
         pack_info = {
             "engine_pack_version": ENGINE_PACK_VERSION,
             "filename": ARCHIVE_FILENAME,
@@ -577,54 +785,110 @@ def prepare_models(app_root: Path, user_engine_pack_path: str | None = None) -> 
             "sha256": "",
         }
 
-    expected_filename = pack_info["filename"]
-    expected_crc32 = pack_info["crc32"]
-    expected_sha256 = pack_info["sha256"]
-    expected_version = pack_info["engine_pack_version"]
+    source_root, config_root = _provisioner_paths()
+    command = [
+        str(venv_python),
+        "-m",
+        "blc_portable.launcher.model_downloader",
+        "--app-root",
+        str(app_root.resolve()),
+        "--config-dir",
+        str(config_root.resolve()),
+        "--expected-filename",
+        str(pack_info["filename"]),
+        "--expected-crc32",
+        str(pack_info.get("crc32", "")),
+        "--expected-sha256",
+        str(pack_info.get("sha256", "")),
+    ]
+    if user_engine_pack_path:
+        command.extend(("--engine-pack", str(Path(user_engine_pack_path).resolve())))
+    if offline:
+        command.append("--offline")
+    if fallback_online:
+        command.append("--fallback-online")
 
-    # 1. 检查已安装模型
-    models_dir = app_root / "models"
-    ok, _ = check_installed_models(models_dir, expected_version)
-    if ok:
-        print("  4-engine models installed (version match), skip model prep")
-        return {
-            "source": "already_installed",
-            "network_requests": 0,
-        }
-
-    # 2. 查找本地 Engine Pack
-    pack_path = find_local_engine_pack(app_root, expected_filename, user_engine_pack_path)
-
-    if pack_path is not None:
-        print(f"\n  found local Engine Pack: {pack_path.name}")
-        try:
-            return install_from_engine_pack(app_root, pack_path, expected_crc32, expected_sha256, expected_version)
-        except RuntimeError:
-            # CRC32 不匹配或解压/校验失败 → 不使用本地包
-            print("  local pack failed validation, falling back to online download")
-    else:
-        print("\n  no local Engine Pack found")
-
-    # 3. Online download (blocked if --offline)
-    if os.environ.get("BLC_OFFLINE") == "1" or os.environ.get("PIP_NO_INDEX") == "1":
-        raise RuntimeError(
-            "Offline mode: no local Engine Pack found and online download is blocked.\n"
-            "Provide an Engine Pack ZIP or remove --offline flag."
-        )
-
-    print("  downloading all 4 engine models online...")
+    env = os.environ.copy()
+    env["PYTHONPATH"] = str(source_root.resolve())
+    env["BLC_MODEL_CONFIG_DIR"] = str(config_root.resolve())
+    env["PYTHONIOENCODING"] = "utf-8"
+    env["PYTHONUTF8"] = "1"
     try:
-        from blc_portable.launcher.model_downloader import download_all_engines
+        result = subprocess.run(
+            command,
+            capture_output=True,
+            text=True,
+            encoding="utf-8",
+            errors="replace",
+            timeout=None,
+            cwd=str(app_root),
+            env=env,
+        )
+    except (OSError, subprocess.SubprocessError) as exc:
+        raise RuntimeError(
+            _format_process_failure(
+                "Model provisioning helper failed",
+                venv_python,
+                returncode=None,
+                stdout="",
+                stderr="",
+                root_exception=f"{type(exc).__name__}: {exc}",
+            )
+        ) from exc
 
-        return download_all_engines(app_root)
-    except ImportError as exc:
-        print(f"  [WARN] model download dependency missing: {exc}")
-        print("  continue startup (ASR may use cached models)")
-        return {
-            "source": "skipped",
-            "network_requests": 0,
-            "warning": str(exc),
-        }
+    stdout = result.stdout or ""
+    stderr = result.stderr or ""
+    result_prefix = "BLC_PROVISION_RESULT="
+    root_prefix = "BLC_PROVISION_ROOT_EXCEPTION="
+    result_line = next((line for line in reversed(stdout.splitlines()) if line.startswith(result_prefix)), "")
+    root_line = next((line for line in reversed(stderr.splitlines()) if line.startswith(root_prefix)), "")
+    visible_stdout = "\n".join(line for line in stdout.splitlines() if not line.startswith(result_prefix)).strip()
+    visible_stderr = "\n".join(line for line in stderr.splitlines() if not line.startswith(root_prefix)).strip()
+    if visible_stdout:
+        print(visible_stdout)
+    if result.returncode != 0:
+        root_exception = (
+            root_line.removeprefix(root_prefix) if root_line else f"child exited with code {result.returncode}"
+        )
+        raise RuntimeError(
+            _format_process_failure(
+                "Model provisioning helper failed",
+                venv_python,
+                returncode=result.returncode,
+                stdout=visible_stdout,
+                stderr=visible_stderr,
+                root_exception=root_exception,
+            )
+        )
+    if visible_stderr:
+        print(visible_stderr, file=sys.stderr)
+    if not result_line:
+        raise RuntimeError(
+            _format_process_failure(
+                "Model provisioning helper returned no result",
+                venv_python,
+                returncode=result.returncode,
+                stdout=visible_stdout,
+                stderr=visible_stderr,
+                root_exception="missing BLC_PROVISION_RESULT record",
+            )
+        )
+    try:
+        payload = json.loads(result_line.removeprefix(result_prefix))
+    except json.JSONDecodeError as exc:
+        raise RuntimeError(
+            _format_process_failure(
+                "Model provisioning helper returned invalid JSON",
+                venv_python,
+                returncode=result.returncode,
+                stdout=visible_stdout,
+                stderr=visible_stderr,
+                root_exception=f"{type(exc).__name__}: {exc}",
+            )
+        ) from exc
+    if not isinstance(payload, dict):
+        raise RuntimeError("Model provisioning helper result must be a JSON object")
+    return payload
 
 
 # -- Launch ──────────────────────────────────────────────────
@@ -788,9 +1052,7 @@ def _verify_installed_models(app_root: Path) -> None:
 
     :param app_root: app root dir。
     """
-    import hashlib
-
-    from blc_portable.engine_pack.installer import _read_installed_manifest
+    from blc_portable.engine_pack.installer import _read_installed_manifest, check_installed_models
 
     models_dir = app_root / "models"
     installed = _read_installed_manifest(models_dir)
@@ -802,62 +1064,22 @@ def _verify_installed_models(app_root: Path) -> None:
     print("=" * 60)
     print("  Model Integrity Verification")
     print("=" * 60)
-    print(f"  Installed version: {installed.get('engine_pack_version')}")
+    print(f"  Model set fingerprint: {installed.get('model_set_fingerprint', '<legacy>')}")
     print(f"  installed at: {installed.get('installed_at')}")
-    print(f"  engines: {installed.get('engine_ids', [])}")
+    records = installed.get("engines", {})
+    print(f"  engines: {sorted(records) if isinstance(records, dict) else '<invalid>'}")
     print()
-
-    verified = 0
-    failed = 0
-    total_files_checked = 0
-    hash_mismatches = 0
-
-    # 逐引擎比对安装清单中记录的文件
-    for engine_id, info in installed.get("files", {}).items():
-        target_path = str(info.get("target_path", f"models/{engine_id}"))
-        engine_dir = models_dir / engine_id if (models_dir / engine_id).exists() else models_dir / target_path
-        if not engine_dir.exists():
-            print(f"  [FAIL] engine {engine_id}: dirnot found")
-            failed += 1
-            continue
-
-        engine_file_count = info.get("file_count", 0)
-        engine_total_size = info.get("total_size", 0)
-
-        fc = 0
-        ts = 0
-        for f in engine_dir.rglob("*"):
-            if f.is_file():
-                expected_hash = ""
-                # Check if installed manifest has per-file info
-                rel = f.relative_to(models_dir).as_posix()
-                file_info = installed.get("file_details", {}).get(rel, {})
-                expected_hash = str(file_info.get("sha256", ""))
-                actual_hash = hashlib.sha256(f.read_bytes()).hexdigest()
-                if expected_hash and actual_hash != expected_hash:
-                    hash_mismatches += 1
-                fc += 1
-                ts += f.stat().st_size
-                total_files_checked += 1
-
-        # Verify against manifest
-        if engine_file_count and fc != engine_file_count:
-            print(f"  [WARN] engine {engine_id}: file count mismatch declared={engine_file_count} actual={fc}")
-        if engine_total_size and ts != engine_total_size:
-            print(f"  [WARN] engine {engine_id}: size mismatch declared={engine_total_size} actual={ts}")
-
-        print(f"  [PASS] engine {engine_id}: {fc} files, {ts / (1024**3):.2f} GB (SHA-256 recomputed)")
-        verified += 1
-
-    if hash_mismatches:
-        print(f"  [FAIL] {hash_mismatches}  file(s) SHA-256 mismatch")
-        failed += 1
-
-    if failed:
-        print(f"\n  [FAIL] {failed}  engines have issues")
+    ok, errors = check_installed_models(models_dir, full_rehash=True)
+    if not ok:
+        for error in errors:
+            print(f"  [FAIL] {error}")
         sys.exit(1)
-    else:
-        print(f"\n  [PASS] All {verified} engines verified OK ({total_files_checked} files)")
+    for engine_id, info in sorted(records.items()):
+        print(
+            f"  [PASS] engine {engine_id}: {info.get('file_count', 0)} files, "
+            f"fingerprint={str(info.get('content_fingerprint', ''))[:16]}..."
+        )
+    print(f"\n  [PASS] All {len(records)} engines verified by SHA-256")
 
 
 def _repair_runtime(app_root: Path) -> None:
@@ -983,6 +1205,8 @@ def run_launcher(args: argparse.Namespace) -> int:
 
         # 1. ensure persistent data dirs
         ensure_data_dirs(app_root)
+        launcher_config = load_launcher_config(app_root, warn=lambda message: print(f"  [WARNING] {message}"))
+        web_port = launcher_config.web_port
 
         # 2. check/install Runtime
         source_dir = get_current_release_dir()
@@ -1011,7 +1235,13 @@ def run_launcher(args: argparse.Namespace) -> int:
 
         # 6. 模型准备
         print("[5/6] Model preparation...")
-        model_result = prepare_models(app_root, user_engine_pack_path)
+        model_result = prepare_models(
+            venv_python,
+            app_root,
+            user_engine_pack_path,
+            offline=args.offline,
+            fallback_online=args.fallback_online,
+        )
         model_source = model_result.get("source", "unknown")
         network_reqs = model_result.get("network_requests", 0)
         print(f"  Model source: {model_source} (network requests: {network_reqs})")
@@ -1019,9 +1249,10 @@ def run_launcher(args: argparse.Namespace) -> int:
 
         # 7. 启动 Web
         print("[6/6] Starting Web console...")
+        _ensure_web_port_available(web_port)
         print()
         print("=" * 60)
-        print("  Browser will open: http://127.0.0.1:8000")
+        print(f"  Browser will open: http://127.0.0.1:{web_port}")
         print("  Press Ctrl+C to stop")
         print("=" * 60)
         print()
@@ -1034,6 +1265,8 @@ def run_launcher(args: argparse.Namespace) -> int:
             env["PATH"] = str(bin_dir) + os.pathsep + env.get("PATH", "")
 
         env["BLC_PORTABLE"] = "1"
+        env[APP_ROOT_ENV] = str(app_root)
+        env[WEB_PORT_ENV] = str(web_port)
         env["BLC_SOURCE_DIR"] = str(source_dir)
         env["PYTHONPATH"] = str(source_dir)
 
@@ -1045,7 +1278,9 @@ def run_launcher(args: argparse.Namespace) -> int:
         if models_dir.exists():
             env["BLC_MODELS_DIR"] = str(models_dir)
 
-        result = subprocess.run(_build_service_command(venv_python), env=env, cwd=str(app_root))
+        result = subprocess.run(_build_service_command(venv_python, web_port), env=env, cwd=str(app_root))
+        if result.returncode != 0:
+            print(f"[ERROR] Web 服务在 127.0.0.1:{web_port} 启动或运行失败（exit={result.returncode}）。")
         return result.returncode
 
     except KeyboardInterrupt:

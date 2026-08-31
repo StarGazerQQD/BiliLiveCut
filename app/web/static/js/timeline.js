@@ -36,6 +36,12 @@ const SUMMARY_STATUS_LABELS = {
   failed: "生成失败",
 };
 
+const HOTSPOT_STATUS_LABELS = {
+  provisional: "检测中",
+  enriching: "补全中",
+  confirmed: "已确认",
+};
+
 function formatGmt8(value) {
   if (!value) return "进行中";
   return String(value).replace("T", " ").slice(0, 19);
@@ -102,7 +108,9 @@ function renderSessionCard(session, preservedDetail = "") {
           <div class="title">${esc(title)} · 会话 #${session.session_id} ${processingBadge(session.processing_state)} ${badge(session.status)}</div>
           <div class="sub">${esc(timeRange)} GMT+8 · ${formatDuration(session.duration_s)} · ${session.segment_count} 个录制片段</div>
           <div class="timeline-counts">
-            <span>高光 <b>${session.highlight_count}</b></span>
+            <span>事件 <b>${session.timeline_count ?? session.highlight_count}</b></span>
+            <span>成片候选 <b>${session.highlight_count}</b></span>
+            <span>仅时间线 <b>${session.hotspot_only_count ?? 0}</b></span>
             <span>待审 <b>${session.pending_review_count}</b></span>
             <span>已拒绝 <b>${session.rejected_count}</b></span>
           </div>
@@ -137,26 +145,52 @@ function renderSignals(point) {
 }
 
 function renderTimelinePoint(point) {
-  const confidence = Math.round((Number(point.confidence) || 0) * 100);
+  const heat = Math.round((Number(point.heat_score ?? point.confidence) || 0) * 100);
   const rejectedClass = point.rejected ? " rejected" : "";
-  const candidateKey = String(point.candidate_id);
+  const hotspotOnlyClass = point.candidate_id == null ? " hotspot-only" : "";
+  const pointKey = point.hotspot_event_id != null
+    ? `hotspot-${point.hotspot_event_id}`
+    : `candidate-${point.candidate_id}`;
+  const eventIdentity = point.hotspot_event_id != null
+    ? `热点 #${point.hotspot_event_id}`
+    : `旧候选 #${point.candidate_id}`;
+  const eventStatus = point.event_status
+    ? badge(HOTSPOT_STATUS_LABELS[point.event_status] || point.event_status)
+    : "";
+  const candidateState = point.candidate_id != null
+    ? `候选 #${point.candidate_id} · ${badge(point.review_status || point.candidate_status || "pending")}`
+    : '<span class="badge gray">仅时间线，不生成视频</span>';
+  const reviewLink = point.review_url
+    ? `<a class="back-link" href="${esc(point.review_url)}" target="_blank" rel="noopener">精审/预览</a>`
+    : "";
+  const summary = point.summary && point.summary !== point.title
+    ? `<p class="timeline-summary">${esc(point.summary)}</p>`
+    : "";
+  const provenance = point.provenance || {};
+  const scoreLine = point.point_type === "hotspot"
+    ? `热度 ${Number(point.heat_score || 0).toFixed(3)} · 成片 ${Number(point.clip_score || 0).toFixed(3)} · 语义 ${Number(point.semantic_confidence || 0).toFixed(3)} · 证据覆盖 ${Number(point.evidence_coverage || 0).toFixed(3)}`
+    : `规则 ${Number(provenance.rule_score || 0).toFixed(3)} · LLM ${Number(provenance.llm_score || 0).toFixed(3)} · 综合 ${Number(provenance.highlight_score || 0).toFixed(3)}`;
+  const candidateBounds = provenance.candidate_start_at_gmt8 && provenance.candidate_end_at_gmt8
+    ? ` · 成片区间 ${esc(provenance.candidate_start_at_gmt8)} 至 ${esc(provenance.candidate_end_at_gmt8)}`
+    : "";
   return `
-    <li class="timeline-point${rejectedClass}">
+    <li class="timeline-point${rejectedClass}${hotspotOnlyClass}">
       <div class="timeline-clock">${esc(point.clock_gmt8 || "--:--:--")}</div>
       <div class="timeline-node" aria-hidden="true"></div>
       <div class="timeline-point-card">
         <div class="head">
           <div>
-            <div class="title">${esc(point.summary || "待生成高光梗概")}</div>
-            <div class="sub">候选 #${point.candidate_id} · ${formatDuration(point.duration_s)} · 置信度 ${confidence}% · ${badge(point.review_status)}</div>
+            <div class="title">${esc(point.title || point.summary || "待生成热点梗概")}</div>
+            <div class="sub">${eventIdentity} · ${formatDuration(point.duration_s)} · 热度 ${heat}% ${eventStatus} · ${candidateState}</div>
           </div>
-          <a class="back-link" href="${esc(point.review_url)}" target="_blank" rel="noopener">精审/预览</a>
+          ${reviewLink}
         </div>
+        ${summary}
         ${renderDanmaku(point.representative_danmaku)}
         ${renderSignals(point)}
-        <details class="timeline-provenance" data-provenance-candidate="${esc(candidateKey)}" ${expandedProvenanceCandidates.has(candidateKey) ? "open" : ""}>
+        <details class="timeline-provenance" data-provenance-candidate="${esc(pointKey)}" ${expandedProvenanceCandidates.has(pointKey) ? "open" : ""}>
           <summary>查看来源与评分</summary>
-          <div class="sub">规则 ${Number(point.provenance?.rule_score || 0).toFixed(3)} · LLM ${Number(point.provenance?.llm_score || 0).toFixed(3)} · 综合 ${Number(point.provenance?.highlight_score || 0).toFixed(3)} · 区间 ${esc(point.start_at_gmt8 || "-")} 至 ${esc(point.end_at_gmt8 || "-")}</div>
+          <div class="sub">${scoreLine} · 事件区间 ${esc(point.start_at_gmt8 || "-")} 至 ${esc(point.end_at_gmt8 || "-")}${candidateBounds}</div>
         </details>
       </div>
     </li>`;
@@ -191,7 +225,7 @@ function renderTimelineDetail(data) {
   const points = data.points || [];
   const wholeSummary = renderWholeSessionSummary(data);
   if (!points.length) {
-    return `${wholeSummary}<div class="empty">本场尚无${$("#timeline-include-rejected").checked ? "" : "未拒绝的"}高光节点；可等待分析完成或按新配置重分析。</div>`;
+    return `${wholeSummary}<div class="empty">本场尚无${$("#timeline-include-rejected").checked ? "" : "未拒绝的"}热点事件；可等待分析完成或按新配置重分析。</div>`;
   }
   return `${wholeSummary}<ol class="session-timeline" aria-label="${esc(sourceLabel(data.session))} 的高光时间线">${points.map(renderTimelinePoint).join("")}</ol>`;
 }

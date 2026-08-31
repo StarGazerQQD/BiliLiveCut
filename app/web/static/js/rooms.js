@@ -263,6 +263,7 @@ async function loadFeatureSwitches() {
     $("#sw-recording-pipeline").checked = settings.recording_pipeline_enabled !== false;
     $("#sw-transcript-llm-refine").checked = settings.transcript_llm_refine_enabled !== false;
     $("#asr-task-concurrency").value = settings.asr_task_max_concurrency || 1;
+    $("#web-port").value = settings.web_port || 8000;
     $("#recording-pipeline-hint").textContent = settings.recording_pipeline_overridden
       ? "当前值来自控制台运行时设置；修改后从下次开始或恢复录制生效。"
       : `当前值来自 .env：RECORDING_PIPELINE_ENABLED=${settings.recording_pipeline_env_default !== false ? "true" : "false"}。`;
@@ -272,6 +273,9 @@ async function loadFeatureSwitches() {
     $("#asr-task-concurrency-hint").textContent = settings.asr_task_max_concurrency_overridden
       ? "当前值来自控制台；新调度的转写任务立即生效。每个并行使用独立模型实例，显存占用近似倍增。"
       : `当前值来自 .env：ASR_TASK_MAX_CONCURRENCY=${settings.asr_task_max_concurrency_env_default || 1}。CUDA 可提高，CPU 建议保持 1。`;
+    $("#web-port-hint").textContent = settings.restart_required
+      ? `已保存 ${settings.web_port}；当前仍监听 ${settings.current_web_port}，请重启 Launcher。`
+      : `当前监听 ${settings.current_web_port}；已保存端口与本次启动一致。`;
   }
   if (dirtyFeatureRooms.size > 0) {
     updateFeatureDirtyHint();
@@ -319,6 +323,7 @@ async function saveGlobalFeatureSettings() {
       recording_pipeline_enabled: $("#sw-recording-pipeline").checked,
       transcript_llm_refine_enabled: $("#sw-transcript-llm-refine").checked,
       asr_task_max_concurrency: parseInt($("#asr-task-concurrency").value || "1", 10),
+      web_port: parseInt($("#web-port").value || "8000", 10),
     });
     if (globalFeatureRevision !== revision) {
       updateFeatureDirtyHint();
@@ -328,7 +333,7 @@ async function saveGlobalFeatureSettings() {
     globalFeatureDirty = false;
     featureEditorRevision += 1;
     updateFeatureDirtyHint();
-    toast("已保存实时转写与 LLM 整理开关");
+    toast("已保存全局开关与下次启动端口");
     await loadFeatureSwitches();
   } catch (e) { toast("保存失败:" + e.message); }
 }
@@ -597,5 +602,7 @@ $("#sw-recording-pipeline").addEventListener("change", markGlobalFeatureDirty);
 $("#sw-transcript-llm-refine").addEventListener("change", markGlobalFeatureDirty);
 $("#asr-task-concurrency").addEventListener("input", markGlobalFeatureDirty);
 $("#asr-task-concurrency").addEventListener("change", markGlobalFeatureDirty);
+$("#web-port").addEventListener("input", markGlobalFeatureDirty);
+$("#web-port").addEventListener("change", markGlobalFeatureDirty);
 
 export { loadRooms, saveRoom, saveRoomConfig, loadFeatureSwitches, saveGlobalFeatureSettings, saveFeatureSwitches, loadThresholdLearning, loadSchedules, delSchedule, loadTopics, toggleCollection, hasRoomDraft };

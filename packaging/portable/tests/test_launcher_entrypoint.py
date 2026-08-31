@@ -36,11 +36,92 @@ def test_service_command_calls_typer_app_explicitly(tmp_path: Path) -> None:
     from blc_portable.launcher.main import _build_service_command
 
     venv_python = tmp_path / ".venv" / "Scripts" / "python.exe"
-    command = _build_service_command(venv_python)
+    command = _build_service_command(venv_python, 8080)
 
     assert command[:3] == [str(venv_python), "-c", "from app.cli import app; app()"]
-    assert command[3:] == ["serve", "--host", "127.0.0.1", "--port", "8000"]
+    assert command[3:] == ["serve", "--host", "127.0.0.1", "--port", "8080"]
     assert "-m" not in command
+
+
+def test_launcher_rejects_occupied_web_port_without_changing_config(tmp_path: Path) -> None:
+    """配置端口被占用时必须显式失败，且不得随机回退或改写配置。"""
+    import socket
+
+    from blc_portable.launcher.main import _ensure_web_port_available
+
+    from config.launcher_settings import launcher_config_path, save_launcher_config
+
+    with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as occupied:
+        occupied.bind(("127.0.0.1", 0))
+        occupied.listen()
+        port = occupied.getsockname()[1]
+        save_launcher_config(tmp_path, web_port=port)
+        before = launcher_config_path(tmp_path).read_bytes()
+
+        with pytest.raises(RuntimeError, match=rf"Web 端口 {port} 无法绑定"):
+            _ensure_web_port_available(port)
+
+    assert launcher_config_path(tmp_path).read_bytes() == before
+
+
+def test_launcher_uses_persisted_port_for_command_and_runtime_env(
+    tmp_path: Path,
+    monkeypatch: MonkeyPatch,
+) -> None:
+    """重启 Launcher 后，持久化端口必须同时进入 CLI 与实际端口环境变量。"""
+    from blc_portable.launcher import main as launcher_module
+
+    from config.launcher_settings import save_launcher_config
+
+    source_dir = tmp_path / "runtime" / "releases" / "current"
+    source_dir.mkdir(parents=True)
+    venv_python = tmp_path / ".venv" / "Scripts" / "python.exe"
+    venv_python.parent.mkdir(parents=True)
+    venv_python.write_bytes(b"fixture")
+    save_launcher_config(tmp_path, web_port=8080)
+    captured: dict[str, object] = {}
+
+    monkeypatch.chdir(tmp_path)
+    monkeypatch.setattr(launcher_module, "get_app_root", lambda: tmp_path)
+    monkeypatch.setattr(launcher_module, "get_current_release_dir", lambda: source_dir)
+    monkeypatch.setattr(launcher_module, "ensure_env", lambda _root, _source: None)
+    monkeypatch.setattr(launcher_module, "prepare_venv", lambda _root: venv_python)
+    monkeypatch.setattr(launcher_module, "install_dependencies", lambda *_args, **_kwargs: None)
+    monkeypatch.setattr(
+        launcher_module,
+        "prepare_models",
+        lambda *_args, **_kwargs: {"source": "installed", "network_requests": 0},
+    )
+    monkeypatch.setattr(launcher_module, "_ensure_web_port_available", lambda _port: None)
+
+    def fake_run(command: list[str], **kwargs: object):
+        captured["command"] = command
+        captured["env"] = kwargs["env"]
+        return launcher_module.subprocess.CompletedProcess(command, 0)
+
+    monkeypatch.setattr(launcher_module.subprocess, "run", fake_run)
+
+    assert launcher_module.run_launcher(launcher_module.build_parser().parse_args([])) == 0
+    assert captured["command"] == launcher_module._build_service_command(venv_python, 8080)
+    env = captured["env"]
+    assert isinstance(env, dict)
+    assert env["BLC_WEB_PORT"] == "8080"
+    assert env["BLC_APP_ROOT"] == str(tmp_path)
+
+
+def test_runtime_repair_preserves_launcher_port(tmp_path: Path) -> None:
+    """Runtime 更新/修复只替换 runtime，持久化 Launcher 配置必须保留。"""
+    from blc_portable.launcher.main import _repair_runtime
+
+    from config.launcher_settings import load_launcher_config, save_launcher_config
+
+    release = tmp_path / "runtime" / "releases" / "old"
+    release.mkdir(parents=True)
+    save_launcher_config(tmp_path, web_port=8080)
+
+    _repair_runtime(tmp_path)
+
+    assert load_launcher_config(tmp_path).web_port == 8080
 
 
 def test_launcher_version_python_entrypoint() -> None:
@@ -160,6 +241,145 @@ def test_prepare_venv_rejects_existing_unsupported_python(tmp_path: Path, monkey
 
     with pytest.raises(RuntimeError, match="unsupported Python 3.14"):
         launcher_module.prepare_venv(tmp_path)
+    assert venv_python.is_file()
+
+
+def test_prepare_venv_reuses_supported_interpreter(tmp_path: Path, monkeypatch: MonkeyPatch) -> None:
+    """A runnable managed 3.11/3.12 environment is reused without mutation."""
+    from blc_portable.launcher import main as launcher_module
+
+    venv_python = tmp_path / ".venv" / "Scripts" / "python.exe"
+    venv_python.parent.mkdir(parents=True)
+    venv_python.write_bytes(b"fixture")
+    interpreter_home = tmp_path / "python-home"
+    interpreter_home.mkdir()
+    (tmp_path / ".venv" / "pyvenv.cfg").write_text(
+        f"home = {interpreter_home}\nversion = 3.12.0\n",
+        encoding="utf-8",
+    )
+    monkeypatch.setattr(launcher_module, "_python_version", lambda _python: (3, 12))
+    monkeypatch.setattr(
+        launcher_module.subprocess,
+        "run",
+        lambda *_args, **_kwargs: pytest.fail("supported .venv must not be recreated"),
+    )
+
+    assert launcher_module.prepare_venv(tmp_path) == venv_python
+
+
+def test_prepare_venv_rebuilds_when_interpreter_home_is_missing(
+    tmp_path: Path,
+    monkeypatch: MonkeyPatch,
+) -> None:
+    """A runnable interpreter with a stale pyvenv home is still corrupted."""
+    from blc_portable.launcher import main as launcher_module
+
+    venv_python = tmp_path / ".venv" / "Scripts" / "python.exe"
+    venv_python.parent.mkdir(parents=True)
+    venv_python.write_bytes(b"stale")
+    (tmp_path / ".venv" / "pyvenv.cfg").write_text(
+        f"home = {tmp_path / 'missing-python-home'}\nversion = 3.12.0\n",
+        encoding="utf-8",
+    )
+    portable_home = tmp_path / "portable-python"
+    portable_python = portable_home / "python.exe"
+    portable_home.mkdir()
+    portable_python.write_bytes(b"portable")
+    versions: dict[Path, tuple[int, int] | None] = {
+        venv_python: (3, 12),
+        portable_python: (3, 12),
+    }
+
+    def fake_run(args: list[str], **_kwargs: object):
+        assert args[:3] == [str(portable_python), "-m", "venv"]
+        venv_python.parent.mkdir(parents=True)
+        venv_python.write_bytes(b"rebuilt")
+        (tmp_path / ".venv" / "pyvenv.cfg").write_text(
+            f"home = {portable_home}\nversion = 3.12.0\n",
+            encoding="utf-8",
+        )
+        return launcher_module.subprocess.CompletedProcess(args, 0, stdout="", stderr="")
+
+    monkeypatch.setattr(launcher_module, "_python_version", lambda python: versions.get(python))
+    monkeypatch.setattr(launcher_module, "_find_portable_python", lambda _root: portable_python)
+    monkeypatch.setattr(launcher_module.subprocess, "run", fake_run)
+
+    assert launcher_module.prepare_venv(tmp_path) == venv_python
+    assert venv_python.read_bytes() == b"rebuilt"
+
+
+@pytest.mark.parametrize("with_python", [False, True])
+def test_prepare_venv_rebuilds_incomplete_or_unreadable_managed_environment(
+    tmp_path: Path,
+    monkeypatch: MonkeyPatch,
+    capsys: CaptureFixture[str],
+    with_python: bool,
+) -> None:
+    """Only an incomplete/unreadable app-root .venv is rebuilt automatically."""
+    from blc_portable.launcher import main as launcher_module
+
+    venv_python = tmp_path / ".venv" / "Scripts" / "python.exe"
+    venv_python.parent.mkdir(parents=True)
+    if with_python:
+        venv_python.write_bytes(b"corrupt")
+    portable_python = tmp_path / "portable-python" / "python.exe"
+    portable_python.parent.mkdir(parents=True)
+    portable_python.write_bytes(b"portable")
+    versions: dict[Path, tuple[int, int] | None] = {
+        venv_python: None,
+        portable_python: (3, 12),
+    }
+
+    def fake_run(args: list[str], **_kwargs: object):
+        assert args[:3] == [str(portable_python), "-m", "venv"]
+        venv_python.parent.mkdir(parents=True)
+        venv_python.write_bytes(b"rebuilt")
+        (tmp_path / ".venv" / "pyvenv.cfg").write_text(
+            f"home = {portable_python.parent}\nversion = 3.12.0\n",
+            encoding="utf-8",
+        )
+        versions[venv_python] = (3, 12)
+        return launcher_module.subprocess.CompletedProcess(args, 0, stdout="", stderr="")
+
+    monkeypatch.setattr(launcher_module, "_python_version", lambda python: versions.get(python))
+    monkeypatch.setattr(launcher_module, "_find_portable_python", lambda _root: portable_python)
+    monkeypatch.setattr(launcher_module.subprocess, "run", fake_run)
+
+    assert launcher_module.prepare_venv(tmp_path) == venv_python
+    assert venv_python.read_bytes() == b"rebuilt"
+    diagnosis = "unreadable" if with_python else "incomplete"
+    assert f"managed .venv is {diagnosis}; rebuilding it safely" in capsys.readouterr().out
+
+
+def test_prepare_venv_rejects_unsupported_bundled_python(tmp_path: Path, monkeypatch: MonkeyPatch) -> None:
+    """A Full Bundle with Python 3.14 must fail instead of silently using ambient Python."""
+    from blc_portable.launcher import main as launcher_module
+
+    portable_python = tmp_path / "portable-python" / "python.exe"
+    portable_python.parent.mkdir(parents=True)
+    portable_python.write_bytes(b"portable")
+    monkeypatch.setattr(launcher_module, "_find_portable_python", lambda _root: portable_python)
+    monkeypatch.setattr(launcher_module, "_python_version", lambda _python: (3, 14))
+    monkeypatch.setattr(
+        launcher_module,
+        "_find_system_python",
+        lambda: pytest.fail("unsupported bundled Python must not fall back to an ambient interpreter"),
+    )
+
+    with pytest.raises(RuntimeError, match=r"Portable Python is unsupported \(3.14\)"):
+        launcher_module.prepare_venv(tmp_path)
+
+
+def test_remove_managed_venv_refuses_other_directory(tmp_path: Path) -> None:
+    """The recovery helper cannot delete a path other than app-root/.venv."""
+    from blc_portable.launcher import main as launcher_module
+
+    other = tmp_path / "other-venv"
+    other.mkdir()
+
+    with pytest.raises(RuntimeError, match="non-managed virtual environment"):
+        launcher_module._remove_managed_venv(tmp_path, other)
+    assert other.is_dir()
 
 
 def test_doctor_returns_nonzero_when_checks_fail(tmp_path: Path, monkeypatch: MonkeyPatch) -> None:
@@ -223,15 +443,29 @@ def test_exit_pause_ignores_eof_from_interactive_stdin(monkeypatch: MonkeyPatch)
 
 
 def test_frozen_entry_prepare_models_uses_package_safe_imports(tmp_path: Path, monkeypatch: MonkeyPatch) -> None:
-    """PyInstaller executes main.py without package context; model preparation must still import."""
-    from blc_portable.engine_pack import installer  # noqa: E402
+    """PyInstaller entry delegates model preparation to the managed interpreter."""
+    import subprocess
 
-    monkeypatch.setattr(installer, "check_installed_models", lambda _models, _version: (True, []))
+    venv_python = tmp_path / ".venv" / "Scripts" / "python.exe"
+    venv_python.parent.mkdir(parents=True)
+    venv_python.write_bytes(b"fixture")
+
+    def fake_run(args: list[str], **_kwargs: object):
+        assert args[0] == str(venv_python)
+        assert args[1:3] == ["-m", "blc_portable.launcher.model_downloader"]
+        return subprocess.CompletedProcess(
+            args,
+            0,
+            stdout='BLC_PROVISION_RESULT={"network_requests": 0, "source": "already_installed"}\n',
+            stderr="",
+        )
+
+    monkeypatch.setattr(subprocess, "run", fake_run)
     entry_path = _src_dir / "blc_portable" / "launcher" / "main.py"
     namespace = runpy.run_path(str(entry_path), run_name="main")
 
     assert namespace["__package__"] == ""
-    assert namespace["prepare_models"](tmp_path) == {
+    assert namespace["prepare_models"](venv_python, tmp_path) == {
         "source": "already_installed",
         "network_requests": 0,
     }
@@ -256,3 +490,5 @@ def test_frozen_entry_collects_engine_pack_config_dependencies() -> None:
     assert '"version_loader"' in content
     assert '(_version_config, ".")' in content
     assert '(_model_sources_lock, ".")' in content
+    assert 'Path("provisioner")' in content
+    assert '"provisioner-config"' in content

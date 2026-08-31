@@ -123,11 +123,13 @@ def test_transcribe_compute_stores_clean_text_summary_and_raw_asr(
     assert auxiliary["transcript_refinement"] == {"applied": True, "summary": "片段摘要"}
 
 
-def test_transcribe_compute_rejects_degenerate_text_before_llm(
+def test_transcribe_compute_persists_degenerate_text_as_degraded_without_llm(
     temp_db: None,
     monkeypatch: MonkeyPatch,
 ) -> None:
-    """所有 ASR 都退化时不得调用 LLM，也不得返回可落库的转写。"""
+    """所有 ASR 都退化时不调用 LLM，但作为 degraded 证据继续落库。"""
+    import json
+
     from app.analysis.transcription import pipeline as pipeline_module
     from app.analysis.transcription.models import ASRTranscriptResult
     from app.pipeline.workers.transcribe import transcribe_compute
@@ -147,7 +149,12 @@ def test_transcribe_compute_rejects_degenerate_text_before_llm(
 
     result = transcribe_compute(task_id)
 
-    assert result == {"error": "ASR 输出质量不合格: degenerate_repetition", "segment_id": segment_id}
+    assert result["transcribed"] is True
+    assert result["segment_id"] == segment_id
+    assert result["final_text"] == "等一下我们先看看" * 20
+    quality = json.loads(result["auxiliary_json"])["asr_quality"]
+    assert quality["state"] == "degraded"
+    assert quality["reason"] == "degenerate_repetition"
 
 
 def test_commit_transcript_advances_without_nonexistent_task_field(temp_db: None) -> None:

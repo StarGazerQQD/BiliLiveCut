@@ -20,6 +20,8 @@ from app.db.entities import (
     CandidateStatus,
     HighlightCandidate,
     HighlightEvent,
+    HotspotEvent,
+    HotspotStatus,
     LiveRoom,
     RawSegment,
     RecordingSession,
@@ -143,6 +145,105 @@ def _seed_timeline() -> int:
         return session.id
 
 
+def _seed_event_first_hotspots(session_id: int) -> tuple[int, int, int]:
+    """增加一个已关联候选热点、一个仅时间线热点和两个不可见终态别名。"""
+    with get_session() as db:
+        candidate = db.exec(
+            select(HighlightCandidate)
+            .where(HighlightCandidate.session_id == session_id, HighlightCandidate.status != CandidateStatus.REJECTED)
+            .order_by(HighlightCandidate.id.asc())
+        ).first()
+        assert candidate is not None and candidate.id is not None
+        linked = HotspotEvent(
+            event_key="timeline-hotspot-linked",
+            session_id=session_id,
+            start_ts=candidate.start_ts,
+            peak_ts=candidate.peak_ts,
+            end_ts=candidate.end_ts,
+            status=HotspotStatus.CONFIRMED,
+            heat_score=0.91,
+            clip_score=0.87,
+            semantic_confidence=0.82,
+            evidence_coverage=0.88,
+            title="主播完成关键反转",
+            summary="主播在挑战中完成关键反转，观众反应明显。",
+            category="gameplay",
+            features_json=json.dumps(
+                {
+                    "detector_version": "event-first-v1",
+                    "ticks": [{"modality_scores": {"danmaku": 0.9, "audio": 0.7, "sensevoice": 0.6}}],
+                    "event_lifecycle": {"version": 1},
+                    "event_clip_score": {"components": {"reaction": 0.85}},
+                },
+                ensure_ascii=False,
+            ),
+            representative_danmaku_json=json.dumps(
+                [{"text": "这波反转绝了", "count": 6, "role": "information"}],
+                ensure_ascii=False,
+            ),
+            candidate_id=candidate.id,
+        )
+        db.add(linked)
+        db.flush()
+        assert linked.id is not None
+        standalone = HotspotEvent(
+            event_key="timeline-hotspot-only",
+            session_id=session_id,
+            start_ts=candidate.peak_ts - timedelta(minutes=16),
+            peak_ts=candidate.peak_ts - timedelta(minutes=15),
+            end_ts=candidate.peak_ts - timedelta(minutes=14),
+            status=HotspotStatus.CONFIRMED,
+            heat_score=0.76,
+            clip_score=0.34,
+            semantic_confidence=0.45,
+            evidence_coverage=0.72,
+            title="观众热议新的挑战话题",
+            summary="弹幕与音频反应同步升高，但成片分未达到房间阈值。",
+            category="discussion",
+            features_json=json.dumps(
+                {
+                    "detector_version": "event-first-v1",
+                    "ticks": [{"modality_scores": {"danmaku": 0.8, "audio": 0.65, "sensevoice": 0.4}}],
+                    "event_lifecycle": {"version": 1},
+                    "event_clip_score": {"components": {"reaction": 0.71}},
+                },
+                ensure_ascii=False,
+            ),
+            representative_danmaku_json=json.dumps(
+                [
+                    {"text": "这个挑战真的能成功吗", "count": 4, "role": "information"},
+                    {"text": "？？？", "count": 9, "role": "reaction"},
+                ],
+                ensure_ascii=False,
+            ),
+        )
+        db.add(standalone)
+        db.flush()
+        assert standalone.id is not None
+        db.add(
+            HotspotEvent(
+                event_key="timeline-hotspot-merged",
+                session_id=session_id,
+                start_ts=standalone.start_ts,
+                peak_ts=standalone.peak_ts,
+                end_ts=standalone.end_ts,
+                status=HotspotStatus.MERGED,
+                merged_into_id=standalone.id,
+            )
+        )
+        db.add(
+            HotspotEvent(
+                event_key="timeline-hotspot-dismissed",
+                session_id=session_id,
+                start_ts=standalone.start_ts,
+                peak_ts=standalone.peak_ts,
+                end_ts=standalone.end_ts,
+                status=HotspotStatus.DISMISSED,
+            )
+        )
+        return linked.id, standalone.id, candidate.id
+
+
 def test_session_timeline_exposes_gmt8_summary_danmaku_and_provenance(temp_db: None) -> None:
     """时间点必须同时具备本地钟点、梗概、弹幕、来源信号和可核查评分。"""
     session_id = _seed_timeline()
@@ -152,7 +253,14 @@ def test_session_timeline_exposes_gmt8_summary_danmaku_and_provenance(temp_db: N
     assert payload["timezone"] == "GMT+8"
     assert payload["session"]["source_label"] == "测试主播 · 房间 23771139"
     assert payload["session"]["processing_state"] == "finalizing"
-    assert payload["counts"] == {"visible": 1, "rejected": 1, "total": 2}
+    assert payload["counts"] == {
+        "visible": 1,
+        "rejected": 1,
+        "total": 2,
+        "hotspots": 0,
+        "hotspot_only": 0,
+        "candidates": 2,
+    }
     assert len(payload["points"]) == 1
     point = payload["points"][0]
     assert point["clock_gmt8"] == "19:45:00"
@@ -181,6 +289,47 @@ def test_session_timeline_can_include_rejected_nodes_and_list_overview(temp_db: 
     assert overview[0]["started_at_gmt8"].startswith("2026-08-05T19:00:00")
     assert len(expanded["points"]) == 2
     assert sum(1 for point in expanded["points"] if point["rejected"]) == 1
+
+
+def test_event_first_timeline_keeps_hotspots_without_candidates_and_avoids_linked_duplicates(
+    temp_db: None,
+) -> None:
+    """活动热点应成为主时间线；低于阈值仍可见，已关联候选不得重复显示。"""
+    session_id = _seed_timeline()
+    linked_id, standalone_id, candidate_id = _seed_event_first_hotspots(session_id)
+
+    overview = list_session_timelines()
+    payload = get_session_timeline(session_id)
+
+    assert overview[0]["hotspot_count"] == 2
+    assert overview[0]["hotspot_only_count"] == 1
+    assert overview[0]["timeline_count"] == 3
+    assert overview[0]["highlight_count"] == 1
+    assert payload["counts"] == {
+        "visible": 2,
+        "rejected": 1,
+        "total": 3,
+        "hotspots": 2,
+        "hotspot_only": 1,
+        "candidates": 2,
+    }
+    assert len(payload["points"]) == 2
+    linked = next(point for point in payload["points"] if point["hotspot_event_id"] == linked_id)
+    standalone = next(point for point in payload["points"] if point["hotspot_event_id"] == standalone_id)
+    assert linked["candidate_id"] == candidate_id
+    assert linked["review_url"] == f"/review/{candidate_id}"
+    assert sum(point["candidate_id"] == candidate_id for point in payload["points"]) == 1
+    assert standalone["candidate_id"] is None
+    assert standalone["review_url"] is None
+    assert standalone["title"] == "观众热议新的挑战话题"
+    assert standalone["clip_score"] == 0.34
+    assert standalone["representative_danmaku"] == [
+        {"text": "这个挑战真的能成功吗", "count": 4},
+        {"text": "？？？", "count": 9},
+    ]
+    assert standalone["source_signals"] == ["弹幕高峰", "音频峰值", "SenseVoice"]
+    assert standalone["provenance"]["event_key"] == "timeline-hotspot-only"
+    assert all(point["hotspot_event_id"] not in {None} for point in payload["points"])
 
 
 def test_whole_session_summary_analyzes_all_final_asr_once_in_time_order(

@@ -10,6 +10,13 @@ from loguru import logger
 from app.core import settings_store
 from app.core.config import settings
 from app.core.paths import clips_dir, ready_to_upload_dir
+from config.launcher_settings import (
+    current_web_port,
+    load_launcher_config,
+    runtime_app_root,
+    save_launcher_config,
+    validate_web_port,
+)
 
 
 def get_settings_view() -> dict[str, Any]:
@@ -20,6 +27,8 @@ def get_settings_view() -> dict[str, Any]:
     pipeline_override = settings_store.get_setting("recording_pipeline_enabled", "").strip()
     refinement_override = settings_store.get_setting("transcript_llm_refine_enabled", "").strip()
     asr_concurrency_override = settings_store.get_setting("asr_task_max_concurrency", "").strip()
+    launcher_config = load_launcher_config(runtime_app_root(), warn=logger.warning)
+    running_port = current_web_port()
     return {
         "recording_pipeline_enabled": settings_store.recording_pipeline_enabled(),
         "recording_pipeline_env_default": settings.recording_pipeline_enabled,
@@ -30,6 +39,9 @@ def get_settings_view() -> dict[str, Any]:
         "asr_task_max_concurrency": settings_store.asr_task_max_concurrency(),
         "asr_task_max_concurrency_env_default": settings.asr_task_max_concurrency,
         "asr_task_max_concurrency_overridden": bool(asr_concurrency_override),
+        "web_port": launcher_config.web_port,
+        "current_web_port": running_port,
+        "restart_required": launcher_config.web_port != running_port,
         "biliup_enabled": settings_store.biliup_enabled(),
         "auto_upload": settings_store.auto_upload_enabled(),
         "upload_active": settings_store.upload_active(),
@@ -46,6 +58,10 @@ def update_settings(fields: dict[str, Any]) -> dict[str, Any]:
     :param fields: 待更新开关。
     :returns: 更新后的设置视图。
     """
+    if "web_port" in fields and fields["web_port"] is not None:
+        port = validate_web_port(fields["web_port"])
+        save_launcher_config(runtime_app_root(), web_port=port)
+        logger.info("Web 端口已保存为 {}，重启 Launcher 后生效。", port)
     if "recording_pipeline_enabled" in fields and fields["recording_pipeline_enabled"] is not None:
         enabled = bool(fields["recording_pipeline_enabled"])
         settings_store.set_bool("recording_pipeline_enabled", enabled)

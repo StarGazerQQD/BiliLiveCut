@@ -1,7 +1,7 @@
 """分析阶段 Worker — compute/commit 真正分离。
 
-analyze_compute 只做评分计算, 不创建 Candidate/Event, 不写 DB。
-commit_highlight 在租约保护下实现真正并发幂等的 Candidate + Event 创建。
+analyze_compute 只做热点检测与候选评分计算, 不创建 ORM 对象, 不写 DB。
+commit_highlight 在租约保护下幂等写入 provisional Hotspot 与 Candidate/Event。
 """
 
 from __future__ import annotations
@@ -10,8 +10,9 @@ import hashlib
 import json
 import logging
 import time
-from dataclasses import dataclass
-from datetime import timedelta
+from collections.abc import Mapping
+from dataclasses import dataclass, replace
+from datetime import datetime, timedelta
 from enum import StrEnum
 from typing import Any
 
@@ -25,12 +26,15 @@ from app.db.entities import (
     CandidateStatus,
     HighlightCandidate,
     HighlightEvent,
+    HotspotEvent,
+    HotspotStatus,
     LiveRoom,
     RawSegment,
     RecordingSession,
     ReviewStatus,
     SegmentStatus,
     SegmentTask,
+    SessionStatus,
     SystemLog,
     TaskStatus,
     Transcript,
@@ -39,6 +43,7 @@ from app.db.session import get_session
 from app.pipeline.highlight_plugins import build_highlight_scoring_request
 from app.pipeline.lease import LeaseLostError, TaskLease, still_owns_lease
 from app.pipeline.stage_result import enqueue_next, mark_completed, mark_failed
+from app.pipeline.task_context import event_first_context, update_event_first_context
 from app.plugins.highlight import HighlightDispatch
 from app.plugins.manager import plugin_manager
 
@@ -52,6 +57,7 @@ class HighlightDecision(StrEnum):
     BELOW_THRESHOLD = "below_threshold"
     DUPLICATE = "duplicate"
     SKIPPED = "skipped"
+    SIGNAL_PASS = "signal_pass"
 
 
 @dataclass(frozen=True)
@@ -155,6 +161,7 @@ def analyze_compute(task_id: int) -> dict[str, Any]:
         if task is None:
             return {"error": "task not found", "decision": HighlightDecision.SKIPPED}
         segment_id = task.segment_id
+        analysis_pass = event_first_context(task.context_json).get("analysis_pass")
         segment = db.get(RawSegment, segment_id)
         if segment is not None and segment.session_id != task.session_id:
             return {
@@ -165,21 +172,76 @@ def analyze_compute(task_id: int) -> dict[str, Any]:
                 "decision": HighlightDecision.SKIPPED,
                 "segment_id": segment_id,
             }
+        if segment is None:
+            return {"error": "segment not found", "decision": HighlightDecision.SKIPPED, "segment_id": segment_id}
+        session_id = segment.session_id
+        file_path = segment.file_path
+
+    audio_features: audio_mod.AudioFeatures | None = None
+    try:
+        audio_features = audio_mod.analyze_audio(file_path)
+    except (OSError, RuntimeError) as exc:
+        _logger.warning("hotspot_audio_unavailable: segment=%s error=%s", segment_id, exc)
+
+    hotspot_payloads: list[dict[str, object]] = []
+    try:
+        from app.analysis.hotspot_detector import detect_segment_hotspots, log_hotspot_detection
+
+        hotspot_drafts = detect_segment_hotspots(segment_id, audio_features=audio_features)
+        log_hotspot_detection(segment_id, hotspot_drafts)
+        hotspot_payloads = [draft.to_payload() for draft in hotspot_drafts]
+    except (OSError, RuntimeError, TypeError, ValueError) as exc:
+        _logger.exception("hotspot_detection_failed: segment=%s error=%s", segment_id, exc)
+
+    if analysis_pass == "detect":
+        return {
+            "decision": HighlightDecision.SIGNAL_PASS,
+            "segment_id": segment_id,
+            "session_id": session_id,
+            "hotspot_drafts": hotspot_payloads,
+        }
+
+    if analysis_pass == "candidate":
+        event_results = _score_pending_hotspot_events(
+            session_id,
+            audio_features=audio_features,
+            audio_segment_id=segment_id,
+        )
+        has_candidate = any(result["clip_draft"].decision == HighlightDecision.CANDIDATE for result in event_results)
+        return {
+            "decision": HighlightDecision.CANDIDATE if has_candidate else HighlightDecision.BELOW_THRESHOLD,
+            "segment_id": segment_id,
+            "session_id": session_id,
+            "hotspot_drafts": hotspot_payloads,
+            "event_clip_results": event_results,
+        }
 
     try:
-        draft = _score_segment_drafts(segment_id)
+        draft = _score_segment_drafts(segment_id, audio_features=audio_features)
     except ValueError as exc:
-        return {"error": str(exc), "decision": HighlightDecision.SKIPPED, "segment_id": segment_id}
+        return {
+            "error": str(exc),
+            "decision": HighlightDecision.SKIPPED,
+            "segment_id": segment_id,
+            "session_id": session_id,
+            "hotspot_drafts": hotspot_payloads,
+        }
 
     if draft is None:
-        return {"decision": HighlightDecision.BELOW_THRESHOLD, "segment_id": segment_id}
+        return {
+            "decision": HighlightDecision.BELOW_THRESHOLD,
+            "segment_id": segment_id,
+            "session_id": session_id,
+            "hotspot_drafts": hotspot_payloads,
+        }
 
     # draft 包含 decision 字段 (CANDIDATE / DUPLICATE)
+    draft["hotspot_drafts"] = hotspot_payloads
     return draft
 
 
 def commit_highlight(lease: TaskLease, compute_result: dict[str, Any], ms: int) -> None:
-    """单事务提交分析结果: 先校验租约, 按决策类型执行 DB 写操作。
+    """单事务提交热点与候选分析结果: 先校验租约再执行 DB 写操作。
 
     决策分支:
     - BELOW_THRESHOLD: _mark_scored + 推进 Task 到 COMPLETED
@@ -213,6 +275,82 @@ def commit_highlight(lease: TaskLease, compute_result: dict[str, Any], ms: int) 
                 mark_failed(task, "highlight compute result source mismatch", permanent=True)
                 db.add(task)
                 db.commit()
+                return
+            raw_hotspots = compute_result.get("hotspot_drafts", [])
+            if not isinstance(raw_hotspots, list) or not all(isinstance(item, Mapping) for item in raw_hotspots):
+                mark_failed(task, "invalid hotspot compute result", permanent=True)
+                db.add(task)
+                db.commit()
+                return
+            from app.analysis.hotspot_detector import persist_provisional_hotspots
+
+            persist_provisional_hotspots(
+                db,
+                raw_hotspots,
+                expected_session_id=task.session_id,
+                observed_through=segment.end_ts,
+            )
+
+            if decision == HighlightDecision.SIGNAL_PASS:
+                attention_windows = _build_hotspot_attention_windows(segment, raw_hotspots)
+                has_attention = settings.hotspot_asr_enabled and bool(attention_windows)
+                task.context_json = update_event_first_context(
+                    task.context_json,
+                    analysis_pass="candidate",
+                    asr_mode="hotspot" if has_attention else "background",
+                    asr_evidence_state="pending",
+                    attention_windows=attention_windows if has_attention else [],
+                    detector_completed_at=time.time(),
+                )
+                task.priority = _next_asr_priority(db, task.session_id, hotspot=has_attention)
+                task.processing_time_ms = ms
+                enqueue_next(task, TaskStatus.QUEUED_FOR_TRANS)
+                db.add(task)
+                db.commit()
+                _logger.info(
+                    "signal_pass_committed segment=%s hotspots=%s attention=%s next_priority=%s",
+                    segment_id,
+                    len(raw_hotspots),
+                    len(attention_windows),
+                    task.priority,
+                )
+                return
+
+            raw_event_results = compute_result.get("event_clip_results")
+            if isinstance(raw_event_results, list):
+                created, processed_event_ids = _commit_event_clip_results(
+                    db,
+                    task,
+                    raw_event_results,
+                )
+                followup_event_ids = _unscored_confirmed_event_ids(
+                    db,
+                    task.session_id,
+                    exclude=processed_event_ids,
+                )
+                _mark_scored_in_db(db, segment_id)
+                mark_completed(task, ms)
+                if created:
+                    primary = max(created, key=lambda item: item[2])
+                    enqueue_next(
+                        task,
+                        TaskStatus.CANDIDATE_CREATED,
+                        candidate_id=primary[0],
+                        event_id=primary[1],
+                    )
+                else:
+                    enqueue_next(task, TaskStatus.COMPLETED)
+                db.add(task)
+                db.commit()
+                for event_id in followup_event_ids:
+                    try:
+                        score_hotspot_event(event_id)
+                    except (OSError, RuntimeError, TypeError, ValueError) as exc:
+                        _logger.exception(
+                            "event_clip_followup_failed: event_id=%s error=%s",
+                            event_id,
+                            exc,
+                        )
                 return
             _record_plugin_dispatch(db, compute_result)
 
@@ -335,13 +473,229 @@ def commit_highlight(lease: TaskLease, compute_result: dict[str, Any], ms: int) 
         _logger.warning("stale_result_discarded: highlight task=%s 已失去租约", lease.task_id)
 
 
+def _score_pending_hotspot_events(
+    session_id: int,
+    *,
+    audio_features: audio_mod.AudioFeatures | None,
+    audio_segment_id: int,
+) -> list[dict[str, object]]:
+    """在事务外依次补全并评分当前场次全部待处理的 confirmed 事件。"""
+    from app.analysis.clip_scorer import compute_hotspot_clip_draft, pending_hotspot_event_ids
+    from app.analysis.event_enricher import compute_event_enrichment
+
+    results: list[dict[str, object]] = []
+    for event_id in pending_hotspot_event_ids(session_id):
+        enrichment = compute_event_enrichment(event_id)
+        clip_draft = compute_hotspot_clip_draft(
+            event_id,
+            enrichment=enrichment,
+            audio_features=audio_features,
+            audio_segment_id=audio_segment_id,
+        )
+        results.append(
+            {
+                "event_id": event_id,
+                "enrichment": enrichment,
+                "clip_draft": clip_draft,
+            }
+        )
+    return results
+
+
+def _commit_event_clip_results(
+    db: Session,
+    task: SegmentTask,
+    raw_results: list[object],
+) -> tuple[list[tuple[int, int, float]], set[int]]:
+    """校验事件快照并复用既有 Candidate/Event 幂等提交链。"""
+    from app.analysis.clip_scorer import (
+        EventClipDraft,
+        mark_event_clip_evaluated,
+        validate_event_clip_draft,
+    )
+    from app.analysis.event_enricher import (
+        EventEnrichmentDraft,
+        commit_event_enrichment,
+    )
+    from app.analysis.scoring_config import get_scoring_config
+
+    scoring_config = get_scoring_config()
+    created: list[tuple[int, int, float]] = []
+    processed_event_ids: set[int] = set()
+    for raw in raw_results:
+        if not isinstance(raw, Mapping):
+            raise ValueError("event_clip_results 只能包含对象")
+        clip_draft = raw.get("clip_draft")
+        enrichment = raw.get("enrichment")
+        if not isinstance(clip_draft, EventClipDraft):
+            raise ValueError("event_clip_results 缺少 EventClipDraft")
+        if enrichment is not None and not isinstance(enrichment, EventEnrichmentDraft):
+            raise ValueError("event_clip_results 包含无效 EventEnrichmentDraft")
+        if clip_draft.session_id != task.session_id:
+            raise ValueError("event_clip_results 与任务场次不一致")
+        if enrichment is not None and not commit_event_enrichment(db, enrichment):
+            continue
+        event = validate_event_clip_draft(db, clip_draft)
+        if event is None:
+            continue
+        processed_event_ids.add(clip_draft.hotspot_event_id)
+        committed_draft = clip_draft
+        if clip_draft.decision == HighlightDecision.CANDIDATE:
+            payload = clip_draft.to_payload()
+            if _draft_clusters_existing(
+                db,
+                payload,
+                dedup_hash=clip_draft.dedup_hash,
+                cooldown_s=scoring_config.cooldown_s,
+                iou_threshold=scoring_config.iou_threshold,
+            ):
+                committed_draft = replace(
+                    clip_draft,
+                    decision=HighlightDecision.DUPLICATE,
+                    reason=f"{clip_draft.reason}；与既有候选重叠或处于同事件冷却期",
+                )
+            else:
+                candidate = _get_or_create_candidate(
+                    db,
+                    clip_draft.dedup_hash,
+                    clip_draft.session_id,
+                    clip_draft.peak_ts,
+                    clip_draft.start_ts,
+                    clip_draft.end_ts,
+                    clip_draft.clip_score,
+                    0.0,
+                    clip_draft.clip_score,
+                    clip_draft.features_json,
+                    clip_draft.reason,
+                    clip_draft.initial_status,
+                )
+                if candidate.id is None:
+                    raise RuntimeError("事件级候选创建后缺少主键")
+                highlight_event_id = _get_or_create_event(
+                    db,
+                    candidate.id,
+                    clip_draft.session_id,
+                    clip_draft.start_ts,
+                    clip_draft.end_ts,
+                    clip_draft.clip_score,
+                    0.0,
+                    clip_draft.clip_score,
+                    clip_draft.features_json,
+                    clip_draft.reason,
+                    segment_id=clip_draft.segment_id,
+                    asr_text=clip_draft.asr_text,
+                )
+                event.candidate_id = candidate.id
+                db.add(event)
+                created.append((candidate.id, highlight_event_id, clip_draft.clip_score))
+        mark_event_clip_evaluated(db, event, committed_draft)
+    return created, processed_event_ids
+
+
+def _unscored_confirmed_event_ids(
+    db: Session,
+    session_id: int,
+    *,
+    exclude: set[int],
+) -> list[int]:
+    """找出本次持久化后才进入 confirmed 或证据刚变化的事件。"""
+    from app.analysis.clip_scorer import event_clip_score_is_current
+
+    rows = db.exec(
+        select(HotspotEvent)
+        .where(
+            HotspotEvent.session_id == session_id,
+            HotspotEvent.status == HotspotStatus.CONFIRMED,
+            HotspotEvent.candidate_id.is_(None),
+        )
+        .order_by(HotspotEvent.peak_ts.asc(), HotspotEvent.id.asc())
+    ).all()
+    return [
+        event.id
+        for event in rows
+        if event.id is not None and event.id not in exclude and not event_clip_score_is_current(db, event)
+    ]
+
+
+def score_hotspot_event(event_id: int) -> HighlightCandidate | None:
+    """同步补全并评分一个 confirmed 热点，达到房间阈值时创建候选。"""
+    from app.analysis.clip_scorer import compute_hotspot_clip_draft, event_clip_score_is_current
+    from app.analysis.event_enricher import compute_event_enrichment
+
+    with get_session() as db:
+        current = db.get(HotspotEvent, event_id)
+        if current is None:
+            raise ValueError(f"HotspotEvent 不存在: event_id={event_id}")
+        if current.candidate_id is not None:
+            return db.get(HighlightCandidate, current.candidate_id)
+        if event_clip_score_is_current(db, current):
+            return None
+    enrichment = compute_event_enrichment(event_id)
+    clip_draft = compute_hotspot_clip_draft(event_id, enrichment=enrichment)
+    with get_session() as db:
+        event = db.get(HotspotEvent, event_id)
+        if event is None:
+            raise ValueError(f"HotspotEvent 不存在: event_id={event_id}")
+        synthetic_task = SegmentTask(
+            segment_id=clip_draft.segment_id,
+            session_id=clip_draft.session_id,
+            stage=TaskStatus.ANALYZING,
+        )
+        created, _processed = _commit_event_clip_results(
+            db,
+            synthetic_task,
+            [{"event_id": event_id, "enrichment": enrichment, "clip_draft": clip_draft}],
+        )
+        if not created:
+            return None
+        candidate = db.get(HighlightCandidate, created[0][0])
+        if candidate is None:
+            raise RuntimeError("事件级候选提交后无法读取")
+        return candidate
+
+
 def score_segment_direct(segment_id: int) -> HighlightCandidate | None:
     """供 CLI/同步编排器复用正式多峰评分链，并提交全部去簇候选。
+
+    在旧候选评分前先运行无 LLM HotspotDetector，并独立持久化 provisional
+    热点；因此候选路径仍要求 ASR 时，热点事实也不会丢失。
 
     返回最高分候选以维持既有同步 API；同一分段的其他有效爆点也会创建为
     独立 Candidate/Event，随后统一出现在场次时间线与审核工作台中。
     """
-    compute_result = _score_segment_drafts(segment_id)
+    with get_session() as db:
+        segment = db.get(RawSegment, segment_id)
+        if segment is None:
+            raise ValueError(f"片段不存在: id={segment_id}")
+        file_path = segment.file_path
+        session_id = segment.session_id
+
+    audio_features: audio_mod.AudioFeatures | None = None
+    try:
+        audio_features = audio_mod.analyze_audio(file_path)
+    except (OSError, RuntimeError) as exc:
+        _logger.warning("hotspot_audio_unavailable: segment=%s error=%s", segment_id, exc)
+    try:
+        from app.analysis.hotspot_detector import (
+            detect_segment_hotspots,
+            log_hotspot_detection,
+            persist_provisional_hotspots,
+        )
+
+        hotspot_drafts = detect_segment_hotspots(segment_id, audio_features=audio_features)
+        log_hotspot_detection(segment_id, hotspot_drafts)
+        with get_session() as db:
+            segment = db.get(RawSegment, segment_id)
+            persist_provisional_hotspots(
+                db,
+                hotspot_drafts,
+                expected_session_id=session_id,
+                observed_through=segment.end_ts if segment is not None else None,
+            )
+    except (OSError, RuntimeError, TypeError, ValueError) as exc:
+        _logger.exception("hotspot_detection_failed: segment=%s error=%s", segment_id, exc)
+
+    compute_result = _score_segment_drafts(segment_id, audio_features=audio_features)
     if compute_result is None:
         _mark_scored_direct(segment_id)
         return None
@@ -421,6 +775,63 @@ def _mark_scored_direct(segment_id: int) -> None:
         _mark_scored_in_db(db, segment_id)
 
 
+def _build_hotspot_attention_windows(
+    segment: RawSegment,
+    hotspots: list[Mapping[str, object]],
+) -> list[dict[str, object]]:
+    """把本段 provisional 热点转换为可恢复的局部 ASR 窗口。"""
+    if segment.start_ts is None:
+        return []
+    if segment.end_ts is not None:
+        duration_s = max(0.0, (segment.end_ts - segment.start_ts).total_seconds())
+    else:
+        duration_s = float(segment.duration_s or settings.segment_duration_s)
+    windows: list[dict[str, object]] = []
+    seen: set[str] = set()
+    for hotspot in hotspots:
+        event_key = hotspot.get("event_key")
+        peak_ts = hotspot.get("peak_ts")
+        if not isinstance(event_key, str) or not event_key or event_key in seen:
+            continue
+        if not isinstance(peak_ts, datetime):
+            continue
+        try:
+            peak_offset_s = (peak_ts - segment.start_ts).total_seconds()
+        except TypeError:
+            peak_value = peak_ts.replace(tzinfo=None)
+            start_value = segment.start_ts.replace(tzinfo=None)
+            peak_offset_s = (peak_value - start_value).total_seconds()
+        start_offset_s = max(0.0, peak_offset_s - settings.hotspot_asr_pre_roll_s)
+        end_offset_s = min(duration_s, peak_offset_s + settings.hotspot_asr_post_roll_s)
+        if end_offset_s - start_offset_s < 1.0:
+            continue
+        seen.add(event_key)
+        windows.append(
+            {
+                "event_key": event_key,
+                "start_offset_s": round(start_offset_s, 3),
+                "end_offset_s": round(end_offset_s, 3),
+                "status": "pending",
+            }
+        )
+    return windows
+
+
+def _next_asr_priority(db: Session, session_id: int, *, hotspot: bool) -> int:
+    """按热点、近直播、历史后台三档返回持久化任务优先级。"""
+    if hotspot:
+        return settings.hotspot_asr_priority
+    session = db.get(RecordingSession, session_id)
+    if session is not None and session.status in {
+        SessionStatus.STARTING,
+        SessionStatus.RECORDING,
+        SessionStatus.RECONNECTING,
+        SessionStatus.RECONNECTED,
+    }:
+        return settings.near_live_asr_priority
+    return settings.background_asr_priority
+
+
 def _draft_dedup_hash(draft: dict[str, Any]) -> str:
     """为缺少业务键的异常计算结果生成稳定候选指纹。"""
     start = draft.get("start_ts")
@@ -453,9 +864,71 @@ def _draft_clusters_existing(
             return False
         if interval_iou(start, end, candidate.start_ts, candidate.end_ts) >= iou_threshold:
             return True
-        if cooldown_s > 0 and datetime_distance_s(peak, candidate.peak_ts) < cooldown_s:
+        if (
+            cooldown_s > 0
+            and datetime_distance_s(peak, candidate.peak_ts) < cooldown_s
+            and _draft_shares_cooldown_identity(draft, candidate)
+        ):
             return True
     return False
+
+
+def _draft_shares_cooldown_identity(
+    draft: Mapping[str, Any],
+    candidate: HighlightCandidate,
+) -> bool:
+    """旧分段候选保持时间冷却；事件候选仅对同一语义事件应用冷却。"""
+    hotspot_event_id = draft.get("hotspot_event_id")
+    if not isinstance(hotspot_event_id, int):
+        return True
+    draft_features = _json_object(draft.get("features_json"))
+    candidate_features = _json_object(candidate.features_json)
+    if candidate_features.get("hotspot_event_id") == hotspot_event_id:
+        return True
+    draft_event = draft_features.get("event")
+    candidate_event = candidate_features.get("event")
+    if not isinstance(draft_event, Mapping) or not isinstance(candidate_event, Mapping):
+        return False
+    draft_terms = _cooldown_terms(draft_event)
+    candidate_terms = _cooldown_terms(candidate_event)
+    if not draft_terms or not candidate_terms:
+        return False
+    return len(draft_terms & candidate_terms) / len(draft_terms | candidate_terms) >= 0.20
+
+
+def _cooldown_terms(event_payload: Mapping[str, object]) -> set[str]:
+    """提取事件标题、类别与实体的稳定冷却身份词。"""
+    values: list[str] = []
+    for name in ("title", "category"):
+        value = event_payload.get(name)
+        if isinstance(value, str):
+            values.append(value)
+    entities = event_payload.get("entities")
+    if isinstance(entities, list):
+        values.extend(item for item in entities if isinstance(item, str))
+    terms: set[str] = set()
+    for value in values:
+        normalized = "".join(value.casefold().split())
+        if not normalized:
+            continue
+        if any("\u4e00" <= char <= "\u9fff" for char in normalized):
+            terms.update(normalized[index : index + 2] for index in range(max(1, len(normalized) - 1)))
+        else:
+            terms.update(token for token in normalized.replace("_", " ").split() if token)
+    return terms
+
+
+def _json_object(raw: object) -> dict[str, Any]:
+    """安全解析候选特征对象。"""
+    if isinstance(raw, Mapping):
+        return dict(raw)
+    if not isinstance(raw, str):
+        return {}
+    try:
+        value = json.loads(raw)
+    except (json.JSONDecodeError, TypeError):
+        return {}
+    return dict(value) if isinstance(value, Mapping) else {}
 
 
 def _get_or_create_candidate(
@@ -635,28 +1108,25 @@ def run_analyze(lease: TaskLease) -> None:
 # ══════════════════════════════════════════
 
 
-def _score_segment_drafts(segment_id: int) -> dict[str, Any] | None:
+def _score_segment_drafts(
+    segment_id: int,
+    *,
+    audio_features: audio_mod.AudioFeatures | None = None,
+) -> dict[str, Any] | None:
     """对一个录制分段的多个局部峰值分别评分并执行防扎堆筛选。
 
     返回值以最高分候选作为顶层结果供任务状态机推进；其余候选
     放在 ``additional_candidates`` 中，由同一个租约事务幂等提交。
     """
     from app.analysis.timeline import suppress_clustered_drafts  # noqa: PLC0415
-    from app.analysis.transcription.quality import assess_transcript_quality  # noqa: PLC0415
 
     with get_session() as db:
         segment = db.get(RawSegment, segment_id)
         if segment is None:
             raise ValueError(f"片段不存在: id={segment_id}")
-        transcript = db.exec(select(Transcript).where(Transcript.segment_id == segment_id)).first()
-        if transcript is None:
-            raise ValueError(f"片段尚未转写: id={segment_id}")
-        quality = assess_transcript_quality(transcript.final_text)
-        if not quality.usable:
-            raise ValueError(f"片段转写质量不合格，已阻止高光与 LLM 分析: segment={segment_id} reason={quality.reason}")
         file_path = segment.file_path
 
-    features = audio_mod.analyze_audio(file_path)
+    features = audio_features or audio_mod.analyze_audio(file_path)
     peak_offsets = features.peak_offsets(
         limit=settings.highlight_max_candidates_per_segment,
         min_distance_s=settings.highlight_peak_min_distance_s,
@@ -741,6 +1211,7 @@ def _score_segment_draft(
         _danmaku_score as _dm_score,
     )
     from app.analysis.scoring_config import get_scoring_config  # noqa: PLC0415
+    from app.analysis.transcription.quality import assess_transcript_quality  # noqa: PLC0415
 
     cfg = get_scoring_config()
 
@@ -770,24 +1241,19 @@ def _score_segment_draft(
         session_segments = db.exec(
             select(RawSegment).where(RawSegment.session_id == segment.session_id).order_by(RawSegment.seq.asc())
         ).all()
+        loaded_transcripts = db.exec(
+            select(Transcript).where(Transcript.segment_id.in_([item.id for item in session_segments]))
+        ).all()
         session_transcripts = {
-            item.segment_id: item
-            for item in db.exec(
-                select(Transcript).where(Transcript.segment_id.in_([item.id for item in session_segments]))
-            ).all()
+            item.segment_id: item for item in loaded_transcripts if assess_transcript_quality(item.final_text).usable
         }
         available_start, available_end = contiguous_recording_range(session_segments, segment)
 
-    if not has_transcript:
-        raise ValueError(f"片段尚未转写: id={segment_id}")
-
-    from app.analysis.transcription.quality import assess_transcript_quality  # noqa: PLC0415
-
-    transcript_quality = assess_transcript_quality(text)
-    if not transcript_quality.usable:
-        raise ValueError(
-            f"片段转写质量不合格，已阻止高光与 LLM 分析: segment={segment_id} reason={transcript_quality.reason}"
-        )
+    transcript_quality = assess_transcript_quality(text) if has_transcript else None
+    asr_evidence_state = (
+        "unavailable" if transcript_quality is None else ("available" if transcript_quality.usable else "degraded")
+    )
+    asr_evidence_reason = transcript_quality.reason if transcript_quality is not None else "missing_transcript"
 
     # 1) 规则特征
     feats = audio_features or audio_mod.analyze_audio(file_path)
@@ -828,14 +1294,20 @@ def _score_segment_draft(
     )
 
     danmaku_start_ts, danmaku_end_ts = align_danmaku_window(analysis_start_ts, analysis_end_ts)
-    kw_score, kw_hits = match_keywords(judgement_text)
+    semantic_text_available = bool(judgement_text.strip())
+    kw_score, kw_hits = match_keywords(judgement_text) if semantic_text_available else (0.0, [])
     features: dict[str, float] = {
         "volume": feats.volume_score(),
-        "keywords": kw_score,
-        "speech_rate": speech_rate_score(analysis_window.words, analysis_duration_s),
-        "laughter": laughter_score(judgement_text),
         "danmaku": _dm_score(session_id, danmaku_start_ts, danmaku_end_ts),
     }
+    if semantic_text_available:
+        features.update(
+            {
+                "keywords": kw_score,
+                "speech_rate": speech_rate_score(analysis_window.words, analysis_duration_s),
+                "laughter": laughter_score(judgement_text),
+            }
+        )
     if use_dm_sentiment:
         features["danmaku_sentiment"] = danmaku_sentiment_score(
             session_id,
@@ -849,7 +1321,7 @@ def _score_segment_draft(
         if audio_evt_score > 0:
             features["audio_events"] = audio_evt_score
     trend_hits: list[str] = []
-    if settings.trend_enabled:
+    if settings.trend_enabled and semantic_text_available:
         trend_score, trend_hits = _trend_score(judgement_text)
         features["trend"] = trend_score
     rule_score = weighted_rule_score(features, cfg.weights)
@@ -906,9 +1378,20 @@ def _score_segment_draft(
     # 3) LLM 复核
     top_danmaku = representative_danmaku(session_id, analysis_start_ts, analysis_end_ts)
     danmaku_summary = "；".join(str(item["text"]) for item in top_danmaku)
-    judgement = llm_mod.judge_highlight(judgement_text, features, danmaku_summary, analysis_start_s)
+    judgement = (
+        llm_mod.judge_highlight(judgement_text, features, danmaku_summary, analysis_start_s)
+        if semantic_text_available
+        else None
+    )
     llm_score = judgement.score if judgement else None
-    reason = judgement.reason if judgement else "规则命中(未启用/未触发 LLM)"
+    if judgement is not None:
+        reason = judgement.reason
+    elif asr_evidence_state == "degraded":
+        reason = "ASR 语义证据质量较低，依据音频与互动信号命中"
+    elif asr_evidence_state == "unavailable":
+        reason = "ASR 语义证据不可用，依据音频与互动信号命中"
+    else:
+        reason = "规则命中(未启用/未触发 LLM)"
     highlight_score = fuse_scores(primary_score, llm_score, cfg.alpha, cfg.beta)
 
     # 终分不足 — 不写 DB, 返回显式决策。
@@ -998,6 +1481,14 @@ def _score_segment_draft(
                 "keyword_hits": kw_hits,
                 "audio": _audio_meta(feats),
                 "danmaku_explain": danmaku_explain,
+                "asr_evidence": {
+                    "state": asr_evidence_state,
+                    "reason": asr_evidence_reason,
+                    "semantic_window_available": semantic_text_available,
+                    "repetition_ratio": (
+                        round(transcript_quality.repetition_ratio, 6) if transcript_quality is not None else None
+                    ),
+                },
                 "timeline": {
                     "analysis_version": TIMELINE_ANALYSIS_VERSION,
                     "confidence": confidence,

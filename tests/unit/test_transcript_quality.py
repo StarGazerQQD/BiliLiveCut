@@ -1,4 +1,4 @@
-"""长音频标准化与转写质量门禁回归测试。"""
+"""长音频标准化、热点窗口与转写质量分类回归测试。"""
 
 from __future__ import annotations
 
@@ -6,7 +6,7 @@ import subprocess
 from pathlib import Path
 from typing import TYPE_CHECKING
 
-from app.analysis.transcription.audio_normalization import normalized_asr_audio
+from app.analysis.transcription.audio_normalization import normalized_asr_audio, normalized_asr_audio_window
 from app.analysis.transcription.quality import assess_transcript_quality, repair_local_decode_loop
 
 if TYPE_CHECKING:
@@ -22,7 +22,7 @@ def test_quality_accepts_normal_transcript() -> None:
 
 
 def test_quality_rejects_empty_and_degenerate_repetition() -> None:
-    """空输出和生成式解码循环都必须阻止进入下游。"""
+    """空输出和生成式解码循环应分类为 degraded 语义证据。"""
     empty = assess_transcript_quality("  ，。！")
     repeated = assess_transcript_quality("等一下我们先看看" * 20)
 
@@ -101,3 +101,23 @@ def test_wav_input_bypasses_ffmpeg(monkeypatch: MonkeyPatch) -> None:
     monkeypatch.setattr(subprocess, "run", fail_run)
     with normalized_asr_audio("already-normalized.wav") as normalized:
         assert normalized == "already-normalized.wav"
+
+
+def test_hotspot_window_is_cut_before_priority_asr(tmp_path: Path, monkeypatch: MonkeyPatch) -> None:
+    """热点 ASR 必须只向 production pipeline 提交指定局部窗口。"""
+    source = tmp_path / "segment.ts"
+    source.write_bytes(b"transport-stream")
+    captured: list[str] = []
+
+    def fake_run(command: list[str], **_kwargs: object) -> subprocess.CompletedProcess[str]:
+        captured.extend(command)
+        Path(command[-1]).write_bytes(b"RIFF-window")
+        return subprocess.CompletedProcess(command, 0, "", "")
+
+    monkeypatch.setattr(subprocess, "run", fake_run)
+
+    with normalized_asr_audio_window(str(source), 25.0, 115.0) as normalized:
+        assert Path(normalized).is_file()
+
+    assert captured[captured.index("-ss") + 1] == "25.000"
+    assert captured[captured.index("-t") + 1] == "90.000"

@@ -27,7 +27,10 @@ from typing import TYPE_CHECKING
 from loguru import logger
 
 from app.analysis import asr_metrics
-from app.analysis.transcription.audio_normalization import normalized_asr_audio
+from app.analysis.transcription.audio_normalization import (
+    normalized_asr_audio,
+    normalized_asr_audio_window,
+)
 
 # ── 导入 backends 中的共享工具函数 ──────────────────────────
 # Zero-duplicate policy: all utility functions live in backends.py
@@ -47,6 +50,7 @@ from app.analysis.transcription.quality import (
     TranscriptQuality,
     assess_transcript_quality,
     repair_local_decode_loop,
+    transcript_quality_payload,
 )
 from app.core.config import settings
 from app.db.entities import RawSegment, SegmentStatus, Transcript
@@ -109,6 +113,21 @@ class ASRPipeline:
         :returns: :class:`ASRTranscriptResult`。
         """
         with normalized_asr_audio(audio_path) as normalized_path:
+            return self._transcribe_normalized(normalized_path, initial_prompt)
+
+    def transcribe_window(
+        self,
+        audio_path: str,
+        start_s: float,
+        end_s: float,
+        initial_prompt: str | None = None,
+    ) -> ASRTranscriptResult:
+        """优先识别源媒体中的一个热点局部窗口。
+
+        本方法复用完整 production ASR 管线，只改变输入窗口；调用方负责将
+        结果绑定到 HotspotEvent，后台完整转写仍由后续独立任务继续。
+        """
+        with normalized_asr_audio_window(audio_path, start_s, end_s) as normalized_path:
             return self._transcribe_normalized(normalized_path, initial_prompt)
 
     def _transcribe_normalized(
@@ -480,8 +499,12 @@ def transcribe_segment(
     result.final_text = final_text
     quality = assess_transcript_quality(final_text or text)
     if not quality.usable:
-        raise RuntimeError(f"ASR 输出质量不合格: {quality.reason}")
-    refinement = _refine_transcript_for_storage(final_text or text)
+        logger.warning(
+            "ASR 输出已按 degraded 证据落库，非语义热点分析继续: segment={} reason={}",
+            segment_id,
+            quality.reason,
+        )
+    refinement = _refine_transcript_for_storage(final_text or text) if quality.usable else None
     display_text = refinement.clean_text if refinement is not None else (final_text or text)
 
     words_json = json.dumps(
@@ -490,7 +513,7 @@ def transcribe_segment(
     )
 
     # V0.1.12.2: 序列化辅助特征 + reviewed_segments
-    auxiliary_payload: dict[str, object] = {}
+    auxiliary_payload: dict[str, object] = {"asr_quality": transcript_quality_payload(quality)}
     if result.emotions or result.reviewed_segments:
         auxiliary_payload.update(
             {

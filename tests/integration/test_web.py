@@ -13,6 +13,8 @@ pytest.importorskip("fastapi")
 from fastapi.testclient import TestClient  # noqa: E402
 
 if TYPE_CHECKING:
+    from pathlib import Path
+
     from _pytest.monkeypatch import MonkeyPatch
 
 
@@ -465,6 +467,7 @@ def test_dashboard_serves_complete_javascript_module_graph(temp_db: None) -> Non
         dashboard = client.get("/")
         assert dashboard.status_code == 200
         assert '<script type="module" src="/static/app.js"></script>' in dashboard.text
+        assert 'id="web-port"' in dashboard.text
 
         entrypoint = client.get("/static/app.js")
         assert entrypoint.status_code == 200
@@ -478,13 +481,15 @@ def test_dashboard_serves_complete_javascript_module_graph(temp_db: None) -> Non
             assert response.content, module_path
 
 
-def test_settings_toggle_and_uploads(temp_db: None, monkeypatch: MonkeyPatch) -> None:
+def test_settings_toggle_and_uploads(temp_db: None, monkeypatch: MonkeyPatch, tmp_path: Path) -> None:
     """上传开关默认关闭,可切换;上传队列与打开目录接口工作。"""
     from app.web import service
     from app.web.main import app
 
     # 避免测试真的打开文件管理器窗口。
     monkeypatch.setattr(service, "open_path", lambda p: True)
+    monkeypatch.setenv("BLC_APP_ROOT", str(tmp_path))
+    monkeypatch.setenv("BLC_WEB_PORT", "8000")
 
     with TestClient(app) as client:
         s = client.get("/api/settings").json()
@@ -494,6 +499,9 @@ def test_settings_toggle_and_uploads(temp_db: None, monkeypatch: MonkeyPatch) ->
         assert s["transcript_llm_refine_overridden"] is False
         assert s["asr_task_max_concurrency"] == 1
         assert s["asr_task_max_concurrency_overridden"] is False
+        assert s["web_port"] == 8000
+        assert s["current_web_port"] == 8000
+        assert s["restart_required"] is False
         assert s["biliup_enabled"] is False
         assert s["upload_active"] is False
 
@@ -503,6 +511,7 @@ def test_settings_toggle_and_uploads(temp_db: None, monkeypatch: MonkeyPatch) ->
                 "recording_pipeline_enabled": False,
                 "transcript_llm_refine_enabled": False,
                 "asr_task_max_concurrency": 3,
+                "web_port": 8080,
                 "biliup_enabled": True,
             },
         ).json()
@@ -512,6 +521,9 @@ def test_settings_toggle_and_uploads(temp_db: None, monkeypatch: MonkeyPatch) ->
         assert s2["transcript_llm_refine_overridden"] is True
         assert s2["asr_task_max_concurrency"] == 3
         assert s2["asr_task_max_concurrency_overridden"] is True
+        assert s2["web_port"] == 8080
+        assert s2["current_web_port"] == 8000
+        assert s2["restart_required"] is True
         assert s2["biliup_enabled"] is True
         assert s2["upload_active"] is True
 
@@ -524,6 +536,17 @@ def test_settings_toggle_and_uploads(temp_db: None, monkeypatch: MonkeyPatch) ->
 
         invalid = client.patch("/api/settings", json={"asr_task_max_concurrency": 9})
         assert invalid.status_code == 400
+
+        config_path = tmp_path / "config" / "launcher.json"
+        before = config_path.read_bytes()
+        invalid_port = client.patch("/api/settings", json={"web_port": 0})
+        assert invalid_port.status_code == 400
+        assert config_path.read_bytes() == before
+
+        monkeypatch.setenv("BLC_WEB_PORT", "8080")
+        restarted = client.get("/api/settings").json()
+        assert restarted["current_web_port"] == 8080
+        assert restarted["restart_required"] is False
 
 
 def test_transcript_api_exposes_summary_and_raw_asr(temp_db: None) -> None:

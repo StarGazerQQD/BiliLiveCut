@@ -7,8 +7,9 @@
   3. Portable runtime lock audit
   4. Ruff lint + format check
   5. Payload 构建 + Manifest/ZIP 契约验证
-  6. 主线全部测试
-  7. Portable 全部测试
+  6. Portable production provisioning 编排测试
+  7. 主线全部测试
+  8. Portable 全部测试
 
 任一步骤失败都会关闭门禁并最终返回非零退出码 (fail-closed)。
 
@@ -82,23 +83,23 @@ def main() -> int:  # noqa: D103
     all_ok = True
 
     # ── Step 1: release_audit ──
-    all_ok &= _run([sys.executable, "scripts/release_audit.py"], desc="1/8 release_audit")
+    all_ok &= _run([sys.executable, "scripts/release_audit.py"], desc="1/9 release_audit")
 
     # ── Step 2: version_consistency ──
-    all_ok &= _run([sys.executable, "scripts/check_version_consistency.py"], desc="2/8 version_consistency")
+    all_ok &= _run([sys.executable, "scripts/check_version_consistency.py"], desc="2/9 version_consistency")
 
     # ── Step 3: Portable runtime lock audit ──
     all_ok &= _run(
         [sys.executable, "scripts/audit_portable_runtime_locks.py"],
-        desc="3/8 Portable runtime lock audit",
+        desc="3/9 Portable runtime lock audit",
     )
 
     # ── Step 4: Ruff ──
-    all_ok &= _run([sys.executable, "scripts/run_ruff.py", "check"], desc="4/8 ruff check")
-    all_ok &= _run([sys.executable, "scripts/run_ruff.py", "format"], desc="4/8 ruff format check")
+    all_ok &= _run([sys.executable, "scripts/run_ruff.py", "check"], desc="4/9 ruff check")
+    all_ok &= _run([sys.executable, "scripts/run_ruff.py", "format"], desc="4/9 ruff format check")
 
     # ── Step 5: Payload 构建 + 契约验证 ──
-    payload_built = _run([sys.executable, "packaging/portable/build_payload.py"], desc="5/8 build_payload")
+    payload_built = _run([sys.executable, "packaging/portable/build_payload.py"], desc="5/9 build_payload")
     all_ok &= payload_built
 
     # Payload contract cross-verify
@@ -119,7 +120,7 @@ def main() -> int:  # noqa: D103
         mf_cnt = m["file_count"]
         mf_entries = len(m["files"])
         if zf_cnt != mf_cnt or zf_cnt != mf_entries:
-            print(f"{RED}  5/8 Payload contract FAIL: ZIP={zf_cnt} MF={mf_cnt} files={mf_entries}{RESET}")
+            print(f"{RED}  5/9 Payload contract FAIL: ZIP={zf_cnt} MF={mf_cnt} files={mf_entries}{RESET}")
             payload_ok = False
 
         abi = m["python_abi"]
@@ -130,38 +131,44 @@ def main() -> int:  # noqa: D103
         }
         missing_native = sorted(required_native - entries)
         if missing_native:
-            print(f"{RED}  5/8 Payload native contract FAIL: missing={missing_native}{RESET}")
+            print(f"{RED}  5/9 Payload native contract FAIL: missing={missing_native}{RESET}")
             payload_ok = False
         foreign_native = sorted(name for name in entries if name.endswith((".so", ".dll")))
         if foreign_native:
-            print(f"{RED}  5/8 Payload native contract FAIL: foreign={foreign_native}{RESET}")
+            print(f"{RED}  5/9 Payload native contract FAIL: foreign={foreign_native}{RESET}")
             payload_ok = False
 
         sums_lines = (payload_dir / "SHA256SUMS.txt").read_text(encoding="utf-8").splitlines()
         for line in sums_lines:
             expected, filename = line.split(maxsplit=1)
             if filename == "SHA256SUMS.txt":
-                print(f"{RED}  5/8 Payload checksum FAIL: checksum file lists itself{RESET}")
+                print(f"{RED}  5/9 Payload checksum FAIL: checksum file lists itself{RESET}")
                 payload_ok = False
                 continue
             actual = hashlib.sha256((payload_dir / filename).read_bytes()).hexdigest()
             if actual != expected:
-                print(f"{RED}  5/8 Payload checksum FAIL: {filename}{RESET}")
+                print(f"{RED}  5/9 Payload checksum FAIL: {filename}{RESET}")
                 payload_ok = False
         if payload_ok:
-            print(f"{GREEN}  5/8 Payload contract OK: {zf_cnt} files{RESET}")
+            print(f"{GREEN}  5/9 Payload contract OK: {zf_cnt} files{RESET}")
     except Exception as exc:
-        print(f"{RED}  5/8 Payload contract FAIL: {exc}{RESET}")
+        print(f"{RED}  5/9 Payload contract FAIL: {exc}{RESET}")
         payload_ok = False
     all_ok &= payload_ok
 
-    # ── Step 6: 主线测试 ──
-    all_ok &= _pytest("tests/", desc="6/8 main tests")
+    # ── Step 6: production provisioning 编排 ──
+    all_ok &= _pytest(
+        "packaging/portable/tests/test_provisioning_orchestration.py",
+        desc="6/9 production provisioning orchestration",
+    )
 
-    # ── Step 7: Portable 测试 ──
-    all_ok &= _pytest("packaging/portable/tests/", desc="7/8 portable tests")
+    # ── Step 7: 主线测试 ──
+    all_ok &= _pytest("tests/", desc="7/9 main tests")
 
-    # ── Step 8: 最终判断 ──
+    # ── Step 8: Portable 测试 ──
+    all_ok &= _pytest("packaging/portable/tests/", desc="8/9 portable tests")
+
+    # ── Step 9: 最终判断 ──
     print(f"\n{'=' * 60}")
     if all_ok:
         print(f"{GREEN}  ALL CHECKS PASSED — ready to release{RESET}")

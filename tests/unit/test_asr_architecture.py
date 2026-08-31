@@ -192,12 +192,28 @@ class TestModelCatalogConsistency:
         assert "iic/Fun-ASR-Nano" not in be.MODEL_ID_NANO, "Old Nano ID still present"
 
     def test_revisions_are_stable_not_master(self) -> None:
-        """Primary revision 不应为 'master' (tag/branch 不可复现)。"""
+        """所有运行时 revision 都不得回退到浮动 master。"""
         from app.analysis.transcription.backends import FunASRBackend
 
         be = FunASRBackend
-        # Primary should have a real revision, not just "master"
-        assert be._REVISION_PRIMARY != "master", "Primary revision should be a stable hash/tag, not 'master'"
+        assert "master" not in {
+            be._REVISION_PRIMARY,
+            be._REVISION_SENSEVOICE,
+            be._REVISION_NANO,
+        }
+
+    def test_runtime_revisions_match_portable_model_lock(self) -> None:
+        """运行时 provenance 必须报告模型锁中的真实 resolved_revision。"""
+        from app.analysis.transcription.backends import FunASRBackend
+
+        lock_path = _REPO_ROOT / "packaging" / "portable" / "config" / "model_sources.lock.json"
+        engines = {
+            item["engine_id"]: item["resolved_revision"]
+            for item in json.loads(lock_path.read_text(encoding="utf-8"))["engines"]
+        }
+        assert FunASRBackend._REVISION_PRIMARY == engines["paraformer"]
+        assert FunASRBackend._REVISION_SENSEVOICE == engines["sensevoice"]
+        assert FunASRBackend._REVISION_NANO == engines["funasr_nano"]
 
     def test_no_short_hash_revisions(self) -> None:
         """每个 revision 不应是短 hash (< 7 chars)。"""

@@ -28,6 +28,7 @@ from app.pipeline.stage_result import (
     mark_failed,
 )
 from app.pipeline.stale_recovery import resume_stage
+from app.pipeline.task_context import update_event_first_context
 from app.pipeline.workers import (
     run_analyze,
     run_publish,
@@ -65,7 +66,7 @@ def room_cfg_from_task(task: SegmentTask) -> dict[str, bool | float]:
 
 
 def advance_recorded() -> None:
-    """推进 RECORDED 阶段任务到 QUEUED_FOR_TRANS (如果 auto_analyze 开启)。"""
+    """先把 RECORDED 任务送入无 ASR 信号检测，再进入转写。"""
     import logging
 
     _logger = logging.getLogger(__name__)
@@ -76,9 +77,29 @@ def advance_recorded() -> None:
             if seg is not None and seg.status == OldStatus.RECORDED:
                 cfg = room_cfg_from_task(task)
                 if not cfg.get("auto_analyze", False):
-                    _logger.debug("auto_analyze=off, 片段 %s 不自动进入转写队列", task.segment_id)
+                    _logger.debug("auto_analyze=off, 片段 %s 不自动进入热点检测", task.segment_id)
                     continue
-                enqueue_next(task, TaskStatus.QUEUED_FOR_TRANS)
+                session = db.get(RecordingSession, task.session_id)
+                task.priority = (
+                    settings.near_live_asr_priority
+                    if session is not None
+                    and session.status
+                    in {
+                        SessionStatus.STARTING,
+                        SessionStatus.RECORDING,
+                        SessionStatus.RECONNECTING,
+                        SessionStatus.RECONNECTED,
+                    }
+                    else settings.background_asr_priority
+                )
+                task.context_json = update_event_first_context(
+                    task.context_json,
+                    analysis_pass="detect",
+                    asr_mode="pending",
+                    asr_evidence_state="pending",
+                    attention_windows=[],
+                )
+                enqueue_next(task, TaskStatus.QUEUED_FOR_ANALYSIS)
                 db.add(task)
 
 
@@ -128,6 +149,21 @@ def _analysis_lookahead_ready(db: Session, task: SegmentTask) -> bool:
             return True
         following_task = db.exec(select(SegmentTask).where(SegmentTask.segment_id == following.id)).first()
         return following_task is not None and following_task.stage in {
+            TaskStatus.TRANSCRIBED,
+            TaskStatus.QUEUED_FOR_ANALYSIS,
+            TaskStatus.ANALYZING,
+            TaskStatus.CANDIDATE_CREATED,
+            TaskStatus.AWAITING_REVIEW,
+            TaskStatus.REVIEWED_WAITING_ACTION,
+            TaskStatus.APPROVED,
+            TaskStatus.APPROVED_WAITING_RENDER,
+            TaskStatus.QUEUED_FOR_RENDER,
+            TaskStatus.RENDERING,
+            TaskStatus.RENDERED,
+            TaskStatus.AWAITING_PUBLISH_CONFIRMATION,
+            TaskStatus.QUEUED_FOR_PUBLISH,
+            TaskStatus.PUBLISHING,
+            TaskStatus.COMPLETED,
             TaskStatus.FAILED,
             TaskStatus.CANCELLED,
         }
@@ -288,9 +324,24 @@ def retry_expired() -> None:
         ).all()
         for task in tasks:
             if task.attempts >= task.max_retries:
-                task.stage = TaskStatus.FAILED
-                task.last_error = task.last_error or "重试次数超限"
-                task.completed_at = now
+                if task.failed_stage == TaskStatus.TRANSCRIBING:
+                    reason = task.last_error or "ASR 重试次数超限"
+                    task.context_json = update_event_first_context(
+                        task.context_json,
+                        analysis_pass="candidate",
+                        asr_mode="unavailable",
+                        asr_evidence_state="unavailable",
+                        asr_unavailable_reason=reason[:500],
+                    )
+                    enqueue_next(task, TaskStatus.TRANSCRIBED)
+                    _logger.warning(
+                        "任务 %s ASR 已耗尽重试，按 unavailable 证据继续热点分析",
+                        task.id,
+                    )
+                else:
+                    task.stage = TaskStatus.FAILED
+                    task.last_error = task.last_error or "重试次数超限"
+                    task.completed_at = now
             else:
                 res = resume_stage(task.failed_stage)
                 task.stage = res

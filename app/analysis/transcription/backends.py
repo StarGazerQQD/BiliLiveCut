@@ -116,8 +116,8 @@ class FunASRBackend:
 
     # Per-engine revisions from model catalog — overrides global settings.asr_model_revision
     _REVISION_PRIMARY = "v2.0.4"
-    _REVISION_SENSEVOICE = "master"
-    _REVISION_NANO = "master"
+    _REVISION_SENSEVOICE = "7bf452403abd7353a300cd760f7adae7701c92c1"
+    _REVISION_NANO = "05201c46f1c38592b1567f857c0d56eab3d0d8ef"
 
     def __init__(
         self,

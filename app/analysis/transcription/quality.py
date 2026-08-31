@@ -1,7 +1,7 @@
-"""ASR 文本质量门禁。
+"""ASR 文本质量分类与局部解码循环修复。
 
-该模块只判断转写结果是否可进入 LLM 整理和高光分析，不尝试修正文案。
-空输出、整段退化和局部解码循环会被拒绝，由上层切换备用 ASR 或暂停任务。
+质量结果决定语义证据是 available 还是 degraded，并可触发备用 ASR；它不再
+决定热点事实是否存在，也不会阻止音频、弹幕或 SenseVoice 继续分析。
 """
 
 from __future__ import annotations
@@ -34,6 +34,17 @@ class RepetitionRepair:
     changed: bool
     removed_characters: int
     original_ratio: float
+
+
+def transcript_quality_payload(quality: TranscriptQuality) -> dict[str, object]:
+    """把质量判断转换为可持久化的稳定证据元数据。"""
+    return {
+        "state": "available" if quality.usable else "degraded",
+        "usable": quality.usable,
+        "reason": quality.reason,
+        "repetition_ratio": round(quality.repetition_ratio, 6),
+        "normalized_length": quality.normalized_length,
+    }
 
 
 def _normalize_text(text: str) -> str:
