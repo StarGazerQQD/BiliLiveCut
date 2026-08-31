@@ -1,7 +1,7 @@
 """分析阶段 Worker — compute/commit 真正分离。
 
-analyze_compute 只做评分计算, 不创建 Candidate/Event, 不写 DB。
-commit_highlight 在租约保护下实现真正并发幂等的 Candidate + Event 创建。
+analyze_compute 只做热点检测与候选评分计算, 不创建 ORM 对象, 不写 DB。
+commit_highlight 在租约保护下幂等写入 provisional Hotspot 与 Candidate/Event。
 """
 
 from __future__ import annotations
@@ -10,6 +10,7 @@ import hashlib
 import json
 import logging
 import time
+from collections.abc import Mapping
 from dataclasses import dataclass
 from datetime import timedelta
 from enum import StrEnum
@@ -165,21 +166,53 @@ def analyze_compute(task_id: int) -> dict[str, Any]:
                 "decision": HighlightDecision.SKIPPED,
                 "segment_id": segment_id,
             }
+        if segment is None:
+            return {"error": "segment not found", "decision": HighlightDecision.SKIPPED, "segment_id": segment_id}
+        session_id = segment.session_id
+        file_path = segment.file_path
+
+    audio_features: audio_mod.AudioFeatures | None = None
+    try:
+        audio_features = audio_mod.analyze_audio(file_path)
+    except (OSError, RuntimeError) as exc:
+        _logger.warning("hotspot_audio_unavailable: segment=%s error=%s", segment_id, exc)
+
+    hotspot_payloads: list[dict[str, object]] = []
+    try:
+        from app.analysis.hotspot_detector import detect_segment_hotspots, log_hotspot_detection
+
+        hotspot_drafts = detect_segment_hotspots(segment_id, audio_features=audio_features)
+        log_hotspot_detection(segment_id, hotspot_drafts)
+        hotspot_payloads = [draft.to_payload() for draft in hotspot_drafts]
+    except (OSError, RuntimeError, TypeError, ValueError) as exc:
+        _logger.exception("hotspot_detection_failed: segment=%s error=%s", segment_id, exc)
 
     try:
-        draft = _score_segment_drafts(segment_id)
+        draft = _score_segment_drafts(segment_id, audio_features=audio_features)
     except ValueError as exc:
-        return {"error": str(exc), "decision": HighlightDecision.SKIPPED, "segment_id": segment_id}
+        return {
+            "error": str(exc),
+            "decision": HighlightDecision.SKIPPED,
+            "segment_id": segment_id,
+            "session_id": session_id,
+            "hotspot_drafts": hotspot_payloads,
+        }
 
     if draft is None:
-        return {"decision": HighlightDecision.BELOW_THRESHOLD, "segment_id": segment_id}
+        return {
+            "decision": HighlightDecision.BELOW_THRESHOLD,
+            "segment_id": segment_id,
+            "session_id": session_id,
+            "hotspot_drafts": hotspot_payloads,
+        }
 
     # draft 包含 decision 字段 (CANDIDATE / DUPLICATE)
+    draft["hotspot_drafts"] = hotspot_payloads
     return draft
 
 
 def commit_highlight(lease: TaskLease, compute_result: dict[str, Any], ms: int) -> None:
-    """单事务提交分析结果: 先校验租约, 按决策类型执行 DB 写操作。
+    """单事务提交热点与候选分析结果: 先校验租约再执行 DB 写操作。
 
     决策分支:
     - BELOW_THRESHOLD: _mark_scored + 推进 Task 到 COMPLETED
@@ -214,6 +247,20 @@ def commit_highlight(lease: TaskLease, compute_result: dict[str, Any], ms: int) 
                 db.add(task)
                 db.commit()
                 return
+            raw_hotspots = compute_result.get("hotspot_drafts", [])
+            if not isinstance(raw_hotspots, list) or not all(isinstance(item, Mapping) for item in raw_hotspots):
+                mark_failed(task, "invalid hotspot compute result", permanent=True)
+                db.add(task)
+                db.commit()
+                return
+            if raw_hotspots:
+                from app.analysis.hotspot_detector import persist_provisional_hotspots
+
+                persist_provisional_hotspots(
+                    db,
+                    raw_hotspots,
+                    expected_session_id=task.session_id,
+                )
             _record_plugin_dispatch(db, compute_result)
 
             # ── BELOW_THRESHOLD ──────────────────────────
@@ -338,10 +385,44 @@ def commit_highlight(lease: TaskLease, compute_result: dict[str, Any], ms: int) 
 def score_segment_direct(segment_id: int) -> HighlightCandidate | None:
     """供 CLI/同步编排器复用正式多峰评分链，并提交全部去簇候选。
 
+    在旧候选评分前先运行无 LLM HotspotDetector，并独立持久化 provisional
+    热点；因此候选路径仍要求 ASR 时，热点事实也不会丢失。
+
     返回最高分候选以维持既有同步 API；同一分段的其他有效爆点也会创建为
     独立 Candidate/Event，随后统一出现在场次时间线与审核工作台中。
     """
-    compute_result = _score_segment_drafts(segment_id)
+    with get_session() as db:
+        segment = db.get(RawSegment, segment_id)
+        if segment is None:
+            raise ValueError(f"片段不存在: id={segment_id}")
+        file_path = segment.file_path
+        session_id = segment.session_id
+
+    audio_features: audio_mod.AudioFeatures | None = None
+    try:
+        audio_features = audio_mod.analyze_audio(file_path)
+    except (OSError, RuntimeError) as exc:
+        _logger.warning("hotspot_audio_unavailable: segment=%s error=%s", segment_id, exc)
+    try:
+        from app.analysis.hotspot_detector import (
+            detect_segment_hotspots,
+            log_hotspot_detection,
+            persist_provisional_hotspots,
+        )
+
+        hotspot_drafts = detect_segment_hotspots(segment_id, audio_features=audio_features)
+        log_hotspot_detection(segment_id, hotspot_drafts)
+        if hotspot_drafts:
+            with get_session() as db:
+                persist_provisional_hotspots(
+                    db,
+                    hotspot_drafts,
+                    expected_session_id=session_id,
+                )
+    except (OSError, RuntimeError, TypeError, ValueError) as exc:
+        _logger.exception("hotspot_detection_failed: segment=%s error=%s", segment_id, exc)
+
+    compute_result = _score_segment_drafts(segment_id, audio_features=audio_features)
     if compute_result is None:
         _mark_scored_direct(segment_id)
         return None
@@ -635,7 +716,11 @@ def run_analyze(lease: TaskLease) -> None:
 # ══════════════════════════════════════════
 
 
-def _score_segment_drafts(segment_id: int) -> dict[str, Any] | None:
+def _score_segment_drafts(
+    segment_id: int,
+    *,
+    audio_features: audio_mod.AudioFeatures | None = None,
+) -> dict[str, Any] | None:
     """对一个录制分段的多个局部峰值分别评分并执行防扎堆筛选。
 
     返回值以最高分候选作为顶层结果供任务状态机推进；其余候选
@@ -656,7 +741,7 @@ def _score_segment_drafts(segment_id: int) -> dict[str, Any] | None:
             raise ValueError(f"片段转写质量不合格，已阻止高光与 LLM 分析: segment={segment_id} reason={quality.reason}")
         file_path = segment.file_path
 
-    features = audio_mod.analyze_audio(file_path)
+    features = audio_features or audio_mod.analyze_audio(file_path)
     peak_offsets = features.peak_offsets(
         limit=settings.highlight_max_candidates_per_segment,
         min_distance_s=settings.highlight_peak_min_distance_s,

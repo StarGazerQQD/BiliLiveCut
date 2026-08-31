@@ -164,6 +164,12 @@ class Settings(BaseSettings):
     highlight_min_post_roll_s: float = Field(default=30.0, ge=0.0, le=180.0)
     # B 站弹幕接收时间通常晚于画面爆点；评分查询窗口向后平移此秒数。
     danmaku_event_lag_s: float = Field(default=7.5, ge=0.0, le=60.0)
+    # Event-first 热点检测器的统一时间参数；三者必须按 bucket 整数对齐。
+    hotspot_bucket_s: float = Field(default=10.0, ge=5.0, le=10.0)
+    hotspot_baseline_window_s: float = Field(default=90.0, ge=60.0, le=120.0)
+    hotspot_detector_tick_s: float = Field(default=20.0, ge=15.0, le=30.0)
+    hotspot_min_baseline_buckets: int = Field(default=3, ge=2, le=12)
+    hotspot_detection_threshold: float = Field(default=0.55, ge=0.0, le=1.0)
     auto_publish_threshold: float = Field(default=0.80, ge=0.0, le=1.0)
 
     # ---------- 切片后处理 ----------
@@ -266,6 +272,15 @@ class Settings(BaseSettings):
         # biliup_upload_cmd 如果非空,必须包含 {file} 占位符
         if self.biliup_upload_cmd and "{file}" not in self.biliup_upload_cmd:
             raise ValueError(f"biliup_upload_cmd 必须包含 {{file}} 占位符,当前值: {self.biliup_upload_cmd}")
+
+        baseline_ratio = self.hotspot_baseline_window_s / self.hotspot_bucket_s
+        tick_ratio = self.hotspot_detector_tick_s / self.hotspot_bucket_s
+        if not baseline_ratio.is_integer():
+            raise ValueError("hotspot_baseline_window_s 必须是 hotspot_bucket_s 的整数倍")
+        if not tick_ratio.is_integer():
+            raise ValueError("hotspot_detector_tick_s 必须是 hotspot_bucket_s 的整数倍")
+        if self.hotspot_min_baseline_buckets >= int(baseline_ratio):
+            raise ValueError("hotspot_min_baseline_buckets 必须小于滚动基线的 bucket 数")
 
         return self
 
