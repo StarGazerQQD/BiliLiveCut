@@ -618,7 +618,7 @@ def write_output_files(
         )
         if errors:
             raise RuntimeError("Engine Pack production metadata validation FAILED:\n  " + "\n  ".join(errors))
-    engine_pack_info_text = json.dumps(engine_pack_info, ensure_ascii=False, indent=2)
+    engine_pack_info_text = json.dumps(engine_pack_info, ensure_ascii=False, indent=2) + "\n"
     (RESOURCES_DIR / "engine_pack_info.json").write_text(engine_pack_info_text, encoding="utf-8")
     (DIST_DIR / "engine-pack-info.json").write_text(engine_pack_info_text, encoding="utf-8")
 

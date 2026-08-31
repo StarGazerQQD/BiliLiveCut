@@ -48,7 +48,9 @@ class TestFixtureImpersonationDetection:
     def test_committed_info_is_current_fixture(self) -> None:
         from blc_portable.engine_pack.schema import ExternalMetadata
 
-        metadata = ExternalMetadata.from_dict(json.loads(_INFO_PATH.read_text(encoding="utf-8")))
+        raw = _INFO_PATH.read_bytes()
+        assert raw.endswith(b"\n")
+        metadata = ExternalMetadata.from_dict(json.loads(raw.decode("utf-8")))
         assert metadata.artifact_class == "fixture"
 
     def test_missing_artifact_class_rejected_by_schema(self) -> None:

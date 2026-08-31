@@ -168,10 +168,10 @@ class TestEnginePackManifest:
 
     def test_create_manifest(self) -> None:
         """create_manifest 生成有效的 Manifest。"""
-        from blc_portable.engine_pack.manifest import create_manifest
+        from blc_portable.engine_pack.manifest import SOURCE_COMMIT_FULL, create_manifest
 
         m = create_manifest(
-            source_commit="abae819cbf3f7b444cdd5414b23bd5c75095a9e2",
+            source_commit=SOURCE_COMMIT_FULL,
             builder_commit="b" * 40,
             file_list={},
             fixture=True,
@@ -185,10 +185,10 @@ class TestEnginePackManifest:
 
     def test_validate_manifest_valid(self) -> None:
         """完整 Manifest 校验通过。"""
-        from blc_portable.engine_pack.manifest import create_manifest, validate_manifest
+        from blc_portable.engine_pack.manifest import SOURCE_COMMIT_FULL, create_manifest, validate_manifest
 
         m = create_manifest(
-            source_commit="abae819cbf3f7b444cdd5414b23bd5c75095a9e2",
+            source_commit=SOURCE_COMMIT_FULL,
             builder_commit="b" * 40,
             file_list={},
             fixture=True,
@@ -198,14 +198,19 @@ class TestEnginePackManifest:
 
     def test_validate_manifest_missing_engine(self) -> None:
         """缺少引擎时校验报错。"""
-        from blc_portable.engine_pack.manifest import EnginePackManifest, validate_manifest
+        from blc_portable.engine_pack.manifest import (
+            SOURCE_COMMIT_FULL,
+            SOURCE_COMMIT_SHORT,
+            EnginePackManifest,
+            validate_manifest,
+        )
 
         m = EnginePackManifest(
             format_version=MANIFEST_FORMAT_VERSION,
             engine_pack_version=_EP_RELEASE_VERSION,
             portable_release_version=_EP_RELEASE_VERSION,
-            source_commit="abae819cbf3f7b444cdd5414b23bd5c75095a9e2",
-            source_commit_short="abae819",
+            source_commit=SOURCE_COMMIT_FULL,
+            source_commit_short=SOURCE_COMMIT_SHORT,
             builder_commit="b" * 40,
             fixture=True,
             engines=[],
@@ -217,10 +222,10 @@ class TestEnginePackManifest:
 
     def test_legacy_archive_fields_are_rejected(self) -> None:
         """旧版内部归档哈希字段不得再被解析。"""
-        from blc_portable.engine_pack.manifest import EnginePackManifest, create_manifest
+        from blc_portable.engine_pack.manifest import SOURCE_COMMIT_FULL, EnginePackManifest, create_manifest
 
         raw = create_manifest(
-            source_commit="abae819cbf3f7b444cdd5414b23bd5c75095a9e2",
+            source_commit=SOURCE_COMMIT_FULL,
             builder_commit="b" * 40,
             file_list={},
             fixture=True,
