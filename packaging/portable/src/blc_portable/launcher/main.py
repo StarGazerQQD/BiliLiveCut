@@ -1064,7 +1064,7 @@ def _verify_installed_models(app_root: Path) -> None:
     print("=" * 60)
     print("  Model Integrity Verification")
     print("=" * 60)
-    print(f"  Model set fingerprint: {installed.get('model_set_fingerprint', '<legacy>')}")
+    print(f"  Model set fingerprint: {installed.get('model_set_fingerprint', '<missing>')}")
     print(f"  installed at: {installed.get('installed_at')}")
     records = installed.get("engines", {})
     print(f"  engines: {sorted(records) if isinstance(records, dict) else '<invalid>'}")

@@ -24,8 +24,6 @@ sys.path.insert(0, str(_PORTABLE_DIR / "src"))
 sys.path.insert(0, str(_PORTABLE_DIR / "config"))
 sys.path.insert(0, str(Path(__file__).resolve().parent))
 
-from engine_pack_helpers import legacy_installed_manifest  # noqa: E402
-
 _TINY_PROVIDER_ENV = "BLC_RELEASE_SMOKE_TINY_MODELS"
 _FAIL_ENGINE_ENV = "BLC_RELEASE_SMOKE_FAIL_ENGINE"
 
@@ -42,20 +40,7 @@ def _write_required_files(root: Path, relative_paths: list[str]) -> None:
     for relative in relative_paths:
         target = root / relative
         target.parent.mkdir(parents=True, exist_ok=True)
-        target.write_bytes(f"legacy fixture: {relative}\n".encode())
-
-
-def _create_legacy_models(app_root: Path) -> None:
-    """Create the exact audited schema-5 fixture consumed by migration."""
-    from model_catalog import load_engines
-
-    models_dir = app_root / "models"
-    for engine in load_engines():
-        _write_required_files(models_dir / engine.engine_id, list(engine.required_files))
-    (models_dir / "engine-pack-installed.json").write_text(
-        json.dumps(legacy_installed_manifest(models_dir)),
-        encoding="utf-8",
-    )
+        target.write_bytes(f"fixture: {relative}\n".encode())
 
 
 def _prepare_with_real_child(app_root: Path) -> dict[str, Any]:
@@ -132,24 +117,6 @@ def test_hub_failure_preserves_runtime_and_completed_engine_for_retry(
     assert result["network_requests"] == 3
     assert result["reused_engines"] == ["whisper"]
     assert set(result["installed_engines"]) == {"paraformer", "sensevoice", "funasr_nano"}
-
-
-def test_legacy_install_migrates_through_real_child_without_requests(
-    tmp_path: Path,
-    monkeypatch: MonkeyPatch,
-) -> None:
-    """The audited 0.1.17.4 manifest migrates through the child with zero requests."""
-    _enable_tiny_provider(monkeypatch)
-    _create_legacy_models(tmp_path)
-
-    result = _prepare_with_real_child(tmp_path)
-
-    assert result["source"] == "already_installed"
-    assert result["network_requests"] == 0
-    assert Path(result["provisioning_interpreter"]) == Path(sys.executable).resolve()
-    installed = json.loads((tmp_path / "models" / "engine-pack-installed.json").read_text(encoding="utf-8"))
-    assert installed["schema_version"] == 6
-    assert {record["installation_source"] for record in installed["engines"].values()} == {"legacy_migration"}
 
 
 def test_only_stale_engine_is_reprovisioned_through_real_child(

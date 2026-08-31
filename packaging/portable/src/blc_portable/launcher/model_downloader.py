@@ -375,7 +375,7 @@ def provision_models(
             pack_errors.append(f"{pack_path}: {exc}")
             if user_engine_pack_path and not fallback_online:
                 raise
-            print(f"  local pack is not content-compatible: {exc}")
+            print(f"  local pack does not match the current release contract: {exc}")
     if pack_paths:
         print("  no local Engine Pack candidate matched the desired content fingerprints")
     else:
@@ -385,7 +385,7 @@ def provision_models(
         detail = "\n".join(f"  - {item}" for item in pack_errors)
         raise RuntimeError(
             "Offline mode: no valid local Engine Pack was found and online download is blocked.\n"
-            "Provide a content-compatible Engine Pack ZIP or remove --offline."
+            "Provide the current-release Engine Pack ZIP or remove --offline."
             + (f"\nCandidate failures:\n{detail}" if detail else "")
         )
 

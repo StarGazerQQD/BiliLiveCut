@@ -16,6 +16,7 @@
 
 from __future__ import annotations
 
+import os
 import shutil
 import subprocess
 import sys
@@ -95,14 +96,9 @@ def build() -> bool:
 
     print(f"  [build_rust] 编译 Rust 扩展 ({RUST_SRC})…")
 
-    # Python 3.14 兼容性（pyo3 0.22.6 官方支持到 3.13）
-    import os as _os
-
-    env = _os.environ.copy()
-    env.setdefault("PYO3_USE_ABI3_FORWARD_COMPATIBILITY", "1")
-    env.setdefault("PYO3_PYTHON", sys.executable)
-
-    # cargo build --release (带 Python 3.14 兼容性)
+    # 仅按当前受支持解释器编译，不绕过 PyO3 的版本检查。
+    env = os.environ.copy()
+    env["PYO3_PYTHON"] = sys.executable
     result = subprocess.run(
         ["cargo", "build", "--release"],
         cwd=RUST_SRC,

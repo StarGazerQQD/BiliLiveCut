@@ -17,8 +17,6 @@ sys.path.insert(0, str(_portable_dir / "src"))
 sys.path.insert(0, str(_portable_dir / "config"))
 sys.path.insert(0, str(Path(__file__).resolve().parent))
 
-from engine_pack_helpers import legacy_installed_manifest  # noqa: E402
-
 
 def _write_files(root: Path, relative_paths: list[str], payload: bytes = b"fixture") -> None:
     for relative in relative_paths:
@@ -31,67 +29,6 @@ def _create_minimal_engine(engine: Any, models_dir: Path) -> None:
     target = models_dir / engine.engine_id
     target.mkdir(parents=True, exist_ok=True)
     _write_files(target, list(engine.required_files))
-
-
-def test_legacy_017_provisioning_migrates_with_zero_network(tmp_path: Path, monkeypatch: MonkeyPatch) -> None:
-    """An unchanged schema-5 installation is adopted without any SDK call."""
-    from blc_portable.launcher import model_downloader
-    from model_catalog import load_engines
-
-    models_dir = tmp_path / "models"
-    for engine in load_engines():
-        _create_minimal_engine(engine, models_dir)
-    (models_dir / "engine-pack-installed.json").write_text(
-        json.dumps(legacy_installed_manifest(models_dir)),
-        encoding="utf-8",
-    )
-    monkeypatch.setattr(
-        model_downloader,
-        "download_all_engines",
-        lambda *_args, **_kwargs: pytest.fail("unchanged legacy content must not use the network"),
-    )
-
-    result = model_downloader.provision_models(
-        tmp_path,
-        config_dir=_portable_dir / "config",
-        expected_filename="BiliLiveCut-EnginePack-0.1.18.0-alpha.zip",
-        expected_crc32="",
-        expected_sha256="",
-        user_engine_pack_path=None,
-        offline=False,
-        fallback_online=False,
-    )
-
-    assert result["source"] == "already_installed"
-    assert result["network_requests"] == 0
-    migrated = json.loads((models_dir / "engine-pack-installed.json").read_text(encoding="utf-8"))
-    assert migrated["schema_version"] == 6
-
-
-def test_legacy_manifest_is_not_blessed_after_model_revision_changes(tmp_path: Path) -> None:
-    """The one-time migration must fail when the current desired content changed."""
-    from dataclasses import replace
-
-    from blc_portable.engine_pack.installer import check_installed_models
-    from model_catalog import load_engines
-
-    engines = load_engines()
-    models_dir = tmp_path / "models"
-    for engine in engines:
-        _create_minimal_engine(engine, models_dir)
-    (models_dir / "engine-pack-installed.json").write_text(
-        json.dumps(legacy_installed_manifest(models_dir)),
-        encoding="utf-8",
-    )
-    changed = [
-        replace(engine, resolved_revision="f" * 40) if engine.engine_id == "whisper" else engine for engine in engines
-    ]
-
-    ok, errors = check_installed_models(models_dir, desired_engines=changed)
-
-    assert not ok
-    assert any("identities differ" in error for error in errors)
-    assert json.loads((models_dir / "engine-pack-installed.json").read_text(encoding="utf-8"))["schema_version"] == 5
 
 
 def test_completed_engine_staging_resumes_without_network(tmp_path: Path, monkeypatch: MonkeyPatch) -> None:

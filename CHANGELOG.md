@@ -2,6 +2,9 @@
 
 ## 未发布
 
+- **compatibility/current-only**: Alpha 运行时移除 0.1.17.x 数据库迁移、schema-5 Engine Pack 已安装清单迁移、跨发行版 Engine Pack 安装入口和无 `HotspotEvent` 候选的时间线兼容节点；数据库、Engine Pack、安装清单和时间线现在只接受当前结构，历史数据不会被推断、备份或改写。
+- **native/build-contract**: PyO3 构建只绑定当前虚拟环境解释器，不再启用 ABI3 向前兼容逃生开关；不受支持的解释器必须直接失败。
+
 ## V0.1.18.0 Alpha (2026-08-31)
 
 ### Portable Runtime 与模型资产

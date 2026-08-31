@@ -127,7 +127,8 @@ def test_release_gate_uses_workspace_local_pytest_directories(monkeypatch: Monke
 def test_rust_build_uses_current_python_interpreter() -> None:
     """PyO3 构建必须显式使用当前虚拟环境的 Python。"""
     source = (run_ruff.REPO_ROOT / "tools" / "native" / "build_rust.py").read_text(encoding="utf-8")
-    assert 'env.setdefault("PYO3_PYTHON", sys.executable)' in source
+    assert 'env["PYO3_PYTHON"] = sys.executable' in source
+    assert "PYO3_USE_ABI3_FORWARD_COMPATIBILITY" not in source
 
 
 def test_rust_build_uses_exact_windows_platform_match() -> None:
@@ -179,6 +180,7 @@ def test_rust_build_streams_cargo_output(monkeypatch: MonkeyPatch, tmp_path: Pat
     assert build_rust.build() is True
     assert "capture_output" not in observed_kwargs
     assert observed_kwargs["env"]["PYO3_PYTHON"] == sys.executable  # type: ignore[index]
+    assert "PYO3_USE_ABI3_FORWARD_COMPATIBILITY" not in observed_kwargs["env"]  # type: ignore[operator]
     assert (target_dir / f"_rust_cluster{destination_suffix}").read_bytes() == b"native"
 
 

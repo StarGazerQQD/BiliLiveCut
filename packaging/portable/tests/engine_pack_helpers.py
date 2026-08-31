@@ -81,40 +81,6 @@ def installed_manifest(
     }
 
 
-def legacy_installed_manifest(models_dir: Path, *, version: str = "0.1.17.4-alpha") -> dict[str, Any]:
-    """Build the exact schema-5 manifest accepted by the one-time migration."""
-    from blc_portable.engine_pack.installer import compute_sha256
-
-    engine_ids = ["whisper", "paraformer", "sensevoice", "funasr_nano"]
-    files: dict[str, dict[str, object]] = {}
-    for engine_id in engine_ids:
-        entries: dict[str, dict[str, object]] = {}
-        for path in sorted((models_dir / engine_id).rglob("*")):
-            if path.is_file():
-                entries[path.relative_to(models_dir / engine_id).as_posix()] = {
-                    "size": path.stat().st_size,
-                    "sha256": compute_sha256(path),
-                }
-        files[engine_id] = {
-            "target_path": f"models/{engine_id}",
-            "file_count": len(entries),
-            "total_size": sum(int(item["size"]) for item in entries.values()),
-            "files": entries,
-        }
-    return {
-        "schema_version": 5,
-        "engine_pack_version": version,
-        "installation_source": "engine_pack",
-        "zip_sha256": "a" * 64,
-        "engine_ids": engine_ids,
-        "file_count": sum(int(info["file_count"]) for info in files.values()),
-        "total_size_bytes": sum(int(info["total_size"]) for info in files.values()),
-        "installed_at": "2026-08-12T00:00:00",
-        "source_commit": "abae819cbf3f7b444cdd5414b23bd5c75095a9e2",
-        "files": files,
-    }
-
-
 def external_metadata(**overrides: object) -> dict[str, object]:
     """构造当前 Engine Pack 外部元数据。"""
     from blc_portable.engine_pack.manifest import ENGINE_PACK_VERSION, MANIFEST_FORMAT_VERSION, SOURCE_COMMIT_FULL

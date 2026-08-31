@@ -9,7 +9,6 @@ from typing import Any
 
 from sqlmodel import select
 
-from app.analysis.timeline import source_signals
 from app.db.entities import (
     AppSetting,
     CandidateStatus,
@@ -59,14 +58,18 @@ def list_session_timelines(*, limit: int = 30, room_db_id: int | None = None) ->
         session_ids = [session.id for session in sessions if session.id is not None]
         if not session_ids:
             return []
-        candidates = db.exec(select(HighlightCandidate).where(HighlightCandidate.session_id.in_(session_ids))).all()
         hotspots = db.exec(
             select(HotspotEvent).where(
                 HotspotEvent.session_id.in_(session_ids),
                 HotspotEvent.status.in_(_VISIBLE_HOTSPOT_STATUSES),
             )
         ).all()
-        candidate_ids = [candidate.id for candidate in candidates if candidate.id is not None]
+        candidate_ids = [hotspot.candidate_id for hotspot in hotspots if hotspot.candidate_id is not None]
+        candidates = (
+            db.exec(select(HighlightCandidate).where(HighlightCandidate.id.in_(candidate_ids))).all()
+            if candidate_ids
+            else []
+        )
         events = (
             db.exec(select(HighlightEvent).where(HighlightEvent.candidate_id.in_(candidate_ids))).all()
             if candidate_ids
@@ -103,9 +106,6 @@ def list_session_timelines(*, limit: int = 30, room_db_id: int | None = None) ->
             continue
         session_candidates = candidates_by_session.get(session.id, [])
         session_hotspots = hotspots_by_session.get(session.id, [])
-        linked_candidate_ids = {
-            hotspot.candidate_id for hotspot in session_hotspots if hotspot.candidate_id is not None
-        }
         visible_count = 0
         rejected_count = 0
         pending_review_count = 0
@@ -130,8 +130,7 @@ def list_session_timelines(*, limit: int = 30, room_db_id: int | None = None) ->
                 "highlight_count": visible_count,
                 "hotspot_count": len(session_hotspots),
                 "hotspot_only_count": sum(hotspot.candidate_id is None for hotspot in session_hotspots),
-                "timeline_count": len(session_hotspots)
-                + sum(candidate.id not in linked_candidate_ids for candidate in session_candidates),
+                "timeline_count": len(session_hotspots),
                 "pending_review_count": pending_review_count,
                 "rejected_count": rejected_count,
                 "processing_state": _processing_state(
@@ -157,11 +156,6 @@ def get_session_timeline(
         session = db.get(RecordingSession, session_id)
         if session is None:
             raise ValueError(f"录制会话不存在: session_id={session_id}")
-        candidates = db.exec(
-            select(HighlightCandidate)
-            .where(HighlightCandidate.session_id == session_id)
-            .order_by(HighlightCandidate.peak_ts.asc())
-        ).all()
         hotspots = db.exec(
             select(HotspotEvent)
             .where(
@@ -170,7 +164,12 @@ def get_session_timeline(
             )
             .order_by(HotspotEvent.peak_ts.asc(), HotspotEvent.id.asc())
         ).all()
-        candidate_ids = [candidate.id for candidate in candidates if candidate.id is not None]
+        candidate_ids = [hotspot.candidate_id for hotspot in hotspots if hotspot.candidate_id is not None]
+        candidates = (
+            db.exec(select(HighlightCandidate).where(HighlightCandidate.id.in_(candidate_ids))).all()
+            if candidate_ids
+            else []
+        )
         events = (
             db.exec(select(HighlightEvent).where(HighlightEvent.candidate_id.in_(candidate_ids))).all()
             if candidate_ids
@@ -183,7 +182,6 @@ def get_session_timeline(
         source = source_identities_for_sessions(db, [session_id]).get(session_id, unknown_source_identity())
 
     candidate_by_id = {candidate.id: candidate for candidate in candidates if candidate.id is not None}
-    linked_candidate_ids = {hotspot.candidate_id for hotspot in hotspots if hotspot.candidate_id is not None}
     all_points: list[dict[str, Any]] = []
     for hotspot in hotspots:
         candidate = candidate_by_id.get(hotspot.candidate_id)
@@ -198,12 +196,6 @@ def get_session_timeline(
                 rejected=rejected,
             )
         )
-    for candidate in candidates:
-        if candidate.id in linked_candidate_ids:
-            continue
-        event = event_by_candidate[candidate.id]
-        rejected = _candidate_is_rejected(candidate, event)
-        all_points.append(_timeline_point(session, candidate, event, rejected=rejected))
     all_points.sort(key=lambda point: (float(point["offset_s"]), int(point.get("hotspot_event_id") or 0)))
     points = [point for point in all_points if include_rejected or not point["rejected"]]
 
@@ -315,68 +307,6 @@ def _hotspot_timeline_point(
             "cross_segment": bool(candidate_timeline.get("cross_segment", False)),
             "candidate_start_at_gmt8": _iso_gmt8(candidate_start),
             "candidate_end_at_gmt8": _iso_gmt8(candidate_end),
-        },
-    }
-
-
-def _timeline_point(
-    session: RecordingSession,
-    candidate: HighlightCandidate,
-    event: HighlightEvent,
-    *,
-    rejected: bool,
-) -> dict[str, Any]:
-    payload = decode_features(event.features_json or candidate.features_json)
-    timeline = payload.get("timeline") if isinstance(payload.get("timeline"), dict) else {}
-    model_features = payload.get("features") if isinstance(payload.get("features"), dict) else payload
-    raw_signals = timeline.get("source_signals")
-    signals = [str(item) for item in raw_signals if str(item).strip()] if isinstance(raw_signals, list) else []
-    if not signals:
-        numeric_features = {
-            str(key): float(value) for key, value in model_features.items() if isinstance(value, (float, int))
-        }
-        signals = source_signals(numeric_features)
-    raw_danmaku = timeline.get("representative_danmaku")
-    danmaku = _representative_danmaku_payload(raw_danmaku)
-    start_ts = event.adjusted_start_ts or candidate.start_ts
-    end_ts = event.adjusted_end_ts or candidate.end_ts
-    confidence = timeline.get("confidence")
-    confidence_value = float(confidence) if isinstance(confidence, (float, int)) else float(candidate.highlight_score)
-    review_status = event.review_status
-    summary = event.reason or candidate.reason
-    plugin = payload.get("highlight_plugin") if isinstance(payload.get("highlight_plugin"), dict) else None
-    analysis_window = payload.get("analysis_window") if isinstance(payload.get("analysis_window"), dict) else None
-    return {
-        "point_type": "legacy_candidate",
-        "hotspot_event_id": None,
-        "candidate_id": candidate.id,
-        "event_id": event.id,
-        "clock_gmt8": _clock_gmt8(candidate.peak_ts),
-        "peak_at_gmt8": _iso_gmt8(candidate.peak_ts),
-        "start_at_gmt8": _iso_gmt8(start_ts),
-        "end_at_gmt8": _iso_gmt8(end_ts),
-        "offset_s": round((_as_utc(candidate.peak_ts) - _as_utc(session.started_at)).total_seconds(), 3),
-        "duration_s": round(max(0.0, (_as_utc(end_ts) - _as_utc(start_ts)).total_seconds()), 3),
-        "title": summary or "待生成高光梗概",
-        "summary": summary or "待生成高光梗概",
-        "representative_danmaku": danmaku,
-        "confidence": round(max(0.0, min(1.0, confidence_value)), 3),
-        "source_signals": signals,
-        "review_status": review_status,
-        "candidate_status": candidate.status,
-        "rejected": rejected,
-        "review_url": f"/review/{candidate.id}",
-        "preview_url": f"/review/api/{candidate.id}/preview",
-        "provenance": {
-            "analysis_version": int(timeline.get("analysis_version", 0) or 0),
-            "rule_score": round(float(candidate.rule_score), 4),
-            "llm_score": round(float(candidate.llm_score), 4),
-            "highlight_score": round(float(candidate.highlight_score), 4),
-            "dynamic_bounds": bool(timeline.get("dynamic_bounds", False)),
-            "cross_segment": bool(timeline.get("cross_segment", False)),
-            "danmaku_lag_s": float(timeline.get("danmaku_lag_s", 0.0) or 0.0),
-            "analysis_window": analysis_window,
-            "highlight_plugin": plugin,
         },
     }
 

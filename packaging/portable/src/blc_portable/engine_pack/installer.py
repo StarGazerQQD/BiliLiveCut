@@ -26,13 +26,6 @@ from .identity import (
 CHUNK_SIZE = 8 * 1024 * 1024
 INSTALLED_MANIFEST_NAME = "engine-pack-installed.json"
 INSTALLED_MANIFEST_SCHEMA = 6
-_LEGACY_INSTALLED_MANIFEST_SCHEMA = 5
-_LEGACY_0174_FINGERPRINTS = {
-    "whisper": "fec19a13490e9f98e758e0b18b4a13ea8e189cb77720a0671f5e425ff103e706",
-    "paraformer": "9ed3037841a19f59070ccb0a8e06f7e91c3cde45c7f5d64fe3d5a302929165a9",
-    "sensevoice": "2e7868d69e4b0a289b20e5f8dcb385397e4112d4a9c0ac01c0de6579b11dbadc",
-    "funasr_nano": "999153916f7dd6e89b8a5aa4516c2df7be666bd9d034241a634ef8d8c7a86296",
-}
 _CURRENT_MANIFEST_FIELDS = {
     "schema_version",
     "identity_schema_version",
@@ -49,18 +42,6 @@ _ENGINE_RECORD_FIELDS = {
     "target_path",
     "file_count",
     "total_size",
-    "files",
-}
-_LEGACY_MANIFEST_FIELDS = {
-    "schema_version",
-    "engine_pack_version",
-    "installation_source",
-    "zip_sha256",
-    "engine_ids",
-    "file_count",
-    "total_size_bytes",
-    "installed_at",
-    "source_commit",
     "files",
 }
 _FILE_INFO_FIELDS = {"target_path", "file_count", "total_size", "files"}
@@ -91,7 +72,7 @@ def find_local_engine_packs(
     expected_filename: str,
     user_path: str | None = None,
 ) -> list[Path]:
-    """Return candidate packs without making the filename part of compatibility."""
+    """Return the current release pack or one explicit user-selected file."""
     if user_path:
         selected = Path(user_path)
         if selected.is_file():
@@ -109,12 +90,7 @@ def find_local_engine_packs(
         if not root.is_dir():
             continue
         exact = root / expected_filename
-        ordered = ([exact] if exact.is_file() else []) + sorted(
-            root.glob("BiliLiveCut-EnginePack-*.zip"),
-            key=lambda item: (item.stat().st_mtime_ns, item.name),
-            reverse=True,
-        )
-        for candidate in ordered:
+        for candidate in [exact] if exact.is_file() else []:
             resolved = candidate.resolve()
             if resolved not in seen:
                 candidates.append(candidate)
@@ -277,74 +253,11 @@ def _verify_engine_files(engine_id: str, engine_dir: Path, info: Mapping[str, ob
     return errors
 
 
-def _migrate_legacy_manifest(
-    models_dir: Path,
-    legacy: Mapping[str, object],
-    desired: Mapping[str, Mapping[str, object]],
-) -> dict[str, Any]:
-    """Migrate the one supported 0.1.17 schema after a complete local rehash."""
-    if set(legacy) != _LEGACY_MANIFEST_FIELDS:
-        raise RuntimeError("Legacy installed manifest fields do not match schema 5")
-    version = legacy["engine_pack_version"]
-    if version != "0.1.17.4-alpha":
-        raise RuntimeError("Only the audited 0.1.17.4 schema-5 installed manifest can be migrated")
-    current_fingerprints = {key: str(value["content_fingerprint"]) for key, value in desired.items()}
-    if current_fingerprints != _LEGACY_0174_FINGERPRINTS:
-        raise RuntimeError("Legacy 0.1.17.4 model identities differ from the current catalog")
-    engine_ids = legacy["engine_ids"]
-    files = legacy["files"]
-    if not isinstance(engine_ids, list) or set(engine_ids) != set(desired) or not isinstance(files, dict):
-        raise RuntimeError("Legacy installed manifest engine set does not match the current catalog")
-    records: dict[str, dict[str, object]] = {}
-    for engine_id in sorted(desired):
-        info = files.get(engine_id)
-        validation_errors = _validate_file_info(engine_id, info)
-        if validation_errors:
-            raise RuntimeError("Legacy installed manifest invalid: " + "; ".join(validation_errors))
-        assert isinstance(info, dict)
-        disk_errors = _verify_engine_files(engine_id, models_dir / engine_id, info)
-        if disk_errors:
-            raise RuntimeError("Legacy installed models changed: " + "; ".join(disk_errors[:5]))
-        records[engine_id] = {
-            "content_fingerprint": desired[engine_id]["content_fingerprint"],
-            "identity": desired[engine_id]["identity"],
-            "installation_source": "legacy_migration",
-            "zip_sha256": legacy.get("zip_sha256"),
-            "installed_at": dt.datetime.now(dt.UTC).isoformat(),
-            "target_path": info["target_path"],
-            "file_count": info["file_count"],
-            "total_size": info["total_size"],
-            "files": info["files"],
-        }
-    _write_current_manifest(models_dir, records, desired)
-    migrated = _read_installed_manifest(models_dir)
-    if migrated is None:
-        raise RuntimeError("Migrated installed manifest could not be read")
-    return migrated
-
-
-def _load_current_or_migrate(
-    models_dir: Path,
-    desired: Mapping[str, Mapping[str, object]],
-    *,
-    migrate_legacy: bool,
-) -> tuple[dict[str, Any] | None, list[str]]:
-    """Load schema 6 or perform the explicit schema-5 migration."""
+def _load_current_manifest(models_dir: Path) -> tuple[dict[str, Any] | None, list[str]]:
+    """Load the only supported installed-model manifest schema."""
     installed = _read_installed_manifest(models_dir)
     if installed is None:
         return None, [f"{INSTALLED_MANIFEST_NAME} 不存在或损坏"]
-    if installed.get("schema_version") == _LEGACY_INSTALLED_MANIFEST_SCHEMA and migrate_legacy:
-        from blc_portable.archive.locks import FileLock, get_engine_pack_lock_path
-
-        try:
-            with FileLock(get_engine_pack_lock_path(models_dir.parent)).acquire(timeout=120):
-                installed = _read_installed_manifest(models_dir)
-                if installed is None:
-                    return None, [f"{INSTALLED_MANIFEST_NAME} 不存在或损坏"]
-                if installed.get("schema_version") == _LEGACY_INSTALLED_MANIFEST_SCHEMA:
-                    installed = _migrate_legacy_manifest(models_dir, installed, desired)
-        except RuntimeError as exc:
-            return None, [str(exc)]
     if installed.get("schema_version") != INSTALLED_MANIFEST_SCHEMA:
         return None, [f"Installed manifest schema unsupported: {installed.get('schema_version')}"]
     if set(installed) != _CURRENT_MANIFEST_FIELDS:
@@ -360,12 +273,11 @@ def reusable_engine_ids(
     models_dir: Path,
     *,
     full_rehash: bool = False,
-    migrate_legacy: bool = True,
     desired_engines: Sequence[Any] | None = None,
 ) -> tuple[set[str], list[str]]:
     """Return engines whose content fingerprint and local files are reusable."""
     desired = _desired_records(desired_engines)
-    installed, errors = _load_current_or_migrate(models_dir, desired, migrate_legacy=migrate_legacy)
+    installed, errors = _load_current_manifest(models_dir)
     if installed is None:
         return set(), errors
     engine_records = installed["engines"]
@@ -408,7 +320,6 @@ def check_installed_models(
     models_dir: Path,
     full_rehash: bool = False,
     *,
-    migrate_legacy: bool = True,
     desired_engines: Sequence[Any] | None = None,
 ) -> tuple[bool, list[str]]:
     """Check the complete desired model set by content identity."""
@@ -416,7 +327,6 @@ def check_installed_models(
     reusable, errors = reusable_engine_ids(
         models_dir,
         full_rehash=full_rehash,
-        migrate_legacy=migrate_legacy,
         desired_engines=desired_engines,
     )
     missing = set(desired) - reusable
@@ -425,12 +335,9 @@ def check_installed_models(
     return not missing, errors
 
 
-def _existing_records(
-    models_dir: Path,
-    desired: Mapping[str, Mapping[str, object]],
-) -> dict[str, dict[str, object]]:
-    """Return valid schema-6 records, migrating legacy state when possible."""
-    installed, _ = _load_current_or_migrate(models_dir, desired, migrate_legacy=False)
+def _existing_records(models_dir: Path) -> dict[str, dict[str, object]]:
+    """Return records from the only supported installed-model manifest."""
+    installed, _ = _load_current_manifest(models_dir)
     if installed is None:
         return {}
     records = installed.get("engines")
@@ -467,7 +374,7 @@ def _install_engine_directory(
             installation_source=installation_source,
             zip_sha256=zip_sha256,
         )
-        records = _existing_records(models_dir, desired)
+        records = _existing_records(models_dir)
         records[engine_id] = record
         _write_current_manifest(models_dir, records, desired)
     except Exception:
@@ -529,7 +436,7 @@ def install_from_engine_pack(
 
     from blc_portable.archive.locks import FileLock, get_engine_pack_lock_path
 
-    from .manifest import load_manifest_for_install
+    from .manifest import load_manifest
     from .verifier import verify_extracted_tree
 
     desired = _desired_records()
@@ -543,8 +450,8 @@ def install_from_engine_pack(
             manifest_path = staging_dir / "engine-pack-manifest.json"
             if not manifest_path.is_file():
                 raise RuntimeError("Engine Pack 缺少 engine-pack-manifest.json")
-            manifest = load_manifest_for_install(manifest_path)
-            verification_errors = verify_extracted_tree(staging_dir, manifest, strict_release=False)
+            manifest = load_manifest(manifest_path)
+            verification_errors = verify_extracted_tree(staging_dir, manifest)
             if verification_errors:
                 raise RuntimeError("Engine Pack 校验失败:\n  " + "\n  ".join(verification_errors))
             pack_engines = {engine.engine_id: engine for engine in manifest.engines}

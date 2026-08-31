@@ -59,9 +59,8 @@ def init_db() -> None:
 
     流程:
     1. 数据库文件不存在 → app.db.schema.assure_schema() 创建全部表
-    2. 0.1.17.x Schema v4 → 备份并执行唯一受支持的 v5 迁移
-    3. 数据库文件存在   → 校验 schema_meta / version / fingerprint / 关键约束
-    4. 不兼容 → RuntimeError, 阻止启动
+    2. 数据库文件存在   → 校验 schema_meta / version / fingerprint / 关键约束
+    3. 不兼容 → RuntimeError, 阻止启动
 
     :raises RuntimeError: Schema 不兼容或校验失败时。
     """
