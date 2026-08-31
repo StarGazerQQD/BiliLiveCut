@@ -1,8 +1,8 @@
 {
   "release_version": "0.1.17.4-alpha",
   "version_label": "V0.1.17.4 Alpha",
-  "source_commit_short": "05d4d0d",
-  "source_commit_full": "05d4d0d7f9fa7f919041b8ae39da97f3f50772f9",
+  "source_commit_short": "b2b0282",
+  "source_commit_full": "b2b028247ffb23b13fb780fac9a3ce4d74926fd0",
   "engine_pack_version": "0.1.17.4-alpha",
   "runtime_schema": 5,
   "engine_pack_schema": 5,
