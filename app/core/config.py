@@ -170,6 +170,11 @@ class Settings(BaseSettings):
     hotspot_detector_tick_s: float = Field(default=20.0, ge=15.0, le=30.0)
     hotspot_min_baseline_buckets: int = Field(default=3, ge=2, le=12)
     hotspot_detection_threshold: float = Field(default=0.55, ge=0.0, le=1.0)
+    # 事件级协调：跨分段合并、稳定确认与录制连续性边界。
+    hotspot_event_merge_gap_s: float = Field(default=30.0, ge=0.0, le=120.0)
+    hotspot_event_confirm_delay_s: float = Field(default=60.0, ge=0.0, le=600.0)
+    hotspot_event_semantic_overlap_threshold: float = Field(default=0.20, ge=0.0, le=1.0)
+    hotspot_recording_gap_tolerance_s: float = Field(default=1.0, ge=0.0, le=10.0)
     # 热点局部 ASR 先于普通/历史完整转写；数值越小的任务越先被领取。
     hotspot_asr_enabled: bool = True
     hotspot_asr_pre_roll_s: float = Field(default=35.0, ge=0.0, le=180.0)

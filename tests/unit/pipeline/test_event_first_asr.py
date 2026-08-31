@@ -12,6 +12,7 @@ from sqlmodel import select
 from app.analysis.audio import AudioFeatures
 from app.db.entities import (
     HotspotEvent,
+    HotspotStatus,
     LiveRoom,
     RawSegment,
     RecordingSession,
@@ -174,6 +175,43 @@ def test_signal_pass_without_hotspot_still_queues_background_asr(temp_db: None) 
     assert context["attention_windows"] == []
 
 
+def test_empty_detection_pass_confirms_stable_prior_hotspot(temp_db: None) -> None:
+    """后续分段没有新热点时，也必须推进已稳定事件而非永久 provisional。"""
+    from app.pipeline.workers.analyze import HighlightDecision, commit_highlight
+
+    task_id, segment_id, session_id = _seed_pipeline_task(
+        stage=TaskStatus.ANALYZING,
+        context_json='{"event_first":{"analysis_pass":"detect"}}',
+    )
+    payload = _hotspot_payload(session_id)
+    payload.update(
+        {
+            "event_key": "detector-v1:stable-prior",
+            "start_ts": _START + timedelta(seconds=5),
+            "peak_ts": _START + timedelta(seconds=15),
+            "end_ts": _START + timedelta(seconds=30),
+        }
+    )
+    with get_session() as db:
+        db.add(HotspotEvent(**payload))
+
+    commit_highlight(
+        _lease(task_id, TaskStatus.ANALYZING),
+        {
+            "decision": HighlightDecision.SIGNAL_PASS,
+            "segment_id": segment_id,
+            "session_id": session_id,
+            "hotspot_drafts": [],
+        },
+        25,
+    )
+
+    with get_session() as db:
+        event = db.exec(select(HotspotEvent).where(HotspotEvent.event_key == "detector-v1:stable-prior")).one()
+
+    assert event.status == HotspotStatus.CONFIRMED
+
+
 def test_hotspot_asr_compute_runs_window_without_background(
     temp_db: None,
     monkeypatch: MonkeyPatch,
@@ -284,6 +322,73 @@ def test_hotspot_asr_commit_requeues_background_and_updates_event(temp_db: None)
     event_first = json.loads(task.context_json)["event_first"]
     assert event_first["asr_mode"] == "background"
     assert event_first["attention_windows"][0]["status"] == "completed"
+
+
+def test_hotspot_asr_for_merged_alias_updates_canonical_event(temp_db: None) -> None:
+    """跨分段合并后，已排队的旧 event_key 仍应把 ASR 写入主事件。"""
+    from app.pipeline.workers.transcribe import commit_transcript
+
+    alias_key = "detector-v1:event-alias"
+    context = json.dumps(
+        {
+            "event_first": {
+                "analysis_pass": "candidate",
+                "asr_mode": "hotspot",
+                "attention_windows": [
+                    {
+                        "event_key": alias_key,
+                        "start_offset_s": 25.0,
+                        "end_offset_s": 115.0,
+                        "status": "pending",
+                    }
+                ],
+            }
+        }
+    )
+    task_id, segment_id, session_id = _seed_pipeline_task(
+        stage=TaskStatus.TRANSCRIBING,
+        context_json=context,
+    )
+    with get_session() as db:
+        canonical = HotspotEvent(**_hotspot_payload(session_id))
+        db.add(canonical)
+        db.flush()
+        assert canonical.id is not None
+        alias_payload = _hotspot_payload(session_id)
+        alias_payload["event_key"] = alias_key
+        alias_payload["status"] = HotspotStatus.MERGED
+        alias_payload["merged_into_id"] = canonical.id
+        db.add(HotspotEvent(**alias_payload))
+
+    commit_transcript(
+        _lease(task_id, TaskStatus.TRANSCRIBING),
+        {
+            "hotspot_asr": True,
+            "segment_id": segment_id,
+            "session_id": session_id,
+            "attention_results": [
+                {
+                    "event_key": alias_key,
+                    "start_offset_s": 25.0,
+                    "end_offset_s": 115.0,
+                    "text": "跨分段主事件转写",
+                    "quality": {"state": "available", "usable": True, "reason": None},
+                    "backend": "funasr-nano",
+                }
+            ],
+        },
+        30,
+    )
+
+    with get_session() as db:
+        canonical = db.exec(select(HotspotEvent).where(HotspotEvent.event_key == "detector-v1:event-1")).one()
+        alias = db.exec(select(HotspotEvent).where(HotspotEvent.event_key == alias_key)).one()
+
+    assert canonical.transcript_text == "跨分段主事件转写"
+    assert alias.status == HotspotStatus.MERGED
+    assert alias.transcript_text is None
+    evidence = json.loads(canonical.evidence_json or "{}")
+    assert evidence["items"][0]["id"] == f"hotspot-asr:{alias_key}"
 
 
 def test_background_asr_still_runs_after_hotspot_pass(

@@ -14,6 +14,7 @@ from typing import TYPE_CHECKING, Any
 
 from sqlmodel import Session, select
 
+from app.analysis.hotspot_lifecycle import resolve_merged_hotspot_event
 from app.core.config import settings
 from app.db.entities import (
     HotspotEvent,
@@ -464,6 +465,7 @@ def _commit_hotspot_attention(
         if event is None:
             _logger.warning("hotspot_asr_event_missing task=%s event=%s", task.id, event_key)
             continue
+        event = resolve_merged_hotspot_event(db, event)
         state = _attention_result_state(item)
         states.append(state)
         text = item.get("text")

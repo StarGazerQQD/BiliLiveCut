@@ -4,6 +4,8 @@ from __future__ import annotations
 
 import re
 from collections import Counter
+from collections.abc import Callable, Sequence
+from dataclasses import dataclass
 from datetime import UTC, datetime, timedelta
 from typing import Any
 
@@ -14,6 +16,39 @@ from app.db.entities import Danmaku, DanmakuType
 from app.db.session import get_session
 
 TIMELINE_ANALYSIS_VERSION = 1
+
+_REACTION_WORDS = {
+    "?",
+    "??",
+    "???",
+    "!",
+    "!!",
+    "!!!",
+    "666",
+    "6666",
+    "草",
+    "绷",
+    "笑死",
+    "哈哈",
+    "哈哈哈",
+    "卧槽",
+    "绝了",
+    "高能",
+    "泪目",
+    "牛逼",
+}
+_HUMOR_WORDS = ("哈哈", "笑", "绷", "草", "乐", "典", "节目效果", "梗")
+_REACTION_ONLY_PATTERN = re.compile(r"^[?？!！6wW哈啊哦草艹绷]+$")
+
+
+@dataclass(slots=True)
+class _DanmakuStat:
+    """一条规范化弹幕的稳定统计。"""
+
+    key: str
+    text: str
+    count: int
+    first_index: int
 
 
 def align_danmaku_window(
@@ -39,8 +74,9 @@ def representative_danmaku(
     *,
     limit: int = 2,
     lag_s: float | None = None,
+    include_role: bool = False,
 ) -> list[dict[str, object]]:
-    """返回高光窗口内出现次数最多的 1–2 条普通弹幕。"""
+    """返回兼顾高频反应与信息量的确定性代表弹幕。"""
     if limit <= 0 or end_ts <= start_ts:
         return []
     receive_start, receive_end = align_danmaku_window(start_ts, end_ts, lag_s=lag_s)
@@ -56,16 +92,100 @@ def representative_danmaku(
             .order_by(Danmaku.ts.asc())
         ).all()
 
-    display_by_key: dict[str, str] = {}
-    counts: Counter[str] = Counter()
-    for row in rows:
-        display = _clean_danmaku(row.content)
-        if not display:
+    return select_representative_danmaku(
+        [row.content for row in rows],
+        limit=limit,
+        include_role=include_role,
+    )
+
+
+def select_representative_danmaku(
+    messages: Sequence[str | None],
+    *,
+    limit: int = 2,
+    include_role: bool = False,
+) -> list[dict[str, object]]:
+    """从弹幕正文中稳定选择 reaction、information 与可选 humorous 样本。
+
+    排序只依赖规范化正文、出现次数和首次出现位置，因此同一输入始终得到
+    相同输出。``include_role`` 供 HotspotEvent 保存选择理由；旧时间线接口
+    默认仍只返回 ``text`` 与 ``count``。
+    """
+    if limit <= 0:
+        return []
+    stats_by_key: dict[str, _DanmakuStat] = {}
+    for index, content in enumerate(messages):
+        text = _clean_danmaku(content)
+        if not text:
             continue
-        key = display.casefold()
-        display_by_key.setdefault(key, display)
-        counts[key] += 1
-    return [{"text": display_by_key[key], "count": count} for key, count in counts.most_common(min(limit, 2))]
+        key = text.casefold()
+        existing = stats_by_key.get(key)
+        if existing is None:
+            stats_by_key[key] = _DanmakuStat(key=key, text=text, count=1, first_index=index)
+        else:
+            existing.count += 1
+    stats = list(stats_by_key.values())
+    if not stats:
+        return []
+
+    chosen: list[tuple[_DanmakuStat, str]] = []
+    used: set[str] = set()
+
+    def choose(
+        candidates: Sequence[_DanmakuStat],
+        role: str,
+        key: Callable[[_DanmakuStat], tuple[object, ...]],
+    ) -> None:
+        if len(chosen) >= limit:
+            return
+        available = [item for item in candidates if item.key not in used]
+        if not available:
+            return
+        selected = min(available, key=key)
+        chosen.append((selected, role))
+        used.add(selected.key)
+
+    reactions = [item for item in stats if _reaction_score(item.text) > 0.0]
+    choose(
+        reactions,
+        "reaction",
+        lambda item: (-item.count, -_reaction_score(item.text), item.first_index, item.key),
+    )
+    informative = [item for item in stats if _information_score(item.text) > 0.0]
+    choose(
+        informative,
+        "information",
+        lambda item: (-_information_score(item.text), -item.count, item.first_index, item.key),
+    )
+    humorous = [item for item in stats if _humor_score(item.text) > 0.0]
+    choose(
+        humorous,
+        "humorous",
+        lambda item: (
+            -_humor_score(item.text),
+            -_information_score(item.text),
+            -item.count,
+            item.first_index,
+            item.key,
+        ),
+    )
+    for item in sorted(
+        (item for item in stats if item.key not in used),
+        key=lambda item: (-item.count, -_information_score(item.text), item.first_index, item.key),
+    ):
+        if len(chosen) >= limit:
+            break
+        role = "reaction" if _reaction_score(item.text) > 0.0 else "information"
+        chosen.append((item, role))
+        used.add(item.key)
+
+    result: list[dict[str, object]] = []
+    for item, role in chosen:
+        payload: dict[str, object] = {"text": item.text, "count": item.count}
+        if include_role:
+            payload["role"] = role
+        result.append(payload)
+    return result
 
 
 def source_signals(features: dict[str, float], *, keyword_hits: list[str] | None = None) -> list[str]:
@@ -166,6 +286,39 @@ def _clean_danmaku(content: str | None) -> str:
     if not value or len(value) > 120:
         return ""
     return value
+
+
+def _reaction_score(text: str) -> float:
+    """返回短促情绪反应强度；零表示不是 reaction。"""
+    normalized = text.casefold().replace("？", "?").replace("！", "!")
+    if normalized in _REACTION_WORDS:
+        return 1.0
+    if len(normalized) <= 12 and _REACTION_ONLY_PATTERN.fullmatch(normalized):
+        return min(1.0, 0.55 + len(normalized) / 24.0)
+    return 0.0
+
+
+def _information_score(text: str) -> float:
+    """估计事件主题承载量，并抑制纯标点/复读反应。"""
+    compact = re.sub(r"\s+", "", text)
+    semantic = [char for char in compact if char.isalnum() or "\u4e00" <= char <= "\u9fff"]
+    if len(semantic) < 4 or (_reaction_score(text) > 0.0 and len(semantic) <= 8):
+        return 0.0
+    counts = Counter(semantic)
+    repetition = max(counts.values()) / len(semantic)
+    unique_ratio = len(counts) / len(semantic)
+    length_score = min(1.0, len(semantic) / 24.0)
+    token_count = len(re.findall(r"[A-Za-z0-9_]+|[\u4e00-\u9fff]{2,}", text))
+    token_score = min(1.0, token_count / 4.0)
+    return _clamp(length_score * 0.45 + unique_ratio * 0.35 + token_score * 0.20 - repetition * 0.15)
+
+
+def _humor_score(text: str) -> float:
+    """返回可选幽默代表强度。"""
+    hits = sum(token in text for token in _HUMOR_WORDS)
+    if hits == 0:
+        return 0.0
+    return _clamp(0.45 + hits * 0.15 + _information_score(text) * 0.40)
 
 
 def _clamp(value: float) -> float:

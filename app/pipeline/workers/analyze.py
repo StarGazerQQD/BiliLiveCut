@@ -265,14 +265,14 @@ def commit_highlight(lease: TaskLease, compute_result: dict[str, Any], ms: int) 
                 db.add(task)
                 db.commit()
                 return
-            if raw_hotspots:
-                from app.analysis.hotspot_detector import persist_provisional_hotspots
+            from app.analysis.hotspot_detector import persist_provisional_hotspots
 
-                persist_provisional_hotspots(
-                    db,
-                    raw_hotspots,
-                    expected_session_id=task.session_id,
-                )
+            persist_provisional_hotspots(
+                db,
+                raw_hotspots,
+                expected_session_id=task.session_id,
+                observed_through=segment.end_ts,
+            )
 
             if decision == HighlightDecision.SIGNAL_PASS:
                 attention_windows = _build_hotspot_attention_windows(segment, raw_hotspots)
@@ -449,13 +449,14 @@ def score_segment_direct(segment_id: int) -> HighlightCandidate | None:
 
         hotspot_drafts = detect_segment_hotspots(segment_id, audio_features=audio_features)
         log_hotspot_detection(segment_id, hotspot_drafts)
-        if hotspot_drafts:
-            with get_session() as db:
-                persist_provisional_hotspots(
-                    db,
-                    hotspot_drafts,
-                    expected_session_id=session_id,
-                )
+        with get_session() as db:
+            segment = db.get(RawSegment, segment_id)
+            persist_provisional_hotspots(
+                db,
+                hotspot_drafts,
+                expected_session_id=session_id,
+                observed_through=segment.end_ts if segment is not None else None,
+            )
     except (OSError, RuntimeError, TypeError, ValueError) as exc:
         _logger.exception("hotspot_detection_failed: segment=%s error=%s", segment_id, exc)
 

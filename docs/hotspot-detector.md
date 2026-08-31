@@ -12,6 +12,10 @@ HOTSPOT_BASELINE_WINDOW_S=90
 HOTSPOT_DETECTOR_TICK_S=20
 HOTSPOT_MIN_BASELINE_BUCKETS=3
 HOTSPOT_DETECTION_THRESHOLD=0.55
+HOTSPOT_EVENT_MERGE_GAP_S=30
+HOTSPOT_EVENT_CONFIRM_DELAY_S=60
+HOTSPOT_EVENT_SEMANTIC_OVERLAP_THRESHOLD=0.20
+HOTSPOT_RECORDING_GAP_TOLERANCE_S=1
 HOTSPOT_ASR_ENABLED=true
 HOTSPOT_ASR_PRE_ROLL_S=35
 HOTSPOT_ASR_POST_ROLL_S=55
@@ -33,6 +37,10 @@ BACKGROUND_ASR_PRIORITY=100
 ## 幂等与事务
 
 稳定事件键由场次、检测器版本与峰值 tick 生成。同一分析任务重试会复用并刷新尚未进入候选链的 provisional 记录；写入与分析任务状态推进共享一个数据库事务，租约失效时不会留下热点。
+
+事件生命周期协调同样在该事务内完成。新事件先进入 `provisional`，同键观测或跨窗合并继续扩展边界时进入 `enriching`。相邻事件只有在录制媒体连续，且时间重叠或语义/信号连续时才会合并；跨分段的后继键保留为 `status=merged` 的别名并通过 `merged_into_id` 指向最早主事件，已排队的局部 ASR 因此仍能写回正确主事件。活动直播中，观察时间超过最新事件结尾 60 秒后进入 `confirmed`；已确认事件如果再次向前或向后扩展会重新进入 `enriching`，避免把仍在继续的爆点提前冻结。场次已经停止时，最后一次观察会直接确认剩余事件。没有新热点的后续分段也会推进确认状态。
+
+代表弹幕不再只取全局频次前两名。选择器会确定性地保留一条高频 reaction、一条与人物/话题相关的信息型内容，以及容量允许时的一条幽默代表；每条仍保存出现次数，并在事件内部额外记录选择角色。
 
 ## ASR 双向融合与降级语义
 

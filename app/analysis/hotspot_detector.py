@@ -20,9 +20,7 @@ from app.analysis.keywords import match_keywords
 from app.analysis.timeline import datetime_epoch
 from app.analysis.transcription.quality import assess_transcript_quality
 from app.core.config import settings
-from app.db.entities import Danmaku, DanmakuType, HotspotStatus, RawSegment, Transcript
-from app.db.entities.base import utcnow
-from app.db.hotspot_store import get_or_create_hotspot_event
+from app.db.entities import Danmaku, DanmakuType, RawSegment, Transcript
 from app.db.session import get_session
 
 if TYPE_CHECKING:
@@ -434,85 +432,18 @@ def persist_provisional_hotspots(
     drafts: Sequence[HotspotDraft | Mapping[str, object]],
     *,
     expected_session_id: int,
+    observed_through: datetime | None = None,
 ) -> list[int]:
-    """在调用方事务内幂等写入 provisional 热点并返回主键。"""
-    persisted: list[int] = []
-    for raw in drafts:
-        payload = raw.to_payload() if isinstance(raw, HotspotDraft) else dict(raw)
-        session_id = _required_int(payload, "session_id")
-        if session_id != expected_session_id:
-            raise ValueError(
-                "hotspot compute result source mismatch: "
-                f"expected_session={expected_session_id} actual_session={session_id}"
-            )
-        event, created = get_or_create_hotspot_event(
-            db,
-            event_key=_required_str(payload, "event_key"),
-            session_id=session_id,
-            start_ts=_required_datetime(payload, "start_ts"),
-            peak_ts=_required_datetime(payload, "peak_ts"),
-            end_ts=_required_datetime(payload, "end_ts"),
-            status=HotspotStatus.PROVISIONAL,
-            heat_score=_required_float(payload, "heat_score"),
-            clip_score=_required_float(payload, "clip_score"),
-            semantic_confidence=_required_float(payload, "semantic_confidence"),
-            evidence_coverage=_required_float(payload, "evidence_coverage"),
-            features_json=_optional_str(payload.get("features_json")),
-            evidence_json=_optional_str(payload.get("evidence_json")),
-            transcript_text=_optional_str(payload.get("transcript_text")),
-        )
-        if not created and event.status == HotspotStatus.PROVISIONAL and event.candidate_id is None:
-            event.start_ts = _required_datetime(payload, "start_ts")
-            event.peak_ts = _required_datetime(payload, "peak_ts")
-            event.end_ts = _required_datetime(payload, "end_ts")
-            event.heat_score = _required_float(payload, "heat_score")
-            event.clip_score = _required_float(payload, "clip_score")
-            event.semantic_confidence = _required_float(payload, "semantic_confidence")
-            event.evidence_coverage = _required_float(payload, "evidence_coverage")
-            event.features_json = _optional_str(payload.get("features_json"))
-            event.evidence_json = _merge_attention_evidence(
-                event.evidence_json,
-                _optional_str(payload.get("evidence_json")),
-            )
-            transcript_text = _optional_str(payload.get("transcript_text"))
-            if transcript_text:
-                event.transcript_text = transcript_text
-            event.updated_at = utcnow()
-            db.add(event)
-        if event.id is None:
-            raise RuntimeError("HotspotEvent 写入后缺少主键")
-        persisted.append(event.id)
-    return persisted
+    """在调用方事务内协调 provisional 热点并返回最终主事件 ID。"""
+    from app.analysis.hotspot_lifecycle import reconcile_hotspot_events
 
-
-def _merge_attention_evidence(existing: str | None, incoming: str | None) -> str | None:
-    """Detector 刷新证据时保留已提交的热点局部 ASR 证据。"""
-    if not incoming:
-        return existing
-    try:
-        old_payload = json.loads(existing) if existing else {}
-        new_payload = json.loads(incoming)
-    except (json.JSONDecodeError, TypeError):
-        return incoming
-    if not isinstance(old_payload, dict) or not isinstance(new_payload, dict):
-        return incoming
-    old_items = old_payload.get("items")
-    new_items = new_payload.get("items")
-    if not isinstance(old_items, list) or not isinstance(new_items, list):
-        return incoming
-    incoming_ids = {item.get("id") for item in new_items if isinstance(item, dict)}
-    preserved = [
-        item
-        for item in old_items
-        if isinstance(item, dict)
-        and isinstance(item.get("id"), str)
-        and str(item["id"]).startswith("hotspot-asr:")
-        and item.get("id") not in incoming_ids
-    ]
-    if not preserved:
-        return incoming
-    new_payload["items"] = [*new_items, *preserved]
-    return json.dumps(new_payload, ensure_ascii=False, allow_nan=False, separators=(",", ":"))
+    payloads = [raw.to_payload() if isinstance(raw, HotspotDraft) else dict(raw) for raw in drafts]
+    return reconcile_hotspot_events(
+        db,
+        payloads,
+        expected_session_id=expected_session_id,
+        observed_through=observed_through,
+    )
 
 
 class _BucketBuilder:
@@ -1056,38 +987,6 @@ def _database_datetime(value: datetime) -> datetime:
 
 def _clamp(value: float) -> float:
     return max(0.0, min(1.0, float(value)))
-
-
-def _required_int(payload: Mapping[str, object], name: str) -> int:
-    value = payload.get(name)
-    if not isinstance(value, int):
-        raise ValueError(f"hotspot payload 缺少整数 {name}")
-    return value
-
-
-def _required_float(payload: Mapping[str, object], name: str) -> float:
-    value = payload.get(name)
-    if not isinstance(value, int | float) or not math.isfinite(float(value)):
-        raise ValueError(f"hotspot payload 缺少有限数值 {name}")
-    return _clamp(float(value))
-
-
-def _required_str(payload: Mapping[str, object], name: str) -> str:
-    value = payload.get(name)
-    if not isinstance(value, str) or not value.strip():
-        raise ValueError(f"hotspot payload 缺少非空字符串 {name}")
-    return value
-
-
-def _required_datetime(payload: Mapping[str, object], name: str) -> datetime:
-    value = payload.get(name)
-    if not isinstance(value, datetime):
-        raise ValueError(f"hotspot payload 缺少 datetime {name}")
-    return value
-
-
-def _optional_str(value: object) -> str | None:
-    return value if isinstance(value, str) else None
 
 
 def log_hotspot_detection(segment_id: int, drafts: Sequence[HotspotDraft]) -> None:
