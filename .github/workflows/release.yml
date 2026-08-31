@@ -534,6 +534,7 @@ jobs:
           finally {
             Remove-Item -Recurse -Force $tmpDir -ErrorAction SilentlyContinue
           }
+          exit 0
         timeout-minutes: 10
 
       - name: Full Bundle offline install test

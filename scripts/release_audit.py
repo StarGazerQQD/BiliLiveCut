@@ -167,6 +167,11 @@ def check_ci_bypass(audit: AuditResult) -> None:
         doctor_start = content.find("- name: Lite EXE --doctor rejects incomplete environment")
         doctor_end = content.find("- name: Lite fresh-install to empty directory", doctor_start)
         doctor_smoke = content[doctor_start:doctor_end] if doctor_start >= 0 and doctor_end > doctor_start else ""
+        python314_start = content.find("- name: Frozen Launcher rejects an actual Python 3.14 venv")
+        python314_end = content.find("- name: Full Bundle offline install test", python314_start)
+        python314_smoke = (
+            content[python314_start:python314_end] if python314_start >= 0 and python314_end > python314_start else ""
+        )
         audit.check("release.yml 无 BLC_CI_BUILD", "BLC_CI_BUILD" not in content)
         audit.check(
             "release.yml 无 BLC_FIXTURE_BUILD",
@@ -224,8 +229,9 @@ def check_ci_bypass(audit: AuditResult) -> None:
             and "Frozen Launcher rejects an actual Python 3.14 venv" in content
             and "unsupported Python 3\\.14" in content
             and "Frozen Launcher deleted the unsupported venv" in content
-            and "Frozen Launcher actual Python 3.14 rejection OK" in content,
-            "Release smoke 必须用实际 Python 3.14 venv 验证显式拒绝且不删除环境",
+            and "Frozen Launcher actual Python 3.14 rejection OK" in content
+            and "exit 0" in python314_smoke,
+            "Release smoke 必须用实际 Python 3.14 venv 验证显式拒绝、不删除环境并归一化预期失败退出码",
         )
         audit.check(
             "release.yml Doctor 预期失败退出码归一化",
