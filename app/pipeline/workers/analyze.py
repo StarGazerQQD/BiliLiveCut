@@ -11,7 +11,7 @@ import json
 import logging
 import time
 from collections.abc import Mapping
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 from datetime import datetime, timedelta
 from enum import StrEnum
 from typing import Any
@@ -26,6 +26,8 @@ from app.db.entities import (
     CandidateStatus,
     HighlightCandidate,
     HighlightEvent,
+    HotspotEvent,
+    HotspotStatus,
     LiveRoom,
     RawSegment,
     RecordingSession,
@@ -199,6 +201,21 @@ def analyze_compute(task_id: int) -> dict[str, Any]:
             "hotspot_drafts": hotspot_payloads,
         }
 
+    if analysis_pass == "candidate":
+        event_results = _score_pending_hotspot_events(
+            session_id,
+            audio_features=audio_features,
+            audio_segment_id=segment_id,
+        )
+        has_candidate = any(result["clip_draft"].decision == HighlightDecision.CANDIDATE for result in event_results)
+        return {
+            "decision": HighlightDecision.CANDIDATE if has_candidate else HighlightDecision.BELOW_THRESHOLD,
+            "segment_id": segment_id,
+            "session_id": session_id,
+            "hotspot_drafts": hotspot_payloads,
+            "event_clip_results": event_results,
+        }
+
     try:
         draft = _score_segment_drafts(segment_id, audio_features=audio_features)
     except ValueError as exc:
@@ -297,6 +314,43 @@ def commit_highlight(lease: TaskLease, compute_result: dict[str, Any], ms: int) 
                     len(attention_windows),
                     task.priority,
                 )
+                return
+
+            raw_event_results = compute_result.get("event_clip_results")
+            if isinstance(raw_event_results, list):
+                created, processed_event_ids = _commit_event_clip_results(
+                    db,
+                    task,
+                    raw_event_results,
+                )
+                followup_event_ids = _unscored_confirmed_event_ids(
+                    db,
+                    task.session_id,
+                    exclude=processed_event_ids,
+                )
+                _mark_scored_in_db(db, segment_id)
+                mark_completed(task, ms)
+                if created:
+                    primary = max(created, key=lambda item: item[2])
+                    enqueue_next(
+                        task,
+                        TaskStatus.CANDIDATE_CREATED,
+                        candidate_id=primary[0],
+                        event_id=primary[1],
+                    )
+                else:
+                    enqueue_next(task, TaskStatus.COMPLETED)
+                db.add(task)
+                db.commit()
+                for event_id in followup_event_ids:
+                    try:
+                        score_hotspot_event(event_id)
+                    except (OSError, RuntimeError, TypeError, ValueError) as exc:
+                        _logger.exception(
+                            "event_clip_followup_failed: event_id=%s error=%s",
+                            event_id,
+                            exc,
+                        )
                 return
             _record_plugin_dispatch(db, compute_result)
 
@@ -417,6 +471,187 @@ def commit_highlight(lease: TaskLease, compute_result: dict[str, Any], ms: int) 
 
     except LeaseLostError:
         _logger.warning("stale_result_discarded: highlight task=%s 已失去租约", lease.task_id)
+
+
+def _score_pending_hotspot_events(
+    session_id: int,
+    *,
+    audio_features: audio_mod.AudioFeatures | None,
+    audio_segment_id: int,
+) -> list[dict[str, object]]:
+    """在事务外依次补全并评分当前场次全部待处理的 confirmed 事件。"""
+    from app.analysis.clip_scorer import compute_hotspot_clip_draft, pending_hotspot_event_ids
+    from app.analysis.event_enricher import compute_event_enrichment
+
+    results: list[dict[str, object]] = []
+    for event_id in pending_hotspot_event_ids(session_id):
+        enrichment = compute_event_enrichment(event_id)
+        clip_draft = compute_hotspot_clip_draft(
+            event_id,
+            enrichment=enrichment,
+            audio_features=audio_features,
+            audio_segment_id=audio_segment_id,
+        )
+        results.append(
+            {
+                "event_id": event_id,
+                "enrichment": enrichment,
+                "clip_draft": clip_draft,
+            }
+        )
+    return results
+
+
+def _commit_event_clip_results(
+    db: Session,
+    task: SegmentTask,
+    raw_results: list[object],
+) -> tuple[list[tuple[int, int, float]], set[int]]:
+    """校验事件快照并复用既有 Candidate/Event 幂等提交链。"""
+    from app.analysis.clip_scorer import (
+        EventClipDraft,
+        mark_event_clip_evaluated,
+        validate_event_clip_draft,
+    )
+    from app.analysis.event_enricher import (
+        EventEnrichmentDraft,
+        commit_event_enrichment,
+    )
+    from app.analysis.scoring_config import get_scoring_config
+
+    scoring_config = get_scoring_config()
+    created: list[tuple[int, int, float]] = []
+    processed_event_ids: set[int] = set()
+    for raw in raw_results:
+        if not isinstance(raw, Mapping):
+            raise ValueError("event_clip_results 只能包含对象")
+        clip_draft = raw.get("clip_draft")
+        enrichment = raw.get("enrichment")
+        if not isinstance(clip_draft, EventClipDraft):
+            raise ValueError("event_clip_results 缺少 EventClipDraft")
+        if enrichment is not None and not isinstance(enrichment, EventEnrichmentDraft):
+            raise ValueError("event_clip_results 包含无效 EventEnrichmentDraft")
+        if clip_draft.session_id != task.session_id:
+            raise ValueError("event_clip_results 与任务场次不一致")
+        if enrichment is not None and not commit_event_enrichment(db, enrichment):
+            continue
+        event = validate_event_clip_draft(db, clip_draft)
+        if event is None:
+            continue
+        processed_event_ids.add(clip_draft.hotspot_event_id)
+        committed_draft = clip_draft
+        if clip_draft.decision == HighlightDecision.CANDIDATE:
+            payload = clip_draft.to_payload()
+            if _draft_clusters_existing(
+                db,
+                payload,
+                dedup_hash=clip_draft.dedup_hash,
+                cooldown_s=scoring_config.cooldown_s,
+                iou_threshold=scoring_config.iou_threshold,
+            ):
+                committed_draft = replace(
+                    clip_draft,
+                    decision=HighlightDecision.DUPLICATE,
+                    reason=f"{clip_draft.reason}；与既有候选重叠或处于同事件冷却期",
+                )
+            else:
+                candidate = _get_or_create_candidate(
+                    db,
+                    clip_draft.dedup_hash,
+                    clip_draft.session_id,
+                    clip_draft.peak_ts,
+                    clip_draft.start_ts,
+                    clip_draft.end_ts,
+                    clip_draft.clip_score,
+                    0.0,
+                    clip_draft.clip_score,
+                    clip_draft.features_json,
+                    clip_draft.reason,
+                    clip_draft.initial_status,
+                )
+                if candidate.id is None:
+                    raise RuntimeError("事件级候选创建后缺少主键")
+                highlight_event_id = _get_or_create_event(
+                    db,
+                    candidate.id,
+                    clip_draft.session_id,
+                    clip_draft.start_ts,
+                    clip_draft.end_ts,
+                    clip_draft.clip_score,
+                    0.0,
+                    clip_draft.clip_score,
+                    clip_draft.features_json,
+                    clip_draft.reason,
+                    segment_id=clip_draft.segment_id,
+                    asr_text=clip_draft.asr_text,
+                )
+                event.candidate_id = candidate.id
+                db.add(event)
+                created.append((candidate.id, highlight_event_id, clip_draft.clip_score))
+        mark_event_clip_evaluated(db, event, committed_draft)
+    return created, processed_event_ids
+
+
+def _unscored_confirmed_event_ids(
+    db: Session,
+    session_id: int,
+    *,
+    exclude: set[int],
+) -> list[int]:
+    """找出本次持久化后才进入 confirmed 或证据刚变化的事件。"""
+    from app.analysis.clip_scorer import event_clip_score_is_current
+
+    rows = db.exec(
+        select(HotspotEvent)
+        .where(
+            HotspotEvent.session_id == session_id,
+            HotspotEvent.status == HotspotStatus.CONFIRMED,
+            HotspotEvent.candidate_id.is_(None),
+        )
+        .order_by(HotspotEvent.peak_ts.asc(), HotspotEvent.id.asc())
+    ).all()
+    return [
+        event.id
+        for event in rows
+        if event.id is not None and event.id not in exclude and not event_clip_score_is_current(db, event)
+    ]
+
+
+def score_hotspot_event(event_id: int) -> HighlightCandidate | None:
+    """同步补全并评分一个 confirmed 热点，达到房间阈值时创建候选。"""
+    from app.analysis.clip_scorer import compute_hotspot_clip_draft, event_clip_score_is_current
+    from app.analysis.event_enricher import compute_event_enrichment
+
+    with get_session() as db:
+        current = db.get(HotspotEvent, event_id)
+        if current is None:
+            raise ValueError(f"HotspotEvent 不存在: event_id={event_id}")
+        if current.candidate_id is not None:
+            return db.get(HighlightCandidate, current.candidate_id)
+        if event_clip_score_is_current(db, current):
+            return None
+    enrichment = compute_event_enrichment(event_id)
+    clip_draft = compute_hotspot_clip_draft(event_id, enrichment=enrichment)
+    with get_session() as db:
+        event = db.get(HotspotEvent, event_id)
+        if event is None:
+            raise ValueError(f"HotspotEvent 不存在: event_id={event_id}")
+        synthetic_task = SegmentTask(
+            segment_id=clip_draft.segment_id,
+            session_id=clip_draft.session_id,
+            stage=TaskStatus.ANALYZING,
+        )
+        created, _processed = _commit_event_clip_results(
+            db,
+            synthetic_task,
+            [{"event_id": event_id, "enrichment": enrichment, "clip_draft": clip_draft}],
+        )
+        if not created:
+            return None
+        candidate = db.get(HighlightCandidate, created[0][0])
+        if candidate is None:
+            raise RuntimeError("事件级候选提交后无法读取")
+        return candidate
 
 
 def score_segment_direct(segment_id: int) -> HighlightCandidate | None:
@@ -629,9 +864,71 @@ def _draft_clusters_existing(
             return False
         if interval_iou(start, end, candidate.start_ts, candidate.end_ts) >= iou_threshold:
             return True
-        if cooldown_s > 0 and datetime_distance_s(peak, candidate.peak_ts) < cooldown_s:
+        if (
+            cooldown_s > 0
+            and datetime_distance_s(peak, candidate.peak_ts) < cooldown_s
+            and _draft_shares_cooldown_identity(draft, candidate)
+        ):
             return True
     return False
+
+
+def _draft_shares_cooldown_identity(
+    draft: Mapping[str, Any],
+    candidate: HighlightCandidate,
+) -> bool:
+    """旧分段候选保持时间冷却；事件候选仅对同一语义事件应用冷却。"""
+    hotspot_event_id = draft.get("hotspot_event_id")
+    if not isinstance(hotspot_event_id, int):
+        return True
+    draft_features = _json_object(draft.get("features_json"))
+    candidate_features = _json_object(candidate.features_json)
+    if candidate_features.get("hotspot_event_id") == hotspot_event_id:
+        return True
+    draft_event = draft_features.get("event")
+    candidate_event = candidate_features.get("event")
+    if not isinstance(draft_event, Mapping) or not isinstance(candidate_event, Mapping):
+        return False
+    draft_terms = _cooldown_terms(draft_event)
+    candidate_terms = _cooldown_terms(candidate_event)
+    if not draft_terms or not candidate_terms:
+        return False
+    return len(draft_terms & candidate_terms) / len(draft_terms | candidate_terms) >= 0.20
+
+
+def _cooldown_terms(event_payload: Mapping[str, object]) -> set[str]:
+    """提取事件标题、类别与实体的稳定冷却身份词。"""
+    values: list[str] = []
+    for name in ("title", "category"):
+        value = event_payload.get(name)
+        if isinstance(value, str):
+            values.append(value)
+    entities = event_payload.get("entities")
+    if isinstance(entities, list):
+        values.extend(item for item in entities if isinstance(item, str))
+    terms: set[str] = set()
+    for value in values:
+        normalized = "".join(value.casefold().split())
+        if not normalized:
+            continue
+        if any("\u4e00" <= char <= "\u9fff" for char in normalized):
+            terms.update(normalized[index : index + 2] for index in range(max(1, len(normalized) - 1)))
+        else:
+            terms.update(token for token in normalized.replace("_", " ").split() if token)
+    return terms
+
+
+def _json_object(raw: object) -> dict[str, Any]:
+    """安全解析候选特征对象。"""
+    if isinstance(raw, Mapping):
+        return dict(raw)
+    if not isinstance(raw, str):
+        return {}
+    try:
+        value = json.loads(raw)
+    except (json.JSONDecodeError, TypeError):
+        return {}
+    return dict(value) if isinstance(value, Mapping) else {}
 
 
 def _get_or_create_candidate(

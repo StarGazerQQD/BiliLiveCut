@@ -241,7 +241,8 @@ def _merge_payload_into_event(
     incoming_end = _required_datetime(payload, "end_ts")
     incoming_heat = _required_score(payload, "heat_score")
     incoming_clip = _required_score(payload, "clip_score")
-    if max(incoming_heat, incoming_clip) > max(event.heat_score, event.clip_score):
+    detector_clip = max(_detector_clip_value(event), incoming_clip)
+    if max(incoming_heat, incoming_clip) > max(event.heat_score, _detector_clip_value(event)):
         event.peak_ts = incoming_peak
     event.start_ts = _earlier(event.start_ts, incoming_start)
     event.end_ts = _later(event.end_ts, incoming_end)
@@ -260,6 +261,18 @@ def _merge_payload_into_event(
         _optional_str(payload.get("features_json")),
         observed_through=observed_through,
     )
+    merged_features = _json_dict(event.features_json)
+    clip_metadata = merged_features.get("event_clip_score")
+    if isinstance(clip_metadata, Mapping):
+        updated_metadata = dict(clip_metadata)
+        updated_metadata["detector_clip_score"] = detector_clip
+        merged_features["event_clip_score"] = updated_metadata
+        event.features_json = json.dumps(
+            merged_features,
+            ensure_ascii=False,
+            allow_nan=False,
+            separators=(",", ":"),
+        )
     event.evidence_json = _merge_evidence_json(event.evidence_json, _optional_str(payload.get("evidence_json")))
     event.transcript_text = _merge_text(event.transcript_text, _optional_str(payload.get("transcript_text")))
     event.updated_at = utcnow()
@@ -285,7 +298,7 @@ def _merge_event_into(
         "peak_ts": source.peak_ts,
         "end_ts": source.end_ts,
         "heat_score": source.heat_score,
-        "clip_score": source.clip_score,
+        "clip_score": _detector_clip_value(source),
         "semantic_confidence": source.semantic_confidence,
         "evidence_coverage": source.evidence_coverage,
         "features_json": source.features_json,
@@ -309,6 +322,16 @@ def _merge_event_into(
         canonical.id,
         canonical.session_id,
     )
+
+
+def _detector_clip_value(event: HotspotEvent) -> float:
+    """在事件级成片评分覆盖 ``clip_score`` 后仍返回检测器原始先验。"""
+    metadata = _json_dict(event.features_json).get("event_clip_score")
+    if isinstance(metadata, Mapping):
+        value = metadata.get("detector_clip_score")
+        if isinstance(value, int | float):
+            return max(0.0, min(float(value), 1.0))
+    return event.clip_score
 
 
 def _merged_active_status(
