@@ -4,8 +4,12 @@ from __future__ import annotations
 
 import tempfile
 from pathlib import Path
+from typing import TYPE_CHECKING
 
 import pytest
+
+if TYPE_CHECKING:
+    from pytest import MonkeyPatch
 
 # 添加模块路径
 _portable_dir = Path(__file__).resolve().parent.parent  # portable/
@@ -55,92 +59,74 @@ class TestAtomicInstall:
 
     def test_installed_manifest_write_then_read(self) -> None:
         from blc_portable.engine_pack.installer import (  # noqa: E402
-            _collect_files_info,
             _read_installed_manifest,
-            _write_installed_manifest,
+            install_engine_from_staging,
         )
-        from blc_portable.engine_pack.manifest import ENGINE_PACK_VERSION, SOURCE_COMMIT_FULL  # noqa: E402
 
         with tempfile.TemporaryDirectory() as tmpdir:
-            models_dir = Path(tmpdir) / "models"
-            models_dir.mkdir()
+            app_root = Path(tmpdir)
+            models_dir = app_root / "models"
             for engine_id in ("whisper", "paraformer"):
-                engine_dir = models_dir / engine_id
-                engine_dir.mkdir()
+                engine_dir = app_root / "staging" / engine_id
+                engine_dir.mkdir(parents=True)
                 (engine_dir / "model.bin").write_bytes(engine_id.encode())
-            files_info = _collect_files_info(models_dir, ["whisper", "paraformer"])
-            _write_installed_manifest(
-                models_dir,
-                ENGINE_PACK_VERSION,
-                ["whisper", "paraformer"],
-                files_info,
-                zip_sha256="a" * 64,
-                source_commit=SOURCE_COMMIT_FULL,
-                installation_source="engine_pack",
-            )
+                install_engine_from_staging(
+                    app_root,
+                    engine_id,
+                    engine_dir,
+                    installation_source="engine_pack",
+                )
             manifest = _read_installed_manifest(models_dir)
             assert manifest is not None
-            assert manifest["engine_pack_version"] == ENGINE_PACK_VERSION
-            assert manifest["installation_source"] == "engine_pack"
-            assert manifest["zip_sha256"] == "a" * 64
-            assert manifest["source_commit"] == SOURCE_COMMIT_FULL
+            assert manifest["schema_version"] == 6
+            assert manifest["engines"]["whisper"]["installation_source"] == "engine_pack"
+            assert manifest["engines"]["whisper"]["zip_sha256"] is None
+            assert "engine_pack_version" not in manifest
+            assert "source_commit" not in manifest
 
-    def test_installed_manifest_version_check(self) -> None:
+    def test_installed_manifest_uses_only_content_identity(self) -> None:
         from blc_portable.engine_pack.installer import (  # noqa: E402
-            _collect_files_info,
-            _write_installed_manifest,
             check_installed_models,
+            install_engine_from_staging,
         )
-        from blc_portable.engine_pack.manifest import ENGINE_PACK_VERSION, SOURCE_COMMIT_FULL  # noqa: E402
 
         with tempfile.TemporaryDirectory() as tmpdir:
-            models_dir = Path(tmpdir) / "models"
-            models_dir.mkdir()
+            app_root = Path(tmpdir)
+            models_dir = app_root / "models"
             for eng in ("whisper", "paraformer", "sensevoice", "funasr_nano"):
-                (models_dir / eng).mkdir(parents=True, exist_ok=True)
-                (models_dir / eng / "model.txt").write_text("test")
-            _write_installed_manifest(
-                models_dir,
-                ENGINE_PACK_VERSION,
-                ["whisper", "paraformer", "sensevoice", "funasr_nano"],
-                _collect_files_info(
-                    models_dir,
-                    ["whisper", "paraformer", "sensevoice", "funasr_nano"],
-                ),
-                zip_sha256=None,
-                source_commit=SOURCE_COMMIT_FULL,
-                installation_source="online_download",
-            )
-            ok1, _ = check_installed_models(models_dir, ENGINE_PACK_VERSION)
-            assert ok1
-            ok2, _ = check_installed_models(models_dir, "0.1.17.2-alpha")
-            assert not ok2
+                staged = app_root / "staging" / eng
+                staged.mkdir(parents=True, exist_ok=True)
+                (staged / "model.txt").write_text("test")
+                install_engine_from_staging(app_root, eng, staged)
+            ok, _ = check_installed_models(models_dir)
+            assert ok
 
     def test_not_installed_returns_false(self) -> None:
         from blc_portable.engine_pack.installer import check_installed_models  # noqa: E402
 
         with tempfile.TemporaryDirectory() as tmpdir:
-            ok, _ = check_installed_models(Path(tmpdir) / "nonexistent", "0.1.14.9-alpha")
+            ok, _ = check_installed_models(Path(tmpdir) / "nonexistent")
             assert not ok
 
-    def test_rollback_on_move_failure(self) -> None:
-        from blc_portable.engine_pack.installer import install_models_dir_from_staging  # noqa: E402
-        from blc_portable.engine_pack.manifest import ENGINE_PACK_VERSION  # noqa: E402
+    def test_rollback_on_manifest_failure(self, monkeypatch: MonkeyPatch) -> None:
+        from blc_portable.engine_pack import installer  # noqa: E402
 
         with tempfile.TemporaryDirectory() as tmpdir:
             app_root = Path(tmpdir)
-            staging = app_root / "staging"
-            staging.mkdir()
-            (staging / "whisper").mkdir()
-            (staging / "whisper" / "model.bin").write_text("data")
+            source = app_root / "staging" / "whisper"
+            source.mkdir(parents=True)
+            (source / "model.bin").write_text("new")
+            target = app_root / "models" / "whisper"
+            target.mkdir(parents=True)
+            (target / "model.bin").write_text("old")
 
-            # Pretend models already exist
-            models = app_root / "models"
-            models.mkdir()
-            (models / "old_model.txt").write_text("old")
-            old_content = (models / "old_model.txt").read_text()
-            assert old_content == "old"
+            def fail_record(*_args: object, **_kwargs: object) -> dict[str, object]:
+                raise RuntimeError("injected manifest failure")
 
-            result = install_models_dir_from_staging(app_root, staging, ENGINE_PACK_VERSION, ["whisper"])
-            # Should succeed since staging relocation is straightforward
-            assert result is True
+            monkeypatch.setattr(installer, "_new_engine_record", fail_record)
+
+            with pytest.raises(RuntimeError, match="injected manifest failure"):
+                installer.install_engine_from_staging(app_root, "whisper", source)
+
+            assert (target / "model.bin").read_text() == "old"
+            assert (source / "model.bin").read_text() == "new"

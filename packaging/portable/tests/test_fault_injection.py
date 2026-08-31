@@ -48,17 +48,16 @@ class TestRuntimeFaultInjection:
 class TestEnginePackFaultInjection:
     """Engine Pack 安装故障注入。"""
 
-    def test_manifest_version_mismatch_raises(self) -> None:
-        """Manifest 版本不匹配应抛出。"""
+    def test_obsolete_manifest_schema_is_rejected(self) -> None:
+        """缺少 schema 的旧清单不能被误认作可复用内容。"""
         from blc_portable.engine_pack.installer import check_installed_models  # noqa: E402
 
         with tempfile.TemporaryDirectory() as tmpdir:
             models_dir = Path(tmpdir)
-            # Installed manifest says 0.1.14.7
             (models_dir / "engine-pack-installed.json").write_text(
                 json.dumps({"engine_pack_version": "0.1.14.7-alpha", "engine_ids": ["whisper"]})
             )
-            ok, _ = check_installed_models(models_dir, "0.1.14.9-alpha")
+            ok, _ = check_installed_models(models_dir)
             assert not ok
 
     def test_missing_engine_directory(self) -> None:
@@ -74,7 +73,7 @@ class TestEnginePackFaultInjection:
                 "engine_ids": ["whisper", "paraformer", "sensevoice", "funasr_nano"],
             }
             (models_dir / "engine-pack-installed.json").write_text(json.dumps(installed))
-            ok2, _ = check_installed_models(models_dir, "0.1.14.9-alpha")
+            ok2, _ = check_installed_models(models_dir)
             assert not ok2
 
 

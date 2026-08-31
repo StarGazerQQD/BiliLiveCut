@@ -34,17 +34,21 @@ def current_tree_manifest(root: Path) -> dict[str, Any]:
 def installed_manifest(
     models_dir: Path,
     *,
-    version: str,
     zip_sha256: str | None = "a" * 64,
     installation_source: str = "engine_pack",
 ) -> dict[str, Any]:
     """根据临时 models 目录生成当前已安装模型清单。"""
-    from blc_portable.engine_pack.installer import INSTALLED_MANIFEST_SCHEMA, compute_sha256
+    from blc_portable.engine_pack.identity import model_set_fingerprint
+    from blc_portable.engine_pack.installer import (
+        INSTALLED_MANIFEST_SCHEMA,
+        _desired_records,
+        compute_sha256,
+    )
 
     engine_ids = ["whisper", "paraformer", "sensevoice", "funasr_nano"]
     files: dict[str, dict[str, object]] = {}
-    file_count = 0
-    total_size = 0
+    desired = _desired_records()
+    records: dict[str, dict[str, object]] = {}
     for engine_id in engine_ids:
         entries: dict[str, dict[str, object]] = {}
         engine_dir = models_dir / engine_id
@@ -54,8 +58,43 @@ def installed_manifest(
             rel = path.relative_to(engine_dir).as_posix()
             size = path.stat().st_size
             entries[rel] = {"size": size, "sha256": compute_sha256(path)}
-            file_count += 1
-            total_size += size
+        files[engine_id] = {
+            "target_path": f"models/{engine_id}",
+            "file_count": len(entries),
+            "total_size": sum(int(item["size"]) for item in entries.values()),
+            "files": entries,
+        }
+        records[engine_id] = {
+            "content_fingerprint": desired[engine_id]["content_fingerprint"],
+            "identity": desired[engine_id]["identity"],
+            "installation_source": installation_source,
+            "zip_sha256": zip_sha256,
+            "installed_at": "2026-08-12T00:00:00+00:00",
+            **files[engine_id],
+        }
+    return {
+        "schema_version": INSTALLED_MANIFEST_SCHEMA,
+        "identity_schema_version": 1,
+        "model_set_fingerprint": model_set_fingerprint(desired),
+        "installed_at": "2026-08-12T00:00:00+00:00",
+        "engines": records,
+    }
+
+
+def legacy_installed_manifest(models_dir: Path, *, version: str = "0.1.17.4-alpha") -> dict[str, Any]:
+    """Build the exact schema-5 manifest accepted by the one-time migration."""
+    from blc_portable.engine_pack.installer import compute_sha256
+
+    engine_ids = ["whisper", "paraformer", "sensevoice", "funasr_nano"]
+    files: dict[str, dict[str, object]] = {}
+    for engine_id in engine_ids:
+        entries: dict[str, dict[str, object]] = {}
+        for path in sorted((models_dir / engine_id).rglob("*")):
+            if path.is_file():
+                entries[path.relative_to(models_dir / engine_id).as_posix()] = {
+                    "size": path.stat().st_size,
+                    "sha256": compute_sha256(path),
+                }
         files[engine_id] = {
             "target_path": f"models/{engine_id}",
             "file_count": len(entries),
@@ -63,13 +102,13 @@ def installed_manifest(
             "files": entries,
         }
     return {
-        "schema_version": INSTALLED_MANIFEST_SCHEMA,
+        "schema_version": 5,
         "engine_pack_version": version,
-        "installation_source": installation_source,
-        "zip_sha256": zip_sha256,
+        "installation_source": "engine_pack",
+        "zip_sha256": "a" * 64,
         "engine_ids": engine_ids,
-        "file_count": file_count,
-        "total_size_bytes": total_size,
+        "file_count": sum(int(info["file_count"]) for info in files.values()),
+        "total_size_bytes": sum(int(info["total_size"]) for info in files.values()),
         "installed_at": "2026-08-12T00:00:00",
         "source_commit": "97e39df3a9b24d35eca7ec6cb862291dadfad6e2",
         "files": files,

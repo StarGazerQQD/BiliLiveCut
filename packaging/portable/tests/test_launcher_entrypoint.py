@@ -160,6 +160,91 @@ def test_prepare_venv_rejects_existing_unsupported_python(tmp_path: Path, monkey
 
     with pytest.raises(RuntimeError, match="unsupported Python 3.14"):
         launcher_module.prepare_venv(tmp_path)
+    assert venv_python.is_file()
+
+
+def test_prepare_venv_reuses_supported_interpreter(tmp_path: Path, monkeypatch: MonkeyPatch) -> None:
+    """A runnable managed 3.11/3.12 environment is reused without mutation."""
+    from blc_portable.launcher import main as launcher_module
+
+    venv_python = tmp_path / ".venv" / "Scripts" / "python.exe"
+    venv_python.parent.mkdir(parents=True)
+    venv_python.write_bytes(b"fixture")
+    monkeypatch.setattr(launcher_module, "_python_version", lambda _python: (3, 12))
+    monkeypatch.setattr(
+        launcher_module.subprocess,
+        "run",
+        lambda *_args, **_kwargs: pytest.fail("supported .venv must not be recreated"),
+    )
+
+    assert launcher_module.prepare_venv(tmp_path) == venv_python
+
+
+@pytest.mark.parametrize("with_python", [False, True])
+def test_prepare_venv_rebuilds_incomplete_or_unreadable_managed_environment(
+    tmp_path: Path,
+    monkeypatch: MonkeyPatch,
+    with_python: bool,
+) -> None:
+    """Only an incomplete/unreadable app-root .venv is rebuilt automatically."""
+    from blc_portable.launcher import main as launcher_module
+
+    venv_python = tmp_path / ".venv" / "Scripts" / "python.exe"
+    venv_python.parent.mkdir(parents=True)
+    if with_python:
+        venv_python.write_bytes(b"corrupt")
+    portable_python = tmp_path / "portable-python" / "python.exe"
+    portable_python.parent.mkdir(parents=True)
+    portable_python.write_bytes(b"portable")
+    versions: dict[Path, tuple[int, int] | None] = {
+        venv_python: None,
+        portable_python: (3, 12),
+    }
+
+    def fake_run(args: list[str], **_kwargs: object):
+        assert args[:3] == [str(portable_python), "-m", "venv"]
+        venv_python.parent.mkdir(parents=True)
+        venv_python.write_bytes(b"rebuilt")
+        versions[venv_python] = (3, 12)
+        return launcher_module.subprocess.CompletedProcess(args, 0, stdout="", stderr="")
+
+    monkeypatch.setattr(launcher_module, "_python_version", lambda python: versions.get(python))
+    monkeypatch.setattr(launcher_module, "_find_portable_python", lambda _root: portable_python)
+    monkeypatch.setattr(launcher_module.subprocess, "run", fake_run)
+
+    assert launcher_module.prepare_venv(tmp_path) == venv_python
+    assert venv_python.read_bytes() == b"rebuilt"
+
+
+def test_prepare_venv_rejects_unsupported_bundled_python(tmp_path: Path, monkeypatch: MonkeyPatch) -> None:
+    """A Full Bundle with Python 3.14 must fail instead of silently using ambient Python."""
+    from blc_portable.launcher import main as launcher_module
+
+    portable_python = tmp_path / "portable-python" / "python.exe"
+    portable_python.parent.mkdir(parents=True)
+    portable_python.write_bytes(b"portable")
+    monkeypatch.setattr(launcher_module, "_find_portable_python", lambda _root: portable_python)
+    monkeypatch.setattr(launcher_module, "_python_version", lambda _python: (3, 14))
+    monkeypatch.setattr(
+        launcher_module,
+        "_find_system_python",
+        lambda: pytest.fail("unsupported bundled Python must not fall back to an ambient interpreter"),
+    )
+
+    with pytest.raises(RuntimeError, match=r"Portable Python is unsupported \(3.14\)"):
+        launcher_module.prepare_venv(tmp_path)
+
+
+def test_remove_managed_venv_refuses_other_directory(tmp_path: Path) -> None:
+    """The recovery helper cannot delete a path other than app-root/.venv."""
+    from blc_portable.launcher import main as launcher_module
+
+    other = tmp_path / "other-venv"
+    other.mkdir()
+
+    with pytest.raises(RuntimeError, match="non-managed virtual environment"):
+        launcher_module._remove_managed_venv(tmp_path, other)
+    assert other.is_dir()
 
 
 def test_doctor_returns_nonzero_when_checks_fail(tmp_path: Path, monkeypatch: MonkeyPatch) -> None:
@@ -223,15 +308,29 @@ def test_exit_pause_ignores_eof_from_interactive_stdin(monkeypatch: MonkeyPatch)
 
 
 def test_frozen_entry_prepare_models_uses_package_safe_imports(tmp_path: Path, monkeypatch: MonkeyPatch) -> None:
-    """PyInstaller executes main.py without package context; model preparation must still import."""
-    from blc_portable.engine_pack import installer  # noqa: E402
+    """PyInstaller entry delegates model preparation to the managed interpreter."""
+    import subprocess
 
-    monkeypatch.setattr(installer, "check_installed_models", lambda _models, _version: (True, []))
+    venv_python = tmp_path / ".venv" / "Scripts" / "python.exe"
+    venv_python.parent.mkdir(parents=True)
+    venv_python.write_bytes(b"fixture")
+
+    def fake_run(args: list[str], **_kwargs: object):
+        assert args[0] == str(venv_python)
+        assert args[1:3] == ["-m", "blc_portable.launcher.model_downloader"]
+        return subprocess.CompletedProcess(
+            args,
+            0,
+            stdout='BLC_PROVISION_RESULT={"network_requests": 0, "source": "already_installed"}\n',
+            stderr="",
+        )
+
+    monkeypatch.setattr(subprocess, "run", fake_run)
     entry_path = _src_dir / "blc_portable" / "launcher" / "main.py"
     namespace = runpy.run_path(str(entry_path), run_name="main")
 
     assert namespace["__package__"] == ""
-    assert namespace["prepare_models"](tmp_path) == {
+    assert namespace["prepare_models"](venv_python, tmp_path) == {
         "source": "already_installed",
         "network_requests": 0,
     }
@@ -256,3 +355,5 @@ def test_frozen_entry_collects_engine_pack_config_dependencies() -> None:
     assert '"version_loader"' in content
     assert '(_version_config, ".")' in content
     assert '(_model_sources_lock, ".")' in content
+    assert 'Path("provisioner")' in content
+    assert '"provisioner-config"' in content

@@ -183,54 +183,54 @@ class TestZipCorruptionDetection:
 class TestFullRehash:
     """当前已安装清单支持快速检查和完整重哈希。"""
 
-    def _prepare(self, tmp_path: Path, version: str) -> tuple[Path, dict[str, object]]:
+    def _prepare(self, tmp_path: Path) -> tuple[Path, dict[str, object]]:
         models_dir = tmp_path / "models"
         _make_models(tmp_path)
-        manifest = installed_manifest(models_dir, version=version)
+        manifest = installed_manifest(models_dir)
         (models_dir / "engine-pack-installed.json").write_text(json.dumps(manifest), encoding="utf-8")
         return models_dir, manifest
 
     def test_full_rehash_missing_file(self, tmp_path: Path) -> None:
         from blc_portable.engine_pack.installer import check_installed_models
-        from blc_portable.engine_pack.manifest import ENGINE_PACK_VERSION
 
-        models_dir, _ = self._prepare(tmp_path, ENGINE_PACK_VERSION)
+        models_dir, _ = self._prepare(tmp_path)
         (models_dir / "whisper" / "model.bin").unlink()
-        ok, errors = check_installed_models(models_dir, ENGINE_PACK_VERSION, full_rehash=True)
+        ok, errors = check_installed_models(models_dir, full_rehash=True)
         assert not ok, errors
         assert any("missing" in error.lower() or "empty" in error.lower() for error in errors), errors
 
     def test_full_rehash_sha_mismatch(self, tmp_path: Path) -> None:
         from blc_portable.engine_pack.installer import check_installed_models
-        from blc_portable.engine_pack.manifest import ENGINE_PACK_VERSION
 
-        models_dir, _ = self._prepare(tmp_path, ENGINE_PACK_VERSION)
+        models_dir, _ = self._prepare(tmp_path)
         (models_dir / "whisper" / "model.bin").write_bytes(b"tampered")
-        ok, errors = check_installed_models(models_dir, ENGINE_PACK_VERSION, full_rehash=True)
+        ok, errors = check_installed_models(models_dir, full_rehash=True)
         assert not ok and any("SHA-256" in error for error in errors)
 
     def test_clean_and_quick_checks(self, tmp_path: Path) -> None:
         from blc_portable.engine_pack.installer import check_installed_models
-        from blc_portable.engine_pack.manifest import ENGINE_PACK_VERSION
 
-        models_dir, manifest = self._prepare(tmp_path, ENGINE_PACK_VERSION)
-        assert check_installed_models(models_dir, ENGINE_PACK_VERSION, full_rehash=True)[0]
-        manifest["files"]["whisper"]["files"]["model.bin"]["sha256"] = "0" * 64  # type: ignore[index]
+        models_dir, manifest = self._prepare(tmp_path)
+        assert check_installed_models(models_dir, full_rehash=True)[0]
+        manifest["engines"]["whisper"]["files"]["model.bin"]["sha256"] = "0" * 64  # type: ignore[index]
         (models_dir / "engine-pack-installed.json").write_text(json.dumps(manifest), encoding="utf-8")
-        assert check_installed_models(models_dir, ENGINE_PACK_VERSION, full_rehash=False)[0]
+        assert check_installed_models(models_dir, full_rehash=False)[0]
 
-    def test_legacy_installed_manifest_rejected(self, tmp_path: Path) -> None:
+    def test_legacy_017_manifest_migrates_without_network(self, tmp_path: Path) -> None:
         from blc_portable.engine_pack.installer import check_installed_models
-        from blc_portable.engine_pack.manifest import ENGINE_PACK_VERSION
+        from engine_pack_helpers import legacy_installed_manifest
 
         models_dir = tmp_path / "models"
         _make_models(tmp_path)
         (models_dir / "engine-pack-installed.json").write_text(
-            json.dumps({"engine_pack_version": ENGINE_PACK_VERSION, "engines_installed": _ENGINES}),
+            json.dumps(legacy_installed_manifest(models_dir)),
             encoding="utf-8",
         )
-        ok, errors = check_installed_models(models_dir, ENGINE_PACK_VERSION)
-        assert not ok and any("missing fields" in error for error in errors)
+        ok, errors = check_installed_models(models_dir, full_rehash=True)
+        assert ok, errors
+        migrated = json.loads((models_dir / "engine-pack-installed.json").read_text(encoding="utf-8"))
+        assert migrated["schema_version"] == 6
+        assert {record["installation_source"] for record in migrated["engines"].values()} == {"legacy_migration"}
 
 
 class TestVerifierIntegration:

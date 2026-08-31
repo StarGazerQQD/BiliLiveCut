@@ -1,20 +1,22 @@
 """四引擎模型在线下载与原子安装。
 
 职责:
-* 全量下载四个 ASR 引擎模型 (Whisper + Paraformer + SenseVoice + FunASR-Nano)
+* 仅下载内容身份不匹配的 ASR 引擎模型
 * 优先国内镜像 (hf-mirror / ModelScope)
 * 固定模型 Revision (与 Engine Pack 一致)
-* 下载到独立 staging 目录
-* 四引擎整体原子安装 (任一失败则整体回滚)
-* 断点续传支持
+* 下载到按内容指纹命名的逐引擎 staging 目录
+* 每个引擎独立原子安装，已成功引擎不会因后续失败而回滚
+* 跨启动断点续传支持
 * 写入下载缓存信息
 """
 
 from __future__ import annotations
 
+import argparse
+import json
 import os
-import shutil
-import uuid
+import sys
+import traceback
 from pathlib import Path
 from typing import Any
 
@@ -34,21 +36,30 @@ MODELSCOPE_MIRRORS = [
 ENGINES_TO_DOWNLOAD: list[dict[str, Any]] = []
 
 
-def _load_launcher_engines() -> list[dict[str, Any]]:
+def _load_catalog_engines(config_dir: Path | None = None) -> list[Any]:
+    """Load immutable engine definitions from the bundled model catalog."""
+    import sys as _sys
+
+    configured = config_dir or (
+        Path(os.environ["BLC_MODEL_CONFIG_DIR"]) if "BLC_MODEL_CONFIG_DIR" in os.environ else None
+    )
+    resolved_config = configured or Path(__file__).resolve().parents[3] / "config"
+    config_path = str(resolved_config.resolve())
+    if config_path not in _sys.path:
+        _sys.path.insert(0, config_path)
+
+    from model_catalog import load_engines
+
+    return list(load_engines())
+
+
+def _load_launcher_engines(config_dir: Path | None = None) -> list[dict[str, Any]]:
     """从统一模型目录加载引擎定义。
 
     :returns: 引擎下载定义列表。
     """
-    import sys as _sys
-
-    _CONFIG_DIR = str(Path(__file__).resolve().parent.parent.parent.parent.parent / "config")
-    if _CONFIG_DIR not in _sys.path:
-        _sys.path.insert(0, _CONFIG_DIR)
-
-    from model_catalog import load_engines
-
     engines = []
-    for e in load_engines():
+    for e in _load_catalog_engines(config_dir):
         d: dict[str, Any] = {
             "engine_id": e.engine_id,
             "hub": e.hub,
@@ -57,6 +68,7 @@ def _load_launcher_engines() -> list[dict[str, Any]]:
             "revision": e.resolved_revision if e.resolved_revision else None,
             "target_dir": e.engine_id,  # bare name: "whisper", "paraformer", etc.
             "description": e.display_name,
+            "required_files": list(e.required_files),
         }
         if e.sub_models:
             d["sub_models"] = [
@@ -69,6 +81,28 @@ def _load_launcher_engines() -> list[dict[str, Any]]:
             ]
         engines.append(d)
     return engines
+
+
+def _missing_required_files(target_dir: Path, engine_def: dict[str, Any]) -> list[str]:
+    """Return catalog-required files missing from one staging directory."""
+    required = [str(item) for item in engine_def.get("required_files", [])]
+    return [relative for relative in required if not (target_dir / relative).is_file()]
+
+
+def _staging_complete(
+    target_dir: Path,
+    marker: Path,
+    fingerprint: str,
+    engine_def: dict[str, Any],
+) -> bool:
+    """Validate a completed staging marker before avoiding network access."""
+    if not marker.is_file() or _missing_required_files(target_dir, engine_def):
+        return False
+    try:
+        payload = json.loads(marker.read_text(encoding="utf-8"))
+    except (json.JSONDecodeError, OSError):
+        return False
+    return payload == {"content_fingerprint": fingerprint}
 
 
 # ── HuggingFace 下载 ──────────────────────────────────────
@@ -93,10 +127,8 @@ def _download_hf_model(
     """
     try:
         from huggingface_hub import snapshot_download
-    except ImportError:
-        raise ImportError(
-            "需要安装 huggingface_hub 来下载 Whisper 模型。\n请执行: pip install huggingface_hub"
-        ) from None
+    except ImportError as exc:
+        raise RuntimeError("huggingface_hub is unavailable in the provisioning interpreter") from exc
 
     if mirror:
         os.environ["HF_ENDPOINT"] = mirror
@@ -132,8 +164,8 @@ def _download_ms_model(
     """
     try:
         from modelscope.hub.snapshot_download import snapshot_download
-    except ImportError:
-        raise ImportError("需要安装 modelscope 来下载 FunASR 模型。\n请执行: pip install modelscope") from None
+    except ImportError as exc:
+        raise RuntimeError("modelscope is unavailable in the provisioning interpreter") from exc
 
     snapshot_download(
         model_id=model_id,
@@ -160,23 +192,18 @@ def _print_progress(current: int, total: int, name: str) -> None:
 # ── 在线下载主入口 ────────────────────────────────────────
 
 
-def download_all_engines(app_root: Path) -> dict[str, Any]:
-    """全量在线下载四个引擎模型到 staging，然后原子安装。
-
-    任何一个引擎下载失败 → 整体安装失败 → 不覆盖现有 models/。
+def download_all_engines(app_root: Path, *, config_dir: Path | None = None) -> dict[str, Any]:
+    """按内容身份下载并逐引擎提交当前模型集合。
 
     :param app_root: 应用根目录。
     :returns: 安-装信息字典。
     :raises RuntimeError: 任何引擎下载或安装失败时。
     """
     print("=" * 60)
-    print("  在线下载四引擎模型 (全量)")
+    print("  在线供给 ASR 引擎模型 (内容寻址 / 可续传)")
     print("=" * 60)
 
-    staging_dir = app_root / f"models-staging-{uuid.uuid4().hex[:12]}"
-    staging_dir.mkdir(parents=True, exist_ok=True)
-
-    engine_defs = _load_launcher_engines()
+    engine_defs = _load_launcher_engines(config_dir)
     expected_ids = {"whisper", "paraformer", "sensevoice", "funasr_nano"}
     actual_ids = {e["engine_id"] for e in engine_defs}
 
@@ -185,92 +212,185 @@ def download_all_engines(app_root: Path) -> dict[str, Any]:
     if actual_ids != expected_ids:
         raise RuntimeError(f"Model catalog mismatch: expected {expected_ids}, got {actual_ids}")
 
-    total = len(engine_defs)
-    installed_engines: list[str] = []
-    files_info: dict[str, dict[str, object]] = {}
-    failed_engines: list[str] = []
+    from ..engine_pack.identity import desired_engine_records, model_set_fingerprint
+    from ..engine_pack.installer import check_installed_models, install_engine_from_staging, reusable_engine_ids
 
-    try:
-        for idx, engine_def in enumerate(engine_defs):
-            engine_id = str(engine_def["engine_id"])
-            target_dir = staging_dir / str(engine_def["target_dir"])
-            target_dir.mkdir(parents=True, exist_ok=True)
-            desc = str(engine_def.get("description", engine_id))
-
-            _print_progress(idx, total, desc)
-
-            try:
-                hub = str(engine_def["hub"])
-                if hub == "huggingface":
-                    repo_id = str(engine_def["repo_id"])
-                    revision = engine_def.get("revision") if engine_def.get("revision") else None
-                    _download_hf_model(repo_id, target_dir, revision, HF_MIRRORS[0])
-                elif hub == "modelscope":
-                    model_id = str(engine_def["model_id"])
-                    revision = str(engine_def.get("revision", "v2.0.4"))
-                    _download_ms_model(model_id, target_dir, revision)
-
-                    # 下载子模型 (Paraformer)
-                    for sub in engine_def.get("sub_models", []):
-                        sub_id = str(sub["model_id"])
-                        sub_rev = str(sub.get("revision", revision))
-                        sub_name = sub.get("target_subdir", sub_id.rsplit("/", 1)[-1])
-                        sub_dir = target_dir / sub_name
-                        sub_dir.mkdir(parents=True, exist_ok=True)
-                        print(f"    下载子模型: {sub_id}")
-                        _download_ms_model(sub_id, sub_dir, sub_rev)
-
-            except Exception as exc:
-                print(f"    [失败] {desc}: {exc}")
-                failed_engines.append(f"{engine_id}: {exc}")
-                continue
-
-            installed_engines.append(engine_id)
-            fc = sum(1 for _ in target_dir.rglob("*") if _.is_file())
-            ts = sum(f.stat().st_size for f in target_dir.rglob("*") if f.is_file())
-            files_info[engine_id] = {
-                "target_path": f"models/{engine_id}",
-                "file_count": fc,
-                "total_size": ts,
-            }
-
-        # 检查是否全部成功
-        if failed_engines:
-            failures = "; ".join(failed_engines)
-            raise RuntimeError(f"以下引擎下载失败: {failures}")
-
-        # Validate staging before committing
-        if not installed_engines:
-            raise RuntimeError("No engines downloaded — refusing to overwrite existing models")
-        if set(installed_engines) != expected_ids:
-            raise RuntimeError(f"Engine set mismatch: installed={set(installed_engines)} expected={expected_ids}")
-
-        # 原子安装
-        print(f"\n  全部 {total} 个引擎下载完成，正在安装...")
-        from ..engine_pack.installer import install_models_dir_from_staging
-
-        ok = install_models_dir_from_staging(
-            app_root,
-            staging_dir,
-            "0.1.17.4-alpha",
-            installed_engines,
-        )
-
-        if not ok:
-            raise RuntimeError("模型原子安装失败，已回滚原 models/")
-
-        print("  四引擎模型安装完成")
+    catalog_engines = _load_catalog_engines(config_dir)
+    desired = desired_engine_records(catalog_engines)
+    reusable, _ = reusable_engine_ids(app_root / "models")
+    if reusable == expected_ids:
         return {
-            "source": "online_download",
-            "method": "full_download",
-            "network_requests": total,
-            "engines": installed_engines,
-            "files": files_info,
+            "source": "already_installed",
+            "method": "content_fingerprint",
+            "network_requests": 0,
+            "engines": sorted(reusable),
+            "model_set_fingerprint": model_set_fingerprint(desired),
         }
 
-    except Exception:
-        # 清理 staging
-        if staging_dir.exists():
-            shutil.rmtree(str(staging_dir), ignore_errors=True)
-        # 不删除现有 models/
-        raise
+    staging_root = app_root / ".model-staging"
+    staging_root.mkdir(parents=True, exist_ok=True)
+    installed_now: list[str] = []
+    resumed: list[str] = []
+    network_requests = 0
+    total = len(engine_defs)
+
+    for idx, engine_def in enumerate(engine_defs):
+        engine_id = str(engine_def["engine_id"])
+        if engine_id in reusable:
+            print(f"  [{idx + 1}/{total}] reuse engine by content fingerprint: {engine_id}")
+            continue
+        fingerprint = str(desired[engine_id]["content_fingerprint"])
+        target_dir = staging_root / f"{engine_id}-{fingerprint[:16]}"
+        marker = target_dir / ".provision-complete.json"
+        desc = str(engine_def.get("description", engine_id))
+        _print_progress(idx, total, desc)
+        target_dir.mkdir(parents=True, exist_ok=True)
+
+        complete = _staging_complete(target_dir, marker, fingerprint, engine_def)
+        if complete:
+            resumed.append(engine_id)
+            print(f"    reuse completed staging: {target_dir.name}")
+        else:
+            hub = str(engine_def["hub"])
+            if hub == "huggingface":
+                revision = engine_def.get("revision") if engine_def.get("revision") else None
+                _download_hf_model(str(engine_def["repo_id"]), target_dir, revision, HF_MIRRORS[0])
+                network_requests += 1
+            elif hub == "modelscope":
+                revision = str(engine_def.get("revision", "v2.0.4"))
+                _download_ms_model(str(engine_def["model_id"]), target_dir, revision)
+                network_requests += 1
+                for sub in engine_def.get("sub_models", []):
+                    sub_id = str(sub["model_id"])
+                    sub_rev = str(sub.get("revision", revision))
+                    sub_name = str(sub.get("target_subdir", sub_id.rsplit("/", 1)[-1]))
+                    sub_dir = target_dir / sub_name
+                    sub_dir.mkdir(parents=True, exist_ok=True)
+                    print(f"    下载子模型: {sub_id}")
+                    _download_ms_model(sub_id, sub_dir, sub_rev)
+                    network_requests += 1
+            else:
+                raise RuntimeError(f"Unsupported model hub for {engine_id}: {hub}")
+            missing = _missing_required_files(target_dir, engine_def)
+            if missing:
+                raise RuntimeError(f"Engine {engine_id} download incomplete; missing required files: {missing}")
+            marker.write_text(
+                json.dumps({"content_fingerprint": fingerprint}, ensure_ascii=False, sort_keys=True),
+                encoding="utf-8",
+            )
+
+        marker.unlink(missing_ok=True)
+        install_engine_from_staging(app_root, engine_id, target_dir)
+        installed_now.append(engine_id)
+
+    complete, errors = check_installed_models(app_root / "models", full_rehash=True)
+    if not complete:
+        raise RuntimeError("Online model provisioning incomplete: " + "; ".join(errors[:5]))
+    print("  四引擎模型供给完成")
+    return {
+        "source": "online_download",
+        "method": "per_engine_content_addressed",
+        "network_requests": network_requests,
+        "engines": sorted(expected_ids),
+        "installed_engines": installed_now,
+        "reused_engines": sorted(reusable),
+        "resumed_staging": resumed,
+        "model_set_fingerprint": model_set_fingerprint(desired),
+    }
+
+
+def provision_models(
+    app_root: Path,
+    *,
+    config_dir: Path,
+    expected_filename: str,
+    expected_crc32: str,
+    expected_sha256: str,
+    user_engine_pack_path: str | None,
+    offline: bool,
+    fallback_online: bool,
+) -> dict[str, Any]:
+    """Provision installed models, a local pack, or locked online sources.
+
+    This function is the production helper boundary and is expected to run
+    under ``<app_root>/.venv`` rather than the frozen launcher interpreter.
+    """
+    from ..engine_pack.installer import check_installed_models, find_local_engine_packs, install_from_engine_pack
+
+    models_dir = app_root / "models"
+    ok, _ = check_installed_models(models_dir)
+    if ok:
+        print("  4-engine models installed (content fingerprint match), skip model prep")
+        return {"source": "already_installed", "method": "content_fingerprint", "network_requests": 0}
+
+    pack_paths = find_local_engine_packs(app_root, expected_filename, user_engine_pack_path)
+    pack_errors: list[str] = []
+    for pack_path in pack_paths:
+        print(f"\n  found local Engine Pack candidate: {pack_path.name}")
+        try:
+            return install_from_engine_pack(
+                app_root,
+                pack_path,
+                expected_crc32 if pack_path.name == expected_filename else "",
+                expected_sha256 if pack_path.name == expected_filename else "",
+            )
+        except RuntimeError as exc:
+            pack_errors.append(f"{pack_path}: {exc}")
+            if user_engine_pack_path and not fallback_online:
+                raise
+            print(f"  local pack is not content-compatible: {exc}")
+    if pack_paths:
+        print("  no local Engine Pack candidate matched the desired content fingerprints")
+    else:
+        print("\n  no local Engine Pack found")
+
+    if offline:
+        detail = "\n".join(f"  - {item}" for item in pack_errors)
+        raise RuntimeError(
+            "Offline mode: no valid local Engine Pack was found and online download is blocked.\n"
+            "Provide a content-compatible Engine Pack ZIP or remove --offline."
+            + (f"\nCandidate failures:\n{detail}" if detail else "")
+        )
+
+    print("  downloading locked engine models online...")
+    return download_all_engines(app_root, config_dir=config_dir)
+
+
+def _build_parser() -> argparse.ArgumentParser:
+    """Build the external provisioning helper argument parser."""
+    parser = argparse.ArgumentParser(description="BiliLiveCut model provisioning helper")
+    parser.add_argument("--app-root", type=Path, required=True)
+    parser.add_argument("--config-dir", type=Path, required=True)
+    parser.add_argument("--expected-filename", required=True)
+    parser.add_argument("--expected-crc32", default="")
+    parser.add_argument("--expected-sha256", default="")
+    parser.add_argument("--engine-pack")
+    parser.add_argument("--offline", action="store_true")
+    parser.add_argument("--fallback-online", action="store_true")
+    return parser
+
+
+def main(argv: list[str] | None = None) -> int:
+    """Run provisioning and emit one machine-readable result record."""
+    args = _build_parser().parse_args(argv)
+    try:
+        result = provision_models(
+            args.app_root.resolve(),
+            config_dir=args.config_dir.resolve(),
+            expected_filename=args.expected_filename,
+            expected_crc32=args.expected_crc32,
+            expected_sha256=args.expected_sha256,
+            user_engine_pack_path=args.engine_pack,
+            offline=args.offline,
+            fallback_online=args.fallback_online,
+        )
+    except Exception as exc:  # noqa: BLE001 - CLI boundary must preserve third-party root failures
+        print(f"BLC_PROVISION_ROOT_EXCEPTION={type(exc).__name__}: {exc}", file=sys.stderr)
+        traceback.print_exc(file=sys.stderr)
+        return 1
+    print("BLC_PROVISION_RESULT=" + json.dumps(result, ensure_ascii=False, sort_keys=True))
+    return 0
+
+
+if __name__ == "__main__":
+    raise SystemExit(main())

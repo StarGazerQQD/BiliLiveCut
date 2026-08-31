@@ -31,7 +31,7 @@ Payload 从 **EXE 内置资源**释放，版本固定并校验 SHA-256，安装�
 - 拒绝候选会原子同步审核事件、仍可取消的任务和全部未发布关联成片；拒绝记录不会继续以 `reviewing` 出现在成品队列，已经发布的外部结果不会被事后改写。
 - 主播下播或持续断流时，连续重试默认最多 20 次或 300 秒，任一先到即自动收尾；成功产出新片段后重试预算归零。
 - 转写整理与高光复核默认各允许最多 `65536` 个输出 token。长转写的局部解码复读会触发 Paraformer、Whisper 回退，LLM 只保守清理残余的 ASR/VAD 边界重复。
-- Alpha 当前版不迁移其他版本的数据库、配置、Runtime、Payload 或 Engine Pack；测试新构建必须使用全新目录。
+- Alpha 当前版不迁移其他版本的数据库、配置、Runtime 或 Payload。Engine Pack 是例外：兼容性由逐引擎内容指纹决定，版本号和文件名不参与判断；经过审计的 `0.1.17.4-alpha` 已安装模型清单会先完整重哈希，再原地升级为内容寻址清单。
 
 ---
 
@@ -72,7 +72,7 @@ Payload 从 **EXE 内置资源**释放，版本固定并校验 SHA-256，安装�
 | **模型** | 不含模型，通过独立 **Engine Pack** 或在线下载安装 | 不含模型，通过独立 **Engine Pack** 或在线下载安装 |
 | **适用场景** | 熟悉 Python/FFmpeg 的高级用户 | 普通用户、小规模分发测试 |
 
-> **模型策略**: Lite 和 Full 均不携带四引擎 ASR 模型。模型统一由独立的 **Portable Engine Pack** 提供。将 Engine Pack ZIP 放在程序同级目录，首次启动时会安全解压并按内部 Manifest 逐文件校验 SHA-256；本地嵌入了正式元数据的构建还会校验外部 CRC32/SHA-256。无本地包时自动在线下载全部四个引擎模型。
+> **模型策略**: Lite 和 Full 均不携带四引擎 ASR 模型。模型统一由独立的 **Portable Engine Pack** 提供。将任一版本的 Engine Pack ZIP 放在程序同级目录，首次启动会安全解压、按内部 Manifest 逐文件校验 SHA-256，再用不可变仓库 revision 的内容指纹判断每个引擎能否复用；本地嵌入了正式元数据的同名构建还会校验外部 CRC32/SHA-256。无兼容本地包时仅在线下载缺失或内容变化的引擎。
 
 ---
 
@@ -253,11 +253,11 @@ resources/engine_pack_info.json (本地 Engine Pack 构建后可供 Lite/Full EX
 | ① | 释放源码 Payload | ~426 KB | 从 EXE 内置 Payload 释放 `app/` `config/` `pyproject.toml` `setup.py` 等，**无需 GitHub** |
 | ② | 创建虚拟环境 | — | `.venv` 隔离 Python 依赖 |
 | ③ | 安装依赖 | ~500 MB | 内嵌 5 个经哈希校验的 bootstrap wheel，其余依赖从用户配置的 Python 包索引下载且只接受二进制 wheel |
-| ④ | 模型准备 | — | 检查 Engine Pack → CRC32 校验安装 → 无本地包则在线下载四引擎模型 |
+| ④ | 模型准备 | — | 迁移/检查内容指纹 → 校验本地 Engine Pack → 逐引擎复用或在线补齐 |
 | ⑤ | 检查 FFmpeg | — | Lite 当前不内置 FFmpeg；需要系统 PATH 可用，或在 `bin/` 提供 `ffmpeg.exe`/`ffprobe.exe` |
 | ⑥ | 生成 `.env` 配置 | — | 含合理默认值 |
 
-> **断点续跑**：任何一步失败或中断，再次双击自动从断点继续。
+> **断点续跑**：模型下载 staging 以引擎内容指纹持久化；每个引擎完成后立即独立原子提交。后续引擎失败或进程中断不会回滚已经成功的引擎，再次双击只续传未完成部分。
 > **源码固定**：本次发布源码来源固定为 Commit `97e39df`，不随 GitHub 上游变动。
 
 4. 部署完成后打开 **Web 管理控制台**（默认 `http://127.0.0.1:8000`；未自动弹出时请手动访问）
@@ -291,7 +291,7 @@ python build_exe.py --without-engine-pack
 python build_full_bundle.py
 ```
 
-若还需独立模型包，执行 `python build_engine_pack.py --from-cache`（已有完整缓存）或 `python build_engine_pack.py`（联网下载）。构建器只接受当前版本的 Payload、Runtime 和 Engine Pack 清单。
+若还需独立模型包，执行 `python build_engine_pack.py --from-cache`（已有完整缓存）或 `python build_engine_pack.py`（联网下载）。构建器仍生成当前发行版审计元数据，但 Launcher 的模型兼容性只取决于逐引擎内容指纹。
 
 ---
 
@@ -552,7 +552,7 @@ BILIUP_UPLOAD_CMD=                          # 自定义上传命令模板
 |------|------|
 | 启动报 `python` 不是命令 | Full 应检查 `portable-python/python.exe`；Lite 需安装 Python 3.11/3.12 并加入 PATH |
 | Payload 释放失败 | 检查 EXE 完整性，SHA-256 不匹配时自动拒绝安装 |
-| 下载模型卡住不动 | 关闭窗口重新双击，模型支持断点续传 |
+| 下载模型卡住不动 | 关闭窗口重新双击；已完成引擎和带完成标记的指纹 staging 会直接复用，未完成引擎由 SDK 续传 |
 | ASR 报 `funasr` / `modelscope` 未安装 | Full 应重新校验并解压完整 ZIP；Lite 需重新完成依赖安装 |
 | ASR 主引擎无法加载 | 检查 `models/` 是否完整；无 Engine Pack 时首次需联网下载模型 |
 | 主播下播后仍显示重连 | 默认会在连续失败 20 次或 300 秒后自动收尾；检查 `RECORDING_RECONNECT_MAX_ATTEMPTS` 与 `RECORDING_RECONNECT_MAX_ELAPSED_S` 是否被设为 `0` |

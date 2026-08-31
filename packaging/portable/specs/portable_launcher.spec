@@ -46,13 +46,28 @@ for _wheel in sorted(_bootstrap_wheels_dir.glob("*.whl")):
 if not _bootstrap_wheels:
     raise RuntimeError(f"Lite bootstrap wheels are missing: {_bootstrap_wheels_dir}")
 
+# The model provisioner must be importable by the managed .venv Python.  A
+# PyInstaller PYZ is private to the frozen interpreter, so ship audited Python
+# sources and their immutable catalog as explicit data files.
+_provisioner_sources = []
+_provisioner_root = _here / "src"
+for _source in sorted((_provisioner_root / "blc_portable").rglob("*.py")):
+    _relative_parent = _source.relative_to(_provisioner_root).parent
+    _provisioner_sources.append((str(_source), str(Path("provisioner") / _relative_parent)))
+
+_provisioner_config = []
+for _source in sorted(_config_dir.glob("*.py")):
+    _provisioner_config.append((str(_source), "provisioner-config"))
+for _source in (_version_config, _model_sources_lock):
+    _provisioner_config.append((str(_source), "provisioner-config"))
+
 _datas = [
     (_payload_zip, "."),
     (_manifest, "."),
     (_version_config, "."),
     (_model_sources_lock, "."),
     (str(_project_license), "."),
-] + _lock_files + _bootstrap_wheels
+] + _lock_files + _bootstrap_wheels + _provisioner_sources + _provisioner_config
 
 # engine_pack_info.json 存在则嵌入, 不存在则不嵌入 (此-时 CRC32 为空)
 if os.environ.get("BLC_OMIT_ENGINE_PACK_INFO") != "1" and Path(_engine_pack_info).exists():

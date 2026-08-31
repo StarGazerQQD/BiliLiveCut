@@ -115,7 +115,7 @@
 
 ### 版本与发布一致性
 
-- Python 包、CLI、C/Cython、Rust、Portable、Docker、GitHub Actions、测试和用户文档当前统一为 `0.1.17.4-alpha`。Alpha 发行只接受同版本 Runtime、Payload、Engine Pack、配置与数据库，不迁移或兼容旧格式。
+- Python 包、CLI、C/Cython、Rust、Portable、Docker、GitHub Actions、测试和用户文档当前统一为 `0.1.17.4-alpha`。Runtime、Payload、配置与数据库仍按 Alpha 当前格式严格校验；ASR 模型改为按不可变仓库 revision 生成的逐引擎内容指纹复用，不再与应用或 Engine Pack 版本号绑定，并仅对经过审计的 `0.1.17.4-alpha` 已安装模型清单执行一次完整重哈希迁移。
 - 新功能覆盖单元、集成、前端语法和发布回归测试；CI 与 Release 门禁继续校验版本、固定源码、可复现 Payload、原生模块、依赖锁和制品完整性。
 
 ## V0.1.15 版本总结：Portable 发布链路完整收口

@@ -1,30 +1,56 @@
-"""Engine Pack 本地安装模块 — 查找、校验、解压、原子安装。
-
-职责:
-* 查找程序旁边的 Engine Pack ZIP
-* 流式计算 CRC32 并与内置值比较
-* 安全解压 Engine Pack 到 staging
-* 逐文件 SHA-256 校验
-* 原子安装四引擎模型到 <app_root>/models/
-* 写入 engine-pack-installed.json 安装清单
-"""
+"""Content-addressed Engine Pack discovery, verification and installation."""
 
 from __future__ import annotations
 
+import datetime as dt
 import json
 import shutil
 import uuid
 import zipfile
 import zlib
+from collections.abc import Mapping, Sequence
 from pathlib import Path
 from typing import Any
 
 from blc_portable.atomic_fs import replace_with_retry
 
-CHUNK_SIZE = 8 * 1024 * 1024  # 8 MB 流式块大小
+from .identity import (
+    IDENTITY_SCHEMA_VERSION,
+    desired_engine_records,
+    engine_fingerprint,
+    manifest_engine_identity,
+    model_set_fingerprint,
+)
+
+CHUNK_SIZE = 8 * 1024 * 1024
 INSTALLED_MANIFEST_NAME = "engine-pack-installed.json"
-INSTALLED_MANIFEST_SCHEMA = 5
-_INSTALLED_MANIFEST_FIELDS = {
+INSTALLED_MANIFEST_SCHEMA = 6
+_LEGACY_INSTALLED_MANIFEST_SCHEMA = 5
+_LEGACY_0174_FINGERPRINTS = {
+    "whisper": "fec19a13490e9f98e758e0b18b4a13ea8e189cb77720a0671f5e425ff103e706",
+    "paraformer": "9ed3037841a19f59070ccb0a8e06f7e91c3cde45c7f5d64fe3d5a302929165a9",
+    "sensevoice": "2e7868d69e4b0a289b20e5f8dcb385397e4112d4a9c0ac01c0de6579b11dbadc",
+    "funasr_nano": "999153916f7dd6e89b8a5aa4516c2df7be666bd9d034241a634ef8d8c7a86296",
+}
+_CURRENT_MANIFEST_FIELDS = {
+    "schema_version",
+    "identity_schema_version",
+    "model_set_fingerprint",
+    "installed_at",
+    "engines",
+}
+_ENGINE_RECORD_FIELDS = {
+    "content_fingerprint",
+    "identity",
+    "installation_source",
+    "zip_sha256",
+    "installed_at",
+    "target_path",
+    "file_count",
+    "total_size",
+    "files",
+}
+_LEGACY_MANIFEST_FIELDS = {
     "schema_version",
     "engine_pack_version",
     "installation_source",
@@ -36,351 +62,449 @@ _INSTALLED_MANIFEST_FIELDS = {
     "source_commit",
     "files",
 }
-_ENGINE_FILE_FIELDS = {"target_path", "file_count", "total_size", "files"}
+_FILE_INFO_FIELDS = {"target_path", "file_count", "total_size", "files"}
 
 
 def compute_crc32(path: Path) -> str:
-    """流式计算文件 CRC32 (8 位大写十六进制)。
-
-    :param path: 文件路径。
-    :returns: CRC32 字符串。
-    """
-    crc_val: int = 0
-    with path.open("rb") as f:
-        while chunk := f.read(CHUNK_SIZE):
-            crc_val = zlib.crc32(chunk, crc_val)
-    return f"{crc_val & 0xFFFFFFFF:08X}"
+    """Stream one file and return an uppercase CRC32 digest."""
+    crc_value = 0
+    with path.open("rb") as stream:
+        while chunk := stream.read(CHUNK_SIZE):
+            crc_value = zlib.crc32(chunk, crc_value)
+    return f"{crc_value & 0xFFFFFFFF:08X}"
 
 
 def compute_sha256(path: Path) -> str:
-    """流式计算文件 SHA-256。
-
-    :param path: 文件路径。
-    :returns: SHA-256 十六进制字符串。
-    """
+    """Stream one file and return a lowercase SHA-256 digest."""
     import hashlib
 
     hasher = hashlib.sha256()
-    with path.open("rb") as f:
-        while chunk := f.read(CHUNK_SIZE):
+    with path.open("rb") as stream:
+        while chunk := stream.read(CHUNK_SIZE):
             hasher.update(chunk)
     return hasher.hexdigest()
 
 
-def find_local_engine_pack(
+def find_local_engine_packs(
     app_root: Path,
     expected_filename: str,
     user_path: str | None = None,
-) -> Path | None:
-    """按顺序查找本地 Engine Pack ZIP。
-
-    1. 用户通过参数指定的路径 (优先级最高)
-    2. Launcher EXE 所在目录
-    3. <app_root>/packages/
-
-    :param app_root: 应用根目录。
-    :param expected_filename: 期望的文件名。
-    :param user_path: 用户指定路径。
-    :returns: 文件路径，未找到返回 None。
-    """
+) -> list[Path]:
+    """Return candidate packs without making the filename part of compatibility."""
     if user_path:
-        p = Path(user_path)
-        if p.exists() and p.is_file():
-            return p
-        if p.is_dir():
-            exact = p / expected_filename
-            if exact.exists():
-                return exact
-        print(f"  [警告] 用户指定路径不存在: {user_path}")
+        selected = Path(user_path)
+        if selected.is_file():
+            return [selected]
+        if not selected.is_dir():
+            print(f"  [警告] 用户指定路径不存在: {user_path}")
+            return []
+        roots = [selected]
+    else:
+        roots = [app_root, app_root / "packages"]
 
-    candidate = app_root / expected_filename
-    if candidate.exists() and candidate.is_file():
-        return candidate
-
-    candidate = app_root / "packages" / expected_filename
-    if candidate.exists() and candidate.is_file():
-        return candidate
-
-    return None
+    candidates: list[Path] = []
+    seen: set[Path] = set()
+    for root in roots:
+        if not root.is_dir():
+            continue
+        exact = root / expected_filename
+        ordered = ([exact] if exact.is_file() else []) + sorted(
+            root.glob("BiliLiveCut-EnginePack-*.zip"),
+            key=lambda item: (item.stat().st_mtime_ns, item.name),
+            reverse=True,
+        )
+        for candidate in ordered:
+            resolved = candidate.resolve()
+            if resolved not in seen:
+                candidates.append(candidate)
+                seen.add(resolved)
+    return candidates
 
 
 def _safe_extract(zip_path: Path, target_dir: Path) -> None:
-    """安全流式解压 ZIP，复用 blc_portable.archive.safe_zip。
-
-    :param zip_path: ZIP 文件路径。
-    :param target_dir: 目标目录。
-    :raises RuntimeError: 检测到不安全路径或 ZIP 炸弹时。
-    """
+    """Safely extract a pack using the shared archive limits."""
     from blc_portable.archive.safe_zip import safe_extract
 
-    with zipfile.ZipFile(zip_path) as zf:
-        safe_extract(zf, target_dir)
+    with zipfile.ZipFile(zip_path) as archive:
+        safe_extract(archive, target_dir)
+
+
+def _catalog_engines() -> list[Any]:
+    """Load the current immutable model catalog."""
+    import sys
+
+    config_dir = str(Path(__file__).resolve().parent.parent.parent.parent / "config")
+    if config_dir not in sys.path:
+        sys.path.insert(0, config_dir)
+    from model_catalog import load_engines
+
+    return list(load_engines())
+
+
+def _desired_records(engines: Sequence[Any] | None = None) -> dict[str, dict[str, object]]:
+    """Return current desired identities keyed by engine ID."""
+    return desired_engine_records(engines or _catalog_engines())
 
 
 def _read_installed_manifest(models_dir: Path) -> dict[str, Any] | None:
-    """读取已安装模型清单。
-
-    :param models_dir: models 目录。
-    :returns: 清单字典，未安装返回 None。
-    """
-    p = models_dir / INSTALLED_MANIFEST_NAME
-    if not p.exists():
+    """Read the installed-model manifest, returning ``None`` on corruption."""
+    path = models_dir / INSTALLED_MANIFEST_NAME
+    if not path.is_file():
         return None
     try:
-        return json.loads(p.read_text(encoding="utf-8"))
+        raw = json.loads(path.read_text(encoding="utf-8"))
     except (json.JSONDecodeError, OSError):
         return None
+    return raw if isinstance(raw, dict) else None
 
 
-def _write_installed_manifest(
-    models_dir: Path,
-    engine_pack_version: str,
-    engines: list[str],
-    files_info: dict[str, dict[str, object]],
-    zip_sha256: str | None,
-    source_commit: str,
-    installation_source: str,
-) -> None:
-    """原子写入已安装模型清单。
-
-    :param models_dir: models 目录。
-    :param engine_pack_version: Engine Pack 版本。
-    :param engines: 已安装引擎列表。
-    :param files_info: 引擎文件信息。
-    :param zip_sha256: ZIP SHA-256；在线下载时为 None。
-    :param source_commit: 源码 Commit。
-    :param installation_source: ``engine_pack`` 或 ``online_download``。
-    """
-    import datetime
-
-    info: dict[str, Any] = {
-        "schema_version": INSTALLED_MANIFEST_SCHEMA,
-        "engine_pack_version": engine_pack_version,
-        "installation_source": installation_source,
-        "zip_sha256": zip_sha256,
-        "engine_ids": engines,
-        "file_count": sum(int(f.get("file_count", 0)) for f in files_info.values()),  # type: ignore[arg-type]
-        "total_size_bytes": sum(int(f.get("total_size", 0)) for f in files_info.values()),  # type: ignore[arg-type]
-        "installed_at": datetime.datetime.now().strftime("%Y-%m-%dT%H:%M:%S"),
-        "source_commit": source_commit,
-        "files": files_info,
-    }
-    tmp = models_dir / f"{INSTALLED_MANIFEST_NAME}.tmp"
-    target = models_dir / INSTALLED_MANIFEST_NAME
-    tmp.write_text(json.dumps(info, ensure_ascii=False, indent=2), encoding="utf-8")
-    replace_with_retry(tmp, target)
-
-
-def _collect_files_info(models_dir: Path, engines: list[str]) -> dict[str, dict[str, object]]:
-    """对当前安装的全部模型文件生成严格、可重哈希的清单。"""
-    result: dict[str, dict[str, object]] = {}
-    for engine_id in engines:
-        engine_dir = models_dir / engine_id
-        file_entries: dict[str, dict[str, object]] = {}
-        for path in sorted(engine_dir.rglob("*")):
-            if not path.is_file():
-                continue
-            rel_path = path.relative_to(engine_dir).as_posix()
-            file_entries[rel_path] = {
+def _collect_engine_files(engine_dir: Path) -> dict[str, dict[str, object]]:
+    """Collect a strict file hash manifest for one engine directory."""
+    entries: dict[str, dict[str, object]] = {}
+    for path in sorted(engine_dir.rglob("*")):
+        if path.is_file():
+            entries[path.relative_to(engine_dir).as_posix()] = {
                 "size": path.stat().st_size,
                 "sha256": compute_sha256(path),
             }
-        result[engine_id] = {
-            "target_path": f"models/{engine_id}",
-            "file_count": len(file_entries),
-            "total_size": sum(int(entry["size"]) for entry in file_entries.values()),
-            "files": file_entries,
-        }
-    return result
+    return entries
 
 
-def _validate_installed_manifest(installed: dict[str, Any], expected_version: str) -> list[str]:
-    """验证当前且唯一的已安装模型清单格式。"""
+def _new_engine_record(
+    engine_id: str,
+    engine_dir: Path,
+    desired: Mapping[str, object],
+    *,
+    installation_source: str,
+    zip_sha256: str | None,
+) -> dict[str, object]:
+    """Create one schema-6 installed-engine record."""
+    entries = _collect_engine_files(engine_dir)
+    if not entries:
+        raise RuntimeError(f"Engine directory is empty: {engine_id}")
+    return {
+        "content_fingerprint": desired["content_fingerprint"],
+        "identity": desired["identity"],
+        "installation_source": installation_source,
+        "zip_sha256": zip_sha256,
+        "installed_at": dt.datetime.now(dt.UTC).isoformat(),
+        "target_path": f"models/{engine_id}",
+        "file_count": len(entries),
+        "total_size": sum(int(entry["size"]) for entry in entries.values()),
+        "files": entries,
+    }
+
+
+def _write_current_manifest(
+    models_dir: Path,
+    engine_records: Mapping[str, Mapping[str, object]],
+    desired: Mapping[str, Mapping[str, object]],
+) -> None:
+    """Atomically write the release-independent installed-model manifest."""
+    models_dir.mkdir(parents=True, exist_ok=True)
+    payload = {
+        "schema_version": INSTALLED_MANIFEST_SCHEMA,
+        "identity_schema_version": IDENTITY_SCHEMA_VERSION,
+        "model_set_fingerprint": model_set_fingerprint(desired),
+        "installed_at": dt.datetime.now(dt.UTC).isoformat(),
+        "engines": {engine_id: dict(record) for engine_id, record in sorted(engine_records.items())},
+    }
+    temporary = models_dir / f"{INSTALLED_MANIFEST_NAME}.tmp"
+    temporary.write_text(json.dumps(payload, ensure_ascii=False, indent=2), encoding="utf-8")
+    replace_with_retry(temporary, models_dir / INSTALLED_MANIFEST_NAME)
+
+
+def _validate_file_info(engine_id: str, info: object) -> list[str]:
+    """Validate one persisted file-info record without touching disk."""
     errors: list[str] = []
-    if set(installed) != _INSTALLED_MANIFEST_FIELDS:
-        missing = _INSTALLED_MANIFEST_FIELDS - set(installed)
-        unknown = set(installed) - _INSTALLED_MANIFEST_FIELDS
-        if missing:
-            errors.append(f"Installed manifest missing fields: {sorted(missing)}")
-        if unknown:
-            errors.append(f"Installed manifest unknown fields: {sorted(unknown)}")
-        return errors
-    if installed["schema_version"] != INSTALLED_MANIFEST_SCHEMA:
-        errors.append(
-            f"Installed manifest schema mismatch: {installed['schema_version']} != {INSTALLED_MANIFEST_SCHEMA}"
-        )
-    if installed["engine_pack_version"] != expected_version:
-        errors.append(f"Version mismatch: installed={installed['engine_pack_version']} expected={expected_version}")
-    source = installed["installation_source"]
-    if source not in {"engine_pack", "online_download"}:
-        errors.append(f"Invalid installation_source: {source}")
-    zip_sha256 = installed["zip_sha256"]
-    if source == "engine_pack" and (not isinstance(zip_sha256, str) or len(zip_sha256) != 64):
-        errors.append("Engine Pack installation requires a 64-character zip_sha256")
-    if source == "online_download" and zip_sha256 is not None:
-        errors.append("Online installation zip_sha256 must be null")
-    if not isinstance(installed["source_commit"], str) or len(installed["source_commit"]) != 40:
-        errors.append("Installed manifest source_commit invalid")
-    engine_ids = installed["engine_ids"]
-    if not isinstance(engine_ids, list) or any(not isinstance(item, str) or not item for item in engine_ids):
-        errors.append("Installed manifest engine_ids invalid")
-        return errors
-    files = installed["files"]
-    if not isinstance(files, dict) or set(files) != set(engine_ids):
-        errors.append("Installed manifest files must exactly match engine_ids")
-        return errors
-    actual_file_count = 0
-    actual_total_size = 0
-    for engine_id, engine_info in files.items():
-        if not isinstance(engine_info, dict) or set(engine_info) != _ENGINE_FILE_FIELDS:
-            errors.append(f"Installed manifest files[{engine_id}] fields invalid")
+    if not isinstance(info, dict) or set(info) != _FILE_INFO_FIELDS:
+        return [f"Installed manifest files[{engine_id}] fields invalid"]
+    if info["target_path"] != f"models/{engine_id}":
+        errors.append(f"Installed manifest files[{engine_id}].target_path invalid")
+    entries = info["files"]
+    if not isinstance(entries, dict) or not entries:
+        return [*errors, f"Installed manifest files[{engine_id}].files must be non-empty"]
+    total_size = 0
+    for relative, entry in entries.items():
+        relative_path = Path(str(relative))
+        if not isinstance(relative, str) or not relative or relative_path.is_absolute() or ".." in relative_path.parts:
+            errors.append(f"Installed manifest path invalid: {engine_id}/{relative}")
             continue
-        if engine_info["target_path"] != f"models/{engine_id}":
-            errors.append(f"Installed manifest files[{engine_id}].target_path invalid")
-        entries = engine_info["files"]
-        if not isinstance(entries, dict) or not entries:
-            errors.append(f"Installed manifest files[{engine_id}].files must be non-empty")
+        if not isinstance(entry, dict) or set(entry) != {"size", "sha256"}:
+            errors.append(f"Installed manifest file entry invalid: {engine_id}/{relative}")
             continue
-        engine_size = 0
-        for rel_path, entry in entries.items():
-            if not isinstance(rel_path, str) or not rel_path:
-                errors.append(f"Installed manifest files[{engine_id}] contains invalid path")
-                continue
-            if not isinstance(entry, dict) or set(entry) != {"size", "sha256"}:
-                errors.append(f"Installed manifest file entry invalid: {engine_id}/{rel_path}")
-                continue
-            size = entry["size"]
-            sha256 = entry["sha256"]
-            if not isinstance(size, int) or isinstance(size, bool) or size < 0:
-                errors.append(f"Installed manifest size invalid: {engine_id}/{rel_path}")
-                continue
-            if not isinstance(sha256, str) or len(sha256) != 64:
-                errors.append(f"Installed manifest sha256 invalid: {engine_id}/{rel_path}")
-                continue
-            engine_size += size
-        if engine_info["file_count"] != len(entries):
-            errors.append(f"Installed manifest file_count invalid: {engine_id}")
-        if engine_info["total_size"] != engine_size:
-            errors.append(f"Installed manifest total_size invalid: {engine_id}")
-        actual_file_count += len(entries)
-        actual_total_size += engine_size
-    if installed["file_count"] != actual_file_count:
-        errors.append("Installed manifest aggregate file_count invalid")
-    if installed["total_size_bytes"] != actual_total_size:
-        errors.append("Installed manifest aggregate total_size_bytes invalid")
+        size = entry["size"]
+        digest = entry["sha256"]
+        if not isinstance(size, int) or isinstance(size, bool) or size < 0:
+            errors.append(f"Installed manifest size invalid: {engine_id}/{relative}")
+            continue
+        if not isinstance(digest, str) or len(digest) != 64:
+            errors.append(f"Installed manifest sha256 invalid: {engine_id}/{relative}")
+            continue
+        total_size += size
+    if info["file_count"] != len(entries):
+        errors.append(f"Installed manifest file_count invalid: {engine_id}")
+    if info["total_size"] != total_size:
+        errors.append(f"Installed manifest total_size invalid: {engine_id}")
     return errors
+
+
+def _verify_engine_files(engine_id: str, engine_dir: Path, info: Mapping[str, object]) -> list[str]:
+    """Fully compare one installed engine with its persisted hash list."""
+    errors: list[str] = []
+    entries = info["files"]
+    if not isinstance(entries, dict):
+        return [f"Engine file list invalid: {engine_id}"]
+    expected_paths = set(entries)
+    for relative, raw_entry in entries.items():
+        if not isinstance(raw_entry, dict):
+            errors.append(f"Engine file entry invalid: {engine_id}/{relative}")
+            continue
+        target = engine_dir / relative
+        if not target.is_file():
+            errors.append(f"Missing: {engine_id}/{relative}")
+            continue
+        if target.stat().st_size != raw_entry["size"]:
+            errors.append(f"Size mismatch: {engine_id}/{relative}")
+        if compute_sha256(target) != raw_entry["sha256"]:
+            errors.append(f"SHA-256 mismatch: {engine_id}/{relative}")
+    actual_paths = {path.relative_to(engine_dir).as_posix() for path in engine_dir.rglob("*") if path.is_file()}
+    for relative in sorted(actual_paths - expected_paths):
+        errors.append(f"Extra file: {engine_id}/{relative}")
+    return errors
+
+
+def _migrate_legacy_manifest(
+    models_dir: Path,
+    legacy: Mapping[str, object],
+    desired: Mapping[str, Mapping[str, object]],
+) -> dict[str, Any]:
+    """Migrate the one supported 0.1.17 schema after a complete local rehash."""
+    if set(legacy) != _LEGACY_MANIFEST_FIELDS:
+        raise RuntimeError("Legacy installed manifest fields do not match schema 5")
+    version = legacy["engine_pack_version"]
+    if version != "0.1.17.4-alpha":
+        raise RuntimeError("Only the audited 0.1.17.4 schema-5 installed manifest can be migrated")
+    current_fingerprints = {key: str(value["content_fingerprint"]) for key, value in desired.items()}
+    if current_fingerprints != _LEGACY_0174_FINGERPRINTS:
+        raise RuntimeError("Legacy 0.1.17.4 model identities differ from the current catalog")
+    engine_ids = legacy["engine_ids"]
+    files = legacy["files"]
+    if not isinstance(engine_ids, list) or set(engine_ids) != set(desired) or not isinstance(files, dict):
+        raise RuntimeError("Legacy installed manifest engine set does not match the current catalog")
+    records: dict[str, dict[str, object]] = {}
+    for engine_id in sorted(desired):
+        info = files.get(engine_id)
+        validation_errors = _validate_file_info(engine_id, info)
+        if validation_errors:
+            raise RuntimeError("Legacy installed manifest invalid: " + "; ".join(validation_errors))
+        assert isinstance(info, dict)
+        disk_errors = _verify_engine_files(engine_id, models_dir / engine_id, info)
+        if disk_errors:
+            raise RuntimeError("Legacy installed models changed: " + "; ".join(disk_errors[:5]))
+        records[engine_id] = {
+            "content_fingerprint": desired[engine_id]["content_fingerprint"],
+            "identity": desired[engine_id]["identity"],
+            "installation_source": "legacy_migration",
+            "zip_sha256": legacy.get("zip_sha256"),
+            "installed_at": dt.datetime.now(dt.UTC).isoformat(),
+            "target_path": info["target_path"],
+            "file_count": info["file_count"],
+            "total_size": info["total_size"],
+            "files": info["files"],
+        }
+    _write_current_manifest(models_dir, records, desired)
+    migrated = _read_installed_manifest(models_dir)
+    if migrated is None:
+        raise RuntimeError("Migrated installed manifest could not be read")
+    return migrated
+
+
+def _load_current_or_migrate(
+    models_dir: Path,
+    desired: Mapping[str, Mapping[str, object]],
+    *,
+    migrate_legacy: bool,
+) -> tuple[dict[str, Any] | None, list[str]]:
+    """Load schema 6 or perform the explicit schema-5 migration."""
+    installed = _read_installed_manifest(models_dir)
+    if installed is None:
+        return None, [f"{INSTALLED_MANIFEST_NAME} 不存在或损坏"]
+    if installed.get("schema_version") == _LEGACY_INSTALLED_MANIFEST_SCHEMA and migrate_legacy:
+        from blc_portable.archive.locks import FileLock, get_engine_pack_lock_path
+
+        try:
+            with FileLock(get_engine_pack_lock_path(models_dir.parent)).acquire(timeout=120):
+                installed = _read_installed_manifest(models_dir)
+                if installed is None:
+                    return None, [f"{INSTALLED_MANIFEST_NAME} 不存在或损坏"]
+                if installed.get("schema_version") == _LEGACY_INSTALLED_MANIFEST_SCHEMA:
+                    installed = _migrate_legacy_manifest(models_dir, installed, desired)
+        except RuntimeError as exc:
+            return None, [str(exc)]
+    if installed.get("schema_version") != INSTALLED_MANIFEST_SCHEMA:
+        return None, [f"Installed manifest schema unsupported: {installed.get('schema_version')}"]
+    if set(installed) != _CURRENT_MANIFEST_FIELDS:
+        return None, ["Installed manifest schema-6 fields invalid"]
+    if installed.get("identity_schema_version") != IDENTITY_SCHEMA_VERSION:
+        return None, ["Installed manifest identity schema mismatch"]
+    if not isinstance(installed.get("engines"), dict):
+        return None, ["Installed manifest engines must be an object"]
+    return installed, []
+
+
+def reusable_engine_ids(
+    models_dir: Path,
+    *,
+    full_rehash: bool = False,
+    migrate_legacy: bool = True,
+    desired_engines: Sequence[Any] | None = None,
+) -> tuple[set[str], list[str]]:
+    """Return engines whose content fingerprint and local files are reusable."""
+    desired = _desired_records(desired_engines)
+    installed, errors = _load_current_or_migrate(models_dir, desired, migrate_legacy=migrate_legacy)
+    if installed is None:
+        return set(), errors
+    engine_records = installed["engines"]
+    reusable: set[str] = set()
+    for engine_id, desired_record in desired.items():
+        raw = engine_records.get(engine_id)
+        if not isinstance(raw, dict) or set(raw) != _ENGINE_RECORD_FIELDS:
+            errors.append(f"Installed engine record invalid: {engine_id}")
+            continue
+        if raw.get("content_fingerprint") != desired_record["content_fingerprint"]:
+            errors.append(f"Content fingerprint mismatch: {engine_id}")
+            continue
+        if raw.get("identity") != desired_record["identity"]:
+            errors.append(f"Content identity mismatch: {engine_id}")
+            continue
+        info = {
+            "target_path": raw.get("target_path"),
+            "file_count": raw.get("file_count"),
+            "total_size": raw.get("total_size"),
+            "files": raw.get("files"),
+        }
+        info_errors = _validate_file_info(engine_id, info)
+        if info_errors:
+            errors.extend(info_errors)
+            continue
+        engine_dir = models_dir / engine_id
+        if not engine_dir.is_dir() or not any(engine_dir.iterdir()):
+            errors.append(f"Engine directory missing or empty: {engine_id}")
+            continue
+        if full_rehash:
+            disk_errors = _verify_engine_files(engine_id, engine_dir, info)
+            if disk_errors:
+                errors.extend(disk_errors)
+                continue
+        reusable.add(engine_id)
+    return reusable, errors
 
 
 def check_installed_models(
     models_dir: Path,
-    expected_version: str,
     full_rehash: bool = False,
+    *,
+    migrate_legacy: bool = True,
+    desired_engines: Sequence[Any] | None = None,
 ) -> tuple[bool, list[str]]:
-    """检查四引擎是否已全部安装且版本匹配。
+    """Check the complete desired model set by content identity."""
+    desired = _desired_records(desired_engines)
+    reusable, errors = reusable_engine_ids(
+        models_dir,
+        full_rehash=full_rehash,
+        migrate_legacy=migrate_legacy,
+        desired_engines=desired_engines,
+    )
+    missing = set(desired) - reusable
+    if missing:
+        errors.append(f"Missing or stale engines: {sorted(missing)}")
+    return not missing, errors
 
-    快速模式 (full_rehash=False):
-    - 校验安装清单存在性和版本
-    - 引擎 ID 集合完整
-    - 目录存在且非空
 
-    完整重哈希模式 (full_rehash=True):
-    - 所有以上检查
-    - 逐文件 SHA-256 与安装清单对比
-    - 额外文件检测
-    - 文件数量检测
-
-    :param models_dir: models 目录。
-    :param expected_version: 期望的 Engine Pack 版本。
-    :param full_rehash: 是否执行完整 SHA-256 重哈希。
-    :returns: (通过, 错误列表)。
-    """
-    errors: list[str] = []
-    installed = _read_installed_manifest(models_dir)
+def _existing_records(
+    models_dir: Path,
+    desired: Mapping[str, Mapping[str, object]],
+) -> dict[str, dict[str, object]]:
+    """Return valid schema-6 records, migrating legacy state when possible."""
+    installed, _ = _load_current_or_migrate(models_dir, desired, migrate_legacy=False)
     if installed is None:
-        errors.append("engine-pack-installed.json 不存在")
-        return False, errors
+        return {}
+    records = installed.get("engines")
+    return {key: dict(value) for key, value in records.items() if isinstance(value, dict)}
 
-    errors.extend(_validate_installed_manifest(installed, expected_version))
-    if errors:
-        return False, errors
 
-    installed_engines = set(installed["engine_ids"])
-    expected = {"whisper", "paraformer", "sensevoice", "funasr_nano"}
-    if installed_engines != expected:
-        missing = expected - installed_engines
-        extra = installed_engines - expected
-        if missing:
-            errors.append(f"Missing engines: {sorted(missing)}")
-        if extra:
-            errors.append(f"Extra engines: {sorted(extra)}")
+def _install_engine_directory(
+    app_root: Path,
+    engine_id: str,
+    source_dir: Path,
+    desired_record: Mapping[str, object],
+    *,
+    installation_source: str,
+    zip_sha256: str | None,
+    desired: Mapping[str, Mapping[str, object]],
+) -> None:
+    """Atomically replace one engine and persist it before proceeding."""
+    if not source_dir.is_dir() or not any(source_dir.iterdir()):
+        raise RuntimeError(f"Engine staging directory is empty: {engine_id}")
+    models_dir = app_root / "models"
+    models_dir.mkdir(parents=True, exist_ok=True)
+    target = models_dir / engine_id
+    incoming = models_dir / f".{engine_id}.incoming-{uuid.uuid4().hex[:8]}"
+    backup = models_dir / f".{engine_id}.backup-{uuid.uuid4().hex[:8]}"
+    shutil.move(str(source_dir), str(incoming))
+    try:
+        if target.exists():
+            shutil.move(str(target), str(backup))
+        replace_with_retry(incoming, target)
+        record = _new_engine_record(
+            engine_id,
+            target,
+            desired_record,
+            installation_source=installation_source,
+            zip_sha256=zip_sha256,
+        )
+        records = _existing_records(models_dir, desired)
+        records[engine_id] = record
+        _write_current_manifest(models_dir, records, desired)
+    except Exception:
+        if target.exists():
+            source_dir.parent.mkdir(parents=True, exist_ok=True)
+            if source_dir.exists():
+                shutil.rmtree(source_dir, ignore_errors=True)
+            shutil.move(str(target), str(source_dir))
+        if backup.exists():
+            shutil.move(str(backup), str(target))
+        if incoming.exists():
+            shutil.rmtree(incoming, ignore_errors=True)
+        raise
+    if backup.exists():
+        shutil.rmtree(backup, ignore_errors=True)
 
-    # Check each engine dir is non-empty
-    for engine in expected:
-        d = models_dir / engine
-        if not d.exists():
-            errors.append(f"Engine directory missing: {engine}")
-        elif not any(d.iterdir()):
-            errors.append(f"Engine directory empty: {engine}")
 
-    # ── Full rehash mode ──
-    if full_rehash and not errors:
-        files_manifest = installed["files"]
+def install_engine_from_staging(
+    app_root: Path,
+    engine_id: str,
+    staging_engine_dir: Path,
+    *,
+    installation_source: str = "online_download",
+) -> None:
+    """Commit one downloaded engine under the shared installation lock."""
+    from blc_portable.archive.locks import FileLock, get_engine_pack_lock_path
 
-        sha_mismatches = 0
-        size_mismatches = 0
-        extra_files = 0
-        max_detail = 5
-
-        manifest_file_set: set[str] = set()
-        for engine_id, engine_info in files_manifest.items():
-            engine_files = engine_info["files"]
-            for rel_path, file_entry in engine_files.items():
-                full_rel = f"{engine_id}/{rel_path}"
-                manifest_file_set.add(full_rel)
-
-                target = models_dir / full_rel
-                if not target.is_file():
-                    errors.append(f"Missing: {full_rel}")
-                    continue
-
-                expected_sha = file_entry["sha256"]
-                expected_size = file_entry["size"]
-
-                actual_size = target.stat().st_size
-                if actual_size != expected_size:
-                    size_mismatches += 1
-                    if size_mismatches <= max_detail:
-                        errors.append(f"Size mismatch: {full_rel} expected={expected_size} actual={actual_size}")
-
-                actual_sha = compute_sha256(target)
-                if actual_sha != expected_sha:
-                    sha_mismatches += 1
-                    if sha_mismatches <= max_detail:
-                        errors.append(
-                            f"SHA-256 mismatch: {full_rel} expected={expected_sha[:16]}... actual={actual_sha[:16]}..."
-                        )
-
-        # Check for extra files
-        for engine_id in expected:
-            engine_dir = models_dir / engine_id
-            if not engine_dir.exists():
-                continue
-            for p in engine_dir.rglob("*"):
-                if p.is_file():
-                    rel = p.relative_to(models_dir).as_posix()
-                    if rel not in manifest_file_set:
-                        extra_files += 1
-                        if extra_files <= max_detail:
-                            errors.append(f"Extra file: {rel}")
-
-        if sha_mismatches:
-            errors.append(f"Full rehash: {sha_mismatches} file(s) SHA-256 mismatch")
-        if size_mismatches:
-            errors.append(f"Full rehash: {size_mismatches} file(s) size mismatch")
-        if extra_files:
-            errors.append(f"Full rehash: {extra_files} file(s) not in manifest")
-
-    return len(errors) == 0, errors
+    desired = _desired_records()
+    if engine_id not in desired:
+        raise RuntimeError(f"Unknown engine ID: {engine_id}")
+    with FileLock(get_engine_pack_lock_path(app_root)).acquire(timeout=120):
+        _install_engine_directory(
+            app_root,
+            engine_id,
+            staging_engine_dir,
+            desired[engine_id],
+            installation_source=installation_source,
+            zip_sha256=None,
+            desired=desired,
+        )
 
 
 def install_from_engine_pack(
@@ -388,208 +512,71 @@ def install_from_engine_pack(
     pack_path: Path,
     expected_crc32: str,
     expected_sha256: str,
-    expected_version: str,
 ) -> dict[str, Any]:
-    """从本地 Engine Pack 安装四引擎模型。
-
-    流程:
-    1. 流式 CRC32 校验（快速损坏检测）
-    2. 流式 SHA-256 校验（强完整性验证，强制安装条件）
-    3. 流式解压到唯一 staging 目录
-    4. 校验内部 Manifest (版本、schema、引擎 ID)
-    5. 校验 Manifest SHA-256
-    6. 校验四个引擎目录和必需文件
-    7. 逐文件 SHA-256 校验
-    8. 原子替换 models/（含回滚）
-    9. 写入安装清单
-
-    :param app_root: 应用根目录。
-    :param pack_path: Engine Pack ZIP 路径。
-    :param expected_crc32: 内置 CRC32。
-    :param expected_sha256: 内置 SHA-256。
-    :param expected_version: 期望版本。
-    :returns: 安装信息字典。
-    :raises RuntimeError: 校验失败。
-    """
-    # 1. CRC32 快速检测
+    """Install only stale engines from a fully verified local pack."""
     actual_crc32 = compute_crc32(pack_path)
     if expected_crc32 and actual_crc32 != expected_crc32:
         raise RuntimeError(f"CRC32 mismatch: expected={expected_crc32} actual={actual_crc32}")
-
-    # 2. SHA-256 强制校验
     actual_sha256 = compute_sha256(pack_path)
     if expected_sha256 and actual_sha256 != expected_sha256:
         raise RuntimeError(f"SHA-256 mismatch: expected={expected_sha256[:16]} actual={actual_sha256[:16]}")
-
     if not expected_crc32 and not expected_sha256:
         print("  Engine Pack has no external digest; validating its complete internal manifest")
     print(f"  Engine Pack 校验通过: CRC32={actual_crc32} SHA256={actual_sha256[:16]}...")
 
     from blc_portable.archive.locks import FileLock, get_engine_pack_lock_path
 
-    lock = FileLock(get_engine_pack_lock_path(app_root))
-    models_dir = app_root / "models"
-    staging_dir = app_root / f"models-staging-{uuid.uuid4().hex[:12]}"
+    from .manifest import load_manifest_for_install
+    from .verifier import verify_extracted_tree
 
-    with lock.acquire(timeout=120):
+    desired = _desired_records()
+    staging_dir = app_root / f"models-staging-pack-{uuid.uuid4().hex[:12]}"
+    installed_now: list[str] = []
+    reused, _ = reusable_engine_ids(app_root / "models")
+    with FileLock(get_engine_pack_lock_path(app_root)).acquire(timeout=120):
         try:
-            # 2. 安全解压
-            print("  解压 Engine Pack ...")
             staging_dir.mkdir(parents=True, exist_ok=True)
             _safe_extract(pack_path, staging_dir)
-
-            # 3. 校验 Manifest
             manifest_path = staging_dir / "engine-pack-manifest.json"
-            if not manifest_path.exists():
+            if not manifest_path.is_file():
                 raise RuntimeError("Engine Pack 缺少 engine-pack-manifest.json")
-            from .manifest import load_manifest
-
-            manifest = load_manifest(manifest_path)
-            if manifest.engine_pack_version != expected_version:
-                raise RuntimeError(f"Engine Pack 版本不匹配: {manifest.engine_pack_version} != {expected_version}")
-
-            # 4. 四引擎目录存在性
-            for engine in manifest.engines:
-                ep = staging_dir / engine.target_path
-                if not ep.exists() or not any(ep.iterdir()):
-                    raise RuntimeError(f"Engine Pack 缺少引擎目录: {engine.target_path}")
-
-            # 5. 逐文件校验 + 多余文件检测 (使用共用 verifier)
-            print(f"  逐文件 SHA-256 校验 ({manifest.total_files} 文件) ...")
-            from .verifier import verify_extracted_tree
-
-            errors = verify_extracted_tree(staging_dir, manifest)
-            if errors:
-                raise RuntimeError("Engine Pack 校验失败:\n  " + "\n  ".join(errors))
-
-            # 6. 引擎信息
-            installed_engines: list[str] = []
-            for engine in manifest.engines:
-                installed_engines.append(engine.engine_id)
-
-            # 7. Atomic directory transaction: models.new -> switch -> verify
-            print("  Atomic model installation...")
-            models_new = app_root / f"models.new-{uuid.uuid4().hex[:12]}"
-            backup_dir = None
-            try:
-                models_new.mkdir(parents=True, exist_ok=True)
-                staging_models = staging_dir / "models"
-                if staging_models.exists():
-                    for sub in staging_models.iterdir():
-                        shutil.move(str(sub), str(models_new / sub.name))
-                else:
-                    for item in staging_dir.iterdir():
-                        if item.name in ("engine-pack-manifest.json", "engine-pack-content-manifest.json"):
-                            continue
-                        if item.is_dir():
-                            shutil.move(str(item), str(models_new / item.name))
-                shutil.move(str(manifest_path), str(models_new / "engine-pack-content-manifest.json"))
-                files_info = _collect_files_info(models_new, installed_engines)
-                _write_installed_manifest(
-                    models_new,
-                    expected_version,
-                    installed_engines,
-                    files_info,
-                    zip_sha256=actual_sha256,
-                    source_commit=manifest.source_commit,
+            manifest = load_manifest_for_install(manifest_path)
+            verification_errors = verify_extracted_tree(staging_dir, manifest, strict_release=False)
+            if verification_errors:
+                raise RuntimeError("Engine Pack 校验失败:\n  " + "\n  ".join(verification_errors))
+            pack_engines = {engine.engine_id: engine for engine in manifest.engines}
+            if set(pack_engines) != set(desired):
+                raise RuntimeError("Engine Pack engine set does not match the current catalog")
+            for engine_id, desired_record in desired.items():
+                pack_identity = manifest_engine_identity(pack_engines[engine_id])
+                if engine_fingerprint(pack_identity) != desired_record["content_fingerprint"]:
+                    raise RuntimeError(f"Engine Pack content fingerprint mismatch: {engine_id}")
+            for engine_id, desired_record in desired.items():
+                if engine_id in reused:
+                    print(f"  reuse engine by content fingerprint: {engine_id}")
+                    continue
+                source_dir = staging_dir / str(pack_engines[engine_id].target_path)
+                _install_engine_directory(
+                    app_root,
+                    engine_id,
+                    source_dir,
+                    desired_record,
                     installation_source="engine_pack",
+                    zip_sha256=actual_sha256,
+                    desired=desired,
                 )
-                if models_dir.exists() and any(models_dir.iterdir()):
-                    backup_dir = app_root / f"models.backup-{uuid.uuid4().hex[:8]}"
-                    shutil.move(str(models_dir), str(backup_dir))
-                elif models_dir.exists():
-                    shutil.rmtree(str(models_dir), ignore_errors=True)
-                replace_with_retry(models_new, models_dir)
-                for engine_id in installed_engines:
-                    ep = models_dir / engine_id
-                    if not ep.exists() or not any(ep.iterdir()):
-                        raise RuntimeError(f"Post-switch verify failed: {engine_id}")
-            except Exception:
-                if backup_dir and backup_dir.exists():
-                    if models_dir.exists():
-                        shutil.rmtree(str(models_dir), ignore_errors=True)
-                    shutil.move(str(backup_dir), str(models_dir))
-                if models_new.exists():
-                    shutil.rmtree(str(models_new), ignore_errors=True)
-                raise
-
-        except Exception:
-            if staging_dir.exists():
-                shutil.rmtree(str(staging_dir), ignore_errors=True)
-            raise
-
-        shutil.rmtree(str(staging_dir), ignore_errors=True)
-        if backup_dir and backup_dir.exists():
-            shutil.rmtree(str(backup_dir), ignore_errors=True)
-
-        print("  Engine pack models installed")
-        return {
-            "source": "engine_pack",
-            "method": "local_extract",
-            "network_requests": 0,
-            "engines": installed_engines,
-            "files": files_info,
-        }
-
-
-def install_models_dir_from_staging(
-    app_root: Path,
-    staging_dir: Path,
-    engine_pack_version: str,
-    installed_engines: list[str],
-) -> bool:
-    """将 staging 目录原子替换为 models/ (在线下载后调用)。
-
-    :param app_root: 应用根目录。
-    :param staging_dir: 已完成校验的 staging 目录。
-    :param engine_pack_version: Engine Pack 版本。
-    :param installed_engines: 已安装引擎列表。
-    :returns: True 成功, False 失败且已回滚。
-    """
-    models_dir = app_root / "models"
-    backup_dir = None
-
-    try:
-        if models_dir.exists() and any(models_dir.iterdir()):
-            backup_dir = app_root / f"models-backup-{uuid.uuid4().hex[:8]}"
-            shutil.move(str(models_dir), str(backup_dir))
-
-        models_dir.mkdir(parents=True, exist_ok=True)
-        for item in staging_dir.iterdir():
-            dest = models_dir / item.name
-            if dest.exists():
-                if dest.is_dir():
-                    shutil.rmtree(str(dest), ignore_errors=True)
-                else:
-                    dest.unlink(missing_ok=True)
-            shutil.move(str(item), str(dest))
-
-        import sys
-
-        config_dir = str(Path(__file__).resolve().parent.parent.parent.parent / "config")
-        if config_dir not in sys.path:
-            sys.path.insert(0, config_dir)
-        from version_loader import get_source_commit_full
-
-        files_info = _collect_files_info(models_dir, installed_engines)
-        _write_installed_manifest(
-            models_dir,
-            engine_pack_version,
-            installed_engines,
-            files_info,
-            zip_sha256=None,
-            source_commit=get_source_commit_full(),
-            installation_source="online_download",
-        )
-
-        if backup_dir and backup_dir.exists():
-            shutil.rmtree(str(backup_dir), ignore_errors=True)
-
-        return True
-
-    except Exception:
-        if backup_dir and backup_dir.exists():
-            if models_dir.exists():
-                shutil.rmtree(str(models_dir), ignore_errors=True)
-            shutil.move(str(backup_dir), str(models_dir))
-        return False
+                installed_now.append(engine_id)
+        finally:
+            shutil.rmtree(staging_dir, ignore_errors=True)
+    complete, errors = check_installed_models(app_root / "models", full_rehash=True)
+    if not complete:
+        raise RuntimeError("Post-install model verification failed: " + "; ".join(errors[:5]))
+    return {
+        "source": "engine_pack",
+        "method": "content_addressed_extract",
+        "network_requests": 0,
+        "engines": sorted(desired),
+        "installed_engines": installed_now,
+        "reused_engines": sorted(reused),
+        "model_set_fingerprint": model_set_fingerprint(desired),
+    }
