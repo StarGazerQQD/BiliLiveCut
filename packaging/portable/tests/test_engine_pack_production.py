@@ -218,21 +218,21 @@ class TestFullRehash:
         (models_dir / "engine-pack-installed.json").write_text(json.dumps(manifest), encoding="utf-8")
         assert check_installed_models(models_dir, full_rehash=False)[0]
 
-    def test_legacy_017_manifest_migrates_without_network(self, tmp_path: Path) -> None:
+    def test_old_installed_manifest_is_rejected_without_rewrite(self, tmp_path: Path) -> None:
+        """旧已安装清单不得迁移为当前 schema，也不得被原地改写。"""
         from blc_portable.engine_pack.installer import check_installed_models
-        from engine_pack_helpers import legacy_installed_manifest
 
-        models_dir = tmp_path / "models"
-        _make_models(tmp_path)
-        (models_dir / "engine-pack-installed.json").write_text(
-            json.dumps(legacy_installed_manifest(models_dir)),
-            encoding="utf-8",
-        )
+        models_dir, manifest = self._prepare(tmp_path)
+        manifest["schema_version"] = 5
+        manifest_path = models_dir / "engine-pack-installed.json"
+        original = json.dumps(manifest, ensure_ascii=False, sort_keys=True)
+        manifest_path.write_text(original, encoding="utf-8")
+
         ok, errors = check_installed_models(models_dir, full_rehash=True)
-        assert ok, errors
-        migrated = json.loads((models_dir / "engine-pack-installed.json").read_text(encoding="utf-8"))
-        assert migrated["schema_version"] == 6
-        assert {record["installation_source"] for record in migrated["engines"].values()} == {"legacy_migration"}
+
+        assert ok is False
+        assert any("schema unsupported: 5" in error for error in errors)
+        assert manifest_path.read_text(encoding="utf-8") == original
 
 
 class TestVerifierIntegration:

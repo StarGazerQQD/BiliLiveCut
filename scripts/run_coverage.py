@@ -14,7 +14,7 @@
     Coverage:        48.57%
     Target 50%:      163 additional lines needed
     Target 51%:      276 additional lines needed
-    Native C ext:    loaded (app.analysis._c_speedups)
+    Native C ext:    loaded (app.accelerators._c_speedups)
     Result:          FAIL (48.57% < 50.00%)
 
 退出码:
@@ -51,8 +51,8 @@ def check_native_extension() -> tuple[bool, str]:
     try:
         import importlib
 
-        importlib.import_module("app.analysis._c_speedups")
-        return True, "loaded (app.analysis._c_speedups)"
+        importlib.import_module("app.accelerators._c_speedups")
+        return True, "loaded (app.accelerators._c_speedups)"
     except ImportError:
         return False, "NOT FOUND - C extension not compiled; coverage may differ from CI"
 

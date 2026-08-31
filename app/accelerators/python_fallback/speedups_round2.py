@@ -10,6 +10,105 @@ from __future__ import annotations
 
 import math
 from collections import Counter
+from collections.abc import Sequence
+from statistics import median
+
+
+def audio_peak_offsets(
+    times: Sequence[float],
+    rms: Sequence[float],
+    limit: int = 4,
+    min_distance_s: float = 25.0,
+    min_prominence: float = 0.15,
+) -> list[float]:
+    """选择按能量排序且彼此分离的局部峰值。"""
+    size = min(len(times), len(rms))
+    if size == 0 or limit <= 0:
+        return []
+
+    offsets = [float(times[index]) for index in range(size)]
+    values = [float(rms[index]) for index in range(size)]
+    global_index = max(range(size), key=values.__getitem__)
+    baseline = float(median(values))
+    threshold = baseline + max(0.0, min_prominence) * max(1.0 - baseline, 0.0)
+    candidates = [global_index]
+    for index in range(1, size - 1):
+        value = values[index]
+        if index != global_index and value >= threshold and value >= values[index - 1] and value > values[index + 1]:
+            candidates.append(index)
+
+    selected: list[int] = []
+    minimum_distance = max(0.0, min_distance_s)
+    for index in sorted(candidates, key=lambda item: (-values[item], item)):
+        offset = offsets[index]
+        if any(abs(offset - offsets[chosen]) < minimum_distance for chosen in selected):
+            continue
+        selected.append(index)
+        if len(selected) >= limit:
+            break
+    return sorted(offsets[index] for index in selected)
+
+
+def find_silence_ranges(
+    times: Sequence[float],
+    rms: Sequence[float],
+    threshold_ratio: float = 0.15,
+    min_silence_s: float = 0.3,
+) -> list[tuple[float, float]]:
+    """从 RMS 包络中提取满足最短持续时间的连续静音区间。"""
+    size = min(len(times), len(rms))
+    if size == 0:
+        return []
+
+    hop_s = float(times[1]) - float(times[0]) if size > 1 else 0.1
+    silences: list[tuple[float, float]] = []
+    start_index: int | None = None
+    for index in range(size):
+        is_quiet = float(rms[index]) < threshold_ratio
+        if is_quiet and start_index is None:
+            start_index = index
+        elif not is_quiet and start_index is not None:
+            if (index - start_index) * hop_s >= min_silence_s:
+                silences.append((float(times[start_index]), float(times[index - 1])))
+            start_index = None
+    if start_index is not None and (size - start_index) * hop_s >= min_silence_s:
+        silences.append((float(times[start_index]), float(times[size - 1])))
+    return silences
+
+
+def robust_relative_uplift(current: float, history: Sequence[float]) -> float:
+    """按当前场次历史的中位数与 MAD 计算稳健相对增幅。"""
+    clean = [float(value) for value in history if math.isfinite(value)]
+    if not clean or not math.isfinite(current):
+        return 0.0
+    baseline = float(median(clean))
+    if current <= baseline:
+        return 0.0
+    mad = float(median([abs(value - baseline) for value in clean]))
+    scale = max(1e-3, abs(baseline) * 0.10)
+    ratio_score = math.log2((current + scale) / (baseline + scale)) / 3.0
+    relative_score = ((current - baseline) / (abs(baseline) + scale)) / 2.0
+    robust_score = 0.0 if mad <= 1e-9 else ((current - baseline) / (1.4826 * mad)) / 6.0
+    return max(0.0, min(1.0, max(ratio_score, relative_score, robust_score)))
+
+
+def danmaku_text_features(
+    texts: Sequence[str],
+    high_emotion_tokens: Sequence[str],
+) -> tuple[float, float, float, tuple[str, ...]]:
+    """汇总弹幕复读率、情绪强度、高情绪命中率与代表消息。"""
+    if not texts:
+        return 0.0, 0.0, 0.0, ()
+    counts = Counter(texts)
+    total = len(texts)
+    repetition = max(counts.values()) / total
+    punctuation_hits = sum(1 for text in texts if any(token in text for token in ("!", "！", "?", "？")))
+    high_emotion_hits = sum(any(token in text for token in high_emotion_tokens) for text in texts)
+    punctuation_rate = punctuation_hits / total
+    high_emotion = high_emotion_hits / total
+    intensity = max(0.0, min(1.0, punctuation_rate * 0.45 + high_emotion * 0.55))
+    representatives = tuple(text for text, _count in counts.most_common(3))
+    return max(0.0, min(1.0, repetition)), intensity, max(0.0, min(1.0, high_emotion)), representatives
 
 
 def cluster_similarity_matrix(items: list[dict]) -> list[list[float]]:

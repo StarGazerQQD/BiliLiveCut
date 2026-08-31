@@ -345,13 +345,13 @@ class TestEnginePackInstall:
         assert result["source"] == "engine_pack"
         assert result["network_requests"] == 0
 
-    def test_older_release_pack_reuses_identical_content(
+    def test_older_release_pack_is_rejected_even_when_content_matches(
         self,
         tmp_app_root: Path,
         fixture_engine_pack: Path,
         tmp_path: Path,
     ) -> None:
-        """0.1.17 archive metadata is irrelevant when all engine fingerprints match."""
+        """旧发行包不得绕过当前版本与源码提交契约。"""
         from blc_portable.engine_pack.installer import install_from_engine_pack
 
         old_pack = _rewrite_pack_manifest(
@@ -365,10 +365,9 @@ class TestEnginePackInstall:
             ),
         )
 
-        result = install_from_engine_pack(tmp_app_root, old_pack, "", "")
-
-        assert result["network_requests"] == 0
-        assert set(result["installed_engines"]) == {"whisper", "paraformer", "sensevoice", "funasr_nano"}
+        with pytest.raises(ValueError, match="engine_pack_version 不匹配"):
+            install_from_engine_pack(tmp_app_root, old_pack, "", "")
+        assert not (tmp_app_root / "models" / "engine-pack-installed.json").exists()
 
     def test_second_install_only_replaces_stale_engine(
         self,

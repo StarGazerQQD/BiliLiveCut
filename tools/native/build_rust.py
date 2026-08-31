@@ -1,6 +1,6 @@
 """BiliLiveCut Rust 加速模块编译脚本.
 
-编译 O(N**2) 聚类矩阵 Rust 扩展 (_rust_cluster.pyd/.so)。
+编译聚类矩阵与弹幕文本特征 Rust 扩展 (_rust_speedups.pyd/.so)。
 
 用法:
     python tools/native/build_rust.py          # 编译并复制到包目录
@@ -16,6 +16,7 @@
 
 from __future__ import annotations
 
+import os
 import shutil
 import subprocess
 import sys
@@ -26,7 +27,7 @@ _HERE = Path(__file__).resolve().parent
 # tools/native/ → 仓库根目录
 _REPO_ROOT = _HERE.parent.parent
 RUST_SRC = _REPO_ROOT / "tools" / "native" / "rust"
-TARGET_DIR = _REPO_ROOT / "app" / "analysis"
+TARGET_DIR = _REPO_ROOT / "app" / "accelerators"
 
 
 def _configure_stream_encoding(stream: TextIO) -> None:
@@ -95,14 +96,9 @@ def build() -> bool:
 
     print(f"  [build_rust] 编译 Rust 扩展 ({RUST_SRC})…")
 
-    # Python 3.14 兼容性（pyo3 0.22.6 官方支持到 3.13）
-    import os as _os
-
-    env = _os.environ.copy()
-    env.setdefault("PYO3_USE_ABI3_FORWARD_COMPATIBILITY", "1")
-    env.setdefault("PYO3_PYTHON", sys.executable)
-
-    # cargo build --release (带 Python 3.14 兼容性)
+    # 仅按当前受支持解释器编译，不绕过 PyO3 的版本检查。
+    env = os.environ.copy()
+    env["PYO3_PYTHON"] = sys.executable
     result = subprocess.run(
         ["cargo", "build", "--release"],
         cwd=RUST_SRC,
@@ -120,20 +116,20 @@ def build() -> bool:
     # 查找产物 (.pyd, .so, .dll)
     ext = _extension_suffix()
     build_dir = RUST_SRC / "target" / "release"
-    candidates = list(build_dir.glob(f"_rust_cluster*{ext}"))
+    candidates = list(build_dir.glob(f"_rust_speedups*{ext}"))
     # 也匹配 .dll (Windows Rust 默认输出)
     if sys.platform == "win32" and not candidates:
-        candidates = list(build_dir.glob("_rust_cluster*.dll"))
-    # macOS: lib_rust_cluster.dylib
+        candidates = list(build_dir.glob("_rust_speedups*.dll"))
+    # macOS: lib_rust_speedups.dylib
     if not candidates:
-        candidates = list(build_dir.glob("lib_rust_cluster*"))
+        candidates = list(build_dir.glob("lib_rust_speedups*"))
 
     if not candidates:
         print(f"  [build_rust] 错误: 未找到编译产物 ({ext})")
         return False
 
     src = candidates[0]
-    dst = TARGET_DIR / f"_rust_cluster{ext}"
+    dst = TARGET_DIR / f"_rust_speedups{ext}"
     TARGET_DIR.mkdir(parents=True, exist_ok=True)
     shutil.copy2(src, dst)
     print(f"  [build_rust] 复制: {src.name} → {dst}")

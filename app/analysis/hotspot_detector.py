@@ -6,7 +6,6 @@ import hashlib
 import json
 import math
 import re
-from collections import Counter
 from collections.abc import Mapping, Sequence
 from dataclasses import dataclass
 from datetime import datetime, timedelta
@@ -16,6 +15,7 @@ import numpy as np
 from loguru import logger
 from sqlmodel import Session, select
 
+from app.accelerators.dispatcher import danmaku_text_features, robust_relative_uplift
 from app.analysis.keywords import match_keywords
 from app.analysis.timeline import datetime_epoch
 from app.analysis.transcription.quality import assess_transcript_quality
@@ -217,22 +217,6 @@ def dynamic_weighted_score(
         return 0.0, 0.0
     value = sum(score * weight for score, weight in available.values()) / available_weight
     return _clamp(value), _clamp(available_weight / total_weight)
-
-
-def robust_relative_uplift(current: float, history: Sequence[float]) -> float:
-    """按直播自身历史衡量上升幅度，避免大房间绝对量天然占优。"""
-    clean = np.asarray([value for value in history if math.isfinite(value)], dtype=np.float64)
-    if clean.size == 0 or not math.isfinite(current):
-        return 0.0
-    median = float(np.median(clean))
-    if current <= median:
-        return 0.0
-    mad = float(np.median(np.abs(clean - median)))
-    scale = max(1e-3, abs(median) * 0.10)
-    ratio_score = math.log2((current + scale) / (median + scale)) / 3.0
-    relative_score = ((current - median) / (abs(median) + scale)) / 2.0
-    robust_score = 0.0 if mad <= 1e-9 else ((current - median) / (1.4826 * mad)) / 6.0
-    return _clamp(max(ratio_score, relative_score, robust_score))
 
 
 class HotspotDetector:
@@ -469,7 +453,10 @@ class _BucketBuilder:
     ) -> SignalBucket:
         """冻结为只读信号桶并计算桶内派生特征。"""
         count = self.danmaku_total
-        repetition, intensity, high_emotion, messages = _danmaku_text_features(self.danmaku_texts)
+        repetition, intensity, high_emotion, messages = danmaku_text_features(
+            self.danmaku_texts,
+            _HIGH_EMOTION_TOKENS,
+        )
         audio_mean: float | None = None
         audio_peak: float | None = None
         silence_ratio: float | None = None
@@ -877,20 +864,6 @@ def _validate_buckets(buckets: Sequence[SignalBucket]) -> None:
             if abs(gap) > 1e-6:
                 raise ValueError("SignalBucket 必须按时间升序且连续")
         previous_end = bucket.end_ts
-
-
-def _danmaku_text_features(texts: Sequence[str]) -> tuple[float, float, float, tuple[str, ...]]:
-    if not texts:
-        return 0.0, 0.0, 0.0, ()
-    counts = Counter(texts)
-    repetition = max(counts.values()) / len(texts)
-    punctuation = sum(1 for text in texts if "!" in text or "！" in text or "?" in text or "？" in text)
-    high_emotion_hits = sum(any(token in text for token in _HIGH_EMOTION_TOKENS) for text in texts)
-    punctuation_rate = punctuation / len(texts)
-    high_emotion = high_emotion_hits / len(texts)
-    intensity = _clamp(punctuation_rate * 0.45 + high_emotion * 0.55)
-    representatives = tuple(text for text, _count in counts.most_common(3))
-    return _clamp(repetition), intensity, _clamp(high_emotion), representatives
 
 
 def _sensevoice_event_weight(event_type: str) -> float:

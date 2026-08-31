@@ -15,7 +15,7 @@ _extensions = []
 
 if not _skip:
     _c_speedups = Extension(
-        "app.analysis._c_speedups",
+        "app.accelerators._c_speedups",
         sources=["tools/native/c/_c_speedups.c"],
         extra_compile_args=(["/O2", "/fp:fast", "/utf-8"] if sys.platform == "win32" else ["-O3", "-ffast-math"]),
         extra_link_args=(["/Brepro"] if sys.platform == "win32" else []),
@@ -24,7 +24,7 @@ if not _skip:
 
 setup(
     name="bili_live_cut_c",
-    version="0.1.18.0",
+    version="0.1.18.1",
     py_modules=[],
     ext_modules=_extensions,
 )

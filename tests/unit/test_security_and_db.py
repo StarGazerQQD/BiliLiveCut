@@ -16,6 +16,8 @@ import tempfile
 from pathlib import Path
 from typing import TYPE_CHECKING
 
+import pytest
+
 if TYPE_CHECKING:
     from _pytest.monkeypatch import MonkeyPatch
 
@@ -271,6 +273,33 @@ class TestDatabaseForeignKeys:
 
         assert validate_schema() is False
 
+    def test_assure_schema_rejects_old_schema_without_migration(
+        self,
+        temp_db: None,
+        tmp_path: Path,
+    ) -> None:
+        """旧 Schema 必须原样拒绝，不得备份、迁移或改写元数据。"""
+        from sqlmodel import Session
+
+        from app.db.schema import SchemaMeta, assure_schema
+        from app.db.session import engine
+
+        with Session(engine) as db:
+            meta = db.get(SchemaMeta, 1)
+            assert meta is not None
+            meta.schema_version = 4
+            db.add(meta)
+            db.commit()
+
+        with pytest.raises(RuntimeError, match="Alpha 版本不迁移历史数据库"):
+            assure_schema()
+
+        with Session(engine) as db:
+            meta = db.get(SchemaMeta, 1)
+            assert meta is not None
+            assert meta.schema_version == 4
+        assert list(tmp_path.glob("*.bak")) == []
+
     def test_schema_rejects_unexpected_table(self, temp_db: None) -> None:
         """Alpha 数据库不得保留当前模型未定义的旧表。"""
         from app.db.schema import _verify_actual_structure
@@ -329,6 +358,7 @@ class TestDatabaseForeignKeys:
     def test_historical_migration_module_is_removed(self) -> None:
         """Alpha 当前版本不再分发历史数据库迁移模块。"""
         assert not (Path(__file__).resolve().parents[2] / "app" / "db" / "migration_v01411.py").exists()
+        assert not (Path(__file__).resolve().parents[2] / "app" / "db" / "migration_v0180.py").exists()
 
 
 class TestSchemaFingerprint:

@@ -16,6 +16,10 @@ from dataclasses import dataclass
 import numpy as np
 from loguru import logger
 
+from app.accelerators.dispatcher import (
+    audio_peak_offsets as select_audio_peak_offsets,
+)
+from app.accelerators.dispatcher import find_silence_ranges
 from app.core.config import settings
 
 # 解码目标参数:16kHz 足够语音分析,单声道降低数据量。
@@ -68,31 +72,13 @@ class AudioFeatures:
         :param min_prominence: 相对中位能量的最小突出度。
         :returns: 峰值时间偏移列表（秒，升序）。
         """
-        if self.rms.size == 0 or self.times.size == 0 or limit <= 0:
-            return []
-
-        size = min(self.rms.size, self.times.size)
-        rms = self.rms[:size]
-        times = self.times[:size]
-        global_index = int(np.argmax(rms))
-        median = float(np.median(rms))
-        threshold = median + max(0.0, min_prominence) * max(1.0 - median, 0.0)
-        candidates = {global_index}
-        for index in range(1, size - 1):
-            value = float(rms[index])
-            if value >= threshold and value >= float(rms[index - 1]) and value > float(rms[index + 1]):
-                candidates.add(index)
-
-        selected: list[int] = []
-        minimum_distance = max(0.0, min_distance_s)
-        for index in sorted(candidates, key=lambda item: float(rms[item]), reverse=True):
-            offset = float(times[index])
-            if any(abs(offset - float(times[chosen])) < minimum_distance for chosen in selected):
-                continue
-            selected.append(index)
-            if len(selected) >= limit:
-                break
-        return sorted(float(times[index]) for index in selected)
+        return select_audio_peak_offsets(
+            self.times,
+            self.rms,
+            limit=limit,
+            min_distance_s=min_distance_s,
+            min_prominence=min_prominence,
+        )
 
     def volume_score(self) -> float:
         """计算音量维度的高光分(0-1)。
@@ -249,30 +235,12 @@ def find_silences(
     :param min_silence_s: 最短静音时长(秒)。
     :returns: 静音区间列表 ``[(start_s, end_s), ...]``。
     """
-    if rms.size == 0:
-        return []
-
-    hop_s = float(times[1] - times[0]) if times.size > 1 else 0.1
-    quiet = rms < threshold_ratio
-    silences: list[tuple[float, float]] = []
-    start_idx: int | None = None
-
-    for i, is_quiet in enumerate(quiet):
-        if is_quiet and start_idx is None:
-            start_idx = i
-        elif not is_quiet and start_idx is not None:
-            duration = (i - start_idx) * hop_s
-            if duration >= min_silence_s:
-                silences.append((float(times[start_idx]), float(times[i - 1])))
-            start_idx = None
-
-    # 收尾:末尾仍处于静音。
-    if start_idx is not None:
-        duration = (len(quiet) - start_idx) * hop_s
-        if duration >= min_silence_s:
-            silences.append((float(times[start_idx]), float(times[-1])))
-
-    return silences
+    return find_silence_ranges(
+        times,
+        rms,
+        threshold_ratio=threshold_ratio,
+        min_silence_s=min_silence_s,
+    )
 
 
 def analyze_audio(path: str, hop_s: float = 0.1) -> AudioFeatures:

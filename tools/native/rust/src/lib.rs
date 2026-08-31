@@ -1,6 +1,7 @@
-//! BiliLiveCut Rust 加速模块 — V0.1.10
+//! BiliLiveCut Rust 并行聚类与弹幕文本特征加速模块。
 //!
-//! O(N**2) 聚类相似度矩阵并行计算 (PyO3 + rayon)。
+//! - O(N**2) 聚类相似度矩阵并行计算 (PyO3 + rayon)
+//! - 弹幕复读率、情绪强度和代表消息单遍汇总
 //!
 //! 设计:
 //! - Python 端一次性提取 texts/keywords/timestamps → 传入 Rust
@@ -13,7 +14,7 @@
 //!     或 python tools/native/build_rust.py
 //!
 //! 回退:
-//!     无 Rust 编译环境时自动使用 _speedups_round2_py.py
+//!     无 Rust 编译环境时由 app.accelerators.dispatcher 使用 Python 参考实现
 
 use pyo3::prelude::*;
 use rayon::prelude::*;
@@ -23,9 +24,12 @@ use std::collections::{HashMap, HashSet};
 
 /// 提取中文字符级 bigram (与 Python `fast_char_bigrams` 等价的 Rust 实现)。
 fn char_bigrams(text: &str) -> HashMap<String, f64> {
-    let chars: Vec<char> = text.chars().collect();
-    if chars.len() < 2 {
+    let chars: Vec<char> = text.chars().filter(|ch| *ch > ' ').collect();
+    if chars.is_empty() {
         return HashMap::new();
+    }
+    if chars.len() == 1 {
+        return HashMap::from([(chars[0].to_string(), 1.0)]);
     }
     let mut bigrams: HashMap<String, f64> = HashMap::with_capacity(chars.len() - 1);
     for w in chars.windows(2) {
@@ -127,11 +131,7 @@ fn pairwise_sim(
     ts_b: Option<f64>,
 ) -> f64 {
     // 文本相似度 (TF-IDF 余弦)
-    let sim_text = if !t_a.is_empty()
-        && !t_b.is_empty()
-        && !bg_a.is_empty()
-        && !bg_b.is_empty()
-    {
+    let sim_text = if !t_a.is_empty() && !t_b.is_empty() && !bg_a.is_empty() && !bg_b.is_empty() {
         let total_docs = bg_a.len().max(bg_b.len()).max(2) as f64;
         let wa = idf_weight(bg_a, bg_b, total_docs);
         let wb = idf_weight(bg_b, bg_a, total_docs);
@@ -160,7 +160,7 @@ fn pairwise_sim(
 /// :param timestamps: 每个候选的 Unix 时间戳 (list[Optional[float]])。
 /// :returns: N×N 矩阵 list[list[float]]。
 #[pyfunction]
-fn cluster_similarity_matrix_rust(
+fn cluster_similarity_matrix(
     texts: Vec<String>,
     keywords: Vec<Vec<String>>,
     timestamps: Vec<Option<f64>>,
@@ -173,8 +173,7 @@ fn cluster_similarity_matrix_rust(
     }
 
     // ── 阶段 1: 预计算 bigram 频率 (串行,但 O(N * avg_text_len),可接受) ──
-    let bigrams: Vec<HashMap<String, f64>> =
-        texts.iter().map(|t| char_bigrams(t)).collect();
+    let bigrams: Vec<HashMap<String, f64>> = texts.iter().map(|t| char_bigrams(t)).collect();
 
     // ── 阶段 2: 并行计算所有 (i<j) 对的相似度 ──
     // 收集下标对
@@ -213,10 +212,70 @@ fn cluster_similarity_matrix_rust(
     Ok(matrix)
 }
 
+/// 单遍汇总弹幕文本特征。
+///
+/// :param texts: 当前时间桶内的弹幕正文。
+/// :param high_emotion_tokens: 当前版本定义的高情绪词表。
+/// :returns: (复读率, 情绪强度, 高情绪命中率, 高频代表消息)。
+#[pyfunction]
+fn danmaku_text_features(
+    texts: Vec<String>,
+    high_emotion_tokens: Vec<String>,
+) -> (f64, f64, f64, Vec<String>) {
+    if texts.is_empty() {
+        return (0.0, 0.0, 0.0, Vec::new());
+    }
+
+    let mut counts: HashMap<&str, (usize, usize)> = HashMap::with_capacity(texts.len());
+    let mut punctuation_hits = 0usize;
+    let mut emotion_hits = 0usize;
+    for (index, text) in texts.iter().enumerate() {
+        let entry = counts.entry(text.as_str()).or_insert((0, index));
+        entry.0 += 1;
+        if text.contains('!') || text.contains('！') || text.contains('?') || text.contains('？')
+        {
+            punctuation_hits += 1;
+        }
+        if high_emotion_tokens.iter().any(|token| text.contains(token)) {
+            emotion_hits += 1;
+        }
+    }
+
+    let total = texts.len() as f64;
+    let repetition = counts
+        .values()
+        .map(|(count, _first_index)| *count)
+        .max()
+        .unwrap_or(0) as f64
+        / total;
+    let punctuation_rate = punctuation_hits as f64 / total;
+    let high_emotion = emotion_hits as f64 / total;
+    let intensity = (punctuation_rate * 0.45 + high_emotion * 0.55).clamp(0.0, 1.0);
+
+    let mut ranked: Vec<(&str, usize, usize)> = counts
+        .into_iter()
+        .map(|(text, (count, first_index))| (text, count, first_index))
+        .collect();
+    ranked.sort_by(|left, right| right.1.cmp(&left.1).then_with(|| left.2.cmp(&right.2)));
+    let representatives = ranked
+        .into_iter()
+        .take(3)
+        .map(|(text, _count, _first_index)| text.to_owned())
+        .collect();
+
+    (
+        repetition.clamp(0.0, 1.0),
+        intensity,
+        high_emotion.clamp(0.0, 1.0),
+        representatives,
+    )
+}
+
 // ── 模块注册 ─────────────────────────────────────────────────────
 
 #[pymodule]
-fn _rust_cluster(m: &Bound<'_, PyModule>) -> PyResult<()> {
-    m.add_function(wrap_pyfunction!(cluster_similarity_matrix_rust, m)?)?;
+fn _rust_speedups(m: &Bound<'_, PyModule>) -> PyResult<()> {
+    m.add_function(wrap_pyfunction!(cluster_similarity_matrix, m)?)?;
+    m.add_function(wrap_pyfunction!(danmaku_text_features, m)?)?;
     Ok(())
 }

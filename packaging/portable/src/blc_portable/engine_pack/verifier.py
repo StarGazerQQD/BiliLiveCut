@@ -17,7 +17,6 @@ from .manifest import (
     ENGINE_PACK_VERSION,
     EnginePackManifest,
     load_manifest,
-    validate_installable_manifest,
     validate_manifest,
 )
 
@@ -144,8 +143,6 @@ def verify_archive_manifest(
 def verify_extracted_tree(
     extracted_dir: Path,
     manifest: EnginePackManifest | dict[str, Any],
-    *,
-    strict_release: bool = True,
 ) -> list[str]:
     """验证解压后的目录树与 Manifest 完全一致。
 
@@ -165,7 +162,7 @@ def verify_extracted_tree(
     else:
         parsed = manifest
 
-    manifest_errors = validate_manifest(parsed) if strict_release else validate_installable_manifest(parsed)
+    manifest_errors = validate_manifest(parsed)
     if manifest_errors:
         return [f"Manifest 校验失败: {error}" for error in manifest_errors]
 

@@ -5,9 +5,8 @@
 publishing / pipeline / web),通过数据库与任务队列解耦。
 """
 
-# 版本号统一由 packaging/portable/config/version.json 管理。
-# 此处读取为便捷常量，实际权威来源在 config/version.json。
-__version__ = "0.1.18.0-alpha"
+# 版本号以此处为唯一真源；构建、Portable 与文档副本由版本一致性门禁校验。
+__version__ = "0.1.18.1-alpha"
 
 
 def version_label(version: str | None = None) -> str:

@@ -244,9 +244,66 @@ def _seed_event_first_hotspots(session_id: int) -> tuple[int, int, int]:
         return linked.id, standalone.id, candidate.id
 
 
+def _seed_current_linked_hotspots(session_id: int) -> tuple[int, int]:
+    """为当前严格数据模型创建可见与已拒绝候选各自的一等热点。"""
+    with get_session() as db:
+        candidates = db.exec(
+            select(HighlightCandidate)
+            .where(HighlightCandidate.session_id == session_id)
+            .order_by(HighlightCandidate.id.asc())
+        ).all()
+        assert len(candidates) == 2
+        visible, rejected = candidates
+        assert visible.id is not None and rejected.id is not None
+        visible_hotspot = HotspotEvent(
+            event_key="timeline-current-visible",
+            session_id=session_id,
+            start_ts=visible.start_ts,
+            peak_ts=visible.peak_ts,
+            end_ts=visible.end_ts,
+            status=HotspotStatus.CONFIRMED,
+            heat_score=0.91,
+            clip_score=0.87,
+            semantic_confidence=0.88,
+            evidence_coverage=0.9,
+            title="主播完成关键反转",
+            summary="主播完成关键反转",
+            features_json=json.dumps(
+                {
+                    "detector_version": "event-first-v1",
+                    "ticks": [{"modality_scores": {"danmaku": 0.9, "audio": 0.6}}],
+                    "event_lifecycle": {"version": 1},
+                },
+                ensure_ascii=False,
+            ),
+            representative_danmaku_json=json.dumps(
+                [{"text": "笑死", "count": 8}, {"text": "名场面", "count": 3}],
+                ensure_ascii=False,
+            ),
+            candidate_id=visible.id,
+        )
+        rejected_hotspot = HotspotEvent(
+            event_key="timeline-current-rejected",
+            session_id=session_id,
+            start_ts=rejected.start_ts,
+            peak_ts=rejected.peak_ts,
+            end_ts=rejected.end_ts,
+            status=HotspotStatus.CONFIRMED,
+            heat_score=0.7,
+            clip_score=0.7,
+            candidate_id=rejected.id,
+        )
+        db.add(visible_hotspot)
+        db.add(rejected_hotspot)
+        db.flush()
+        assert visible_hotspot.id is not None and rejected_hotspot.id is not None
+        return visible_hotspot.id, rejected_hotspot.id
+
+
 def test_session_timeline_exposes_gmt8_summary_danmaku_and_provenance(temp_db: None) -> None:
     """时间点必须同时具备本地钟点、梗概、弹幕、来源信号和可核查评分。"""
     session_id = _seed_timeline()
+    _seed_current_linked_hotspots(session_id)
 
     payload = get_session_timeline(session_id)
 
@@ -257,7 +314,7 @@ def test_session_timeline_exposes_gmt8_summary_danmaku_and_provenance(temp_db: N
         "visible": 1,
         "rejected": 1,
         "total": 2,
-        "hotspots": 0,
+        "hotspots": 2,
         "hotspot_only": 0,
         "candidates": 2,
     }
@@ -269,16 +326,17 @@ def test_session_timeline_exposes_gmt8_summary_danmaku_and_provenance(temp_db: N
         {"text": "笑死", "count": 8},
         {"text": "名场面", "count": 3},
     ]
-    assert point["source_signals"] == ["弹幕高峰", "音量突增"]
+    assert point["source_signals"] == ["弹幕高峰", "音频峰值"]
     assert point["confidence"] == 0.88
     assert point["provenance"]["cross_segment"] is True
-    assert point["provenance"]["danmaku_lag_s"] == 7.5
+    assert point["provenance"]["event_version"] == 1
     assert point["review_url"].endswith(f"/{point['candidate_id']}")
 
 
 def test_session_timeline_can_include_rejected_nodes_and_list_overview(temp_db: None) -> None:
     """默认隐藏终态拒绝节点，但显式查询与场次概览应保留拒绝统计。"""
     session_id = _seed_timeline()
+    _seed_current_linked_hotspots(session_id)
 
     overview = list_session_timelines()
     expanded = get_session_timeline(session_id, include_rejected=True)
@@ -289,6 +347,27 @@ def test_session_timeline_can_include_rejected_nodes_and_list_overview(temp_db: 
     assert overview[0]["started_at_gmt8"].startswith("2026-08-05T19:00:00")
     assert len(expanded["points"]) == 2
     assert sum(1 for point in expanded["points"] if point["rejected"]) == 1
+
+
+def test_session_timeline_omits_candidates_without_current_hotspot(temp_db: None) -> None:
+    """没有一等热点的旧候选不得再通过兼容节点出现在时间线。"""
+    session_id = _seed_timeline()
+
+    overview = list_session_timelines()
+    payload = get_session_timeline(session_id, include_rejected=True)
+
+    assert overview[0]["timeline_count"] == 0
+    assert overview[0]["highlight_count"] == 0
+    assert overview[0]["rejected_count"] == 0
+    assert payload["points"] == []
+    assert payload["counts"] == {
+        "visible": 0,
+        "rejected": 0,
+        "total": 0,
+        "hotspots": 0,
+        "hotspot_only": 0,
+        "candidates": 0,
+    }
 
 
 def test_event_first_timeline_keeps_hotspots_without_candidates_and_avoids_linked_duplicates(
@@ -303,15 +382,15 @@ def test_event_first_timeline_keeps_hotspots_without_candidates_and_avoids_linke
 
     assert overview[0]["hotspot_count"] == 2
     assert overview[0]["hotspot_only_count"] == 1
-    assert overview[0]["timeline_count"] == 3
+    assert overview[0]["timeline_count"] == 2
     assert overview[0]["highlight_count"] == 1
     assert payload["counts"] == {
         "visible": 2,
-        "rejected": 1,
-        "total": 3,
+        "rejected": 0,
+        "total": 2,
         "hotspots": 2,
         "hotspot_only": 1,
-        "candidates": 2,
+        "candidates": 1,
     }
     assert len(payload["points"]) == 2
     linked = next(point for point in payload["points"] if point["hotspot_event_id"] == linked_id)

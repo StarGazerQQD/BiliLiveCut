@@ -30,9 +30,9 @@ from config.launcher_settings import APP_ROOT_ENV, WEB_PORT_ENV, load_launcher_c
 
 # -- Constants ──────────────────────────────────────────────────
 APP_NAME = "BiliLiveCut"
-VERSION = "V0.1.18.0 Alpha"
-RELEASE_VERSION = "0.1.18.0-alpha"
-SOURCE_COMMIT_SHORT = "9615a8b"
+VERSION = "V0.1.18.1 Alpha"
+RELEASE_VERSION = "0.1.18.1-alpha"
+SOURCE_COMMIT_SHORT = "aa2e312"
 # NOTE: RELEASE_ID 将在获得 Payload SHA-256 后动态生成 (内容寻址)
 SUPPORTED_PYTHON_VERSIONS = frozenset({(3, 11), (3, 12)})
 
@@ -1064,7 +1064,7 @@ def _verify_installed_models(app_root: Path) -> None:
     print("=" * 60)
     print("  Model Integrity Verification")
     print("=" * 60)
-    print(f"  Model set fingerprint: {installed.get('model_set_fingerprint', '<legacy>')}")
+    print(f"  Model set fingerprint: {installed.get('model_set_fingerprint', '<missing>')}")
     print(f"  installed at: {installed.get('installed_at')}")
     records = installed.get("engines", {})
     print(f"  engines: {sorted(records) if isinstance(records, dict) else '<invalid>'}")
