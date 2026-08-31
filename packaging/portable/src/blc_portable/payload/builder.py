@@ -2,7 +2,7 @@
 
 流程:
 1. 从固定的当前发布基线 c435147 提取源码 → staging/
-2. 校验源码快照本身就是 0.1.18.0-alpha
+2. 校验源码快照本身就是 0.1.18.1-alpha
 3. 构建 ZIP (收集 included_files 集合)
 4. 基于 included_files 生成 Manifest (文件数/Hash 与 ZIP 严格一致)
 5. 逐文件交叉校验 ZIP vs Manifest

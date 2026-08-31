@@ -2,8 +2,24 @@
 
 ## 未发布
 
+- 暂无。
+
+## V0.1.18.1 Alpha (2026-08-31)
+
+### 破坏性收口
+
 - **compatibility/current-only**: Alpha 运行时移除 0.1.17.x 数据库迁移、schema-5 Engine Pack 已安装清单迁移、跨发行版 Engine Pack 安装入口和无 `HotspotEvent` 候选的时间线兼容节点；数据库、Engine Pack、安装清单和时间线现在只接受当前结构，历史数据不会被推断、备份或改写。
 - **native/build-contract**: PyO3 构建只绑定当前虚拟环境解释器，不再启用 ABI3 向前兼容逃生开关；不受支持的解释器必须直接失败。
+
+### 原生加速
+
+- **native/rust**: 候选聚类相似度矩阵和弹幕文本特征改由当前 `_rust_speedups` 扩展执行；聚类使用 rayon 并行，文本特征以单遍扫描计算复读率、标点强度、高情绪命中率和代表消息。
+- **native/cython**: 音频局部峰值筛选、连续静音区间提取和热点滚动历史稳健增幅改由当前 `_cython_speedups` 扩展执行；业务入口按函数选择原生后端，并保留逐项等价的 Python 参考实现用于无编译环境和一致性测试。
+- **native/namespace**: C、Cython、Rust 扩展统一收口到 `app.accelerators`；删除旧 `app.analysis` 原生模块路径和函数别名，Portable Payload 只接受当前 Python ABI 的三个原生模块。
+
+### 版本与发布
+
+- **version/release**: Python、C/Cython、Rust、Portable、Engine Pack、Docker、GitHub Actions、测试与用户文档统一升级为 `0.1.18.1-alpha`；GitHub Release 标签固定为 `v0.1.18.1-Alpha`。
 
 ## V0.1.18.0 Alpha (2026-08-31)
 

@@ -4,7 +4,7 @@
 [![Release](https://img.shields.io/github/v/release/StarGazerQQD/BiliLiveCut?include_prereleases&sort=semver)](https://github.com/StarGazerQQD/BiliLiveCut/releases)
 [![License](https://img.shields.io/github/license/StarGazerQQD/BiliLiveCut)](LICENSE)
 
-**当前版本：V0.1.18.0 Alpha** (`0.1.18.0-alpha`)
+**当前版本：V0.1.18.1 Alpha** (`0.1.18.1-alpha`)
 
 面向 Bilibili 直播的全自动工作流：实时录制 → 转写 → 生成场次时间线 → 审核动态高光 → 生成切片与文案 →（可选）上传。
 阶段 1–5 全链路已可用；即插即用分发包见 [`packaging/portable/`](packaging/portable/README.md)。普通 Windows 用户可直接阅读 [Portable 小白使用说明](packaging/portable/USER_GUIDE_ZH.md)。
@@ -23,9 +23,9 @@
 
 > ⚖️ **许可证边界**：BiliLiveCut 项目代码采用 [MIT License](LICENSE)，Copyright (c) 2026 StarGazerQQD。随包第三方模型和组件继续适用各自的许可证与归属声明；项目的 MIT License 不改变任何第三方条款。
 
-## V0.1.18.0 新特性：Event-first 热点与可恢复 Portable
+## V0.1.18.1 当前能力：Event-first 热点与原生加速
 
-**V0.1.18.0 先检测“发生了什么”，再独立判断“值不值得成片”。** 弹幕、音频、SenseVoice、ASR 和趋势信号先汇聚为带稳定 ID 的 `HotspotEvent`；ASR 不再是硬前置。事件可跨连续原始分段更新和合并，但绝不会跨过真实断流缺口。只有成片分达到房间阈值时才创建既有 `HighlightCandidate`，因此审核、渲染和发布链路保持稳定。
+**V0.1.18.1 先检测“发生了什么”，再独立判断“值不值得成片”。** 弹幕、音频、SenseVoice、ASR 和趋势信号先汇聚为带稳定 ID 的 `HotspotEvent`；ASR 不再是硬前置。事件可跨连续原始分段更新和合并，但绝不会跨过真实断流缺口。只有成片分达到房间阈值时才创建当前 `HighlightCandidate`，再进入审核、渲染和发布链路。
 
 - 固定时间桶与滚动基线按房间自适应热度；缺失证据会重归一化权重，不会被当作零分。ASR 完全不可用时，强弹幕/音频/SenseVoice 证据仍能召回热点并优先补转写。
 - EventEnricher 把带 ID 的弹幕、ASR、音频和趋势证据交给结构化 LLM；标题、摘要、语义置信度和代表弹幕可追溯，证据不足时保守描述，不允许凭空补故事。
@@ -33,7 +33,8 @@
 - GMT+8 场次时间线展示所有活动热点。低于成片阈值的事件仍显示热度、成片分、语义置信度和证据覆盖，并明确标记“仅时间线，不生成视频”；有候选的事件才提供精审入口。
 - 数据库只接受当前版本创建的 Schema v5；历史数据库不再备份、迁移或补写，校验不一致时明确拒绝启动。
 - Portable 首次在线模型下载改由已安装依赖的 `.venv` Python 执行；损坏的程序托管 venv 自动重建，真实不支持的 Python 明确拒绝，依赖中断则在原环境续装。
-- Engine Pack 和模型目录使用当前 schema-6 内容清单。四个引擎按不可变来源与内容指纹独立复用；4/4 未变时零下载，只有一个变化时只更新一个；旧清单不会被推断或改写。
+- Engine Pack 内容清单只接受 schema 5，安装后的模型目录只接受 schema 6。四个引擎按不可变来源与内容指纹独立复用；4/4 未变时零下载，只有一个变化时只更新一个；其他 schema 不会被推断或改写。
+- 候选聚类和弹幕文本特征由 Rust/rayon 加速；音频峰值、静音区间和滚动稳健增幅由 Cython 加速。三个原生模块统一位于 `app.accelerators`，没有旧模块别名；完整清单和排除项见[原生加速模块说明](docs/native-acceleration.md)。
 - Release Gate 覆盖真实 Launcher 首次启动编排、准备中断恢复、损坏 venv、Python 3.14 拒绝、当前模型复用、单引擎更新和离线 Engine Pack，不再只靠 fixture 离线路径代表生产启动。
 - 设置页可保存下次启动的 Web 端口；当前进程不重绑。Launcher 按 `config/launcher.json > 默认 8000` 选择端口，仍只监听 `127.0.0.1`，占用时明确失败。
 - 全场高光总结继续消费同场全部最终 ASR，而不是拼接节点摘要；人工纠错、历史场次筛选、房间词典、脏页面保护和审核后的后台出片行为保持不变。
@@ -111,7 +112,7 @@
 
 ### 版本与发布一致性
 
-- Python 包、CLI、C/Cython、Rust、Portable、Docker、GitHub Actions、测试和用户文档当前统一为 `0.1.18.0-alpha`。Runtime、Payload、数据库与 Engine Pack 已安装清单均只接受当前精确格式，不提供历史迁移或兼容入口；ASR 模型是否可复用只由当前清单记录的不可变仓库 revision 与逐引擎内容指纹决定。
+- Python 包、CLI、C/Cython、Rust、Portable、Docker、GitHub Actions、测试和用户文档当前统一为 `0.1.18.1-alpha`。Runtime、Payload、数据库与 Engine Pack 已安装清单均只接受当前精确格式，不提供历史迁移或兼容入口；ASR 模型是否可复用只由当前清单记录的不可变仓库 revision 与逐引擎内容指纹决定。
 - 新功能覆盖单元、集成、前端语法和发布回归测试；CI 与 Release 门禁继续校验版本、固定源码、可复现 Payload、原生模块、依赖锁和制品完整性。
 
 ## V0.1.15 版本总结：Portable 发布链路完整收口
