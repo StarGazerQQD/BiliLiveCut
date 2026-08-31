@@ -10,9 +10,9 @@
   "crc32": "EBDF3CF3",
   "sha256": "4c0f5afea516e86498608e1f01b04a28a52763b7f9818b2cca7499007aa6fa5a",
   "content_manifest_sha256": "09784584909335c3ea8f920982ea351c85190bbf7d104a6fbb5da91e01eba2c5",
-  "model_lock_sha256": "9a21979d729fb5d0bdcfc615bd67d83f604233cfdd55eb2c7f5403d708f06894",
-  "source_commit": "9615a8b7320bf07e15ae656b6a9b21c8daa88d10",
-  "builder_commit": "9615a8b7320bf07e15ae656b6a9b21c8daa88d10",
+  "model_lock_sha256": "9e52b9120aeb3032aa7522e18fef82d221ecc0b17fcc5b3c5e6641c53c5a4d93",
+  "source_commit": "e38cfe0f6e6e85cec6f02f6bcc8ce746d7cf8412",
+  "builder_commit": "e38cfe0f6e6e85cec6f02f6bcc8ce746d7cf8412",
   "build_timestamp": "2026-08-31T17:17:13",
   "expected_engine_ids": [
     "whisper",
