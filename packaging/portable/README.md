@@ -278,7 +278,7 @@ python scripts/build_portable_runtime_wheels.py --output-dir packaging/portable/
 python scripts/generate_portable_runtime_locks.py
 ```
 
-Release CI 会对两套锁执行 `pip download --require-hashes`，并分别进行 Python 3.11 和 3.12 的全新虚拟环境 `--no-index` 离线安装、`pip check` 与核心模块导入测试。它还会让 Lite 在空目录完成首次联网安装、Web 就绪与二次断网启动。Full Launcher 会自动发现安装目录下的 `vendor/wheels` 并强制使用 `--no-index --require-hashes`，无需设置 `PIP_NO_INDEX`；若 Full wheelhouse 缺失或为空则直接失败，不会回退到在线镜像。发布前还会交叉核对 Payload、Lite、Full 的版本、源码基线、构建提交与实际 SHA-256/CRC32。不要通过删除哈希、添加 `--no-deps` 或跳过离线安装来规避锁文件错误。
+Release CI 会对两套锁执行 `pip download --require-hashes`，并分别进行 Python 3.11 和 3.12 的全新虚拟环境 `--no-index` 离线安装、`pip check` 与核心模块导入测试。它还会让冻结的 Lite Launcher 在空目录真实经过 Runtime 安装、`.venv` 依赖安装和在线模型 helper 边界；CI 专用 tiny provider 只替换数 GB 的远端模型字节，不绕开逐引擎 staging、内容指纹和原子提交。Smoke 会在第 2 个引擎注入 Hub 故障，确认重启复用已完成引擎，再验证无 Engine Pack 的严格离线启动、联网重建损坏的 Lite `.venv` 且不改写持久化模型，以及实际 Python 3.14 被明确拒绝且不被删除。Lite 只内嵌 bootstrap wheels，完整 `.venv` 损坏后仍需联网按锁文件恢复依赖；Full 的完整 wheelhouse 才支持依赖离线重装。tiny provider 同时要求 `CI=true` 与专用开关，普通用户进程无法启用。Full Launcher 会自动发现安装目录下的 `vendor/wheels` 并强制使用 `--no-index --require-hashes`，无需设置 `PIP_NO_INDEX`；若 Full wheelhouse 缺失或为空则直接失败，不会回退到在线镜像。发布前还会交叉核对 Payload、Lite、Full 的版本、源码基线、构建提交与实际 SHA-256/CRC32。不要通过删除哈希、添加 `--no-deps` 或跳过离线安装来规避锁文件错误。
 
 ### 方式三：开发者手动构建当前发行物
 

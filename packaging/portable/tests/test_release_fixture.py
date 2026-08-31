@@ -31,9 +31,35 @@ def test_release_workflow_has_smoke_tests() -> None:
     assert "scripts/smoke_portable_lite.py" in content
 
     smoke_script = (_PROJ_ROOT / "scripts" / "smoke_portable_lite.py").read_text(encoding="utf-8")
-    assert "Lite fresh online installation and second offline launch OK" in smoke_script
+    assert "Lite production bootstrap, interruption, offline reuse and damaged-venv recovery OK" in smoke_script
     assert "_wait_ready" in smoke_script
-    assert '["--offline", "--engine-pack"' in smoke_script
+    assert "_run_expected_failure" in smoke_script
+    assert "BLC_RELEASE_SMOKE_TINY_MODELS" in smoke_script
+    assert "BLC_RELEASE_SMOKE_FAIL_ENGINE" in smoke_script
+    assert '["--offline"]' in smoke_script
+    assert "venv_python.write_bytes" in smoke_script
+    assert "--engine-pack-dir" not in smoke_script
+
+
+def test_release_workflow_rejects_actual_python_314_without_mutation() -> None:
+    """Frozen Launcher must see and preserve a real unsupported 3.14 venv."""
+    release_yml = _PROJ_ROOT / ".github" / "workflows" / "release.yml"
+    content = release_yml.read_text(encoding="utf-8")
+
+    assert 'python-version: "3.14"' in content
+    assert "Frozen Launcher rejects an actual Python 3.14 venv" in content
+    assert 'python -m venv (Join-Path $tmpDir ".venv")' in content
+    assert "unsupported Python 3\\.14" in content
+    assert "$beforeHash" in content and "$afterHash" in content
+    assert "Frozen Launcher actual Python 3.14 rejection OK" in content
+
+
+def test_release_gate_runs_production_provisioning_orchestration() -> None:
+    """Local Release Gate must run the real child-process orchestration suite."""
+    gate = (_PROJ_ROOT / "scripts" / "release_gate.py").read_text(encoding="utf-8")
+
+    assert "test_provisioning_orchestration.py" in gate
+    assert "production provisioning orchestration" in gate
 
 
 def test_release_workflow_builds_and_embeds_lite_bootstrap_wheels() -> None:

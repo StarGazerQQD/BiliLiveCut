@@ -272,6 +272,38 @@ def _find_portable_python(app_root: Path) -> Path | None:
     return None
 
 
+def _managed_venv_metadata_valid(
+    venv_dir: Path,
+    expected_version: tuple[int, int] | None = None,
+) -> bool:
+    """Return whether a managed venv has complete, usable metadata.
+
+    :param venv_dir: Managed virtual-environment directory.
+    :param expected_version: Optional runnable interpreter version to match.
+    :returns: Whether ``pyvenv.cfg`` identifies an existing interpreter home
+        and a syntactically valid, matching Python version.
+    """
+    config_path = venv_dir / "pyvenv.cfg"
+    try:
+        fields = {
+            key.strip().lower(): value.strip()
+            for line in config_path.read_text(encoding="utf-8").splitlines()
+            if "=" in line
+            for key, value in (line.split("=", 1),)
+        }
+    except OSError:
+        return False
+    home_text = fields.get("home", "")
+    version_text = fields.get("version", "")
+    try:
+        parsed_version = tuple(int(part) for part in version_text.split(".")[:2])
+    except ValueError:
+        return False
+    if len(parsed_version) != 2 or not Path(home_text).is_dir():
+        return False
+    return expected_version is None or parsed_version == expected_version
+
+
 def prepare_venv(app_root: Path) -> Path:
     """Prepare the application-managed virtual environment.
 
@@ -293,15 +325,19 @@ def prepare_venv(app_root: Path) -> Path:
     if venv_python.exists():
         existing_version = _python_version(venv_python)
         if existing_version in SUPPORTED_PYTHON_VERSIONS:
-            return venv_python
-        if existing_version is not None:
+            if _managed_venv_metadata_valid(venv_dir, existing_version):
+                return venv_python
+            print("  managed .venv metadata is incomplete; rebuilding it safely...")
+            _remove_managed_venv(app_root, venv_dir)
+        elif existing_version is not None:
             version_text = ".".join(str(part) for part in existing_version)
             raise RuntimeError(
                 f"Existing virtual environment uses unsupported Python {version_text}. "
                 "Only Python 3.11 and 3.12 are supported."
             )
-        print("  managed .venv is unreadable; rebuilding it safely...")
-        _remove_managed_venv(app_root, venv_dir)
+        else:
+            print("  managed .venv is unreadable; rebuilding it safely...")
+            _remove_managed_venv(app_root, venv_dir)
     elif venv_dir.exists():
         print("  managed .venv is incomplete; rebuilding it safely...")
         _remove_managed_venv(app_root, venv_dir)
@@ -360,10 +396,16 @@ def prepare_venv(app_root: Path) -> Path:
             )
         )
     created_version = _python_version(venv_python)
-    if created_version not in SUPPORTED_PYTHON_VERSIONS:
+    if created_version not in SUPPORTED_PYTHON_VERSIONS or not _managed_venv_metadata_valid(
+        venv_dir,
+        created_version,
+    ):
         if venv_dir.exists():
             _remove_managed_venv(app_root, venv_dir)
-        raise RuntimeError("Virtual environment creation completed without a runnable Python 3.11/3.12 interpreter.")
+        raise RuntimeError(
+            "Virtual environment creation completed without a runnable Python 3.11/3.12 "
+            "interpreter and complete pyvenv.cfg metadata."
+        )
     return venv_python
 
 
@@ -752,11 +794,15 @@ def prepare_models(
     env = os.environ.copy()
     env["PYTHONPATH"] = str(source_root.resolve())
     env["BLC_MODEL_CONFIG_DIR"] = str(config_root.resolve())
+    env["PYTHONIOENCODING"] = "utf-8"
+    env["PYTHONUTF8"] = "1"
     try:
         result = subprocess.run(
             command,
             capture_output=True,
             text=True,
+            encoding="utf-8",
+            errors="replace",
             timeout=None,
             cwd=str(app_root),
             env=env,

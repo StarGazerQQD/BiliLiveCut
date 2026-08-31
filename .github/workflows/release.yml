@@ -495,10 +495,46 @@ jobs:
         run: |
           python scripts/smoke_portable_lite.py `
             --lite-dir smoke/lite `
-            --engine-pack-dir packaging/portable/dist/engine-pack `
             --work-parent $env:RUNNER_TEMP
           if ($LASTEXITCODE -ne 0) { Write-Error "Lite real installation smoke failed"; exit 1 }
-        timeout-minutes: 25
+        timeout-minutes: 45
+
+      - name: Set up actual Python 3.14 for unsupported-version smoke
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.14"
+
+      - name: Frozen Launcher rejects an actual Python 3.14 venv
+        shell: pwsh
+        run: |
+          $ErrorActionPreference = "Stop"
+          $tmpDir = Join-Path $env:RUNNER_TEMP "blc-python314-test-$(Get-Random)"
+          New-Item -ItemType Directory -Path $tmpDir -Force | Out-Null
+          try {
+            $sourceExe = Get-ChildItem smoke/lite/*.exe | Select-Object -First 1
+            if (-not $sourceExe) { throw "Lite EXE not found" }
+            $launcher = Join-Path $tmpDir "BiliLiveCut.exe"
+            Copy-Item $sourceExe.FullName $launcher
+            python -m venv (Join-Path $tmpDir ".venv")
+            if ($LASTEXITCODE -ne 0) { throw "Python 3.14 could not create the test venv" }
+            $venvPython = Join-Path $tmpDir ".venv\Scripts\python.exe"
+            $beforeHash = (Get-FileHash $venvPython -Algorithm SHA256).Hash
+            $launcherOutput = @(& $launcher 2>&1)
+            $launcherExit = $LASTEXITCODE
+            $launcherOutput | Out-Host
+            if ($launcherExit -eq 0) { throw "Frozen Launcher accepted Python 3.14" }
+            if (-not ($launcherOutput -match "unsupported Python 3\.14")) {
+              throw "Frozen Launcher did not report the actual unsupported Python 3.14 version"
+            }
+            if (-not (Test-Path $venvPython)) { throw "Frozen Launcher deleted the unsupported venv" }
+            $afterHash = (Get-FileHash $venvPython -Algorithm SHA256).Hash
+            if ($beforeHash -ne $afterHash) { throw "Frozen Launcher mutated the unsupported venv" }
+            Write-Output "Frozen Launcher actual Python 3.14 rejection OK"
+          }
+          finally {
+            Remove-Item -Recurse -Force $tmpDir -ErrorAction SilentlyContinue
+          }
+        timeout-minutes: 10
 
       - name: Full Bundle offline install test
         shell: pwsh

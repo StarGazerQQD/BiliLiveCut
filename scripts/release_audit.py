@@ -204,14 +204,28 @@ def check_ci_bypass(audit: AuditResult) -> None:
             "GitHub Release 不分发 Engine Pack，不得嵌入仓库 fixture 元数据",
         )
         audit.check(
-            "release.yml Lite 真实首次安装与二次离线启动",
+            "release.yml Lite production 编排与恢复 smoke",
             "scripts/smoke_portable_lite.py" in content
-            and "Lite fresh online installation and second offline launch OK" in lite_smoke
+            and "Lite production bootstrap, interruption, offline reuse and damaged-venv recovery OK" in lite_smoke
             and "_wait_ready" in lite_smoke
-            and '["--offline", "--engine-pack"' in lite_smoke
+            and "_run_expected_failure" in lite_smoke
+            and "BLC_RELEASE_SMOKE_TINY_MODELS" in lite_smoke
+            and "BLC_RELEASE_SMOKE_FAIL_ENGINE" in lite_smoke
+            and '["--offline"]' in lite_smoke
+            and "venv_python.write_bytes" in lite_smoke
+            and "--engine-pack-dir" not in lite_smoke
             and "_configure_console_encoding()" in lite_smoke
             and 'reconfigure(encoding="utf-8", errors="backslashreplace")' in lite_smoke,
-            "Lite smoke 必须完成空目录安装、Web 就绪、UTF-8 日志回显和二次断网复用",
+            "Lite smoke 必须走空目录在线分支、注入中断、断网复用和损坏 venv 自愈",
+        )
+        audit.check(
+            "release.yml 冻结 Launcher 拒绝真实 Python 3.14",
+            'python-version: "3.14"' in content
+            and "Frozen Launcher rejects an actual Python 3.14 venv" in content
+            and "unsupported Python 3\\.14" in content
+            and "Frozen Launcher deleted the unsupported venv" in content
+            and "Frozen Launcher actual Python 3.14 rejection OK" in content,
+            "Release smoke 必须用实际 Python 3.14 venv 验证显式拒绝且不删除环境",
         )
         audit.check(
             "release.yml Doctor 预期失败退出码归一化",

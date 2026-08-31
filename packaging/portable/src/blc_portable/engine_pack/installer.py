@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import datetime as dt
 import json
+import os
 import shutil
 import uuid
 import zipfile
@@ -133,7 +134,9 @@ def _catalog_engines() -> list[Any]:
     """Load the current immutable model catalog."""
     import sys
 
-    config_dir = str(Path(__file__).resolve().parent.parent.parent.parent / "config")
+    configured = os.environ.get("BLC_MODEL_CONFIG_DIR")
+    config_root = Path(configured) if configured else Path(__file__).resolve().parent.parent.parent.parent / "config"
+    config_dir = str(config_root.resolve())
     if config_dir not in sys.path:
         sys.path.insert(0, config_dir)
     from model_catalog import load_engines

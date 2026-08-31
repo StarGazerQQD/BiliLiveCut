@@ -170,6 +170,12 @@ def test_prepare_venv_reuses_supported_interpreter(tmp_path: Path, monkeypatch: 
     venv_python = tmp_path / ".venv" / "Scripts" / "python.exe"
     venv_python.parent.mkdir(parents=True)
     venv_python.write_bytes(b"fixture")
+    interpreter_home = tmp_path / "python-home"
+    interpreter_home.mkdir()
+    (tmp_path / ".venv" / "pyvenv.cfg").write_text(
+        f"home = {interpreter_home}\nversion = 3.12.0\n",
+        encoding="utf-8",
+    )
     monkeypatch.setattr(launcher_module, "_python_version", lambda _python: (3, 12))
     monkeypatch.setattr(
         launcher_module.subprocess,
@@ -180,10 +186,52 @@ def test_prepare_venv_reuses_supported_interpreter(tmp_path: Path, monkeypatch: 
     assert launcher_module.prepare_venv(tmp_path) == venv_python
 
 
+def test_prepare_venv_rebuilds_when_interpreter_home_is_missing(
+    tmp_path: Path,
+    monkeypatch: MonkeyPatch,
+) -> None:
+    """A runnable interpreter with a stale pyvenv home is still corrupted."""
+    from blc_portable.launcher import main as launcher_module
+
+    venv_python = tmp_path / ".venv" / "Scripts" / "python.exe"
+    venv_python.parent.mkdir(parents=True)
+    venv_python.write_bytes(b"stale")
+    (tmp_path / ".venv" / "pyvenv.cfg").write_text(
+        f"home = {tmp_path / 'missing-python-home'}\nversion = 3.12.0\n",
+        encoding="utf-8",
+    )
+    portable_home = tmp_path / "portable-python"
+    portable_python = portable_home / "python.exe"
+    portable_home.mkdir()
+    portable_python.write_bytes(b"portable")
+    versions: dict[Path, tuple[int, int] | None] = {
+        venv_python: (3, 12),
+        portable_python: (3, 12),
+    }
+
+    def fake_run(args: list[str], **_kwargs: object):
+        assert args[:3] == [str(portable_python), "-m", "venv"]
+        venv_python.parent.mkdir(parents=True)
+        venv_python.write_bytes(b"rebuilt")
+        (tmp_path / ".venv" / "pyvenv.cfg").write_text(
+            f"home = {portable_home}\nversion = 3.12.0\n",
+            encoding="utf-8",
+        )
+        return launcher_module.subprocess.CompletedProcess(args, 0, stdout="", stderr="")
+
+    monkeypatch.setattr(launcher_module, "_python_version", lambda python: versions.get(python))
+    monkeypatch.setattr(launcher_module, "_find_portable_python", lambda _root: portable_python)
+    monkeypatch.setattr(launcher_module.subprocess, "run", fake_run)
+
+    assert launcher_module.prepare_venv(tmp_path) == venv_python
+    assert venv_python.read_bytes() == b"rebuilt"
+
+
 @pytest.mark.parametrize("with_python", [False, True])
 def test_prepare_venv_rebuilds_incomplete_or_unreadable_managed_environment(
     tmp_path: Path,
     monkeypatch: MonkeyPatch,
+    capsys: CaptureFixture[str],
     with_python: bool,
 ) -> None:
     """Only an incomplete/unreadable app-root .venv is rebuilt automatically."""
@@ -205,6 +253,10 @@ def test_prepare_venv_rebuilds_incomplete_or_unreadable_managed_environment(
         assert args[:3] == [str(portable_python), "-m", "venv"]
         venv_python.parent.mkdir(parents=True)
         venv_python.write_bytes(b"rebuilt")
+        (tmp_path / ".venv" / "pyvenv.cfg").write_text(
+            f"home = {portable_python.parent}\nversion = 3.12.0\n",
+            encoding="utf-8",
+        )
         versions[venv_python] = (3, 12)
         return launcher_module.subprocess.CompletedProcess(args, 0, stdout="", stderr="")
 
@@ -214,6 +266,8 @@ def test_prepare_venv_rebuilds_incomplete_or_unreadable_managed_environment(
 
     assert launcher_module.prepare_venv(tmp_path) == venv_python
     assert venv_python.read_bytes() == b"rebuilt"
+    diagnosis = "unreadable" if with_python else "incomplete"
+    assert f"managed .venv is {diagnosis}; rebuilding it safely" in capsys.readouterr().out
 
 
 def test_prepare_venv_rejects_unsupported_bundled_python(tmp_path: Path, monkeypatch: MonkeyPatch) -> None:

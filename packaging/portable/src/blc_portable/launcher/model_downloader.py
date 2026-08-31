@@ -34,6 +34,8 @@ MODELSCOPE_MIRRORS = [
 # ── 四引擎下载定义 ────────────────────────────────────────
 
 ENGINES_TO_DOWNLOAD: list[dict[str, Any]] = []
+_RELEASE_SMOKE_PROVIDER_ENV = "BLC_RELEASE_SMOKE_TINY_MODELS"
+_RELEASE_SMOKE_FAIL_ENGINE_ENV = "BLC_RELEASE_SMOKE_FAIL_ENGINE"
 
 
 def _load_catalog_engines(config_dir: Path | None = None) -> list[Any]:
@@ -103,6 +105,30 @@ def _staging_complete(
     except (json.JSONDecodeError, OSError):
         return False
     return payload == {"content_fingerprint": fingerprint}
+
+
+def _release_smoke_provider_enabled() -> bool:
+    """Return whether the CI-only tiny model provider is explicitly enabled.
+
+    The provider exists only to make the frozen release workflow exercise the
+    real online-provisioning orchestration without downloading production-sized
+    model repositories.  Refusing it outside CI prevents an end user from
+    accidentally installing fixture bytes as real model assets.
+    """
+    requested = os.environ.get(_RELEASE_SMOKE_PROVIDER_ENV) == "1"
+    ci_environment = os.environ.get("CI", "").strip().lower() in {"1", "true"}
+    if requested and not ci_environment:
+        raise RuntimeError(f"{_RELEASE_SMOKE_PROVIDER_ENV}=1 is restricted to CI release smoke tests")
+    return requested
+
+
+def _materialize_release_smoke_engine(target_dir: Path, engine_def: dict[str, Any]) -> None:
+    """Write deterministic tiny files for one release-smoke engine."""
+    engine_id = str(engine_def["engine_id"])
+    for relative in sorted(str(item) for item in engine_def.get("required_files", [])):
+        target = target_dir / relative
+        target.parent.mkdir(parents=True, exist_ok=True)
+        target.write_bytes(f"BLC release smoke fixture: {engine_id}/{relative}\n".encode())
 
 
 # ── HuggingFace 下载 ──────────────────────────────────────
@@ -233,6 +259,10 @@ def download_all_engines(app_root: Path, *, config_dir: Path | None = None) -> d
     resumed: list[str] = []
     network_requests = 0
     total = len(engine_defs)
+    release_smoke_provider = _release_smoke_provider_enabled()
+    injected_failure = os.environ.get(_RELEASE_SMOKE_FAIL_ENGINE_ENV, "").strip()
+    if injected_failure and not release_smoke_provider:
+        raise RuntimeError(f"{_RELEASE_SMOKE_FAIL_ENGINE_ENV} requires the CI-only tiny model provider")
 
     for idx, engine_def in enumerate(engine_defs):
         engine_id = str(engine_def["engine_id"])
@@ -251,26 +281,32 @@ def download_all_engines(app_root: Path, *, config_dir: Path | None = None) -> d
             resumed.append(engine_id)
             print(f"    reuse completed staging: {target_dir.name}")
         else:
-            hub = str(engine_def["hub"])
-            if hub == "huggingface":
-                revision = engine_def.get("revision") if engine_def.get("revision") else None
-                _download_hf_model(str(engine_def["repo_id"]), target_dir, revision, HF_MIRRORS[0])
+            if injected_failure == engine_id:
+                raise RuntimeError(f"Injected release-smoke hub unavailable for engine {engine_id}")
+            if release_smoke_provider:
+                _materialize_release_smoke_engine(target_dir, engine_def)
                 network_requests += 1
-            elif hub == "modelscope":
-                revision = str(engine_def.get("revision", "v2.0.4"))
-                _download_ms_model(str(engine_def["model_id"]), target_dir, revision)
-                network_requests += 1
-                for sub in engine_def.get("sub_models", []):
-                    sub_id = str(sub["model_id"])
-                    sub_rev = str(sub.get("revision", revision))
-                    sub_name = str(sub.get("target_subdir", sub_id.rsplit("/", 1)[-1]))
-                    sub_dir = target_dir / sub_name
-                    sub_dir.mkdir(parents=True, exist_ok=True)
-                    print(f"    下载子模型: {sub_id}")
-                    _download_ms_model(sub_id, sub_dir, sub_rev)
-                    network_requests += 1
             else:
-                raise RuntimeError(f"Unsupported model hub for {engine_id}: {hub}")
+                hub = str(engine_def["hub"])
+                if hub == "huggingface":
+                    revision = engine_def.get("revision") if engine_def.get("revision") else None
+                    _download_hf_model(str(engine_def["repo_id"]), target_dir, revision, HF_MIRRORS[0])
+                    network_requests += 1
+                elif hub == "modelscope":
+                    revision = str(engine_def.get("revision", "v2.0.4"))
+                    _download_ms_model(str(engine_def["model_id"]), target_dir, revision)
+                    network_requests += 1
+                    for sub in engine_def.get("sub_models", []):
+                        sub_id = str(sub["model_id"])
+                        sub_rev = str(sub.get("revision", revision))
+                        sub_name = str(sub.get("target_subdir", sub_id.rsplit("/", 1)[-1]))
+                        sub_dir = target_dir / sub_name
+                        sub_dir.mkdir(parents=True, exist_ok=True)
+                        print(f"    下载子模型: {sub_id}")
+                        _download_ms_model(sub_id, sub_dir, sub_rev)
+                        network_requests += 1
+                else:
+                    raise RuntimeError(f"Unsupported model hub for {engine_id}: {hub}")
             missing = _missing_required_files(target_dir, engine_def)
             if missing:
                 raise RuntimeError(f"Engine {engine_id} download incomplete; missing required files: {missing}")
@@ -296,6 +332,7 @@ def download_all_engines(app_root: Path, *, config_dir: Path | None = None) -> d
         "reused_engines": sorted(reusable),
         "resumed_staging": resumed,
         "model_set_fingerprint": model_set_fingerprint(desired),
+        "provider": "release_smoke_tiny" if release_smoke_provider else "production_hubs",
     }
 
 
@@ -388,6 +425,7 @@ def main(argv: list[str] | None = None) -> int:
         print(f"BLC_PROVISION_ROOT_EXCEPTION={type(exc).__name__}: {exc}", file=sys.stderr)
         traceback.print_exc(file=sys.stderr)
         return 1
+    result["provisioning_interpreter"] = str(Path(sys.executable).resolve())
     print("BLC_PROVISION_RESULT=" + json.dumps(result, ensure_ascii=False, sort_keys=True))
     return 0
 
