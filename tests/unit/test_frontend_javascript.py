@@ -176,6 +176,9 @@ def test_dashboard_uses_session_timeline_as_primary_review_view() -> None:
     assert "requestSessionReanalysis" in timeline_js
     assert "expandedProvenanceCandidates" in timeline_js
     assert "data-provenance-candidate" in timeline_js
+    assert "hotspot_event_id" in timeline_js
+    assert "仅时间线，不生成视频" in timeline_js
+    assert "event_status" in timeline_js
     assert "sessionListSignature" in timeline_js
     assert "timelineDetailSignatures" in timeline_js
     assert "preservedDetails" in timeline_js
