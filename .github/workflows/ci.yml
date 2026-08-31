@@ -1,4 +1,4 @@
-# BiliLiveCut CI (V0.1.17.4 Alpha)
+# BiliLiveCut CI (V0.1.18.0 Alpha)
 # 触发: push/PR 到 main → lint → audit + test → portable → coverage summary
 #
 # Job 结构:
