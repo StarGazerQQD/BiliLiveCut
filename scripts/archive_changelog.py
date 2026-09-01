@@ -1,7 +1,8 @@
-"""CHANGELOG 归档脚本 (V0.1.14.3)。
+"""CHANGELOG 归档脚本。
 
-动态扫描所有版本标题, 提取 0.1.X 系列号, 按 X 倒序自动选择最近三个系列保留在主 CHANGELOG.md 中,
-其余按系列归档到 docs/changelog/CHANGELOG_PRE_0.1.X.md。
+动态扫描所有版本标题，提取 0.1.X 系列号，只把当前系列保留在主
+CHANGELOG.md 中，其余按系列归档到
+docs/changelog/CHANGELOG_PRE_0.1.X.md。
 """
 
 from __future__ import annotations
@@ -73,16 +74,16 @@ def main() -> None:
     # 2. 动态提取所有三级版本系列, 按 X 倒序
     all_series = sorted({v[2] for v in versions}, reverse=True)
     print(f"发现三级版本系列: {all_series}")
-    keep_series = set(all_series[:3])
+    keep_series = {all_series[0]}
 
-    if len(all_series) <= 3:
-        print(f"只有 {len(all_series)} 个系列, 无需归档。")
+    if len(all_series) == 1:
+        print("只有当前系列, 无需归档。")
         _write_index(docs_dir, keep_series)
         print("  更新: CHANGELOG_INDEX.md")
         return
 
-    # 最近 3 个系列保留在主文件
-    archive_series = all_series[3:]
+    # 仅当前系列保留在主文件，历史系列全部独立归档。
+    archive_series = all_series[1:]
     print(f"保留 (主 CHANGELOG): {sorted(keep_series, reverse=True)}")
     print(f"归档: {sorted(archive_series, reverse=True)}")
 
