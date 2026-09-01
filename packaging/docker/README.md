@@ -1,6 +1,6 @@
 # BiliLiveCut Docker 部署
 
-本目录包含 BiliLiveCut 的 Docker 容器化发行文件。
+本目录包含 BiliLiveCut `v0.1.18.1-Alpha` 的 Docker 容器化发行文件。业务功能见[项目 README](../../README.md)，面向操作者的完整流程见 [Portable 小白使用说明](../portable/USER_GUIDE_ZH.md)，版本变化见 [Changelog 与历史归档](../../docs/changelog/CHANGELOG_INDEX.md)。
 
 ## 文件说明
 
@@ -76,12 +76,14 @@ cp .env.example .env
 
 V0.1.18.1 Alpha 使用与本机/Portable 相同的配置真源：默认分片目标为 300 秒，首选 Fun-ASR-Nano，转写整理和高光复核的最大输出预算均为 `65536` token。下播需连续确认 3 次并等待 60 秒，单场默认最长 12 小时；断流恢复仍按 20 次或 180 秒预算收尾。对应配置为 `LIVE_OFFLINE_CONFIRM_COUNT`、`LIVE_SESSION_END_DELAY_S`、`RECORDING_MAX_DURATION_S`、`RECORDING_RECONNECT_MAX_ATTEMPTS` 与 `RECORDING_RECONNECT_MAX_ELAPSED_S`。
 
-控制台按录制场次生成 GMT+8 高光时间线；每个原始分段可识别多个峰值并跨分段取上下文，弹幕默认按 `7.5` 秒接收延迟对齐，成片使用动态入点/出点。房间手工词典、人工校正、阈值反馈和场次重分析与本机/Portable 行为一致，并保留人工审核、边界、草稿和成片。
+控制台按录制场次生成 GMT+8 高光时间线。V0.1.18.1 先用弹幕、音频、SenseVoice、ASR 和趋势形成 `HotspotEvent`，再用完整事件的可剪性与证据覆盖决定是否创建候选；ASR 缺失不会阻断非语义热点，事件可跨连续分段但绝不跨真实录制缺口。弹幕默认按 `7.5` 秒接收延迟对齐，成片使用动态入点/出点。房间词典、人工校正、历史场次、阈值反馈、整场 ASR 分析和场次重分析与本机/Portable 行为一致。
 
 ## 数据持久化
 
 - `./storage/` → 容器内 `/data`（数据库、录制文件、日志等）
 - ASR 模型缓存通过 Docker Volume 持久化
+
+当前数据库只接受 V0.1.18.1 创建的 Schema v5。不要把 V0.1.17.x 或其他版本的 `blc.db` 放进挂载的 `./storage/`；当前版本不会备份、迁移或补写历史结构。升级测试请使用新的宿主目录或新的 Docker Volume，原始录像和导出成片可作为普通媒体文件另行保留。
 
 ## 版本
 

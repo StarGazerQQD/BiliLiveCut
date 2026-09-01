@@ -2,6 +2,8 @@
 
 适用版本：`0.1.18.1-alpha`。
 
+当前业务架构与安装入口见[项目 README](../README.md)和 [Portable 说明](../packaging/portable/README.md)；版本变更见 [Changelog 归档索引](changelog/CHANGELOG_INDEX.md)。
+
 BiliLiveCut 只保留当前 `app.accelerators` 原生接口。业务代码统一调用
 `app.accelerators.dispatcher`，不直接依赖编译扩展；旧的 `app.analysis` 原生
 模块路径和函数别名均不再提供。

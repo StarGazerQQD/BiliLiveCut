@@ -3,8 +3,8 @@
 验证:
 1. 归档前版本标题集合 == 归档后主文件 + 归档文件版本标题集合
 2. 每个系列只存在于一个文件
-3. 最近三个系列位于主 CHANGELOG
-4. 更早系列位于独立文件
+3. 当前系列位于主 CHANGELOG
+4. 历史系列位于独立文件
 5. 归档文件命名正确
 6. 索引链接有效
 """
@@ -70,20 +70,14 @@ def main() -> int:
     all_series = sorted(set(list(main_series) + list(archive_versions.keys())), reverse=True)
     print(f"\n全部三级版本系列: {all_series}")
 
-    # 2. 验证最近三个系列在主文件
-    if len(all_series) >= 3:
-        latest_3 = set(all_series[:3])
-        for sn in latest_3:
-            if sn not in main_series:
-                all_errors.append(f"系列 0.1.{sn} 不在主 CHANGELOG.md 中, 但在最近三个系列中")
-        older = all_series[3:]
-        for sn in older:
+    # 2. 验证只有当前系列保留在主文件
+    if all_series:
+        current_series = all_series[0]
+        if current_series not in main_series:
+            all_errors.append(f"当前系列 0.1.{current_series} 不在主 CHANGELOG.md 中")
+        for sn in all_series[1:]:
             if sn in main_series:
-                all_errors.append(f"旧系列 0.1.{sn} 仍在主 CHANGELOG.md 中, 应归档")
-    else:
-        for sn in all_series:
-            if sn not in main_series:
-                all_errors.append(f"系列 0.1.{sn} 不在主 CHANGELOG.md 中")
+                all_errors.append(f"历史系列 0.1.{sn} 仍在主 CHANGELOG.md 中, 应归档")
 
     # 3. 验证每个系列只存在于一个文件
     for sn in set(main_series) & set(archive_versions.keys()):

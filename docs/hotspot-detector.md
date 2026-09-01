@@ -1,6 +1,10 @@
 # Event-first 热点检测器
 
+适用版本：`0.1.18.1-alpha`。用户操作流程见[项目 README](../README.md)和 [Portable 小白使用说明](../packaging/portable/USER_GUIDE_ZH.md)；V0.1.17 基于分段峰值的历史实现与修复记录见 [0.1.17 系列 Changelog](changelog/CHANGELOG_PRE_0.1.17.md)。
+
 `HotspotDetector` 在创建视频候选之前回答“这一时段是否发生了值得关注的变化”。它不调用 LLM，也不把 ASR 当作前置条件；检测结果先以 `HotspotEvent(status=provisional, candidate_id=NULL)` 保存。后续事件补全与成片评分再决定是否进入既有 `HighlightCandidate` / `HighlightEvent` 链。
+
+当前实现只接受一等 `HotspotEvent` 时间线，不再从缺少事件的历史候选反推兼容节点。V0.1.17 的多峰值、弹幕对齐、动态边界与跨连续分段能力仍作为业务基础，但召回与成片判断已经拆成下面两层。
 
 ## 时间尺度
 

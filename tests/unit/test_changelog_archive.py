@@ -17,10 +17,15 @@ def test_write_index_keeps_preexisting_archive_series(tmp_path: Path) -> None:
         "# CHANGELOG — 0.1.13 系列\n\n## V0.1.13.2 Alpha (2026-07-06)\n",
         encoding="utf-8",
     )
+    (tmp_path / "CHANGELOG_PRE_0.1.17.md").write_text(
+        "# CHANGELOG — 0.1.17 系列\n\n## V0.1.17.4 Alpha (2026-08-20)\n",
+        encoding="utf-8",
+    )
 
-    _write_index(str(tmp_path), {14, 15, 16})
+    _write_index(str(tmp_path), {18})
 
     index = (tmp_path / "CHANGELOG_INDEX.md").read_text(encoding="utf-8")
-    assert "| 0.1.16 | `../../CHANGELOG.md` | 当前版本 |" in index
+    assert "| 0.1.18 | `../../CHANGELOG.md` | 当前版本 |" in index
+    assert "| 0.1.17 | `CHANGELOG_PRE_0.1.17.md` | V0.1.17.4 |" in index
     assert "| 0.1.13 | `CHANGELOG_PRE_0.1.13.md` | V0.1.13.2 |" in index
     assert "| 0.1.11 | `CHANGELOG_PRE_0.1.11.md` | V0.1.11 |" in index
