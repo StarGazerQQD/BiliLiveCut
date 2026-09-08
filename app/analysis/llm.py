@@ -17,7 +17,7 @@ Moonshot Kimi / 智谱 GLM 等)，服务商统一在控制台配置。语音转�
 
 from __future__ import annotations
 
-import hashlib
+import hmac
 import json
 import math
 import re
@@ -25,12 +25,16 @@ import threading
 from dataclasses import dataclass
 from datetime import date
 from pathlib import Path
+from typing import TYPE_CHECKING
 
 from loguru import logger
 
 from app.analysis import llm_providers as provs
 from app.core.config import settings
 from app.core.paths import storage_root
+
+if TYPE_CHECKING:
+    from openai import OpenAI
 
 
 def _daily_budget() -> float:
@@ -122,8 +126,8 @@ def _add_spend(usd: float) -> None:
 
 # 模块级缓存:按 provider id 缓存 OpenAI 客户端实例,避免连接池泄漏。
 # 长时间录制下(如4小时240个片段),每次创建新客户端会耗尽文件描述符。
-# 连接配置完整指纹用于复用；新调用立即使用轮换后的凭据。
-_client_cache: dict[tuple[str, str, str], object] = {}
+# 缓存键仅包含非敏感连接身份；复用前核对 SDK 客户端已有的完整凭据。
+_client_cache: dict[tuple[str, str], OpenAI] = {}
 _client_cache_lock = threading.RLock()
 _client_active: dict[int, int] = {}
 _retired_clients: dict[int, object] = {}
@@ -133,7 +137,7 @@ class EmptyLLMResponseError(RuntimeError):
     """服务请求成功但没有返回可供业务使用的最终正文。"""
 
 
-def _get_client(provider: provs.LLMProvider):  # noqa: ANN202 — 返回 openai.OpenAI
+def _get_client(provider: provs.LLMProvider) -> OpenAI:
     """为指定 provider 创建或复用 OpenAI 兼容客户端(模块级单例缓存)。
 
     :param provider: 目标服务商配置。
@@ -144,12 +148,12 @@ def _get_client(provider: provs.LLMProvider):  # noqa: ANN202 — 返回 openai.
         return _create_or_reuse_client(provider)
 
 
-def _create_or_reuse_client(provider: provs.LLMProvider) -> object:
-    """在缓存锁内创建连接；完整密钥仅用于摘要，不进入缓存键或日志。"""
-    digest = hashlib.sha256(provider.api_key.encode("utf-8")).hexdigest()
-    cache_key = (provider.id, provider.base_url, digest)
-    if cache_key in _client_cache:
-        return _client_cache[cache_key]
+def _create_or_reuse_client(provider: provs.LLMProvider) -> OpenAI:
+    """在缓存锁内核对已有客户端凭据，不生成或缓存密钥摘要。"""
+    cache_key = (provider.id, provider.base_url)
+    cached = _client_cache.get(cache_key)
+    if cached is not None and hmac.compare_digest(cached.api_key.encode("utf-8"), provider.api_key.encode("utf-8")):
+        return cached
     try:
         from openai import OpenAI
     except ImportError as exc:  # pragma: no cover
@@ -159,7 +163,7 @@ def _create_or_reuse_client(provider: provs.LLMProvider) -> object:
         ) from exc
     client = OpenAI(api_key=provider.api_key, base_url=provider.base_url or None)
     for key in list(_client_cache):
-        if key[0] == provider.id and key != cache_key:
+        if key[0] == provider.id:
             old = _client_cache.pop(key)
             if _client_active.get(id(old), 0):
                 _retired_clients[id(old)] = old
