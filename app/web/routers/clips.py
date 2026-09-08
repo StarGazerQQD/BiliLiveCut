@@ -58,7 +58,16 @@ def confirm_manual_upload(
 
     from loguru import logger as _log
 
-    from app.db.entities import ClipStatus, FinalClip, SegmentTask, SystemLog
+    from app.db.entities import (
+        ClipStatus,
+        FinalClip,
+        SegmentTask,
+        SystemLog,
+        UploadAttempt,
+        UploadStatus,
+        UploadTask,
+        utcnow,
+    )
     from app.db.entities import TaskStatus as _Ts
     from app.db.session import get_session
 
@@ -71,6 +80,22 @@ def confirm_manual_upload(
 
         # 如果有关联的 SegmentTask, 推进到 COMPLETED
         from sqlmodel import select as _sel
+
+        for upload in db.exec(_sel(UploadTask).where(UploadTask.clip_id == clip_id)).all():
+            if upload.status in {UploadStatus.RECONCILIATION_REQUIRED, UploadStatus.MANUAL_EXPORT_READY}:
+                upload.status = UploadStatus.SUCCESS
+                upload.remote_id = submission_id or upload.remote_id
+                upload.last_error = None
+                upload.claimed_by = None
+                upload.updated_at = utcnow()
+                db.add(upload)
+        for attempt in db.exec(_sel(UploadAttempt).where(UploadAttempt.clip_id == clip_id)).all():
+            if attempt.status in {UploadStatus.RECONCILIATION_REQUIRED, "remote_result_unknown"}:
+                attempt.status = UploadStatus.SUCCESS
+                attempt.remote_id = submission_id or attempt.remote_id
+                attempt.remote_url = published_url or attempt.remote_url
+                attempt.finished_at = utcnow()
+                db.add(attempt)
 
         task = db.exec(
             _sel(SegmentTask)
@@ -89,7 +114,9 @@ def confirm_manual_upload(
             from datetime import UTC
             from datetime import datetime as _dt_now
 
-            task.completed_at = _dt_now(UTC)
+            task.completed_at = _dt_now.now(UTC)
+            task.claimed_by = None
+            task.lease_token = None
             db.add(task)
 
         # 日志记录

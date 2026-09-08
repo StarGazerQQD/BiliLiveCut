@@ -1,0 +1,37 @@
+<section id="tab-settings" class="panel">
+  <div class="card settings-heading">
+    <div><h2>设置中心</h2><p class="hint">日常参数在此保存。活动任务保留开始时的设置；每项均注明来源和生效时机。</p></div>
+    <button id="configuration-refresh">读取最新值并保留草稿</button>
+  </div>
+  <div class="settings-layout">
+    <aside class="card settings-filters" aria-label="设置筛选">
+      <label for="configuration-search">搜索设置</label>
+      <input id="configuration-search" type="search" placeholder="中文名称或 ENV 名称" />
+      <label for="configuration-group">设置分类</label>
+      <select id="configuration-group">
+        <option value="all">全部分类</option><option value="recording">录制与自动化</option>
+        <option value="asr">本地语音模型</option><option value="llm">大模型与预算</option>
+        <option value="trends">网感采集</option><option value="highlights">高光与评分</option>
+        <option value="review">审核</option><option value="output">成片与编码</option>
+        <option value="storage">存储与清理</option><option value="publishing">上传与发布</option>
+        <option value="notifications">通知</option><option value="system">账号与系统</option>
+      </select>
+      <label class="chk"><input id="configuration-advanced" type="checkbox" /> 显示高级设置</label>
+      <p class="hint">搜索会包含高级项。部署专用项只读，并提供修改入口说明。</p>
+      <p id="configuration-count" class="hint" aria-live="polite"></p>
+      <div id="configuration-links" class="settings-links"></div>
+    </aside>
+    <div class="settings-content">
+      <p id="configuration-error" class="hint warn" role="alert"></p>
+      <form id="configuration-form" novalidate>
+        <div id="configuration-fields"><p class="empty">正在读取设置…</p></div>
+        <div class="card settings-savebar">
+          <p id="configuration-impact" class="hint"></p>
+          <div class="row"><button id="configuration-save" type="submit" class="primary" disabled>保存修改</button>
+            <button id="configuration-discard" type="button" disabled>撤销本页草稿</button></div>
+          <p id="configuration-status" class="hint" role="status" aria-live="polite"></p>
+        </div>
+      </form>
+    </div>
+  </div>
+</section>

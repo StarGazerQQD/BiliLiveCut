@@ -1237,7 +1237,14 @@ def _score_segment_draft(
         room_auto_approve = bool(room.auto_approve) if room else False
         room_auto_approve_threshold = room.auto_approve_threshold if room else settings.highlight_auto_approve_threshold
         room_review_threshold = room.review_threshold if room else settings.highlight_review_threshold
-        use_dm_sentiment = room is not None and bool(room.danmaku_sentiment_enabled) and settings.collect_danmaku
+        from app.core.settings_store import get_bool
+
+        use_dm_sentiment = (
+            get_bool("danmaku_sentiment_enabled")
+            and room is not None
+            and bool(room.danmaku_sentiment_enabled)
+            and settings.collect_danmaku
+        )
         session_segments = db.exec(
             select(RawSegment).where(RawSegment.session_id == segment.session_id).order_by(RawSegment.seq.asc())
         ).all()

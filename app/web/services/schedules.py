@@ -2,14 +2,17 @@
 
 from __future__ import annotations
 
+from datetime import UTC, datetime, timedelta
 from typing import Any
 
+from sqlalchemy import update
 from sqlmodel import select
 
 from app.core.config import settings
 from app.db.entities import (
     LiveRoom,
     RecordingSchedule,
+    SystemLog,
 )
 from app.db.session import get_session
 
@@ -50,6 +53,8 @@ def create_schedule(room_id: int, scheduled_at: str, recurrent: str = "") -> dic
     """
     from datetime import datetime as dt
 
+    if recurrent not in {"", "daily", "weekly"}:
+        raise ValueError("重复规则必须是单次、daily 或 weekly")
     with get_session() as db:
         room = db.get(LiveRoom, room_id)
         if room is None:
@@ -59,6 +64,7 @@ def create_schedule(room_id: int, scheduled_at: str, recurrent: str = "") -> dic
 
         try:
             ts = dt.fromisoformat(scheduled_at)
+            ts = ts.replace(tzinfo=UTC) if ts.tzinfo is None else ts.astimezone(UTC)
         except ValueError as exc:
             raise ValueError(f"时间格式无效({scheduled_at}),请用 ISO 格式。") from exc
 
@@ -114,7 +120,10 @@ def get_due_schedules() -> list[dict[str, Any]]:
     now = utcnow()
     with get_session() as db:
         rows = db.exec(
-            select(RecordingSchedule).where(
+            select(RecordingSchedule)
+            .join(LiveRoom, LiveRoom.id == RecordingSchedule.room_id)
+            .where(
+                LiveRoom.schedule_enabled == True,  # noqa: E712
                 RecordingSchedule.enabled == True,  # noqa: E712
                 RecordingSchedule.triggered == False,  # noqa: E712
                 RecordingSchedule.scheduled_at <= now,
@@ -126,16 +135,43 @@ def get_due_schedules() -> list[dict[str, Any]]:
     ]
 
 
-def mark_schedule_triggered(schedule_id: int) -> None:
-    """标记预约已触发。
-
-    :param schedule_id: 预约 id。
-    """
+def complete_schedule_occurrence(schedule_id: int, *, error: str | None = None) -> None:
+    """原子结束本次预约并创建唯一后继，保留失败原因供界面查询。"""
     with get_session() as db:
+        claimed = db.exec(
+            update(RecordingSchedule)
+            .where(
+                RecordingSchedule.id == schedule_id,
+                RecordingSchedule.triggered == False,  # noqa: E712
+            )
+            .values(triggered=True)
+            .returning(RecordingSchedule.id)
+        ).first()
+        if claimed is None:
+            return
         sched = db.get(RecordingSchedule, schedule_id)
-        if sched is not None:
-            sched.triggered = True
-            db.add(sched)
+        if sched is None:
+            return
+        if sched.recurrent in {"daily", "weekly"}:
+            step = timedelta(days=7 if sched.recurrent == "weekly" else 1)
+            old = sched.scheduled_at
+            old = old.replace(tzinfo=UTC) if old.tzinfo is None else old.astimezone(UTC)
+            now = datetime.now(UTC)
+            next_at = old + max(1, (now - old) // step + 1) * step
+            db.add(
+                RecordingSchedule(
+                    room_id=sched.room_id, scheduled_at=next_at, enabled=sched.enabled, recurrent=sched.recurrent
+                )
+            )
+        db.add(
+            SystemLog(
+                module="schedule",
+                room_id=sched.room_id,
+                event=f"schedule:{schedule_id}",
+                level="ERROR" if error else "INFO",
+                message=error or "本次预约已处理",
+            )
+        )
 
 
 # --------------------------------------------------------------------------- #

@@ -53,10 +53,28 @@ _VALID_TRANSITIONS: dict[str, set[str]] = {
     TaskStatus.APPROVED_WAITING_RENDER: {TaskStatus.QUEUED_FOR_RENDER, TaskStatus.CANCELLED},
     TaskStatus.QUEUED_FOR_RENDER: {TaskStatus.RENDERING},
     TaskStatus.RENDERING: {TaskStatus.RENDERED, TaskStatus.TRANSIENT_FAILED, TaskStatus.FAILED},
-    TaskStatus.RENDERED: {TaskStatus.AWAITING_PUBLISH_CONFIRMATION, TaskStatus.QUEUED_FOR_PUBLISH},
-    TaskStatus.AWAITING_PUBLISH_CONFIRMATION: {TaskStatus.QUEUED_FOR_PUBLISH, TaskStatus.CANCELLED},
-    TaskStatus.QUEUED_FOR_PUBLISH: {TaskStatus.PUBLISHING},
-    TaskStatus.PUBLISHING: {TaskStatus.COMPLETED, TaskStatus.TRANSIENT_FAILED, TaskStatus.FAILED},
+    # 成功发布日志恢复可直接完成；结果未知必须回到人工核对入口。
+    TaskStatus.RENDERED: {
+        TaskStatus.AWAITING_PUBLISH_CONFIRMATION,
+        TaskStatus.QUEUED_FOR_PUBLISH,
+        TaskStatus.COMPLETED,
+    },
+    TaskStatus.AWAITING_PUBLISH_CONFIRMATION: {
+        TaskStatus.QUEUED_FOR_PUBLISH,
+        TaskStatus.CANCELLED,
+        TaskStatus.COMPLETED,
+    },
+    TaskStatus.QUEUED_FOR_PUBLISH: {
+        TaskStatus.PUBLISHING,
+        TaskStatus.COMPLETED,
+        TaskStatus.AWAITING_PUBLISH_CONFIRMATION,
+    },
+    TaskStatus.PUBLISHING: {
+        TaskStatus.COMPLETED,
+        TaskStatus.TRANSIENT_FAILED,
+        TaskStatus.FAILED,
+        TaskStatus.AWAITING_PUBLISH_CONFIRMATION,
+    },
     TaskStatus.TRANSIENT_FAILED: {
         TaskStatus.QUEUED_FOR_TRANS,
         TaskStatus.QUEUED_FOR_ANALYSIS,

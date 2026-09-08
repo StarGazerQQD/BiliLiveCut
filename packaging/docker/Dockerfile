@@ -30,7 +30,7 @@ USER appuser
 
 # 安装 Python 依赖 (不启用哈希锁定, 请确保依赖来源可信)。
 RUN pip install --upgrade pip \
-    && pip install ".[asr,web]"
+    && pip install ".[asr-whisper,asr-funasr,llm,web]"
 
 # 运行产物挂载到 /data(见 docker-compose)。
 VOLUME ["/data"]

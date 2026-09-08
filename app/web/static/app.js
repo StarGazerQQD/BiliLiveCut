@@ -1,11 +1,12 @@
 // BiliLiveCut 控制台入口:导入模块、初始化标签切换与轮询
 import { $ } from "./js/common.js";
-import { loadRooms, saveRoom, saveRoomConfig, loadFeatureSwitches, saveGlobalFeatureSettings, saveFeatureSwitches, loadThresholdLearning, loadSchedules, delSchedule, loadTopics, toggleCollection, hasRoomDraft } from "./js/rooms.js";
+import { loadRooms, saveRoom, saveRoomConfig, loadFeatureSwitches, saveWebPort, saveFeatureSwitches, loadThresholdLearning, loadSchedules, delSchedule, loadTopics, toggleCollection, hasRoomDraft } from "./js/rooms.js";
+import { loadConfiguration, hasConfigurationDraft, selectConfigurationGroup } from "./js/configuration.js";
 import { startRoom, stopRoom, resumeRoom, markHighlight, copyTranscriptSourceFile, correctTranscript, cancelTranscriptCorrection, retranscribeTranscript, loadRecording, loadTranscripts, loadDanmaku, hasTranscriptDraft } from "./js/recording.js";
 import { loadSessionTimelines, toggleSessionTimeline, requestSessionReanalysis, regenerateSessionSummary } from "./js/timeline.js";
 import { approveCand, rejectCand, delCand } from "./js/review.js";
 import { loadClips, publishClip, enqueueClip, rejectClip } from "./js/clips.js";
-import { loadUploads, retryUpload, pollNotifications, hasPublishingDraft } from "./js/publishing.js";
+import { loadUploads, retryUpload, pollNotifications } from "./js/publishing.js";
 import { loadTrends, loadAnalytics, hasTrendDraft } from "./js/dashboard.js";
 import { loadLLM, loadLogs, loadTasks, retryTask, cancelTask, loadCookieStatus, loadTemplates, exportTemplate, detTempl, loadIntroTemplates, detIntro, hasLLMDraft } from "./js/settings.js";
 import { loadMonitor, triggerMaintenance } from "./js/monitor.js";
@@ -16,7 +17,7 @@ import { loadPlugins, hasPluginMutationPending } from "./js/plugins.js";
 window.saveRoom = saveRoom;
 window.saveRoomConfig = saveRoomConfig;
 window.saveFeatureSwitches = saveFeatureSwitches;
-window.saveGlobalFeatureSettings = saveGlobalFeatureSettings;
+window.saveWebPort = saveWebPort;
 window.delSchedule = delSchedule;
 window.toggleCollection = toggleCollection;
 window.startRoom = startRoom;
@@ -47,11 +48,10 @@ window.cancelJob = cancelJob;
 window.retryJob = retryJob;
 
 function hasUnsavedDashboardDraft() {
-  return hasRoomDraft()
+  return hasConfigurationDraft() || hasRoomDraft()
     || hasTranscriptDraft()
     || hasTrendDraft()
     || hasLLMDraft()
-    || hasPublishingDraft()
     || hasPluginMutationPending();
 }
 
@@ -63,23 +63,42 @@ window.addEventListener("beforeunload", (event) => {
 
 // ----------------------------- 标签切换 ----------------------------- //
 let activeTab = "rooms";
-document.querySelectorAll(".tab").forEach((btn) => {
-  btn.addEventListener("click", () => {
-    document.querySelectorAll(".tab").forEach((b) => b.classList.remove("active"));
-    document.querySelectorAll(".panel").forEach((p) => p.classList.remove("active"));
-    btn.classList.add("active");
-    activeTab = btn.dataset.tab;
-    $(`#tab-${activeTab}`).classList.add("active");
-    refresh();
+const settingsTabs = new Set(["settings", "features", "models", "plugins", "login", "templates", "intro-templates"]);
+function navigate(tab, updateHistory = true, group = null) {
+  const panel = $(`#tab-${tab}`);
+  if (!panel) return;
+  activeTab = tab;
+  document.querySelectorAll(".tab").forEach(button => {
+    button.classList.remove("active");
+    if (button.dataset.tab === tab || (button.dataset.tab === "settings" && settingsTabs.has(tab))) button.classList.add("active");
   });
+  document.querySelectorAll(".panel").forEach(item => item.classList.remove("active"));
+  panel.classList.add("active");
+  $("#settings-navigation").hidden = !settingsTabs.has(tab);
+  if (tab === "settings") selectConfigurationGroup(group || "all");
+  if (updateHistory && window.history?.pushState) {
+    const url = new URL(window.location.href);
+    url.searchParams.set("tab", tab);
+    if (group) url.searchParams.set("group", group); else url.searchParams.delete("group");
+    window.history.pushState(null, "", url);
+  }
+  refresh();
+}
+document.querySelectorAll(".tab").forEach((btn) => {
+  btn.addEventListener("click", () => navigate(btn.dataset.tab));
 });
-
-const requestedTab = new URLSearchParams(window.location?.search || "").get("tab");
-const requestedButton = [...document.querySelectorAll(".tab")].find((btn) => btn.dataset.tab === requestedTab);
-if (requestedButton) requestedButton.click();
+document.addEventListener("click", event => {
+  const link = event.target.closest?.('a[href^="/?tab="]');
+  if (!link || event.ctrlKey || event.metaKey || event.shiftKey || event.altKey || event.button > 0) return;
+  const params = new URLSearchParams(link.getAttribute("href").split("?")[1]);
+  if (!$(`#tab-${params.get("tab")}`)) return;
+  event.preventDefault();
+  navigate(params.get("tab"), true, params.get("group"));
+});
 
 // ----------------------------- 轮询 ----------------------------- //
 const loaders = {
+  settings: loadConfiguration,
   rooms: loadRooms, recording: loadRecording, transcripts: loadTranscripts,
   danmaku: loadDanmaku, trends: loadTrends, candidates: loadSessionTimelines,
   clips: loadClips, uploads: loadUploads, features: loadFeatureSwitches, models: loadLLM, logs: loadLogs,
@@ -96,7 +115,14 @@ async function refresh() {
   pollNotifications();
 }
 
-refresh();
+function navigateFromUrl() {
+  const params = new URLSearchParams(window.location?.search || "");
+  const requestedTab = params.get("tab") || "rooms";
+  const exists = [...document.querySelectorAll(".tab")].some(btn => btn.dataset.tab === requestedTab);
+  navigate(exists ? requestedTab : "rooms", false, params.get("group"));
+}
+window.addEventListener("popstate", navigateFromUrl);
+navigateFromUrl();
 let _refresh_lock = false;
 async function scheduleRefresh() {
   if (_refresh_lock) return;

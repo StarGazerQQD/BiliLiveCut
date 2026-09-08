@@ -5,6 +5,8 @@ const root = $("#plugin-settings-root");
 const pluginId = root.dataset.pluginId;
 let settingsDirty = false;
 let settingsRevision = 0;
+let settingsSaving = false;
+const clearPasswords = new Set();
 
 function markSettingsDirty() {
   settingsDirty = true;
@@ -27,7 +29,8 @@ function settingControl(field) {
       ? `${field.minimum == null ? "" : ` min="${field.minimum}"`}${field.maximum == null ? "" : ` max="${field.maximum}"`}`
       : "";
     const placeholder = field.kind === "password" && field.configured ? "已配置（留空不修改）" : "";
-    control = `<input id="${id}" data-key="${esc(field.key)}" data-kind="${esc(field.kind)}" type="${type}" value="${esc(field.value ?? "")}" placeholder="${placeholder}"${bounds} ${field.required ? "required" : ""} />`;
+    control = `<input id="${id}" data-key="${esc(field.key)}" data-kind="${esc(field.kind)}" type="${type}" value="${esc(field.value ?? "")}" placeholder="${placeholder}"${bounds} ${field.required && !(field.kind === "password" && field.configured) ? "required" : ""} ${type === "number" ? 'step="any"' : ""} />`;
+    if (field.kind === "password") control += `<label class="chk"><input type="checkbox" data-clear-password="${esc(field.key)}" /> 保存时明确清空凭据</label>`;
   }
   return `<div class="plugin-setting-field"><label for="${id}">${esc(field.label)}</label>${control}${field.description ? `<small>${esc(field.description)}</small>` : ""}</div>`;
 }
@@ -52,14 +55,22 @@ async function loadSettings(force = false) {
 }
 
 async function saveSettings() {
+  if (settingsSaving) return;
   const revision = settingsRevision;
   const values = {};
+  for (const control of root.querySelectorAll("[data-key]")) {
+    if (clearPasswords.has(control.dataset.key)) continue;
+    if (!control.checkValidity()) { control.reportValidity(); control.focus(); return; }
+  }
   root.querySelectorAll("[data-key]").forEach((control) => {
     if (control.dataset.kind === "boolean") values[control.dataset.key] = control.checked;
     else if (control.dataset.kind === "number") values[control.dataset.key] = control.value === "" ? null : Number(control.value);
-    else values[control.dataset.key] = control.value;
+    else values[control.dataset.key] = clearPasswords.has(control.dataset.key) ? null : control.value;
   });
   const status = $("#plugin-settings-status");
+  settingsSaving = true;
+  $("#btn-save-plugin-settings").disabled = true;
+  status.textContent = "正在保存…";
   try {
     await api("PATCH", `/api/plugins/${encodeURIComponent(pluginId)}/settings`, { values });
     if (settingsRevision !== revision) {
@@ -68,20 +79,32 @@ async function saveSettings() {
       return;
     }
     settingsDirty = false;
+    clearPasswords.clear();
     status.textContent = "设置已保存。";
     status.className = "hint ok";
     await loadSettings(true);
   } catch (error) {
     status.textContent = "保存失败：" + error.message;
     status.className = "hint warn";
-  }
+  } finally { settingsSaving = false; $("#btn-save-plugin-settings").disabled = false; }
 }
 
 $("#plugin-settings-form").addEventListener("input", markSettingsDirty);
 $("#plugin-settings-form").addEventListener("change", markSettingsDirty);
+$("#plugin-settings-form").addEventListener("click", event => {
+  const key = event.target.dataset.clearPassword;
+  if (!key) return;
+  if (event.target.checked) clearPasswords.add(key); else clearPasswords.delete(key);
+  markSettingsDirty();
+});
+$("#btn-discard-plugin-settings").addEventListener("click", async () => {
+  if (settingsSaving || !window.confirm("撤销未保存的插件设置？")) return;
+  settingsDirty = false; clearPasswords.clear(); settingsRevision += 1;
+  await loadSettings(true);
+});
 $("#btn-save-plugin-settings").addEventListener("click", saveSettings);
 window.addEventListener("beforeunload", (event) => {
-  if (!settingsDirty) return;
+  if (!settingsDirty && !settingsSaving) return;
   event.preventDefault();
   event.returnValue = "";
 });

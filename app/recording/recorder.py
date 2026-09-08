@@ -108,12 +108,14 @@ class Recorder:
         on_segment: SegmentCallback | None = None,
         on_end: SessionEndCallback | None = None,
         on_state: StateCallback | None = None,
+        metadata_prepared: bool = False,
     ) -> None:
         self.room_id = room_id
         self.db_room_id = db_room_id
         self.on_segment = on_segment
         self.on_end = on_end
         self.on_state = on_state
+        self._metadata_prepared = metadata_prepared
         self._stop = asyncio.Event()
         self._session_id: int | None = None
         self._seq = 0  # 跨重连累加的全局片段序号
@@ -182,6 +184,46 @@ class Recorder:
         self._danmaku_task = None
 
     async def run(self) -> None:
+        """固定本场录制参数；保存的变更在下一场使用。"""
+        from app.core.runtime_settings import async_settings_scope
+
+        async with async_settings_scope(fresh=True):
+            await self._run_with_settings()
+
+    async def _run_with_settings(self) -> None:
+        """统一各录制入口的资料刷新，并保证所有退出路径释放刷新任务。"""
+        from app.recording.metadata import begin_session_metadata, end_session_metadata, refresh_room_metadata
+
+        if not self._metadata_prepared:
+            await refresh_room_metadata(self.db_room_id)
+        if self._stop.is_set():
+            return
+        self._session_id = self._create_session()
+        begin_session_metadata(self._session_id)
+        metadata_task = asyncio.create_task(self._refresh_metadata_loop())
+        try:
+            await self._run_session()
+        finally:
+            metadata_task.cancel()
+            await asyncio.gather(metadata_task, return_exceptions=True)
+            await self._stop_danmaku()
+            end_session_metadata(self._session_id)
+
+    async def _refresh_metadata_loop(self) -> None:
+        """录制及重连期间独立刷新标题，停止时由录制生命周期取消。"""
+        from sqlalchemy.exc import SQLAlchemyError
+
+        from app.recording.metadata import refresh_room_metadata
+
+        while not self._stop.is_set():
+            await self._sleep_or_stop(settings.room_metadata_refresh_interval_s)
+            if not self._stop.is_set():
+                try:
+                    await refresh_room_metadata(self.db_room_id)
+                except SQLAlchemyError:
+                    logger.exception("标题持久化失败 room={} session={}，下一轮重试", self.room_id, self._session_id)
+
+    async def _run_session(self) -> None:
         """启动录制主循环:取流 -> 录制 -> 断流重连,直到被请求停止。
 
         关键设计:
@@ -190,7 +232,6 @@ class Recorder:
         - 重连成功后首个片段写入即重置退避计数器(backoff→1),
           避免稳定录制后再次断流时无谓等待 30s。
         """
-        self._session_id = self._create_session()
         self._emit_state(SessionStatus.STARTING)
         self._seq = 0  # 每次 run() 重新开始片段计数
         self._paths = set()  # 重置路径缓存
@@ -374,6 +415,7 @@ class Recorder:
         stderr_task = asyncio.create_task(self._drain_stderr(proc))
         # 监听停止信号,主动终止 ffmpeg。
         stopper = asyncio.create_task(self._terminate_on_stop(proc))
+        disk_guard = asyncio.create_task(self._monitor_disk())
 
         try:
             return await proc.wait()
@@ -381,12 +423,23 @@ class Recorder:
             if proc.returncode is None:
                 proc.kill()
                 await proc.wait()
-            for task in (watcher, stderr_task, stopper):
+            for task in (watcher, stderr_task, stopper, disk_guard):
                 task.cancel()
-            await asyncio.gather(watcher, stderr_task, stopper, return_exceptions=True)
+            await asyncio.gather(watcher, stderr_task, stopper, disk_guard, return_exceptions=True)
             # 兜底:登记可能尚未从清单读到的最后片段。
             await self._scan_orphan_segments(segment_list, out_dir)
             self._active_process = None
+
+    async def _monitor_disk(self) -> None:
+        """在 FFmpeg 运行期间持续检查空间，通过现有停止信号优雅收尾。"""
+        from app.pipeline.storage_lifecycle import should_stop_recording
+
+        while not self._stop.is_set():
+            if await asyncio.to_thread(should_stop_recording):
+                logger.error("录制期间磁盘空间进入紧急状态，停止录制 room={} session={}", self.room_id, self.session_id)
+                self.stop()
+                return
+            await self._sleep_or_stop(1.0)
 
     def _build_ffmpeg_cmd(
         self,

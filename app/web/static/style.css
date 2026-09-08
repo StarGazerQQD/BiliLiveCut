@@ -1,4 +1,36 @@
 /* BiliLiveCut 控制台样式:简洁深色主题 */
+[hidden] { display: none !important; }
+.settings-navigation { display: flex; flex-wrap: wrap; align-items: center; gap: 6px; }
+.settings-navigation a { padding: 10px; }
+.settings-heading { display: flex; justify-content: space-between; gap: 16px; align-items: center; }
+.settings-heading h2 { margin: 0; }
+.settings-layout { display: grid; grid-template-columns: 240px minmax(0, 1fr); gap: 20px; align-items: start; }
+.settings-filters { position: sticky; top: 82px; display: grid; gap: 12px; }
+.settings-filters input, .settings-filters select { width: 100%; min-width: 0; }
+.settings-filters input[type="checkbox"] { width: auto; }
+.settings-content { min-width: 0; }
+.settings-links { display: grid; gap: 10px; }
+.configuration-field { overflow-wrap: anywhere; }
+.configuration-field input:not([type="checkbox"]), .configuration-field select { width: 100%; max-width: 640px; min-width: 0; }
+.configuration-field label strong { font-size: 16px; }
+.configuration-field .head { gap: 12px; }
+.configuration-field .hint { line-height: 1.65; }
+.configuration-field button { font-size: 12px; }
+.configuration-advanced-group > summary { padding: 12px 0; color: var(--muted); cursor: pointer; }
+.settings-scoring { display: grid; grid-template-columns: repeat(auto-fit, minmax(180px, 1fr)); gap: 12px; }
+.settings-scoring label { display: grid; gap: 7px; }
+.settings-savebar { position: sticky; bottom: 8px; z-index: 3; border-color: var(--accent); box-shadow: 0 4px 24px #0006; }
+.settings-savebar p { margin: 6px 0; }
+.settings-layout :focus-visible, .settings-navigation :focus-visible { outline: 2px solid var(--accent); outline-offset: 3px; }
+@media (max-width: 760px) {
+  .settings-layout { grid-template-columns: 1fr; gap: 8px; }
+  .settings-filters { position: static; }
+  .settings-heading { align-items: flex-start; flex-direction: column; }
+  .settings-navigation { gap: 2px; }
+  .settings-navigation .tab { padding: 8px; }
+  .settings-savebar { position: static; }
+  .configuration-field .head { flex-wrap: wrap; }
+}
 :root {
   --bg: #0f1419;
   --panel: #1a212b;

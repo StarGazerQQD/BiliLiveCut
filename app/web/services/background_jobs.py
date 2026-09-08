@@ -5,7 +5,7 @@ from __future__ import annotations
 import asyncio
 import json
 import threading
-from collections.abc import Callable
+from collections.abc import Callable, Iterator
 from dataclasses import dataclass
 from datetime import UTC, datetime
 from typing import Any
@@ -103,7 +103,7 @@ class WebJobManager:
         from app.web.services.job_handlers import register_job_handlers
 
         register_job_handlers(self)
-        for job in list_jobs(limit=500):
+        for job in iter_active_jobs():
             if job["status"] == "running" and not job["cancellable_while_running"]:
                 _update_job(
                     job["id"],
@@ -177,7 +177,7 @@ class WebJobManager:
                 raise ValueError(f"未知 Web 作业类型: {job_type}")
         _validate_builtin_payload(job_type, payload)
         if dedup_key:
-            for existing in list_jobs(limit=500):
+            for existing in iter_active_jobs():
                 if existing["dedup_key"] == dedup_key and existing["status"] in _ACTIVE:
                     return existing
         now = _now_iso()
@@ -230,6 +230,9 @@ class WebJobManager:
 
     def retry(self, job_id: str, actor: str, *, is_admin: bool = False) -> dict[str, Any]:
         """原地重试失败或取消的作业。"""
+        asyncio.get_running_loop()
+        if self._semaphore is None:
+            raise ValueError("作业管理器尚未启动")
         job = get_job(job_id)
         if job is None:
             raise ValueError("作业不存在")
@@ -258,7 +261,12 @@ class WebJobManager:
             return
         task = asyncio.create_task(self._execute(job_id), name=f"web-job-{job_id[:8]}")
         self._tasks[job_id] = task
-        task.add_done_callback(lambda _task, key=job_id: self._tasks.pop(key, None))
+
+        def remove_finished(finished: asyncio.Task[None]) -> None:
+            if self._tasks.get(job_id) is finished:
+                self._tasks.pop(job_id, None)
+
+        task.add_done_callback(remove_finished)
 
     async def _execute(self, job_id: str) -> None:
         assert self._semaphore is not None
@@ -281,7 +289,9 @@ class WebJobManager:
             )
             context = JobContext(job_id, cancel_event)
             try:
-                result = await asyncio.to_thread(handler, context, job["payload"])
+                from app.core.runtime_settings import configured_entry
+
+                result = await asyncio.to_thread(configured_entry(handler), context, job["payload"])
                 context.check_cancelled()
             except (JobCancelled, ProcessCancelledError) as exc:
                 _update_job(
@@ -317,6 +327,26 @@ def get_job(job_id: str) -> dict[str, Any] | None:
     with _JOB_LOCK, get_session() as db:
         row = db.get(AppSetting, f"{_JOB_PREFIX}{job_id}")
         return _decode_job(row.value) if row else None
+
+
+def iter_active_jobs() -> Iterator[dict[str, Any]]:
+    """按稳定键分页扫描全部活动作业，不受界面历史展示上限影响。"""
+    after = ""
+    while True:
+        with _JOB_LOCK, get_session() as db:
+            rows = db.exec(
+                select(AppSetting)
+                .where(AppSetting.key.startswith(_JOB_PREFIX), AppSetting.key > after)
+                .order_by(AppSetting.key)
+                .limit(128)
+            ).all()
+        if not rows:
+            return
+        after = rows[-1].key
+        for row in rows:
+            job = _decode_job(row.value)
+            if job["status"] in _ACTIVE:
+                yield job
 
 
 def list_jobs(limit: int = 100, *, owner: str | None = None) -> list[dict[str, Any]]:

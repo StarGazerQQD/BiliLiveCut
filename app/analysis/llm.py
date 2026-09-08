@@ -17,9 +17,11 @@ Moonshot Kimi / 智谱 GLM 等)，服务商统一在控制台配置。语音转�
 
 from __future__ import annotations
 
+import hashlib
 import json
 import math
 import re
+import threading
 from dataclasses import dataclass
 from datetime import date
 from pathlib import Path
@@ -120,8 +122,11 @@ def _add_spend(usd: float) -> None:
 
 # 模块级缓存:按 provider id 缓存 OpenAI 客户端实例,避免连接池泄漏。
 # 长时间录制下(如4小时240个片段),每次创建新客户端会耗尽文件描述符。
-# 注意:缓存无 TTL 过期,provider 配置变更需重启应用生效。
-_client_cache: dict[str, object] = {}
+# 连接配置完整指纹用于复用；新调用立即使用轮换后的凭据。
+_client_cache: dict[tuple[str, str, str], object] = {}
+_client_cache_lock = threading.RLock()
+_client_active: dict[int, int] = {}
+_retired_clients: dict[int, object] = {}
 
 
 class EmptyLLMResponseError(RuntimeError):
@@ -135,7 +140,14 @@ def _get_client(provider: provs.LLMProvider):  # noqa: ANN202 — 返回 openai.
     :returns: ``openai.OpenAI`` 实例。
     :raises RuntimeError: 未安装 openai 时。
     """
-    cache_key = f"{provider.id}:{provider.base_url}:{provider.api_key[:8]}"
+    with _client_cache_lock:
+        return _create_or_reuse_client(provider)
+
+
+def _create_or_reuse_client(provider: provs.LLMProvider) -> object:
+    """在缓存锁内创建连接；完整密钥仅用于摘要，不进入缓存键或日志。"""
+    digest = hashlib.sha256(provider.api_key.encode("utf-8")).hexdigest()
+    cache_key = (provider.id, provider.base_url, digest)
     if cache_key in _client_cache:
         return _client_cache[cache_key]
     try:
@@ -146,8 +158,22 @@ def _get_client(provider: provs.LLMProvider):  # noqa: ANN202 — 返回 openai.
             "Portable 请重新运行 Launcher 完成依赖修复,或升级到最新完整包。"
         ) from exc
     client = OpenAI(api_key=provider.api_key, base_url=provider.base_url or None)
+    for key in list(_client_cache):
+        if key[0] == provider.id and key != cache_key:
+            old = _client_cache.pop(key)
+            if _client_active.get(id(old), 0):
+                _retired_clients[id(old)] = old
+            else:
+                _close_client(old)
     _client_cache[cache_key] = client
     return client
+
+
+def _close_client(client: object) -> None:
+    """关闭已无活动请求的退役客户端。"""
+    close = getattr(client, "close", None)
+    if callable(close):
+        close()
 
 
 def _account_usage(provider: provs.LLMProvider, resp: object) -> None:
@@ -283,7 +309,28 @@ def _complete(
     :param extra_body: 额外请求体(如联网搜索开关)。
     :returns: 模型输出文本。
     """
-    client = _get_client(provider)
+    with _client_cache_lock:
+        client = _get_client(provider)
+        _client_active[id(client)] = _client_active.get(id(client), 0) + 1
+    try:
+        return _complete_using_client(client, provider, prompt, max_tokens, extra_body)
+    finally:
+        retired = None
+        with _client_cache_lock:
+            count = _client_active[id(client)] - 1
+            if count:
+                _client_active[id(client)] = count
+            else:
+                _client_active.pop(id(client), None)
+                retired = _retired_clients.pop(id(client), None)
+        if retired is not None:
+            _close_client(retired)
+
+
+def _complete_using_client(
+    client: object, provider: provs.LLMProvider, prompt: str, max_tokens: int, extra_body: dict[str, object] | None
+) -> str:
+    """在客户端租用期间完成正文提取和空正文重试。"""
     resp = _create_completion(client, provider, prompt, max_tokens, extra_body)
     _account_usage(provider, resp)
     text = _extract_text(resp)

@@ -14,11 +14,6 @@ def get_bilibili_cookie() -> str:
     :returns: Cookie 字符串,未配置时为空串。
     """
     from app.core import settings_store
-
-    cookie = settings_store.get_setting("bilibili_cookie", "")
-    if cookie:
-        return cookie
-
     from app.core.config import settings
 
-    return settings.bilibili_cookie
+    return settings_store.get_setting("bilibili_cookie", settings.bilibili_cookie)

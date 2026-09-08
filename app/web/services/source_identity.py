@@ -10,7 +10,8 @@ from typing import TypedDict
 
 from sqlmodel import Session, select
 
-from app.db.entities import LiveRoom, RecordingSession
+from app.db.entities import AppSetting, LiveRoom, RecordingSession
+from app.recording.metadata import SessionMetadata, read_metadata, room_metadata_view
 
 
 class SourceIdentity(TypedDict):
@@ -21,6 +22,9 @@ class SourceIdentity(TypedDict):
     uploader_name: str | None
     room_title: str | None
     source_label: str
+    session_title: str | None
+    title_snapshot: dict[str, object] | None
+    title_state: str
 
 
 def source_identities_for_sessions(
@@ -41,6 +45,10 @@ def source_identities_for_sessions(
     room_db_ids = sorted({session.room_id for session in sessions})
     rooms = db.exec(select(LiveRoom).where(LiveRoom.id.in_(room_db_ids))).all() if room_db_ids else []
     room_by_id = {room.id: room for room in rooms}
+    snapshot_rows = db.exec(
+        select(AppSetting).where(AppSetting.key.in_([f"session_metadata:{sid}" for sid in ids]))
+    ).all()
+    snapshots = {row.key: read_metadata(db, row.key, SessionMetadata) for row in snapshot_rows}
 
     result: dict[int, SourceIdentity] = {}
     for session in sessions:
@@ -50,6 +58,13 @@ def source_identities_for_sessions(
         uploader_name = room.uploader_name.strip() if room and room.uploader_name else None
         room_title = room.title.strip() if room and room.title else None
         public_room_id = room.room_id if room else None
+        snapshot = snapshots.get(f"session_metadata:{session.id}")
+        title_state = "unavailable"
+        if snapshot and snapshot.last_title:
+            if snapshot.ended_at:
+                title_state = "frozen" if snapshot.observed_at else "stale"
+            elif room:
+                title_state = str(room_metadata_view(db, room)["state"])
         primary = (
             uploader_name or room_title or (f"房间 {public_room_id}" if public_room_id is not None else "未知来源")
         )
@@ -62,6 +77,9 @@ def source_identities_for_sessions(
             "uploader_name": uploader_name,
             "room_title": room_title,
             "source_label": f"{primary}{suffix}",
+            "session_title": snapshot.last_title if snapshot else None,
+            "title_snapshot": snapshot.model_dump(mode="json") if snapshot else None,
+            "title_state": title_state,
         }
     return result
 
@@ -74,4 +92,7 @@ def unknown_source_identity() -> SourceIdentity:
         "uploader_name": None,
         "room_title": None,
         "source_label": "未知来源",
+        "session_title": None,
+        "title_snapshot": None,
+        "title_state": "unavailable",
     }

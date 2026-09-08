@@ -11,7 +11,7 @@
 
 输出:
     dist/engine-pack/
-    ├── BiliLiveCut-EnginePack-0.1.18.1-alpha.zip
+    ├── BiliLiveCut-EnginePack-0.1.18.2-alpha.zip
     ├── engine-pack-manifest.json
     ├── CRC32SUMS.txt
     ├── SHA256SUMS.txt

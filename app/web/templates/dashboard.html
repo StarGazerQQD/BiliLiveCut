@@ -39,12 +39,7 @@
     </div>
     <div class="tabs-group">
       <span class="tabs-label">配置</span>
-      <button class="tab" data-tab="features">功能开关</button>
-      <button class="tab" data-tab="models">模型</button>
-      <button class="tab" data-tab="plugins">插件</button>
-      <button class="tab" data-tab="login">账号管理</button>
-      <button class="tab" data-tab="templates">字幕模板</button>
-      <button class="tab" data-tab="intro-templates">片头片尾</button>
+      <button class="tab" data-tab="settings">设置中心</button>
     </div>
     <div class="tabs-group">
       <span class="tabs-label">系统</span>
@@ -56,6 +51,16 @@
   </nav>
 
   <main class="dashboard-main">
+    <nav id="settings-navigation" class="settings-navigation card" aria-label="设置中心导航" hidden>
+      <a href="/?tab=settings" data-nav-tab="settings">全部参数</a>
+      <button class="tab" data-tab="features">房间自动化与端口</button>
+      <button class="tab" data-tab="models">大模型服务商</button>
+      <button class="tab" data-tab="plugins">插件</button>
+      <button class="tab" data-tab="login">账号登录</button>
+      <button class="tab" data-tab="templates">字幕模板</button>
+      <button class="tab" data-tab="intro-templates">片头片尾</button>
+    </nav>
+    {% include 'configuration.html' %}
     <!-- 直播间 -->
     <section id="tab-rooms" class="panel active">
       <div class="card add-room">
@@ -139,26 +144,13 @@
           <input id="trends-topic" placeholder="采集主题(可选,如:某游戏 近期热门切片话题)" />
           <button id="btn-collect-trends" class="primary">立即联网采集</button>
         </div>
-        <p class="hint">需在「大模型配置」中启用至少一个服务商并设置 API Key，同时令 TREND_ENABLED=true。采集结果用于高光评分的「网感」维度与文案标签参考。</p>
+        <p class="hint">需在「大模型配置」中启用至少一个服务商并设置 API Key，在设置中心启用网感采集。采集结果用于高光评分的「网感」维度与文案标签参考。</p>
       </div>
 
       <div class="card">
-        <h3>定时采集</h3>
-        <label class="switch-row">
-          <input type="checkbox" id="sw-trend-schedule" />
-          启用每日定时采集 + 迭代
-        </label>
-        <div class="row" style="margin-top:8px; align-items:center; gap:8px">
-          <span class="muted">每日窗口</span>
-          <input id="trend-start" type="time" style="width:auto" />
-          <span class="muted">至</span>
-          <input id="trend-end" type="time" style="width:auto" />
-          <span class="muted">间隔(分钟)</span>
-          <input id="trend-interval" type="number" min="1" style="width:90px" />
-          <button id="btn-save-schedule">保存</button>
-        </div>
-        <p class="hint" id="trend-schedule-status"></p>
-        <p class="hint">说明:在每日时间段内按间隔反复采集以迭代资料库;一旦开始录制/分析,定时采集立即暂停,录制全部结束后自动恢复。</p>
+        <h3>自动采集状态</h3><p class="hint" id="trend-schedule-status"></p>
+        <a href="/?tab=settings&group=trends">设置采集开关、时间窗口和间隔</a>
+        <p class="hint">每日窗口按间隔采集；录制/分析进行时暂停，结束后恢复。</p>
       </div>
       <h3 style="margin:18px 0 8px">近期热词</h3>
       <div id="trends-keywords"></div>
@@ -208,16 +200,7 @@
     <section id="tab-uploads" class="panel">
       <div class="card">
         <h3>上传设置</h3>
-        <div class="thresholds">
-          <label class="switch-row">
-            <input type="checkbox" id="sw-biliup" />
-            启用 Biliup 上传(社区方案,合规风险自负)
-          </label>
-          <label class="switch-row">
-            <input type="checkbox" id="sw-auto" />
-            成品就绪后自动上传
-          </label>
-        </div>
+        <a href="/?tab=settings&group=publishing">打开上传与发布设置</a>
         <p class="hint" id="upload-hint"></p>
         <p class="hint" style="color:var(--yellow)">
           ⚠ B 站无面向普通用户的官方公开投稿 API。启用 Biliup 将使用你自己的登录态走网页投稿端点,
@@ -250,37 +233,14 @@
         </p>
       </div>
       <div class="card">
-        <div class="head">
-          <div>
-            <h3>全局运行设置</h3>
-            <p class="hint" id="recording-pipeline-hint">载入中…</p>
-          </div>
-          <button class="primary" onclick="saveGlobalFeatureSettings()">保存全局设置</button>
-        </div>
-        <label class="switch-row" style="align-items:flex-start">
-          <input type="checkbox" id="sw-recording-pipeline" />
-          <span><b>启用录制 Pipeline</b><br /><span class="muted">新开始或恢复的手动录制、预约录制、恢复录制及未显式传参的 CLI 录制将实时转写并进入高光分析；录制中修改不会影响当前会话。</span></span>
-        </label>
-        <label class="switch-row" style="align-items:flex-start">
-          <input type="checkbox" id="sw-transcript-llm-refine" />
-          <span><b>启用单切片 LLM 转写整理</b><br /><span class="muted">每个切片完成本地 ASR 后，交给已配置的大模型补全标点、整理可读正文并生成片段概括；失败时保留原始 ASR，不中断流水线。</span></span>
-        </label>
-        <p class="hint" id="transcript-llm-refine-hint">载入中…</p>
-        <div class="row" style="margin-top:10px;align-items:center">
-          <label>ASR 任务并行数
-            <input id="asr-task-concurrency" type="number" min="1" max="8" step="1" style="width:80px" />
-          </label>
-          <span class="muted" id="asr-task-concurrency-hint">CUDA 可设置多个并行；每个并行使用独立模型实例，显存占用近似倍增。CPU 建议保持 1。</span>
-        </div>
-        <div class="row" style="margin-top:10px;align-items:center">
-          <label>Web 管理端口
-            <input id="web-port" type="number" min="1" max="65535" step="1" style="width:100px" />
-          </label>
-          <span class="muted" id="web-port-hint">载入中…</span>
-        </div>
-        <p class="hint">端口设置只在下次启动 Launcher 时生效；当前服务不会热重绑，也不会自动改用随机端口。</p>
+        <h3>Web 管理端口</h3>
+        <label for="web-port">下次启动端口</label>
+        <input id="web-port" type="number" min="1" max="65535" step="1" />
+        <button class="primary" onclick="saveWebPort()">保存端口</button>
+        <p id="web-port-hint" class="hint"></p>
+        <p class="hint">单独保存到启动配置，重启后生效。录制、语音和大模型参数统一在 <a href="/?tab=settings" data-nav-tab="settings">全部参数</a> 中修改。</p>
       </div>
-      <p class="hint" id="feature-dirty-hint" style="display:none">检测到未保存的全局或直播间功能设置，自动刷新不会覆盖当前表单；保存后恢复。</p>
+      <p class="hint" id="feature-dirty-hint" style="display:none">检测到未保存的端口或直播间功能设置，自动刷新不会覆盖当前表单；保存后恢复。</p>
       <div id="feature-switches-list"></div>
     </section>
 

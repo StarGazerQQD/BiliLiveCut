@@ -8,9 +8,10 @@ from __future__ import annotations
 import logging
 from datetime import UTC, datetime
 
+from sqlalchemy.exc import SQLAlchemyError
 from sqlmodel import select
 
-from app.db.entities import UploadAttempt, UploadStatus, UploadTask
+from app.db.entities import ClipStatus, FinalClip, UploadAttempt, UploadStatus, UploadTask
 from app.db.session import get_session
 from app.publishing.journal import mark_replayed, read_pending_entries
 
@@ -58,11 +59,7 @@ def recover_publish_results() -> int:
                     mark_replayed(attempt_token, generation)
                     continue
 
-                if attempt.status == UploadStatus.SUCCESS:
-                    # 已成功, 清理 Journal
-                    mark_replayed(attempt_token, generation)
-                    _logger.info("journal_already_success: token=%s (清理 Journal)", attempt_token)
-                    continue
+                newly_recovered = attempt.status != UploadStatus.SUCCESS
 
                 # 回填
                 attempt.status = UploadStatus.SUCCESS
@@ -76,10 +73,16 @@ def recover_publish_results() -> int:
                 if upload_task is not None:
                     upload_task.status = UploadStatus.SUCCESS
                     upload_task.remote_id = remote_id
+                    upload_task.claimed_by = None
+                    upload_task.updated_at = datetime.now(UTC)
                     db.add(upload_task)
+                clip = db.get(FinalClip, attempt.clip_id)
+                if clip is not None:
+                    clip.status = ClipStatus.PUBLISHED
+                    db.add(clip)
 
                 db.commit()
-                recovered += 1
+                recovered += int(newly_recovered)
 
                 # 从 Journal 中删除
                 mark_replayed(attempt_token, generation)
@@ -91,7 +94,18 @@ def recover_publish_results() -> int:
                     generation,
                 )
 
-        except Exception as exc:
-            _logger.error("journal_recovery_failed: token=%s error=%s", attempt_token, exc)
+        except SQLAlchemyError:
+            _logger.exception("journal_recovery_failed: token=%s", attempt_token)
 
     return recovered
+
+
+def recover_publish_state() -> dict[str, int]:
+    """先回放成功结果，再恢复过期请求，最后同步上传和流水线状态。"""
+    from app.pipeline.stale_recovery import recover_stale_upload_attempts, sync_segment_task_from_attempt
+
+    return {
+        "journal": recover_publish_results(),
+        "stale_attempts": recover_stale_upload_attempts(),
+        "task_sync": sync_segment_task_from_attempt(),
+    }

@@ -2,6 +2,13 @@
 const $ = (sel) => document.querySelector(sel);
 const $$ = (sel) => document.querySelectorAll(sel);
 
+export function sessionTitle(row) {
+  const title = row?.session_title || "标题未知";
+  const snapshot = row?.title_snapshot;
+  return row?.title_state === "stale" || (snapshot && !snapshot.observed_at && snapshot.last_title)
+    ? `${title}（上次获取）` : title;
+}
+
 async function api(method, path, body) {
   const opts = { method, headers: { "Content-Type": "application/json" } };
   if (body !== undefined) opts.body = JSON.stringify(body);
@@ -9,7 +16,10 @@ async function api(method, path, body) {
   if (!resp.ok) {
     let detail = resp.statusText;
     try { detail = (await resp.json()).detail || detail; } catch (e) { /* ignore */ }
-    throw new Error(detail);
+    if (Array.isArray(detail)) detail = detail.map(item => `${(item.loc || []).join(".")}: ${item.msg || "输入无效"}`).join("；");
+    const error = new Error(detail);
+    error.status = resp.status;
+    throw error;
   }
   return resp.status === 204 ? null : resp.json();
 }

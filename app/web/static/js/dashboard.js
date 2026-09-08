@@ -1,28 +1,15 @@
 // BiliLiveCut \u4eea\u8868\u76d8:\u7f51\u611f\u8d44\u6599\u5e93\u3001\u6570\u636e\u5206\u6790\u3001\u8d8b\u52bf\u56fe\u8868
 import { $, api, toast, esc } from "./common.js";
 
-let scheduleDirty = false;
-let scheduleRevision = 0;
 let collectionTopicDirty = false;
 let collectionTopicRevision = 0;
 
-function markScheduleDirty() {
-  scheduleDirty = true;
-  scheduleRevision += 1;
-}
-
 function hasTrendDraft() {
-  return scheduleDirty || collectionTopicDirty;
+  return collectionTopicDirty;
 }
 
 // ----------------------------- \u5b9a\u65f6\u91c7\u96c6\u63a7\u4ef6\u540c\u6b65 ----------------------------- //
 function renderScheduler(s) {
-  if (!scheduleDirty) {
-    $("#sw-trend-schedule").checked = !!s.schedule_enabled;
-    if (s.window_start) $("#trend-start").value = s.window_start;
-    if (s.window_end) $("#trend-end").value = s.window_end;
-    if (s.interval_min) $("#trend-interval").value = s.interval_min;
-  }
   let st = s.running ? "\u8c03\u5ea6\u8fd0\u884c\u4e2d" : "\u8c03\u5ea6\u672a\u8fd0\u884c";
   if (!s.trend_enabled) st += " \u00b7 \u8d44\u6599\u5e93\u672a\u542f\u7528(TREND_ENABLED=false)";
   else if (s.paused_by_recording) st += " \u00b7 \u5df2\u56e0\u5f55\u5236\u6682\u505c";
@@ -33,12 +20,11 @@ function renderScheduler(s) {
 
 // ----------------------------- \u6e32\u67d3:\u7f51\u611f\u8d44\u6599\u5e93 ----------------------------- //
 async function loadTrends() {
-  const revision = scheduleRevision;
   const data = await api("GET", "/api/trends?limit=30&days=7");
   $("#trends-status").innerHTML = data.enabled
     ? `\u5df2\u542f\u7528 \u00b7 \u8054\u7f51\u641c\u7d22 ${data.web_search ? "\u5f00" : "\u5173"} \u00b7 \u8fd1 ${data.days} \u5929`
-    : `\u672a\u542f\u7528(\u8bbe\u7f6e TREND_ENABLED=true \u5e76\u914d\u7f6e\u5927\u6a21\u578b API \u540e\u53ef\u7528)`;
-  if (scheduleRevision === revision) renderScheduler(data.scheduler || {});
+    : `尚未启用；请在设置中心的“网感采集”分类启用，并配置大模型服务商。`;
+  renderScheduler(data.scheduler || {});
   const kw = data.keywords || [];
   $("#trends-keywords").innerHTML = kw.length
     ? `<div class="tagcloud">${kw.map((k) => `<span class="tagchip" title="\u51fa\u73b0 ${k.count} \u6b21">${esc(k.keyword)} \u00b7 ${k.heat}</span>`).join("")}</div>`
@@ -154,30 +140,6 @@ function renderTrendChart(daily) {
 }
 
 // \u4e8b\u4ef6\u7ed1\u5b9a
-["#trend-start", "#trend-end", "#trend-interval"].forEach((sel) =>
-  $(sel).addEventListener("input", markScheduleDirty));
-$("#sw-trend-schedule").addEventListener("change", markScheduleDirty);
-$("#btn-save-schedule").addEventListener("click", async () => {
-  const revision = scheduleRevision;
-  const body = {
-    trend_schedule_enabled: $("#sw-trend-schedule").checked,
-    trend_schedule_start: $("#trend-start").value || "03:00",
-    trend_schedule_end: $("#trend-end").value || "05:00",
-    trend_schedule_interval_min: parseInt($("#trend-interval").value || "30", 10),
-  };
-  try {
-    await api("PATCH", "/api/settings", body);
-    if (scheduleRevision !== revision) {
-      toast("已保存提交时的定时采集设置；保存期间还有新修改，请再次保存");
-      return;
-    }
-    scheduleDirty = false;
-    scheduleRevision += 1;
-    toast("\u5df2\u4fdd\u5b58\u5b9a\u65f6\u91c7\u96c6\u8bbe\u7f6e");
-    await loadTrends();
-  } catch (e) { toast("\u4fdd\u5b58\u5931\u8d25:" + e.message); }
-});
-
 $("#btn-collect-trends").addEventListener("click", async () => {
   const revision = collectionTopicRevision;
   const topic = $("#trends-topic").value.trim();

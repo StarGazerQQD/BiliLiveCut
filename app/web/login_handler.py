@@ -252,9 +252,9 @@ def get_cookie_info() -> dict:
 
     :returns: ``{has_cookie, uid?, hint?}``。
     """
-    from app.core import settings_store
+    from app.core.cookie import get_bilibili_cookie
 
-    raw = settings_store.get_setting("bilibili_cookie", "")
+    raw = get_bilibili_cookie()
 
     # 安全摘要: 只输出 DedeUserID 值
     if not raw:

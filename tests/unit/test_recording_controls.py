@@ -96,7 +96,7 @@ async def test_start_uses_pipeline_default_and_enables_room_analysis(
     monkeypatch.setattr(rooms.settings_store, "recording_pipeline_enabled", lambda: True)
     monkeypatch.setattr("app.pipeline.orchestrator.make_pipeline_callback", fake_callback)
     monkeypatch.setattr(rooms, "Recorder", StartRecorder)
-    monkeypatch.setattr(rooms, "BilibiliLiveClient", lambda **_kwargs: FakeClient())
+    monkeypatch.setattr("app.recording.metadata.BilibiliLiveClient", lambda **_kwargs: FakeClient())
     monkeypatch.setattr(rooms, "get_bilibili_cookie", lambda: "")
 
     manager = rooms.RecorderManager()
@@ -149,10 +149,10 @@ async def test_metadata_refresh_failure_preserves_cached_room_info(
             assert include_detail is True
             raise RuntimeError("metadata unavailable")
 
-    monkeypatch.setattr(rooms, "BilibiliLiveClient", lambda **_kwargs: FailingClient())
+    monkeypatch.setattr("app.recording.metadata.BilibiliLiveClient", lambda **_kwargs: FailingClient())
     monkeypatch.setattr(rooms, "get_bilibili_cookie", lambda: "")
 
-    await rooms._refresh_room_metadata_before_recording(room_id)  # noqa: SLF001
+    await rooms.refresh_room_metadata(room_id)  # noqa: SLF001
 
     with get_session() as db:
         room = db.get(LiveRoom, room_id)
@@ -689,7 +689,9 @@ async def test_retry_exhaustion_waits_for_a_real_offline_transition(
 
         async def get_room_info(self, _room_id: str, *, include_detail: bool) -> SimpleNamespace:
             assert isinstance(include_detail, bool)
-            return SimpleNamespace(live_status=live_state["value"], title="测试直播", uploader_name="测试主播")
+            return SimpleNamespace(
+                room_id=200, live_status=live_state["value"], title="测试直播", uploader_name="测试主播"
+            )
 
     starts: list[int] = []
 

@@ -9,6 +9,7 @@ from typing import TYPE_CHECKING
 from sqlmodel import select
 
 from app.core.config import settings
+from app.core.runtime_settings import configured_entry
 from app.db.entities import (
     HighlightCandidate,
     RawSegment,
@@ -61,6 +62,7 @@ def room_cfg_from_task(task: SegmentTask) -> dict[str, bool | float]:
             "auto_approve": bool(room.auto_approve),
             "auto_upload": bool(room.auto_upload),
             "auto_approve_threshold": float(room.auto_approve_threshold),
+            "auto_publish_threshold": float(room.auto_publish_threshold),
             "review_threshold": float(room.review_threshold),
         }
 
@@ -293,19 +295,25 @@ def advance_rendered() -> None:
     """推进 RENDERED 阶段任务到 QUEUED_FOR_PUBLISH 或 AWAITING_PUBLISH_CONFIRMATION。"""
     import logging
 
+    from app.core.settings_store import auto_upload_enabled, biliup_enabled
+
     _logger = logging.getLogger(__name__)
     with get_session() as db:
         tasks = db.exec(select(SegmentTask).where(SegmentTask.stage == TaskStatus.RENDERED)).all()
         for task in tasks:
             cfg = room_cfg_from_task(task)
-            auto_upload = bool(cfg.get("auto_upload", False))
+            auto_upload = auto_upload_enabled() and biliup_enabled() and bool(cfg.get("auto_upload", False))
+            candidate = db.get(HighlightCandidate, task.candidate_id) if task.candidate_id else None
+            meets_threshold = candidate is not None and candidate.highlight_score >= float(
+                cfg.get("auto_publish_threshold", settings.auto_publish_threshold)
+            )
 
-            if auto_upload:
+            if auto_upload and meets_threshold:
                 enqueue_next(task, TaskStatus.QUEUED_FOR_PUBLISH)
                 _logger.info("auto_upload: task=%s clip=%s -> queued_for_publish", task.id, task.clip_id)
             else:
                 enqueue_next(task, TaskStatus.AWAITING_PUBLISH_CONFIRMATION)
-                _logger.info("auto_upload=off: task=%s -> awaiting_publish_confirmation", task.id)
+                _logger.info("automatic publish not eligible: task=%s -> awaiting_publish_confirmation", task.id)
             db.add(task)
 
 
@@ -352,6 +360,7 @@ def retry_expired() -> None:
             db.add(task)
 
 
+@configured_entry
 def execute_task(task_id: int, active_stage_val: str, lease_token: str | None = None) -> None:
     """执行耗时任务, 传递 lease_token 用于条件提交。
 

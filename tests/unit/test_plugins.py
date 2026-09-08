@@ -92,6 +92,14 @@ async def test_plugin_settings_are_validated_namespaced_and_secrets_are_hidden(
         manager.update_settings("demo", {"limit": 10})
     with pytest.raises(PluginValidationError, match="未知设置项"):
         manager.update_settings("demo", {"other": True})
+    with pytest.raises(PluginValidationError):
+        manager.update_settings("demo", {"mode": "safe", "limit": 10})
+    preserved = {field["key"]: field for field in manager.settings_payload("demo")["fields"]}
+    assert preserved["mode"]["value"] == "fast"
+    with pytest.raises(PluginValidationError, match="有限"):
+        manager.update_settings("demo", {"limit": float("nan")})
+    cleared = manager.update_settings("demo", {"token": None})
+    assert next(field for field in cleared["fields"] if field["key"] == "token")["configured"] is False
     await manager.stop()
 
 

@@ -1,6 +1,6 @@
 # BiliLiveCut 插件接口
 
-适用主程序：`V0.1.18.1 Alpha`；当前且唯一的插件 API 版本为 `1`。Event-first 热点召回、跨分段事件生命周期、事件补全与成片评分由宿主管理；评分插件只作用于宿主生成的候选，不负责创建或持久化 `HotspotEvent`，也没有其他版本接口可供回退。
+适用主程序：`V0.1.18.2 Alpha`；当前且唯一的插件 API 版本为 `1`。Event-first 热点召回、跨分段事件生命周期、事件补全与成片评分由宿主管理；评分插件只作用于宿主生成的候选，不负责创建或持久化 `HotspotEvent`，也没有其他版本接口可供回退。
 
 主程序当前架构见[项目 README](../README.md)和 [Event-first 热点检测器](../docs/hotspot-detector.md)；版本变化见 [Changelog 归档索引](../docs/changelog/CHANGELOG_INDEX.md)。本文只描述当前宿主，不提供 V0.1.17.x 插件数据或私有接口迁移方案。
 

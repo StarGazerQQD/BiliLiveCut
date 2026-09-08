@@ -53,6 +53,7 @@ from app.analysis.transcription.quality import (
     transcript_quality_payload,
 )
 from app.core.config import settings
+from app.core.runtime_settings import configured_task
 from app.db.entities import RawSegment, SegmentStatus, Transcript
 from app.db.session import get_session
 
@@ -232,7 +233,7 @@ class ASRPipeline:
                     language="zh",
                     backend="paraformer",
                     model_id="paraformer-zh",
-                    model_revision=settings.asr_model_revision,
+                    model_revision=self._get_primary().primary_revision,
                     primary_status="failed",
                     primary_error_type=type(exc).__name__,
                     primary_error_message=str(exc)[:500],
@@ -445,12 +446,26 @@ class ASRPipeline:
 # ═══════════════════════════════════════════════════════════
 
 
-@lru_cache(maxsize=1)
 def get_default_pipeline() -> ASRPipeline:
+    """按当前任务的模型配置指纹复用流水线。"""
+    return _cached_pipeline(_pipeline_fingerprint())
+
+
+def _pipeline_fingerprint() -> tuple[tuple[str, object], ...]:
+    from app.core.runtime_settings import effective_settings
+
+    return tuple(
+        (key, value) for key, value in effective_settings().model_dump().items() if key.startswith(("asr_", "whisper_"))
+    )
+
+
+@lru_cache(maxsize=1)
+def _cached_pipeline(fingerprint: tuple[tuple[str, object], ...]) -> ASRPipeline:
     """返回进程级缓存的默认 ASR 流水线。"""
     return ASRPipeline()
 
 
+get_default_pipeline.cache_clear = _cached_pipeline.cache_clear
 _task_pipeline_local = threading.local()
 
 
@@ -461,12 +476,15 @@ def get_task_pipeline() -> ASRPipeline:
     if asr_task_max_concurrency() <= 1:
         return get_default_pipeline()
     pipeline = getattr(_task_pipeline_local, "pipeline", None)
-    if pipeline is None:
+    fingerprint = _pipeline_fingerprint()
+    if pipeline is None or getattr(_task_pipeline_local, "fingerprint", None) != fingerprint:
         pipeline = ASRPipeline()
         _task_pipeline_local.pipeline = pipeline
+        _task_pipeline_local.fingerprint = fingerprint
     return pipeline
 
 
+@configured_task
 def transcribe_segment(
     segment_id: int,
     backend: TranscriberBackend | None = None,

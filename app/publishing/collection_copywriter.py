@@ -151,7 +151,7 @@ def sec_to_hhmmss(total_s: float) -> str:
     return f"{h:02d}:{m:02d}:{s:02d}"
 
 
-def generate_copywriter_for_topic(topic_id: int) -> dict | None:
+def generate_copywriter_for_topic(topic_id: int) -> dict[str, object] | None:
     """从数据库加载主题和事件,批量生成文案。
 
     :param topic_id: 主题 id。
@@ -159,7 +159,7 @@ def generate_copywriter_for_topic(topic_id: int) -> dict | None:
     """
     from sqlmodel import select
 
-    from app.db.entities import HighlightCandidate, HighlightTopic, Topic
+    from app.db.entities import HighlightCandidate, HighlightEvent, HighlightTopic, Topic
     from app.db.session import get_session
 
     with get_session() as db:
@@ -178,7 +178,8 @@ def generate_copywriter_for_topic(topic_id: int) -> dict | None:
         event_summaries = []
         total_dur = 0.0
         for link in links:
-            cand = db.get(HighlightCandidate, link.event_id)
+            event = db.get(HighlightEvent, link.event_id)
+            cand = db.get(HighlightCandidate, event.candidate_id) if event else None
             if cand is None:
                 continue
             dur = (cand.end_ts - cand.start_ts).total_seconds() if cand.start_ts and cand.end_ts else 30
@@ -188,7 +189,7 @@ def generate_copywriter_for_topic(topic_id: int) -> dict | None:
                     "candidate_id": cand.id,
                     "score": cand.highlight_score,
                     "reason": cand.reason or "",
-                    "asr_text": "",
+                    "asr_text": event.asr_text or "",
                     "duration_s": round(dur, 1),
                 }
             )

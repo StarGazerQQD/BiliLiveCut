@@ -33,6 +33,7 @@ from app.accelerators.dispatcher import (
 )
 from app.db.entities import (
     HighlightCandidate,
+    HighlightEvent,
     HighlightTopic,
     Topic,
     TopicStatus,
@@ -193,7 +194,7 @@ def _extract_keywords(text: str, max_keywords: int = 8) -> list[str]:
     return keywords[:max_keywords]
 
 
-def cluster_candidates(session_id: int) -> list[dict]:
+def cluster_candidates(session_id: int) -> list[dict[str, object]]:
     """对一场直播的所有待审核候选进行主题聚类。
 
     算法:
@@ -207,7 +208,9 @@ def cluster_candidates(session_id: int) -> list[dict]:
     """
     with get_session() as db:
         candidates = db.exec(
-            select(HighlightCandidate).where(
+            select(HighlightCandidate, HighlightEvent)
+            .join(HighlightEvent, HighlightEvent.candidate_id == HighlightCandidate.id)
+            .where(
                 HighlightCandidate.session_id == session_id,
                 HighlightCandidate.status.in_(["pending", "approved"]),
             )
@@ -218,7 +221,7 @@ def cluster_candidates(session_id: int) -> list[dict]:
 
     # 收集候选数据。
     items: list[dict] = []
-    for c in candidates:
+    for c, event in candidates:
         features = {}
         if c.features_json:
             try:
@@ -226,7 +229,7 @@ def cluster_candidates(session_id: int) -> list[dict]:
             except json.JSONDecodeError:
                 pass
         # 尝试取转写文本:通过时间范围匹配 RawSegment 再关联 Transcript。
-        asr_text = ""
+        asr_text = event.asr_text or ""
         with get_session() as db:
             from app.db.entities import RawSegment, Transcript
 
@@ -241,12 +244,13 @@ def cluster_candidates(session_id: int) -> list[dict]:
                     )
                 )
             ).all():
-                asr_text = seg.text or ""
+                asr_text = asr_text or seg.text or ""
                 break
 
         items.append(
             {
-                "id": c.id,
+                "id": event.id,
+                "candidate_id": c.id,
                 "asr_text": asr_text,
                 "keywords": features.get("keyword_hits", []),
                 "score": c.highlight_score,
@@ -306,7 +310,7 @@ def cluster_candidates(session_id: int) -> list[dict]:
                 all_text += (items[idx].get("asr_text") or "") + " "
                 for kw in items[idx].get("keywords") or []:
                     kw_pool.add(str(kw))
-            topic_kw = list(kw_pool)[:10]
+            topic_kw = sorted(kw_pool)[:10]
             topic_title = ", ".join(topic_kw[:3]) if topic_kw else f"主题簇 #{root}"
             topic_summary = all_text[:200].strip() if all_text else None
 
@@ -335,18 +339,18 @@ def cluster_candidates(session_id: int) -> list[dict]:
 
             # 关联。
             for idx in indices:
-                cid = items[idx]["id"]
+                event_id = items[idx]["id"]
                 sim = 1.0  # 同簇默认 1.0
                 existing_link = db.exec(
                     select(HighlightTopic).where(
-                        HighlightTopic.event_id == cid,
+                        HighlightTopic.event_id == event_id,
                         HighlightTopic.topic_id == topic_id,
                     )
                 ).first()
                 if existing_link is None:
                     db.add(
                         HighlightTopic(
-                            event_id=cid,
+                            event_id=event_id,
                             topic_id=topic_id,
                             confidence=round(sim, 4),
                         )
@@ -466,11 +470,15 @@ def update_topic(topic_id: int, **kwargs) -> bool:
 def add_event_to_topic(event_id: int, topic_id: int) -> bool:
     """将高光加入已有主题(幂等)。
 
-    :param event_id: 高光候选 id。
+    :param event_id: HighlightEvent.id。
     :param topic_id: 主题 id。
     :returns: 成功返回 ``True``。
     """
     with get_session() as db:
+        event = db.get(HighlightEvent, event_id)
+        topic = db.get(Topic, topic_id)
+        if event is None or topic is None or event.session_id != topic.session_id:
+            return False
         existing = db.exec(
             select(HighlightTopic).where(
                 HighlightTopic.event_id == event_id,
@@ -486,7 +494,7 @@ def add_event_to_topic(event_id: int, topic_id: int) -> bool:
 def remove_event_from_topic(event_id: int, topic_id: int) -> bool:
     """从主题移除高光。
 
-    :param event_id: 高光候选 id。
+    :param event_id: HighlightEvent.id。
     :param topic_id: 主题 id。
     :returns: 成功返回 ``True``。
     """
@@ -513,7 +521,7 @@ def merge_topics(source_id: int, target_id: int) -> bool:
     with get_session() as db:
         src = db.get(Topic, source_id)
         tgt = db.get(Topic, target_id)
-        if src is None or tgt is None or source_id == target_id:
+        if src is None or tgt is None or source_id == target_id or src.session_id != tgt.session_id:
             return False
         links = db.exec(select(HighlightTopic).where(HighlightTopic.topic_id == source_id)).all()
         for link in links:
@@ -547,11 +555,14 @@ def split_topic(topic_id: int, event_ids: list[int]) -> int | None:
     :param event_ids: 要移出的事件 id 列表。
     :returns: 新主题 id 或 ``None``。
     """
-    if len(event_ids) < 1:
+    if not event_ids or len(set(event_ids)) != len(event_ids):
         return None
     with get_session() as db:
         t = db.get(Topic, topic_id)
         if t is None:
+            return None
+        links = db.exec(select(HighlightTopic).where(HighlightTopic.topic_id == topic_id)).all()
+        if not set(event_ids).issubset({link.event_id for link in links}):
             return None
         new_topic = Topic(
             session_id=t.session_id,
@@ -593,6 +604,11 @@ def reorder_topic_events(topic_id: int, event_ids: list[int], chapter_titles: di
     :returns: 成功返回 ``True``。
     """
     with get_session() as db:
+        links = db.exec(select(HighlightTopic).where(HighlightTopic.topic_id == topic_id)).all()
+        if db.get(Topic, topic_id) is None or len(event_ids) != len(set(event_ids)):
+            return False
+        if set(event_ids) != {link.event_id for link in links}:
+            return False
         for i, eid in enumerate(event_ids):
             link = db.exec(
                 select(HighlightTopic).where(

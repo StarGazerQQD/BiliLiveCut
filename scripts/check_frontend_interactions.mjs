@@ -119,6 +119,9 @@ const llmDraftFields = new Map([
   [".llm-base", { value: "https://example.invalid/v1" }],
   [".llm-model", { value: "draft-model" }],
   [".llm-key", { value: "draft-secret" }],
+  [".llm-clear-key", { checked: false }],
+  [".llm-price-input", { value: "1.5" }],
+  [".llm-price-output", { value: "3" }],
   [".llm-search", { value: "" }],
   [".llm-priority", { value: "1" }],
   [".llm-enabled", { checked: true }],
@@ -363,7 +366,7 @@ try {
   assert.equal(typeof globalThis.approveCand, "function", "inline review action was not exported to window");
   assert.equal(typeof globalThis.triggerMaintenance, "function", "maintenance action was not exported to window");
   assert.equal(typeof globalThis.saveFeatureSwitches, "function", "feature-switch save action was not exported");
-  assert.equal(typeof globalThis.saveGlobalFeatureSettings, "function", "global feature save action was not exported");
+  assert.equal(typeof globalThis.saveWebPort, "function", "Web port save action was not exported");
   assert.equal(typeof globalThis.toggleSessionTimeline, "function", "timeline expand action was not exported");
   assert.equal(typeof globalThis.regenerateSessionSummary, "function", "timeline summary action was not exported");
   assert.equal(typeof globalThis.correctTranscript, "function", "transcript correction action was not exported");

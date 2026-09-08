@@ -10,15 +10,19 @@
 
 from __future__ import annotations
 
-import os
 import shutil
-import stat
 from pathlib import Path
+from typing import TYPE_CHECKING
 
 from loguru import logger
 
 from app.core.config import settings
 from app.core.paths import clips_dir, raw_dir
+
+if TYPE_CHECKING:
+    from sqlmodel import Session
+
+    from app.db.entities import FinalClip
 
 
 def _safe_unlink(disk_path: str, allowed_root: Path) -> bool:
@@ -50,12 +54,6 @@ def _safe_unlink(disk_path: str, allowed_root: Path) -> bool:
 # 可配置的默认值(可通过 settings 覆盖)。
 _MIN_FREE_GB = 10
 _RAW_RETENTION_DAYS = 7
-
-# 两级磁盘保护阈值(GB),暂未纳入 Settings 模型,作为模块常量。
-LOW_DISK_THRESHOLD_GB: float = 20.0
-"""低于此阈值:暂停新分析/转写/渲染任务,暂停模型下载。"""
-CRITICAL_DISK_THRESHOLD_GB: float = 5.0
-"""低于此阈值:安全停止当前录制,优雅终止 ffmpeg,暂停重度日志/弹幕写入。"""
 
 
 def get_disk_usage(path: str | Path | None = None) -> dict:
@@ -120,17 +118,20 @@ def check_disk_level() -> tuple[str, float]:
     """两级磁盘保护检查,返回当前危险等级及剩余空间。
 
     等级规则:
-    - ``"ok"``: 剩余空间 >= ``LOW_DISK_THRESHOLD_GB``
-    - ``"low"``: ``CRITICAL_DISK_THRESHOLD_GB`` <= 剩余空间 < ``LOW_DISK_THRESHOLD_GB``
-    - ``"critical"``: 剩余空间 < ``CRITICAL_DISK_THRESHOLD_GB``
+    - ``"ok"``: 剩余空间 >= ``settings.low_disk_threshold_gb``
+    - ``"low"``: ``settings.critical_disk_threshold_gb`` <= 剩余空间 < ``settings.low_disk_threshold_gb``
+    - ``"critical"``: 剩余空间 < ``settings.critical_disk_threshold_gb``
 
     :returns: ``(level, free_gb)`` 其中 level 为 ``"ok"`` / ``"low"`` / ``"critical"``。
     """
+    from app.core.runtime_settings import process_settings
+
+    current = process_settings()
     usage = get_disk_usage()
     free_gb = usage["free_gb"]
-    if free_gb < CRITICAL_DISK_THRESHOLD_GB:
+    if free_gb < current.critical_disk_threshold_gb:
         return ("critical", free_gb)
-    if free_gb < LOW_DISK_THRESHOLD_GB:
+    if free_gb < current.low_disk_threshold_gb:
         return ("low", free_gb)
     return ("ok", free_gb)
 
@@ -158,49 +159,162 @@ def should_stop_recording() -> bool:
 
 
 def cleanup_old_raw_files(retention_days: int | None = None) -> int:
-    """清理超过保留天数的原始录像文件。
+    """按数据库引用清理已结束且无活动任务的原始分段，保留未知文件。"""
+    import json
+    from datetime import UTC, datetime, timedelta
 
-    :param retention_days: 保留天数,默认 7 天。
-    :returns: 清理的目录数。
-    """
-    days = retention_days or getattr(settings, "raw_retention_days", _RAW_RETENTION_DAYS)
-    sessions_dir_path = raw_dir()
-    if not sessions_dir_path.exists():
-        return 0
+    from sqlmodel import select
 
-    import time
+    from app.db.entities import (
+        AppSetting,
+        CandidateStatus,
+        ClipVariant,
+        FinalClip,
+        HighlightCandidate,
+        HighlightEvent,
+        HotspotEvent,
+        RawSegment,
+        RecordingSession,
+        SegmentTask,
+        TaskStatus,
+    )
+    from app.db.session import get_session
 
-    cutoff = time.time() - days * 86400
+    now = datetime.now(UTC).replace(tzinfo=None)
+    days = retention_days if retention_days is not None else settings.raw_retention_days
+    if days < 1:
+        raise ValueError("原始录像保留天数必须 >= 1")
+    age_cutoff = now - timedelta(days=days)
+    clip_cutoff = now - timedelta(hours=settings.clip_cleanup_delay_hours)
     cleaned = 0
+    with get_session() as db:
+        db.connection().exec_driver_sql("BEGIN IMMEDIATE")
+        from app.core.media_usage import media_in_use
 
-    for session_path in sessions_dir_path.iterdir():
-        if not session_path.is_dir():
-            continue
-        try:
-            mtime = session_path.stat().st_mtime
-            if mtime < cutoff:
-                # TOCTOU 防御: 检查符号链接 + 解析真实路径在预期目录下
-                try:
-                    st = os.lstat(session_path)
-                    if stat.S_ISLNK(st.st_mode):
-                        logger.warning("跳过符号链接目录 (安全防护): {}", session_path)
-                        continue
-                    real = os.path.realpath(session_path)
-                    resolved_root = os.path.realpath(str(raw_dir().resolve()))
-                    if not real.startswith(resolved_root):
-                        logger.warning("拒绝删除外部路径: {}", real)
-                        continue
-                except OSError:
-                    pass
-                shutil.rmtree(session_path)
-                cleaned += 1
-                logger.info("已清理过期原始文件: {}", session_path)
-        except Exception as exc:
-            logger.warning("清理原始文件失败 {}: {}", session_path, exc)
+        if media_in_use(db):
+            logger.info("原片清理暂停：媒体操作仍在使用源文件。")
+            return 0
+        # Web 作业可跨场次引用媒体，活动期间保守地停止自动原始文件清理。
+        for row in db.exec(select(AppSetting).where(AppSetting.key.startswith("web_job:"))).all():
+            try:
+                payload = json.loads(row.value)
+            except json.JSONDecodeError:
+                logger.warning("原片清理暂停：Web 作业记录损坏 key={}。", row.key)
+                return 0
+            if not isinstance(payload, dict) or payload.get("status") in {"queued", "running", "cancelling"}:
+                return 0
+        protected_paths = {str(Path(value).resolve()) for value in db.exec(select(FinalClip.file_path)).all() if value}
+        protected_paths.update(
+            str(Path(value).resolve()) for value in db.exec(select(ClipVariant.file_path)).all() if value
+        )
+        shared_sources: dict[str, set[int]] = {}
+        for raw_path, session_id in db.exec(select(RawSegment.file_path, RawSegment.session_id)).all():
+            shared_sources.setdefault(str(Path(raw_path).resolve()), set()).add(session_id)
+        recordings = db.exec(select(RecordingSession).where(RecordingSession.ended_at.is_not(None))).all()
+        for recording in recordings:
+            if recording.status not in {"stopped", "paused", "error"}:
+                continue
+            if db.get(AppSetting, f"session_reanalysis:{recording.id}") is not None:
+                continue
+            tasks = db.exec(select(SegmentTask).where(SegmentTask.session_id == recording.id)).all()
+            if any(task.stage not in {TaskStatus.COMPLETED, TaskStatus.CANCELLED} for task in tasks):
+                continue
+            candidates = db.exec(select(HighlightCandidate).where(HighlightCandidate.session_id == recording.id)).all()
+            if any(candidate.status in {CandidateStatus.PENDING, CandidateStatus.APPROVED} for candidate in candidates):
+                continue
+            if (
+                db.exec(
+                    select(HotspotEvent.id)
+                    .where(
+                        HotspotEvent.session_id == recording.id, HotspotEvent.status.in_(["provisional", "enriching"])
+                    )
+                    .limit(1)
+                ).first()
+                is not None
+            ):
+                continue
+            from app.web.services.review_workflow import claim_state, has_review_draft
 
+            review_events = db.exec(
+                select(HighlightEvent)
+                .join(HighlightCandidate, HighlightEvent.candidate_id == HighlightCandidate.id)
+                .where(HighlightCandidate.session_id == recording.id)
+            ).all()
+            if any(has_review_draft(event.features_json) or claim_state(event)["active"] for event in review_events):
+                continue
+            segments = db.exec(select(RawSegment).where(RawSegment.session_id == recording.id)).all()
+            completed = bool(tasks) and all(task.stage == TaskStatus.COMPLETED for task in tasks)
+            expired = recording.ended_at <= age_cutoff
+            usable_clips = db.exec(
+                select(FinalClip, HighlightCandidate)
+                .join(HighlightCandidate, FinalClip.candidate_id == HighlightCandidate.id)
+                .where(HighlightCandidate.session_id == recording.id)
+            ).all()
+            for segment in segments:
+                rendered_old = False
+                if completed and segment.start_ts is not None and segment.end_ts is not None:
+                    segment_task = next((task for task in tasks if task.segment_id == segment.id), None)
+                    if (
+                        segment_task is not None
+                        and segment_task.completed_at is not None
+                        and segment_task.completed_at <= clip_cutoff
+                    ):
+                        rendered_old = any(
+                            clip.status in {"generated", "ready", "published"}
+                            and clip.created_at <= clip_cutoff
+                            and Path(clip.file_path).is_file()
+                            and candidate.start_ts <= segment.start_ts
+                            and candidate.end_ts >= segment.end_ts
+                            for clip, candidate in usable_clips
+                        )
+                if not expired and not rendered_old:
+                    continue
+                file = Path(segment.file_path)
+                resolved = str(file.resolve())
+                if (
+                    not file.is_file()
+                    or resolved in protected_paths
+                    or shared_sources.get(resolved, set()) - {recording.id}
+                ):
+                    continue
+                # 仅删除确认为托管原始媒体的单个文件，目录和非登记文件保持原样。
+                if _safe_unlink(segment.file_path, raw_dir()):
+                    cleaned += 1
+                    if cleaned >= 100:
+                        logger.info("本轮原片清理达到 100 个文件，余项在下轮继续。")
+                        return cleaned
     if cleaned:
-        logger.info("已清理 {} 个过期的原始录像目录(>{}天)。", cleaned, days)
+        logger.info("已按保留策略清理 {} 个无活动引用的原始分段。", cleaned)
     return cleaned
+
+
+def _clip_is_protected(db: Session, clip: FinalClip) -> bool:
+    """保留发布、审核、任务、上传及其它成片正在引用的资源。"""
+    from sqlmodel import select
+
+    from app.db.entities import ClipStatus, ClipVariant, FinalClip, SegmentTask, TaskStatus, UploadTask
+
+    if clip.status in {ClipStatus.PUBLISHED, ClipStatus.READY, ClipStatus.REVIEWING}:
+        return True
+    uploads = db.exec(select(UploadTask).where(UploadTask.clip_id == clip.id)).all()
+    if any(task.status not in {"failed", "failed_permanent", "skipped", "cancelled"} for task in uploads):
+        return True
+    tasks = db.exec(select(SegmentTask).where(SegmentTask.clip_id == clip.id)).all()
+    if any(task.stage not in {TaskStatus.FAILED, TaskStatus.CANCELLED, TaskStatus.COMPLETED} for task in tasks):
+        return True
+    paths = [path for path in (clip.file_path, clip.cover_path) if path]
+    if db.exec(select(ClipVariant).where(ClipVariant.file_path.in_(paths))).first() is not None:
+        return True
+    return (
+        db.exec(
+            select(FinalClip).where(
+                FinalClip.id != clip.id,
+                (FinalClip.file_path.in_(paths)) | (FinalClip.cover_path.in_(paths)),
+                FinalClip.status != ClipStatus.REJECTED,
+            )
+        ).first()
+        is not None
+    )
 
 
 def cleanup_rejected_candidates() -> int:
@@ -215,6 +329,9 @@ def cleanup_rejected_candidates() -> int:
 
     cleaned = 0
     with get_session() as db:
+        # 防止检查后另一个数据库写入者把同一素材加入发布或渲染流程。
+        if db.get_bind().dialect.name == "sqlite":
+            db.connection().exec_driver_sql("BEGIN IMMEDIATE")
         rejected = db.exec(
             select(HighlightCandidate).where(
                 HighlightCandidate.status == CandidateStatus.REJECTED,
@@ -227,21 +344,27 @@ def cleanup_rejected_candidates() -> int:
                     FinalClip.candidate_id == cand.id,
                 )
             ).all()
+            fully_cleaned = True
             for clip in clips:
-                if clip.file_path and _safe_unlink(clip.file_path, clips_dir()):
+                if _clip_is_protected(db, clip):
+                    fully_cleaned = False
+                    continue
+                removed = not clip.file_path or _safe_unlink(clip.file_path, clips_dir())
+                if clip.file_path and removed:
                     cleaned += 1
-                if clip.cover_path:
-                    _safe_unlink(clip.cover_path, clips_dir())
+                cover_removed = not clip.cover_path or _safe_unlink(clip.cover_path, clips_dir())
+                fully_cleaned = fully_cleaned and removed and cover_removed
             # 更新状态为已清理。
-            cand.status = CandidateStatus.CLEANED
-            db.add(cand)
+            if fully_cleaned:
+                cand.status = CandidateStatus.CLEANED
+                db.add(cand)
 
     if cleaned:
         logger.info("已清理 {} 个被拒绝候选的切片文件。", cleaned)
     return cleaned
 
 
-def run_disk_maintenance() -> dict:
+def run_disk_maintenance(*, cleanup: bool = True) -> dict:
     """执行一次磁盘维护(清理 + 检查)。
 
     建议每 60 分钟调用一次。
@@ -258,8 +381,9 @@ def run_disk_maintenance() -> dict:
     result["clips_size_gb"] = get_directory_size(clips_dir())
 
     # 清理。
-    result["cleaned_raw"] = cleanup_old_raw_files()
-    result["cleaned_rejected"] = cleanup_rejected_candidates()
+    if cleanup:
+        result["cleaned_raw"] = cleanup_old_raw_files()
+        result["cleaned_rejected"] = cleanup_rejected_candidates()
 
     # 安全检查。
     safe, msg = check_disk_safe()
@@ -276,7 +400,7 @@ def run_disk_maintenance() -> dict:
 
             notify_disk_alert(
                 free_gb=free_gb,
-                threshold_gb=int(CRITICAL_DISK_THRESHOLD_GB),
+                threshold_gb=int(settings.critical_disk_threshold_gb),
                 raw_gb=result.get("raw_size_gb", 0.0),
                 clips_gb=result.get("clips_size_gb", 0.0),
             )

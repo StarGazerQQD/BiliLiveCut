@@ -29,13 +29,8 @@ def test_unsupported_compute_type_retries_with_auto(monkeypatch: pytest.MonkeyPa
     fake_module.__dict__["WhisperModel"] = fake_whisper_model
     monkeypatch.setitem(sys.modules, "faster_whisper", fake_module)
     monkeypatch.setattr(asr_detection, "check_resources_sufficient", lambda *_args: (True, "ok"))
-    backends._load_whisper_model.cache_clear()
 
-    try:
-        result = backends._load_whisper_model("whisper-model", "cuda", "int16")
-    finally:
-        backends._load_whisper_model.cache_clear()
-
+    result = backends._load_whisper_model("whisper-model", "cuda", "int16")
     assert result is loaded_model
     assert calls == [
         ("whisper-model", "cuda", "int16"),
@@ -55,12 +50,7 @@ def test_unrelated_value_error_is_not_retried(monkeypatch: pytest.MonkeyPatch) -
     fake_module.__dict__["WhisperModel"] = fake_whisper_model
     monkeypatch.setitem(sys.modules, "faster_whisper", fake_module)
     monkeypatch.setattr(asr_detection, "check_resources_sufficient", lambda *_args: (True, "ok"))
-    backends._load_whisper_model.cache_clear()
 
-    try:
-        with pytest.raises(ValueError, match="broken model metadata"):
-            backends._load_whisper_model("whisper-model", "cuda", "int16")
-    finally:
-        backends._load_whisper_model.cache_clear()
-
+    with pytest.raises(ValueError, match="broken model metadata"):
+        backends._load_whisper_model("whisper-model", "cuda", "int16")
     assert calls == ["cuda:int16"]

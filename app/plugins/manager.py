@@ -6,6 +6,7 @@ import asyncio
 import importlib.util
 import inspect
 import json
+import math
 import re
 import sys
 from dataclasses import dataclass, field
@@ -186,6 +187,8 @@ class PluginManager:
             item = setting_field.model_dump(mode="json")
             item["configured"] = stored not in (None, "")
             item["value"] = "" if setting_field.kind == "password" else stored
+            if setting_field.kind == "password":
+                item["default"] = ""
             fields.append(item)
         return {"plugin": self._serialize_record(record), "fields": fields}
 
@@ -196,12 +199,19 @@ class PluginManager:
         unknown = sorted(set(values) - set(schema))
         if unknown:
             raise PluginValidationError(f"未知设置项: {', '.join(unknown)}")
+        validated: dict[str, str] = {}
         for key, raw_value in values.items():
             setting_field = schema[key]
+            if setting_field.kind == "password" and raw_value is None:
+                validated[self._setting_key(plugin_id, key)] = json.dumps("")
+                continue
             if setting_field.kind == "password" and raw_value == "":
                 continue
             value = self._validate_setting_value(setting_field, raw_value)
-            self._write_setting(plugin_id, key, value)
+            validated[self._setting_key(plugin_id, key)] = json.dumps(value, ensure_ascii=False)
+        from app.core.settings_store import set_settings
+
+        set_settings(validated)
         return self.settings_payload(plugin_id)
 
     def score_highlight(self, request: HighlightScoringRequest) -> HighlightDispatch | None:
@@ -468,6 +478,8 @@ class PluginManager:
             if isinstance(raw_value, bool) or not isinstance(raw_value, (int, float)):
                 raise PluginValidationError(f"{setting_field.key} 必须是数值")
             numeric = float(raw_value)
+            if not math.isfinite(numeric):
+                raise PluginValidationError(f"{setting_field.key} 必须是有限数字")
             if setting_field.minimum is not None and numeric < setting_field.minimum:
                 raise PluginValidationError(f"{setting_field.key} 不能小于 {setting_field.minimum}")
             if setting_field.maximum is not None and numeric > setting_field.maximum:

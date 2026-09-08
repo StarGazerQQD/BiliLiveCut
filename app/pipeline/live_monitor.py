@@ -11,6 +11,7 @@
 from __future__ import annotations
 
 import asyncio
+from datetime import UTC, datetime
 
 from loguru import logger
 from sqlmodel import select
@@ -38,6 +39,7 @@ class LiveMonitor:
         # 防止重复启动。
         self._starting: set[int] = set()
         self._last_check_at: dict[int, float] = {}
+        self._errors: dict[int, str] = {}
         self._reconnect_totals: dict[int, int] = {}
         self._pending_stops: dict[int, asyncio.Task[None]] = {}
 
@@ -77,6 +79,31 @@ class LiveMonitor:
             "last_check": {str(k): v for k, v in self._last_check_at.items()},
         }
 
+    def room_status(self, room: LiveRoom, *, running: bool, runtime_state: str) -> dict[str, object]:
+        """房间级守候状态与最近成功检测时间，失败不伪装成正常待机。"""
+        config = load_room_config(room)
+        if running:
+            state = "starting" if runtime_state == "starting" else "recording"
+        elif config.get("recording_paused") or config.get("recording_auto_restart_suppressed"):
+            state = "manual_paused"
+        elif not room.auto_record:
+            state = "disabled"
+        elif config.get("recording_wait_for_next_live"):
+            state = "waiting_next_live"
+        elif room.id in self._errors:
+            state = "error"
+        elif room.id in self._starting:
+            state = "starting"
+        else:
+            state = "waiting_live"
+        checked = self._last_check_at.get(room.id)
+        return {
+            "state": state,
+            "last_checked_at": datetime.fromtimestamp(checked, UTC).isoformat() if checked else None,
+            "error": self._errors.get(room.id),
+            "service_running": self._task is not None and not self._task.done(),
+        }
+
     def get_reconnect_total(self, db_id: int) -> int:
         """获取某房间累计重连次数。"""
         return self._reconnect_totals.get(db_id, 0)
@@ -106,7 +133,6 @@ class LiveMonitor:
                     "room_id": r.room_id,
                     "auto_analyze": r.auto_analyze,
                     "auto_render": r.auto_render,
-                    "needs_identity": not r.uploader_name or not r.title,
                     "recording_paused": load_room_config(r).get("recording_paused", False),
                     "auto_restart_suppressed": load_room_config(r).get("recording_auto_restart_suppressed", False),
                     "wait_for_next_live": load_room_config(r).get("recording_wait_for_next_live", False),
@@ -126,30 +152,20 @@ class LiveMonitor:
                 auto_render: bool = room_state["auto_render"]
                 if room_state["recording_paused"] or room_state["auto_restart_suppressed"]:
                     continue
-                self._last_check_at[db_id] = asyncio.get_event_loop().time()
 
                 if db_id in self._starting:
                     continue  # 正在启动中,跳过
 
                 try:
-                    latest = await client.get_room_info(str(room_id), include_detail=bool(room_state["needs_identity"]))
+                    latest = await client.get_room_info(str(room_id), include_detail=False)
+                    if latest.room_id != room_id:
+                        raise ValueError("直播状态返回了不同房间号")
+                    self._last_check_at[db_id] = datetime.now(UTC).timestamp()
+                    self._errors.pop(db_id, None)
                 except Exception as exc:
+                    self._errors[db_id] = f"开播检测失败：{type(exc).__name__}"
                     logger.warning("房间 {} 状态查询失败: {}", room_id, exc)
                     continue
-
-                if latest.title or latest.uploader_name:
-                    with get_session() as db:
-                        room = db.get(LiveRoom, db_id)
-                        if room is not None:
-                            changed = False
-                            if latest.title and room.title != latest.title:
-                                room.title = latest.title
-                                changed = True
-                            if latest.uploader_name and room.uploader_name != latest.uploader_name:
-                                room.uploader_name = latest.uploader_name
-                                changed = True
-                            if changed:
-                                db.add(room)
 
                 is_live = latest.live_status == 1
                 is_recording = recorder_manager.is_running(db_id)
@@ -180,6 +196,7 @@ class LiveMonitor:
                                 settings.recording_max_duration_s,
                             )
                             await recorder_manager.stop(db_id)
+                            recorder_manager._set_recording_flags(db_id, wait_for_next_live=True)
                             self._started_at.pop(db_id, None)
                 elif not is_live and is_recording:
                     # 可能下播,累积离线计数。
@@ -256,6 +273,7 @@ class LiveMonitor:
                 db_id,
                 pipeline=auto_analyze,
                 produce=auto_render,
+                automatic=True,
             )
             self._started_at[db_id] = asyncio.get_event_loop().time()
             # 从 RecordingSession 获取重连次数。
@@ -274,6 +292,7 @@ class LiveMonitor:
                 if session:
                     self._reconnect_totals[db_id] = session.reconnect_count
         except Exception as exc:
+            self._errors[db_id] = f"自动启动失败：{exc}"
             logger.error("自动启动录制失败 db_id={}: {}", db_id, exc)
         finally:
             self._starting.discard(db_id)

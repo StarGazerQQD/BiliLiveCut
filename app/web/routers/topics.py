@@ -90,7 +90,8 @@ def add_event_to_topic(topic_id: int, event_id: int) -> dict[str, str]:
     """将事件加入主题。"""
     from app.analysis.topic_cluster import add_event_to_topic as _ae
 
-    _ae(event_id, topic_id)
+    if not _ae(event_id, topic_id):
+        raise HTTPException(status_code=400, detail="事件或主题不存在，或不属于同一场次")
     return {"status": "added"}
 
 
@@ -132,7 +133,8 @@ def reorder_topic_events(topic_id: int, req: ReorderTopicRequest) -> dict[str, s
     """重排主题内事件顺序。"""
     from app.analysis.topic_cluster import reorder_topic_events as _ro
 
-    _ro(topic_id, req.event_ids)
+    if not _ro(topic_id, req.event_ids):
+        raise HTTPException(status_code=400, detail="顺序必须恰好包含主题内所有事件且不能重复")
     return {"status": "reordered"}
 
 

@@ -3,18 +3,18 @@
 使用 ``pydantic-settings`` 从环境变量与 ``.env`` 文件加载配置,实现:
 
 * 配置集中、类型安全;
-* 密钥不写死在代码里(全部来自环境变量);
+* 密钥来自部署环境或数据库中的显式覆盖，不写死在代码里;
 * 提供合理默认值,降低 MVP 上手成本。
 
-通过模块级单例 :data:`settings` 在全工程复用。
+通过稳定代理 :data:`settings` 读取有效配置；业务任务使用开始时的完整快照。
 """
 
 from __future__ import annotations
 
 from functools import lru_cache
-from typing import Literal
+from typing import Literal, cast
 
-from pydantic import Field, model_validator
+from pydantic import AliasChoices, Field, model_validator
 from pydantic_settings import BaseSettings, SettingsConfigDict
 
 
@@ -29,6 +29,7 @@ class Settings(BaseSettings):
         env_file_encoding="utf-8",
         extra="forbid",
         case_sensitive=False,
+        allow_inf_nan=False,
     )
 
     def __repr__(self) -> str:
@@ -66,6 +67,8 @@ class Settings(BaseSettings):
     stream_quality: int = 10000
     reconnect_max_backoff_s: int = Field(default=30, ge=1)
     live_poll_interval_s: int = Field(default=15, ge=5)
+    room_metadata_refresh_interval_s: int = Field(default=30, ge=5, le=3600)
+    room_metadata_refresh_timeout_s: float = Field(default=3.0, ge=0.1, le=30.0)
     # 连续无法恢复录制的最大失败次数；0=不按次数停止。
     recording_reconnect_max_attempts: int = Field(default=20, ge=0, le=10000)
     # 从断流开始计算的最长重试时间（秒）；0=不按时间停止。
@@ -95,7 +98,7 @@ class Settings(BaseSettings):
 
     # ---------- AI:多引擎 ASR 流水线 (V0.1.12) ----------
     # 主引擎: funasr_nano / paraformer / whisper, 默认 Fun-ASR-Nano
-    asr_primary: str = "funasr_nano"
+    asr_primary: Literal["funasr_nano", "funasr", "nano", "paraformer", "whisper"] = "funasr_nano"
     # 辅助特征提取: SenseVoice-Small (情感/笑声/音乐/事件)
     asr_sensevoice: bool = True
     # 低置信度复核: Fun-ASR-Nano
@@ -110,30 +113,32 @@ class Settings(BaseSettings):
     asr_sensevoice_enabled: bool = True  # False=关闭辅助特征,不参与评分
     # FunASR 长音频先由 FSMN-VAD 切为短句，避免生成式解码器处理五分钟单句。
     asr_vad_max_segment_s: int = Field(default=30, ge=5, le=120)
-    # 同时执行的分段 ASR 任务数；大于 1 时每个工作线程独立加载模型，显存近似线性增加。
-    asr_task_max_concurrency: int = Field(default=1, ge=1, le=8)
+    # 同时执行的分段 ASR 任务数；实际模型实例由共享池按角色并发上限分配。
+    asr_task_max_concurrency: int = Field(
+        default=1, ge=1, le=8, validation_alias=AliasChoices("asr_task_max_concurrency", "MAX_TRANSCRIBING")
+    )
 
     # ---------- V0.1.12.2: 分后端设备与并发控制 ----------
     asr_primary_device: str = "cpu"
     asr_auxiliary_device: str = "cpu"
     asr_review_device: str = "cpu"
     asr_fallback_device: str = "cpu"
-    asr_primary_max_concurrency: int = 1
-    asr_auxiliary_max_concurrency: int = 1
-    asr_review_max_concurrency: int = 1
-    asr_fallback_max_concurrency: int = 1
+    asr_primary_max_concurrency: int = Field(default=1, ge=1, le=8)
+    asr_auxiliary_max_concurrency: int = Field(default=1, ge=1, le=8)
+    asr_review_max_concurrency: int = Field(default=1, ge=1, le=8)
+    asr_fallback_max_concurrency: int = Field(default=1, ge=1, le=8)
     # 模型生命周期
     asr_primary_keep_loaded: bool = True
     asr_auxiliary_keep_loaded: bool = False
     asr_review_keep_loaded: bool = False
     asr_fallback_keep_loaded: bool = False
-    asr_model_idle_unload_seconds: int = 900
+    asr_model_idle_unload_seconds: int = Field(default=900, ge=0, le=86400)
     asr_preload_on_start: bool = False
     # V0.1.12.2: 固定模型 revision (不再默认 master)
     asr_model_revision: str = "v2.0.4"
 
     # ---------- AI:大模型(OpenAI 兼容协议,境内推荐 DeepSeek/通义/Kimi/GLM) ----------
-    llm_daily_budget: float = 0.0
+    llm_daily_budget: float = Field(default=0.0, ge=0.0)
     # 每个录制切片完成 ASR 后，是否调用 LLM 整理正文并生成摘要。
     transcript_llm_refine_enabled: bool = True
     transcript_llm_refine_max_tokens: int = Field(default=65536, ge=128, le=65536)
@@ -193,7 +198,9 @@ class Settings(BaseSettings):
     clip_subtitle: bool = False  # 烧录字幕(从转写生成)
     clip_max_duration_s: int = Field(default=180, ge=5, le=900)
     clip_video_crf: int = Field(default=20, ge=0, le=51)  # x264 质量,越小越好
-    clip_preset: str = "veryfast"  # x264 编码速度档
+    clip_preset: Literal[
+        "ultrafast", "superfast", "veryfast", "faster", "fast", "medium", "slow", "slower", "veryslow"
+    ] = "veryfast"  # x264 编码速度档
 
     # ---------- V0.1.2 新增:高级功能 ----------
     # 阈值自学习:收集 N 条审批反馈后自动调整房间级阈值。
@@ -208,6 +215,16 @@ class Settings(BaseSettings):
     min_free_disk_gb: float = Field(default=10.0, ge=1.0, description="最低剩余磁盘空间(GB),低于此值暂停高风险任务")
     raw_retention_days: int = Field(default=7, ge=1, le=90, description="原始录像保留天数")
     clip_cleanup_delay_hours: int = Field(default=24, ge=1, le=720, description="成片成功后原始分段延迟清理(小时)")
+
+    # 后台调度、恢复与磁盘保护；保留已有 ENV 名称。
+    max_analyzing: int = Field(default=2, ge=1, le=16)
+    max_rendering: int = Field(default=2, ge=1, le=16)
+    max_publishing: int = Field(default=1, ge=1, le=8)
+    worker_shutdown_timeout_seconds: int = Field(default=30, ge=1, le=3600)
+    stale_timeout_s: int = Field(default=120, ge=60, le=86400)
+    upload_attempt_stale_s: int = Field(default=600, ge=60, le=86400)
+    low_disk_threshold_gb: float = Field(default=20.0, ge=1)
+    critical_disk_threshold_gb: float = Field(default=5.0, ge=0.1)
 
     # ---------- 上传 ----------
     uploader: str = "manual"  # 默认上传器(manual 时不触碰平台接口)
@@ -234,7 +251,7 @@ class Settings(BaseSettings):
 
     # 邮件通知(SMTP)。
     smtp_host: str = ""  # SMTP 服务器
-    smtp_port: int = 465  # SMTP 端口(默认 SSL 465)
+    smtp_port: int = Field(default=465, ge=1, le=65535)  # SMTP 端口(默认 SSL 465)
     smtp_user: str = ""  # SMTP 用户名
     smtp_password: str = Field(default="", repr=False)  # SMTP 密码 (repr=False 防止日志泄露)
     smtp_from: str = ""  # 发件人地址
@@ -251,7 +268,7 @@ class Settings(BaseSettings):
     def validate_cross_fields(self) -> Settings:
         """跨字段校验,在模型完成字段级别验证后执行。
 
-        检查逻辑约束(如磁盘告警阈值应小于最小保留空间)
+        检查逻辑约束(如磁盘告警应在最低空间保护之前触发)
         以及格式约束(如上传命令模板须包含 ``{file}`` 占位符)。
 
         :returns: 校验通过的 ``self``。
@@ -275,17 +292,17 @@ class Settings(BaseSettings):
         if self.upload_max_per_hour < 1:
             raise ValueError(f"upload_max_per_hour 必须 >= 1,当前值: {self.upload_max_per_hour}")
 
-        # 磁盘告警阈值应 <= 最小保留空间,确保告警在磁盘不足之前触发
-        if self.disk_alert_threshold_gb > self.min_free_disk_gb:
-            raise ValueError(
-                f"disk_alert_threshold_gb ({self.disk_alert_threshold_gb} GB)"
-                f" 必须 <= min_free_disk_gb ({self.min_free_disk_gb} GB),"
-                f" 确保磁盘告警在空间不足之前触发"
-            )
+        if (
+            self.critical_disk_threshold_gb > self.min_free_disk_gb
+            or self.min_free_disk_gb > self.low_disk_threshold_gb
+        ):
+            raise ValueError("磁盘阈值必须满足 critical <= min_free <= low")
+        if self.disk_alert_threshold_gb < self.min_free_disk_gb:
+            raise ValueError("磁盘告警阈值必须 >= min_free_disk_gb")
 
         # biliup_upload_cmd 如果非空,必须包含 {file} 占位符
         if self.biliup_upload_cmd and "{file}" not in self.biliup_upload_cmd:
-            raise ValueError(f"biliup_upload_cmd 必须包含 {{file}} 占位符,当前值: {self.biliup_upload_cmd}")
+            raise ValueError("biliup_upload_cmd 必须包含 {file} 占位符")
 
         baseline_ratio = self.hotspot_baseline_window_s / self.hotspot_bucket_s
         tick_ratio = self.hotspot_detector_tick_s / self.hotspot_bucket_s
@@ -316,4 +333,6 @@ def get_settings() -> Settings:
 
 
 # 便捷别名:大多数模块直接 ``from app.core.config import settings`` 即可。
-settings: Settings = get_settings()
+from app.core.runtime_settings import SettingsProxy  # noqa: E402
+
+settings = cast(Settings, SettingsProxy())

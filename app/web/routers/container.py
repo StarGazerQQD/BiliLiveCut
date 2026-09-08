@@ -37,6 +37,31 @@ class SettingsRequest(BaseModel):
 router = APIRouter()
 
 
+from app.core.configuration import (  # noqa: E402
+    ConfigurationChange,
+    ConfigurationConflict,
+    configuration_view,
+    save_configuration,
+)
+
+
+@router.get("/settings/configuration")
+def get_configuration() -> dict[str, Any]:
+    """返回完整业务配置注册表及脱敏后的有效值。"""
+    return configuration_view()
+
+
+@router.patch("/settings/configuration")
+def patch_configuration(req: ConfigurationChange) -> dict[str, Any]:
+    """原子保存业务配置；过期表单返回冲突而不覆盖新设置。"""
+    try:
+        return save_configuration(req)
+    except ConfigurationConflict as exc:
+        raise HTTPException(status_code=409, detail=str(exc)) from exc
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
+
+
 @router.get("/settings")
 def get_settings() -> dict[str, Any]:
     """返回可切换的运行时开关与上传配置概览。"""

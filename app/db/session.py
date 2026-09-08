@@ -68,6 +68,9 @@ def init_db() -> None:
     from app.db.schema import assure_schema
 
     assure_schema()
+    from app.core.configuration import reload_configuration
+
+    reload_configuration()
     logger.info("数据库初始化完成: {}", settings.database_url)
 
 

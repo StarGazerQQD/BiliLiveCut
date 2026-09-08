@@ -682,11 +682,15 @@ def test_finished_session_timeline_api_exposes_and_regenerates_whole_summary(tem
     assert regenerate.json() == {"session_id": session_id, "requested": True}
 
 
-def test_retranscribe_api_deletes_transcript_and_requeues_segment(temp_db: None) -> None:
+def test_retranscribe_api_deletes_transcript_and_requeues_segment(temp_db: None, monkeypatch: MonkeyPatch) -> None:
     """无受保护下游资产时，重新识别应原子删除旧转写并重置任务。"""
     from app.db.entities import RawSegment, SegmentStatus, SegmentTask, TaskStatus, Transcript
     from app.db.session import get_session
+    from app.pipeline import storage_lifecycle
     from app.web.main import app
+
+    # 本测试验证接口入队事务；调度/转写由独立集成测试覆盖。
+    monkeypatch.setattr(storage_lifecycle, "is_safe_for_new_tasks", lambda: False)
 
     with get_session() as db:
         segment = RawSegment(session_id=1, seq=1, file_path="segment.ts", status=SegmentStatus.SCORED)

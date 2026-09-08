@@ -26,6 +26,7 @@ from sqlmodel import select
 
 from app.core import settings_store
 from app.core.config import settings
+from app.core.runtime_settings import configured_task
 from app.db.entities import (
     FinalClip,
     UploadStatus,
@@ -59,6 +60,8 @@ class UploadResult:
     success: bool
     remote_id: str | None = None
     message: str = ""
+    outcome: str | None = None
+    request_may_have_been_sent: bool = False
 
 
 @dataclass(frozen=True)
@@ -240,6 +243,7 @@ class BiliupUploader(Uploader):
             return UploadResult(
                 success=False,
                 message="未配置 BILIUP_UPLOAD_CMD,biliup 上传未执行(合规风险自负)。",
+                outcome="failed_permanent",
             )
 
         # V0.1.8.2:使用 shlex.quote 包裹参数,防止命令注入。
@@ -249,12 +253,19 @@ class BiliupUploader(Uploader):
             file=_shlex.quote(str(clip["file_path"])),
             title=_sanitize_biliup(clip.get("title") or ""),
             desc=_sanitize_biliup(clip.get("description") or ""),
+            config=_shlex.quote(settings.biliup_config),
         )
         try:
             args = shlex.split(cmd_str, posix=False)
             proc = subprocess.run(args, capture_output=True, timeout=1800)
-        except Exception as exc:  # noqa: BLE001 — 外部命令任何异常都转为失败结果
-            return UploadResult(success=False, message=f"biliup 命令执行异常: {exc}")
+        except (OSError, subprocess.TimeoutExpired) as exc:
+            classified = classify_upload_error(exc)
+            return UploadResult(
+                success=False,
+                message=f"biliup 命令执行异常: {exc}",
+                outcome=classified.outcome,
+                request_may_have_been_sent=classified.request_may_have_been_sent,
+            )
 
         out = (proc.stdout or b"").decode("utf-8", errors="ignore")
         err = (proc.stderr or b"").decode("utf-8", errors="ignore")
@@ -262,10 +273,19 @@ class BiliupUploader(Uploader):
             return UploadResult(
                 success=False,
                 message=f"biliup 失败(code={proc.returncode}): {err[:300]}",
+                outcome="remote_result_unknown",
+                request_may_have_been_sent=True,
             )
         # 尽力从输出解析稿件号(BV 号)。
         remote_id = _parse_bv(out) or _parse_bv(err)
-        return UploadResult(success=True, remote_id=remote_id, message="biliup 上传完成。")
+        if remote_id is None:
+            return UploadResult(
+                False,
+                message="上传命令结束但未返回稿件号，请核对平台结果",
+                outcome="remote_result_unknown",
+                request_may_have_been_sent=True,
+            )
+        return UploadResult(success=True, remote_id=remote_id, message="biliup 上传完成。", outcome="success")
 
 
 def _sanitize_biliup(value: str) -> str:
@@ -357,59 +377,55 @@ def enqueue_upload(clip_id: int) -> UploadTask:
     return task
 
 
+@configured_task
 def process_upload_task(task_id: int) -> UploadTask:
-    """执行一个上传任务(带重试)。
+    """复用持久化尝试记录；只有确定未发送的错误允许有限重试。"""
+    from uuid import uuid4
 
-    :param task_id: ``upload_tasks`` 主键。
-    :returns: 更新后的 :class:`UploadTask`。
-    :raises ValueError: 任务不存在时。
-    """
+    from app.pipeline.workers.publish import (
+        commit_publish_result,
+        execute_remote_upload,
+        prepare_upload_attempt,
+    )
+
     with get_session() as db:
         task = db.get(UploadTask, task_id)
         if task is None:
             raise ValueError(f"上传任务不存在: id={task_id}")
-        if task.status == UploadStatus.SKIPPED:
+        if task.status not in {"queued", "failed", "failed_retryable"}:
             return task
         clip = db.get(FinalClip, task.clip_id)
-        clip_dict = (
-            {
-                "id": clip.id,
-                "file_path": clip.file_path,
-                "title": clip.title,
-                "description": clip.description,
-            }
-            if clip
-            else None
+        if clip is None:
+            return _finish_task(task_id, UploadStatus.FAILED, error="切片不存在")
+        payload = {"id": clip.id, "file_path": clip.file_path, "title": clip.title, "description": clip.description}
+        manual = task.uploader == "manual"
+    if manual:
+        result = ManualUploader().upload(payload)
+        return _finish_task(
+            task_id,
+            UploadStatus.SUCCESS if result.success else UploadStatus.FAILED,
+            remote_id=result.remote_id,
+            error=None if result.success else result.message,
         )
-
-    if clip_dict is None:
-        return _finish_task(task_id, UploadStatus.FAILED, error="切片不存在")
-
-    uploader = get_uploader()
-    last_error = ""
-    for attempt in range(1, settings.upload_max_retries + 2):
-        _set_task_running(task_id, attempt)
-        try:
-            result = uploader.upload(clip_dict)
-        except Exception as exc:  # noqa: BLE001
-            result = UploadResult(success=False, message=str(exc))
-        if result.success:
-            return _finish_task(task_id, UploadStatus.SUCCESS, remote_id=result.remote_id, error=None)
-        last_error = result.message
-        logger.warning("上传失败 task={} 第{}次: {}", task_id, attempt, last_error)
-
-    return _finish_task(task_id, UploadStatus.FAILED, error=last_error)
-
-
-def _set_task_running(task_id: int, attempt: int) -> None:
-    """把任务标记为上传中并记录尝试次数。"""
+    worker_id = f"upload-{uuid4().hex}"
+    for _ in range(settings.upload_max_retries + 1):
+        prepared = prepare_upload_attempt(task_id, worker_id)
+        if not prepared.get("ready"):
+            break
+        token, generation = prepared["attempt_token"], prepared["publish_generation"]
+        result = (
+            {"outcome": "success", "remote_id": prepared.get("remote_id")}
+            if prepared.get("already_success")
+            else execute_remote_upload(token)
+        )
+        commit_publish_result(token, generation, result)
+        if result.get("outcome") != "failed_retryable" or result.get("request_may_have_been_sent", False):
+            break
     with get_session() as db:
         task = db.get(UploadTask, task_id)
-        if task is not None:
-            task.status = UploadStatus.UPLOADING
-            task.attempts = attempt
-            task.updated_at = utcnow()
-            db.add(task)
+        if task is None:
+            raise ValueError(f"上传任务不存在: id={task_id}")
+        return task
 
 
 def _finish_task(
@@ -456,6 +472,7 @@ def _finish_task(
         return task
 
 
+@configured_task
 def enqueue_and_upload(clip_id: int) -> UploadTask:
     """入队并立即执行上传(便于自动链路与 CLI 复用)。
 
@@ -492,6 +509,24 @@ def classify_upload_error(exc: Exception) -> RemoteUploadResult:
     """
     import re
 
+    if isinstance(exc, (TimeoutError, subprocess.TimeoutExpired, ConnectionResetError, BrokenPipeError)):
+        return RemoteUploadResult(
+            outcome="remote_result_unknown",
+            remote_id=None,
+            remote_url=None,
+            error_type="request_may_have_been_sent",
+            error_message=str(exc),
+            request_may_have_been_sent=True,
+        )
+    if isinstance(exc, (FileNotFoundError, PermissionError)):
+        return RemoteUploadResult(
+            outcome="failed_permanent",
+            remote_id=None,
+            remote_url=None,
+            error_type="auth_or_config",
+            error_message=str(exc),
+            request_may_have_been_sent=False,
+        )
     msg = str(exc).lower()
 
     # 确定请求未发出的情况 (安全重试)

@@ -31,6 +31,7 @@ from app.core.config import settings
 from app.core.ffmpeg_errors import classify_ffmpeg_error
 from app.core.paths import clips_dir
 from app.core.process_control import ProcessCancelledError, run_cancellable
+from app.core.runtime_settings import configured_task
 from app.db.entities import (
     CandidateStatus,
     ClipStatus,
@@ -304,7 +305,9 @@ def _render_intro_outro_cards(
                 if room:
                     vars_dict["streamer_name"] = room.uploader_name or ""
                     vars_dict["game_name"] = ""
-                    vars_dict["room_title"] = room.title or ""
+                    from app.recording.metadata import session_title_at
+
+                    vars_dict["room_title"] = session_title_at(db, cand.session_id, cand.start_ts) or ""
         if cand:
             vars_dict["time"] = cand.start_ts.strftime("%H:%M") if cand.start_ts else ""
 
@@ -632,6 +635,7 @@ def render_clip_to_file(
     }
 
 
+@configured_task
 def produce_clip(
     candidate_id: int,
     options: ClipOptions | None = None,

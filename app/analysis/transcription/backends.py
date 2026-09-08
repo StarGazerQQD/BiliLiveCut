@@ -22,12 +22,12 @@ from __future__ import annotations
 import re
 import time
 import uuid
-from functools import lru_cache
 from pathlib import Path
 
 from loguru import logger
 
 from app.analysis import asr_metrics
+from app.analysis.model_pool import model_pool
 from app.analysis.transcription.models import (  # single source of truth — no duplicates
     ASRSegmentResult,
     ASRTranscriptResult,
@@ -138,9 +138,21 @@ class FunASRBackend:
             self._primary_model_name = primary or self.MODEL_ID_PRIMARY
         self._use_sensevoice = sensevoice if sensevoice is not None else settings.asr_sensevoice
         self._use_funasr = funasr_nano if funasr_nano is not None else settings.asr_funasr_review
-        self._primary: object | None = None
-        self._sensevoice: object | None = None
-        self._funasr: object | None = None
+
+    @property
+    def primary_identity(self) -> str:
+        """实际 Paraformer 路径与固定版本组成模型身份。"""
+        return f"{self._primary_model_name}@{self.primary_revision}"
+
+    @property
+    def nano_identity(self) -> str:
+        """Nano 本地模型来源与固定版本组成模型身份。"""
+        return f"{self._models_dir or self.MODEL_ID_NANO}@{self.nano_revision}"
+
+    @property
+    def sensevoice_identity(self) -> str:
+        """SenseVoice 本地模型来源与固定版本组成模型身份。"""
+        return f"{self._models_dir or self.MODEL_ID_SENSEVOICE}@{self.sensevoice_revision}"
 
     @property
     def model_revision(self) -> str:
@@ -169,8 +181,6 @@ class FunASRBackend:
 
         Uses self._REVISION_PRIMARY (per-engine), not global settings.asr_model_revision.
         """
-        if self._primary is not None:
-            return self._primary
         try:
             from funasr import AutoModel
         except ImportError:
@@ -183,7 +193,7 @@ class FunASRBackend:
             vad_path = str(Path(self._models_dir) / "paraformer" / "fsmn-vad")
             punc_path = str(Path(self._models_dir) / "paraformer" / "ct-punc")
             logger.info("Loading Paraformer from local paths: model={} vad={}", self._primary_model_name, vad_path)
-            self._primary = AutoModel(
+            model = AutoModel(
                 model=self._primary_model_name,
                 vad_model=vad_path,
                 punc_model=punc_path,
@@ -198,7 +208,7 @@ class FunASRBackend:
                 device,
                 revision,
             )
-            self._primary = AutoModel(
+            model = AutoModel(
                 model=self._primary_model_name,
                 vad_model="fsmn-vad",
                 punc_model="ct-punc",
@@ -208,12 +218,10 @@ class FunASRBackend:
             )
         asr_metrics.record_backend_call("paraformer", 0, success=True)
         logger.info("Paraformer loaded: device={} local={}", device, self._use_local_models)
-        return self._primary
+        return model
 
     def _load_sensevoice(self) -> object:
         """加载 SenseVoice-Small (情感/笑声/音乐/事件检测)。 Uses per-engine revision."""
-        if self._sensevoice is not None:
-            return self._sensevoice
         try:
             from funasr import AutoModel
         except ImportError:
@@ -221,20 +229,20 @@ class FunASRBackend:
         if self._use_local_models:
             sensevoice_path = str(Path(self._models_dir) / "sensevoice")
             logger.info("Loading SenseVoice-Small from local path: {}", sensevoice_path)
-            self._sensevoice = AutoModel(
+            model = AutoModel(
                 model=sensevoice_path,
                 device=settings.asr_auxiliary_device or settings.whisper_device,
                 hub="ms",
                 disable_update=True,
             )
         else:
-            self._sensevoice = AutoModel(
+            model = AutoModel(
                 model=self.MODEL_ID_SENSEVOICE,
                 device=settings.asr_auxiliary_device or settings.whisper_device,
                 hub="ms",
                 revision=self._REVISION_SENSEVOICE or None,
             )
-        return self._sensevoice
+        return model
 
     def _load_funasr(self, *, for_primary: bool = False) -> object:
         """加载 Fun-ASR-Nano，并按用途选择首选或复核设备。
@@ -243,8 +251,6 @@ class FunASRBackend:
             局部复核时使用 ``ASR_REVIEW_DEVICE``。
         :returns: 缓存的 FunASR ``AutoModel`` 实例。
         """
-        if self._funasr is not None:
-            return self._funasr
         try:
             from funasr import AutoModel
         except ImportError:
@@ -260,7 +266,7 @@ class FunASRBackend:
                 vad_path,
                 settings.asr_vad_max_segment_s,
             )
-            self._funasr = AutoModel(
+            model = AutoModel(
                 model=nano_path,
                 vad_model=vad_path,
                 vad_kwargs=vad_kwargs,
@@ -274,7 +280,7 @@ class FunASRBackend:
                 self._REVISION_NANO or "master",
                 settings.asr_vad_max_segment_s,
             )
-            self._funasr = AutoModel(
+            model = AutoModel(
                 model=self.MODEL_ID_NANO,
                 vad_model="fsmn-vad",
                 vad_kwargs=vad_kwargs,
@@ -282,7 +288,7 @@ class FunASRBackend:
                 hub="ms",
                 revision=self._REVISION_NANO or None,
             )
-        return self._funasr
+        return model
 
     # ---- 转写 (V0.1.12.2: 返回 ASRTranscriptResult) ----
 
@@ -298,7 +304,6 @@ class FunASRBackend:
         :returns: :class:`ASRTranscriptResult`。
         """
         audio_duration = _probe_audio_duration(audio_path)
-        model = self._load_primary()
         t0 = time.time()
 
         # V0.1.12.2: 将热词传入 Paraformer (如果后端支持)
@@ -306,13 +311,14 @@ class FunASRBackend:
         if initial_prompt:
             generate_kwargs["hotword"] = initial_prompt
 
-        try:
-            result = model.generate(**generate_kwargs)
-        except TypeError:
-            # hotword 参数不被此版本支持 → 降级
-            logger.info("Paraformer 不支持 hotword 参数, 降级为无热词调用")
-            generate_kwargs.pop("hotword", None)
-            result = model.generate(**generate_kwargs)
+        with model_pool.use("primary", self.primary_identity, self._load_primary) as model:
+            try:
+                result = model.generate(**generate_kwargs)
+            except TypeError:
+                # hotword 参数不被此版本支持 → 降级
+                logger.info("Paraformer 不支持 hotword 参数, 降级为无热词调用")
+                generate_kwargs.pop("hotword", None)
+                result = model.generate(**generate_kwargs)
 
         elapsed = time.time() - t0
         logger.info("Paraformer 主引擎转写完成, 耗时 {:.1f}s", elapsed)
@@ -430,9 +436,9 @@ class FunASRBackend:
 
     def _detect_auxiliary(self, audio_path: str) -> list[EmotionEvent]:
         """SenseVoice-Small: 检测情感、笑声、音乐、事件 (V0.1.12.2: 解析时间戳)。"""
-        sv = self._load_sensevoice()
         t0 = time.time()
-        result = sv.generate(input=audio_path)
+        with model_pool.use("auxiliary", self.sensevoice_identity, self._load_sensevoice) as sv:
+            result = sv.generate(input=audio_path)
         elapsed = time.time() - t0
         logger.info("SenseVoice 辅助特征检测完成, 耗时 {:.1f}s", elapsed)
 
@@ -552,7 +558,6 @@ class FunASRBackend:
         :param hotword: 传给 FunASR 解码器的房间专属热词串。
         :returns: :class:`ASRTranscriptResult`。
         """
-        model = self._load_funasr(for_primary=for_primary)
         measured_duration = audio_duration if audio_duration is not None else _probe_audio_duration(audio_path)
         t0 = time.time()
         generate_kwargs: dict[str, object] = {
@@ -564,9 +569,9 @@ class FunASRBackend:
         }
         if hotword:
             generate_kwargs["hotword"] = hotword
-        result = model.generate(
-            **generate_kwargs,
-        )
+        role = "primary" if for_primary else "review"
+        with model_pool.use(role, self.nano_identity, lambda: self._load_funasr(for_primary=for_primary)) as model:
+            result = model.generate(**generate_kwargs)
         elapsed = time.time() - t0
         logger.info("Fun-ASR-Nano 转写完成, 耗时 {:.1f}s", elapsed)
         asr_metrics.record_backend_call("funasr-nano", elapsed, success=bool(result))
@@ -733,6 +738,11 @@ class FasterWhisperBackend:
         self.device = device or settings.asr_fallback_device or settings.whisper_device
         self.compute_type = compute_type or settings.whisper_compute_type
 
+    @property
+    def model_identity(self) -> str:
+        """包含显式设备与精度，防止不同构造参数复用同一实例。"""
+        return f"{self.model_size}@{self.device}:{self.compute_type}"
+
     def _load_model(self):  # noqa: ANN202
         return _load_whisper_model(self.model_size, self.device, self.compute_type)
 
@@ -748,36 +758,36 @@ class FasterWhisperBackend:
         :returns: :class:`ASRTranscriptResult`。
         """
         audio_duration = _probe_audio_duration(audio_path)
-        model = self._load_model()
         kwargs: dict = {"vad_filter": True, "word_timestamps": True}
         if initial_prompt:
             kwargs["initial_prompt"] = initial_prompt
         t0 = time.time()
-        fw_segments, info = model.transcribe(audio_path, **kwargs)
-        elapsed = time.time() - t0
+        with model_pool.use("fallback", self.model_identity, self._load_model) as model:
+            fw_segments, info = model.transcribe(audio_path, **kwargs)
 
-        segments: list[ASRSegmentResult] = []
-        all_text: list[str] = []
-        for seg in fw_segments:
-            seg_words: list[Word] = []
-            for w in seg.words or []:
-                seg_words.append(Word(word=w.word, start=float(w.start), end=float(w.end)))
+            segments: list[ASRSegmentResult] = []
+            all_text: list[str] = []
+            for seg in fw_segments:
+                seg_words: list[Word] = []
+                for w in seg.words or []:
+                    seg_words.append(Word(word=w.word, start=float(w.start), end=float(w.end)))
 
-            segments.append(
-                ASRSegmentResult(
-                    start=float(seg.start),
-                    end=float(seg.end),
-                    text=seg.text.strip(),
-                    raw_confidence=seg.avg_logprob,
-                    confidence_type="avg_logprob",
-                    normalized_confidence=_normalize_whisper_logprob(seg.avg_logprob),
-                    confidence_available=True,
-                    language=info.language,
-                    words=seg_words,
+                segments.append(
+                    ASRSegmentResult(
+                        start=float(seg.start),
+                        end=float(seg.end),
+                        text=seg.text.strip(),
+                        raw_confidence=seg.avg_logprob,
+                        confidence_type="avg_logprob",
+                        normalized_confidence=_normalize_whisper_logprob(seg.avg_logprob),
+                        confidence_available=True,
+                        language=info.language,
+                        words=seg_words,
+                    )
                 )
-            )
-            all_text.append(seg.text)
+                all_text.append(seg.text)
 
+        elapsed = time.time() - t0
         full_text = "".join(all_text).strip()
         logger.info("Whisper 兜底转写完成, 耗时 {:.1f}s, 语言={}", elapsed, info.language)
         asr_metrics.record_backend_call("whisper", elapsed, success=True)
@@ -807,9 +817,8 @@ class FasterWhisperBackend:
         return self.transcribe(audio_path)
 
 
-@lru_cache(maxsize=2)
 def _load_whisper_model(model_size: str, device: str, compute_type: str):  # noqa: ANN202
-    """加载并缓存 WhisperModel (进程级, 最多缓存 2 个)。
+    """创建 WhisperModel；实例由推理模型池独占管理。
 
     V0.1.13: 加载前检查系统资源, 不足时根据 asr_resource_policy 决定抛异常或仅警告。
     """

@@ -45,10 +45,11 @@ def cancel_job(job_id: str, request: Request) -> dict[str, Any]:
 
 
 @router.post("/jobs/{job_id}/retry")
-def retry_job(job_id: str, request: Request) -> dict[str, Any]:
+async def retry_job(job_id: str, request: Request) -> dict[str, Any]:
     """重试失败或已取消的后台作业。"""
     actor, role = review_actor(request)
     try:
+        await web_job_manager.start()
         return web_job_manager.retry(job_id, actor, is_admin=role == "admin")
     except PermissionError as exc:
         raise HTTPException(status_code=403, detail=str(exc)) from exc
