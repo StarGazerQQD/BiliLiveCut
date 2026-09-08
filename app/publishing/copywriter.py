@@ -23,6 +23,7 @@ from app.analysis.transcript_windows import extract_transcript_window
 from app.clipping.clipper import select_covering_segments
 from app.core.config import settings
 from app.core.paths import ready_to_upload_dir
+from app.core.runtime_settings import configured_task
 from app.db.entities import (
     ClipStatus,
     FinalClip,
@@ -220,6 +221,7 @@ def _fallback_copy(text: str, reason: str) -> Copy:
     )
 
 
+@configured_task
 def generate_copy(clip_id: int) -> FinalClip:
     """为成品切片生成文案并按审核模式决定状态。
 

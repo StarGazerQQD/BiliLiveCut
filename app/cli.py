@@ -18,9 +18,13 @@ app = typer.Typer(help="BiliLiveCut —— AI 直播实时切片系统 CLI")
 
 
 @app.callback()
-def _bootstrap() -> None:
+def _bootstrap(ctx: typer.Context) -> None:
     """所有命令执行前的初始化: 配置日志。"""
     setup_logging()
+    if ctx.invoked_subcommand not in {None, "version", "doctor", "serve", "init"}:
+        from app.db.session import init_db
+
+        init_db()
 
 
 # ── 从子模块注册所有命令 ──────────────────────────────────

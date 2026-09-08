@@ -12,6 +12,7 @@ import json
 import os
 from datetime import UTC, datetime
 from pathlib import Path
+from uuid import uuid4
 
 from loguru import logger
 
@@ -19,10 +20,23 @@ _JOURNAL_DIR = Path(os.environ.get("BLC_JOURNAL_DIR", "storage/journal"))
 
 
 def _journal_path() -> Path:
-    """确保 Journal 目录存在并返回当日日志文件路径。"""
+    """每次写入独立文件，避免回放重写覆盖同时追加的成功结果。"""
     _JOURNAL_DIR.mkdir(parents=True, exist_ok=True)
     today = datetime.now(UTC).strftime("%Y%m%d")
-    return _JOURNAL_DIR / f"publish_journal_{today}.jsonl"
+    return _JOURNAL_DIR / f"publish_journal_{today}_{uuid4().hex}.jsonl"
+
+
+def _atomic_write(path: Path, content: str) -> None:
+    """先落盘再原子替换；读者只会看到完整的日志。"""
+    temporary = path.with_suffix(f".{uuid4().hex}.tmp")
+    try:
+        with temporary.open("x", encoding="utf-8") as stream:
+            stream.write(content)
+            stream.flush()
+            os.fsync(stream.fileno())
+        os.replace(temporary, path)
+    finally:
+        temporary.unlink(missing_ok=True)
 
 
 def write_remote_success(
@@ -35,7 +49,7 @@ def write_remote_success(
     platform: str = "bilibili",
     finished_at: str | None = None,
 ) -> bool:
-    """持久化远程成功结果 (行式 JSON, 可追加)。
+    """持久化远程成功结果（独立行式 JSON 文件，原子写入）。
 
     调用时机: 远程返回 SUCCESS 但 DB submit 失败时。
 
@@ -65,21 +79,20 @@ def write_remote_success(
 
     try:
         path = _journal_path()
-        with open(path, "a", encoding="utf-8") as f:
-            f.write(json.dumps(entry, ensure_ascii=False) + "\n")
-        logger.info("journal_write: attempt=%s remote=%s → %s", attempt_token, remote_id, path)
+        _atomic_write(path, json.dumps(entry, ensure_ascii=False) + "\n")
+        logger.info("journal_write: attempt={} remote={} → {}", attempt_token, remote_id, path)
         return True
     except OSError as exc:
-        logger.error("journal_write_failed: attempt=%s error=%s", attempt_token, exc)
+        logger.error("journal_write_failed: attempt={} error={}", attempt_token, exc)
         return False
 
 
-def read_pending_entries() -> list[dict]:
+def read_pending_entries() -> list[dict[str, str | int | None]]:
     """读取所有尚未回填的 Journal 条目。
 
     :returns: 条目列表 (按时间顺序)。
     """
-    entries: list[dict] = []
+    entries: list[dict[str, str | int | None]] = []
     if not _JOURNAL_DIR.exists():
         return entries
 
@@ -89,9 +102,17 @@ def read_pending_entries() -> list[dict]:
                 for line in f:
                     line = line.strip()
                     if line:
-                        entries.append(json.loads(line))
-        except (OSError, json.JSONDecodeError) as exc:
-            logger.warning("journal_read_error: %s error=%s", path, exc)
+                        try:
+                            entry = json.loads(line)
+                        except json.JSONDecodeError as exc:
+                            logger.warning("journal_read_error: {} error={}", path, exc)
+                            continue
+                        if isinstance(entry, dict) and all(
+                            value is None or isinstance(value, (str, int)) for value in entry.values()
+                        ):
+                            entries.append(entry)
+        except OSError as exc:
+            logger.warning("journal_read_error: {} error={}", path, exc)
 
     return entries
 
@@ -99,7 +120,7 @@ def read_pending_entries() -> list[dict]:
 def mark_replayed(attempt_token: str, publish_generation: int) -> bool:
     """标记某个 Journal 条目已被回填 (删除对应行)。
 
-    当前实现: 重写整个文件去除对应行。
+    兼容旧版多行日志；原子重写去除对应行，新写入使用独立文件。
 
     :param attempt_token: 已回填的 attempt 令牌。
     :param publish_generation: 对应代数。
@@ -118,16 +139,16 @@ def mark_replayed(attempt_token: str, publish_generation: int) -> bool:
                 except json.JSONDecodeError:
                     new_lines.append(line)
                     continue
-                if (
+                if isinstance(entry, dict) and (
                     entry.get("attempt_token") == attempt_token
                     and entry.get("publish_generation") == publish_generation
                 ):
                     continue
                 new_lines.append(line)
             if len(new_lines) < len(lines):
-                path.write_text("".join(new_lines), encoding="utf-8")
+                _atomic_write(path, "".join(new_lines))
                 return True
         except OSError as exc:
-            logger.warning("journal_mark_replayed_failed: %s error=%s", path, exc)
+            logger.warning("journal_mark_replayed_failed: {} error={}", path, exc)
 
     return False

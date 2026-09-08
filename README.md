@@ -4,7 +4,13 @@
 [![Release](https://img.shields.io/github/v/release/StarGazerQQD/BiliLiveCut?include_prereleases&sort=semver)](https://github.com/StarGazerQQD/BiliLiveCut/releases)
 [![License](https://img.shields.io/github/license/StarGazerQQD/BiliLiveCut)](LICENSE)
 
-**当前版本：V0.1.18.1 Alpha** (`0.1.18.1-alpha`)
+**当前版本：V0.1.18.2 Alpha** (`0.1.18.2-alpha`)
+
+本版整改：上传超时、命令结果无法确认时会保留尝试记录并等待人工核对，不自动重新投稿；核对后可通过成品页确认发布。启动和运行期间会恢复发布成功日志，已发布素材及活动任务引用的文件不会被拒绝候选清理删除。录制中的磁盘空间检查每秒执行，进入紧急阈值后优雅停止当前录制。整改进度及验收记录见 [审计整改记录](docs/audit/2026-09-08-remediation.md)。
+
+升级到本版时，现有应用版本严格校验仍会拒绝旧版数据库，即使 Schema 编号同为 5；请保留旧目录，在独立目录创建本版数据库并重新配置。程序不会自动迁移旧数据。首次版本与构建验证见 [0.1.18.2 验收记录](docs/audit/2026-09-08-v0.1.18.2.md)，随后修复的 PR 安全告警、当前源码冻结与产物验证见 [PR #53 CI 修复记录](docs/audit/2026-09-08-pr53-ci.md)。
+
+直播间卡片可直接选择「开播后自动录制并分析」，同时启用两个开关并解除人工暂停；只保存单独开关仍保留原暂停状态。服务运行时显示守候、启动、录制、等待下一场及检测错误，程序退出或系统休眠时不会检测。录制前获取最新标题，所有录制入口（含 CLI、手动录制）在运行中默认每 30 秒刷新，单次超时 3 秒；页面轮询后可见。失败保留缓存并标注“上次获取”。场次保留开录标题、观测到的变更与结束标题，旧场次没有历史证据时显示未知；渲染片头按素材时刻的场次观测取标题，不改写已有成片或稿件。每日/每周预约在启动失败或房间已录制时也只创建一个后继，房间需开启「预约录制」。
 
 面向 Bilibili 直播的全自动工作流：实时录制 → 转写 → 生成场次时间线 → 审核动态高光 → 生成切片与文案 →（可选）上传。
 阶段 1–5 全链路已可用；即插即用分发包见 [`packaging/portable/`](packaging/portable/README.md)。普通 Windows 用户可直接阅读 [Portable 小白使用说明](packaging/portable/USER_GUIDE_ZH.md)。
@@ -33,9 +39,9 @@
 - 当前插件 API：[插件接口说明](plugin/README.md)
 - 当前与历史更新记录：[CHANGELOG](CHANGELOG.md) · [归档索引](docs/changelog/CHANGELOG_INDEX.md)
 
-## V0.1.18.1 当前能力：Event-first 热点与原生加速
+## V0.1.18.2 当前能力：Event-first 热点与原生加速
 
-**V0.1.18.1 先检测“发生了什么”，再独立判断“值不值得成片”。** 弹幕、音频、SenseVoice、ASR 和趋势信号先汇聚为带稳定 ID 的 `HotspotEvent`；ASR 不再是硬前置。事件可跨连续原始分段更新和合并，但绝不会跨过真实断流缺口。只有成片分达到房间阈值时才创建当前 `HighlightCandidate`，再进入审核、渲染和发布链路。
+**V0.1.18.2 先检测“发生了什么”，再独立判断“值不值得成片”。** 弹幕、音频、SenseVoice、ASR 和趋势信号先汇聚为带稳定 ID 的 `HotspotEvent`；ASR 不再是硬前置。事件可跨连续原始分段更新和合并，但绝不会跨过真实断流缺口。只有成片分达到房间阈值时才创建当前 `HighlightCandidate`，再进入审核、渲染和发布链路。
 
 - 固定时间桶与滚动基线按房间自适应热度；缺失证据会重归一化权重，不会被当作零分。ASR 完全不可用时，强弹幕/音频/SenseVoice 证据仍能召回热点并优先补转写。
 - EventEnricher 把带 ID 的弹幕、ASR、音频和趋势证据交给结构化 LLM；标题、摘要、语义置信度和代表弹幕可追溯，证据不足时保守描述，不允许凭空补故事。
@@ -141,12 +147,12 @@
 - 控制台新增“插件”导航项：检测到插件后显示插件名称、启停开关和“设置”按钮；每个插件拥有由宿主渲染的独立设置页面。
 - 根目录 [`plugin/`](plugin/README.md) 提供接口文档、Manifest JSON Schema 和可运行示例，并通过 `MANIFEST.in` 随源码发行包分发。
 - 控制台采用分组侧边导航、统一深色视觉层级、焦点状态和响应式布局；录制、任务、审核与插件功能沿用同一套控件和状态反馈。
-- 控制台新增“功能开关”页，按直播间集中展示五项流水线自动化开关、三个辅助开关和审核阈值，并提供上传、网感、插件及模型全局开关的直达入口。
+- 控制台新增“房间自动化与端口”页，按直播间集中展示五项流水线自动化开关、三个辅助开关和审核阈值，并提供上传、网感、插件及模型全局开关的直达入口。
 - “模型”页可直接用尚未保存的当前表单执行连通测试；测试不会写入配置，并会保留各服务商的成功响应或错误详情。
 
 ### 版本与发布一致性
 
-- Python 包、CLI、C/Cython、Rust、Portable、Docker、GitHub Actions、测试和用户文档当前统一为 `0.1.18.1-alpha`。Runtime、Payload、数据库与 Engine Pack 已安装清单均只接受当前精确格式，不提供历史迁移或兼容入口；ASR 模型是否可复用只由当前清单记录的不可变仓库 revision 与逐引擎内容指纹决定。
+- Python 包、CLI、C/Cython、Rust、Portable、Docker、GitHub Actions、测试和用户文档当前统一为 `0.1.18.2-alpha`。Runtime、Payload、数据库与 Engine Pack 已安装清单均只接受当前精确格式，不提供历史迁移或兼容入口；ASR 模型是否可复用只由当前清单记录的不可变仓库 revision 与逐引擎内容指纹决定。
 - 新功能覆盖单元、集成、前端语法和发布回归测试；CI 与 Release 门禁继续校验版本、固定源码、可复现 Payload、原生模块、依赖锁和制品完整性。
 
 ## V0.1.15 版本总结：Portable 发布链路完整收口
@@ -296,11 +302,11 @@ python setup_c.py build_ext --inplace
 备用源  https://pypi.tuna.tsinghua.edu.cn/simple/
 ```
 
-可通过环境变量覆盖（不修改系统级 pip 配置）：
+可在安装前设置当前 PowerShell 进程的环境变量（不修改系统级 pip 配置）。这两项属于 pip，不写入应用 `.env`：
 
-```
-PIP_INDEX_URL=https://mirrors.aliyun.com/pypi/simple/
-PIP_EXTRA_INDEX_URL=https://pypi.tuna.tsinghua.edu.cn/simple/
+```powershell
+$env:PIP_INDEX_URL='https://mirrors.aliyun.com/pypi/simple/'
+$env:PIP_EXTRA_INDEX_URL='https://pypi.tuna.tsinghua.edu.cn/simple/'
 ```
 
 ## 快速开始（Windows PowerShell）
@@ -360,7 +366,7 @@ python -m app.cli list-candidates       # 查看高光候选
 python -m app.cli record <db_id> --pipeline
 ```
 
-`RECORDING_PIPELINE_ENABLED=true` 时，Web 手动开始/恢复、预约、崩溃恢复以及未显式传参的 CLI 录制都会启用实时转写与高光分析。可在控制台“配置 → 功能开关 → 录制实时转写”覆盖该默认值；CLI 可用 `--pipeline` 或 `--no-pipeline` 对单次录制覆盖。`TRANSCRIPT_LLM_REFINE_ENABLED=true` 时，每个切片完成本地 ASR 后还会调用已配置的大模型补全标点、整理正文并生成片段概括；调用失败时保留原始 ASR，不阻断流水线。这两个开关都从下一次开始或恢复录制生效。
+`RECORDING_PIPELINE_ENABLED=true` 时，Web 手动开始/恢复、预约、崩溃恢复以及未显式传参的 CLI 录制都会启用实时转写与高光分析。可在控制台“设置中心 → 全部参数 → 录制与自动化”覆盖该默认值；CLI 可用 `--pipeline` 或 `--no-pipeline` 对单次录制覆盖。`TRANSCRIPT_LLM_REFINE_ENABLED=true` 时，每个切片完成本地 ASR 后还会调用已配置的大模型补全标点、整理正文并生成片段概括；调用失败时保留原始 ASR，不阻断流水线。录制流水线开关从下一次开始或恢复录制生效，转写整理开关从下一次转写任务生效。
 
 主播下播、断流或平台暂时无法返回播放地址时，录制器会继续重试，但不会无限挂起。连续失败达到 `RECORDING_RECONNECT_MAX_ATTEMPTS`（默认 20 次）或从断流开始经过 `RECORDING_RECONNECT_MAX_ELAPSED_S`（默认 180 秒）时，任一条件先满足都会自动结束本场录制并正常执行会话收尾。若平台仍报告直播中，自动监控会等待一次真实离线再允许下一次开播，避免立即进入相同失败循环；成功恢复并产出新片段后，次数和计时都会归零。将某一项设为 `0` 可单独禁用该限制；两项都设为 `0` 会恢复无限重试，不建议用于无人值守录制。
 
@@ -378,17 +384,17 @@ TRANSCRIPT_LLM_REFINE_MAX_TOKENS=65536  # 五分钟转写整理的最大输出�
 HIGHLIGHT_LLM_MAX_TOKENS=65536      # 高光复核的最大输出预算（含推理 token）
 ```
 
-`ASR_TASK_MAX_CONCURRENCY` 控制任务级并行，而 `ASR_PRIMARY_MAX_CONCURRENCY` 等变量控制单个后端实例内部的调用上限。任务级并行大于 `1` 时，每个工作线程加载独立 ASR 流水线，显存占用通常近似线性增加；CPU 或显存不足时保持 `1`。该值也可在“配置 → 功能开关 → ASR 分段并行数”中实时调整，只影响之后领取的任务。
+`ASR_TASK_MAX_CONCURRENCY` 控制任务级并行，`ASR_PRIMARY_MAX_CONCURRENCY` 等变量控制对应模型角色的同时推理数。模型池按实际模型身份复用空闲实例，同一实例的推理互斥；提高并发可能加载更多模型并增加显存占用。设备和模型选择在下一任务生效，活动任务保留原快照；并发与常驻策略在后续检查生效，空闲卸载不会中断推理。
 
 转写整理和高光复核默认各预留 `65536` 个最大输出 token，避免推理模型在处理五分钟切片时耗尽额度而没有正文；可按模型能力分别在 `128-65536` 和 `512-65536` 范围内调低。该值是单次请求上限，实际用量仍以模型返回的 token 数为准。
 
 实时转写页先用“录制场次”下拉选择历史直播，再显示该场全部转写；旧场次不会因为新增记录超过固定条数而消失。“重新识别”会删除当前场次可重建的自动分析结果后重新排队；若存在正在运行的任务，服务端会拒绝并说明原因。每条转写还会显示源 TS 文件名；需要直接进入 NLE 剪辑时使用“无损导出 MP4”，应用会保留原始编码并把首个有效视频帧校准到 `0s`，避免普通 TS→MP4 重封装因 AAC 预滚产生首帧黑画面。
 
-**工作原理与成本控制**：先用零成本规则特征（音量峰值、关键词、语速突增、音频特征、弹幕热度）算出 `rule_score`；只有超过初筛阈值才调用大模型复核。新直播间默认初筛/候选/人工审核阈值为 `0.28/0.38/0.32`，自动批准/发布阈值为 `0.72/0.80`，也可通过 `.env` 的 `HIGHLIGHT_*_THRESHOLD` 与 `AUTO_PUBLISH_THRESHOLD` 调整；房间级值可在“功能开关”中调整。Web「配置 → 大模型」没有启用服务商时自动走**纯规则模式**，完全可用、零费用。
+**工作原理与成本控制**：先用零成本规则特征（音量峰值、关键词、语速突增、音频特征、弹幕热度）算出 `rule_score`；只有超过初筛阈值才调用大模型复核。新直播间默认初筛/候选/人工审核阈值为 `0.28/0.38/0.32`，自动批准/发布阈值为 `0.72/0.80`，也可通过设置中心的全局阈值调整新房间默认，`.env` 同名参数仍提供部署默认；房间级值可在“直播间”及“房间自动化与端口”中调整。Web「设置中心 → 大模型服务商」没有启用服务商时自动走**纯规则模式**，完全可用、零费用。
 
 Event-first 热点层会先按 10 秒信号桶、90 秒直播自身滚动基线和 20 秒检测 tick 生成 `provisional HotspotEvent`。弹幕、音频、SenseVoice、可选 ASR 与缓存趋势按可用证据动态归一化，因此尚无 ASR 不会把热点分数拉成零。热点峰值会反向生成默认前 35 秒、后 55 秒的高优先级局部 ASR；完成后仍保留后台完整 ASR，用于历史、搜索、字幕与整场总结。相邻检测结果会在录制连续且语义或信号连续时跨原始分段归并，稳定结束后进入 `confirmed`；代表弹幕会同时保留高频反应和信息量较高的上下文，不再让多条 `???/666` 挤掉事件内容。EventEnricher 仅根据带 ID 的事件证据束生成结构化标题、摘要和类别；未知引用、证据外实体/数字、无归因的弹幕猜测及陈旧结果都会被拒绝并降级为保守说明。随后 ClipScorer 按完整事件的多信号、证据质量和录制连续性计算成片价值；只有达到房间阈值才关联既有候选审核链，动态边界也始终限制在同一连续录像块内，不会跨断流缺口。详细参数、生命周期、评分和证据字段见 [热点检测器说明](docs/hotspot-detector.md)。
 
-> **大模型选型（境内）**：系统采用 **OpenAI 兼容协议**，可在 Web「配置 → 大模型」同时配置 DeepSeek / 通义千问 / Kimi / 智谱 GLM，并按优先级执行运行时故障切换。
+> **大模型选型（境内）**：系统采用 **OpenAI 兼容协议**，可在 Web「设置中心 → 大模型服务商」同时配置 DeepSeek / 通义千问 / Kimi / 智谱 GLM，并按优先级执行运行时故障切换。
 
 ## 阶段 3：自动切片 + 后处理 + 文案
 
@@ -401,7 +407,7 @@ python -m app.cli produce <candidate_id>     # 切片 + 文案一步到位
 python -m app.cli record <db_id> --pipeline --produce
 ```
 
-**后处理选项**（在 `.env` 配置）：响度标准化 `CLIP_LOUDNORM`、去首尾静默 `CLIP_REMOVE_SILENCE`、烧录字幕 `CLIP_SUBTITLE`、最大时长 `CLIP_MAX_DURATION_S`、画质 `CLIP_VIDEO_CRF`。主成片、审片预览和派生版本都会重建音视频起始时间戳，首个真实画面从 MP4 的 `0s` 开始，不需要在剪辑软件里手工抽掉黑帧。
+**后处理选项**（在“设置中心 → 全部参数 → 成片与编码”配置）：响度标准化 `CLIP_LOUDNORM`、去首尾静默 `CLIP_REMOVE_SILENCE`、烧录字幕 `CLIP_SUBTITLE`、最大时长 `CLIP_MAX_DURATION_S`、画质 `CLIP_VIDEO_CRF`。主成片、审片预览和派生版本都会重建音视频起始时间戳，首个真实画面从 MP4 的 `0s` 开始，不需要在剪辑软件里手工抽掉黑帧。
 
 **多版本出片**：每个 HighlightEvent 可生成多个 ClipVariant（单段版、完整上下文版、带字幕版、无字幕净版、投稿压制版、高码率归档版），横屏输出以 1920×1080 为主。
 
@@ -414,11 +420,23 @@ pip install -e ".[web]" `
 python -m app.cli serve              # 默认 http://127.0.0.1:8000
 ```
 
-Portable Launcher 的 Web 端口可在“配置 → 功能开关 → Web 管理端口”保存，范围为 `1..65535`。配置写入安装根目录的 `config/launcher.json`，只在下次启动 Launcher 时生效；页面会同时显示已保存端口、当前实际端口和是否需要重启。端口被占用时会明确失败，不会随机切换端口。无密码模式仍只监听并接受 `localhost`、`127.0.0.0/8` 或 `[::1]` authority；远程部署必须设置 `ADMIN_PASSWORD`。
+Portable Launcher 的 Web 端口可在“设置中心 → 房间自动化与端口”保存，范围为 `1..65535`。配置写入安装根目录的 `config/launcher.json`，只在下次启动 Web 时生效；源码 CLI 未传 `--port` 时也使用该保存值，显式参数优先；页面会同时显示已保存端口、当前实际端口和是否需要重启。端口被占用时会明确失败，不会随机切换端口。无密码模式仍只监听并接受 `localhost`、`127.0.0.0/8` 或 `[::1]` authority；远程部署必须设置 `ADMIN_PASSWORD`。
 
 功能概览：**直播间管理 / 录制状态 / 实时转写 / 候选审核（横屏审片工作台）/ 成品切片 / 主题管理 / 合集编辑 / 插件中心 / 运维面板 / 任务队列监控 / 上传设置**。
 
 插件默认从 `./storage/plugins` 读取，可通过 `PLUGIN_DIR` 修改。扫描只读取 `plugin.json`，入口代码仅在管理员显式启用后执行；插件与主程序同进程运行，因此只应启用可信插件。开发接口、清单 Schema 和最小示例见 [`plugin/README.md`](plugin/README.md)。
+
+### 统一配置与持久化
+
+左侧“设置中心”是唯一总入口。全部参数按录制、语音、大模型、网感、高光、审核、成片、存储、发布、通知与系统分类；默认显示常用项，高级项按类别展开，支持中文和环境变量名搜索。大模型服务商、房间自动化、账号登录、插件及模板仍有独立子页；原 `?tab=features/models/plugins/login/templates/intro-templates` 链接继续直达。上传和网感业务页保留运行状态，并链接到对应设置。
+
+修改只形成内存草稿，底部展示本次影响与生效时间，点击“保存修改”才提交。切换页面及定时刷新保留草稿；校验失败定位字段，版本冲突时可读取最新值并保留草稿供核对。密码不会保存在浏览器本地存储，离开页面会提示未保存内容。模型计费单价可编辑，空白字段不会被当成删除服务商；密钥留空保持，勾选清空才删除。
+
+`GET /api/settings/configuration` 返回完整的 150 项配置清单、有效值、来源、范围和生效时机；`PATCH` 接受 `values`、`reset`、`clear` 和 `revision`，整体校验后一次提交。Web 覆盖优先于环境/项目默认，重启后保留。凭据不回显，留空保持，显式清空会阻止环境回退；恢复默认删除覆盖。正在执行的任务使用启动快照。
+
+高光入选、进入人工审核、自动批准和自动投稿这四项全局阈值是**新房间默认值**；已有房间使用自己的保存值。自动投稿须同时满足全局自动上传、biliup、房间自动上传开启，并达到房间自动投稿阈值；否则留待人工确认。自动清理默认关闭，启用后每小时检查；清理保留活动任务、媒体使用、审核、重分析、共享文件和未登记文件。
+
+数据库、存储根目录、插件目录、日志和登录身份仍作为启动配置，避免运行中搬迁数据或改变身份。完整字段映射及边界见 [统一配置清单](docs/audit/2026-09-08-configuration-inventory.md)。
 
 ### 可插拔高光评分
 
@@ -440,7 +458,7 @@ python -m pytest scripts/external_tests/test_highlight_plugin_external.py
 
 独立参考实现、训练 CLI 和模型注册表位于 [StarGazerQQD/BiliLiveCut_Highlight](https://github.com/StarGazerQQD/BiliLiveCut_Highlight)。
 
-多人审核入口为 `/review/queue`。管理员仍使用 `ADMIN_PASSWORD`；审核员账号、领取租约和盲审开关在 `.env` 中配置：
+多人审核入口为 `/review/queue`。管理员仍使用 `ADMIN_PASSWORD`；审核员账号在 `.env` 中配置；领取租约和盲审开关也可在设置中心的“审核”分类保存覆盖。部署默认示例：
 
 ```env
 ADMIN_PASSWORD=change-admin-password
@@ -465,7 +483,7 @@ REVIEW_BLIND_MODE=true
 
 每个开关逐阶段独立判断，修改后未完成任务按新配置执行。支持房间级别配置覆盖。
 
-Portable Web 控制台可在“配置 → 功能开关”中按直播间独立修改上述五项开关；预约录制、阈值自学习、弹幕情绪与审核阈值也集中在同一页。房间级 `auto_upload` 仍需配合“上传与发布”页的全局上传总开关。
+Portable Web 控制台可在“设置中心 → 房间自动化与端口”中按直播间独立修改上述五项开关；预约录制、阈值自学习、弹幕情绪与审核阈值也集中在同一页。房间级 `auto_upload` 需配合设置中心“上传与发布”分类的两个全局开关，并达到房间自动投稿分数阈值。
 
 ## 阶段 5：上传队列 + 部署
 
@@ -523,7 +541,7 @@ python scripts/release_gate.py
 |---|---|
 | `ffmpeg 不是内部或外部命令` | 安装 FFmpeg 或在 `.env` 设置 `FFMPEG_PATH` |
 | `check` 显示未开播 | 主播未直播时无流，属正常 |
-| 取流报错 / 403 | 部分高清晰度需登录态，可在 `.env` 配置 `BILIBILI_COOKIE` |
+| 取流报错 / 403 | 部分高清晰度需登录态，可在设置中心登录账号或填写 Cookie |
 | 弹幕 token 返回 `code=-352` | 登录请求失败时会立即匿名兜底并定时重试；匿名请求也被风控时会按配置间隔重试，录制与实时转写继续。无需反复手动登录 |
 | 片段未生成 | 看 `storage/logs/blc.log` 中 `[ffmpeg]` 行 |
 | ASR 主引擎未加载 | 确认 `pip install funasr modelscope` 已执行 |

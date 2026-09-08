@@ -14,6 +14,16 @@ if TYPE_CHECKING:
     from _pytest.monkeypatch import MonkeyPatch
 
 
+@pytest.fixture(autouse=True)
+def isolated_model_pool() -> Iterator[None]:
+    """每个测试清理边界替身的空闲模型，避免外部加载 mock 跨测试复用。"""
+    from app.analysis.model_pool import model_pool
+
+    model_pool.cleanup_idle(force=True)
+    yield
+    model_pool.cleanup_idle(force=True)
+
+
 @pytest.fixture()
 def temp_db(tmp_path, monkeypatch: MonkeyPatch) -> Iterator[None]:
     """创建一个临时 SQLite 数据库并重建引擎。
@@ -33,7 +43,7 @@ def temp_db(tmp_path, monkeypatch: MonkeyPatch) -> Iterator[None]:
     from app.core import config as config_module
 
     config_module.get_settings.cache_clear()
-    config_module.settings = config_module.get_settings()
+    config_module.get_settings()
 
     # 重建数据库引擎以指向临时库。
     import importlib

@@ -3,12 +3,12 @@
 from __future__ import annotations
 
 import logging
-import os
 from datetime import timedelta
 from pathlib import Path
 
 from sqlmodel import select
 
+from app.core.config import settings
 from app.db.entities import (
     ClipVariant,
     RawSegment,
@@ -23,8 +23,6 @@ from app.db.session import get_session
 from app.pipeline.lifecycle import now_utc
 
 _logger = logging.getLogger(__name__)
-
-_STALE_TIMEOUT_S: int = int(os.environ.get("STALE_TIMEOUT_S", "120"))
 
 
 def resume_stage(failed_stage: str | None) -> str:
@@ -53,7 +51,7 @@ def recover_stale() -> None:
     - 已有 UploadAttempt 且状态为 in_progress/reconciliation_required → 不重新排队
     - 仅 PREPARED 或无限 attempt → 允许重新排队
     """
-    stale_threshold = now_utc() - timedelta(seconds=_STALE_TIMEOUT_S)
+    stale_threshold = now_utc() - timedelta(seconds=settings.stale_timeout_s)
 
     with get_session() as db:
         stale = db.exec(
@@ -205,11 +203,8 @@ def recover_pending_clips() -> int:
     return recovered
 
 
-_UPLOAD_ATTEMPT_STALE_SECONDS: int = int(os.environ.get("UPLOAD_ATTEMPT_STALE_S", "600"))
-
-
 def recover_stale_upload_attempts() -> int:
-    """恢复超时的 UploadAttempt — IN_PROGRESS → RECONCILIATION_REQUIRED。
+    """恢复过期尝试：未发出的 PREPARED 可重试，IN_PROGRESS 需核对。
 
     当 Attempt 超过阈值仍处于 IN_PROGRESS, 不得直接重试。
     必须转为 RECONCILIATION_REQUIRED (不能证明平台未成功)。
@@ -218,82 +213,106 @@ def recover_stale_upload_attempts() -> int:
     """
     from datetime import UTC, datetime
 
-    threshold = datetime.now(UTC) - timedelta(seconds=_UPLOAD_ATTEMPT_STALE_SECONDS)
+    threshold = datetime.now(UTC) - timedelta(seconds=settings.upload_attempt_stale_s)
 
     with get_session() as db:
         stale_attempts = db.exec(
             select(UploadAttempt).where(
-                UploadAttempt.status == "in_progress",
+                UploadAttempt.status.in_(["prepared", "in_progress"]),
                 UploadAttempt.started_at < threshold,
             )
         ).all()
 
         recovered = 0
         for attempt in stale_attempts:
-            attempt.status = UploadStatus.RECONCILIATION_REQUIRED
+            attempt.status = (
+                "failed_retryable" if attempt.status == "prepared" else UploadStatus.RECONCILIATION_REQUIRED
+            )
             attempt.finished_at = datetime.now(UTC)
             attempt.error_type = "stale_timeout"
-            attempt.error_message = f"Attempt stale after {_UPLOAD_ATTEMPT_STALE_SECONDS}s"
+            attempt.error_message = f"Attempt stale after {settings.upload_attempt_stale_s}s"
             db.add(attempt)
+            from app.db.entities import UploadTask
+
+            upload_task = db.get(UploadTask, attempt.upload_task_id)
+            if upload_task is not None and upload_task.publish_generation == attempt.publish_generation:
+                upload_task.status = attempt.status
+                upload_task.claimed_by = None
+                upload_task.last_error = attempt.error_message
+                upload_task.updated_at = datetime.now(UTC)
+                db.add(upload_task)
             recovered += 1
             _logger.warning(
-                "upload_attempt_stale_recovery: attempt=%s clip=%s → RECONCILIATION_REQUIRED",
+                "upload_attempt_stale_recovery: attempt=%s clip=%s → %s",
                 attempt.attempt_token,
                 attempt.clip_id,
+                attempt.status,
             )
 
         if recovered:
             db.commit()
-            _logger.info("upload_attempt_recovery: %d stale IN_PROGRESS → RECONCILIATION_REQUIRED", recovered)
+            _logger.info("upload_attempt_recovery: recovered=%d", recovered)
 
     return recovered
 
 
 def sync_segment_task_from_attempt() -> int:
-    """根据 UploadAttempt 状态同步 SegmentTask (非活跃任务的状态推进)。
+    """使用最新尝试或已确认成功的证据，同步上传、成片及全部相关发布任务。"""
+    from app.db.entities import ClipStatus, FinalClip, UploadTask
+    from app.pipeline.stage_result import enqueue_next, mark_completed, mark_failed
 
-    SUCCESS → COMPLETED
-    RECONCILIATION_REQUIRED → RECONCILIATION_REQUIRED
-    FAILED_PERMANENT → FAILED
-
-    Returns: 同步的 Task 数量。
-    """
     synced = 0
     with get_session() as db:
+        latest: dict[int, UploadAttempt] = {}
         attempts = db.exec(
-            select(UploadAttempt).where(
-                UploadAttempt.status.in_(["success", "reconciliation_required", "failed_permanent"])
-            )
+            select(UploadAttempt).order_by(UploadAttempt.created_at.desc(), UploadAttempt.id.desc())
         ).all()
-
         for attempt in attempts:
-            task = db.exec(
+            if attempt.clip_id not in latest or attempt.status == UploadStatus.SUCCESS:
+                latest[attempt.clip_id] = attempt
+        for attempt in latest.values():
+            if attempt.status not in {"success", "reconciliation_required", "failed_permanent"}:
+                continue
+            upload = db.get(UploadTask, attempt.upload_task_id)
+            if upload is not None and upload.publish_generation == attempt.publish_generation:
+                upload.status = attempt.status
+                upload.remote_id = attempt.remote_id
+                upload.last_error = attempt.error_message
+                upload.claimed_by = None
+                db.add(upload)
+            if attempt.status == UploadStatus.SUCCESS:
+                clip = db.get(FinalClip, attempt.clip_id)
+                if clip is not None:
+                    clip.status = ClipStatus.PUBLISHED
+                    db.add(clip)
+            tasks = db.exec(
                 select(SegmentTask).where(
                     SegmentTask.clip_id == attempt.clip_id,
-                    SegmentTask.stage.in_([TaskStatus.PUBLISHING, TaskStatus.QUEUED_FOR_PUBLISH, TaskStatus.RENDERED]),
+                    SegmentTask.stage.in_(
+                        [
+                            TaskStatus.PUBLISHING,
+                            TaskStatus.QUEUED_FOR_PUBLISH,
+                            TaskStatus.RENDERED,
+                            TaskStatus.AWAITING_PUBLISH_CONFIRMATION,
+                        ]
+                    ),
                 )
-            ).first()
-            if task is None:
-                continue
-
-            if attempt.status == UploadStatus.SUCCESS:
-                if task.stage != TaskStatus.COMPLETED:
-                    task.stage = TaskStatus.COMPLETED
-                    db.add(task)
-                    synced += 1
-            elif attempt.status == UploadStatus.RECONCILIATION_REQUIRED:
-                # Task 不推进, 等待人工
-                pass
-            elif attempt.status == "failed_permanent":
-                if task.stage not in (TaskStatus.FAILED, TaskStatus.COMPLETED):
-                    task.stage = TaskStatus.FAILED
-                    db.add(task)
-                    synced += 1
-
-        if synced:
-            db.commit()
-            _logger.info("attempt_task_sync: %d tasks synced", synced)
-
+            ).all()
+            for task in tasks:
+                if attempt.status == UploadStatus.SUCCESS:
+                    mark_completed(task)
+                    enqueue_next(task, TaskStatus.COMPLETED)
+                elif attempt.status == UploadStatus.RECONCILIATION_REQUIRED:
+                    if task.stage == TaskStatus.AWAITING_PUBLISH_CONFIRMATION:
+                        continue
+                    enqueue_next(task, TaskStatus.AWAITING_PUBLISH_CONFIRMATION)
+                    task.last_error = "平台结果未知，必须核对后确认，禁止自动重投"
+                else:
+                    mark_failed(task, attempt.error_message or "publish failed", permanent=True)
+                task.claimed_by = None
+                task.lease_token = None
+                db.add(task)
+                synced += 1
     return synced
 
 

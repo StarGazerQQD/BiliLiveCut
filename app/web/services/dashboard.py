@@ -55,12 +55,19 @@ def dashboard_state() -> dict[str, Any]:
 def _room_dict(room: LiveRoom, runtime: dict[str, Any]) -> dict[str, Any]:
     """把房间转为可序列化字典并附带运行状态。"""
     from app.analysis.room_config import load_room_config
+    from app.pipeline.live_monitor import live_monitor
+    from app.recording.metadata import room_metadata_view
+
+    with get_session() as db:
+        metadata = room_metadata_view(db, room)
 
     return {
         "id": room.id,
         "room_id": room.room_id,
         "input_url": room.input_url,
         "title": room.title,
+        "metadata": metadata,
+        "monitor": live_monitor.room_status(room, running=runtime["running"], runtime_state=runtime["state"]),
         "uploader_name": room.uploader_name,
         "highlight_threshold": room.highlight_threshold,
         "auto_publish_threshold": room.auto_publish_threshold,

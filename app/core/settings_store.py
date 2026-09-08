@@ -1,8 +1,7 @@
 """运行时设置存储(可在 Web 后台动态切换、跨重启持久化)。
 
-与 :mod:`app.core.config`(只读、来自 ``.env``)互补:此处存放需要用户在界面上
-随时切换的开关,持久化在 ``app_settings`` 表。最典型的是 **biliup 上传开关**——
-默认关闭,由用户自行决定是否启用。
+配置覆盖、服务商及插件设置持久化在 ``app_settings`` 表；业务任务优先读取
+启动快照。统一配置入口负责整体验证和原子提交，biliup 上传默认关闭。
 """
 
 from __future__ import annotations
@@ -22,6 +21,7 @@ _DEFAULTS: dict[str, str] = {
     # V0.1.2 新增:全局功能开关
     "threshold_learning_enabled": "true",  # 阈值自学习全局总开关
     "danmaku_sentiment_enabled": "true",  # 弹幕情绪分析全局总开关
+    "storage_cleanup_enabled": "false",  # 自动删除须由用户在设置中心显式启用。
 }
 
 _TRUE = {"1", "true", "yes", "on"}
@@ -34,6 +34,11 @@ def get_setting(key: str, default: str | None = None) -> str:
     :param default: 缺省值;为 ``None`` 时回退到内置默认。
     :returns: 字符串值。
     """
+    from app.core.runtime_settings import snapshot_extra
+
+    frozen = snapshot_extra(key)
+    if frozen is not None:
+        return frozen
     with get_session() as db:
         row = db.get(AppSetting, key)
         if row is not None:
@@ -49,16 +54,22 @@ def set_setting(key: str, value: str) -> None:
     :param key: 设置键。
     :param value: 设置值(字符串)。
     """
+    set_settings({key: value})
+
+
+def set_settings(values: dict[str, str]) -> None:
+    """把已由对应业务 schema 验证的键值作为同一事务写入。"""
     from app.db.entities import utcnow
 
     with get_session() as db:
-        row = db.get(AppSetting, key)
-        if row is None:
-            row = AppSetting(key=key, value=value)
-        else:
-            row.value = value
-            row.updated_at = utcnow()
-        db.add(row)
+        for key, value in values.items():
+            row = db.get(AppSetting, key)
+            if row is None:
+                row = AppSetting(key=key, value=value)
+            else:
+                row.value = value
+                row.updated_at = utcnow()
+            db.add(row)
 
 
 def get_bool(key: str) -> bool:

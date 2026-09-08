@@ -8,7 +8,7 @@ from typing import Any
 from loguru import logger
 
 from app.core import settings_store
-from app.core.config import settings
+from app.core.config import get_settings, settings
 from app.core.paths import clips_dir, ready_to_upload_dir
 from config.launcher_settings import (
     current_web_port,
@@ -31,13 +31,13 @@ def get_settings_view() -> dict[str, Any]:
     running_port = current_web_port()
     return {
         "recording_pipeline_enabled": settings_store.recording_pipeline_enabled(),
-        "recording_pipeline_env_default": settings.recording_pipeline_enabled,
+        "recording_pipeline_env_default": get_settings().recording_pipeline_enabled,
         "recording_pipeline_overridden": bool(pipeline_override),
         "transcript_llm_refine_enabled": settings_store.transcript_llm_refine_enabled(),
-        "transcript_llm_refine_env_default": settings.transcript_llm_refine_enabled,
+        "transcript_llm_refine_env_default": get_settings().transcript_llm_refine_enabled,
         "transcript_llm_refine_overridden": bool(refinement_override),
         "asr_task_max_concurrency": settings_store.asr_task_max_concurrency(),
-        "asr_task_max_concurrency_env_default": settings.asr_task_max_concurrency,
+        "asr_task_max_concurrency_env_default": get_settings().asr_task_max_concurrency,
         "asr_task_max_concurrency_overridden": bool(asr_concurrency_override),
         "web_port": launcher_config.web_port,
         "current_web_port": running_port,
@@ -53,69 +53,32 @@ def get_settings_view() -> dict[str, Any]:
 
 
 def update_settings(fields: dict[str, Any]) -> dict[str, Any]:
-    """更新运行时开关(biliup_enabled / auto_upload)。
+    """整体校验后保存；保留旧接口的端口与开关联合提交契约。"""
+    from collections.abc import Iterator
+    from contextlib import contextmanager
 
-    :param fields: 待更新开关。
-    :returns: 更新后的设置视图。
-    """
-    if "web_port" in fields and fields["web_port"] is not None:
-        port = validate_web_port(fields["web_port"])
+    from sqlalchemy.exc import SQLAlchemyError
+
+    from app.core.configuration import ConfigurationChange, save_configuration
+
+    values = {key: value for key, value in fields.items() if value is not None and key != "web_port"}
+    port = validate_web_port(fields["web_port"]) if fields.get("web_port") is not None else None
+
+    @contextmanager
+    def launcher_change() -> Iterator[None]:
+        if port is None:
+            yield
+            return
+        previous = load_launcher_config(runtime_app_root(), warn=logger.warning).web_port
         save_launcher_config(runtime_app_root(), web_port=port)
-        logger.info("Web 端口已保存为 {}，重启 Launcher 后生效。", port)
-    if "recording_pipeline_enabled" in fields and fields["recording_pipeline_enabled"] is not None:
-        enabled = bool(fields["recording_pipeline_enabled"])
-        settings_store.set_bool("recording_pipeline_enabled", enabled)
-        logger.info("录制实时转写/分析默认开关已设置为 {}，下次启动录制生效。", enabled)
-    if "transcript_llm_refine_enabled" in fields and fields["transcript_llm_refine_enabled"] is not None:
-        enabled = bool(fields["transcript_llm_refine_enabled"])
-        settings_store.set_bool("transcript_llm_refine_enabled", enabled)
-        logger.info("单切片转写 LLM 整理与摘要开关已设置为 {}。", enabled)
-    if "asr_task_max_concurrency" in fields and fields["asr_task_max_concurrency"] is not None:
-        concurrency = int(fields["asr_task_max_concurrency"])
-        if not 1 <= concurrency <= 8:
-            raise ValueError("ASR 任务并行数必须在 1 到 8 之间。")
-        settings_store.set_setting("asr_task_max_concurrency", str(concurrency))
-        logger.warning("ASR 任务并行数已设置为 {}，并行模型实例会增加内存/显存占用。", concurrency)
-    if "biliup_enabled" in fields and fields["biliup_enabled"] is not None:
-        settings_store.set_bool("biliup_enabled", bool(fields["biliup_enabled"]))
-        logger.warning("biliup 上传开关被设置为 {}(合规风险自负)。", bool(fields["biliup_enabled"]))
-    if "auto_upload" in fields and fields["auto_upload"] is not None:
-        settings_store.set_bool("auto_upload", bool(fields["auto_upload"]))
-    _update_trend_schedule(fields)
+        try:
+            yield
+        except (SQLAlchemyError, OSError, ValueError, RuntimeError):
+            save_launcher_config(runtime_app_root(), web_port=previous)
+            raise
+
+    save_configuration(ConfigurationChange(values=values), external_change=launcher_change())
     return get_settings_view()
-
-
-def _valid_hhmm(value: str) -> bool:
-    """校验 ``HH:MM`` 时间字符串是否合法。
-
-    :param value: 时间字符串。
-    :returns: 合法返回 ``True``。
-    """
-    try:
-        h, m = value.strip().split(":")
-        return 0 <= int(h) < 24 and 0 <= int(m) < 60
-    except (ValueError, AttributeError):
-        return False
-
-
-def _update_trend_schedule(fields: dict[str, Any]) -> None:
-    """更新网感定时采集的相关设置(开关/窗口/间隔)。
-
-    :param fields: 待更新字段。
-    :raises ValueError: 时间格式或间隔非法时。
-    """
-    if fields.get("trend_schedule_enabled") is not None:
-        settings_store.set_bool("trend_schedule_enabled", bool(fields["trend_schedule_enabled"]))
-    for key in ("trend_schedule_start", "trend_schedule_end"):
-        if fields.get(key) is not None:
-            if not _valid_hhmm(str(fields[key])):
-                raise ValueError(f"时间格式应为 HH:MM: {fields[key]}")
-            settings_store.set_setting(key, str(fields[key]).strip())
-    if fields.get("trend_schedule_interval_min") is not None:
-        interval = int(fields["trend_schedule_interval_min"])
-        if interval < 1:
-            raise ValueError("采集间隔需 >= 1 分钟。")
-        settings_store.set_setting("trend_schedule_interval_min", str(interval))
 
 
 def list_llm_providers() -> dict[str, Any]:

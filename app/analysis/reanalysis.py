@@ -7,6 +7,7 @@ from dataclasses import asdict, dataclass
 from datetime import UTC, datetime
 
 from loguru import logger
+from sqlalchemy.exc import SQLAlchemyError
 from sqlmodel import Session, select
 
 from app.analysis.timeline import TIMELINE_ANALYSIS_VERSION
@@ -17,6 +18,7 @@ from app.db.entities import (
     HighlightCandidate,
     HighlightEvent,
     HighlightTopic,
+    HotspotEvent,
     RawSegment,
     SegmentStatus,
     SegmentTask,
@@ -207,6 +209,19 @@ def process_pending_session_reanalyses(*, limit: int = 4) -> list[ReanalysisResu
             _delete_pending_request(key)
             logger.warning("场次重分析请求不可执行并已清理 session={}: {}", session_id, exc)
             continue
+        except SQLAlchemyError as exc:
+            # 保留请求并排到队尾，让其它场次与流水线阶段继续执行。
+            with get_session() as db:
+                request = db.get(AppSetting, key)
+                if request is not None:
+                    request.updated_at = datetime.now(UTC)
+                    db.add(request)
+                error_key = f"session_reanalysis_error:{session_id}"
+                failure = db.get(AppSetting, error_key) or AppSetting(key=error_key, value="")
+                failure.value = json.dumps({"error": str(exc)[:500], "observed_at": datetime.now(UTC).isoformat()})
+                db.add(failure)
+            logger.exception("场次重分析失败，保留请求并继续其它场次 session={}", session_id)
+            continue
         if result.skipped_active:
             continue
         _delete_pending_request(key)
@@ -257,8 +272,20 @@ def _delete_auto_events(db: Session, events: list[HighlightEvent]) -> None:
         db.delete(event)
         db.flush()
         if candidate is not None:
+            detach_hotspot_candidate(db, candidate.id)
             db.delete(candidate)
             db.flush()
+
+
+def detach_hotspot_candidate(db: Session, candidate_id: int | None) -> None:
+    """保留热点观测事实，解除即将重建的自动候选引用。"""
+    if candidate_id is None:
+        return
+    for hotspot in db.exec(select(HotspotEvent).where(HotspotEvent.candidate_id == candidate_id)).all():
+        hotspot.candidate_id = None
+        hotspot.updated_at = datetime.now(UTC)
+        db.add(hotspot)
+    db.flush()
 
 
 def _reset_task(task: SegmentTask, *, reason: str, rerun_asr: bool) -> None:

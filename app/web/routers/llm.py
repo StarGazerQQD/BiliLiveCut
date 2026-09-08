@@ -4,7 +4,7 @@ from __future__ import annotations
 
 from typing import Any
 
-from fastapi import APIRouter
+from fastapi import APIRouter, HTTPException
 from pydantic import BaseModel, ConfigDict
 
 from app.web import service
@@ -20,6 +20,7 @@ class LLMProviderIn(BaseModel):
     base_url: str
     model: str
     api_key: str = ""
+    clear_api_key: bool = False
     web_search_param: str = ""
     price_input_per_m: float = 0.0
     price_output_per_m: float = 0.0
@@ -47,7 +48,10 @@ def get_llm_providers() -> dict[str, Any]:
 @router.put("/llm-providers")
 def put_llm_providers(req: LLMProvidersRequest) -> dict[str, Any]:
     """保存多大模型配置(按优先级失败回退；未填 key 保留已保存值)。"""
-    return service.save_llm_providers([p.model_dump() for p in req.providers])
+    try:
+        return service.save_llm_providers([p.model_dump() for p in req.providers])
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
 
 
 @router.post("/llm-providers/test")

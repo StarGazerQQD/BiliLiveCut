@@ -1,7 +1,8 @@
 // BiliLiveCut 场次高光时间线：按录制会话聚合、展开与安全重分析
-import { $, api, toast, esc, badge } from "./common.js";
+import { $, api, toast, esc, badge, sessionTitle } from "./common.js";
 
 const expandedSessions = new Set();
+const titleHistory = new Map();
 const expandedProvenanceCandidates = new Set();
 const timelineDetailSignatures = new Map();
 const knownRooms = new Map();
@@ -99,7 +100,7 @@ function updateRoomFilter(rows) {
 
 function renderSessionCard(session, preservedDetail = "") {
   const expanded = expandedSessions.has(session.session_id);
-  const title = sourceLabel(session);
+  const title = `${sourceLabel(session)} · ${sessionTitle(session)}`;
   const timeRange = `${formatGmt8(session.started_at_gmt8)} — ${formatGmt8(session.ended_at_gmt8)}`;
   return `
     <article class="timeline-session item" data-session-id="${session.session_id}">
@@ -107,6 +108,8 @@ function renderSessionCard(session, preservedDetail = "") {
         <div>
           <div class="title">${esc(title)} · 会话 #${session.session_id} ${processingBadge(session.processing_state)} ${badge(session.status)}</div>
           <div class="sub">${esc(timeRange)} GMT+8 · ${formatDuration(session.duration_s)} · ${session.segment_count} 个录制片段</div>
+          <div class="sub">开录：${esc(session.title_snapshot?.start_title || "未知")} · 标题变化 ${session.title_snapshot?.change_count || 0} 次（观测时间） <button onclick="showTitleHistory(${session.session_id})">标题历史</button></div>
+          <div id="title-history-${session.session_id}" class="sub">${esc(titleHistory.get(session.session_id) || "")}</div>
           <div class="timeline-counts">
             <span>事件 <b>${session.timeline_count ?? session.highlight_count}</b></span>
             <span>成片候选 <b>${session.highlight_count}</b></span>
@@ -337,3 +340,13 @@ $("#timeline-list").addEventListener("toggle", (event) => {
 }, true);
 
 export { loadSessionTimelines, toggleSessionTimeline, requestSessionReanalysis, regenerateSessionSummary };
+
+window.showTitleHistory = async (sessionId) => {
+  try {
+    const data = await api("GET", `/api/sessions/${sessionId}/titles`);
+    const target = $(`#title-history-${sessionId}`);
+    const text = data.changes.map((change) => `${new Date(change.observed_at).toLocaleString()} 观测：${change.title}`).join("；") || "没有记录到标题变更";
+    titleHistory.set(sessionId, text);
+    if (target) target.textContent = text;
+  } catch (error) { toast(error.message); }
+};

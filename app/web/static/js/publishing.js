@@ -1,23 +1,11 @@
 // BiliLiveCut \u53d1\u5e03:\u4e0a\u4f20\u961f\u5217\u3001\u4e0a\u4f20\u5f00\u5173\u3001\u901a\u77e5\u8f6e\u8be2
 import { $, api, toast, esc, badge } from "./common.js";
 
-let switchesDirty = false;
-let switchesRevision = 0;
-let switchesSaving = false;
 let lastNotifyId = 0;
-
-function hasPublishingDraft() {
-  return switchesDirty || switchesSaving;
-}
 
 // ----------------------------- \u6e32\u67d3:\u4e0a\u4f20\u961f\u5217 ----------------------------- //
 async function loadUploads() {
-  const revision = switchesRevision;
   const s = await api("GET", "/api/settings");
-  if (!switchesDirty && switchesRevision === revision) {
-    $("#sw-biliup").checked = s.biliup_enabled;
-    $("#sw-auto").checked = s.auto_upload;
-  }
   $("#clips-dir-path").textContent = s.clips_dir;
   $("#upload-hint").textContent = s.upload_active
     ? "\u4e0a\u4f20\u6a21\u5757:\u5df2\u5f00\u542f(biliup)\u3002" + (s.biliup_cmd_configured ? "" : " \u4f46\u672a\u914d\u7f6e BILIUP_UPLOAD_CMD,\u4e0a\u4f20\u4f1a\u5b89\u5168\u5931\u8d25\u3002")
@@ -37,32 +25,6 @@ async function loadUploads() {
         </div>
       </div>
     </div>`).join("") : `<div class="empty">\u6682\u65e0\u4e0a\u4f20\u4efb\u52a1\u3002</div>`;
-}
-
-async function saveSwitch() {
-  switchesDirty = true;
-  switchesRevision += 1;
-  if (switchesSaving) return;
-  switchesSaving = true;
-  try {
-    while (switchesDirty) {
-      const revision = switchesRevision;
-      await api("PATCH", "/api/settings", {
-        biliup_enabled: $("#sw-biliup").checked,
-        auto_upload: $("#sw-auto").checked,
-      });
-      if (switchesRevision === revision) {
-        switchesDirty = false;
-        switchesRevision += 1;
-        toast("\u5df2\u4fdd\u5b58\u4e0a\u4f20\u5f00\u5173");
-      }
-    }
-  } catch (e) {
-    toast(e.message);
-  } finally {
-    switchesSaving = false;
-  }
-  if (!switchesDirty) await loadUploads();
 }
 
 async function retryUpload(id) {
@@ -85,12 +47,10 @@ async function pollNotifications() {
 }
 
 // \u5f00\u5173\u4e8b\u4ef6
-$("#sw-biliup").addEventListener("change", saveSwitch);
-$("#sw-auto").addEventListener("change", saveSwitch);
 
 $("#btn-open-dir").addEventListener("click", async () => {
   try { const r = await api("POST", "/api/open-clips-dir"); toast("\u5df2\u6253\u5f00:" + r.clips_dir); }
   catch (e) { toast(e.message); }
 });
 
-export { loadUploads, saveSwitch, retryUpload, pollNotifications, lastNotifyId, hasPublishingDraft };
+export { loadUploads, retryUpload, pollNotifications, lastNotifyId };

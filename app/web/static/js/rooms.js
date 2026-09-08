@@ -1,13 +1,13 @@
 // BiliLiveCut 直播间管理:列表、添加、开关、预约、主题、阈值学习
 import { $, api, toast, esc, badge } from "./common.js";
 
-let globalFeatureDirty = false;
+let webPortDirty = false;
 const dirtyRoomSections = new Set();
 const dirtyFeatureRooms = new Set();
 const openRoomDetails = new Set();
 const roomSectionRevisions = new Map();
 const featureRoomRevisions = new Map();
-let globalFeatureRevision = 0;
+let webPortRevision = 0;
 let roomEditorRevision = 0;
 let featureEditorRevision = 0;
 let scheduleRoomOptionsSignature = "";
@@ -28,13 +28,13 @@ function updateRoomsDirtyHint() {
 }
 
 function updateFeatureDirtyHint() {
-  $("#feature-dirty-hint").style.display = globalFeatureDirty || dirtyFeatureRooms.size > 0 ? "" : "none";
+  $("#feature-dirty-hint").style.display = webPortDirty || dirtyFeatureRooms.size > 0 ? "" : "none";
 }
 
 function hasRoomDraft() {
   return dirtyRoomSections.size > 0
     || dirtyFeatureRooms.size > 0
-    || globalFeatureDirty
+    || webPortDirty
     || newRoomFormDirty
     || scheduleFormDirty;
 }
@@ -54,7 +54,13 @@ function roomDisplayName(room) {
 function roomRuntimeMeta(room) {
   const session = room.active_session_id ? ` \u00b7 \u4f1a\u8bdd #${room.active_session_id}` : "";
   const title = room.title && room.title !== room.uploader_name ? ` · ${room.title}` : "";
-  return `db_id=${room.id} · room_id=${room.room_id ?? "-"}${title} · 授权:${room.authorized ? "是" : "否"}${session}`;
+  const labels = {waiting_live: "等待开播", waiting_next_live: "等待下一场", manual_paused: "人工暂停自动启动",
+    starting: "正在启动", recording: "录制中", disabled: "自动录制未开启", error: "检测异常"};
+  const monitor = room.monitor || {};
+  const checked = monitor.last_checked_at ? ` · 最近检测 ${new Date(monitor.last_checked_at).toLocaleTimeString()}` : " · 尚无成功检测";
+  const freshness = {fresh: "标题已更新", stale: "上次获取的标题", unavailable: "标题未知"}[room.metadata?.state] || "";
+  const service = room.auto_record && monitor.service_running === false ? " · 监控服务未运行，请启动后台服务" : "";
+  return `db_id=${room.id} · room_id=${room.room_id ?? "-"}${title} · ${freshness} · 授权:${room.authorized ? "是" : "否"}${session} · ${labels[monitor.state] || ""}${checked}${monitor.error ? ` · ${monitor.error}` : ""}${service}`;
 }
 
 function roomRuntimeActions(room) {
@@ -64,10 +70,20 @@ function roomRuntimeActions(room) {
       <button onclick="stopRoom(${room.id}, true)">\u5f3a\u5236\u505c\u6b62</button>`;
   }
   if (room.room_config.recording_paused) {
-    return `<button class="ok" onclick="resumeRoom(${room.id})">\u6062\u590d\u5f55\u5236</button>`;
+    return `<button class="ok" onclick="resumeRoom(${room.id})">\u6062\u590d\u5f55\u5236</button>
+      <button onclick="armAutoRoom(${room.id})" title="解除人工暂停，开启自动录制和分析并等待开播">解除暂停并守候开播</button>`;
   }
-  return `<button class="ok" onclick="startRoom(${room.id})">\u5f00\u59cb\u5f55\u5236</button>`;
+  return `<button class="ok" onclick="startRoom(${room.id})">\u5f00\u59cb\u5f55\u5236</button>
+    <button onclick="armAutoRoom(${room.id})" title="开启自动录制和分析，解除暂停，服务运行时守候开播">开播后自动录制并分析</button>`;
 }
+
+window.armAutoRoom = async (id) => {
+  try {
+    await api("POST", `/api/rooms/${id}/arm-auto`);
+    toast("已开启自动录制与分析并解除暂停；请保持后台服务运行以检测开播");
+    await loadRooms();
+  } catch (error) { toast(error.message); }
+};
 
 function learnedAliasesMarkup(room) {
   const learned = Object.entries(room.room_config?.learned_aliases || {});
@@ -259,22 +275,10 @@ async function loadFeatureSwitches() {
     updateFeatureDirtyHint();
     return;
   }
-  if (!globalFeatureDirty) {
-    $("#sw-recording-pipeline").checked = settings.recording_pipeline_enabled !== false;
-    $("#sw-transcript-llm-refine").checked = settings.transcript_llm_refine_enabled !== false;
-    $("#asr-task-concurrency").value = settings.asr_task_max_concurrency || 1;
+  if (!webPortDirty) {
     $("#web-port").value = settings.web_port || 8000;
-    $("#recording-pipeline-hint").textContent = settings.recording_pipeline_overridden
-      ? "当前值来自控制台运行时设置；修改后从下次开始或恢复录制生效。"
-      : `当前值来自 .env：RECORDING_PIPELINE_ENABLED=${settings.recording_pipeline_env_default !== false ? "true" : "false"}。`;
-    $("#transcript-llm-refine-hint").textContent = settings.transcript_llm_refine_overridden
-      ? "当前值来自控制台运行时设置；从下一个完成 ASR 的切片起生效。"
-      : `当前值来自 .env：TRANSCRIPT_LLM_REFINE_ENABLED=${settings.transcript_llm_refine_env_default !== false ? "true" : "false"}。`;
-    $("#asr-task-concurrency-hint").textContent = settings.asr_task_max_concurrency_overridden
-      ? "当前值来自控制台；新调度的转写任务立即生效。每个并行使用独立模型实例，显存占用近似倍增。"
-      : `当前值来自 .env：ASR_TASK_MAX_CONCURRENCY=${settings.asr_task_max_concurrency_env_default || 1}。CUDA 可提高，CPU 建议保持 1。`;
     $("#web-port-hint").textContent = settings.restart_required
-      ? `已保存 ${settings.web_port}；当前仍监听 ${settings.current_web_port}，请重启 Launcher。`
+      ? `已保存 ${settings.web_port}；当前仍监听 ${settings.current_web_port}，请重启 Web 服务。`
       : `当前监听 ${settings.current_web_port}；已保存端口与本次启动一致。`;
   }
   if (dirtyFeatureRooms.size > 0) {
@@ -308,7 +312,7 @@ async function loadFeatureSwitches() {
         <label>自动通过阈值
           <input type="number" step="0.01" min="0" max="1" id="feature-approve-threshold-${r.id}" value="${r.auto_approve_threshold}" />
         </label>
-        <label>人工复核阈值
+        <label>进入人工审核阈值
           <input type="number" step="0.01" min="0" max="1" id="feature-review-threshold-${r.id}" value="${r.review_threshold}" />
         </label>
         ${r.running ? '<span class="muted">录制中仅锁定预约、阈值学习和弹幕情绪开关</span>' : ""}
@@ -316,24 +320,23 @@ async function loadFeatureSwitches() {
     </div>`).join("") : `<div class="empty">还没有直播间，请先在「直播间」页添加。</div>`;
 }
 
-async function saveGlobalFeatureSettings() {
+async function saveWebPort() {
+  const port = $("#web-port");
+  if (!port.value || !port.checkValidity()) { port.focus(); return toast("端口必须为 1～65535 的整数。"); }
   try {
-    const revision = globalFeatureRevision;
+    const revision = webPortRevision;
     await api("PATCH", "/api/settings", {
-      recording_pipeline_enabled: $("#sw-recording-pipeline").checked,
-      transcript_llm_refine_enabled: $("#sw-transcript-llm-refine").checked,
-      asr_task_max_concurrency: parseInt($("#asr-task-concurrency").value || "1", 10),
-      web_port: parseInt($("#web-port").value || "8000", 10),
+      web_port: Number(port.value),
     });
-    if (globalFeatureRevision !== revision) {
+    if (webPortRevision !== revision) {
       updateFeatureDirtyHint();
-      toast("已保存提交时的全局功能设置；保存期间还有新修改，请再次保存");
+      toast("已保存提交时的端口；保存期间还有新修改，请再次保存");
       return;
     }
-    globalFeatureDirty = false;
+    webPortDirty = false;
     featureEditorRevision += 1;
     updateFeatureDirtyHint();
-    toast("已保存全局开关与下次启动端口");
+    toast("已保存下次启动端口");
     await loadFeatureSwitches();
   } catch (e) { toast("保存失败:" + e.message); }
 }
@@ -591,18 +594,14 @@ $("#rooms-list").addEventListener("toggle", (event) => {
 }, true);
 $("#feature-switches-list").addEventListener("input", markFeatureRoomDirty);
 $("#feature-switches-list").addEventListener("change", markFeatureRoomDirty);
-function markGlobalFeatureDirty() {
-  globalFeatureDirty = true;
-  globalFeatureRevision += 1;
+function markWebPortDirty() {
+  webPortDirty = true;
+  webPortRevision += 1;
   featureEditorRevision += 1;
   updateFeatureDirtyHint();
 }
 
-$("#sw-recording-pipeline").addEventListener("change", markGlobalFeatureDirty);
-$("#sw-transcript-llm-refine").addEventListener("change", markGlobalFeatureDirty);
-$("#asr-task-concurrency").addEventListener("input", markGlobalFeatureDirty);
-$("#asr-task-concurrency").addEventListener("change", markGlobalFeatureDirty);
-$("#web-port").addEventListener("input", markGlobalFeatureDirty);
-$("#web-port").addEventListener("change", markGlobalFeatureDirty);
+$("#web-port").addEventListener("input", markWebPortDirty);
+$("#web-port").addEventListener("change", markWebPortDirty);
 
-export { loadRooms, saveRoom, saveRoomConfig, loadFeatureSwitches, saveGlobalFeatureSettings, saveFeatureSwitches, loadThresholdLearning, loadSchedules, delSchedule, loadTopics, toggleCollection, hasRoomDraft };
+export { loadRooms, saveRoom, saveRoomConfig, loadFeatureSwitches, saveWebPort, saveFeatureSwitches, loadThresholdLearning, loadSchedules, delSchedule, loadTopics, toggleCollection, hasRoomDraft };

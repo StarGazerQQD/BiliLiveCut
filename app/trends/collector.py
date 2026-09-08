@@ -16,6 +16,7 @@ from loguru import logger
 
 from app.analysis import llm as llm_mod
 from app.core.config import settings
+from app.core.runtime_settings import configured_task
 
 # 默认采集主题(可由调用方覆盖)。
 _DEFAULT_TOPIC = "B 站、抖音、微博热搜等平台近期(最近几天)适合做直播切片/短视频的高热度话题、热梗、热门内容、热门标签"
@@ -129,6 +130,7 @@ def collect_trends(topic: str = "") -> list[TrendRecord]:
     return records[:request_limit]
 
 
+@configured_task
 def collect_and_save(topic: str = "") -> int:
     """采集并写入资料库,返回新增/更新的条目数。
 

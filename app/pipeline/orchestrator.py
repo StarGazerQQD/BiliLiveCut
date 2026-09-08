@@ -17,9 +17,11 @@ from app.analysis.highlight import score_segment
 from app.analysis.transcription.models import TranscriberBackend
 from app.analysis.transcription.pipeline import transcribe_segment
 from app.core.config import settings
+from app.core.runtime_settings import configured_task
 from app.db.entities import FinalClip, HighlightCandidate, RawSegment
 
 
+@configured_task
 def process_segment_sync(
     segment_id: int,
     backend: TranscriberBackend | None = None,
@@ -78,6 +80,7 @@ def _read_room_config(room_id: int | None) -> dict:
         }
 
 
+@configured_task
 def produce_clip(
     candidate_id: int,
     auto_upload: bool = False,

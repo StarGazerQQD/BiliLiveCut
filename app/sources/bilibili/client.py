@@ -146,6 +146,7 @@ class RoomInfo:
     live_status: int
     title: str | None = None
     uploader_name: str | None = None
+    detail_status: str = "not_requested"
 
     @property
     def is_live(self) -> bool:
@@ -354,6 +355,7 @@ class BilibiliLiveClient:
         title: str | None = None
         uploader_name: str | None = None
         uid = int(data.get("uid", 0))
+        detail_status = "not_requested"
         if include_detail:
             try:
                 detail = await self._get_json(_ROOM_DETAIL_URL, {"room_id": room_id})
@@ -368,7 +370,9 @@ class BilibiliLiveClient:
                     if isinstance(base_info, dict):
                         raw_name = str(base_info.get("uname") or "").strip()
                         uploader_name = raw_name or None
+                detail_status = "fresh" if title else "unavailable"
             except BilibiliError as exc:
+                detail_status = "failed"
                 # 基础 room_init 已成功时，详情失败不应阻止录制；仅退化为房间号显示。
                 logger.warning("房间 {} 主播资料读取失败,继续使用基础信息: {}", room_id, exc)
 
@@ -379,6 +383,7 @@ class BilibiliLiveClient:
             live_status=int(data.get("live_status", 0)),
             title=title,
             uploader_name=uploader_name,
+            detail_status=detail_status,
         )
         logger.info(
             "房间解析成功: input={} -> room_id={} uploader={} live_status={}",

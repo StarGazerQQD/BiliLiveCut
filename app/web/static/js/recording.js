@@ -1,5 +1,5 @@
 // BiliLiveCut \u5f55\u5236\u63a7\u5236:\u542f\u52a8/\u505c\u6b62\u3001\u4f1a\u8bdd\u5217\u8868\u3001\u8f6c\u5199\u3001\u5f39\u5e55
-import { $, api, toast, esc, badge, DANMAKU_TYPE_LABEL } from "./common.js";
+import { $, api, toast, esc, badge, DANMAKU_TYPE_LABEL, sessionTitle } from "./common.js";
 
 const dirtyTranscriptIds = new Set();
 const openTranscriptDetails = new Set();
@@ -36,7 +36,7 @@ function storeSessionId(key, value) {
 function sessionOptionLabel(row, countField, countLabel) {
   const started = String(row.started_at_gmt8 || row.started_at || "时间未知").replace("T", " ").slice(0, 19);
   const source = row.source_label || `房间 ${row.room_id || "未知"}`;
-  return `${source} · ${started} · 会话 #${row.session_id} · ${row[countField] || 0} ${countLabel}`;
+  return `${source} · ${sessionTitle(row)} · ${started} · 会话 #${row.session_id} · ${row[countField] || 0} ${countLabel}`;
 }
 
 function selectedSessionRow(selectedId) {
@@ -58,6 +58,8 @@ function renderSessionSelect(kind) {
   const optionsSignature = JSON.stringify(sessionHistory.map((row) => [
     row.session_id,
     row.source_label,
+    row.session_title,
+    row.title_snapshot,
     row.started_at_gmt8,
     row.status,
     row[countField],
@@ -74,7 +76,7 @@ function renderSessionSelect(kind) {
 
   const row = selectedSessionRow(selectedId);
   $(`#${kind}-session-meta`).textContent = row
-    ? `${row.source_label || "未知来源"} · ${row.status || "状态未知"} · ${row.transcript_count || 0} 条转写 · ${row.danmaku_count || 0} 条弹幕`
+    ? `${row.source_label || "未知来源"} · ${sessionTitle(row)} · ${row.status || "状态未知"} · ${row.transcript_count || 0} 条转写 · ${row.danmaku_count || 0} 条弹幕`
     : "暂无可查看的录制场次。";
   if (isTranscript) transcriptSelectedSessionId = selectedId;
   else danmakuSelectedSessionId = selectedId;
@@ -172,7 +174,7 @@ async function loadRecording() {
     return `
     <div class="item">
       <div class="head">
-        <div class="title">${esc(s.source_label || `房间 ${s.room_id}`)} · 会话 #${s.id} ${badge(s.status)}</div>
+        <div class="title">${esc(s.source_label || `房间 ${s.room_id}`)} · ${esc(sessionTitle(s))} · 会话 #${s.id} ${badge(s.status)}</div>
         <div class="sub">${s.segments} \u4e2a\u7247\u6bb5 \u00b7 \u91cd\u8fde ${s.reconnect_count} \u6b21${reconnectInfo} \u00b7 ${esc(s.stream_format || "-")}${s.pipeline_enabled == null ? "" : ` \u00b7 \u5b9e\u65f6\u8f6c\u5199:${s.pipeline_enabled ? "\u5f00" : "\u5173"}`}</div>
       </div>
       ${s.error_message ? `<div class="sub" style="color:var(--red)">${esc(s.error_message)}</div>` : ""}
@@ -220,7 +222,7 @@ async function loadTranscripts(forceRender = false) {
       : `<div class="sub" style="margin-top:6px"><b>源 TS 文件：</b>原始片段记录不可用</div>`;
     return `
     <div class="item" id="transcript-item-${t.id}">
-      <div class="sub">${esc(t.source_label || "未知来源")} · 会话 #${t.session_id ?? "-"} · 片段 #${t.segment_id} · ${esc(t.language || "")} · ${esc(t.primary_backend || "")} · ${esc(t.created_at || "")}</div>
+      <div class="sub">${esc(t.source_label || "未知来源")} · ${esc(sessionTitle(t))} · 会话 #${t.session_id ?? "-"} · 片段 #${t.segment_id} · ${esc(t.language || "")} · ${esc(t.primary_backend || "")} · ${esc(t.created_at || "")}</div>
       ${sourceFile}
       <div class="txt" id="transcript-final-${t.id}">${esc(t.text) || "(\u7a7a)"}</div>
       ${t.summary ? `<div class="sub" style="margin-top:8px"><b>片段概括：</b>${esc(t.summary)}</div>` : ""}

@@ -17,6 +17,22 @@ INLINE_SCRIPT_TEMPLATES = tuple(path for path in TEMPLATE_FILES if "<script>" in
 INTERACTION_CHECK = PROJECT_ROOT / "scripts" / "check_frontend_interactions.mjs"
 
 
+def test_configuration_form_preserves_drafts_and_validates_atomic_saves() -> None:
+    """运行真实设置模块，覆盖迟到响应、保存失败、字段焦点及凭据语义。"""
+    node = shutil.which("node")
+    assert node is not None, "设置交互测试需要 Node.js"
+    result = subprocess.run(
+        [node, str(PROJECT_ROOT / "scripts" / "check_configuration_interactions.mjs")],
+        capture_output=True,
+        text=True,
+        encoding="utf-8",
+        errors="replace",
+        timeout=30,
+        check=False,
+    )
+    assert result.returncode == 0, result.stdout + result.stderr
+
+
 class _ElementIdCollector(HTMLParser):
     """收集 HTML 元素 ID，用于防止选择器命中错误元素。"""
 
@@ -103,8 +119,11 @@ def test_recording_pipeline_has_visible_switch_and_no_hardcoded_web_override() -
     template = (PROJECT_ROOT / "app" / "web" / "templates" / "dashboard.html").read_text(encoding="utf-8")
     recording_js = (STATIC_ROOT / "js" / "recording.js").read_text(encoding="utf-8")
 
-    assert 'id="sw-recording-pipeline"' in template
-    assert 'id="sw-transcript-llm-refine"' in template
+    assert "include 'configuration.html'" in template
+    configuration = (STATIC_ROOT / "js" / "configuration.js").read_text(encoding="utf-8")
+    assert '"recording_pipeline_enabled"' in configuration
+    assert '"transcript_llm_refine_enabled"' in configuration
+    assert "/api/settings/configuration" in configuration
     assert "RECORDING_PIPELINE_ENABLED" in (PROJECT_ROOT / ".env.example").read_text(encoding="utf-8")
     assert "TRANSCRIPT_LLM_REFINE_ENABLED" in (PROJECT_ROOT / ".env.example").read_text(encoding="utf-8")
     assert "pipeline: true" not in recording_js
@@ -219,13 +238,15 @@ def test_room_and_feature_forms_pause_refresh_while_dirty() -> None:
 def test_all_editable_pages_guard_local_drafts_against_late_responses() -> None:
     """轮询页和独立编辑页都应保留请求期间产生的新草稿。"""
     dashboard_js = (STATIC_ROOT / "js" / "dashboard.js").read_text(encoding="utf-8")
-    publishing_js = (STATIC_ROOT / "js" / "publishing.js").read_text(encoding="utf-8")
+    configuration_js = (STATIC_ROOT / "js" / "configuration.js").read_text(encoding="utf-8")
     plugin_settings_js = (STATIC_ROOT / "js" / "plugin_settings.js").read_text(encoding="utf-8")
     review_html = (PROJECT_ROOT / "app" / "web" / "templates" / "review.html").read_text(encoding="utf-8")
     collection_html = (PROJECT_ROOT / "app" / "web" / "templates" / "collection.html").read_text(encoding="utf-8")
 
-    assert "scheduleRevision === revision" in dashboard_js
-    assert "switchesRevision === revision" in publishing_js
+    assert "collectionTopicRevision === revision" in dashboard_js
+    assert '"trend_schedule_enabled"' in configuration_js
+    assert '"auto_upload"' in configuration_js
+    assert "hasConfigurationDraft" in (STATIC_ROOT / "app.js").read_text(encoding="utf-8")
     assert "settingsRevision !== revision" in plugin_settings_js
     assert 'addEventListener("beforeunload"' in plugin_settings_js
     assert "reviewReasonRevision !== reasonRevision" in review_html

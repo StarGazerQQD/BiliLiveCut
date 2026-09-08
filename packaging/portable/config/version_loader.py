@@ -1,10 +1,11 @@
-"""BiliLiveCut 统一版本加载器 — 所有版本号的唯一权威来源。
+"""读取 Portable 同步版本、冻结源码身份与构建契约。
 
 用法:
-    from blc_portable.config.version_loader import get_version, RELEASE_VERSION
-    print(RELEASE_VERSION)  # "0.1.17.4-alpha"
+    from version_loader import get_version, RELEASE_VERSION
+    print(RELEASE_VERSION)
 
-其他模块不得再硬编码版本号，必须通过此模块获取。
+应用版本以 app.__version__ 为真源；独立 Portable 工具读取 version.json，
+副本的一致性由版本门禁校验，冻结发布中无需导入业务应用。
 """
 
 from __future__ import annotations

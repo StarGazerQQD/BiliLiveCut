@@ -38,8 +38,9 @@ _TEMPLATES = Jinja2Templates(directory=str(Path(__file__).resolve().parent.paren
 async def collection_page(request: Request, topic_id: int) -> HTMLResponse:
     """合集编辑器页面。"""
     return _TEMPLATES.TemplateResponse(
-        "collection.html",
-        {"request": request, "topic_id": topic_id},
+        request=request,
+        name="collection.html",
+        context={"topic_id": topic_id},
     )
 
 

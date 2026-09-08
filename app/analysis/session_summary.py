@@ -14,6 +14,7 @@ from loguru import logger
 from sqlmodel import Session, select
 
 from app.core.config import settings
+from app.core.runtime_settings import configured_entry
 from app.db.entities import (
     AppSetting,
     LiveRoom,
@@ -258,6 +259,7 @@ def claim_pending_session_summary() -> SessionSummaryClaim | None:
     return None
 
 
+@configured_entry
 def execute_session_summary_claim(claim: SessionSummaryClaim) -> bool:
     """执行一个已领取请求，并以请求版本保护最终提交。"""
     try:

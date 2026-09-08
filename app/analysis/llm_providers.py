@@ -14,6 +14,7 @@
 from __future__ import annotations
 
 import json
+import math
 import uuid
 from dataclasses import dataclass
 
@@ -131,6 +132,8 @@ def _coerce(raw: dict) -> LLMProvider:
     for field_name in ("price_input_per_m", "price_output_per_m"):
         if not isinstance(raw[field_name], (int, float)) or isinstance(raw[field_name], bool):
             raise ValueError(f"LLM provider {field_name} 必须是数字")
+        if not math.isfinite(raw[field_name]) or raw[field_name] < 0:
+            raise ValueError(f"LLM provider {field_name} 必须为有限非负数")
     if not isinstance(raw["priority"], int) or isinstance(raw["priority"], bool):
         raise ValueError("LLM provider priority 必须是整数")
 
@@ -207,17 +210,27 @@ def merge_providers(incoming: list[dict]) -> list[LLMProvider]:
     """
     existing = {str(raw["id"]): raw for raw in _read_raw()}
     merged: list[LLMProvider] = []
-    for raw in incoming:
+    seen: set[str] = set()
+    for item in incoming:
+        raw = dict(item)
+        clear_key = raw.pop("clear_api_key", False)
+        if not isinstance(clear_key, bool):
+            raise ValueError("clear_api_key 必须为布尔值")
         if set(raw) != _PROVIDER_FIELDS:
             missing = sorted(_PROVIDER_FIELDS - set(raw))
             unknown = sorted(set(raw) - _PROVIDER_FIELDS)
             raise ValueError(f"LLM provider 字段不匹配: missing={missing} unknown={unknown}")
         pid = str(raw["id"]).strip() or _new_id()
+        if pid in seen:
+            raise ValueError("LLM provider ID 不能重复")
+        seen.add(pid)
         data = dict(raw)
         data["id"] = pid
         # 未提供新 key(空/仅掩码占位)时,沿用旧 key。
         new_key = str(raw["api_key"]).strip()
-        if not new_key or new_key.startswith("****"):
+        if clear_key:
+            data["api_key"] = ""
+        elif not new_key or new_key.startswith("****"):
             data["api_key"] = existing.get(pid, {}).get("api_key", "")
         merged.append(_coerce(data))
     return sorted(merged, key=lambda p: (p.priority, p.name))

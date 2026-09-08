@@ -31,7 +31,7 @@ def get_monitor_data() -> dict:
     safe, safe_msg = check_disk_safe()
 
     # V0.1.8 P2:磁盘不足告警通知(带冷却:每30分钟最多发一次)。
-    if not safe:
+    if disk["free_gb"] < settings.disk_alert_threshold_gb:
         from app.notify.webhook import notify_disk_alert
 
         global _last_disk_alert
@@ -203,24 +203,9 @@ def get_asr_metrics() -> JSONResponse:
 def get_asr_models() -> JSONResponse:
     """返回当前已加载 ASR 模型状态。"""
     try:
-        from app.analysis.asr_manager import get_asr_manager
+        from app.analysis.model_pool import model_pool
 
-        mgr = get_asr_manager()
-        infos = []
-        for info in mgr.all_infos():
-            infos.append(
-                {
-                    "key": info.key,
-                    "model_id": info.model_id,
-                    "device": info.device,
-                    "is_loaded": info.is_loaded,
-                    "loaded_at": info.loaded_at,
-                    "last_used_at": info.last_used_at,
-                    "load_duration": info.load_duration,
-                    "keep_loaded": info.keep_loaded,
-                    "revision": info.revision,
-                }
-            )
+        infos = model_pool.infos()
         return JSONResponse({"models": infos})
     except Exception as exc:
         return JSONResponse({"error": str(exc)}, status_code=500)

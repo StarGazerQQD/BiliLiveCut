@@ -21,6 +21,7 @@ from sqlmodel import select
 
 from app.analysis import audio as audio_mod
 from app.core.config import settings
+from app.core.runtime_settings import configured_task
 from app.db.entities import (
     HighlightCandidate,
     RawSegment,
@@ -477,6 +478,7 @@ def fuse_scores(rule: float, llm_score: float | None, alpha: float, beta: float)
 # --------------------------------------------------------------------------- #
 # 主流程:对一个片段评分并(可能)生成候选
 # --------------------------------------------------------------------------- #
+@configured_task
 def score_segment(segment_id: int) -> HighlightCandidate | None:
     """对已转写片段做高光评分,达阈值则写入候选池。
 

@@ -34,6 +34,7 @@ from app.db.entities import (
     ClipVariantType,
     FinalClip,
     HighlightCandidate,
+    HighlightEvent,
     HighlightTopic,
     RenderStatus,
     Topic,
@@ -41,7 +42,7 @@ from app.db.entities import (
 from app.db.session import get_session
 
 
-def get_collection_events(topic_id: int) -> list[dict]:
+def get_collection_events(topic_id: int) -> list[dict[str, object]]:
     """获取主题下所有关联事件(含排序和时长)。
 
     :param topic_id: 主题 id。
@@ -59,7 +60,8 @@ def get_collection_events(topic_id: int) -> list[dict]:
         ).all()
         events = []
         for link in links:
-            cand = db.get(HighlightCandidate, link.event_id)
+            event = db.get(HighlightEvent, link.event_id)
+            cand = db.get(HighlightCandidate, event.candidate_id) if event else None
             if cand is None:
                 continue
             # 查找已有成品。
@@ -85,7 +87,7 @@ def get_collection_events(topic_id: int) -> list[dict]:
             dur = (end - start).total_seconds() if start and end else 0
             events.append(
                 {
-                    "event_id": cand.id,
+                    "event_id": event.id,
                     "candidate_id": cand.id,
                     "score": cand.highlight_score,
                     "reason": cand.reason,
@@ -94,6 +96,7 @@ def get_collection_events(topic_id: int) -> list[dict]:
                     "duration_s": round(dur, 1),
                     "clip": clip_info,
                     "sort_order": link.sort_order,
+                    "chapter_title": link.chapter_title,
                 }
             )
         # 按 sort_order 排序。
@@ -155,7 +158,7 @@ def render_collection(
     :param cancel_check: 可选的取消检查。
     :returns: 新 ClipVariant 对象或 ``None``。
     """
-    if len(event_ids) < 2:
+    if len(event_ids) < 2 or len(set(event_ids)) != len(event_ids):
         logger.warning("合集至少需要 2 个事件,只有 {} 个。", len(event_ids))
         return None
     _collection_progress(progress_callback, 8, "正在检查合集素材")
@@ -168,12 +171,17 @@ def render_collection(
             return None
 
         # 收集 clip 文件。
+        linked_ids = set(db.exec(select(HighlightTopic.event_id).where(HighlightTopic.topic_id == topic_id)).all())
+        if not set(event_ids).issubset(linked_ids):
+            logger.error("合集请求包含不属于主题 {} 的事件", topic_id)
+            return None
         clip_files = []
         for eid in event_ids:
-            cand = db.get(HighlightCandidate, eid)
+            event = db.get(HighlightEvent, eid)
+            cand = db.get(HighlightCandidate, event.candidate_id) if event else None
             if cand is None:
                 logger.warning("事件 {} 找不到候选。", eid)
-                continue
+                return None
             clips = db.exec(
                 select(FinalClip)
                 .where(
@@ -185,7 +193,7 @@ def render_collection(
             ).first()
             if clips is None or not clips.file_path or not Path(clips.file_path).exists():
                 logger.warning("事件 {} 没有可用成品文件。", eid)
-                continue
+                return None
             clip_files.append(
                 {
                     "path": clips.file_path,
@@ -371,7 +379,8 @@ def render_collection(
             if event_link:
                 from app.db.entities import CandidateStatus
 
-                cand = db.get(HighlightCandidate, eid)
+                event = db.get(HighlightEvent, eid)
+                cand = db.get(HighlightCandidate, event.candidate_id) if event else None
                 if cand:
                     cand.status = CandidateStatus.MERGED
                     db.add(cand)

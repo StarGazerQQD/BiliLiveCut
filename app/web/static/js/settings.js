@@ -1,9 +1,11 @@
 // BiliLiveCut \u8bbe\u7f6e:\u6a21\u578b\u3001\u8d26\u53f7\u3001\u65e5\u5fd7\u3001\u4efb\u52a1\u961f\u5217\u3001\u5b57\u5e55/\u7247\u5934\u7247\u5c3e\u6a21\u677f
-import { $, api, toast, esc, badge } from "./common.js";
+import { $, api, toast, esc, badge, sessionTitle } from "./common.js";
+import { loadConfiguration } from "./configuration.js";
 
 // ----------------------------- \u591a\u5927\u6a21\u578b\u914d\u7f6e ----------------------------- //
 let _llmDirty = false;
 let _llmRevision = 0;
+let _llmSaving = false;
 
 function markLLMDirty() {
   _llmDirty = true;
@@ -13,27 +15,29 @@ function markLLMDirty() {
 }
 
 function hasLLMDraft() {
-  return _llmDirty;
+  return _llmDirty || _llmSaving;
 }
 
-function llmRow(p) {
-  p = p || {};
-  const keyPlaceholder = p.api_key_set ? "\u5df2\u914d\u7f6e (\u7559\u7a7a\u4e0d\u6539)" : "\u586b\u5199 API Key";
-  return `
-  <div class="item llm-row" data-id="${esc(p.id || "")}">
-    <div class="row" style="gap:8px; flex-wrap:wrap">
-      <input class="llm-name" style="width:120px" placeholder="\u540d\u79f0" value="${esc(p.name || "")}" />
-      <input class="llm-base" style="width:260px" placeholder="base_url" value="${esc(p.base_url || "")}" />
-      <input class="llm-model" style="width:150px" placeholder="\u6a21\u578b" value="${esc(p.model || "")}" />
-      <input class="llm-key" type="password" style="width:180px" placeholder="${keyPlaceholder}" />
+function llmRow(p = {}) {
+  p = { ...p, id: p.id || crypto.randomUUID() };
+  const keyPlaceholder = p.api_key_set ? "已配置（留空保持）" : "填写 API Key";
+  return `<div class="item llm-row" data-id="${esc(p.id || "")}">
+    <div class="settings-scoring">
+      <label>名称<input class="llm-name" value="${esc(p.name || "")}" required /></label>
+      <label>API 地址<input class="llm-base" placeholder="https://…/v1" value="${esc(p.base_url || "")}" required /></label>
+      <label>模型 ID<input class="llm-model" value="${esc(p.model || "")}" required /></label>
+      <label>API Key<input class="llm-key" type="password" autocomplete="new-password" placeholder="${keyPlaceholder}" /></label>
+      <label>联网参数名<input class="llm-search" value="${esc(p.web_search_param || "")}" /></label>
+      <label>优先级（小者优先）<input class="llm-priority" type="number" step="1" value="${p.priority ?? 100}" /></label>
+      <label>输入价格（美元/百万 token）<input class="llm-price-input" type="number" min="0" step="any" value="${p.price_input_per_m ?? 0}" /></label>
+      <label>输出价格（美元/百万 token）<input class="llm-price-output" type="number" min="0" step="any" value="${p.price_output_per_m ?? 0}" /></label>
     </div>
-    <div class="row" style="gap:8px; flex-wrap:wrap; margin-top:6px; align-items:center">
-      <input class="llm-search" style="width:150px" placeholder="\u8054\u7f51\u53c2\u6570(\u5982 enable_search)" value="${esc(p.web_search_param || "")}" />
-      <span class="muted">\u4f18\u5148\u7ea7</span>
-      <input class="llm-priority" type="number" style="width:80px" value="${p.priority != null ? p.priority : 100}" />
-      <label class="switch-row"><input type="checkbox" class="llm-enabled" ${p.enabled === false ? "" : "checked"} /> \u542f\u7528</label>
-      <button class="llm-del" data-act="del-llm">\u5220\u9664</button>
+    <div class="row">
+      <label class="chk"><input type="checkbox" class="llm-enabled" ${p.enabled === false ? "" : "checked"} /> 启用</label>
+      <label class="chk"><input type="checkbox" class="llm-clear-key" /> 保存时明确清空密钥</label>
+      <button class="llm-del" data-act="del-llm">删除服务商</button>
     </div>
+    <p class="hint">价格为 0 表示不估算该部分费用；填写实际价格后每日预算才能按此估算。</p>
   </div>`;
 }
 
@@ -45,21 +49,29 @@ async function loadLLM(force = false) {
   $("#llm-status").textContent = `\u5df2\u914d\u7f6e ${data.providers.length} \u4e2a \u00b7 \u53ef\u7528 ${data.active_count} \u4e2a(\u6309\u4f18\u5148\u7ea7\u4ece\u5c0f\u5230\u5927\u8c03\u7528)`;
   $("#llm-list").innerHTML = data.providers.length
     ? data.providers.map(llmRow).join("")
-    : `<div class="empty">\u5c1a\u672a\u914d\u7f6e\u3002\u70b9\u51fb\u300c+ \u65b0\u589e\u6a21\u578b\u300d,\u6216\u4f7f\u7528 .env \u7684\u5355\u6a21\u578b\u914d\u7f6e\u3002</div>`;
+    : `<div class="empty">尚未配置服务商。点击“新增模型”，填写地址、模型和密钥后保存。</div>`;
   _llmDirty = false;
 }
 
 function collectLLM() {
-  return [...document.querySelectorAll(".llm-row")].map((row) => ({
-    id: row.dataset.id || "",
-    name: row.querySelector(".llm-name").value.trim(),
-    base_url: row.querySelector(".llm-base").value.trim(),
-    model: row.querySelector(".llm-model").value.trim(),
-    api_key: row.querySelector(".llm-key").value,
-    web_search_param: row.querySelector(".llm-search").value.trim(),
-    priority: parseInt(row.querySelector(".llm-priority").value || "100", 10),
-    enabled: row.querySelector(".llm-enabled").checked,
-  })).filter((p) => p.base_url && p.model);
+  return [...document.querySelectorAll(".llm-row")].map((row, index) => {
+    const read = selector => row.querySelector(selector);
+    for (const selector of [".llm-name", ".llm-base", ".llm-model", ".llm-priority", ".llm-price-input", ".llm-price-output"]) {
+      const control = read(selector);
+      if (!control.value.trim() || (control.checkValidity && !control.checkValidity())) {
+        control.focus?.();
+        throw new Error(`第 ${index + 1} 个服务商有未填写或超出范围的字段；已定位，未保存任何行`);
+      }
+    }
+    return {
+      id: row.dataset.id || "", name: read(".llm-name").value.trim(),
+      base_url: read(".llm-base").value.trim(), model: read(".llm-model").value.trim(),
+      api_key: read(".llm-key").value, clear_api_key: read(".llm-clear-key").checked,
+      web_search_param: read(".llm-search").value.trim(), priority: Number(read(".llm-priority").value),
+      price_input_per_m: Number(read(".llm-price-input").value), price_output_per_m: Number(read(".llm-price-output").value),
+      enabled: read(".llm-enabled").checked,
+    };
+  });
 }
 
 function renderLLMTestResults(results) {
@@ -105,7 +117,7 @@ async function loadTasks() {
     $("#task-tbody").innerHTML = tasks.length ? tasks.map(t => `
       <tr>
         <td>${esc(t.id)}</td>
-        <td title="${esc(t.room_title || "")}">${esc(t.source_label || "未知来源")}<br><span class="muted">会话 #${esc(t.session_id)}</span></td>
+        <td title="${esc(t.room_title || "")}">${esc(t.source_label || "未知来源")}<br>${esc(sessionTitle(t))}<br><span class="muted">会话 #${esc(t.session_id)}</span></td>
         <td>${esc(t.segment_id)}</td>
         <td><span class="badge badge-${esc(t.stage.replace(/_/g,'-'))}">${esc(t.stage)}</span></td>
         <td>${t.attempts}/${t.max_retries}</td>
@@ -143,7 +155,7 @@ async function loadCookieStatus() {
       hint.innerHTML = `\u5df2\u767b\u5f55 \u00b7 UID: <b>${esc(info.uid || "?")}</b>`;
       hint.className = "hint ok";
     } else {
-      hint.textContent = info.hint || "\u672a\u914d\u7f6e Cookie,\u5f39\u5e55\u91c7\u96c6/\u9274\u6743\u529f\u80fd\u4e0d\u53ef\u7528\u3002";
+      hint.textContent = "尚未登录；公开弹幕可匿名采集，需要登录态的画质请先登录。";
       hint.className = "hint warn";
     }
     hint.style.display = "";
@@ -152,6 +164,7 @@ async function loadCookieStatus() {
 
 let _loginPolling = null;
 async function doLogin() {
+  if ($("#btn-login").disabled) return;
   const btn = $("#btn-login");
   const status = $("#login-status");
   btn.disabled = true;
@@ -159,8 +172,8 @@ async function doLogin() {
   try {
     const resp = await api("POST", "/api/login");
     const taskId = resp.task_id;
-    if (_loginPolling) clearInterval(_loginPolling);
-    _loginPolling = setInterval(async () => {
+    if (_loginPolling) clearTimeout(_loginPolling);
+    const poll = async () => {
       try {
         const s = await api("GET", `/api/login/status?task_id=${taskId}`);
         status.textContent = {
@@ -169,25 +182,28 @@ async function doLogin() {
           waiting: "\u8bf7\u5728\u5f39\u51fa\u7a97\u53e3\u4e2d\u5b8c\u6210\u767b\u5f55\u2026",
         }[s.status] || s.status;
         if (s.status === "done") {
-          clearInterval(_loginPolling);
+          clearTimeout(_loginPolling);
           _loginPolling = null;
           status.textContent = "\u767b\u5f55\u6210\u529f\uff01Cookie \u5df2\u81ea\u52a8\u4fdd\u5b58\u3002";
           btn.disabled = false;
           toast("Bilibili \u767b\u5f55\u6210\u529f");
           await loadCookieStatus();
+          await loadConfiguration(true);
         } else if (s.error) {
-          clearInterval(_loginPolling);
+          clearTimeout(_loginPolling);
           _loginPolling = null;
           status.textContent = "\u767b\u5f55\u5931\u8d25: " + esc(s.error);
           btn.disabled = false;
         }
       } catch (e) {
-        clearInterval(_loginPolling);
+        clearTimeout(_loginPolling);
         _loginPolling = null;
         status.textContent = "\u72b6\u6001\u67e5\u8be2\u5f02\u5e38: " + esc(e.message);
         btn.disabled = false;
       }
-    }, 2000);
+      if (btn.disabled) _loginPolling = setTimeout(poll, 2000);
+    };
+    _loginPolling = setTimeout(poll, 2000);
   } catch (e) {
     status.textContent = "\u542f\u52a8\u5931\u8d25: " + esc(e.message);
     btn.disabled = false;
@@ -195,14 +211,13 @@ async function doLogin() {
 }
 
 async function clearCookie() {
-  if (!confirm("\u786e\u5b9a\u8981\u6e05\u9664 Cookie\uff1f\n\u6e05\u9664\u540e\u5f39\u5e55\u91c7\u96c6\u7b49\u9700\u8981\u767b\u5f55\u6001\u7684\u529f\u80fd\u5c06\u4e0d\u53ef\u7528\u3002")) return;
+  if ($("#btn-login").disabled) return toast("请先完成当前登录，再清空 Cookie。");
+  if (!confirm("清空已保存 Cookie？需要登录态的取流功能将受影响，公开弹幕仍可匿名采集。")) return;
   try {
     await api("POST", "/api/login/clear");
-    toast("Cookie \u5df2\u6e05\u9664\u3002");
-    await loadCookieStatus();
-  } catch (e) {
-    toast("\u6e05\u9664\u5931\u8d25: " + esc(e.message));
-  }
+    toast("Cookie 已清空。");
+    await loadCookieStatus(); await loadConfiguration(true);
+  } catch (error) { toast("清空失败：" + error.message); }
 }
 
 // ----------------------------- \u5b57\u5e55\u6a21\u677f(V0.1.8 P0) ----------------------------- //
@@ -273,6 +288,9 @@ $("#llm-list").addEventListener("click", (e) => {
 $("#llm-list").addEventListener("input", markLLMDirty);
 $("#llm-list").addEventListener("change", markLLMDirty);
 $("#btn-save-llm").addEventListener("click", async () => {
+  if (_llmSaving) return;
+  _llmSaving = true;
+  $("#btn-save-llm").disabled = true;
   try {
     const revision = _llmRevision;
     const r = await api("PUT", "/api/llm-providers", { providers: collectLLM() });
@@ -281,12 +299,15 @@ $("#btn-save-llm").addEventListener("click", async () => {
       _llmDirty = false;
       await loadLLM(true);
     }
-  } catch (e) { toast("\u4fdd\u5b58\u5931\u8d25:" + e.message); }
+  } catch (e) { $("#llm-status").textContent = "保存失败：" + e.message; toast("\u4fdd\u5b58\u5931\u8d25:" + e.message); }
+  finally { _llmSaving = false; $("#btn-save-llm").disabled = false; }
 });
 $("#btn-test-llm").addEventListener("click", async () => {
   toast("\u6d4b\u8bd5\u4e2d,\u8bf7\u7a0d\u5019\u2026");
   try {
+    const revision = _llmRevision;
     const r = await api("POST", "/api/llm-providers/test", { providers: collectLLM() });
+    if (revision !== _llmRevision) { $("#llm-test-results").textContent = "测试期间配置已修改，请重新测试当前草稿。"; return; }
     renderLLMTestResults(r.results);
     if (!r.results.length) return toast("\u65e0\u53ef\u7528\u6a21\u578b(\u9700\u5df2\u542f\u7528\u4e14\u914d\u7f6e key)");
     const ok = r.results.filter((x) => x.ok).map((x) => x.name);

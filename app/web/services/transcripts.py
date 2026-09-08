@@ -14,6 +14,7 @@ from uuid import uuid4
 from sqlalchemy import func
 from sqlmodel import Session, select
 
+from app.core.runtime_settings import configured_task
 from app.db.entities import (
     ClipVariant,
     Danmaku,
@@ -167,6 +168,7 @@ def _source_file_name(file_path: str | None) -> str | None:
     return normalized.rsplit("/", maxsplit=1)[-1] or None
 
 
+@configured_task
 def remux_transcript_source(transcript_id: int) -> Path:
     """把转写关联的 TS 无损重封装为首视频帧从 0 秒开始的 MP4。
 
@@ -514,6 +516,9 @@ def retranscribe_transcript(transcript_id: int) -> dict[str, int]:
             db.delete(event)
             db.flush()
         if candidate is not None:
+            from app.analysis.reanalysis import detach_hotspot_candidate
+
+            detach_hotspot_candidate(db, candidate.id)
             db.delete(candidate)
             db.flush()
 

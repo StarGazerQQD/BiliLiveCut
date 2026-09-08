@@ -7,14 +7,21 @@ import os
 import typer
 from rich.console import Console
 
-from config.launcher_settings import APP_ROOT_ENV, WEB_PORT_ENV, LauncherConfigError, validate_web_port
+from config.launcher_settings import (
+    APP_ROOT_ENV,
+    WEB_PORT_ENV,
+    LauncherConfigError,
+    load_launcher_config,
+    runtime_app_root,
+    validate_web_port,
+)
 
 console = Console()
 
 
 def cmd_serve(
     host: str = typer.Option("127.0.0.1", help="监听地址"),
-    port: int = typer.Option(8000, help="监听端口"),
+    port: int | None = typer.Option(None, help="监听端口，默认使用已保存的 Launcher 配置"),
     reload: bool = typer.Option(False, "--reload", help="开发热重载"),
 ) -> None:
     """启动 Web 管理后台(阶段4，需安装 web 可选依赖)。
@@ -30,7 +37,7 @@ def cmd_serve(
         raise typer.Exit(code=1) from exc
 
     try:
-        actual_port = validate_web_port(port)
+        actual_port = validate_web_port(port if port is not None else load_launcher_config(runtime_app_root()).web_port)
     except LauncherConfigError as exc:
         console.print(f"[red]{exc}[/red]")
         raise typer.Exit(code=1) from exc

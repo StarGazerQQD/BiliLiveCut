@@ -76,6 +76,32 @@ def get_session_timeline(session_id: int, include_rejected: bool = False) -> dic
         raise HTTPException(status_code=404, detail=str(exc)) from exc
 
 
+@router.get("/sessions/{session_id}/titles")
+def get_session_titles(session_id: int) -> dict[str, object]:
+    """返回标题快照及按观测顺序保存的变化记录。"""
+    from sqlmodel import select
+
+    from app.db.entities import AppSetting, RecordingSession
+    from app.db.session import get_session
+    from app.recording.metadata import SessionMetadata, TitleObservation, read_metadata
+
+    with get_session() as db:
+        if db.get(RecordingSession, session_id) is None:
+            raise HTTPException(status_code=404, detail="场次不存在")
+        snapshot = read_metadata(db, f"session_metadata:{session_id}", SessionMetadata)
+        rows = db.exec(
+            select(AppSetting)
+            .where(AppSetting.key.startswith(f"session_title_change:{session_id}:"))
+            .order_by(AppSetting.key)
+        ).all()
+        changes = []
+        for row in rows:
+            observation = read_metadata(db, row.key, TitleObservation)
+            if observation:
+                changes.append(observation.model_dump(mode="json"))
+        return {"snapshot": snapshot.model_dump(mode="json") if snapshot else None, "changes": changes}
+
+
 @router.post("/sessions/{session_id}/timeline-summary")
 def regenerate_session_timeline_summary(session_id: int) -> dict[str, int | bool]:
     """使当前整场总结失效，并持久化重新生成请求。"""

@@ -16,8 +16,8 @@
 from __future__ import annotations
 
 import asyncio
-import os
 import threading
+import time
 from typing import Any
 
 from loguru import logger
@@ -59,15 +59,7 @@ from app.pipeline.stale_recovery import (
 )
 
 # ── 并发配置 ──────────────────────────────────────────────────────
-MAX_TRANSCRIBING: int = int(os.environ.get("MAX_TRANSCRIBING", str(settings.asr_task_max_concurrency)))
-MAX_ANALYZING: int = int(os.environ.get("MAX_ANALYZING", "2"))
-MAX_RENDERING: int = int(os.environ.get("MAX_RENDERING", "2"))
-MAX_PUBLISHING: int = int(os.environ.get("MAX_PUBLISHING", "1"))
 
-_WORKER_SHUTDOWN_TIMEOUT_S: int = int(os.environ.get("WORKER_SHUTDOWN_TIMEOUT_SECONDS", "30"))
-
-_HEARTBEAT_INTERVAL_S: int = 30
-_STALE_TIMEOUT_S: int = 120
 
 _logger = logger
 
@@ -232,6 +224,7 @@ class TaskWorker:
         self._session_summaries: set[asyncio.Task[bool]] = set()
         self._main_task: asyncio.Task[None] | None = None
         self._running: bool = False
+        self._next_maintenance = time.monotonic() + 3600
         _logger.info("TaskWorker init worker_id={}", _WORKER_ID)
 
     async def start(self) -> None:
@@ -240,14 +233,30 @@ class TaskWorker:
             return
         shutdown_event.clear()
         self._running = True
+        from app.pipeline.publish_recovery import recover_publish_state
+
+        await asyncio.to_thread(recover_publish_state)
         recover_orphans()
         from app.analysis.session_summary import recover_running_session_summary_requests
 
         recover_running_session_summary_requests()
         self._main_task = asyncio.create_task(self._loop())
+        if settings.asr_preload_on_start:
+            self._preload_task = asyncio.create_task(self._preload_models())
         from app.core.settings_store import asr_task_max_concurrency
 
-        _logger.info("TaskWorker started T{}/A{}/R{}", asr_task_max_concurrency(), MAX_ANALYZING, MAX_RENDERING)
+        _logger.info(
+            "TaskWorker started T{}/A{}/R{}", asr_task_max_concurrency(), settings.max_analyzing, settings.max_rendering
+        )
+
+    async def _preload_models(self) -> None:
+        """后台预加载失败只记录错误，正常转写仍使用已有回退机制。"""
+        from app.analysis.model_pool import preload_models
+
+        try:
+            await asyncio.to_thread(preload_models)
+        except (RuntimeError, OSError, ValueError, ImportError) as exc:
+            _logger.error("ASR 预加载失败: {}", type(exc).__name__)
 
     async def stop(self) -> None:
         """优雅关闭 — 停止领取新任务, 等待当前任务完成或取消。"""
@@ -261,7 +270,12 @@ class TaskWorker:
             except asyncio.CancelledError:
                 pass
 
-        grace_period = _WORKER_SHUTDOWN_TIMEOUT_S
+        grace_period = settings.worker_shutdown_timeout_seconds
+        preload = getattr(self, "_preload_task", None)
+        if preload is not None and not preload.done():
+            _, pending = await asyncio.wait({preload}, timeout=grace_period)
+            for task in pending:
+                task.cancel()
         for coll_name, coll in [
             ("transcribing", self._transcribing),
             ("analyzing", self._analyzing),
@@ -289,8 +303,20 @@ class TaskWorker:
         """主调度循环 — 每个 tick 执行阶段推进、stale 恢复、任务分发。"""
         while self._running and not shutdown_event.is_set():
             try:
+                from app.analysis.model_pool import model_pool
                 from app.analysis.reanalysis import process_pending_session_reanalyses
+                from app.core.configuration import reload_configuration
+                from app.pipeline.publish_recovery import recover_publish_state
 
+                await asyncio.to_thread(reload_configuration)
+                await asyncio.to_thread(model_pool.cleanup_idle)
+                if time.monotonic() >= self._next_maintenance:
+                    from app.core.settings_store import get_bool
+                    from app.pipeline.storage_lifecycle import run_disk_maintenance
+
+                    self._next_maintenance = time.monotonic() + 3600
+                    await asyncio.to_thread(run_disk_maintenance, cleanup=get_bool("storage_cleanup_enabled"))
+                await asyncio.to_thread(recover_publish_state)
                 process_pending_session_reanalyses()
                 retry_expired()
                 recover_stale()
@@ -313,11 +339,11 @@ class TaskWorker:
                         self._transcribing,
                         asr_task_max_concurrency(),
                     )
-                    await self._dispatch(TaskStatus.QUEUED_FOR_ANALYSIS, self._analyzing, MAX_ANALYZING)
-                    await self._dispatch(TaskStatus.QUEUED_FOR_RENDER, self._rendering, MAX_RENDERING)
+                    await self._dispatch(TaskStatus.QUEUED_FOR_ANALYSIS, self._analyzing, settings.max_analyzing)
+                    await self._dispatch(TaskStatus.QUEUED_FOR_RENDER, self._rendering, settings.max_rendering)
                 else:
                     _logger.warning("磁盘空间不足, 跳过 transcribe/analyze/render 调度")
-                await self._dispatch(TaskStatus.QUEUED_FOR_PUBLISH, self._publishing, MAX_PUBLISHING)
+                await self._dispatch(TaskStatus.QUEUED_FOR_PUBLISH, self._publishing, settings.max_publishing)
                 self._transcribing = {t for t in self._transcribing if not t.done()}
                 self._analyzing = {t for t in self._analyzing if not t.done()}
                 self._rendering = {t for t in self._rendering if not t.done()}

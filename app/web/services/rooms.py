@@ -31,6 +31,7 @@ from app.db.entities import (
     utcnow,
 )
 from app.db.session import get_session
+from app.recording.metadata import refresh_room_metadata
 from app.recording.recorder import Recorder
 from app.sources.bilibili.client import BilibiliLiveClient
 from app.web.services.notifications import push_notification
@@ -109,57 +110,6 @@ class RecordingRuntime:
         }
 
 
-async def _refresh_room_metadata_before_recording(db_id: int) -> None:
-    """在创建新录制场次前重新查询直播间标题与主播名。
-
-    元数据详情失败不应阻止已经授权的录制任务启动；此时保留最近一次成功查询的
-    标题与主播名。真实房间号发生异常变化时也拒绝覆盖本地记录。
-
-    :param db_id: ``live_rooms`` 主键。
-    """
-    with get_session() as db:
-        room = db.get(LiveRoom, db_id)
-        if room is None or room.room_id is None:
-            return
-        public_room_id = int(room.room_id)
-
-    try:
-        async with BilibiliLiveClient(cookie=get_bilibili_cookie()) as client:
-            info = await client.get_room_info(str(public_room_id), include_detail=True)
-    except asyncio.CancelledError:
-        raise
-    except Exception as exc:  # noqa: BLE001 — 标题刷新失败不得阻断录制
-        logger.warning("开录前刷新直播间资料失败 db_id={} room={}: {}", db_id, public_room_id, exc)
-        return
-
-    if info.room_id != public_room_id:
-        logger.warning(
-            "开录前直播间资料返回了不同房间号 db_id={} expected={} actual={}，保留原资料",
-            db_id,
-            public_room_id,
-            info.room_id,
-        )
-        return
-
-    with get_session() as db:
-        room = db.get(LiveRoom, db_id)
-        if room is None:
-            return
-        if info.title:
-            room.title = info.title
-        if info.uploader_name:
-            room.uploader_name = info.uploader_name
-        room.updated_at = utcnow()
-        db.add(room)
-    logger.info(
-        "开录前直播间资料已刷新 db_id={} room={} uploader={} title={}",
-        db_id,
-        public_room_id,
-        info.uploader_name or "-",
-        info.title or "-",
-    )
-
-
 class RecorderManager:
     """管理多个直播间的并发录制任务(asyncio)。
 
@@ -171,6 +121,7 @@ class RecorderManager:
         self._recorders: dict[int, Recorder] = {}
         self._tasks: dict[int, asyncio.Task[None]] = {}
         self._runtime: dict[int, RecordingRuntime] = {}
+        self._controls: dict[int, asyncio.Lock] = {}
 
     def _set_state(
         self,
@@ -244,11 +195,66 @@ class RecorderManager:
         """确认房间已经真实离线，允许下一次开播再次自动录制。"""
         self._set_recording_flags(db_id, wait_for_next_live=False)
 
+    async def arm_auto_recording(self, db_id: int) -> None:
+        """显式开启自动录制和分析并解除人工暂停，等待监控检测开播。"""
+        from app.analysis.room_config import merge_room_config
+
+        async with self._controls.setdefault(db_id, asyncio.Lock()):
+            with get_session() as db:
+                room = db.get(LiveRoom, db_id)
+                if room is None or room.room_id is None:
+                    raise ValueError("房间不存在或未解析房间号")
+                if settings.require_authorization and not room.authorized:
+                    raise ValueError("该直播间尚未确认授权")
+                if self.is_running(db_id):
+                    raise ValueError("正在录制，请先完成当前场次再修改自动化模式")
+                room.auto_record = True
+                room.auto_analyze = True
+                room.room_config_json = json.dumps(
+                    merge_room_config(
+                        room,
+                        {
+                            "recording_paused": False,
+                            "recording_auto_restart_suppressed": False,
+                            "recording_wait_for_next_live": False,
+                        },
+                    ),
+                    ensure_ascii=False,
+                )
+                db.add(room)
+            self._set_state(db_id, "waiting_live")
+
     def running_ids(self) -> list[int]:
         """返回当前正在录制的直播间 db_id 列表。"""
         return [rid for rid in self._tasks if self.is_running(rid)]
 
-    async def start(self, db_id: int, pipeline: bool | None = None, produce: bool = False) -> None:
+    async def start(
+        self, db_id: int, pipeline: bool | None = None, produce: bool = False, *, automatic: bool = False
+    ) -> None:
+        """同房间启动、停录串行执行，等待期间也不能重复创建录制器。"""
+        async with self._controls.setdefault(db_id, asyncio.Lock()):
+            if automatic:
+                from app.analysis.room_config import load_room_config
+
+                with get_session() as db:
+                    room = db.get(LiveRoom, db_id)
+                    config = load_room_config(room)
+                    if (
+                        room is None
+                        or not room.auto_record
+                        or any(
+                            config.get(key, False)
+                            for key in (
+                                "recording_paused",
+                                "recording_auto_restart_suppressed",
+                                "recording_wait_for_next_live",
+                            )
+                        )
+                    ):
+                        return
+            await self._start_locked(db_id, pipeline, produce)
+
+    async def _start_locked(self, db_id: int, pipeline: bool | None, produce: bool) -> None:
         """启动某直播间的录制(幂等:已在录制则忽略)。
 
         :param db_id: ``live_rooms`` 主键。
@@ -271,12 +277,16 @@ class RecorderManager:
                 raise ValueError("该直播间缺少 room_id。")
             room_id = room.room_id
 
-        await _refresh_room_metadata_before_recording(db_id)
+        await refresh_room_metadata(db_id)
 
         with get_session() as db:
             room = db.get(LiveRoom, db_id)
             if room is None:
                 raise ValueError(f"房间不存在: db_id={db_id}")
+            if settings.require_authorization and not room.authorized:
+                raise ValueError("该直播间未确认授权,拒绝录制。")
+            if room.room_id != room_id:
+                raise ValueError("启动期间房间号已发生变化，请重新启动")
             room.enabled = True
             # Pipeline 回调及后续调度器都会读取房间级 auto_analyze。
             # 与 CLI 保持一致：有效开关为真时同步开启，否则回调即使已安装也会跳过任务登记。
@@ -306,6 +316,7 @@ class RecorderManager:
             on_segment=on_segment,
             on_end=_on_session_end,
             on_state=lambda state, session_id: self._set_state(db_id, state, session_id),
+            metadata_prepared=True,
         )
         self._recorders[db_id] = recorder
         self._tasks[db_id] = asyncio.create_task(self._run_recorder(db_id, recorder))
@@ -353,6 +364,25 @@ class RecorderManager:
         logger.info("录制任务已收尾并清理 db_id={} session={}", db_id, recorder.session_id)
 
     async def stop(
+        self,
+        db_id: int,
+        *,
+        mode: str = "graceful",
+        pause_auto_restart: bool = False,
+        mark_paused: bool = False,
+        cancel_pending: bool = False,
+    ) -> dict[str, Any]:
+        """停录与开录使用同一把锁，收尾完成后才允许再次启动。"""
+        async with self._controls.setdefault(db_id, asyncio.Lock()):
+            return await self._stop_locked(
+                db_id,
+                mode=mode,
+                pause_auto_restart=pause_auto_restart,
+                mark_paused=mark_paused,
+                cancel_pending=cancel_pending,
+            )
+
+    async def _stop_locked(
         self,
         db_id: int,
         *,
@@ -731,8 +761,6 @@ async def auto_recover_interrupted_sessions() -> list[int]:
     :returns: 已恢复的房间 db_id 列表。
     """
     from datetime import timedelta
-
-    from app.db.entities import utcnow
 
     cutoff = utcnow() - timedelta(hours=settings.auto_recover_max_age_hours)
     with get_session() as db:

@@ -118,6 +118,16 @@ async def start_recording(db_id: int, req: StartRequest) -> dict[str, str]:
     return {"status": "started"}
 
 
+@router.post("/rooms/{db_id}/arm-auto")
+async def arm_auto_recording(db_id: int) -> dict[str, str]:
+    """组合开启录制与分析，显式解除暂停后守候开播。"""
+    try:
+        await service.recorder_manager.arm_auto_recording(db_id)
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
+    return {"status": "waiting_live"}
+
+
 @router.post("/rooms/{db_id}/stop")
 async def stop_recording(db_id: int, req: StopRequest | None = None) -> dict[str, Any]:
     """停止某直播间录制。"""

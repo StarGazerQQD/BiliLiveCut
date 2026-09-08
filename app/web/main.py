@@ -25,7 +25,7 @@ from loguru import logger
 
 from app import __version__, __version_label__
 from app.core.logging import setup_logging
-from app.db.session import get_session, init_db
+from app.db.session import init_db
 from app.web import service
 from app.web.routers.api import router as api_router
 from app.web.routers.collection_router import collection_router
@@ -165,52 +165,27 @@ async def _schedule_loop() -> None:
     while True:
         try:
             await asyncio.sleep(s.schedule_check_interval_s)
-            due = service.get_due_schedules()
-            for item in due:
-                if service.recorder_manager.is_running(item["room_id"]):
-                    service.mark_schedule_triggered(item["id"])
-                    continue
-                try:
-                    await service.recorder_manager.start(item["room_id"])
-                    service.mark_schedule_triggered(item["id"])
-                    logger.info("预约触发:房间 #{} 已启动录制。", item["room_id"])
-                    service.push_notification(
-                        f"预约触发:房间 #{item['room_id']} 已自动开始录制。",
-                        kind="success",
-                    )
-                except ValueError as exc:
-                    logger.warning("预约触发失败(房间 #{}): {}", item["room_id"], exc)
-                # 对 recurring 预约,重新安排下次.
-                if item["recurrent"] == "daily":
-                    _reschedule_daily(item)
+            await _run_due_schedules()
         except asyncio.CancelledError:
             raise
         except Exception as exc:  # noqa: BLE001
             logger.error("预约调度异常: {}", exc)
 
 
-def _reschedule_daily(item: dict) -> None:
-    """为每日预约创建下一天的副本(原记录已标记 triggered)。"""
-    from datetime import timedelta
+async def _run_due_schedules() -> None:
+    """每个到期预约仅产生一个后继，失败和已录制也完成本次调度。"""
+    from app.web.services.schedules import complete_schedule_occurrence
 
-    from app.db.entities import RecordingSchedule, utcnow
-
-    try:
-        # 取原预约的时间(hour+minute),放到下一天。
-        from datetime import datetime, timedelta
-
-        old_dt = datetime.fromisoformat(item.get("scheduled_at", "")) if item.get("scheduled_at") else utcnow()
-        new_ts = utcnow().replace(hour=old_dt.hour, minute=old_dt.minute) + timedelta(days=1)
-        with get_session() as db:
-            sched = RecordingSchedule(
-                room_id=item["room_id"],
-                scheduled_at=new_ts,
-                enabled=True,
-                recurrent="daily",
-            )
-            db.add(sched)
-    except Exception:
-        pass  # 复制失败不阻塞,用户可手动重新创建。
+    for item in service.get_due_schedules():
+        error: str | None = None
+        try:
+            if not service.recorder_manager.is_running(item["room_id"]):
+                await service.recorder_manager.start(item["room_id"])
+                service.push_notification(f"预约触发：房间 #{item['room_id']} 已开始录制。", kind="success")
+        except (ValueError, RuntimeError) as exc:
+            error = str(exc)
+            logger.warning("预约触发失败 room={}: {}", item["room_id"], exc)
+        complete_schedule_occurrence(item["id"], error=error)
 
 
 app = FastAPI(
@@ -218,6 +193,24 @@ app = FastAPI(
     version=f"{__version_label__} ({__version__})",
     lifespan=lifespan,
 )
+
+
+from fastapi.exceptions import RequestValidationError  # noqa: E402
+from fastapi.responses import JSONResponse  # noqa: E402
+
+
+@app.exception_handler(RequestValidationError)
+async def safe_request_validation_error(request: Request, exc: RequestValidationError) -> JSONResponse:
+    """校验错误只返回字段位置和类型，输入内容可能包含密码或 Cookie。"""
+    return JSONResponse(
+        status_code=422,
+        content={
+            "detail": [
+                {"loc": list(error["loc"]), "type": error["type"], "msg": "请求字段缺失、类型或格式不正确"}
+                for error in exc.errors()
+            ]
+        },
+    )
 
 
 # ── 认证中间件(V0.1.8.2) ──────────────────────────────────────────────────
@@ -231,7 +224,9 @@ import secrets as _secrets  # noqa: E402
 from urllib.parse import urlsplit as _urlsplit  # noqa: E402
 
 from starlette.middleware.base import BaseHTTPMiddleware as _BaseMiddleware  # noqa: E402
+from starlette.middleware.base import RequestResponseEndpoint as _RequestResponseEndpoint  # noqa: E402
 from starlette.responses import JSONResponse as _JSONResponse  # noqa: E402
+from starlette.responses import Response as _Response  # noqa: E402
 
 from app.core.config import settings as _cfg  # noqa: E402
 
@@ -444,7 +439,8 @@ class _AuthMiddleware(_BaseMiddleware):
         hostname, port = authority
         return scheme, hostname, port
 
-    async def dispatch(self, request: Request, call_next):
+    async def dispatch(self, request: Request, call_next: _RequestResponseEndpoint) -> _Response:
+        """先检查认证冷却，再验证凭据、角色及修改请求的来源。"""
         path = request.url.path
         request.state.auth_user = "anonymous"
         request.state.auth_role = "anonymous"
@@ -483,6 +479,8 @@ class _AuthMiddleware(_BaseMiddleware):
             return await call_next(request)
 
         auth = request.headers.get("Authorization", "")
+        if not _check_login_rate(client_ip):
+            return _JSONResponse({"detail": "登录尝试过于频繁,请稍后再试"}, status_code=429)
         if not auth.startswith("Basic "):
             # 无 Basic Auth 时,修改请求额外检查 CSRF
             if self._is_modifying(request) and not self._check_csrf(request):
@@ -496,10 +494,16 @@ class _AuthMiddleware(_BaseMiddleware):
                 return _JSONResponse({"detail": "跨站请求被拒绝"}, status_code=403)
             return _JSONResponse({"detail": "需要认证"}, status_code=401, headers={"WWW-Authenticate": "Basic"})
         try:
-            decoded = _base64.b64decode(auth[6:]).decode("utf-8", errors="ignore")
-            username, _, password = decoded.partition(":")
+            decoded = _base64.b64decode(auth[6:], validate=True).decode("utf-8")
+            username, separator, password = decoded.partition(":")
+            if not separator:
+                raise ValueError("Basic credentials must contain a colon")
             expected_password = _ADMIN_PASSWORD if username == "admin" else _REVIEWER_PASSWORDS.get(username)
-            if not username or expected_password is None or not _secrets.compare_digest(password, expected_password):
+            if (
+                not username
+                or expected_password is None
+                or not _secrets.compare_digest(password.encode("utf-8"), expected_password.encode("utf-8"))
+            ):
                 ip = request.client.host if request.client else "unknown"
                 _record_login_failure(ip)
                 if not _check_login_rate(ip):
@@ -513,7 +517,8 @@ class _AuthMiddleware(_BaseMiddleware):
                 return _JSONResponse({"detail": "审核员无权访问该管理接口"}, status_code=403)
             request.state.auth_user = username
             request.state.auth_role = role
-        except Exception:
+        except (ValueError, UnicodeError):
+            _record_login_failure(client_ip)
             return _JSONResponse({"detail": "认证格式错误"}, status_code=400)
         # Basic Auth 通过后,修改请求仍须校验 CSRF
         if self._is_modifying(request) and not self._check_csrf(request):
