@@ -1,8 +1,7 @@
 #!/usr/bin/env node
 /** Exercise the real configuration module against delayed and failed API boundaries. */
 import assert from "node:assert/strict";
-import { cp, mkdtemp, rm, writeFile } from "node:fs/promises";
-import { tmpdir } from "node:os";
+import { readFile } from "node:fs/promises";
 import { dirname, join } from "node:path";
 import { fileURLToPath, pathToFileURL } from "node:url";
 
@@ -93,11 +92,26 @@ globalThis.fetch = async (url, options) => {
   return { ok: true, status: 200, json: async () => structuredClone(server) };
 };
 const root = dirname(dirname(fileURLToPath(import.meta.url)));
-const temp = await mkdtemp(join(tmpdir(), "blc-configuration-ui-"));
-try {
-  await cp(join(root, "app/web/static/js"), temp, { recursive: true });
-  await writeFile(join(temp, "package.json"), '{"type":"module"}');
-  const module = await import(pathToFileURL(join(temp, "configuration.js")));
+function moduleUrl(source, path) {
+  const labeledSource = `${source}\n//# sourceURL=${pathToFileURL(path).href}\n`;
+  return `data:text/javascript;base64,${Buffer.from(labeledSource).toString("base64")}`;
+}
+
+// Keep this behavior check independent of temporary-directory creation/copy/cleanup.
+// The separate frontend graph check still exercises the real relative import layout.
+console.error("configuration check: reading source modules");
+const commonPath = join(root, "app/web/static/js/common.js");
+const configurationPath = join(root, "app/web/static/js/configuration.js");
+const [commonSource, configurationSource] = await Promise.all([
+  readFile(commonPath, "utf8"), readFile(configurationPath, "utf8"),
+]);
+const dependency = /(\bfrom\s+)(["'])\.\/common\.js\2/g;
+assert.equal([...configurationSource.matchAll(dependency)].length, 1, "expected exactly one common.js import");
+const linkedSource = configurationSource.replace(dependency, (_match, prefix) => `${prefix}${JSON.stringify(moduleUrl(commonSource, commonPath))}`);
+console.error("configuration check: loading source modules");
+{
+  const module = await import(moduleUrl(linkedSource, configurationPath));
+  console.error("configuration check: exercising real module behavior");
   await module.loadConfiguration();
   const form = element("configuration-form");
   const edit = async (key, value) => { const control = element(`configuration-${key}`); control.value = value; await form.emit("input", control); };
@@ -159,7 +173,4 @@ try {
   assert.equal(element("configuration-clip_video_crf").value, "20");
   assert.equal(element("configuration-database_url").disabled, true);
   console.log("PASS: configuration draft, delayed reload/caret, validation focus, save failure, concurrent submit, secret clearing, reset and readonly controls");
-} finally {
-  assert.ok(temp.startsWith(join(tmpdir(), "blc-configuration-ui-")));
-  await rm(temp, { recursive: true, force: true });
 }

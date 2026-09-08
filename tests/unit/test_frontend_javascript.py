@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import json
 import shutil
 import subprocess
 from html.parser import HTMLParser
@@ -17,19 +18,40 @@ INLINE_SCRIPT_TEMPLATES = tuple(path for path in TEMPLATE_FILES if "<script>" in
 INTERACTION_CHECK = PROJECT_ROOT / "scripts" / "check_frontend_interactions.mjs"
 
 
-def test_configuration_form_preserves_drafts_and_validates_atomic_saves() -> None:
+@pytest.mark.parametrize("readonly_filesystem", [False, True], ids=["normal", "readonly-filesystem"])
+def test_configuration_form_preserves_drafts_and_validates_atomic_saves(readonly_filesystem: bool) -> None:
     """运行真实设置模块，覆盖迟到响应、保存失败、字段焦点及凭据语义。"""
     node = shutil.which("node")
     assert node is not None, "设置交互测试需要 Node.js"
-    result = subprocess.run(
-        [node, str(PROJECT_ROOT / "scripts" / "check_configuration_interactions.mjs")],
-        capture_output=True,
-        text=True,
-        encoding="utf-8",
-        errors="replace",
-        timeout=30,
-        check=False,
-    )
+    script = PROJECT_ROOT / "scripts" / "check_configuration_interactions.mjs"
+    command = [node, str(script)]
+    driver = None
+    if readonly_filesystem:
+        command = [node, "--input-type=module"]
+        driver = f"""
+import fs from "node:fs/promises";
+import {{ syncBuiltinESMExports }} from "node:module";
+for (const method of ["cp", "copyFile", "mkdir", "mkdtemp", "writeFile", "rm"]) {{
+  fs[method] = async () => {{ throw new Error(`unexpected filesystem mutation: ${{method}}`); }};
+}}
+syncBuiltinESMExports();
+await import({json.dumps(script.as_uri())});
+"""
+    try:
+        result = subprocess.run(
+            command,
+            input=driver,
+            capture_output=True,
+            text=True,
+            encoding="utf-8",
+            errors="replace",
+            timeout=30,
+            check=False,
+        )
+    except subprocess.TimeoutExpired as exc:
+        stdout = exc.stdout.decode("utf-8", errors="replace") if isinstance(exc.stdout, bytes) else exc.stdout or ""
+        stderr = exc.stderr.decode("utf-8", errors="replace") if isinstance(exc.stderr, bytes) else exc.stderr or ""
+        pytest.fail(f"设置交互检查超过 {exc.timeout} 秒。阶段输出：\n{stdout}\n{stderr}", pytrace=False)
     assert result.returncode == 0, result.stdout + result.stderr
 
 
