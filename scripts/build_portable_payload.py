@@ -1,14 +1,14 @@
 """构建 Payload 的快捷入口。"""
 
+from __future__ import annotations
+
 import sys
+from pathlib import Path
 
-sys.path.insert(0, "packaging/portable")
-sys.path.insert(0, ".")
+ROOT = Path(__file__).resolve().parent.parent
+sys.path.insert(0, str(ROOT / "packaging" / "portable" / "src"))
 
-from build_payload import build_payload
+from blc_portable.payload.builder import main  # noqa: E402
 
-report = build_payload()
-print("=== BUILD REPORT ===")
-for k, v in report.items():
-    print(f"  {k}: {v}")
-print("=== BUILD SUCCESS ===")
+if __name__ == "__main__":
+    raise SystemExit(main())
