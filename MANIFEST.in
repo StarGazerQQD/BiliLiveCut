@@ -19,6 +19,7 @@ recursive-include tests *.py *.json
 recursive-include tools *.py *.pyx *.c *.rs *.toml *.lock
 
 global-exclude __pycache__ *.py[cod] *.pyd *.so
+prune .local
 exclude tools/native/cython/_cython_speedups.c
 prune packaging/portable/.model_cache
 prune packaging/portable/build

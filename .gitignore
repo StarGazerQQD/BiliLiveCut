@@ -67,6 +67,9 @@ build/temp.*/
 # 审计工具缓存
 .audit_cache/
 
+# 本地工作记录、历史审计与重构归档（不进入仓库和发行包）
+/.local/
+
 # Portable 模型缓存
 packaging/portable/.model_cache/
 

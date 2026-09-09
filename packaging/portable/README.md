@@ -4,7 +4,7 @@
 
 > **普通用户请先阅读：[Portable 小白使用说明](USER_GUIDE_ZH.md)**。该说明按 Windows 用户从下载、校验、解压、首次启动到第一次录制的顺序编写。
 
-当前业务架构见[项目 README](../../README.md)，完整更新记录见[主 Changelog](../../CHANGELOG.md)与[历史归档索引](../../docs/changelog/CHANGELOG_INDEX.md)。
+项目入口见[README](../../README.md)，业务链路见[使用指南](../../docs/usage.md)与[热点检测器](../../docs/hotspot-detector.md)，源码冻结和验证约定见[开发与维护](../../docs/development.md)。完整更新记录见[主 Changelog](../../CHANGELOG.md)与[历史归档索引](../../docs/changelog/CHANGELOG_INDEX.md)。
 
 BiliLiveCut 是一个**全自动 AI 直播切片系统**：监听 Bilibili 直播间 → 实时录制 + 转写 → 生成场次高光时间线 → 审核动态切片 → 生成剪辑成品 + 文案。
 
