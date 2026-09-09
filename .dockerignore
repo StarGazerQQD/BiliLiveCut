@@ -76,6 +76,9 @@ logs_*.zip
 # 审计工具缓存
 .audit_cache/
 
+# 本地工作记录与历史文档归档
+.local/
+
 # Portable 本地运行时
 /runtime/
 
