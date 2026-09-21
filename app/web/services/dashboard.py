@@ -28,7 +28,7 @@ def dashboard_state() -> dict[str, Any]:
     from sqlalchemy import func
 
     with get_session() as db:
-        rooms = db.exec(select(LiveRoom)).all()
+        rooms = db.exec(select(LiveRoom).where(LiveRoom.platform != "local")).all()
         n_candidates = db.scalar(select(func.count()).select_from(HighlightCandidate)) or 0
         n_clips = db.scalar(select(func.count()).select_from(FinalClip)) or 0
         sessions = db.exec(

@@ -52,11 +52,13 @@ def get_recording() -> list[dict[str, Any]]:
 
 
 @router.get("/sessions/timeline")
-def get_session_timelines(limit: int = 30, room_db_id: int | None = None) -> list[dict[str, Any]]:
+def get_session_timelines(
+    limit: int = 30, room_db_id: int | None = None, session_id: int | None = None
+) -> list[dict[str, Any]]:
     """返回最近录制场次的高光时间线概览。"""
     from app.web.services.timeline import list_session_timelines
 
-    return list_session_timelines(limit=limit, room_db_id=room_db_id)
+    return list_session_timelines(limit=limit, room_db_id=room_db_id, session_id=session_id)
 
 
 @router.get("/sessions/history")

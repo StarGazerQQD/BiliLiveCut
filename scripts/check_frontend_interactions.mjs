@@ -228,6 +228,7 @@ const transcriptRows = [
     segment_id: 301,
     source_label: "测试主播 · 房间 23771139",
     source_file_name: "part000_00301.ts",
+    source_mp4_available: true,
     text: "服务器转写正文",
     raw_text: "服务器原始 ASR",
     llm_refined: true,
@@ -242,6 +243,7 @@ const transcriptRows = [
     segment_id: 302,
     source_label: "测试主播 · 房间 23771139",
     source_file_name: "part000_00302.ts",
+    source_mp4_available: true,
     text: "第二条服务器转写正文",
     raw_text: "第二条服务器原始 ASR",
     llm_refined: false,
@@ -739,6 +741,38 @@ try {
   };
   windowListeners.get("beforeunload")(savedBeforeUnload);
   assert.equal(savedBeforeUnload.defaultPrevented, false, "saved transcript correction still blocked navigation");
+
+  // Imported result links override old session storage and do not silently open another session.
+  globalThis.location = new URL("http://localhost/?tab=transcripts&session_id=20");
+  globalThis.history = {
+    pushState(_state, _title, url) { globalThis.location = new URL(url); },
+    replaceState(_state, _title, url) { globalThis.location = new URL(url); },
+  };
+  windowListeners.get("popstate")(); await settle();
+  assert.equal(transcriptSessionSelect.value, "20");
+  assert.ok(requests.at(-2)?.includes("session_id=20") || requests.some(path => path === "/api/transcripts?limit=500&session_id=20"));
+  globalThis.location = new URL("http://localhost/?tab=transcripts&session_id=999");
+  windowListeners.get("popstate")(); await settle();
+  assert.match(element("transcript-session-meta").textContent, /不存在/);
+  assert.match(element("transcripts-list").innerHTML, /有效场次/);
+  transcriptSessionSelect.value = "21"; await transcriptSessionSelect.emit("change");
+  assert.equal(globalThis.location.searchParams.has("session_id"), false);
+  transcriptRows[0].source_file_name = "part_000000.mkv"; transcriptRows[0].source_mp4_available = false;
+  await transcriptsTab.emit("click"); await settle();
+  assert.match(element("transcripts-list").innerHTML, /part_000000.mkv/);
+  assert.ok(!element("transcripts-list").innerHTML.includes('/api/transcripts/41/source-mp4'));
+  globalThis.location = new URL("http://localhost/?tab=candidates&session_id=21");
+  sessionTimelineRows[0].title_state = "local";
+  sessionTimelineRows[0].source_label = "本地录播 · 离线验证";
+  sessionTimelineRows[0].session_title = "离线验证";
+  windowListeners.get("popstate")(); await settle();
+  assert.ok(requests.includes("/api/sessions/timeline?limit=30&session_id=21"));
+  assert.match(element("timeline-detail-21").innerHTML, /测试高光梗概/);
+  assert.match(element("timeline-detail-21").innerHTML, /LLM 整场 ASR 分析/);
+  assert.ok(!element("timeline-list").innerHTML.includes("离线验证 · 离线验证"));
+  assert.ok(!element("timeline-list").innerHTML.includes("开录：未知"));
+  await roomsTab.emit("click"); await settle();
+  assert.equal(globalThis.location.searchParams.has("session_id"), false);
 
   console.log(
     "PASS: frontend module graph, timeline scroll retention, session timeline expansion/reanalysis, transcript/room/model draft retention, locked switches and draft connectivity test",

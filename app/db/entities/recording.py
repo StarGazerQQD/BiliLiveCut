@@ -30,6 +30,8 @@ class Danmaku(SQLModel, table=True):
 
     用于"弹幕热度"视图与高光评分中的弹幕维度。``ts`` 使用接收到的墙钟时间(UTC),
     与原始片段的 ``start_ts``/``end_ts`` 对齐以便按窗口统计速率。
+    本地导入使用导入原点加媒体相对秒数；``room_id`` 在 local 平台上表示
+    所属本地来源的数据库主键，平台房号仍在 LiveRoom.room_id 中保持 None。
     """
 
     __tablename__ = "danmaku"

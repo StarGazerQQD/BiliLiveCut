@@ -21,6 +21,7 @@ from sqlmodel import Session, select
 
 from app.analysis import audio as audio_mod
 from app.analysis.keywords import match_keywords
+from app.analysis.source_policy import session_danmaku_lag_s
 from app.core.config import settings
 from app.db.entities import (
     CandidateStatus,
@@ -1300,7 +1301,8 @@ def _score_segment_draft(
         source_signals,
     )
 
-    danmaku_start_ts, danmaku_end_ts = align_danmaku_window(analysis_start_ts, analysis_end_ts)
+    lag_s = session_danmaku_lag_s(session_id)
+    danmaku_start_ts, danmaku_end_ts = align_danmaku_window(analysis_start_ts, analysis_end_ts, lag_s=lag_s)
     semantic_text_available = bool(judgement_text.strip())
     kw_score, kw_hits = match_keywords(judgement_text) if semantic_text_available else (0.0, [])
     features: dict[str, float] = {
@@ -1501,7 +1503,7 @@ def _score_segment_draft(
                     "confidence": confidence,
                     "source_signals": signals,
                     "representative_danmaku": top_danmaku,
-                    "danmaku_lag_s": settings.danmaku_event_lag_s,
+                    "danmaku_lag_s": lag_s,
                     "dynamic_bounds": True,
                     "cross_segment": start_ts < seg_start_ts or end_ts > seg_end_ts,
                 },

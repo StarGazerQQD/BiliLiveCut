@@ -4,7 +4,7 @@
 [![Release](https://img.shields.io/github/v/release/StarGazerQQD/BiliLiveCut?include_prereleases&sort=semver)](https://github.com/StarGazerQQD/BiliLiveCut/releases)
 [![License](https://img.shields.io/github/license/StarGazerQQD/BiliLiveCut)](LICENSE)
 
-**当前版本：V0.1.18.2 Alpha** (`0.1.18.2-alpha`) · [更新记录](CHANGELOG.md)
+**当前版本：V0.1.18.3 Alpha** (`0.1.18.3-alpha`) · [更新记录](CHANGELOG.md)
 
 面向 Bilibili 直播的自动切片工具：**录制 → 转写 → 识别高光 → 人工审核 → 生成切片与文案 → 可选上传**。通过 Web 控制台管理直播间、录制场次、转写、候选和成品。
 
@@ -12,6 +12,7 @@
 
 - **开播自动录制与分析**：按直播间开启自动化或预约录制，运行期间同步直播间标题。
 - **本地多引擎语音处理**：Fun-ASR-Nano、Paraformer、Whisper 负责转写与回退，SenseVoice 提供辅助特征；可选大模型整理正文和生成文案。
+- **已有录播分析**：独立页面导入视频与可选 XML、JSON、SRT、ASS 弹幕，预处理后由本地模型转写，再按配置提交 LLM 分析，支持继续上传和失败重试。
 - **场次高光时间线**：融合弹幕、音频、语音与趋势信号识别事件，支持跨连续分段的动态剪辑边界。
 - **审核与出片**：支持人工修订、多人审核、字幕、封面和后台渲染，并保存任务状态。
 - **统一设置与扩展**：Web 设置中心管理业务配置，支持房间级开关、模型服务商和插件。
@@ -55,6 +56,7 @@ python -m app.cli serve
 | --- | --- |
 | 下载、首次启动与第一次录制 | [Portable 小白使用说明](packaging/portable/USER_GUIDE_ZH.md) |
 | CLI、转写、审核、上传与排错 | [使用指南](docs/usage.md) |
+| 已有视频、弹幕导入与智能分析 | [录播导入](docs/recording-import.md) |
 | Web 设置、环境变量与生效边界 | [配置参考](docs/configuration.md) |
 | 高光事件、评分与剪辑边界 | [热点检测器](docs/hotspot-detector.md) |
 | 开发、测试与发行维护 | [开发与维护](docs/development.md) |

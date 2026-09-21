@@ -373,7 +373,10 @@ def build_segment_signal_buckets(
         if segment.start_ts is None or segment.end_ts is None:
             return [], segment.session_id
         transcript = db.exec(select(Transcript).where(Transcript.segment_id == segment_id)).first()
-        lag = timedelta(seconds=settings.danmaku_event_lag_s)
+        from app.analysis.source_policy import session_danmaku_lag_s, session_has_danmaku
+
+        lag_s = session_danmaku_lag_s(segment.session_id)
+        lag = timedelta(seconds=lag_s)
         query_start = _database_datetime(segment.start_ts + lag)
         query_end = _database_datetime(segment.end_ts + lag)
         danmaku_rows = db.exec(
@@ -391,7 +394,10 @@ def build_segment_signal_buckets(
     duration_s = max(0.0, datetime_epoch(end_ts) - datetime_epoch(start_ts))
     bucket_count = max(1, math.ceil(duration_s / cfg.bucket_s))
     builders = [_BucketBuilder() for _ in range(bucket_count)]
-    _fill_danmaku(builders, danmaku_rows, start_ts, duration_s, cfg.bucket_s)
+    has_danmaku = session_has_danmaku(session_id)
+    for builder in builders:
+        builder.danmaku_available = has_danmaku
+    _fill_danmaku(builders, danmaku_rows, start_ts, duration_s, cfg.bucket_s, lag_s=lag_s)
     _fill_audio(builders, audio_features, duration_s, cfg.bucket_s)
     _fill_transcript(builders, transcript, duration_s, cfg.bucket_s)
     _fill_sensevoice(builders, transcript, duration_s, cfg.bucket_s)
@@ -521,8 +527,10 @@ def _fill_danmaku(
     start_ts: datetime,
     duration_s: float,
     bucket_s: float,
+    *,
+    lag_s: float | None = None,
 ) -> None:
-    lag_s = settings.danmaku_event_lag_s
+    lag_s = settings.danmaku_event_lag_s if lag_s is None else lag_s
     start_epoch = datetime_epoch(start_ts)
     for row in rows:
         offset_s = datetime_epoch(row.ts) - lag_s - start_epoch

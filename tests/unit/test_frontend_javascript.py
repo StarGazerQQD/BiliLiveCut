@@ -18,6 +18,22 @@ INLINE_SCRIPT_TEMPLATES = tuple(path for path in TEMPLATE_FILES if "<script>" in
 INTERACTION_CHECK = PROJECT_ROOT / "scripts" / "check_frontend_interactions.mjs"
 
 
+def test_recording_import_page_upload_and_recovery() -> None:
+    """真实导入模块覆盖原始文件上传、响应丢失、取消及轮询焦点保留。"""
+    node = shutil.which("node")
+    assert node is not None, "录播导入交互测试需要 Node.js"
+    result = subprocess.run(
+        [node, str(PROJECT_ROOT / "scripts" / "check_recording_import_interactions.mjs")],
+        capture_output=True,
+        text=True,
+        encoding="utf-8",
+        errors="replace",
+        timeout=30,
+        check=False,
+    )
+    assert result.returncode == 0, result.stdout + result.stderr
+
+
 @pytest.mark.parametrize("readonly_filesystem", [False, True], ids=["normal", "readonly-filesystem"])
 def test_configuration_form_preserves_drafts_and_validates_atomic_saves(readonly_filesystem: bool) -> None:
     """运行真实设置模块，覆盖迟到响应、保存失败、字段焦点及凭据语义。"""
@@ -175,13 +191,14 @@ def test_transcript_page_exposes_safe_retranscription_action() -> None:
     assert "window.correctTranscript" in app_js
 
 
-def test_transcript_page_shows_and_copies_source_ts_file_name() -> None:
-    """每条实时转写都应明确对应源 TS 文件并提供复制入口。"""
+def test_transcript_page_shows_source_file_and_supported_export() -> None:
+    """转写同时支持直播 TS 与导入媒体，仅展示后端支持的导出入口。"""
     recording_js = (STATIC_ROOT / "js" / "recording.js").read_text(encoding="utf-8")
     app_js = (STATIC_ROOT / "app.js").read_text(encoding="utf-8")
 
     assert "source_file_name" in recording_js
-    assert "源 TS 文件" in recording_js
+    assert "源文件" in recording_js
+    assert "source_mp4_available" in recording_js
     assert "copyTranscriptSourceFile" in recording_js
     assert "/source-mp4" in recording_js
     assert "无损导出 MP4" in recording_js

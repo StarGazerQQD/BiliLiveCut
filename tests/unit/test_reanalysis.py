@@ -17,6 +17,7 @@ from app.db.entities import (
     CandidateStatus,
     HighlightCandidate,
     HighlightEvent,
+    HotspotEvent,
     LiveRoom,
     RawSegment,
     RecordingSession,
@@ -26,6 +27,7 @@ from app.db.entities import (
     Transcript,
 )
 from app.db.session import get_session
+from app.pipeline.task_context import event_first_context, update_event_first_context
 from app.web.services.transcripts import _clean_alias_term, correct_transcript, derive_aliases_from_correction
 
 
@@ -106,6 +108,59 @@ def test_reanalysis_replaces_auto_candidate_and_preserves_human_result(temp_db: 
         task = db.exec(select(SegmentTask).where(SegmentTask.segment_id == first_segment_id)).one()
         assert task.stage == TaskStatus.QUEUED_FOR_ANALYSIS
         assert task.candidate_id is None
+        assert not event_first_context(task.context_json)  # 历史分段评分入口不被强制迁移。
+
+
+def test_reanalysis_refreshes_hotspot_caches_without_changing_detector_scores_or_human_assets(temp_db: None) -> None:
+    session_id, first_segment_id, auto_candidate_id, human_candidate_id = _seed_session()
+    metadata = {
+        "detector_feature": "keep",
+        "event_enrichment": {"source": "fallback", "detector_semantic_confidence": 0.3},
+        "event_clip_score": {"detector_clip_score": 0.8},
+    }
+    with get_session() as db:
+        segments = db.exec(select(RawSegment).where(RawSegment.session_id == session_id).order_by(RawSegment.seq)).all()
+        task = db.exec(select(SegmentTask).where(SegmentTask.segment_id == first_segment_id)).one()
+        task.context_json = update_event_first_context(None, analysis_pass="candidate", asr_evidence_state="available")
+        db.add(task)
+        start = segments[0].start_ts
+        assert start is not None
+        for key, offset, duration, candidate_id in [
+            ("auto", 40, 40, auto_candidate_id),
+            ("human", 340, 40, human_candidate_id),
+            ("unlinked-human-range", 350, 20, None),
+            ("cross-protected", 280, 60, None),
+        ]:
+            db.add(
+                HotspotEvent(
+                    session_id=session_id,
+                    event_key=key,
+                    start_ts=start + timedelta(seconds=offset),
+                    end_ts=start + timedelta(seconds=offset + duration),
+                    peak_ts=start + timedelta(seconds=offset + 10),
+                    status="confirmed",
+                    candidate_id=candidate_id,
+                    semantic_confidence=0.7,
+                    clip_score=0.4,
+                    title=key,
+                    features_json=json.dumps(metadata),
+                )
+            )
+    result = queue_session_reanalysis(session_id, reason="llm_enabled")
+    assert result.queued == result.preserved == 1
+    with get_session() as db:
+        events = {event.event_key: event for event in db.exec(select(HotspotEvent)).all()}
+        automatic = events.pop("auto")
+        assert automatic.candidate_id is None
+        assert json.loads(automatic.features_json) == {"detector_feature": "keep"}
+        assert automatic.semantic_confidence == 0.3 and automatic.clip_score == 0.8
+        for event in events.values():
+            assert json.loads(event.features_json) == metadata
+            assert event.semantic_confidence == 0.7 and event.clip_score == 0.4
+        assert events["human"].candidate_id == human_candidate_id
+        task = db.exec(select(SegmentTask).where(SegmentTask.segment_id == first_segment_id)).one()
+        assert event_first_context(task.context_json)["analysis_pass"] == "candidate"
+        assert event_first_context(task.context_json)["asr_evidence_state"] == "available"
 
 
 def test_persisted_final_reanalysis_waits_for_old_pipeline_then_runs(temp_db: None) -> None:

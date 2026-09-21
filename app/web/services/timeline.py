@@ -47,13 +47,17 @@ _PROCESSING_STAGES = {
 }
 
 
-def list_session_timelines(*, limit: int = 30, room_db_id: int | None = None) -> list[dict[str, Any]]:
+def list_session_timelines(
+    *, limit: int = 30, room_db_id: int | None = None, session_id: int | None = None
+) -> list[dict[str, Any]]:
     """返回最近录制场次及其时间线概览。"""
     safe_limit = max(1, min(limit, 200))
     with get_session() as db:
         statement = select(RecordingSession).order_by(RecordingSession.started_at.desc()).limit(safe_limit)
         if room_db_id is not None:
             statement = statement.where(RecordingSession.room_id == room_db_id)
+        if session_id is not None:
+            statement = statement.where(RecordingSession.id == session_id)
         sessions = db.exec(statement).all()
         session_ids = [session.id for session in sessions if session.id is not None]
         if not session_ids:

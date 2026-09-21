@@ -274,10 +274,10 @@ class ASRPipeline:
             return result
 
         # 显式选择 Whisper。
-        if primary_name == "whisper" and self._use_fallback:
+        if primary_name == "whisper":
             return self._get_whisper().transcribe(audio_path, initial_prompt)
 
-        logger.warning("ASR 主引擎配置无效或 Whisper 兜底已禁用: {}, 返回空结果", settings.asr_primary)
+        logger.warning("ASR 主引擎配置无效: {}, 返回空结果", settings.asr_primary)
         return ASRTranscriptResult(text="", language="zh", backend="none")
 
     def _review_loop(
