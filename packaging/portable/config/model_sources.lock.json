@@ -2,7 +2,7 @@
   "schema_version": 5,
   "engine_pack_version": "0.1.18.3-alpha",
   "portable_release_version": "0.1.18.3-alpha",
-  "source_commit": "9503421923233c5613989d97b9f8bc17a2e01490",
+  "source_commit": "8c227e12b34f1778cb3d1654657b47dbce50cfec",
   "generated_at": "2026-08-12T00:00:00+08:00",
   "engines": [
     {

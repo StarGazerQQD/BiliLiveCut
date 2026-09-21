@@ -8,7 +8,7 @@
 | --- | --- |
 | [Portable 小白使用说明](../packaging/portable/USER_GUIDE_ZH.md) | 下载、校验、首次启动、模型准备和第一次录制 |
 | [使用指南](usage.md) | 源码安装、CLI、录制分析、Web、审核、上传和排错 |
-| [录播导入](recording-import.md) | 已有视频和 XML、JSON、SRT、ASS 弹幕的预处理、本地分析与恢复 |
+| [录播导入](recording-import.md) | 已有视频和 XML、JSON、SRT、ASS 弹幕的预处理、本地转写、LLM 分析与恢复 |
 | [配置参考](configuration.md) | 配置字段、作用范围、持久化和生效时间 |
 | [Docker 部署](../packaging/docker/README.md) | 容器构建、运行与数据目录 |
 
