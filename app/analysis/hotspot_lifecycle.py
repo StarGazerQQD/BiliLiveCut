@@ -391,7 +391,11 @@ def _confirm_stable_events(
 
 
 def _refresh_representative_danmaku(db: Session, event: HotspotEvent) -> None:
-    receive_start, receive_end = align_danmaku_window(event.start_ts, event.end_ts)
+    from app.analysis.source_policy import session_danmaku_lag_s
+
+    receive_start, receive_end = align_danmaku_window(
+        event.start_ts, event.end_ts, lag_s=session_danmaku_lag_s(event.session_id)
+    )
     rows = db.exec(
         select(Danmaku)
         .where(

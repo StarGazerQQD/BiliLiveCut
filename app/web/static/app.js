@@ -64,7 +64,7 @@ window.addEventListener("beforeunload", (event) => {
 // ----------------------------- 标签切换 ----------------------------- //
 let activeTab = "rooms";
 const settingsTabs = new Set(["settings", "features", "models", "plugins", "login", "templates", "intro-templates"]);
-function navigate(tab, updateHistory = true, group = null) {
+function navigate(tab, updateHistory = true, group = null, sessionId = null) {
   const panel = $(`#tab-${tab}`);
   if (!panel) return;
   activeTab = tab;
@@ -80,6 +80,7 @@ function navigate(tab, updateHistory = true, group = null) {
     const url = new URL(window.location.href);
     url.searchParams.set("tab", tab);
     if (group) url.searchParams.set("group", group); else url.searchParams.delete("group");
+    if (sessionId) url.searchParams.set("session_id", sessionId); else url.searchParams.delete("session_id");
     window.history.pushState(null, "", url);
   }
   refresh();
@@ -93,7 +94,7 @@ document.addEventListener("click", event => {
   const params = new URLSearchParams(link.getAttribute("href").split("?")[1]);
   if (!$(`#tab-${params.get("tab")}`)) return;
   event.preventDefault();
-  navigate(params.get("tab"), true, params.get("group"));
+  navigate(params.get("tab"), true, params.get("group"), params.get("session_id"));
 });
 
 // ----------------------------- 轮询 ----------------------------- //

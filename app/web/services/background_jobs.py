@@ -45,6 +45,7 @@ _JOB_FIELDS = {
     "recovered",
 }
 _BUILTIN_PAYLOAD_FIELDS = {
+    "local_import": {"import_id"},
     "candidate_render": {"candidate_id", "reviewed_by"},
     "review_rerender": {"candidate_id", "start_ts", "end_ts", "version"},
     "collection_render": {"topic_id", "event_ids", "chapter_titles", "include_chapter_cards"},

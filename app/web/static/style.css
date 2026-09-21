@@ -43,6 +43,44 @@
   --red: #f85149;
   --yellow: #d29922;
 }
+.import-nav-link { padding: 10px 14px; color: var(--muted); text-decoration: none; align-self: center; white-space: nowrap; }
+.import-nav-link:hover { color: var(--accent); }
+.imports-page .topbar nav { display: flex; gap: 20px; }
+.imports-page a { color: var(--accent); text-decoration: none; }
+.imports-main { max-width: 1180px; margin: 0 auto; padding: 36px 24px 64px; }
+.imports-heading { display: flex; align-items: center; justify-content: space-between; gap: 24px; margin-bottom: 26px; }
+.imports-heading h1 { margin: 8px 0; font-size: clamp(24px, 3vw, 32px); line-height: 1.4; }
+.imports-eyebrow { color: var(--accent); letter-spacing: 2px; font-size: 12px; }
+.imports-layout { display: grid; grid-template-columns: minmax(0, 1.4fr) minmax(0, 1fr); gap: 24px; align-items: start; }
+.imports-page h2 { font-size: 19px; margin-top: 0; }
+.imports-page fieldset { padding: 0; margin: 0; border: 0; min-width: 0; }
+.imports-page label { display: block; margin: 18px 0 8px; font-weight: 600; }
+.imports-page input { width: 100%; min-width: 0; }
+.imports-page input[type="file"] { padding: 14px; background: var(--bg); border: 1px dashed var(--border); }
+.imports-page input[type="file"]::file-selector-button { border: 0; border-radius: 5px; padding: 8px; margin-right: 12px; background: var(--panel2); color: var(--text); cursor: pointer; }
+.imports-page input[type="number"] { max-width: 180px; }
+.imports-page .hint, .imports-guide p { line-height: 1.75; }
+.imports-guide ol { padding-left: 24px; }
+.imports-guide li { padding-left: 8px; margin: 22px 0; }
+.imports-guide li::marker { color: var(--accent); }
+.imports-guide summary { cursor: pointer; padding: 12px 0; }
+.imports-guide pre { white-space: pre-wrap; overflow-wrap: anywhere; background: var(--bg); padding: 12px; }
+.imports-history-heading { display: flex; align-items: center; justify-content: space-between; margin: 28px 0 16px; }
+.imports-history-heading h2 { margin: 0; }
+.imports-page progress { width: 100%; height: 10px; accent-color: var(--accent); margin-top: 12px; }
+.import-record h3 { margin: 0; overflow-wrap: anywhere; }
+.import-record .head { gap: 16px; flex-wrap: wrap; }
+.import-record p { overflow-wrap: anywhere; }
+.import-actions { gap: 16px; margin-top: 16px; }
+.imports-page .warn { color: var(--red); }
+.imports-page :focus-visible { outline: 2px solid var(--accent); outline-offset: 3px; }
+@media (max-width: 760px) {
+  .imports-main { padding: 20px 14px; }
+  .imports-layout { grid-template-columns: 1fr; gap: 8px; }
+  .imports-heading { align-items: flex-start; flex-direction: column; gap: 8px; }
+  .imports-page .topbar { align-items: flex-start; gap: 12px; }
+  .imports-page .topbar nav { gap: 8px; flex-wrap: wrap; font-size: 12px; }
+}
 * { box-sizing: border-box; }
 body {
   margin: 0;

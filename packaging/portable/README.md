@@ -1,6 +1,6 @@
 # BiliLiveCut · 即插即用版（`packaging/portable/`）
 
-**版本：V0.1.18.2 Alpha** (`0.1.18.2-alpha`)
+**版本：V0.1.18.3 Alpha** (`0.1.18.3-alpha`)
 
 > **普通用户请先阅读：[Portable 小白使用说明](USER_GUIDE_ZH.md)**。该说明按 Windows 用户从下载、校验、解压、首次启动到第一次录制的顺序编写。
 
@@ -14,7 +14,7 @@ Payload 从 **EXE 内置资源**释放，版本固定并校验 SHA-256，安装�
 
 ---
 
-## V0.1.18.2 Alpha：Event-first 热点与原生加速
+## V0.1.18.3 Alpha：Event-first 热点与原生加速
 
 - 弹幕、音频、SenseVoice、ASR 与趋势先形成带稳定 ID 的热点事件；ASR 缺失或质量不足不再阻断自动切片，缺失证据会重归一化而不是记零分。
 - 热点可以跨连续原始分段更新和合并，一个分段也可以保留多个无关事件；真实录制缺口是不可跨越的媒体边界。
@@ -35,7 +35,7 @@ Payload 从 **EXE 内置资源**释放，版本固定并校验 SHA-256，安装�
 - V0.1.17.2～V0.1.17.4 统一保护所有自动刷新页面的草稿、选择、展开状态和滚动位置；实时转写可按完整历史场次筛选、显示源 TS 并无损导出无黑首帧 MP4，每次录制前重新查询标题和主播名。
 - 整场结束后会把同场全部最终 ASR 作为一个完整上下文交给 LLM 分析，不直接拼接分段或节点摘要；人工纠错和重分析会使旧总结失效。
 
-逐项版本记录见 [0.1.17 系列 Changelog](../../docs/changelog/CHANGELOG_PRE_0.1.17.md)。当前 V0.1.18.2 不迁移 0.1.17.x 的数据库、Runtime、Payload 或已安装清单；请解压到全新目录并使用当前版本创建的新数据库。原始录像、成片和人工导出资料可作为普通文件独立保留。
+逐项版本记录见 [0.1.17 系列 Changelog](../../docs/changelog/CHANGELOG_PRE_0.1.17.md)。当前 V0.1.18.3 不迁移 0.1.17.x 的数据库、Runtime、Payload 或已安装清单；请解压到全新目录并使用当前版本创建的新数据库。原始录像、成片和人工导出资料可作为普通文件独立保留。
 
 ## V0.1.16.5 Alpha：严重正确性修复
 
@@ -193,7 +193,7 @@ Lite 和 Full 均不携带 ASR 模型。四个引擎模型统一由独立的 **E
 
 ### 使用方式
 
-1. 下载 BiliLiveCut-EnginePack-0.1.18.2-alpha.zip（模型内容按当前清单中的不可变身份校验）
+1. 下载 BiliLiveCut-EnginePack-0.1.18.3-alpha.zip（模型内容按当前清单中的不可变身份校验）
 2. 放在 Launcher EXE **同级目录** (或 packages/ 子目录)
 3. 双击启动 Launcher → 自动 **CRC32 校验** → 校验通过即离线安装 (网络请求 0)
 4. 无可用本地包或包校验失败 → 扫描既有 `models/`，只在线准备缺失或身份变化的引擎
@@ -236,7 +236,7 @@ python build_engine_pack.py --from-cache  # 从已验证缓存构建
 
 输出:
 
-- dist/engine-pack/BiliLiveCut-EnginePack-0.1.18.2-alpha.zip
+- dist/engine-pack/BiliLiveCut-EnginePack-0.1.18.3-alpha.zip
 - dist/engine-pack/engine-pack-manifest.json
 - dist/engine-pack/CRC32SUMS.txt
 - dist/engine-pack/SHA256SUMS.txt
@@ -345,7 +345,7 @@ packaging/portable/                     # ★ 即插即用分发版根目录 (�
 ├── runtime/                  # ★ Runtime 版本管理
 │   ├── current.json          #   当前激活的 Release 信息
 │   └── releases/
-│       └── 0.1.18.2-alpha+<source-sha>+<payload-hash>/  # 内容寻址的固定版本源码
+│       └── 0.1.18.3-alpha+<source-sha>+<payload-hash>/  # 内容寻址的固定版本源码
 │
 ├── .venv/                    # Python 虚拟环境（launcher.exe 自动创建）
 ├── models/                   # 四引擎 ASR 模型 (由 Engine Pack 或在线下载安装)
@@ -588,7 +588,7 @@ BILIUP_UPLOAD_CMD=                          # 自定义上传命令模板
 
 ## 回主工程
 
-此 `packaging/portable/` 目录是**发布给最终用户的即插即用版本**，源码固定于 `v0.1.18.2-Alpha` 的发布基线 Commit。
+此 `packaging/portable/` 目录是**发布给最终用户的即插即用版本**，源码固定于 `v0.1.18.3-Alpha` 的发布基线 Commit。
 
 - **主仓库**: `D:\Vibe\BiliLiveCut\README.md`
 - **完整变更日志**: `D:\Vibe\BiliLiveCut\CHANGELOG.md`

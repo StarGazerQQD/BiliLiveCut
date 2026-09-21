@@ -610,3 +610,9 @@ app.mount("/static", StaticFiles(directory=str(_BASE_DIR / "static")), name="sta
 def dashboard(request: Request) -> HTMLResponse:
     """渲染单页仪表盘。"""
     return _TEMPLATES.TemplateResponse(request, "dashboard.html")
+
+
+@app.get("/imports", response_class=HTMLResponse)
+def recording_import_page(request: Request) -> HTMLResponse:
+    """渲染独立的本地录播分析页面；数据接口沿用管理员认证。"""
+    return _TEMPLATES.TemplateResponse(request, "recording_imports.html")

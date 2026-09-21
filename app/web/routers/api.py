@@ -17,6 +17,7 @@ from app.web.routers.media import router as media_router
 from app.web.routers.metrics import router as metrics_router
 from app.web.routers.plugins import api_router as plugins_router
 from app.web.routers.progress import router as progress_router
+from app.web.routers.recording_imports import router as recording_imports_router
 from app.web.routers.rooms import router as rooms_router
 from app.web.routers.schedules import router as schedules_router
 from app.web.routers.segments import router as segments_router
@@ -29,6 +30,7 @@ router = APIRouter(prefix="/api")
 
 router.include_router(dashboard_router)
 router.include_router(jobs_router)
+router.include_router(recording_imports_router)
 router.include_router(rooms_router)
 router.include_router(segments_router)
 router.include_router(candidates_router)

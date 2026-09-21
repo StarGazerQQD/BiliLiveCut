@@ -81,6 +81,12 @@ def source_identities_for_sessions(
             "title_snapshot": snapshot.model_dump(mode="json") if snapshot else None,
             "title_state": title_state,
         }
+        if room is not None and room.platform == "local":
+            result[session.id].update(
+                source_label=f"本地录播 · {room_title or '未命名'}",
+                session_title=room_title,
+                title_state="local",
+            )
     return result
 
 

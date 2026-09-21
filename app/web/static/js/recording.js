@@ -35,8 +35,12 @@ function storeSessionId(key, value) {
 
 function sessionOptionLabel(row, countField, countLabel) {
   const started = String(row.started_at_gmt8 || row.started_at || "时间未知").replace("T", " ").slice(0, 19);
-  const source = row.source_label || `房间 ${row.room_id || "未知"}`;
-  return `${source} · ${sessionTitle(row)} · ${started} · 会话 #${row.session_id} · ${row[countField] || 0} ${countLabel}`;
+  return `${recordingTitle(row)} · ${started} · 会话 #${row.session_id} · ${row[countField] || 0} ${countLabel}`;
+}
+
+function recordingTitle(row) {
+  const source = row.source_label || "未知来源";
+  return row.title_state === "local" ? source : `${source} · ${sessionTitle(row)}`;
 }
 
 function selectedSessionRow(selectedId) {
@@ -51,9 +55,12 @@ function renderSessionSelect(kind) {
   const countField = isTranscript ? "transcript_count" : "danmaku_count";
   const countLabel = isTranscript ? "条转写" : "条弹幕";
   let selectedId = isTranscript ? transcriptSelectedSessionId : danmakuSelectedSessionId;
+  const params = new URLSearchParams(window.location?.search || "");
+  const requestedId = isTranscript && params.get("tab") === "transcripts" ? params.get("session_id") : null;
+  if (requestedId !== null) selectedId = requestedId;
   const hasStoredSelection = selectedId !== null
     && sessionHistory.some((row) => String(row.session_id) === String(selectedId));
-  if (!hasStoredSelection) selectedId = sessionHistory.length ? String(sessionHistory[0].session_id) : "";
+  if (!hasStoredSelection && requestedId === null) selectedId = sessionHistory.length ? String(sessionHistory[0].session_id) : "";
 
   const optionsSignature = JSON.stringify(sessionHistory.map((row) => [
     row.session_id,
@@ -76,8 +83,8 @@ function renderSessionSelect(kind) {
 
   const row = selectedSessionRow(selectedId);
   $(`#${kind}-session-meta`).textContent = row
-    ? `${row.source_label || "未知来源"} · ${sessionTitle(row)} · ${row.status || "状态未知"} · ${row.transcript_count || 0} 条转写 · ${row.danmaku_count || 0} 条弹幕`
-    : "暂无可查看的录制场次。";
+    ? `${recordingTitle(row)} · ${row.status || "状态未知"} · ${row.transcript_count || 0} 条转写 · ${row.danmaku_count || 0} 条弹幕`
+    : requestedId !== null ? "指定录播场次不存在，请重新选择。" : "暂无可查看的录制场次。";
   if (isTranscript) transcriptSelectedSessionId = selectedId;
   else danmakuSelectedSessionId = selectedId;
   if (selectedId) storeSessionId(isTranscript ? TRANSCRIPT_SESSION_STORAGE_KEY : DANMAKU_SESSION_STORAGE_KEY, selectedId);
@@ -189,6 +196,11 @@ async function loadTranscripts(forceRender = false) {
   }
   updateTranscriptDirtyHint();
   await loadSessionHistory();
+  if (!selectedSessionRow(transcriptSelectedSessionId)) {
+    $("#transcripts-list").innerHTML = '<div class="empty">暂无可查看的转写，请选择有效场次。</div>';
+    transcriptListSignature = "";
+    return;
+  }
   const revision = transcriptEditorRevision;
   const selectedSessionId = transcriptSelectedSessionId;
   const query = selectedSessionId
@@ -218,11 +230,11 @@ async function loadTranscripts(forceRender = false) {
       ? `<details data-transcript-detail="${rawDetailKey}" ${openTranscriptDetails.has(rawDetailKey) ? "open" : ""} style="margin-top:8px"><summary class="muted">查看原始 ASR</summary><div class="txt muted">${esc(t.raw_text)}</div></details>`
       : "";
     const sourceFile = t.source_file_name
-      ? `<div class="sub" style="margin-top:6px"><b>源 TS 文件：</b><code id="transcript-source-file-${t.id}">${esc(t.source_file_name)}</code> <button type="button" class="secondary" onclick="copyTranscriptSourceFile(${t.id})">复制文件名</button> <a class="btn-link" href="/api/transcripts/${t.id}/source-mp4" download>无损导出 MP4</a></div>`
-      : `<div class="sub" style="margin-top:6px"><b>源 TS 文件：</b>原始片段记录不可用</div>`;
+      ? `<div class="sub" style="margin-top:6px"><b>源文件：</b><code id="transcript-source-file-${t.id}">${esc(t.source_file_name)}</code> <button type="button" class="secondary" onclick="copyTranscriptSourceFile(${t.id})">复制文件名</button> ${t.source_mp4_available ? `<a class="btn-link" href="/api/transcripts/${t.id}/source-mp4" download>无损导出 MP4</a>` : '<span class="muted">此格式不提供 TS 转 MP4 导出</span>'}</div>`
+      : `<div class="sub" style="margin-top:6px"><b>源文件：</b>原始片段记录不可用</div>`;
     return `
     <div class="item" id="transcript-item-${t.id}">
-      <div class="sub">${esc(t.source_label || "未知来源")} · ${esc(sessionTitle(t))} · 会话 #${t.session_id ?? "-"} · 片段 #${t.segment_id} · ${esc(t.language || "")} · ${esc(t.primary_backend || "")} · ${esc(t.created_at || "")}</div>
+      <div class="sub">${esc(recordingTitle(t))} · 会话 #${t.session_id ?? "-"} · 片段 #${t.segment_id} · ${esc(t.language || "")} · ${esc(t.primary_backend || "")} · ${esc(t.created_at || "")}</div>
       ${sourceFile}
       <div class="txt" id="transcript-final-${t.id}">${esc(t.text) || "(\u7a7a)"}</div>
       ${t.summary ? `<div class="sub" style="margin-top:8px"><b>片段概括：</b>${esc(t.summary)}</div>` : ""}
@@ -256,15 +268,15 @@ async function loadTranscripts(forceRender = false) {
 async function copyTranscriptSourceFile(id) {
   const filename = $(`#transcript-source-file-${id}`)?.textContent?.trim();
   if (!filename) {
-    toast("源 TS 文件名不可用");
+    toast("源文件名不可用");
     return;
   }
   try {
     if (!navigator.clipboard?.writeText) throw new Error("Clipboard API unavailable");
     await navigator.clipboard.writeText(filename);
-    toast(`已复制源 TS 文件名：${filename}`);
+    toast(`已复制源文件名：${filename}`);
   } catch (_error) {
-    window.prompt("复制源 TS 文件名：", filename);
+    window.prompt("复制源文件名：", filename);
   }
 }
 
@@ -380,6 +392,11 @@ $("#transcript-session-select").addEventListener("change", async (event) => {
     return;
   }
   transcriptSelectedSessionId = String(event.target.value || "");
+  if (window.history?.replaceState) {
+    const url = new URL(window.location.href);
+    url.searchParams.delete("session_id");
+    window.history.replaceState(null, "", url);
+  }
   storeSessionId(TRANSCRIPT_SESSION_STORAGE_KEY, transcriptSelectedSessionId);
   transcriptListSignature = "";
   await loadTranscripts(true);

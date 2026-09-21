@@ -79,7 +79,10 @@ def representative_danmaku(
     """返回兼顾高频反应与信息量的确定性代表弹幕。"""
     if limit <= 0 or end_ts <= start_ts:
         return []
-    receive_start, receive_end = align_danmaku_window(start_ts, end_ts, lag_s=lag_s)
+    from app.analysis.source_policy import session_danmaku_lag_s
+
+    effective_lag = session_danmaku_lag_s(session_id) if lag_s is None else lag_s
+    receive_start, receive_end = align_danmaku_window(start_ts, end_ts, lag_s=effective_lag)
     with get_session() as db:
         rows = db.exec(
             select(Danmaku)

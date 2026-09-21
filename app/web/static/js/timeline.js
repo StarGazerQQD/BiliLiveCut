@@ -9,6 +9,7 @@ const knownRooms = new Map();
 let loadGeneration = 0;
 let sessionListSignature = "";
 let roomFilterSignature = "";
+let linkedSessionId = null;
 
 const PROCESSING_LABELS = {
   recording: "录制中",
@@ -90,7 +91,7 @@ function updateRoomFilter(rows) {
     .sort((left, right) => left[1].localeCompare(right[1], "zh-CN"))
     .map(([id, label]) => `<option value="${esc(id)}">${esc(label)}</option>`)
     .join("");
-  const markup = `<option value="">全部直播间</option>${options}`;
+  const markup = `<option value="">全部来源</option>${options}`;
   if (markup !== roomFilterSignature) {
     select.innerHTML = markup;
     roomFilterSignature = markup;
@@ -100,7 +101,8 @@ function updateRoomFilter(rows) {
 
 function renderSessionCard(session, preservedDetail = "") {
   const expanded = expandedSessions.has(session.session_id);
-  const title = `${sourceLabel(session)} · ${sessionTitle(session)}`;
+  const local = session.title_state === "local";
+  const title = local ? sourceLabel(session) : `${sourceLabel(session)} · ${sessionTitle(session)}`;
   const timeRange = `${formatGmt8(session.started_at_gmt8)} — ${formatGmt8(session.ended_at_gmt8)}`;
   return `
     <article class="timeline-session item" data-session-id="${session.session_id}">
@@ -108,8 +110,8 @@ function renderSessionCard(session, preservedDetail = "") {
         <div>
           <div class="title">${esc(title)} · 会话 #${session.session_id} ${processingBadge(session.processing_state)} ${badge(session.status)}</div>
           <div class="sub">${esc(timeRange)} GMT+8 · ${formatDuration(session.duration_s)} · ${session.segment_count} 个录制片段</div>
-          <div class="sub">开录：${esc(session.title_snapshot?.start_title || "未知")} · 标题变化 ${session.title_snapshot?.change_count || 0} 次（观测时间） <button onclick="showTitleHistory(${session.session_id})">标题历史</button></div>
-          <div id="title-history-${session.session_id}" class="sub">${esc(titleHistory.get(session.session_id) || "")}</div>
+          ${local ? '<div class="sub">本地导入 · 显示时间以导入时刻为原点</div>' : `<div class="sub">开录：${esc(session.title_snapshot?.start_title || "未知")} · 标题变化 ${session.title_snapshot?.change_count || 0} 次（观测时间） <button onclick="showTitleHistory(${session.session_id})">标题历史</button></div>
+          <div id="title-history-${session.session_id}" class="sub">${esc(titleHistory.get(session.session_id) || "")}</div>`}
           <div class="timeline-counts">
             <span>事件 <b>${session.timeline_count ?? session.highlight_count}</b></span>
             <span>成片候选 <b>${session.highlight_count}</b></span>
@@ -268,13 +270,24 @@ async function loadTimelineDetail(
 
 async function loadSessionTimelines(forceRender = false) {
   const generation = ++loadGeneration;
-  const roomId = $("#timeline-room-filter").value;
-  const suffix = roomId ? `&room_db_id=${encodeURIComponent(roomId)}` : "";
+  const params = new URLSearchParams(window.location?.search || "");
+  const sessionId = params.get("tab") === "candidates" ? params.get("session_id") : null;
+  if (sessionId !== linkedSessionId) {
+    linkedSessionId = sessionId;
+    if (sessionId && /^[1-9]\d*$/.test(sessionId)) expandedSessions.add(Number(sessionId));
+  }
+  if (sessionId !== null && !/^[1-9]\d*$/.test(sessionId)) {
+    $("#timeline-list").innerHTML = '<div class="empty">录播场次链接无效。</div>';
+    sessionListSignature = "";
+    return;
+  }
+  const roomId = sessionId ? "" : $("#timeline-room-filter").value;
+  const suffix = sessionId ? `&session_id=${encodeURIComponent(sessionId)}` : roomId ? `&room_db_id=${encodeURIComponent(roomId)}` : "";
   const rows = await api("GET", `/api/sessions/timeline?limit=30${suffix}`);
   if (generation !== loadGeneration) return;
   updateRoomFilter(rows);
   const list = $("#timeline-list");
-  const signature = JSON.stringify({ roomId, rows });
+  const signature = JSON.stringify({ roomId, sessionId, rows });
   const shouldRender = forceRender || signature !== sessionListSignature || !list.innerHTML;
   const viewport = shouldRender ? captureTimelineViewport() : null;
   const preservedDetails = new Map();
@@ -285,7 +298,7 @@ async function loadSessionTimelines(forceRender = false) {
     });
     list.innerHTML = rows.length
       ? rows.map((row) => renderSessionCard(row, preservedDetails.get(row.session_id))).join("")
-      : '<div class="empty">暂无录制场次。开始录制后，这里会按场次生成高光时间线。</div>';
+      : `<div class="empty">${sessionId ? "指定录播场次不存在。" : "暂无录制场次。录制或导入后，这里会按场次生成高光时间线。"}</div>`;
     sessionListSignature = signature;
   }
   await Promise.all(rows
@@ -328,7 +341,14 @@ async function regenerateSessionSummary(sessionId) {
   } catch (error) { toast("整场总结请求失败：" + error.message); }
 }
 
-$("#timeline-room-filter").addEventListener("change", () => loadSessionTimelines());
+$("#timeline-room-filter").addEventListener("change", () => {
+  if (window.history?.replaceState) {
+    const url = new URL(window.location.href);
+    url.searchParams.delete("session_id");
+    window.history.replaceState(null, "", url);
+  }
+  loadSessionTimelines();
+});
 $("#timeline-include-rejected").addEventListener("change", () => loadSessionTimelines());
 $("#btn-refresh-timeline").addEventListener("click", () => loadSessionTimelines());
 $("#timeline-list").addEventListener("toggle", (event) => {

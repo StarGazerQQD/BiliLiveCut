@@ -441,6 +441,7 @@ def list_transcripts(limit: int = 30, session_id: int | None = None) -> list[dic
                 "created_at": transcript.created_at.isoformat() if transcript.created_at else None,
                 "session_id": segment.session_id if segment else None,
                 "source_file_name": _source_file_name(segment.file_path) if segment else None,
+                "source_mp4_available": bool(segment and Path(segment.file_path).suffix.lower() == ".ts"),
                 **source,
             }
         )

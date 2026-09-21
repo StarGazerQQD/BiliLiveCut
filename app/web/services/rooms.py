@@ -271,6 +271,8 @@ class RecorderManager:
             room = db.get(LiveRoom, db_id)
             if room is None:
                 raise ValueError(f"房间不存在: db_id={db_id}")
+            if room.platform == "local":
+                raise ValueError("本地录播来源不能启动直播录制")
             if settings.require_authorization and not room.authorized:
                 raise ValueError("该直播间未确认授权,拒绝录制。")
             if room.room_id is None:

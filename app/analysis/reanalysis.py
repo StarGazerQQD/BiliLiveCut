@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import json
+import math
 from dataclasses import asdict, dataclass
 from datetime import UTC, datetime
 
@@ -10,6 +11,7 @@ from loguru import logger
 from sqlalchemy.exc import SQLAlchemyError
 from sqlmodel import Session, select
 
+from app.analysis.source_policy import is_local_session
 from app.analysis.timeline import TIMELINE_ANALYSIS_VERSION
 from app.db.entities import (
     AppSetting,
@@ -28,6 +30,7 @@ from app.db.entities import (
 )
 from app.db.session import get_session
 from app.pipeline.stage_result import make_pipeline_key, make_stage_key
+from app.pipeline.task_context import event_first_context, update_event_first_context
 from app.web.services.review_workflow import has_review_draft
 
 _PENDING_KEY_PREFIX = "session_reanalysis:"
@@ -89,10 +92,13 @@ def queue_session_reanalysis(
             result.skipped_active = len(active_tasks)
             return result
 
+        queued_segments: list[RawSegment] = []
+        protected_segments: list[RawSegment] = []
         for segment in segments:
             task = tasks_by_segment.get(segment.id)
             events = db.exec(select(HighlightEvent).where(HighlightEvent.segment_id == segment.id)).all()
             if any(_event_is_protected(db, event) for event in events):
+                protected_segments.append(segment)
                 result.preserved += 1
                 continue
 
@@ -116,7 +122,9 @@ def queue_session_reanalysis(
                 segment.status = SegmentStatus.TRANSCRIBED
             db.add(segment)
             db.add(task)
+            queued_segments.append(segment)
             result.queued += 1
+        _invalidate_hotspot_analysis(db, session_id, queued_segments, protected_segments)
     return result
 
 
@@ -288,6 +296,46 @@ def detach_hotspot_candidate(db: Session, candidate_id: int | None) -> None:
     db.flush()
 
 
+def _invalidate_hotspot_analysis(
+    db: Session, session_id: int, queued: list[RawSegment], protected: list[RawSegment]
+) -> None:
+    """使安全重分析范围内的自动摘要与评分失效，保留人工关联及跨段保护。"""
+
+    def overlaps(event: HotspotEvent, segment: RawSegment) -> bool:
+        if segment.start_ts is None or segment.end_ts is None:
+            return True
+        return event.start_ts < segment.end_ts and event.end_ts > segment.start_ts
+
+    for event in db.exec(select(HotspotEvent).where(HotspotEvent.session_id == session_id)).all():
+        if event.candidate_id is not None or not any(overlaps(event, segment) for segment in queued):
+            continue
+        if any(overlaps(event, segment) for segment in protected):
+            continue
+        try:
+            features = json.loads(event.features_json or "{}")
+        except (json.JSONDecodeError, TypeError):
+            features = {}
+        if not isinstance(features, dict):
+            features = {}
+        enrichment = features.pop("event_enrichment", None)
+        if isinstance(enrichment, dict):
+            confidence = enrichment.get("detector_semantic_confidence")
+            if isinstance(confidence, int | float) and not isinstance(confidence, bool) and math.isfinite(confidence):
+                event.semantic_confidence = max(0.0, min(1.0, confidence))
+        clip_metadata = features.pop("event_clip_score", None)
+        if isinstance(clip_metadata, dict):
+            detector_score = clip_metadata.get("detector_clip_score")
+            if (
+                isinstance(detector_score, int | float)
+                and not isinstance(detector_score, bool)
+                and math.isfinite(detector_score)
+            ):
+                event.clip_score = max(0.0, min(1.0, detector_score))
+        event.features_json = json.dumps(features, ensure_ascii=False)
+        event.updated_at = datetime.now(UTC)
+        db.add(event)
+
+
 def _reset_task(task: SegmentTask, *, reason: str, rerun_asr: bool) -> None:
     """把非活跃任务重置到转写或分析队列。"""
     target = TaskStatus.QUEUED_FOR_TRANS if rerun_asr else TaskStatus.QUEUED_FOR_ANALYSIS
@@ -310,6 +358,7 @@ def _reset_task(task: SegmentTask, *, reason: str, rerun_asr: bool) -> None:
     task.completed_at = None
     task.processing_time_ms = None
     task.total_elapsed_ms = None
+    previous_context = event_first_context(task.context_json)
     task.context_json = json.dumps(
         {
             "reanalysis": {
@@ -320,6 +369,14 @@ def _reset_task(task: SegmentTask, *, reason: str, rerun_asr: bool) -> None:
         },
         ensure_ascii=False,
     )
+    # 导入录播及已有事件流水线继续补全热点；历史分段任务保持自己的评分入口。
+    if previous_context or is_local_session(task.session_id):
+        task.context_json = update_event_first_context(
+            task.context_json,
+            analysis_pass="candidate",
+            asr_mode="background" if rerun_asr else "completed",
+            asr_evidence_state="pending" if rerun_asr else previous_context.get("asr_evidence_state"),
+        )
 
 
 def _task_is_active(task: SegmentTask) -> bool:

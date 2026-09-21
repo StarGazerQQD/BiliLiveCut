@@ -16,6 +16,13 @@ def register_job_handlers(manager: WebJobManager) -> None:
     manager.register("collection_render", _render_collection)
     manager.register("clip_upload", _upload_clip)
     manager.register("upload_retry", _retry_upload)
+    manager.register("local_import", _import_recording)
+
+
+def _import_recording(context: JobContext, payload: dict[str, Any]) -> dict[str, object]:
+    from app.recording.imports import prepare_import
+
+    return prepare_import(context, str(payload["import_id"]))
 
 
 def _render_candidate(context: JobContext, payload: dict[str, Any]) -> dict[str, Any]:

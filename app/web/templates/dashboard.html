@@ -25,6 +25,7 @@
       <span class="tabs-label">录制</span>
       <button class="tab active" data-tab="rooms">直播间</button>
       <button class="tab" data-tab="recording">录制状态</button>
+      <a class="import-nav-link" href="/imports">录播分析</a>
       <button class="tab" data-tab="schedules">录制预约</button>
       <button class="tab" data-tab="transcripts">实时转写</button>
       <button class="tab" data-tab="danmaku">弹幕热度</button>
@@ -162,14 +163,14 @@
     <section id="tab-candidates" class="panel">
       <div class="card timeline-intro">
         <div>
-          <h3>每场直播的高光时间线</h3>
-          <p class="hint">按 GMT+8 展示动态高光节点、梗概、高频弹幕、来源证据和置信度；整场最终分析完成后，会按时间组织该场全部最终 ASR，作为一个完整上下文只调用一次 LLM 生成全场高光分析，不会直接拼接分段摘要。可按新阈值重分析，或按新词典/ASR 模型重识别。</p>
+          <h3>录制与录播的高光时间线</h3>
+          <p class="hint">按 GMT+8 展示高光节点、梗概、高频弹幕、来源证据和置信度。直播和导入录播均先完成本地语音转写，再按配置使用 LLM 分析热点及整场最终转写。可按新阈值重分析，或按新词典/ASR 模型重识别。</p>
         </div>
         <a class="back-link" href="/review/queue" target="_blank" rel="noopener">打开多人精审队列</a>
       </div>
       <div class="row toolbar timeline-toolbar">
-        <select id="timeline-room-filter" aria-label="筛选直播间">
-          <option value="">全部直播间</option>
+        <select id="timeline-room-filter" aria-label="筛选来源">
+          <option value="">全部来源</option>
         </select>
         <label class="chk"><input type="checkbox" id="timeline-include-rejected" /> 显示已拒绝节点</label>
         <button id="btn-refresh-timeline">刷新时间线</button>
