@@ -13,6 +13,7 @@ import os
 import subprocess
 import sys
 import tempfile
+from datetime import UTC, datetime, timedelta
 from pathlib import Path
 from typing import TYPE_CHECKING
 
@@ -20,6 +21,39 @@ import pytest
 
 if TYPE_CHECKING:
     from _pytest.monkeypatch import MonkeyPatch
+
+
+@pytest.mark.parametrize("aware", [False, True])
+def test_recording_session_preserves_naive_utc_storage(temp_db: None, aware: bool) -> None:
+    """数据库往返与查询必须保持既有无时区 UTC 语义，避免依赖升级隐式改写。"""
+    from sqlmodel import select
+
+    from app.db.entities import LiveRoom, RecordingSession
+    from app.db.session import get_session
+
+    timestamp = datetime(2026, 9, 22, 12, 0)
+    with get_session() as db:
+        room = LiveRoom(room_id=123, input_url="https://live.bilibili.com/123")
+        db.add(room)
+        db.flush()
+        recording = RecordingSession(
+            room_id=room.id,
+            started_at=timestamp.replace(tzinfo=UTC) if aware else timestamp,
+        )
+        db.add(recording)
+        db.flush()
+        recording_id = recording.id
+
+    with get_session() as db:
+        recording = db.exec(
+            select(RecordingSession).where(
+                RecordingSession.id == recording_id,
+                RecordingSession.started_at < timestamp + timedelta(seconds=1),
+            )
+        ).one()
+        assert recording.started_at == timestamp
+        assert recording.started_at.tzinfo is None
+        assert recording.ended_at is None
 
 
 # ── CSRF 测试 ────────────────────────────────────────
