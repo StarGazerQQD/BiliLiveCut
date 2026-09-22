@@ -20,6 +20,7 @@ import os
 import shutil
 import subprocess
 import sys
+import tomllib
 from pathlib import Path
 from typing import TextIO
 
@@ -81,15 +82,51 @@ def check_rust() -> bool:
         return False
 
 
+def _cargo_home(env: dict[str, str]) -> Path:
+    """按 Cargo 子进程的工作目录解析缓存路径。"""
+    path = Path(env.get("CARGO_HOME") or Path.home() / ".cargo")
+    return (path if path.is_absolute() else RUST_SRC / path).resolve()
+
+
+def _inherited_rustflags(env: dict[str, str]) -> list[str]:
+    """保留显式参数；无法无损解析 Cargo 配置优先级时拒绝覆盖。"""
+    if "CARGO_ENCODED_RUSTFLAGS" in env:
+        return env["CARGO_ENCODED_RUSTFLAGS"].split("\x1f")
+    if "RUSTFLAGS" in env:
+        return env["RUSTFLAGS"].split()
+    message = (
+        "Rust path remapping cannot override configured rustflags. "
+        "Pass the complete compiler options through RUSTFLAGS or CARGO_ENCODED_RUSTFLAGS."
+    )
+    for name in env:
+        if name == "CARGO_BUILD_RUSTFLAGS" or (name.startswith("CARGO_TARGET_") and name.endswith("_RUSTFLAGS")):
+            raise ValueError(f"{message} Configured source: {name}")
+    source = RUST_SRC.resolve()
+    config_dirs = [directory / ".cargo" for directory in (source, *source.parents)]
+    config_dirs.append(_cargo_home(env))
+    for directory in dict.fromkeys(config_dirs):
+        # Cargo 同时发现两个文件时使用旧名称 config。
+        config_path = directory / "config"
+        if not config_path.is_file():
+            config_path = directory / "config.toml"
+        if not config_path.is_file():
+            continue
+        with config_path.open("rb") as handle:
+            config = tomllib.load(handle)
+        tables = [config.get("build", {}), *config.get("target", {}).values()]
+        if "include" in config or any("rustflags" in table for table in tables):
+            raise ValueError(f"{message} Configured source: {config_path}")
+    return []
+
+
 def _build_environment() -> dict[str, str]:
     """保留调用者编译选项，并从 Rust 依赖与诊断中移除本机构建目录。"""
     env = os.environ.copy()
     env["PYO3_PYTHON"] = sys.executable
-    encoded = env.get("CARGO_ENCODED_RUSTFLAGS")
-    flags = encoded.split("\x1f") if encoded is not None else env.get("RUSTFLAGS", "").split()
+    flags = _inherited_rustflags(env)
     roots = (
         (Path.home(), "/build-user"),
-        (Path(env.get("CARGO_HOME") or Path.home() / ".cargo"), "/cargo"),
+        (_cargo_home(env), "/cargo"),
         (_REPO_ROOT, "/blc-source"),
     )
     for path, replacement in roots:
