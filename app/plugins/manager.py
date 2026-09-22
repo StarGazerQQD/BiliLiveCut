@@ -9,6 +9,7 @@ import json
 import math
 import re
 import sys
+from collections.abc import Callable
 from dataclasses import dataclass, field
 from pathlib import Path
 from types import ModuleType
@@ -36,6 +37,8 @@ from app.plugins.highlight import (
     HighlightScoringRequest,
     HighlightScoringResult,
 )
+from app.plugins.live_source import LiveSource, SourceError
+from app.sources.registry import SourceRegistry, source_registry
 
 _MAX_MANIFEST_BYTES = 64 * 1024
 _SETTING_KEY_RE = re.compile(r"^[a-z][a-z0-9_.-]{0,63}$")
@@ -82,8 +85,9 @@ class _Discovery:
 class PluginManager:
     """管理一个插件目录中的清单、实例和设置。"""
 
-    def __init__(self, root: Path | None = None) -> None:
+    def __init__(self, root: Path | None = None, *, registry: SourceRegistry | None = None) -> None:
         """创建管理器；省略 ``root`` 时使用运行时配置。"""
+        self.sources = registry if registry is not None else SourceRegistry()
         self._configured_root = root
         self._records: dict[str, _PluginRecord] = {}
         self._scan_errors: list[dict[str, str]] = []
@@ -118,7 +122,11 @@ class PluginManager:
 
             for plugin_id, record in previous.items():
                 replacement = discovery.records.get(plugin_id)
-                unchanged = replacement is not None and replacement.manifest == record.manifest
+                unchanged = (
+                    replacement is not None
+                    and replacement.manifest == record.manifest
+                    and replacement.directory == record.directory
+                )
                 if record.loaded and not unchanged:
                     await self._deactivate(record)
 
@@ -304,50 +312,83 @@ class PluginManager:
         module_name: str | None = None
         module_names: tuple[str, ...] = ()
         instance: BiliLiveCutPlugin | None = None
+        pending_sources: list[LiveSource] = []
+        accepting_sources = True
+
+        def register_source(source: LiveSource) -> None:
+            if not accepting_sources or "live_source" not in record.manifest.capabilities:
+                raise PluginStateError("直播源只能由声明 live_source 的插件在 on_enable 内注册")
+            pending_sources.append(source)
+
         try:
             instance, module_name, module_names = self._load_instance(record)
             self._validate_capabilities(record, instance)
             schema = self._validate_schema(instance.settings_schema)
-            outcome = instance.on_enable(self._context(record))
+            outcome = instance.on_enable(self._context(record, register_source))
             if inspect.isawaitable(outcome):
-                await outcome
+                await asyncio.wait_for(outcome, timeout=30)
+            accepting_sources = False
+            if "live_source" in record.manifest.capabilities:
+                self.sources.register_many(record.manifest.id, pending_sources)
             record.instance = instance
             record.schema = schema
             record.module_name = module_name
             record.module_names = module_names
             record.error = None
             logger.info("插件已启用: {} {}", record.manifest.id, record.manifest.version)
-        except Exception as exc:
+        except (Exception, asyncio.CancelledError) as exc:
+            accepting_sources = False
+            # 尚未发布的来源也必须关闭；去重防止同一个对象被重复关闭。
+            seen: set[int] = set()
+            for source in pending_sources:
+                if id(source) in seen:
+                    continue
+                seen.add(id(source))
+                try:
+                    await asyncio.wait_for(source.aclose(), timeout=10)
+                except Exception:
+                    logger.error("插件 {} 来源启用回滚关闭失败", record.manifest.id)
             if instance is not None:
                 try:
                     cleanup = instance.on_disable()
                     if inspect.isawaitable(cleanup):
-                        await cleanup
-                except Exception as cleanup_exc:
-                    logger.error("插件 {} 启用回滚失败: {}", record.manifest.id, cleanup_exc)
+                        await asyncio.wait_for(cleanup, timeout=30)
+                except Exception:
+                    logger.error("插件 {} 启用回滚失败", record.manifest.id)
             record.instance = None
             record.schema = ()
-            record.error = str(exc)
+            record.error = (
+                "直播源插件初始化失败"
+                if "live_source" in record.manifest.capabilities and not isinstance(exc, (PluginError, SourceError))
+                else str(exc)
+            )
             for imported_name in module_names:
                 sys.modules.pop(imported_name, None)
             record.module_name = None
             record.module_names = ()
+            if isinstance(exc, asyncio.CancelledError):
+                raise
             if isinstance(exc, PluginError):
                 raise
-            raise PluginStateError(f"插件 {record.manifest.id} 启用失败: {exc}") from exc
+            raise PluginStateError(f"插件 {record.manifest.id} 启用失败: {record.error}") from exc
 
     async def _deactivate(self, record: _PluginRecord) -> None:
         instance = record.instance
+        try:
+            await self.sources.unregister_owner(record.manifest.id)
+        except (SourceError, TimeoutError) as exc:
+            record.error = "直播源尚未完成收尾，插件模块保留，请重试停用"
+            raise PluginStateError(record.error) from exc
         record.instance = None
         record.schema = ()
         try:
             if instance is not None:
                 outcome = instance.on_disable()
                 if inspect.isawaitable(outcome):
-                    await outcome
-        except Exception as exc:
-            record.error = f"停用钩子失败: {exc}"
-            logger.error("插件 {} 停用钩子失败: {}", record.manifest.id, exc)
+                    await asyncio.wait_for(outcome, timeout=30)
+        except Exception:
+            record.error = "停用钩子失败，请检查插件资源清理实现"
+            logger.error("插件 {} 停用钩子失败", record.manifest.id)
         finally:
             for imported_name in record.module_names:
                 sys.modules.pop(imported_name, None)
@@ -455,12 +496,15 @@ class PluginManager:
             raise PluginValidationError("settings_schema 中存在重复 key")
         return schema
 
-    def _context(self, record: _PluginRecord) -> PluginContext:
+    def _context(
+        self, record: _PluginRecord, register_source: Callable[[LiveSource], None] | None = None
+    ) -> PluginContext:
         return PluginContext(
             plugin_id=record.manifest.id,
             plugin_dir=record.directory,
             _get_setting=lambda key, default: self._read_setting(record.manifest.id, key, default),
             _set_setting=lambda key, value: self._write_setting(record.manifest.id, key, value),
+            _register_live_source=register_source,
         )
 
     @staticmethod
@@ -559,5 +603,5 @@ class PluginManager:
         }
 
 
-plugin_manager = PluginManager()
+plugin_manager = PluginManager(registry=source_registry)
 """Web 应用使用的进程级插件管理器。"""

@@ -11,6 +11,8 @@ from typing import TYPE_CHECKING
 
 import pytest
 
+from app.plugins.live_source import SourceRoom, StreamSpec
+
 if TYPE_CHECKING:
     from _pytest.monkeypatch import MonkeyPatch
 
@@ -82,6 +84,7 @@ async def test_start_uses_pipeline_default_and_enables_room_analysis(
             return SimpleNamespace(
                 room_id=202,
                 title="开录前最新标题",
+                live_status=1,
                 uploader_name="最新主播名",
             )
 
@@ -96,8 +99,8 @@ async def test_start_uses_pipeline_default_and_enables_room_analysis(
     monkeypatch.setattr(rooms.settings_store, "recording_pipeline_enabled", lambda: True)
     monkeypatch.setattr("app.pipeline.orchestrator.make_pipeline_callback", fake_callback)
     monkeypatch.setattr(rooms, "Recorder", StartRecorder)
-    monkeypatch.setattr("app.recording.metadata.BilibiliLiveClient", lambda **_kwargs: FakeClient())
-    monkeypatch.setattr(rooms, "get_bilibili_cookie", lambda: "")
+    monkeypatch.setattr("app.sources.bilibili.source.BilibiliLiveClient", lambda **_kwargs: FakeClient())
+    monkeypatch.setattr("app.sources.bilibili.source.get_bilibili_cookie", lambda: "")
 
     manager = rooms.RecorderManager()
     await manager.start(room_id, pipeline=None, produce=False)
@@ -149,8 +152,8 @@ async def test_metadata_refresh_failure_preserves_cached_room_info(
             assert include_detail is True
             raise RuntimeError("metadata unavailable")
 
-    monkeypatch.setattr("app.recording.metadata.BilibiliLiveClient", lambda **_kwargs: FailingClient())
-    monkeypatch.setattr(rooms, "get_bilibili_cookie", lambda: "")
+    monkeypatch.setattr("app.sources.bilibili.source.BilibiliLiveClient", lambda **_kwargs: FailingClient())
+    monkeypatch.setattr("app.sources.bilibili.source.get_bilibili_cookie", lambda: "")
 
     await rooms.refresh_room_metadata(room_id)  # noqa: SLF001
 
@@ -423,7 +426,10 @@ def test_recorder_force_stop_kills_active_process(monkeypatch: MonkeyPatch) -> N
         def kill(self) -> None:
             self.killed = True
 
-    recorder = Recorder(room_id=1, db_room_id=1)
+    recorder = Recorder(
+        source_room=SourceRoom(platform="bilibili", source_id="1", canonical_url="https://live.bilibili.com/1"),
+        db_room_id=1,
+    )
     process = _Process()
     recorder._active_process = process  # type: ignore[assignment]  # noqa: SLF001
     monkeypatch.setattr(recorder, "_update_session", lambda **kwargs: None)
@@ -436,6 +442,7 @@ def test_recorder_force_stop_kills_active_process(monkeypatch: MonkeyPatch) -> N
 @pytest.mark.asyncio
 @pytest.mark.parametrize("cookie", ["", "SESSDATA=valid; DedeUserID=456"])
 async def test_recorder_passes_cookie_to_fallback_capable_danmaku_client(
+    temp_db: None,
     monkeypatch: MonkeyPatch,
     cookie: str,
 ) -> None:
@@ -446,7 +453,7 @@ async def test_recorder_passes_cookie_to_fallback_capable_danmaku_client(
     created: list[tuple[int, int, str]] = []
 
     class _FallbackDanmakuClient:
-        def __init__(self, room_id: int, session_id: int, cookie: str) -> None:
+        def __init__(self, room_id: int, session_id: int, cookie: str, **kwargs: object) -> None:
             created.append((room_id, session_id, cookie))
 
         async def run(self) -> None:
@@ -456,16 +463,24 @@ async def test_recorder_passes_cookie_to_fallback_capable_danmaku_client(
             return
 
     monkeypatch.setattr(recorder_module.settings, "collect_danmaku", True)
-    monkeypatch.setattr(recorder_module, "get_bilibili_cookie", lambda: cookie)
+    monkeypatch.setattr("app.sources.bilibili.source.get_bilibili_cookie", lambda: cookie)
     monkeypatch.setattr(danmaku_module, "DanmakuClient", _FallbackDanmakuClient)
 
-    recorder = recorder_module.Recorder(room_id=856077, db_room_id=1)
+    recorder = recorder_module.Recorder(
+        source_room=SourceRoom(
+            platform="bilibili", source_id="856077", canonical_url="https://live.bilibili.com/856077"
+        ),
+        db_room_id=1,
+    )
+    from app.sources.bilibili.source import BilibiliSource
+
+    recorder._source = BilibiliSource()
     recorder._session_id = 9  # noqa: SLF001
-    recorder._start_danmaku()  # noqa: SLF001
+    await recorder._start_danmaku()  # noqa: SLF001
     await asyncio.sleep(0)
 
     assert created == [(856077, 9, cookie)]
-    assert recorder._danmaku_task is not None  # noqa: SLF001
+    assert recorder._danmaku is not None  # noqa: SLF001
     await recorder._stop_danmaku()  # noqa: SLF001
 
 
@@ -488,6 +503,7 @@ def test_reconnect_budget_honors_count_time_and_reset() -> None:
 
 @pytest.mark.asyncio
 async def test_recorder_auto_stops_after_consecutive_retry_limit(
+    temp_db: None,
     tmp_path: Path,
     monkeypatch: MonkeyPatch,
 ) -> None:
@@ -495,14 +511,12 @@ async def test_recorder_auto_stops_after_consecutive_retry_limit(
     from app.pipeline import storage_lifecycle
     from app.recording import recorder as recorder_module
 
-    class _ClientContext:
-        async def __aenter__(self) -> object:
-            return object()
-
-        async def __aexit__(self, *_args: object) -> None:
-            return None
-
-    recorder = recorder_module.Recorder(room_id=23771139, db_room_id=1)
+    recorder = recorder_module.Recorder(
+        source_room=SourceRoom(
+            platform="bilibili", source_id="23771139", canonical_url="https://live.bilibili.com/23771139"
+        ),
+        db_room_id=1,
+    )
     updates: list[dict[str, object]] = []
     fetch_calls = 0
 
@@ -512,15 +526,14 @@ async def test_recorder_auto_stops_after_consecutive_retry_limit(
     def update_session(**kwargs: object) -> None:
         updates.append(kwargs)
 
-    async def fetch_stream(_client: object) -> None:
+    async def fetch_stream(_self: object, _room: SourceRoom, _preference: object) -> list[StreamSpec]:
         nonlocal fetch_calls
         fetch_calls += 1
-        return None
+        return []
 
     async def no_wait(_seconds: float) -> None:
-        return None
+        await asyncio.sleep(0)
 
-    monkeypatch.setattr(recorder_module, "BilibiliLiveClient", lambda **_kwargs: _ClientContext())
     monkeypatch.setattr(recorder_module, "session_raw_dir", lambda _session_id: tmp_path)
     monkeypatch.setattr(storage_lifecycle, "should_stop_recording", lambda: False)
     monkeypatch.setattr(recorder_module.settings, "collect_danmaku", False)
@@ -528,7 +541,7 @@ async def test_recorder_auto_stops_after_consecutive_retry_limit(
     monkeypatch.setattr(recorder_module.settings, "recording_reconnect_max_elapsed_s", 0)
     monkeypatch.setattr(recorder, "_create_session", create_session)
     monkeypatch.setattr(recorder, "_update_session", update_session)
-    monkeypatch.setattr(recorder, "_fetch_stream", fetch_stream)
+    monkeypatch.setattr("app.sources.bilibili.source.BilibiliSource.get_streams", fetch_stream)
     monkeypatch.setattr(recorder, "_sleep_or_stop", no_wait)
 
     await recorder.run()
@@ -540,24 +553,21 @@ async def test_recorder_auto_stops_after_consecutive_retry_limit(
 
 @pytest.mark.asyncio
 async def test_recorder_resets_retry_limit_after_productive_reconnect(
+    temp_db: None,
     tmp_path: Path,
     monkeypatch: MonkeyPatch,
 ) -> None:
     """重连后产出片段应清零旧失败，下一次断流获得完整重试预算。"""
-    from types import SimpleNamespace
-
     from app.pipeline import storage_lifecycle
     from app.recording import recorder as recorder_module
 
-    class _ClientContext:
-        async def __aenter__(self) -> object:
-            return object()
-
-        async def __aexit__(self, *_args: object) -> None:
-            return None
-
-    recorder = recorder_module.Recorder(room_id=23771139, db_room_id=1)
-    stream = SimpleNamespace(url="https://example.invalid/live.m3u8", protocol="hls", quality=10000)
+    recorder = recorder_module.Recorder(
+        source_room=SourceRoom(
+            platform="bilibili", source_id="23771139", canonical_url="https://live.bilibili.com/23771139"
+        ),
+        db_room_id=1,
+    )
+    stream = StreamSpec(url="https://example.invalid/live.m3u8", transport="hls", container="ts", quality_id="10000")
     streams: list[object | None] = [None, stream, None, None]
     updates: list[dict[str, object]] = []
 
@@ -567,15 +577,16 @@ async def test_recorder_resets_retry_limit_after_productive_reconnect(
     def update_session(**kwargs: object) -> None:
         updates.append(kwargs)
 
-    async def fetch_stream(_client: object) -> object | None:
-        return streams.pop(0)
+    async def fetch_stream(_self: object, _room: SourceRoom, _preference: object) -> list[StreamSpec]:
+        item = streams.pop(0)
+        return [item] if item else []
 
     async def record_once(_stream: object, _out_dir: Path) -> int:
         recorder._seq += 1  # noqa: SLF001
         return 1
 
     async def no_wait(_seconds: float) -> None:
-        return None
+        await asyncio.sleep(0)
 
     def classify_exit(_exit_code: int, _stderr_tail: str | None) -> None:
         return None
@@ -583,7 +594,6 @@ async def test_recorder_resets_retry_limit_after_productive_reconnect(
     def increment_reconnect() -> None:
         return None
 
-    monkeypatch.setattr(recorder_module, "BilibiliLiveClient", lambda **_kwargs: _ClientContext())
     monkeypatch.setattr(recorder_module, "session_raw_dir", lambda _session_id: tmp_path)
     monkeypatch.setattr(storage_lifecycle, "should_stop_recording", lambda: False)
     monkeypatch.setattr(recorder_module.settings, "collect_danmaku", False)
@@ -591,7 +601,7 @@ async def test_recorder_resets_retry_limit_after_productive_reconnect(
     monkeypatch.setattr(recorder_module.settings, "recording_reconnect_max_elapsed_s", 0)
     monkeypatch.setattr(recorder, "_create_session", create_session)
     monkeypatch.setattr(recorder, "_update_session", update_session)
-    monkeypatch.setattr(recorder, "_fetch_stream", fetch_stream)
+    monkeypatch.setattr("app.sources.bilibili.source.BilibiliSource.get_streams", fetch_stream)
     monkeypatch.setattr(recorder, "_record_once", record_once)
     monkeypatch.setattr(recorder, "_classify_recording_exit", classify_exit)
     monkeypatch.setattr(recorder, "_increment_reconnect", increment_reconnect)
@@ -698,8 +708,8 @@ async def test_retry_exhaustion_waits_for_a_real_offline_transition(
     async def fake_start(db_id: int, _auto_analyze: bool, _auto_render: bool) -> None:
         starts.append(db_id)
 
-    monkeypatch.setattr(live_monitor_module, "BilibiliLiveClient", lambda **_kwargs: FakeClient())
-    monkeypatch.setattr(live_monitor_module, "get_bilibili_cookie", lambda: "")
+    monkeypatch.setattr("app.sources.bilibili.source.BilibiliLiveClient", lambda **_kwargs: FakeClient())
+    monkeypatch.setattr("app.sources.bilibili.source.get_bilibili_cookie", lambda: "")
     monkeypatch.setattr(service_module, "recorder_manager", manager)
     monitor = live_monitor_module.LiveMonitor()
     monitor._stop = asyncio.Event()  # noqa: SLF001

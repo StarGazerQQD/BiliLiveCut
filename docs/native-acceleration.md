@@ -1,6 +1,10 @@
 # 原生加速模块
 
-适用版本：`0.1.18.3-alpha`。
+适用版本：`0.1.18.4-alpha`。
+
+Rust 构建通过 `CARGO_ENCODED_RUSTFLAGS` 传递路径映射，保留显式编译选项，避免用户目录或 Cargo 缓存路径嵌入原生模块；含空格的路径保持完整。Payload 在收录原生模块前检查 UTF-8/UTF-16 本机构建路径，发现残留则拒绝构建。
+
+自定义编译选项请通过 `RUSTFLAGS` 或 `CARGO_ENCODED_RUSTFLAGS` 显式提供。若仅在 Cargo 的 `build` / `target` 配置（包括对应环境变量）设置 `rustflags`，或配置使用 `include`，构建会明确报错并要求将完整选项传入上述变量，以免路径映射覆盖原有链接或目标平台参数。相对 `CARGO_HOME` 按 Rust 源码目录解析。
 
 当前业务架构与安装入口见[项目 README](../README.md)和 [Portable 说明](../packaging/portable/README.md)；版本变更见 [Changelog 归档索引](changelog/CHANGELOG_INDEX.md)。
 
@@ -8,7 +12,7 @@ BiliLiveCut 只保留当前 `app.accelerators` 原生接口。业务代码统一
 `app.accelerators.dispatcher`，不直接依赖编译扩展；旧的 `app.analysis` 原生
 模块路径和函数别名均不再提供。
 
-## V0.1.18.3 已完成的原生化清单
+## V0.1.18.4 已完成的原生化清单
 
 | 热点 | 实现 | 接入结果 | 原因 |
 |---|---|---|---|

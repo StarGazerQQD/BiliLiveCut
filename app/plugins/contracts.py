@@ -5,16 +5,19 @@ from __future__ import annotations
 from collections.abc import Awaitable, Callable, Sequence
 from dataclasses import dataclass
 from pathlib import Path
-from typing import Literal, Protocol, TypeAlias, runtime_checkable
+from typing import TYPE_CHECKING, Literal, Protocol, TypeAlias, runtime_checkable
 
 from pydantic import BaseModel, ConfigDict, Field, model_validator
+
+if TYPE_CHECKING:
+    from app.plugins.live_source import LiveSource
 
 PLUGIN_API_VERSION = "1"
 """当前宿主支持的插件 API 主版本。"""
 
 PluginSettingValue: TypeAlias = str | float | bool | None
 PluginSettingKind: TypeAlias = Literal["text", "number", "boolean", "select", "password"]
-PluginCapability: TypeAlias = Literal["highlight_scorer"]
+PluginCapability: TypeAlias = Literal["highlight_scorer", "live_source"]
 
 
 class PluginManifest(BaseModel):
@@ -30,6 +33,7 @@ class PluginManifest(BaseModel):
     description: str = Field(default="", max_length=500)
     settings_page: bool = True
     capabilities: tuple[PluginCapability, ...] = ()
+    live_source_api_version: str | None = None
 
     @model_validator(mode="after")
     def validate_entrypoint(self) -> PluginManifest:
@@ -42,6 +46,13 @@ class PluginManifest(BaseModel):
             raise ValueError("entrypoint 必须是插件目录内的相对 .py 文件")
         if len(self.capabilities) != len(set(self.capabilities)):
             raise ValueError("capabilities 不能重复")
+        if "live_source" in self.capabilities:
+            from app.plugins.live_source import LIVE_SOURCE_API_VERSION
+
+            if self.live_source_api_version != LIVE_SOURCE_API_VERSION:
+                raise ValueError(f"live_source_api_version 必须为 {LIVE_SOURCE_API_VERSION}")
+        elif self.live_source_api_version is not None:
+            raise ValueError("live_source_api_version 只能用于 live_source 插件")
         return self
 
 
@@ -95,6 +106,13 @@ class PluginContext:
     plugin_dir: Path
     _get_setting: Callable[[str, PluginSettingValue], PluginSettingValue]
     _set_setting: Callable[[str, PluginSettingValue], None]
+    _register_live_source: Callable[[LiveSource], None] | None = None
+
+    def register_live_source(self, source: LiveSource) -> None:
+        """在 on_enable 中暂存来源；钩子成功后由宿主原子注册并接管关闭。"""
+        if self._register_live_source is None:
+            raise RuntimeError("当前上下文不允许注册直播源")
+        self._register_live_source(source)
 
     def get_setting(self, key: str, default: PluginSettingValue = None) -> PluginSettingValue:
         """读取当前插件命名空间内的设置。"""

@@ -418,11 +418,16 @@ async function loadDanmaku() {
     y: Number(window.scrollY ?? window.pageYOffset ?? 0),
   };
   const sessions = data.sessions || [];
+  const evidenceLabels = {
+    unsupported: "来源不支持弹幕", disabled: "本场未启用弹幕", connecting: "弹幕连接中",
+    available: "已连接采集", failed: "弹幕采集失败", legacy_unknown: "旧场次采集覆盖未知",
+  };
   $("#danmaku-sessions").innerHTML = sessions.length ? sessions.map((s) => `
     <div class="item">
       <div class="sub">${esc(s.source_label || "未知来源")} · 会话 #${s.session_id}</div>
-      <div class="title">\u5f39\u5e55 ${s.count} \u6761 \u00b7 \u5f3a\u5ea6 ${s.intensity}</div>
-    </div>`).join("") : `<div class="empty">\u6682\u65e0\u5f39\u5e55\u3002\u5f00\u542f\u5f55\u5236(COLLECT_DANMAKU=true)\u540e\u4f1a\u81ea\u52a8\u91c7\u96c6\u3002</div>`;
+      <div class="title">弹幕 ${s.count ?? "未知"} 条 · ${esc(s.intensity_unit || "事件权重")} ${s.intensity ?? "未知"}</div>
+      <div class="sub">${esc(evidenceLabels[s.evidence?.state] || "采集状态未知")}${s.evidence?.interrupted ? " · 上次异常中断" : s.evidence?.ended_at ? " · 已结束" : ""}</div>
+    </div>`).join("") : `<div class="empty">暂无场次弹幕信息。支持弹幕的直播源可在录制时采集；未提供弹幕仍可转写和分析。</div>`;
   const recent = data.recent || [];
   $("#danmaku-list").innerHTML = recent.length ? recent.map((d) => `
     <div class="item">

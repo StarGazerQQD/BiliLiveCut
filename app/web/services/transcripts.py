@@ -354,6 +354,8 @@ def list_recording_session_history() -> list[dict[str, Any]]:
 
         sources = source_identities_for_sessions(db, session_ids)
 
+    from app.analysis.source_policy import session_danmaku_view
+
     transcript_counts = {int(session_id): int(count) for session_id, count in transcript_rows}
     danmaku_counts = {int(session_id): int(count) for session_id, count in danmaku_rows}
     return [
@@ -366,6 +368,7 @@ def list_recording_session_history() -> list[dict[str, Any]]:
             "ended_at_gmt8": _iso_gmt8(session.ended_at),
             "transcript_count": transcript_counts.get(int(session.id), 0),
             "danmaku_count": danmaku_counts.get(int(session.id), 0),
+            "danmaku_evidence": session_danmaku_view(int(session.id)),
             **sources.get(int(session.id), unknown_source_identity()),
         }
         for session in sessions

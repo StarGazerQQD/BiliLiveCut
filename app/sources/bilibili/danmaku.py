@@ -27,9 +27,11 @@ from typing import Protocol
 import brotli
 from loguru import logger
 
+from app.core.async_cleanup import complete_cleanup
 from app.core.config import settings
 from app.db.entities import Danmaku, DanmakuType
 from app.db.session import get_session
+from app.plugins.live_source import DanmakuStateSink, DanmakuStatus
 from app.sources.bilibili.client import (
     BilibiliError,
     BilibiliLiveClient,
@@ -229,6 +231,7 @@ class DanmakuClient:
         session_id: int,
         cookie: str = "",
         *,
+        on_state: DanmakuStateSink | None = None,
         login_retry_max_attempts: int | None = None,
         login_retry_interval_s: float | None = None,
     ) -> None:
@@ -243,6 +246,7 @@ class DanmakuClient:
         if retry_interval <= 0:
             raise ValueError("login_retry_interval_s 必须 > 0")
 
+        self._on_state = on_state
         self.room_id = room_id
         self.session_id = session_id
         self.popularity = 0
@@ -266,14 +270,16 @@ class DanmakuClient:
         access: DanmakuAccess | None = None
         while not self._stop.is_set():
             try:
+                await self._report_state(DanmakuStatus.CONNECTING)
                 if access is None:
                     access = await self._select_access()
                 replacement = await self._consume_access(access)
                 access = replacement
                 backoff = 1
             except asyncio.CancelledError:
-                break
+                raise
             except DanmakuProtocolError as exc:
+                await self._report_state(DanmakuStatus.FAILED)
                 if access is not None and access.uses_cookie:
                     self._record_login_failure(exc)
                     access = None
@@ -282,27 +288,29 @@ class DanmakuClient:
                 logger.warning(
                     "匿名弹幕鉴权异常 room={}: {},{}s 后重连。",
                     self.room_id,
-                    exc,
+                    type(exc).__name__,
                     self._login_retry_interval_s,
                 )
                 await self._sleep_or_stop(self._login_retry_interval_s)
                 continue
             except BilibiliRateLimitError as exc:
+                await self._report_state(DanmakuStatus.FAILED)
                 access = None
                 if exc.error_type in {HttpErrorType.COOKIE_EXPIRED, HttpErrorType.RISK_CONTROL}:
                     logger.warning(
                         "匿名弹幕接口返回 {} room={}: {}；{}s 后重试，录制与实时转写不受影响。",
                         exc.error_type.value,
                         self.room_id,
-                        str(exc).strip(),
+                        type(exc).__name__,
                         self._login_retry_interval_s,
                     )
                     await self._sleep_or_stop(self._login_retry_interval_s)
                     continue
-                logger.warning("弹幕连接异常 room={}: {},{}s 后重连。", self.room_id, exc, backoff)
+                logger.warning("弹幕连接异常 room={}: {},{}s 后重连。", self.room_id, type(exc).__name__, backoff)
             except Exception as exc:  # noqa: BLE001 — 弹幕断线不应中断录制
+                await self._report_state(DanmakuStatus.FAILED)
                 access = None
-                logger.warning("弹幕连接异常 room={}: {},{}s 后重连。", self.room_id, exc, backoff)
+                logger.warning("弹幕连接异常 room={}: {},{}s 后重连。", self.room_id, type(exc).__name__, backoff)
             if self._stop.is_set():
                 break
             await self._sleep_or_stop(backoff)
@@ -361,7 +369,7 @@ class DanmakuClient:
                 self.room_id,
                 self._login_failures,
                 self._login_retry_max_attempts,
-                str(exc).strip(),
+                type(exc).__name__,
             )
             return
         self._next_login_retry_at = time.monotonic() + self._login_retry_interval_s
@@ -371,7 +379,7 @@ class DanmakuClient:
             self._login_failures,
             self._login_retry_max_attempts,
             self._login_retry_interval_s,
-            str(exc).strip(),
+            type(exc).__name__,
         )
 
     async def _consume_access(self, access: DanmakuAccess) -> DanmakuAccess | None:
@@ -384,6 +392,7 @@ class DanmakuClient:
     async def _consume_anonymous_with_login_retry(self, access: DanmakuAccess) -> DanmakuAccess | None:
         """保持匿名连接，同时按配置间隔探测登录链路。"""
         consume_task = asyncio.create_task(self._connect_and_consume(access))
+        timer_task: asyncio.Task[None] | None = None
         try:
             while not self._stop.is_set():
                 if self.login_disabled:
@@ -409,6 +418,9 @@ class DanmakuClient:
                     return logged
             return None
         finally:
+            if timer_task is not None:
+                timer_task.cancel()
+                await asyncio.gather(timer_task, return_exceptions=True)
             if not consume_task.done():
                 consume_task.cancel()
             await asyncio.gather(consume_task, return_exceptions=True)
@@ -441,7 +453,7 @@ class DanmakuClient:
                     port,
                     index,
                     len(endpoints),
-                    exc,
+                    type(exc).__name__,
                 )
         raise BilibiliError(f"全部 {len(endpoints)} 个弹幕节点均不可用") from last_error
 
@@ -465,6 +477,7 @@ class DanmakuClient:
             ping_interval=None,
         ) as ws:
             await self._authenticate(ws, access.server.token, uid=access.uid)
+            await self._report_state(DanmakuStatus.AVAILABLE)
             mode = "登录" if access.uses_cookie else "匿名"
             logger.info("{}弹幕已连接 room={} host={} uid={}", mode, self.room_id, host, access.uid)
 
@@ -474,8 +487,10 @@ class DanmakuClient:
                     frame = await asyncio.wait_for(ws.recv(), timeout=35)
                     if isinstance(frame, str):
                         frame = frame.encode("utf-8")
-                    self._handle_frame(frame)
+                    # 工作线程不能被 task.cancel 停止；重复取消也等待本批次持久化。
+                    await complete_cleanup(asyncio.to_thread(self._handle_frame, frame))
             finally:
+                await self._report_state(DanmakuStatus.CONNECTING)
                 heartbeat.cancel()
                 await asyncio.gather(heartbeat, return_exceptions=True)
 
@@ -564,6 +579,10 @@ class DanmakuClient:
         if rows:
             with get_session() as db:
                 db.add_all(rows)
+
+    async def _report_state(self, state: DanmakuStatus) -> None:
+        if self._on_state is not None:
+            await self._on_state(state)
 
     async def _sleep_or_stop(self, seconds: float) -> None:
         """休眠指定秒数,期间收到停止信号则提前返回。

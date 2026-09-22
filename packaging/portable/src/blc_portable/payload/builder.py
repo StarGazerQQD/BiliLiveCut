@@ -1,8 +1,8 @@
 """Payload 构建器 — 构建 source_payload.zip 和完整 Manifest。
 
 流程:
-1. 从固定的当前发布基线 8c227e1 提取源码 → staging/
-2. 校验源码快照本身就是 0.1.18.3-alpha
+1. 从固定的当前发布基线 fc401a6 提取源码 → staging/
+2. 校验源码快照本身就是 0.1.18.4-alpha
 3. 构建 ZIP (收集 included_files 集合)
 4. 基于 included_files 生成 Manifest (文件数/Hash 与 ZIP 严格一致)
 5. 逐文件交叉校验 ZIP vs Manifest
@@ -264,9 +264,14 @@ def _compile_and_copy_native_modules(staging_dir: Path) -> dict[str, bool]:
         raise RuntimeError(f"Windows Payload 缺少必需原生模块：{', '.join(missing_required)}")
 
     # 只复制当前 ABI 的已验证 Windows 产物；禁止混入旧 ABI 或其他平台文件。
+    private_roots = {str(path.resolve()) for path in (repo_root, Path.home())}
+    private_roots.update(prefix.replace("\\", "/") for prefix in tuple(private_roots))
     for name, source in expected.items():
         if not results[name]:
             continue
+        contents = source.read_bytes()
+        if any(prefix.encode(encoding) in contents for prefix in private_roots for encoding in ("utf-8", "utf-16-le")):
+            raise RuntimeError(f"原生模块包含本机构建路径：{source.name}")
         destination = staging_accelerators / source.name
         shutil.copy2(source, destination)
         _logger.info("Copied native module: %s (%d bytes)", source.name, destination.stat().st_size)

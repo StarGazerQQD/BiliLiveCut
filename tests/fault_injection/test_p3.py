@@ -182,7 +182,9 @@ class TestLiveMonitor:
 
     @staticmethod
     @pytest.mark.asyncio
-    async def test_delayed_stop_rechecks_live_source_before_stopping(monkeypatch: pytest.MonkeyPatch) -> None:
+    async def test_delayed_stop_rechecks_live_source_before_stopping(
+        temp_db: None, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
         """延迟窗口结束时必须复核：恢复直播不停止，仍离线才停止。"""
         from app.pipeline import live_monitor as live_monitor_module
         from app.web import service as service_module
@@ -197,8 +199,8 @@ class TestLiveMonitor:
                 return None
 
             async def get_room_info(self, _room_id: str, *, include_detail: bool) -> SimpleNamespace:
-                assert include_detail is False
-                return SimpleNamespace(live_status=live_state["value"])
+                assert include_detail is True
+                return SimpleNamespace(room_id=99, live_status=live_state["value"], title=None, uploader_name=None)
 
         class FakeManager:
             def __init__(self) -> None:
@@ -208,23 +210,30 @@ class TestLiveMonitor:
             def is_running(self, db_id: int) -> bool:
                 return self.running
 
-            async def stop(self, db_id: int) -> None:
+            async def stop_if_current(self, db_id: int, token: object) -> bool:
                 self.running = False
                 self.stopped.append(db_id)
+                return True
 
         manager = FakeManager()
-        monkeypatch.setattr(live_monitor_module, "BilibiliLiveClient", lambda **_kwargs: FakeClient())
-        monkeypatch.setattr(live_monitor_module, "get_bilibili_cookie", lambda: "")
+        monkeypatch.setattr("app.sources.bilibili.source.BilibiliLiveClient", lambda **_kwargs: FakeClient())
+        monkeypatch.setattr("app.sources.bilibili.source.get_bilibili_cookie", lambda: "")
         monkeypatch.setattr(live_monitor_module.settings, "live_session_end_delay_s", 0)
         monkeypatch.setattr(service_module, "recorder_manager", manager)
         monitor = live_monitor_module.LiveMonitor()
         monitor._stop = asyncio.Event()  # noqa: SLF001
 
-        await monitor._delayed_stop(9, 99)  # noqa: SLF001
+        from app.plugins.live_source import SourceRoom
+
+        identity = SourceRoom(platform="bilibili", source_id="99", canonical_url="https://live.bilibili.com/99")
+        await monitor._delayed_stop(9, identity, manager)  # noqa: SLF001
         assert manager.stopped == []
 
         live_state["value"] = 0
-        await monitor._delayed_stop(9, 99)  # noqa: SLF001
+        from app.plugins.live_source import SourceRoom
+
+        identity = SourceRoom(platform="bilibili", source_id="99", canonical_url="https://live.bilibili.com/99")
+        await monitor._delayed_stop(9, identity, manager)  # noqa: SLF001
         assert manager.stopped == [9]
 
     @staticmethod

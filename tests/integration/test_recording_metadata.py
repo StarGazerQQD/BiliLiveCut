@@ -12,9 +12,11 @@ from sqlmodel import select
 
 from app.db.entities import LiveRoom, RecordingSchedule, RecordingSession, SystemLog
 from app.db.session import get_session
+from app.plugins.live_source import SourceRoom, StreamSpec
 from app.recording import metadata
 from app.recording.metadata import SessionMetadata, read_metadata
-from app.sources.bilibili.client import BilibiliLiveClient, StreamInfo
+from app.sources.bilibili import source as bili_source
+from app.sources.bilibili.client import BilibiliLiveClient
 
 
 @pytest.fixture
@@ -36,8 +38,7 @@ def platform(temp_db: None, monkeypatch: pytest.MonkeyPatch) -> dict[str, object
         def __init__(self, **kwargs: object) -> None:
             self._client = httpx.AsyncClient(transport=httpx.MockTransport(respond))
 
-    monkeypatch.setattr(metadata, "BilibiliLiveClient", TransportClient)
-    monkeypatch.setattr("app.pipeline.live_monitor.BilibiliLiveClient", TransportClient)
+    monkeypatch.setattr(bili_source, "BilibiliLiveClient", TransportClient)
     with get_session() as db:
         db.add(LiveRoom(id=1, input_url="202", room_id=202, title="缓存旧标题", authorized=True, schedule_enabled=True))
     return state
@@ -88,7 +89,7 @@ async def test_metadata_failures_preserve_success_timestamp(
         async def timeout(*args: object, **kwargs: object) -> None:
             await asyncio.sleep(60)
 
-        monkeypatch.setattr(metadata.BilibiliLiveClient, "get_room_info", timeout)
+        monkeypatch.setattr(bili_source.BilibiliLiveClient, "get_room_info", timeout)
         monkeypatch.setattr(metadata.settings, "room_metadata_refresh_timeout_s", 0.01)
     await metadata.refresh_room_metadata(1)
     with get_session() as db:
@@ -115,12 +116,12 @@ async def test_recording_refreshes_title_while_media_is_running_and_stops_refres
     monkeypatch.setattr("app.pipeline.storage_lifecycle.should_stop_recording", lambda: False)
     monkeypatch.setattr("app.recording.recorder.session_raw_dir", lambda _id: tmp_path)
 
-    async def stream(self: Recorder, client: BilibiliLiveClient) -> StreamInfo:
-        return StreamInfo(
-            url="https://example.invalid/live", protocol="hls", quality=10000, codec_name="avc", format_name="ts"
+    async def stream(self: Recorder) -> StreamSpec:
+        return StreamSpec(
+            url="https://example.invalid/live", transport="hls", quality_id="10000", codec="avc", container="ts"
         )
 
-    async def media(self: Recorder, source: StreamInfo, directory: Path) -> int:
+    async def media(self: Recorder, source: StreamSpec, directory: Path) -> int:
         recorders.append(self)
         captured.set()
         await finish.wait()
@@ -140,7 +141,11 @@ async def test_recording_refreshes_title_while_media_is_running_and_stops_refres
     if managed:
         await asyncio.gather(*(manager.start(1, pipeline=False) for _ in range(8)))
     else:
-        task = asyncio.create_task(Recorder(202, 1).run())
+        task = asyncio.create_task(
+            Recorder(
+                SourceRoom(platform="bilibili", source_id="202", canonical_url="https://live.bilibili.com/202"), 1
+            ).run()
+        )
     try:
         await asyncio.wait_for(captured.wait(), 3)
         platform["title"] = "录制中改名"
@@ -171,16 +176,19 @@ async def test_recording_refreshes_title_while_media_is_running_and_stops_refres
 async def test_daily_schedule_has_one_successor_after_each_outcome(
     platform: dict[str, object], monkeypatch: pytest.MonkeyPatch, running: bool, fail: bool
 ) -> None:
+    from collections import deque
+
     from app.web import main, service
     from app.web.services.schedules import complete_schedule_occurrence
 
+    monkeypatch.setattr("app.web.services.notifications._NOTIFICATIONS", deque(maxlen=200))
     with get_session() as db:
         db.add(
             RecordingSchedule(id=1, room_id=1, scheduled_at=datetime.now(UTC) - timedelta(days=3), recurrent="daily")
         )
     calls: list[int] = []
 
-    async def start(room_id: int) -> None:
+    async def start(room_id: int, *, pipeline: bool, produce: bool) -> None:
         calls.append(room_id)
         if fail:
             raise ValueError("未授权")
@@ -222,13 +230,13 @@ async def test_cancelled_start_releases_lock_without_creating_session(
     from app.web.services.rooms import RecorderManager
 
     requested = asyncio.Event()
-    original = metadata.BilibiliLiveClient.get_room_info
+    original = bili_source.BilibiliLiveClient.get_room_info
 
     async def wait_response(self: BilibiliLiveClient, *args: object, **kwargs: object) -> None:
         requested.set()
         await asyncio.Event().wait()
 
-    monkeypatch.setattr(metadata.BilibiliLiveClient, "get_room_info", wait_response)
+    monkeypatch.setattr(bili_source.BilibiliLiveClient, "get_room_info", wait_response)
     manager = RecorderManager()
     starting = asyncio.create_task(manager.start(1, pipeline=False))
     await asyncio.wait_for(requested.wait(), 1)
@@ -239,7 +247,7 @@ async def test_cancelled_start_releases_lock_without_creating_session(
     assert not manager._controls[1].locked()
     with get_session() as db:
         assert not db.exec(select(RecordingSession)).all()
-    monkeypatch.setattr(metadata.BilibiliLiveClient, "get_room_info", original)
+    monkeypatch.setattr(bili_source.BilibiliLiveClient, "get_room_info", original)
     await metadata.refresh_room_metadata(1)
     with get_session() as db:
         assert db.get(LiveRoom, 1).title == "标题 A"

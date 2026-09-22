@@ -15,7 +15,6 @@ from sqlmodel import select
 
 from app.core import settings_store
 from app.core.config import settings
-from app.core.cookie import get_bilibili_cookie
 from app.core.osutil import open_path
 from app.core.paths import clips_dir, ready_to_upload_dir
 from app.db.entities import (
@@ -31,9 +30,11 @@ from app.db.entities import (
     utcnow,
 )
 from app.db.session import get_session
+from app.plugins.live_source import SourceUnavailable
 from app.recording.metadata import refresh_room_metadata
 from app.recording.recorder import Recorder
-from app.sources.bilibili.client import BilibiliLiveClient
+from app.sources.registry import source_registry
+from app.sources.rooms import room_source
 from app.web.services.notifications import push_notification
 
 
@@ -202,8 +203,11 @@ class RecorderManager:
         async with self._controls.setdefault(db_id, asyncio.Lock()):
             with get_session() as db:
                 room = db.get(LiveRoom, db_id)
-                if room is None or room.room_id is None:
-                    raise ValueError("房间不存在或未解析房间号")
+                if room is None:
+                    raise ValueError("房间不存在")
+                identity = room_source(room, db)
+                if not source_registry.available(identity.platform):
+                    raise SourceUnavailable("来源不可用，请安装并启用对应直播源插件")
                 if settings.require_authorization and not room.authorized:
                     raise ValueError("该直播间尚未确认授权")
                 if self.is_running(db_id):
@@ -260,7 +264,8 @@ class RecorderManager:
         :param db_id: ``live_rooms`` 主键。
         :param pipeline: 是否启用实时转写+高光分析；``None`` 使用全局默认开关。
         :param produce: 是否在产生候选后自动切片+文案。
-        :raises ValueError: 房间不存在、未授权或缺少 room_id 时。
+        :raises ValueError: 房间不存在或未授权时。
+        :raises SourceUnavailable: 对应来源未注册或正在停用时。
         """
         pipeline_enabled = settings_store.recording_pipeline_enabled() if pipeline is None else pipeline
         if self.is_running(db_id):
@@ -275,9 +280,9 @@ class RecorderManager:
                 raise ValueError("本地录播来源不能启动直播录制")
             if settings.require_authorization and not room.authorized:
                 raise ValueError("该直播间未确认授权,拒绝录制。")
-            if room.room_id is None:
-                raise ValueError("该直播间缺少 room_id。")
-            room_id = room.room_id
+            identity = room_source(room, db)
+            if not source_registry.available(identity.platform):
+                raise SourceUnavailable("来源不可用，请安装并启用对应直播源插件")
 
         await refresh_room_metadata(db_id)
 
@@ -287,8 +292,10 @@ class RecorderManager:
                 raise ValueError(f"房间不存在: db_id={db_id}")
             if settings.require_authorization and not room.authorized:
                 raise ValueError("该直播间未确认授权,拒绝录制。")
-            if room.room_id != room_id:
-                raise ValueError("启动期间房间号已发生变化，请重新启动")
+            if room_source(room, db) != identity:
+                raise ValueError("启动期间来源身份已发生变化，请重新启动")
+            if not source_registry.available(identity.platform):
+                raise SourceUnavailable("来源已停用，请重新启用对应直播源插件")
             room.enabled = True
             # Pipeline 回调及后续调度器都会读取房间级 auto_analyze。
             # 与 CLI 保持一致：有效开关为真时同步开启，否则回调即使已安装也会跳过任务登记。
@@ -313,7 +320,7 @@ class RecorderManager:
             on_segment = make_pipeline_callback(produce=produce, room_id=db_id)
 
         recorder = Recorder(
-            room_id=room_id,
+            source_room=identity,
             db_room_id=db_id,
             on_segment=on_segment,
             on_end=_on_session_end,
@@ -337,11 +344,20 @@ class RecorderManager:
             self._set_state(db_id, "force_stopped", recorder.session_id, "录制任务被强制取消")
             raise
         except Exception as exc:  # noqa: BLE001
-            recorder.fail(str(exc))
-            self._set_state(db_id, SessionStatus.ERROR, recorder.session_id, str(exc))
-            logger.exception("录制任务异常 db_id={}: {}", db_id, exc)
+            message = f"录制失败：{type(exc).__name__}"
+            recorder.fail(message)
+            self._set_state(db_id, SessionStatus.ERROR, recorder.session_id, message)
+            logger.error("录制任务异常 db_id={} error={}", db_id, type(exc).__name__)
         finally:
-            if bool(getattr(recorder, "retry_budget_exhausted", False)):
+            if bool(getattr(recorder, "source_action_required", False)):
+                self._set_recording_flags(db_id, suppress_auto_restart=True)
+                self._set_state(
+                    db_id,
+                    SessionStatus.ERROR,
+                    recorder.session_id,
+                    "直播源需要处理，请检查平台设置后手动启动或重新开启自动录制",
+                )
+            elif bool(getattr(recorder, "retry_budget_exhausted", False)):
                 self._set_recording_flags(db_id, wait_for_next_live=True)
             self._cleanup_finished_recorder(db_id, recorder)
 
@@ -383,6 +399,18 @@ class RecorderManager:
                 mark_paused=mark_paused,
                 cancel_pending=cancel_pending,
             )
+
+    def recording_token(self, db_id: int) -> object | None:
+        """返回当前任务的进程内身份，供下播确认避免停止后续新场次。"""
+        return self._tasks.get(db_id)
+
+    async def stop_if_current(self, db_id: int, token: object) -> bool:
+        """在同一控制锁内核对实例后停止，关闭先比较再等待锁的竞态窗口。"""
+        async with self._controls.setdefault(db_id, asyncio.Lock()):
+            if self._tasks.get(db_id) is not token:
+                return False
+            await self._stop_locked(db_id)
+            return True
 
     async def _stop_locked(
         self,
@@ -639,46 +667,11 @@ def _finalize_manual_markers(session_id: int) -> None:
 recorder_manager = RecorderManager()
 
 
-async def add_room(url: str, authorized: bool) -> LiveRoom:
-    """解析并登记直播间(与 CLI ``add-room`` 等价)。
+async def add_room(url: str, authorized: bool, platform: str | None = None) -> LiveRoom:
+    """通过宿主统一来源规则解析并幂等登记直播间。"""
+    from app.sources.rooms import register_room
 
-    :param url: 直播间 URL 或房间号。
-    :param authorized: 是否确认拥有录制授权。
-    :returns: 登记/更新后的 :class:`LiveRoom`。
-    :raises ValueError: 未授权时(在要求授权的配置下)。
-    """
-    if settings.require_authorization and not authorized:
-        raise ValueError("需要确认授权才能添加直播间。")
-
-    async with BilibiliLiveClient(cookie=get_bilibili_cookie()) as client:
-        info = await client.get_room_info(url)
-
-    with get_session() as db:
-        existing = db.exec(select(LiveRoom).where(LiveRoom.room_id == info.room_id)).first()
-        if existing:
-            existing.input_url = url
-            existing.authorized = authorized
-            if info.title:
-                existing.title = info.title
-            if info.uploader_name:
-                existing.uploader_name = info.uploader_name
-            db.add(existing)
-            return existing
-        room = LiveRoom(
-            input_url=url,
-            room_id=info.room_id,
-            title=info.title,
-            uploader_name=info.uploader_name,
-            authorized=authorized,
-            highlight_threshold=settings.highlight_threshold,
-            review_threshold=settings.highlight_review_threshold,
-            auto_approve_threshold=settings.highlight_auto_approve_threshold,
-            auto_publish_threshold=settings.auto_publish_threshold,
-        )
-        db.add(room)
-        db.flush()
-        db.refresh(room)
-        return room
+    return await register_room(url, authorized, platform)
 
 
 class RoomNotFoundError(ValueError):
@@ -796,12 +789,13 @@ async def auto_recover_interrupted_sessions() -> list[int]:
                 room_config = load_room_config(room)
                 paused = bool(room_config.get("recording_paused", False))
                 suppressed = bool(room_config.get("recording_auto_restart_suppressed", False))
-            if paused or suppressed:
+                waiting_next = bool(room_config.get("recording_wait_for_next_live", False))
+            if paused or suppressed or waiting_next:
                 _set_session_status(sess.id, SessionStatus.PAUSED if paused else SessionStatus.STOPPED)
                 continue
             # 标记旧会话为中断。
             _mark_session_interrupted(sess.id)
-            await recorder_manager.start(room_id, produce=False)
+            await recorder_manager.start(room_id, pipeline=room.auto_analyze, produce=room.auto_render)
             recovered.append(room_id)
             logger.info("自动恢复录制:房间 #{} (会话 {})", room_id, sess.id)
             push_notification(

@@ -100,3 +100,27 @@ def test_payload_native_build_copies_only_current_windows_abi(monkeypatch: Monke
         "_cython_speedups.cp312-win_amd64.pyd",
         "_rust_speedups.pyd",
     }
+
+
+@pytest.mark.parametrize("encoding", ["utf-8", "utf-16-le"])
+def test_payload_native_build_rejects_embedded_private_source_path(
+    monkeypatch: MonkeyPatch, tmp_path: Path, encoding: str
+) -> None:
+    builder, accelerator_dir = _prepare_builder(monkeypatch, tmp_path)
+    expected = {
+        "setup_c.py": accelerator_dir / "_c_speedups.cp312-win_amd64.pyd",
+        "setup.py": accelerator_dir / "_cython_speedups.cp312-win_amd64.pyd",
+        "build_rust.py": accelerator_dir / "_rust_speedups.pyd",
+    }
+
+    def fake_run(command: list[str], **_kwargs: object) -> SimpleNamespace:
+        name = Path(command[1]).name
+        content = str(tmp_path / "private-source.rs").encode(encoding) if name == "build_rust.py" else b"native"
+        expected[name].write_bytes(content)
+        return SimpleNamespace(returncode=0, stdout="", stderr="")
+
+    monkeypatch.setattr(subprocess, "run", fake_run)
+    staging = tmp_path / "staging"
+    with pytest.raises(RuntimeError, match="原生模块包含本机构建路径"):
+        builder._compile_and_copy_native_modules(staging)
+    assert not (staging / "app/accelerators/_rust_speedups.pyd").exists()

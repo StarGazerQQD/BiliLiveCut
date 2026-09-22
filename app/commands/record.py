@@ -12,12 +12,10 @@ from rich.table import Table
 from sqlmodel import select
 
 from app.core.config import settings
-from app.core.cookie import get_bilibili_cookie
 from app.db.entities import LiveRoom
 from app.db.session import get_session
 from app.db.session import init_db as _init_db
 from app.recording.recorder import Recorder
-from app.sources.bilibili.client import BilibiliLiveClient, pick_best_stream
 
 console = Console()
 
@@ -30,53 +28,29 @@ def cmd_init() -> None:
 
 def cmd_add_room(
     url: str = typer.Argument(..., help="直播间 URL 或房间号"),
-    authorize: bool = typer.Option(
-        False,
-        "--authorize",
-        help="确认你拥有录制该直播间内容的授权(合规要求)",
-    ),
+    authorize: bool = typer.Option(False, "--authorize", help="确认拥有录制授权"),
+    platform: str | None = typer.Option(None, "--platform", help="显式来源平台；纯数字默认 Bilibili"),
 ) -> None:
-    """解析并登记一个直播间。
+    """使用已启用的直播源插件解析并登记房间。"""
+    from app.plugins.live_source import SourceError
+    from app.plugins.manager import PluginError
+    from app.plugins.runtime import plugin_runtime
+    from app.sources.rooms import register_room, room_source
 
-    :param url: 直播间 URL 或房间号。
-    :param authorize: 是否确认拥有录制授权。
-    """
-    if settings.require_authorization and not authorize:
-        console.print("[red]需要授权确认。[/red] 仅可录制你拥有授权的内容。确认后请加 [bold]--authorize[/bold] 重试。")
-        raise typer.Exit(code=1)
+    async def resolve() -> LiveRoom:
+        async with plugin_runtime():
+            return await register_room(url, authorize, platform)
 
-    async def _resolve() -> LiveRoom:
-        async with BilibiliLiveClient(cookie=get_bilibili_cookie()) as client:
-            info = await client.get_room_info(url)
-        return LiveRoom(
-            input_url=url,
-            room_id=info.room_id,
-            title=info.title,
-            uploader_name=info.uploader_name,
-            authorized=authorize,
-            highlight_threshold=settings.highlight_threshold,
-            review_threshold=settings.highlight_review_threshold,
-            auto_approve_threshold=settings.highlight_auto_approve_threshold,
-            auto_publish_threshold=settings.auto_publish_threshold,
-        )
-
-    room = asyncio.run(_resolve())
-    with get_session() as db:
-        existing = db.exec(select(LiveRoom).where(LiveRoom.room_id == room.room_id)).first()
-        if existing:
-            existing.authorized = authorize
-            existing.input_url = url
-            if room.title:
-                existing.title = room.title
-            if room.uploader_name:
-                existing.uploader_name = room.uploader_name
-            db.add(existing)
-            console.print(f"[yellow]已存在,信息已更新:[/yellow] room_id={room.room_id}")
-            return
-        db.add(room)
-        db.flush()
-        db.refresh(room)
-        console.print(f"[green]已登记直播间[/green] db_id={room.id} room_id={room.room_id} authorized={authorize}")
+    try:
+        room = asyncio.run(resolve())
+        source = room_source(room)
+    except (SourceError, PluginError, ValueError) as exc:
+        console.print(str(exc), markup=False)
+        raise typer.Exit(code=1) from exc
+    console.print(
+        f"已登记直播间 db_id={room.id} platform={source.platform} source_id={source.source_id} authorized={authorize}",
+        markup=False,
+    )
 
 
 def cmd_list_rooms() -> None:
@@ -89,12 +63,20 @@ def cmd_list_rooms() -> None:
         return
 
     table = Table(title="已登记直播间")
-    for col in ("db_id", "room_id", "enabled", "authorized", "input_url"):
+    for col in ("db_id", "platform", "source_id", "enabled", "authorized", "input_url"):
         table.add_column(col)
+    from app.plugins.live_source import SourceError
+    from app.sources.rooms import room_source
+
     for r in rooms:
+        try:
+            identity = room_source(r).source_id if r.platform != "local" else None
+        except SourceError:
+            identity = None
         table.add_row(
             str(r.id),
-            str(r.room_id),
+            r.platform,
+            identity or "未知",
             str(r.enabled),
             str(r.authorized),
             r.input_url,
@@ -102,31 +84,41 @@ def cmd_list_rooms() -> None:
     console.print(table)
 
 
-def cmd_check(url: str = typer.Argument(..., help="直播间 URL 或房间号")) -> None:
-    """检查直播间当前是否在播、可取到哪条流(只读,不录制)。
+def cmd_check(
+    url: str = typer.Argument(..., help="直播间 URL 或房间号"),
+    platform: str | None = typer.Option(None, "--platform", help="显式来源平台"),
+) -> None:
+    """通过同一来源契约检查直播状态和播放规格，不输出临时播放凭据。"""
+    from app.plugins.live_source import LiveStatus, SourceError, StreamPreference
+    from app.plugins.manager import PluginError
+    from app.plugins.runtime import plugin_runtime
+    from app.sources.registry import source_registry
 
-    :param url: 直播间 URL 或房间号。
-    """
-
-    async def _check() -> None:
-        async with BilibiliLiveClient(cookie=get_bilibili_cookie()) as client:
-            info = await client.get_room_info(url)
+    async def check() -> None:
+        async with plugin_runtime():
+            room = await source_registry.resolve_room(url, platform)
+            info = await source_registry.get_room_info(room)
             console.print(
-                f"room_id=[bold]{info.room_id}[/bold] live_status={info.live_status} "
-                f"({'直播中' if info.is_live else '未开播'})"
+                f"platform={room.platform} source_id={room.source_id} live_status={info.status}", markup=False
             )
-            if not info.is_live:
+            if info.status != LiveStatus.LIVE:
                 return
-            streams = await client.get_streams(info.room_id, quality=settings.stream_quality)
-            best = pick_best_stream(streams, settings.preferred_stream_protocol)
+            streams = await source_registry.get_streams(
+                room, StreamPreference(preferred_transport=settings.preferred_stream_protocol)
+            )
             console.print(f"可用流数量: {len(streams)}")
-            if best:
+            if streams:
+                best = streams[0]
                 console.print(
-                    f"[green]最佳流[/green] 协议={best.protocol} 格式={best.format_name} "
-                    f"编码={best.codec_name} 清晰度={best.quality}"
+                    f"最佳流 协议={best.transport} 格式={best.container} 编码={best.codec} 清晰度={best.quality_id}",
+                    markup=False,
                 )
 
-    asyncio.run(_check())
+    try:
+        asyncio.run(check())
+    except (SourceError, PluginError, ValueError) as exc:
+        console.print(str(exc), markup=False)
+        raise typer.Exit(code=1) from exc
 
 
 def cmd_record(
@@ -148,90 +140,103 @@ def cmd_record(
     :param pipeline: 是否在录制同时启用转写+高光分析流水线；``None`` 使用全局默认值。
     :param produce: 是否在产生候选后自动切片与生成文案。
     """
-    from app.core import settings_store
+    from app.plugins.live_source import SourceError, SourceUnavailable
+    from app.plugins.runtime import plugin_runtime
+    from app.sources.registry import source_registry
+    from app.sources.rooms import room_source
 
-    pipeline_enabled = settings_store.recording_pipeline_enabled() if pipeline is None else pipeline
-    if produce and not pipeline_enabled:
-        console.print("[red]--produce 必须与 --pipeline 一起使用。[/red]")
-        raise typer.Exit(code=1)
+    async def execute() -> None:
+        async with plugin_runtime():
+            from app.core import settings_store
 
-    with get_session() as db:
-        room = db.get(LiveRoom, db_id)
-        if room is None:
-            console.print(f"[red]未找到 db_id={db_id} 的直播间。[/red]")
-            raise typer.Exit(code=1)
-        if settings.require_authorization and not room.authorized:
-            console.print("[red]该直播间未确认授权,拒绝录制。[/red]")
-            raise typer.Exit(code=1)
-        room_id = room.room_id
-        room.enabled = True
-        # 五阶段调度器以房间级开关为唯一真源。CLI 的有效 Pipeline 值需要同步到
-        # 房间配置，否则 Recorder 虽安装了回调，scheduler 仍会把任务留在 RECORDED。
-        if pipeline_enabled:
-            room.auto_analyze = True
-        if produce:
-            room.auto_render = True
-        db.add(room)
+            pipeline_enabled = settings_store.recording_pipeline_enabled() if pipeline is None else pipeline
+            if produce and not pipeline_enabled:
+                console.print("[red]--produce 必须与 --pipeline 一起使用。[/red]")
+                raise typer.Exit(code=1)
 
-    if room_id is None:
-        console.print("[red]该直播间缺少 room_id,请重新 add-room。[/red]")
-        raise typer.Exit(code=1)
+            with get_session() as db:
+                room = db.get(LiveRoom, db_id)
+                if room is None:
+                    console.print(f"[red]未找到 db_id={db_id} 的直播间。[/red]")
+                    raise typer.Exit(code=1)
+                if settings.require_authorization and not room.authorized:
+                    console.print("[red]该直播间未确认授权,拒绝录制。[/red]")
+                    raise typer.Exit(code=1)
+                identity = room_source(room, db)
+                if not source_registry.available(identity.platform):
+                    raise SourceUnavailable("来源不可用，请安装并启用对应直播源插件")
+                room.enabled = True
+                # 五阶段调度器以房间级开关为唯一真源。CLI 的有效 Pipeline 值需要同步到
+                # 房间配置，否则 Recorder 虽安装了回调，scheduler 仍会把任务留在 RECORDED。
+                if pipeline_enabled:
+                    room.auto_analyze = True
+                if produce:
+                    room.auto_render = True
+                db.add(room)
 
-    on_segment = None
-    if pipeline_enabled:
-        from app.pipeline.orchestrator import make_pipeline_callback
+            on_segment = None
+            if pipeline_enabled:
+                from app.pipeline.orchestrator import make_pipeline_callback
 
-        # 传入房间主键，让回调读取刚同步的自动化配置；否则
-        # room_id=None 会按 auto_analyze=False 跳过任务登记。
-        on_segment = make_pipeline_callback(produce=produce, room_id=db_id)
-        extra = " + 自动切片/文案" if produce else ""
-        console.print(f"[cyan]已启用实时分析流水线(转写 + 高光评分{extra})。[/cyan]")
+                # 传入房间主键，让回调读取刚同步的自动化配置；否则
+                # room_id=None 会按 auto_analyze=False 跳过任务登记。
+                on_segment = make_pipeline_callback(produce=produce, room_id=db_id)
+                extra = " + 自动切片/文案" if produce else ""
+                console.print(f"[cyan]已启用实时分析流水线(转写 + 高光评分{extra})。[/cyan]")
 
-    async def _on_end(session_id: int) -> None:
-        """会话结束:上传模块关闭时弹出切片目录。"""
-        if pipeline_enabled:
-            from app.analysis.reanalysis import request_session_reanalysis
-            from app.analysis.session_summary import request_session_timeline_summary
+            async def _on_end(session_id: int) -> None:
+                """会话结束:上传模块关闭时弹出切片目录。"""
+                if pipeline_enabled:
+                    from app.analysis.reanalysis import request_session_reanalysis
+                    from app.analysis.session_summary import request_session_timeline_summary
 
-            reanalysis_requested = request_session_reanalysis(
-                session_id,
-                reason="session_finalized",
-            )
-            if not reanalysis_requested:
-                request_session_timeline_summary(
-                    session_id,
-                    reason="session_finalized_without_reanalysis",
-                    force=True,
-                )
-        from app.core import settings_store
-        from app.core.osutil import open_path
-        from app.core.paths import clips_dir
+                    reanalysis_requested = request_session_reanalysis(
+                        session_id,
+                        reason="session_finalized",
+                    )
+                    if not reanalysis_requested:
+                        request_session_timeline_summary(
+                            session_id,
+                            reason="session_finalized_without_reanalysis",
+                            force=True,
+                        )
+                from app.core import settings_store
+                from app.core.osutil import open_path
+                from app.core.paths import clips_dir
 
-        if settings_store.upload_active():
-            return
-        path = str(clips_dir())
-        console.print(f"[green]本场直播已结束。上传模块未开启,切片已保存到:[/green] {path}")
-        open_path(path)
+                if settings_store.upload_active():
+                    return
+                path = str(clips_dir())
+                console.print(f"[green]本场直播已结束。上传模块未开启,切片已保存到:[/green] {path}")
+                open_path(path)
 
-    recorder = Recorder(room_id=room_id, db_room_id=db_id, on_segment=on_segment, on_end=_on_end)
+            recorder = Recorder(source_room=identity, db_room_id=db_id, on_segment=on_segment, on_end=_on_end)
+            loop = asyncio.get_running_loop()
+            try:
+                loop.add_signal_handler(signal.SIGINT, recorder.stop)
+            except NotImplementedError:
+                pass  # Windows 下 asyncio.run 的取消进入 Recorder finally 完成收尾。
+            console.print(f"开始录制 {identity.platform}:{identity.source_id}（按 Ctrl+C 停止）", markup=False)
+            try:
+                await recorder.run()
+            finally:
+                with get_session() as db:
+                    room = db.get(LiveRoom, db_id)
+                    if room is not None:
+                        room.enabled = False
+                        db.add(room)
 
-    async def _run() -> None:
-        loop = asyncio.get_running_loop()
-        # 注册信号处理,Ctrl+C 时优雅停止(Windows 下 SIGINT 仍有效)。
-        try:
-            loop.add_signal_handler(signal.SIGINT, recorder.stop)
-        except NotImplementedError:
-            # Windows 的 ProactorEventLoop 不支持 add_signal_handler,
-            # 退回到 KeyboardInterrupt 捕获。
-            pass
-        await recorder.run()
-
-    console.print(f"[green]开始录制[/green] room_id={room_id}(按 Ctrl+C 停止)...")
     try:
-        asyncio.run(_run())
+        asyncio.run(execute())
     except KeyboardInterrupt:
-        logger.info("收到 KeyboardInterrupt,正在停止录制 ...")
-        recorder.stop()
+        logger.info("已取消录制并完成收尾")
+    except typer.Exit:
+        raise
+    except Exception as exc:
+        # CLI 最外层录制边界：禁止 Typer 的 traceback locals 回显 FFmpeg 播放凭据。
+        code = exc.code if isinstance(exc, SourceError) else type(exc).__name__
+        console.print(f"录制失败：{code}，请检查来源设置与 FFmpeg 配置", markup=False)
+        raise typer.Exit(code=1) from None
     console.print("[green]录制已结束。[/green]")
 
 

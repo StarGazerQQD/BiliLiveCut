@@ -8,12 +8,16 @@ import pytest
 
 from app.analysis.audio import AudioFeatures
 from app.analysis.room_config import merge_room_config
+from app.core.config import settings
 from app.db.entities import Danmaku, LiveRoom, RawSegment, RecordingSession, Transcript
 from app.db.session import get_session
 from app.pipeline.highlight_plugins import build_highlight_scoring_request
 
 
-def test_host_builds_complete_highlight_request_without_exposing_orm(temp_db: None) -> None:
+def test_host_builds_complete_highlight_request_without_exposing_orm(
+    temp_db: None, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    monkeypatch.setattr(settings, "danmaku_event_lag_s", 7.5)
     started_at = datetime(2026, 1, 2, 12, 0, 0)
     with get_session() as db:
         room = LiveRoom(input_url="https://live.bilibili.com/123", room_id=123)
@@ -93,6 +97,8 @@ def test_host_builds_complete_highlight_request_without_exposing_orm(temp_db: No
     assert [word.text for word in request.words] == ["高光"]
     assert [item.content for item in request.baseline_danmaku] == ["基线"]
     assert [item.content for item in request.window_danmaku] == ["爆了！"]
+    assert request.window_danmaku[0].ts == started_at + timedelta(seconds=62.5)
+    assert request.danmaku_available is True
     assert request.audio is not None
     assert request.audio.rms_peak == 1.0
     assert request.audio.silence_ratio == 0.1

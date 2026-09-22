@@ -11,6 +11,7 @@ from sqlmodel import select
 
 from app.analysis.audio import AudioFeatures
 from app.analysis.room_config import load_room_config
+from app.analysis.source_policy import session_danmaku_lag_s, session_has_danmaku
 from app.db.entities import Danmaku, DanmakuType, LiveRoom, RawSegment, RecordingSession, Transcript
 from app.db.session import get_session
 from app.plugins.highlight import (
@@ -127,13 +128,14 @@ def build_highlight_scoring_request(
             session_started_at,
             start_ts - timedelta(seconds=max(0.0, baseline_lookback_s)),
         )
+        lag = timedelta(seconds=session_danmaku_lag_s(segment.session_id))
         rows = db.exec(
             select(Danmaku)
             .where(
                 Danmaku.session_id == segment.session_id,
                 Danmaku.msg_type == DanmakuType.DANMAKU,
-                Danmaku.ts >= history_start,
-                Danmaku.ts <= end_ts,
+                Danmaku.ts >= history_start + lag,
+                Danmaku.ts < end_ts + lag,
             )
             .order_by(Danmaku.ts)
         ).all()
@@ -142,7 +144,7 @@ def build_highlight_scoring_request(
         window: list[HighlightDanmaku] = []
         for row in rows:
             snapshot = HighlightDanmaku(
-                ts=_utc_naive(row.ts),
+                ts=_utc_naive(row.ts) - lag,
                 content=row.content or "",
                 user=row.user,
                 value=float(row.value),
@@ -171,6 +173,8 @@ def build_highlight_scoring_request(
             audio=_audio_snapshot(audio_features),
             rule_score=rule_score,
             room_mode=_room_mode(room),
+            danmaku_available=session_has_danmaku(segment.session_id, start_ts + lag, end_ts + lag),
+            source_platform=room.platform if room else None,
         )
 
 

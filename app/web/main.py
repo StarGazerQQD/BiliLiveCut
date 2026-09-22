@@ -83,6 +83,9 @@ async def lifespan(_app: FastAPI) -> AsyncIterator[None]:
     """应用生命周期:启动初始化、启动 TaskWorker、自动恢复、预约调度、关闭时优雅停止。"""
     setup_logging()
     init_db()
+    from app.recording.danmaku import freeze_interrupted_captures
+
+    await asyncio.to_thread(freeze_interrupted_captures)
 
     # V0.1.13: Web 安全兜底 — 启动时检查 host+password 配置
     from app.core.config import settings as _cfg_startup
@@ -150,9 +153,9 @@ async def lifespan(_app: FastAPI) -> AsyncIterator[None]:
         except asyncio.CancelledError:
             pass
         await trend_scheduler.stop()
-        await plugin_manager.stop()
         await live_monitor.stop()
         await service.recorder_manager.stop_all()
+        await plugin_manager.stop()
         await web_job_manager.stop()
         await task_worker.stop()
         logger.info("Web 后台已关闭,所有录制已停止。")
@@ -174,13 +177,20 @@ async def _schedule_loop() -> None:
 
 async def _run_due_schedules() -> None:
     """每个到期预约仅产生一个后继，失败和已录制也完成本次调度。"""
+    from app.db.entities import LiveRoom
+    from app.db.session import get_session
     from app.web.services.schedules import complete_schedule_occurrence
 
     for item in service.get_due_schedules():
         error: str | None = None
         try:
             if not service.recorder_manager.is_running(item["room_id"]):
-                await service.recorder_manager.start(item["room_id"])
+                with get_session() as db:
+                    room = db.get(LiveRoom, item["room_id"])
+                    if room is None:
+                        raise ValueError("预约直播间已不存在")
+                    pipeline, produce = room.auto_analyze, room.auto_render
+                await service.recorder_manager.start(item["room_id"], pipeline=pipeline, produce=produce)
                 service.push_notification(f"预约触发：房间 #{item['room_id']} 已开始录制。", kind="success")
         except (ValueError, RuntimeError) as exc:
             error = str(exc)

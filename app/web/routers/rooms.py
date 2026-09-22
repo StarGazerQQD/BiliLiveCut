@@ -7,6 +7,9 @@ from typing import Any, Literal
 from fastapi import APIRouter, HTTPException
 from pydantic import BaseModel, ConfigDict, Field
 
+from app.plugins.live_source import SourceError, SourceRateLimited, SourceUnavailable
+from app.sources.registry import source_registry
+from app.sources.rooms import room_source_view
 from app.web import service
 from app.web.services.rooms import RoomNotFoundError, RoomUpdateConflictError
 
@@ -16,8 +19,9 @@ class AddRoomRequest(BaseModel):
 
     model_config = ConfigDict(extra="forbid")
 
-    url: str
+    url: str = Field(min_length=1, max_length=4096)
     authorized: bool = False
+    platform: str | None = Field(default=None, pattern=r"^[a-z][a-z0-9_-]{0,63}$")
 
 
 class UpdateRoomRequest(BaseModel):
@@ -74,16 +78,28 @@ class MarkerRequest(BaseModel):
 router = APIRouter()
 
 
+@router.get("/live-sources")
+def live_sources() -> list[dict[str, object]]:
+    """列出已注册来源及输入域名，供外部调用方识别平台能力。"""
+    return [descriptor.model_dump(mode="json") for descriptor in source_registry.descriptors()]
+
+
 @router.post("/rooms")
 async def create_room(req: AddRoomRequest) -> dict[str, Any]:
     """添加直播间。"""
     try:
-        room = await service.add_room(req.url, req.authorized)
-    except (ValueError, Exception) as exc:  # noqa: BLE001 — 取流/解析失败统一报 400
+        room = await service.add_room(req.url, req.authorized, req.platform)
+    except SourceRateLimited as exc:
+        headers = {"Retry-After": str(max(1, int(exc.retry_after or 1)))}
+        raise HTTPException(status_code=429, detail=str(exc), headers=headers) from exc
+    except SourceUnavailable as exc:
+        raise HTTPException(status_code=503, detail=str(exc)) from exc
+    except (ValueError, SourceError) as exc:
         raise HTTPException(status_code=400, detail=str(exc)) from exc
     return {
         "id": room.id,
         "room_id": room.room_id,
+        **room_source_view(room),
         "title": room.title,
         "uploader_name": room.uploader_name,
     }
@@ -98,7 +114,7 @@ def patch_room(db_id: int, req: UpdateRoomRequest) -> dict[str, Any]:
         raise HTTPException(status_code=404, detail=str(exc)) from exc
     except RoomUpdateConflictError as exc:
         raise HTTPException(status_code=409, detail=str(exc)) from exc
-    except ValueError as exc:
+    except (ValueError, SourceError) as exc:
         raise HTTPException(status_code=400, detail=str(exc)) from exc
     return {
         "id": room.id,
@@ -113,7 +129,7 @@ async def start_recording(db_id: int, req: StartRequest) -> dict[str, str]:
     """启动某直播间录制。"""
     try:
         await service.recorder_manager.start(db_id, pipeline=req.pipeline, produce=req.produce)
-    except ValueError as exc:
+    except (ValueError, SourceError) as exc:
         raise HTTPException(status_code=400, detail=str(exc)) from exc
     return {"status": "started"}
 
@@ -123,7 +139,7 @@ async def arm_auto_recording(db_id: int) -> dict[str, str]:
     """组合开启录制与分析，显式解除暂停后守候开播。"""
     try:
         await service.recorder_manager.arm_auto_recording(db_id)
-    except ValueError as exc:
+    except (ValueError, SourceError) as exc:
         raise HTTPException(status_code=400, detail=str(exc)) from exc
     return {"status": "waiting_live"}
 
@@ -140,7 +156,7 @@ async def stop_recording(db_id: int, req: StopRequest | None = None) -> dict[str
             mark_paused=False,
             cancel_pending=payload.cancel_pending,
         )
-    except ValueError as exc:
+    except (ValueError, SourceError) as exc:
         raise HTTPException(status_code=400, detail=str(exc)) from exc
     return {"status": result["state"], **result}
 
@@ -162,7 +178,7 @@ async def resume_recording(db_id: int, req: StartRequest) -> dict[str, Any]:
     """恢复人工暂停的房间,并创建新的录制会话。"""
     try:
         await service.recorder_manager.start(db_id, pipeline=req.pipeline, produce=req.produce)
-    except ValueError as exc:
+    except (ValueError, SourceError) as exc:
         raise HTTPException(status_code=400, detail=str(exc)) from exc
     return {"status": "starting", **service.recorder_manager.status(db_id)}
 
@@ -183,5 +199,5 @@ def create_manual_marker(db_id: int, req: MarkerRequest) -> dict[str, Any]:
             post_roll_s=req.post_roll_s,
             note=req.note,
         )
-    except ValueError as exc:
+    except (ValueError, SourceError) as exc:
         raise HTTPException(status_code=409, detail=str(exc)) from exc

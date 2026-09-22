@@ -24,7 +24,7 @@ def test_dashboard_and_room_crud(temp_db: None, monkeypatch: MonkeyPatch) -> Non
     from app.web.main import app
     from app.web.services import rooms as room_service
 
-    async def fake_room_info(self: BilibiliLiveClient, url: str) -> RoomInfo:  # noqa: ANN001
+    async def fake_room_info(self: BilibiliLiveClient, url: str, *, include_detail: bool = True) -> RoomInfo:  # noqa: ANN001
         return RoomInfo(
             room_id=12345,
             short_id=0,
@@ -271,14 +271,15 @@ def test_trends_endpoint(temp_db: None) -> None:
 
 
 def test_danmaku_overview(temp_db: None) -> None:
-    """弹幕接口返回热度概览结构(已接入采集模块)。"""
+    """没有场次采集证据时，弹幕概览应明确不可用。"""
     from app.web.main import app
 
     with TestClient(app) as client:
         r = client.get("/api/danmaku")
         assert r.status_code == 200
         data = r.json()
-        assert data["available"] is True
+        assert data["available"] is False
+        assert data["total"] == 0 and data["sessions"] == []
         assert "recent" in data
         assert "sessions" in data
 

@@ -18,6 +18,7 @@ let scheduleFormRevision = 0;
 let scheduleFormDirty = false;
 let scheduleLoadGeneration = 0;
 let topicLoadGeneration = 0;
+let sourceOptionsSignature = "";
 
 function hasOpenRoomEditor() {
   return [...openRoomDetails].some((key) => key.startsWith("config:"));
@@ -44,6 +45,7 @@ function bumpRevision(revisions, key) {
 }
 
 function roomRuntimeState(room) {
+  if (room.source_available === false && !room.running) return "来源不可用";
   return room.recording_state || (room.running ? "running" : "stopped");
 }
 
@@ -60,7 +62,9 @@ function roomRuntimeMeta(room) {
   const checked = monitor.last_checked_at ? ` · 最近检测 ${new Date(monitor.last_checked_at).toLocaleTimeString()}` : " · 尚无成功检测";
   const freshness = {fresh: "标题已更新", stale: "上次获取的标题", unavailable: "标题未知"}[room.metadata?.state] || "";
   const service = room.auto_record && monitor.service_running === false ? " · 监控服务未运行，请启动后台服务" : "";
-  return `db_id=${room.id} · room_id=${room.room_id ?? "-"}${title} · ${freshness} · 授权:${room.authorized ? "是" : "否"}${session} · ${labels[monitor.state] || ""}${checked}${monitor.error ? ` · ${monitor.error}` : ""}${service}`;
+  const source = `${room.platform || "bilibili"} · 来源房号=${room.source_id ?? room.room_id ?? "未知"}`;
+  const unavailable = room.source_error ? ` · ${room.source_error}` : "";
+  return `db_id=${room.id} · ${source}${title} · ${freshness} · 授权:${room.authorized ? "是" : "否"}${session} · ${labels[monitor.state] || ""}${checked}${monitor.error ? ` · ${monitor.error}` : ""}${service}${unavailable}`;
 }
 
 function roomRuntimeActions(room) {
@@ -69,6 +73,7 @@ function roomRuntimeActions(room) {
       <button class="danger" onclick="stopRoom(${room.id})">\u505c\u6b62\u5e76\u6536\u5c3e</button>
       <button onclick="stopRoom(${room.id}, true)">\u5f3a\u5236\u505c\u6b62</button>`;
   }
+  if (room.source_available === false) return '<span class="muted">请在配置 → 插件中启用对应直播源</span>';
   if (room.room_config.recording_paused) {
     return `<button class="ok" onclick="resumeRoom(${room.id})">\u6062\u590d\u5f55\u5236</button>
       <button onclick="armAutoRoom(${room.id})" title="解除人工暂停，开启自动录制和分析并等待开播">解除暂停并守候开播</button>`;
@@ -117,6 +122,20 @@ function syncRoomRuntime(rooms) {
 async function loadRooms() {
   const revision = roomEditorRevision;
   const data = await api("GET", "/api/dashboard");
+  const sources = data.live_sources || [];
+  const signature = JSON.stringify(sources);
+  if (signature !== sourceOptionsSignature) {
+    const selector = $("#new-platform");
+    const selected = selector.value;
+    selector.innerHTML = '<option value="">按地址自动识别</option>' + sources.map((source) =>
+      `<option value="${esc(source.platform)}">${esc(source.name)}</option>`).join("");
+    if (selected && !sources.some((source) => source.platform === selected)) {
+      selector.innerHTML += `<option value="${esc(selected)}">${esc(selected)}（不可用）</option>`;
+    }
+    selector.value = selected;
+    $("#live-source-hint").textContent = `已启用来源：${sources.map((source) => source.name).join("、") || "暂无"}。更多来源请在配置 → 插件中启用。`;
+    sourceOptionsSignature = signature;
+  }
   if (roomEditorRevision !== revision) {
     syncRoomRuntime(data.rooms);
     updateRoomsDirtyHint();
@@ -292,7 +311,7 @@ async function loadFeatureSwitches() {
       <div class="head">
         <div>
           <div class="title">${esc(roomDisplayName(r))} ${badge(r.recording_state || (r.running ? "running" : "stopped"))}</div>
-          <div class="sub">db_id=${r.id} · room_id=${r.room_id ?? "-"} · 以下设置仅作用于此直播间</div>
+          <div class="sub">db_id=${r.id} · ${esc(r.platform || "bilibili")} · ${esc(r.source_id ?? String(r.room_id ?? "未知"))} · 以下设置仅作用于此直播间</div>
         </div>
         <button class="primary" onclick="saveFeatureSwitches(${r.id})">保存本直播间开关</button>
       </div>
@@ -496,7 +515,8 @@ $("#btn-add").addEventListener("click", async () => {
   const authorized = $("#new-auth").checked;
   if (!url) return toast("\u8bf7\u8f93\u5165\u76f4\u64ad\u95f4 URL \u6216\u623f\u95f4\u53f7");
   try {
-    await api("POST", "/api/rooms", { url, authorized });
+    const platform = $("#new-platform").value || null;
+    await api("POST", "/api/rooms", { url, authorized, platform });
     if (newRoomFormRevision === revision) {
       $("#new-url").value = "";
       newRoomFormDirty = false;
@@ -516,6 +536,7 @@ function markNewRoomFormDirty() {
 
 $("#new-url").addEventListener("input", markNewRoomFormDirty);
 $("#new-auth").addEventListener("change", markNewRoomFormDirty);
+$("#new-platform").addEventListener("change", markNewRoomFormDirty);
 
 $("#btn-add-schedule").addEventListener("click", async () => {
   const revision = scheduleFormRevision;

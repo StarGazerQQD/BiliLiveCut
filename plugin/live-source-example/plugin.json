@@ -1,0 +1,11 @@
+{
+  "id": "live-source-example",
+  "name": "本地直播源契约示例",
+  "version": "1.0.0",
+  "api_version": "1",
+  "live_source_api_version": "1",
+  "entrypoint": "main.py:Plugin",
+  "description": "仅用于本地 HTTP 契约验证，不实现任何平台的取流算法。",
+  "settings_page": true,
+  "capabilities": ["live_source"]
+}

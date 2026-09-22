@@ -140,6 +140,108 @@ def test_rust_build_uses_exact_windows_platform_match() -> None:
     assert build_rust._extension_suffix("linux") == ".so"
 
 
+@pytest.mark.parametrize("encoded", [False, True])
+def test_rust_build_remaps_private_paths_without_splitting_flags(
+    monkeypatch: MonkeyPatch, tmp_path: Path, encoded: bool
+) -> None:
+    from tools.native import build_rust
+
+    user_dir = tmp_path / "user with spaces"
+    cargo_dir = tmp_path / "cargo cache"
+    repository = tmp_path / "source checkout"
+    monkeypatch.setattr(build_rust.Path, "home", lambda: user_dir)
+    monkeypatch.setattr(build_rust, "_REPO_ROOT", repository)
+    monkeypatch.setenv("CARGO_HOME", str(cargo_dir))
+    monkeypatch.setenv("RUSTFLAGS", "-C opt-level=2")
+    if encoded:
+        monkeypatch.setenv("CARGO_ENCODED_RUSTFLAGS", '--cfg\x1ffeature="with spaces"')
+    else:
+        monkeypatch.delenv("CARGO_ENCODED_RUSTFLAGS", raising=False)
+    env = build_rust._build_environment()
+    flags = env["CARGO_ENCODED_RUSTFLAGS"].split("\x1f")
+    assert flags[:2] == (["--cfg", 'feature="with spaces"'] if encoded else ["-C", "opt-level=2"])
+    assert env["RUSTFLAGS"] == "-C opt-level=2"
+    for path, target in ((user_dir, "/build-user"), (cargo_dir, "/cargo"), (repository, "/blc-source")):
+        assert f"--remap-path-prefix={path.resolve()}={target}" in flags
+    assert env["PYO3_PYTHON"] == sys.executable
+
+
+@pytest.mark.parametrize("name", ["CARGO_BUILD_RUSTFLAGS", "CARGO_TARGET_X86_64_PC_WINDOWS_MSVC_RUSTFLAGS"])
+def test_rust_path_remapping_rejects_implicit_environment_flags(name: str) -> None:
+    from tools.native import build_rust
+
+    with pytest.raises(ValueError, match="Pass the complete compiler options"):
+        build_rust._inherited_rustflags({name: "-L native=custom"})
+    assert build_rust._inherited_rustflags({name: "-L native=custom", "RUSTFLAGS": ""}) == []
+
+
+@pytest.mark.parametrize("scope", ["source", "ancestor", "cargo_home"])
+@pytest.mark.parametrize("filename", ["config", "config.toml"])
+@pytest.mark.parametrize("table", ["build", "target.'cfg(windows)'"])
+def test_rust_path_remapping_rejects_implicit_cargo_configuration(
+    monkeypatch: MonkeyPatch, tmp_path: Path, scope: str, filename: str, table: str
+) -> None:
+    from tools.native import build_rust
+
+    source = tmp_path / "project" / "rust"
+    cargo_home = tmp_path / "cargo"
+    monkeypatch.setattr(build_rust, "RUST_SRC", source)
+    config_dir = {"source": source / ".cargo", "ancestor": source.parent / ".cargo", "cargo_home": cargo_home}[scope]
+    config_dir.mkdir(parents=True)
+    (config_dir / filename).write_text(f"[{table}]\nrustflags = ['-L', 'native=custom']\n", encoding="utf-8")
+    env = {"CARGO_HOME": str(cargo_home)}
+    with pytest.raises(ValueError, match="Pass the complete compiler options"):
+        build_rust._inherited_rustflags(env)
+    assert build_rust._inherited_rustflags({**env, "CARGO_ENCODED_RUSTFLAGS": "-L\x1fnative=custom"}) == [
+        "-L",
+        "native=custom",
+    ]
+
+
+def test_rust_path_remapping_uses_cargo_legacy_config_precedence(monkeypatch: MonkeyPatch, tmp_path: Path) -> None:
+    from tools.native import build_rust
+
+    monkeypatch.setattr(build_rust, "RUST_SRC", tmp_path / "rust")
+    config_dir = tmp_path / "cargo"
+    config_dir.mkdir()
+    (config_dir / "config").write_text("[build]\njobs = 1\n", encoding="utf-8")
+    (config_dir / "config.toml").write_text("[build]\nrustflags = ['-L', 'native=custom']\n", encoding="utf-8")
+    assert build_rust._inherited_rustflags({"CARGO_HOME": str(config_dir)}) == []
+
+
+def test_rust_path_remapping_checks_relative_cargo_home(monkeypatch: MonkeyPatch, tmp_path: Path) -> None:
+    from tools.native import build_rust
+
+    source = tmp_path / "rust"
+    monkeypatch.setattr(build_rust, "RUST_SRC", source)
+    config_dir = source / "cargo"
+    config_dir.mkdir(parents=True)
+    (config_dir / "config.toml").write_text("[build]\nrustflags = ['-L', 'native=custom']\n", encoding="utf-8")
+    assert build_rust._cargo_home({"CARGO_HOME": "cargo"}) == config_dir.resolve()
+    with pytest.raises(ValueError, match="Pass the complete compiler options"):
+        build_rust._inherited_rustflags({"CARGO_HOME": "cargo"})
+    monkeypatch.setenv("CARGO_HOME", "cargo")
+    monkeypatch.setenv("RUSTFLAGS", "")
+    monkeypatch.delenv("CARGO_ENCODED_RUSTFLAGS", raising=False)
+    assert f"--remap-path-prefix={config_dir.resolve()}=/cargo" in build_rust._build_environment()[
+        "CARGO_ENCODED_RUSTFLAGS"
+    ].split("\x1f")
+
+
+@pytest.mark.parametrize("include", ['"extra.toml"', '[{ path = "extra.toml", optional = true }]'])
+def test_rust_path_remapping_rejects_implicit_included_configuration(
+    monkeypatch: MonkeyPatch, tmp_path: Path, include: str
+) -> None:
+    from tools.native import build_rust
+
+    monkeypatch.setattr(build_rust, "RUST_SRC", tmp_path / "rust")
+    config_dir = tmp_path / "cargo"
+    config_dir.mkdir()
+    (config_dir / "config.toml").write_text(f"include = {include}\n", encoding="utf-8")
+    with pytest.raises(ValueError, match="Pass the complete compiler options"):
+        build_rust._inherited_rustflags({"CARGO_HOME": str(config_dir)})
+
+
 def test_rust_build_reconfigures_console_to_utf8() -> None:
     """Windows runner 的 cp1252 文本流必须能安全输出中文日志。"""
     from tools.native import build_rust

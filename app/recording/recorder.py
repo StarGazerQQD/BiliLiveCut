@@ -24,8 +24,8 @@ from pathlib import Path
 
 from loguru import logger
 
+from app.core.async_cleanup import complete_cleanup
 from app.core.config import settings
-from app.core.cookie import get_bilibili_cookie
 from app.core.ffmpeg_errors import FfmpegErrorType, classify_ffmpeg_error
 from app.core.paths import session_raw_dir
 from app.db.entities import (
@@ -36,11 +36,17 @@ from app.db.entities import (
     utcnow,
 )
 from app.db.session import get_session
-from app.sources.bilibili.client import (
-    BilibiliLiveClient,
-    StreamInfo,
-    pick_best_stream,
+from app.plugins.live_source import (
+    LiveSource,
+    SourceError,
+    SourceRoom,
+    SourceTemporaryError,
+    SourceUnavailable,
+    StreamPreference,
+    StreamSpec,
 )
+from app.recording.danmaku import DanmakuCapture
+from app.sources.registry import source_registry
 
 # 下游回调签名:接收刚登记入库的 RawSegment(已含 id)。
 SegmentCallback = Callable[[RawSegment], Awaitable[None]]
@@ -95,7 +101,7 @@ class Recorder:
 
     一个实例负责一个直播间的完整录制生命周期(包含多次断流重连)。
 
-    :param room_id: 真实房间号。
+    :param source_room: 稳定平台身份，与数据库房间主键分开。
     :param db_room_id: ``live_rooms`` 主键,用于关联会话。
     :param on_segment: 可选回调,在每个片段入库后触发(用于驱动下游流水线)。
     :param on_end: 可选回调,在录制会话结束时触发(接收 session_id)。
@@ -103,14 +109,18 @@ class Recorder:
 
     def __init__(
         self,
-        room_id: int,
+        source_room: SourceRoom,
         db_room_id: int,
         on_segment: SegmentCallback | None = None,
         on_end: SessionEndCallback | None = None,
         on_state: StateCallback | None = None,
         metadata_prepared: bool = False,
     ) -> None:
-        self.room_id = room_id
+        self.source_room = source_room
+        self._source: LiveSource | None = None
+        self._run_task: asyncio.Task[None] | None = None
+        self._source_retry_delay = 0.0
+        self._source_action_required = False
         self.db_room_id = db_room_id
         self.on_segment = on_segment
         self.on_end = on_end
@@ -120,8 +130,7 @@ class Recorder:
         self._session_id: int | None = None
         self._seq = 0  # 跨重连累加的全局片段序号
         self._paths: set[str] = set()  # 已登记片段路径缓存(避免每次查全表)
-        self._danmaku = None  # type: ignore[var-annotated]  # DanmakuClient(可选)
-        self._danmaku_task: asyncio.Task[None] | None = None
+        self._danmaku: DanmakuCapture | None = None
         self._active_process: asyncio.subprocess.Process | None = None
 
     @property
@@ -138,7 +147,7 @@ class Recorder:
         """立即终止当前 FFmpeg,随后仍由主循环执行数据库和回调收尾。"""
         self.stop()
         if self._active_process is not None and self._active_process.returncode is None:
-            logger.warning("强制终止 FFmpeg room={} session={}", self.room_id, self._session_id)
+            logger.warning("强制终止 FFmpeg room={} session={}", self.db_room_id, self._session_id)
             self._active_process.kill()
 
     def fail(self, message: str) -> None:
@@ -148,47 +157,46 @@ class Recorder:
     # ------------------------------------------------------------------ #
     # 弹幕采集(与录制并行,贯穿整个会话)
     # ------------------------------------------------------------------ #
-    def _start_danmaku(self) -> None:
-        """若已开启则启动登录优先、匿名兜底的弹幕采集任务。"""
-        if not settings.collect_danmaku or self._session_id is None:
-            return
-        try:
-            from app.sources.bilibili.danmaku import DanmakuClient
-
-            cookie = get_bilibili_cookie()
-            self._danmaku = DanmakuClient(
-                room_id=self.room_id,
-                session_id=self._session_id,
-                cookie=cookie,
-            )
-            self._danmaku_task = asyncio.create_task(self._danmaku.run())
-            mode = "登录优先、匿名兜底" if cookie else "匿名"
-            logger.info("{}弹幕采集已启动 room={} session={}", mode, self.room_id, self._session_id)
-        except Exception as exc:  # noqa: BLE001 — 弹幕采集失败不应影响录制
-            logger.warning("弹幕采集启动失败 room={}: {}", self.room_id, exc)
-            self._danmaku = None
-            self._danmaku_task = None
+    async def _start_danmaku(self) -> None:
+        """独立启动可选弹幕，按场次保存能力与实际连接证据。"""
+        if self._session_id is not None and self._source is not None:
+            self._danmaku = DanmakuCapture(self._source, self.source_room, self.db_room_id, self._session_id)
+            await self._danmaku.start()
 
     async def _stop_danmaku(self) -> None:
-        """停止弹幕采集任务并等待其退出。"""
+        """采集连接完成收尾后才允许释放直播源。"""
         if self._danmaku is not None:
-            self._danmaku.stop()
-        if self._danmaku_task is not None:
-            try:
-                await asyncio.wait_for(self._danmaku_task, timeout=5)
-            except (TimeoutError, asyncio.CancelledError):
-                self._danmaku_task.cancel()
-            except Exception as exc:  # noqa: BLE001
-                logger.debug("弹幕任务收尾异常: {}", exc)
-        self._danmaku = None
-        self._danmaku_task = None
+            await self._danmaku.stop()
+            self._danmaku = None
+
+    async def _drain_source(self) -> None:
+        """来源停用不争抢房间控制锁，也不改写用户的暂停标记。"""
+        task = self._run_task
+        self.stop()
+        if task is None or task.done():
+            return
+        for timeout, action in ((30, None), (5, self.force_stop), (5, task.cancel)):
+            if action is not None:
+                action()
+            done, _ = await asyncio.wait({task}, timeout=timeout)
+            if done:
+                await asyncio.gather(task, return_exceptions=True)
+                return
+        raise SourceUnavailable("录制或弹幕未完成取消，来源保留在停用中，请检查插件资源释放")
 
     async def run(self) -> None:
-        """固定本场录制参数；保存的变更在下一场使用。"""
+        """从资料刷新到末片入库始终持有来源，所有入口共用相同生命周期。"""
         from app.core.runtime_settings import async_settings_scope
 
-        async with async_settings_scope(fresh=True):
-            await self._run_with_settings()
+        self._run_task = asyncio.current_task()
+        try:
+            async with source_registry.use(self.source_room.platform, self._drain_source) as source:
+                self._source = source
+                async with async_settings_scope(fresh=True):
+                    await self._run_with_settings()
+        finally:
+            self._source = None
+            self._run_task = None
 
     async def _run_with_settings(self) -> None:
         """统一各录制入口的资料刷新，并保证所有退出路径释放刷新任务。"""
@@ -201,13 +209,30 @@ class Recorder:
         self._session_id = self._create_session()
         begin_session_metadata(self._session_id)
         metadata_task = asyncio.create_task(self._refresh_metadata_loop())
+        failed: str | None = None
         try:
             await self._run_session()
+        except asyncio.CancelledError:
+            failed = "录制任务被取消"
+            raise
+        except Exception as exc:
+            # 插件与子进程边界；不持久化可能包含 URL/请求头的异常正文。
+            failed = f"录制失败：{type(exc).__name__}"
+            raise
         finally:
-            metadata_task.cancel()
-            await asyncio.gather(metadata_task, return_exceptions=True)
-            await self._stop_danmaku()
-            end_session_metadata(self._session_id)
+
+            async def cleanup() -> None:
+                metadata_task.cancel()
+                await asyncio.gather(metadata_task, return_exceptions=True)
+                try:
+                    await self._stop_danmaku()
+                    await self._finalize_session()
+                finally:
+                    end_session_metadata(self._session_id)
+                    if failed is not None:
+                        self.fail(failed)
+
+            await complete_cleanup(cleanup())
 
     async def _refresh_metadata_loop(self) -> None:
         """录制及重连期间独立刷新标题，停止时由录制生命周期取消。"""
@@ -221,7 +246,7 @@ class Recorder:
                 try:
                     await refresh_room_metadata(self.db_room_id)
                 except SQLAlchemyError:
-                    logger.exception("标题持久化失败 room={} session={}，下一轮重试", self.room_id, self._session_id)
+                    logger.exception("标题持久化失败 room={} session={}，下一轮重试", self.db_room_id, self._session_id)
 
     async def _run_session(self) -> None:
         """启动录制主循环:取流 -> 录制 -> 断流重连,直到被请求停止。
@@ -241,108 +266,110 @@ class Recorder:
         reconnect_budget = _ReconnectBudget()
 
         # 会话期间并行采集弹幕(用于弹幕热度与高光评分的弹幕维度)。
-        self._start_danmaku()
+        await self._start_danmaku()
 
-        async with BilibiliLiveClient(cookie=get_bilibili_cookie()) as client:
-            while not self._stop.is_set():
-                # V0.1.13: Disk protection — safely stop recording if disk critical
-                from app.pipeline.storage_lifecycle import should_stop_recording
+        while not self._stop.is_set():
+            # V0.1.13: Disk protection — safely stop recording if disk critical
+            from app.pipeline.storage_lifecycle import should_stop_recording
 
-                if should_stop_recording():
-                    logger.warning("磁盘 CRITICAL, 安全停止录制")
-                    self.stop()
-                    break
+            if await asyncio.to_thread(should_stop_recording):
+                logger.warning("磁盘 CRITICAL, 安全停止录制")
+                self.stop()
+                break
 
+            if self._retry_exhausted(reconnect_budget):
+                break
+
+            stream = await self._fetch_stream()
+            if self._stop.is_set():
+                break
+            if stream is None:
+                # 未开播、已下播或暂时无法取流：计入连续失败预算。
+                reconnect_budget.record_failure(time.monotonic())
                 if self._retry_exhausted(reconnect_budget):
                     break
+                self._update_session(status=SessionStatus.RECONNECTING)
+                await self._sleep_or_stop(max(settings.live_poll_interval_s, self._source_retry_delay))
+                continue
 
-                stream = await self._fetch_stream(client)
-                if stream is None:
-                    # 未开播、已下播或暂时无法取流：计入连续失败预算。
-                    reconnect_budget.record_failure(time.monotonic())
-                    if self._retry_exhausted(reconnect_budget):
-                        break
-                    self._update_session(status=SessionStatus.RECONNECTING)
-                    await self._sleep_or_stop(settings.live_poll_interval_s)
-                    continue
+            self._update_session(
+                status=SessionStatus.RECORDING,
+                stream_format=stream.transport,
+            )
+            self._save_stream_selection(stream)
+            logger.info(
+                "开始录制 room={} 协议={} 清晰度={} reconnect_episode={}",
+                self.db_room_id,
+                stream.transport,
+                stream.quality_id,
+                reconnect_episode,
+            )
 
-                self._update_session(
-                    status=SessionStatus.RECORDING,
-                    stream_url=stream.url,
-                    stream_format=stream.protocol,
-                    quality=stream.quality,
-                )
+            # 记录录制前的 seq 用于判断是否产生过片段。
+            seq_before = self._seq
+            exit_code = await self._record_once(stream, out_dir)
+            self._classify_recording_exit(exit_code, getattr(self, "_stderr_tail", None))
+            produced_segment = self._seq > seq_before
+
+            if self._stop.is_set():
+                break
+
+            if produced_segment:
+                reconnect_budget.reset()
+
+            # ---- 重连成功后重置退避 ----
+            # 如果本次录制实际上是重连且成功产出了至少 1 个片段,
+            # 说明重连成功、流已稳定,把 backoff 重置为 1。
+            # 避免"稳定录制 30 分钟后再次被断流,却要白等 30s"。
+            if reconnect_episode and produced_segment:
                 logger.info(
-                    "开始录制 room={} 协议={} 清晰度={} reconnect_episode={}",
-                    self.room_id,
-                    stream.protocol,
-                    stream.quality,
-                    reconnect_episode,
+                    "重连成功并产出片段 room={} seq={}→{}, backoff 重置 30→1。",
+                    self.db_room_id,
+                    seq_before,
+                    self._seq,
                 )
+                self._update_session(
+                    status=SessionStatus.RECONNECTED,
+                    reconnected=True,
+                )
+                self._update_session(status=SessionStatus.RECORDING)
+                reconnect_episode = False
+                backoff = 1
 
-                # 记录录制前的 seq 用于判断是否产生过片段。
-                seq_before = self._seq
-                exit_code = await self._record_once(stream, out_dir)
-                self._classify_recording_exit(exit_code, getattr(self, "_stderr_tail", None))
-                produced_segment = self._seq > seq_before
-
-                if self._stop.is_set():
+            # ---- 断流处理 ----
+            # FFmpeg 退出可能是:
+            #   a) 超管断流(超管中断推流,主播重新推流后地址可能变)
+            #   b) 主播主动下播(无新流,后续 _fetch_stream 返回 None)
+            #   c) 网络闪断(主播仍在推,短暂丢包后恢复)
+            # 这三种情况都走"重新取流→指数退避→重连"流程。
+            reconnect_episode = True
+            self._increment_reconnect()
+            # -1 = 被我们主动 kill(正常停止),不计为重连。
+            if exit_code != -1:
+                self._update_session(status=SessionStatus.RECONNECTING)
+            retry_started_at = time.monotonic()
+            if produced_segment:
+                # 从本次真实断流开始计时；下一次成功产出片段后会再次清零。
+                reconnect_budget.begin(retry_started_at)
+            else:
+                reconnect_budget.record_failure(retry_started_at)
+                if self._retry_exhausted(reconnect_budget):
                     break
+            logger.warning(
+                "录制中断 room={} exit_code={},{}s 后重连。",
+                self.db_room_id,
+                exit_code,
+                backoff,
+            )
+            await self._sleep_or_stop(backoff)
+            backoff = min(backoff * 2, settings.reconnect_max_backoff_s)
 
-                if produced_segment:
-                    reconnect_budget.reset()
-
-                # ---- 重连成功后重置退避 ----
-                # 如果本次录制实际上是重连且成功产出了至少 1 个片段,
-                # 说明重连成功、流已稳定,把 backoff 重置为 1。
-                # 避免"稳定录制 30 分钟后再次被断流,却要白等 30s"。
-                if reconnect_episode and produced_segment:
-                    logger.info(
-                        "重连成功并产出片段 room={} seq={}→{}, backoff 重置 30→1。",
-                        self.room_id,
-                        seq_before,
-                        self._seq,
-                    )
-                    self._update_session(
-                        status=SessionStatus.RECONNECTED,
-                        reconnected=True,
-                    )
-                    self._update_session(status=SessionStatus.RECORDING)
-                    reconnect_episode = False
-                    backoff = 1
-
-                # ---- 断流处理 ----
-                # FFmpeg 退出可能是:
-                #   a) 超管断流(超管中断推流,主播重新推流后地址可能变)
-                #   b) 主播主动下播(无新流,后续 _fetch_stream 返回 None)
-                #   c) 网络闪断(主播仍在推,短暂丢包后恢复)
-                # 这三种情况都走"重新取流→指数退避→重连"流程。
-                reconnect_episode = True
-                self._increment_reconnect()
-                # -1 = 被我们主动 kill(正常停止),不计为重连。
-                if exit_code != -1:
-                    self._update_session(status=SessionStatus.RECONNECTING)
-                retry_started_at = time.monotonic()
-                if produced_segment:
-                    # 从本次真实断流开始计时；下一次成功产出片段后会再次清零。
-                    reconnect_budget.begin(retry_started_at)
-                else:
-                    reconnect_budget.record_failure(retry_started_at)
-                    if self._retry_exhausted(reconnect_budget):
-                        break
-                logger.warning(
-                    "录制中断 room={} exit_code={},{}s 后重连。",
-                    self.room_id,
-                    exit_code,
-                    backoff,
-                )
-                await self._sleep_or_stop(backoff)
-                backoff = min(backoff * 2, settings.reconnect_max_backoff_s)
-
+    async def _finalize_session(self) -> None:
+        """正常停止、取消和异常都执行一次会话收尾。"""
         self._update_session(status=SessionStatus.FINALIZING)
         await self._stop_danmaku()
         self._update_session(status=SessionStatus.STOPPED, ended=True)
-        logger.info("录制已停止 room={} session={}", self.room_id, self._session_id)
+        logger.info("录制已停止 room={} session={}", self.db_room_id, self._session_id)
 
         if self.on_end is not None and self._session_id is not None:
             try:
@@ -362,7 +389,7 @@ class Recorder:
         self._retry_budget_exhausted = True
         message = f"{reason}，自动结束本场录制"
         self._update_session(error_message=message)
-        logger.info("{} room={} session={}", message, self.room_id, self._session_id)
+        logger.info("{} room={} session={}", message, self.db_room_id, self._session_id)
         return True
 
     @property
@@ -370,27 +397,61 @@ class Recorder:
         """返回本场录制是否因连续取流失败耗尽重试预算。"""
         return bool(getattr(self, "_retry_budget_exhausted", False))
 
+    @property
+    def source_action_required(self) -> bool:
+        """返回永久取流错误是否需要用户处理后显式恢复自动录制。"""
+        return self._source_action_required
+
     # ------------------------------------------------------------------ #
     # 取流
     # ------------------------------------------------------------------ #
-    async def _fetch_stream(self, client: BilibiliLiveClient) -> StreamInfo | None:
-        """获取并挑选最佳可用流;失败返回 ``None``。
-
-        :param client: 已建立的 Bilibili 客户端。
-        :returns: 选中的 :class:`StreamInfo`,或 ``None``(未开播/出错)。
-        """
+    async def _fetch_stream(self) -> StreamSpec | None:
+        """每次重连重新取流；永久来源错误结束当前录制，临时失败使用原预算。"""
+        self._source_retry_delay = 0.0
         try:
-            streams = await client.get_streams(self.room_id, quality=settings.stream_quality)
-        except Exception as exc:  # noqa: BLE001 — 取流失败不应中断主循环
-            logger.error("取流失败 room={}: {}", self.room_id, exc)
-            self._update_session(error_message=str(exc))
+            streams = await source_registry.get_streams(
+                self.source_room, StreamPreference(preferred_transport=settings.preferred_stream_protocol)
+            )
+        except SourceTemporaryError as exc:
+            self._source_retry_delay = exc.retry_after or 0.0
+            self._update_session(error_message=f"取流暂时失败：{exc.code}")
+            logger.warning("取流失败 db_room={} code={}", self.db_room_id, exc.code)
             return None
-        return pick_best_stream(streams, settings.preferred_stream_protocol)
+        except SourceError as exc:
+            self._source_action_required = True
+            self._update_session(error_message=f"来源需要处理：{exc.code}")
+            self.stop()
+            return None
+        return streams[0] if streams else None
+
+    def _save_stream_selection(self, stream: StreamSpec) -> None:
+        """只保存非敏感播放描述，临时 URL 和请求头不进入普通持久字段。"""
+        import json
+
+        from app.db.entities import AppSetting
+
+        with get_session() as db:
+            key = f"session_stream:{self._session_id}"
+            row = db.get(AppSetting, key) or AppSetting(key=key)
+            row.value = json.dumps(
+                {
+                    "version": 1,
+                    "platform": self.source_room.platform,
+                    "source_id": self.source_room.source_id,
+                    "transport": stream.transport,
+                    "container": stream.container,
+                    "quality_id": stream.quality_id,
+                    "quality_label": stream.quality_label,
+                    "codec": stream.codec,
+                },
+                ensure_ascii=False,
+            )
+            db.add(row)
 
     # ------------------------------------------------------------------ #
     # 录制单次(直到 ffmpeg 退出)
     # ------------------------------------------------------------------ #
-    async def _record_once(self, stream: StreamInfo, out_dir: Path) -> int:
+    async def _record_once(self, stream: StreamSpec, out_dir: Path) -> int:
         """启动一次 FFmpeg 录制,并并发监听片段清单,直到进程退出。
 
         :param stream: 选中的流。
@@ -401,7 +462,9 @@ class Recorder:
         # 为本次录制使用唯一的文件名前缀,避免重连后覆盖既有片段。
         prefix = f"part{self._seq:03d}_"
         cmd = self._build_ffmpeg_cmd(stream, out_dir, prefix, segment_list)
-        logger.debug("FFmpeg 命令: {}", " ".join(cmd))
+        logger.debug(
+            "启动 FFmpeg db_room={} session={} transport={}", self.db_room_id, self._session_id, stream.transport
+        )
 
         proc = await asyncio.create_subprocess_exec(
             *cmd,
@@ -420,15 +483,19 @@ class Recorder:
         try:
             return await proc.wait()
         finally:
-            if proc.returncode is None:
-                proc.kill()
-                await proc.wait()
-            for task in (watcher, stderr_task, stopper, disk_guard):
-                task.cancel()
-            await asyncio.gather(watcher, stderr_task, stopper, disk_guard, return_exceptions=True)
-            # 兜底:登记可能尚未从清单读到的最后片段。
-            await self._scan_orphan_segments(segment_list, out_dir)
-            self._active_process = None
+
+            async def cleanup() -> None:
+                if proc.returncode is None:
+                    proc.kill()
+                    await proc.wait()
+                for task in (watcher, stderr_task, stopper, disk_guard):
+                    task.cancel()
+                await asyncio.gather(watcher, stderr_task, stopper, disk_guard, return_exceptions=True)
+                # 兜底:登记可能尚未从清单读到的最后片段。
+                await self._scan_orphan_segments(segment_list, out_dir)
+                self._active_process = None
+
+            await complete_cleanup(cleanup())
 
     async def _monitor_disk(self) -> None:
         """在 FFmpeg 运行期间持续检查空间，通过现有停止信号优雅收尾。"""
@@ -436,14 +503,16 @@ class Recorder:
 
         while not self._stop.is_set():
             if await asyncio.to_thread(should_stop_recording):
-                logger.error("录制期间磁盘空间进入紧急状态，停止录制 room={} session={}", self.room_id, self.session_id)
+                logger.error(
+                    "录制期间磁盘空间进入紧急状态，停止录制 room={} session={}", self.db_room_id, self.session_id
+                )
                 self.stop()
                 return
             await self._sleep_or_stop(1.0)
 
     def _build_ffmpeg_cmd(
         self,
-        stream: StreamInfo,
+        stream: StreamSpec,
         out_dir: Path,
         prefix: str,
         segment_list: Path,
@@ -472,11 +541,8 @@ class Recorder:
         :param segment_list: 片段清单 CSV 路径。
         :returns: 可直接传给子进程的参数列表。
         """
-        headers = (
-            "Referer: https://live.bilibili.com/\r\n"
-            "User-Agent: Mozilla/5.0 (Windows NT 10.0; Win64; x64) "
-            "AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0.0.0 Safari/537.36\r\n"
-        )
+        stream = StreamSpec.model_validate(stream.model_dump())
+        headers = "".join(f"{key}: {value}\r\n" for key, value in stream.headers.items())
         output_template = str(out_dir / f"{prefix}%05d.ts")
         return [
             settings.ffmpeg_path,
@@ -485,8 +551,9 @@ class Recorder:
             "warning",
             "-rw_timeout",
             "15000000",
-            "-headers",
-            headers,
+            "-protocol_whitelist",
+            "http,https,tcp,tls,crypto",
+            *(["-headers", headers] if headers else []),
             "-i",
             stream.url,
             "-c",
@@ -640,8 +707,10 @@ class Recorder:
             async for raw in proc.stderr:
                 msg = raw.decode("utf-8", errors="ignore").strip()
                 if msg:
-                    logger.debug("[ffmpeg] {}", msg)
-                    self._stderr_tail.append(msg)
+                    # FFmpeg 可能回显完整签名 URL、Header 或上游响应。只保留分类。
+                    category = classify_ffmpeg_error(1, msg).name
+                    logger.debug("FFmpeg session={} category={}", self._session_id, category)
+                    self._stderr_tail.append(category)
                     if len(self._stderr_tail) > 50:
                         self._stderr_tail.pop(0)
         except asyncio.CancelledError:
@@ -684,14 +753,13 @@ class Recorder:
             db.flush()
             db.refresh(session)
             sid = session.id
-        logger.info("创建录制会话 session_id={} room={}", sid, self.room_id)
+        logger.info("创建录制会话 session_id={} room={}", sid, self.db_room_id)
         return int(sid)
 
     def _update_session(
         self,
         *,
         status: str | None = None,
-        stream_url: str | None = None,
         stream_format: str | None = None,
         quality: int | None = None,
         error_message: str | None = None,
@@ -701,7 +769,6 @@ class Recorder:
         """更新当前会话的字段(仅更新传入的非 ``None`` 项)。
 
         :param status: 新状态。
-        :param stream_url: 当前拉流地址。
         :param stream_format: 流协议。
         :param quality: 清晰度码。
         :param error_message: 错误信息。
@@ -716,8 +783,6 @@ class Recorder:
                 return
             if status is not None:
                 session.status = status
-            if stream_url is not None:
-                session.stream_url = stream_url
             if stream_format is not None:
                 session.stream_format = stream_format
             if quality is not None:
@@ -760,13 +825,17 @@ class Recorder:
         stderr_text = "\n".join(stderr_lines[-20:]) if stderr_lines else ""
         if exit_code == -1:
             return FfmpegErrorType.CANCELLED  # 主动停止
-        error_type = classify_ffmpeg_error(exit_code, stderr_text)
+        categories = [FfmpegErrorType[line] for line in (stderr_lines or []) if line in FfmpegErrorType.__members__]
+        error_type = next(
+            (item for item in categories if item != FfmpegErrorType.UNKNOWN),
+            classify_ffmpeg_error(exit_code, stderr_text),
+        )
         if error_type in (FfmpegErrorType.DISK_FULL,):
             logger.critical("录制磁盘满, 触发 CRITICAL 保护")
             try:
                 from app.notify.webhook import notify_disk_alert
 
-                notify_disk_alert(f"录制磁盘满: 房间 {self.room_id}")
+                notify_disk_alert(f"录制磁盘满: 房间 {self.db_room_id}")
             except Exception:
                 pass
         if error_type in (

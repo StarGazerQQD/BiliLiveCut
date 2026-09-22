@@ -10,6 +10,8 @@ import httpx
 import pytest
 from sqlmodel import select
 
+from app.plugins.live_source import SourceRoom
+
 if TYPE_CHECKING:
     from pytest import MonkeyPatch
 
@@ -78,14 +80,14 @@ async def test_live_detection_starts_recording_and_respects_analysis_switch(
 
         def __init__(
             self,
-            room_id: int,
+            source_room: SourceRoom,
             db_room_id: int,
             on_segment: SegmentCallback | None = None,
             on_end: SessionEndCallback | None = None,
             on_state: StateCallback | None = None,
             metadata_prepared: bool = False,
         ) -> None:
-            assert room_id == 202 and db_room_id == db_id
+            assert source_room.source_id == "202" and source_room.platform == "bilibili" and db_room_id == db_id
             self.on_segment = on_segment
             self.session_id: int | None = None
             self.retry_budget_exhausted = False
@@ -115,10 +117,8 @@ async def test_live_detection_starts_recording_and_respects_analysis_switch(
             """Expose unexpected failures instead of hiding them in manager logging."""
             failures.append(reason)
 
-    monkeypatch.setattr(module, "BilibiliLiveClient", TransportClient)
-    monkeypatch.setattr("app.recording.metadata.BilibiliLiveClient", TransportClient)
-    monkeypatch.setattr(module, "get_bilibili_cookie", lambda: "")
-    monkeypatch.setattr(rooms, "get_bilibili_cookie", lambda: "")
+    monkeypatch.setattr("app.sources.bilibili.source.BilibiliLiveClient", TransportClient)
+    monkeypatch.setattr("app.sources.bilibili.source.get_bilibili_cookie", lambda: "")
     monkeypatch.setattr(rooms, "Recorder", BoundaryRecorder)
     manager = rooms.RecorderManager()
     monkeypatch.setattr(service, "recorder_manager", manager)

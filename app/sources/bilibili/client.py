@@ -143,7 +143,7 @@ class RoomInfo:
     room_id: int
     short_id: int
     uid: int
-    live_status: int
+    live_status: int | None
     title: str | None = None
     uploader_name: str | None = None
     detail_status: str = "not_requested"
@@ -380,7 +380,7 @@ class BilibiliLiveClient:
             room_id=room_id,
             short_id=int(data.get("short_id", 0)),
             uid=uid,
-            live_status=int(data.get("live_status", 0)),
+            live_status=data.get("live_status") if type(data.get("live_status")) is int else None,
             title=title,
             uploader_name=uploader_name,
             detail_status=detail_status,

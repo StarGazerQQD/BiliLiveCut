@@ -1,7 +1,7 @@
 from __future__ import annotations
 
 import json
-from datetime import datetime, timedelta
+from datetime import UTC, datetime, timedelta
 from typing import TYPE_CHECKING
 
 import numpy as np
@@ -9,7 +9,7 @@ from sqlmodel import select
 
 from app.analysis.audio import AudioFeatures
 from app.core.config import settings
-from app.db.entities import LiveRoom, RawSegment, RecordingSession, SystemLog, Transcript
+from app.db.entities import AppSetting, LiveRoom, RawSegment, RecordingSession, SystemLog, Transcript
 from app.db.session import get_session
 from app.pipeline.workers.analyze import (
     HighlightDecision,
@@ -39,6 +39,19 @@ def _seed_segment() -> tuple[int, int]:
         db.add(recording)
         db.flush()
         assert recording.id is not None
+        from app.plugins.live_source import DanmakuStatus
+        from app.recording.danmaku import CaptureInterval, DanmakuEvidence
+
+        evidence = DanmakuEvidence(
+            status=DanmakuStatus.AVAILABLE,
+            lag_s=7.5,
+            intervals=[
+                CaptureInterval(
+                    start=started_at.replace(tzinfo=UTC), end=(started_at + timedelta(hours=1)).replace(tzinfo=UTC)
+                )
+            ],
+        )
+        db.add(AppSetting(key=f"session_danmaku:{recording.id}", value=evidence.model_dump_json()))
         segment = RawSegment(
             session_id=recording.id,
             seq=0,
@@ -248,6 +261,28 @@ def test_degenerate_transcript_uses_non_semantic_signals_without_llm(
     assert "keywords" not in metadata["features"]
     assert "volume" in metadata["features"]
     assert "danmaku" in metadata["features"]
+
+
+def test_missing_danmaku_omits_numeric_feature_and_keeps_analysis(
+    temp_db: None,
+    monkeypatch: MonkeyPatch,
+) -> None:
+    from app.plugins.live_source import DanmakuStatus
+    from app.recording.danmaku import DanmakuEvidence
+
+    segment_id, _room_id = _seed_segment()
+    with get_session() as db:
+        segment = db.get(RawSegment, segment_id)
+        row = db.get(AppSetting, f"session_danmaku:{segment.session_id}")
+        row.value = DanmakuEvidence(status=DanmakuStatus.UNSUPPORTED).model_dump_json()
+        db.add(row)
+    _patch_rule_scoring(monkeypatch, rule_score=0.8)
+    monkeypatch.setattr(plugin_manager, "has_capability", lambda _capability: False)
+    result = _score_segment_draft(segment_id)
+    assert result is not None and result["decision"] == HighlightDecision.CANDIDATE
+    metadata = json.loads(result["features_json"])
+    assert "danmaku" not in metadata["features"] and "danmaku_sentiment" not in metadata["features"]
+    assert metadata["danmaku_explain"]["available"] is False
 
 
 def test_commit_records_plugin_fallback_as_structured_log(temp_db: None) -> None:

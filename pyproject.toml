@@ -1,6 +1,6 @@
 [project]
 name = "bili-live-cut"
-version = "0.1.18.3-alpha"
+version = "0.1.18.4-alpha"
 description = "AI 直播实时切片系统:监听 Bilibili 直播,自动录制、转写、识别高光、生成切片与文案"
 readme = "README.md"
 license = "MIT"
@@ -14,7 +14,7 @@ dependencies = [
     "httpx>=0.27",            # 异步 HTTP 客户端:调用 B 站公开接口
     "pydantic>=2.7",          # 数据校验
     "pydantic-settings>=2.3", # 从 .env / 环境变量读取配置
-    "sqlmodel>=0.0.22",       # ORM(SQLAlchemy + Pydantic)
+    "sqlmodel>=0.0.22,<0.0.45", # 0.0.45 改变默认 datetime 存储语义，当前 Schema 仍使用无时区 UTC
     "loguru>=0.7",            # 结构化日志
     "typer>=0.12",            # 命令行入口
     "rich>=13.7",             # 终端美化输出
@@ -89,6 +89,15 @@ include = ["app", "app.*", "config"]
     "static/js/*.txt",
 ]
 "config" = ["*.yaml", "*.txt"]
+
+[tool.setuptools.data-files]
+"share/bili-live-cut/docs" = ["docs/live-source-plugins.md", "docs/douyin-plugin-handoff.md"]
+"share/bili-live-cut/plugin" = ["plugin/README.md", "plugin/manifest.schema.json"]
+"share/bili-live-cut/plugin/live-source-example" = [
+    "plugin/live-source-example/plugin.json",
+    "plugin/live-source-example/main.py",
+    "plugin/live-source-example/README.md",
+]
 
 [tool.check-manifest]
 ignore = [
