@@ -140,6 +140,32 @@ def test_rust_build_uses_exact_windows_platform_match() -> None:
     assert build_rust._extension_suffix("linux") == ".so"
 
 
+@pytest.mark.parametrize("encoded", [False, True])
+def test_rust_build_remaps_private_paths_without_splitting_flags(
+    monkeypatch: MonkeyPatch, tmp_path: Path, encoded: bool
+) -> None:
+    from tools.native import build_rust
+
+    user_dir = tmp_path / "user with spaces"
+    cargo_dir = tmp_path / "cargo cache"
+    repository = tmp_path / "source checkout"
+    monkeypatch.setattr(build_rust.Path, "home", lambda: user_dir)
+    monkeypatch.setattr(build_rust, "_REPO_ROOT", repository)
+    monkeypatch.setenv("CARGO_HOME", str(cargo_dir))
+    monkeypatch.setenv("RUSTFLAGS", "-C opt-level=2")
+    if encoded:
+        monkeypatch.setenv("CARGO_ENCODED_RUSTFLAGS", '--cfg\x1ffeature="with spaces"')
+    else:
+        monkeypatch.delenv("CARGO_ENCODED_RUSTFLAGS", raising=False)
+    env = build_rust._build_environment()
+    flags = env["CARGO_ENCODED_RUSTFLAGS"].split("\x1f")
+    assert flags[:2] == (["--cfg", 'feature="with spaces"'] if encoded else ["-C", "opt-level=2"])
+    assert env["RUSTFLAGS"] == "-C opt-level=2"
+    for path, target in ((user_dir, "/build-user"), (cargo_dir, "/cargo"), (repository, "/blc-source")):
+        assert f"--remap-path-prefix={path.resolve()}={target}" in flags
+    assert env["PYO3_PYTHON"] == sys.executable
+
+
 def test_rust_build_reconfigures_console_to_utf8() -> None:
     """Windows runner 的 cp1252 文本流必须能安全输出中文日志。"""
     from tools.native import build_rust

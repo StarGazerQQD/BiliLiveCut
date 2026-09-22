@@ -264,9 +264,14 @@ def _compile_and_copy_native_modules(staging_dir: Path) -> dict[str, bool]:
         raise RuntimeError(f"Windows Payload 缺少必需原生模块：{', '.join(missing_required)}")
 
     # 只复制当前 ABI 的已验证 Windows 产物；禁止混入旧 ABI 或其他平台文件。
+    private_roots = {str(path.resolve()) for path in (repo_root, Path.home())}
+    private_roots.update(prefix.replace("\\", "/") for prefix in tuple(private_roots))
     for name, source in expected.items():
         if not results[name]:
             continue
+        contents = source.read_bytes()
+        if any(prefix.encode(encoding) in contents for prefix in private_roots for encoding in ("utf-8", "utf-16-le")):
+            raise RuntimeError(f"原生模块包含本机构建路径：{source.name}")
         destination = staging_accelerators / source.name
         shutil.copy2(source, destination)
         _logger.info("Copied native module: %s (%d bytes)", source.name, destination.stat().st_size)

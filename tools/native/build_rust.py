@@ -81,6 +81,26 @@ def check_rust() -> bool:
         return False
 
 
+def _build_environment() -> dict[str, str]:
+    """保留调用者编译选项，并从 Rust 依赖与诊断中移除本机构建目录。"""
+    env = os.environ.copy()
+    env["PYO3_PYTHON"] = sys.executable
+    encoded = env.get("CARGO_ENCODED_RUSTFLAGS")
+    flags = encoded.split("\x1f") if encoded is not None else env.get("RUSTFLAGS", "").split()
+    roots = (
+        (Path.home(), "/build-user"),
+        (Path(env.get("CARGO_HOME") or Path.home() / ".cargo"), "/cargo"),
+        (_REPO_ROOT, "/blc-source"),
+    )
+    for path, replacement in roots:
+        resolved = path.resolve()
+        for prefix in sorted({str(resolved), resolved.as_posix()}):
+            flags.append(f"--remap-path-prefix={prefix}={replacement}")
+    # 使用 Cargo 的参数分隔格式，含空格的用户目录不会拆成多个 rustc 参数。
+    env["CARGO_ENCODED_RUSTFLAGS"] = "\x1f".join(flag for flag in flags if flag)
+    return env
+
+
 def build() -> bool:
     """编译 Rust 扩展并复制到目标目录。
 
@@ -97,8 +117,7 @@ def build() -> bool:
     print(f"  [build_rust] 编译 Rust 扩展 ({RUST_SRC})…")
 
     # 仅按当前受支持解释器编译，不绕过 PyO3 的版本检查。
-    env = os.environ.copy()
-    env["PYO3_PYTHON"] = sys.executable
+    env = _build_environment()
     result = subprocess.run(
         ["cargo", "build", "--release"],
         cwd=RUST_SRC,
