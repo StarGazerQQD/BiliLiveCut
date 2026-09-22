@@ -17,6 +17,8 @@ from app.db.entities import (
     SessionStatus,
 )
 from app.db.session import get_session
+from app.sources.registry import source_registry
+from app.sources.rooms import room_source_view
 from app.web.services.rooms import recorder_manager
 
 
@@ -48,6 +50,7 @@ def dashboard_state() -> dict[str, Any]:
 
     return {
         "rooms": [_room_dict(r, recorder_manager.status(r.id)) for r in rooms],
+        "live_sources": [descriptor.model_dump(mode="json") for descriptor in source_registry.descriptors()],
         "counts": {"candidates": n_candidates, "clips": n_clips, "active_sessions": len(sessions)},
     }
 
@@ -60,10 +63,12 @@ def _room_dict(room: LiveRoom, runtime: dict[str, Any]) -> dict[str, Any]:
 
     with get_session() as db:
         metadata = room_metadata_view(db, room)
+        source = room_source_view(room, db)
 
     return {
         "id": room.id,
         "room_id": room.room_id,
+        **source,
         "input_url": room.input_url,
         "title": room.title,
         "metadata": metadata,
@@ -113,11 +118,18 @@ def danmaku_overview(limit: int = 50, session_id: int | None = None) -> dict[str
         all_rows = db.exec(agg_stmt).all()
         from app.web.services.source_identity import source_identities_for_sessions, unknown_source_identity
 
-        source_session_ids = {row.session_id for row in recent_rows}
+        session_stmt = select(RecordingSession.id).order_by(RecordingSession.id.desc()).limit(limit)
+        if session_id is not None:
+            session_stmt = session_stmt.where(RecordingSession.id == session_id)
+        source_session_ids = set(db.exec(session_stmt).all())
+        source_session_ids.update(row.session_id for row in recent_rows)
         source_session_ids.update(sid for sid, _ in all_rows)
         sources = source_identities_for_sessions(db, source_session_ids)
 
-    counts: dict[int, dict[str, float]] = {}
+    from app.analysis.source_policy import session_danmaku_view
+
+    evidence = {sid: session_danmaku_view(sid) for sid in source_session_ids}
+    counts: dict[int, dict[str, float]] = {sid: {"count": 0.0, "intensity": 0.0} for sid in source_session_ids}
     for sid, value in all_rows:
         bucket = counts.setdefault(sid, {"count": 0.0, "intensity": 0.0})
         bucket["count"] += 1
@@ -126,8 +138,12 @@ def danmaku_overview(limit: int = 50, session_id: int | None = None) -> dict[str
     sessions = [
         {
             "session_id": sid,
-            "count": int(v["count"]),
-            "intensity": round(v["intensity"], 2),
+            "count": int(v["count"]) if evidence[sid]["available"] or v["count"] else None,
+            "intensity": round(v["intensity"], 2) if evidence[sid]["available"] or v["count"] else None,
+            "intensity_unit": "Bilibili 事件权重"
+            if sources.get(sid, unknown_source_identity())["platform"] == "bilibili"
+            else "普通文本条数",
+            "evidence": evidence[sid],
             **sources.get(sid, unknown_source_identity()),
         }
         for sid, v in sorted(counts.items(), reverse=True)
@@ -143,7 +159,12 @@ def danmaku_overview(limit: int = 50, session_id: int | None = None) -> dict[str
         }
         for d in recent_rows
     ]
-    return {"available": True, "total": len(all_rows), "recent": recent, "sessions": sessions}
+    return {
+        "available": any(item["available"] for item in evidence.values()),
+        "total": len(all_rows),
+        "recent": recent,
+        "sessions": sessions,
+    }
 
 
 def pipeline_progress(session_id: int | None = None) -> dict[str, Any]:

@@ -143,6 +143,7 @@ def get_analytics() -> dict[str, Any]:
         room_ranks: list[dict[str, Any]] = []
         rows = db.exec(
             _sel(
+                LiveRoom.id,
                 LiveRoom.room_id,
                 LiveRoom.uploader_name,
                 func.count(FinalClip.id).label("cnt"),
@@ -158,9 +159,19 @@ def get_analytics() -> dict[str, Any]:
             .limit(10)
         ).all()
         for r in rows:
+            from app.sources.rooms import room_source_view
+
+            room = db.get(LiveRoom, r.id)
+            source = room_source_view(room, db) if room and room.platform != "local" else None
+            name = r.uploader_name or f"房间{r.room_id}"
+            if source and source["platform"] != "bilibili":
+                name = f"{source['platform']} · {name}"
             room_ranks.append(
                 {
-                    "name": r.uploader_name or f"房间{r.room_id}",
+                    "name": name,
+                    "room_db_id": r.id,
+                    "platform": room.platform if room else None,
+                    "source_id": source["source_id"] if source else None,
                     "clips": r.cnt,
                     "duration_h": round((r.dur or 0) / 3600, 1),
                 }

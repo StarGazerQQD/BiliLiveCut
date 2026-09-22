@@ -6,7 +6,7 @@ publishing / pipeline / web),通过数据库与任务队列解耦。
 """
 
 # 版本号以此处为唯一真源；构建、Portable 与文档副本由版本一致性门禁校验。
-__version__ = "0.1.18.3-alpha"
+__version__ = "0.1.18.4-alpha"
 
 
 def version_label(version: str | None = None) -> str:

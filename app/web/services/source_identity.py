@@ -12,6 +12,7 @@ from sqlmodel import Session, select
 
 from app.db.entities import AppSetting, LiveRoom, RecordingSession
 from app.recording.metadata import SessionMetadata, read_metadata, room_metadata_view
+from app.sources.rooms import room_source_view
 
 
 class SourceIdentity(TypedDict):
@@ -19,6 +20,8 @@ class SourceIdentity(TypedDict):
 
     room_db_id: int | None
     room_id: int | None
+    platform: str | None
+    source_id: str | None
     uploader_name: str | None
     room_title: str | None
     source_label: str
@@ -58,6 +61,7 @@ def source_identities_for_sessions(
         uploader_name = room.uploader_name.strip() if room and room.uploader_name else None
         room_title = room.title.strip() if room and room.title else None
         public_room_id = room.room_id if room else None
+        source = room_source_view(room, db) if room and room.platform != "local" else None
         snapshot = snapshots.get(f"session_metadata:{session.id}")
         title_state = "unavailable"
         if snapshot and snapshot.last_title:
@@ -74,6 +78,8 @@ def source_identities_for_sessions(
         result[session.id] = {
             "room_db_id": room.id if room else session.room_id,
             "room_id": public_room_id,
+            "platform": room.platform if room else None,
+            "source_id": source["source_id"] if source else None,
             "uploader_name": uploader_name,
             "room_title": room_title,
             "source_label": f"{primary}{suffix}",
@@ -87,6 +93,9 @@ def source_identities_for_sessions(
                 session_title=room_title,
                 title_state="local",
             )
+        elif source and room is not None and room.platform != "bilibili":
+            name = uploader_name or room_title or "直播间"
+            result[session.id]["source_label"] = f"{room.platform} · {name} · {source['source_id'] or '身份未知'}"
     return result
 
 
@@ -95,6 +104,8 @@ def unknown_source_identity() -> SourceIdentity:
     return {
         "room_db_id": None,
         "room_id": None,
+        "platform": None,
+        "source_id": None,
         "uploader_name": None,
         "room_title": None,
         "source_label": "未知来源",

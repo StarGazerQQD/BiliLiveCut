@@ -17,6 +17,11 @@ PAYLOAD_ITEMS = [
     "setup_c.py",
     ".env.example",
     "LICENSE",
+    "docs/live-source-plugins.md",
+    "docs/douyin-plugin-handoff.md",
+    "plugin/README.md",
+    "plugin/manifest.schema.json",
+    "plugin/live-source-example/",
 ]
 
 # 禁止进入 Payload 的路径
@@ -24,7 +29,6 @@ EXCLUDE_PATTERNS = [
     ".git",
     ".github",
     "tests/",
-    "docs/",
     "__pycache__/",
     "*.pyc",
     "storage/",

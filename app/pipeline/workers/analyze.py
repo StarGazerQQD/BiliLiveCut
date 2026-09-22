@@ -319,39 +319,10 @@ def commit_highlight(lease: TaskLease, compute_result: dict[str, Any], ms: int) 
 
             raw_event_results = compute_result.get("event_clip_results")
             if isinstance(raw_event_results, list):
-                created, processed_event_ids = _commit_event_clip_results(
-                    db,
-                    task,
-                    raw_event_results,
-                )
-                followup_event_ids = _unscored_confirmed_event_ids(
-                    db,
-                    task.session_id,
-                    exclude=processed_event_ids,
-                )
-                _mark_scored_in_db(db, segment_id)
-                mark_completed(task, ms)
-                if created:
-                    primary = max(created, key=lambda item: item[2])
-                    enqueue_next(
-                        task,
-                        TaskStatus.CANDIDATE_CREATED,
-                        candidate_id=primary[0],
-                        event_id=primary[1],
-                    )
-                else:
-                    enqueue_next(task, TaskStatus.COMPLETED)
-                db.add(task)
+                # 先提交本轮热点事实，仍持有 ANALYZING 租约。证据可能因此发生变化，
+                # 重新评分与候选/任务的原子提交由同一租约继续完成。
                 db.commit()
-                for event_id in followup_event_ids:
-                    try:
-                        score_hotspot_event(event_id)
-                    except (OSError, RuntimeError, TypeError, ValueError) as exc:
-                        _logger.exception(
-                            "event_clip_followup_failed: event_id=%s error=%s",
-                            event_id,
-                            exc,
-                        )
+                _commit_event_analysis(lease, raw_event_results, ms)
                 return
             _record_plugin_dispatch(db, compute_result)
 
@@ -472,6 +443,59 @@ def commit_highlight(lease: TaskLease, compute_result: dict[str, Any], ms: int) 
 
     except LeaseLostError:
         _logger.warning("stale_result_discarded: highlight task=%s 已失去租约", lease.task_id)
+
+
+def _commit_event_analysis(lease: TaskLease, raw_results: list[object], ms: int) -> None:
+    """在同一租约下重算过期证据，候选与任务承接原子提交。"""
+    from app.analysis.clip_scorer import compute_hotspot_clip_draft, pending_hotspot_event_ids
+    from app.analysis.event_enricher import compute_event_enrichment
+
+    results = raw_results
+    for attempt in range(2):
+        with get_session() as db:
+            connection = db.connection()
+            if connection.dialect.name == "sqlite":
+                # legacy SQLite SELECT 不开启事务；必须先 BEGIN，避免首个 SAVEPOINT
+                # 释放时独立提交，导致整批 rollback 仍残留候选。
+                connection.exec_driver_sql("BEGIN IMMEDIATE")
+            if not still_owns_lease(db, lease):
+                raise LeaseLostError()
+            task = db.get(SegmentTask, lease.task_id)
+            if task is None:
+                raise LeaseLostError()
+            session_id = task.session_id
+            created, processed = _commit_event_clip_results(db, task, results)
+            remaining = _unscored_confirmed_event_ids(db, session_id, exclude=processed)
+            if not remaining:
+                _mark_scored_in_db(db, task.segment_id)
+                mark_completed(task, ms)
+                if created:
+                    primary = max(created, key=lambda item: item[2])
+                    enqueue_next(task, TaskStatus.CANDIDATE_CREATED, candidate_id=primary[0], event_id=primary[1])
+                else:
+                    enqueue_next(task, TaskStatus.COMPLETED)
+                db.add(task)
+                return
+            # 包括本轮已经创建的候选一起撤销，不留下无任务承接的中间产物。
+            db.rollback()
+            if attempt == 1:
+                connection = db.connection()
+                if connection.dialect.name == "sqlite":
+                    connection.exec_driver_sql("BEGIN IMMEDIATE")
+                if not still_owns_lease(db, lease):
+                    raise LeaseLostError()
+                task = db.get(SegmentTask, lease.task_id)
+                if task is None:
+                    raise LeaseLostError()
+                mark_failed(task, "热点证据在提交期间变化，等待重新分析", permanent=False)
+                db.add(task)
+                return
+        # 计算必须在事务之外；最多立即重算一次，持续变化交给原有有界重试。
+        results = []
+        for event_id in pending_hotspot_event_ids(session_id):
+            enrichment = compute_event_enrichment(event_id)
+            draft = compute_hotspot_clip_draft(event_id, enrichment=enrichment)
+            results.append({"event_id": event_id, "enrichment": enrichment, "clip_draft": draft})
 
 
 def _score_pending_hotspot_events(
@@ -1241,10 +1265,7 @@ def _score_segment_draft(
         from app.core.settings_store import get_bool
 
         use_dm_sentiment = (
-            get_bool("danmaku_sentiment_enabled")
-            and room is not None
-            and bool(room.danmaku_sentiment_enabled)
-            and settings.collect_danmaku
+            get_bool("danmaku_sentiment_enabled") and room is not None and bool(room.danmaku_sentiment_enabled)
         )
         session_segments = db.exec(
             select(RawSegment).where(RawSegment.session_id == segment.session_id).order_by(RawSegment.seq.asc())
@@ -1305,10 +1326,12 @@ def _score_segment_draft(
     danmaku_start_ts, danmaku_end_ts = align_danmaku_window(analysis_start_ts, analysis_end_ts, lag_s=lag_s)
     semantic_text_available = bool(judgement_text.strip())
     kw_score, kw_hits = match_keywords(judgement_text) if semantic_text_available else (0.0, [])
-    features: dict[str, float] = {
-        "volume": feats.volume_score(),
-        "danmaku": _dm_score(session_id, danmaku_start_ts, danmaku_end_ts),
-    }
+    from app.analysis.source_policy import session_has_danmaku
+
+    has_danmaku = session_has_danmaku(session_id, danmaku_start_ts, danmaku_end_ts)
+    features: dict[str, float] = {"volume": feats.volume_score()}
+    if has_danmaku:
+        features["danmaku"] = _dm_score(session_id, danmaku_start_ts, danmaku_end_ts)
     if semantic_text_available:
         features.update(
             {
@@ -1317,7 +1340,7 @@ def _score_segment_draft(
                 "laughter": laughter_score(judgement_text),
             }
         )
-    if use_dm_sentiment:
+    if use_dm_sentiment and has_danmaku:
         features["danmaku_sentiment"] = danmaku_sentiment_score(
             session_id,
             danmaku_start_ts,
@@ -1479,7 +1502,11 @@ def _score_segment_draft(
     else:
         initial_status = CandidateStatus.REJECTED
 
-    danmaku_explain = danmaku_score_explain(session_id, danmaku_start_ts, danmaku_end_ts)
+    danmaku_explain = (
+        danmaku_score_explain(session_id, danmaku_start_ts, danmaku_end_ts)
+        if has_danmaku
+        else {"available": False, "reason": "missing_capture_coverage"}
+    )
     signals = source_signals(features, keyword_hits=kw_hits)
     confidence = confidence_score(rule_score, llm_score, signals)
 

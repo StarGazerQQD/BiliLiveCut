@@ -67,11 +67,13 @@
       <div class="card add-room">
         <h3>添加直播间</h3>
         <div class="row">
-          <input id="new-url" placeholder="直播间 URL 或房间号,如 https://live.bilibili.com/123" />
+          <input id="new-url" placeholder="直播间 URL；纯数字默认按 Bilibili 房号解析" />
+          <select id="new-platform" aria-label="直播来源平台"><option value="">按地址自动识别</option></select>
           <label class="chk"><input type="checkbox" id="new-auth" /> 我已确认拥有录制授权</label>
           <button id="btn-add" class="primary">添加</button>
         </div>
         <p class="hint">合规提示:仅可录制你拥有授权的内容。</p>
+        <p class="hint" id="live-source-hint">正在读取已启用的直播源…</p>
       </div>
       <p class="hint" id="rooms-dirty-hint" style="display:none">正在编辑或存在未保存的直播间设置，已暂停列表重绘；保存并收起编辑区后恢复。</p>
       <div id="rooms-list"></div>

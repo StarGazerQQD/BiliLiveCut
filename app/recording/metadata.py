@@ -7,16 +7,16 @@ from datetime import UTC, datetime
 from typing import Literal, TypeVar
 from weakref import WeakKeyDictionary
 
-import httpx
 from loguru import logger
 from pydantic import AwareDatetime, BaseModel, ConfigDict, Field, ValidationError
 from sqlmodel import Session, select
 
 from app.core.config import settings
-from app.core.cookie import get_bilibili_cookie
 from app.db.entities import AppSetting, LiveRoom, RecordingSession, SessionStatus
 from app.db.session import get_session
-from app.sources.bilibili.client import BilibiliError, BilibiliLiveClient
+from app.plugins.live_source import SourceError
+from app.sources.registry import source_registry
+from app.sources.rooms import room_source
 
 
 class RoomMetadata(BaseModel):
@@ -150,36 +150,35 @@ async def refresh_room_metadata(db_id: int) -> None:
     async with locks.setdefault(db_id, asyncio.Lock()):
         with get_session() as db:
             room = db.get(LiveRoom, db_id)
-            if room is None or room.room_id is None:
+            if room is None or room.platform == "local":
                 return
-            public_id = room.room_id
             metadata = read_metadata(db, f"room_metadata:{db_id}", RoomMetadata) or RoomMetadata()
         metadata.attempted_at = datetime.now(UTC)
         try:
+            identity = room_source(room)
             async with asyncio.timeout(settings.room_metadata_refresh_timeout_s):
-                async with BilibiliLiveClient(cookie=get_bilibili_cookie()) as client:
-                    info = await client.get_room_info(str(public_id), include_detail=True)
-            if info.room_id != public_id or not info.title or not info.title.strip():
-                raise ValueError("房间详情缺少有效标题或返回了不同房间号")
-        except (TimeoutError, httpx.HTTPError, BilibiliError, ValueError, RuntimeError) as exc:
+                info = await source_registry.get_room_info(identity)
+            if not info.title or not info.title.strip():
+                raise ValueError("房间详情暂未提供有效标题")
+        except (TimeoutError, SourceError, ValueError) as exc:
             metadata.error = f"标题刷新失败：{type(exc).__name__}"
             with get_session() as db:
                 if db.get(LiveRoom, db_id) is not None:
                     _save(db, f"room_metadata:{db_id}", metadata)
-            logger.warning("标题刷新失败 room={} error={}", public_id, type(exc).__name__)
+            logger.warning("标题刷新失败 room={} error={}", db_id, type(exc).__name__)
             return
 
         now = datetime.now(UTC)
         with get_session() as db:
             room = db.get(LiveRoom, db_id)
-            if room is None or room.room_id != public_id:
+            if room is None or room_source(room, db) != identity:
                 return
             room.title = info.title.strip()
             if info.uploader_name:
                 room.uploader_name = info.uploader_name.strip()
             room.updated_at = now
             db.add(room)
-            metadata.observed_at = now
+            metadata.observed_at = info.observed_at
             metadata.error = None
             _save(db, f"room_metadata:{db_id}", metadata)
             sessions = db.exec(
@@ -208,8 +207,8 @@ async def refresh_room_metadata(db_id: int) -> None:
                     _save(
                         db,
                         f"session_title_change:{session.id}:{snapshot.change_count:08d}",
-                        TitleObservation(title=room.title, observed_at=now),
+                        TitleObservation(title=room.title, observed_at=info.observed_at),
                     )
                 snapshot.last_title = room.title
-                snapshot.observed_at = now
+                snapshot.observed_at = info.observed_at
                 _save(db, key, snapshot)

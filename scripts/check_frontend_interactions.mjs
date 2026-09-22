@@ -263,6 +263,10 @@ globalThis.fetch = async (path, options = {}) => {
       counts: { candidates: 0, clips: 0, active_sessions: 0 },
       modes: ["manual", "semi", "auto"],
       rooms: dashboardRooms,
+      live_sources: [
+        { platform: "bilibili", name: "Bilibili", domains: ["live.bilibili.com"] },
+        { platform: "external", name: "外部来源", domains: ["external.invalid"] },
+      ],
       sessions: [],
     };
   } else if (requestPath.startsWith("/api/notifications")) {
@@ -403,6 +407,15 @@ try {
   await settle();
   const roomsMarkupBeforeDraft = element("rooms-list").innerHTML;
   assert.match(roomsMarkupBeforeDraft, /草稿保护测试/);
+  assert.match(element("new-platform").innerHTML, /外部来源/);
+  element("new-platform").value = "external";
+  element("new-url").value = "room-ab";
+  element("new-auth").checked = true;
+  await element("btn-add").emit("click");
+  await settle();
+  const sourceRegistration = requestDetails.find((entry) => entry.path === "/api/rooms" && entry.options.method === "POST");
+  assert.deepEqual(JSON.parse(sourceRegistration.options.body), { url: "room-ab", authorized: true, platform: "external" });
+  element("new-platform").value = "";
   const dirtyRoomControl = {
     closest(selector) {
       assert.equal(selector, "[data-room-dirty-section]");

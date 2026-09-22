@@ -65,6 +65,8 @@ class HighlightScoringRequest:
     audio: HighlightAudio | None
     rule_score: float
     room_mode: RoomScoringMode = "inherit"
+    danmaku_available: bool | None = None
+    source_platform: str | None = None
 
     def __post_init__(self) -> None:
         """拒绝无效时间边界和非有限主评分。"""

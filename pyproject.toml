@@ -1,6 +1,6 @@
 [project]
 name = "bili-live-cut"
-version = "0.1.18.3-alpha"
+version = "0.1.18.4-alpha"
 description = "AI 直播实时切片系统:监听 Bilibili 直播,自动录制、转写、识别高光、生成切片与文案"
 readme = "README.md"
 license = "MIT"
@@ -89,6 +89,15 @@ include = ["app", "app.*", "config"]
     "static/js/*.txt",
 ]
 "config" = ["*.yaml", "*.txt"]
+
+[tool.setuptools.data-files]
+"share/bili-live-cut/docs" = ["docs/live-source-plugins.md", "docs/douyin-plugin-handoff.md"]
+"share/bili-live-cut/plugin" = ["plugin/README.md", "plugin/manifest.schema.json"]
+"share/bili-live-cut/plugin/live-source-example" = [
+    "plugin/live-source-example/plugin.json",
+    "plugin/live-source-example/main.py",
+    "plugin/live-source-example/README.md",
+]
 
 [tool.check-manifest]
 ignore = [

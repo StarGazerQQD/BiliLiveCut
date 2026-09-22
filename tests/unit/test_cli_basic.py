@@ -5,7 +5,9 @@ from __future__ import annotations
 import os
 import subprocess
 import sys
+from pathlib import Path
 
+import pytest
 import typer
 from typer.testing import CliRunner
 
@@ -37,7 +39,7 @@ def test_cli_module_entrypoint_dispatches_commands() -> None:
     )
 
     assert result.returncode == 0, result.stderr
-    assert "BiliLiveCut 0.1.18.3-alpha" in result.stdout
+    assert "BiliLiveCut 0.1.18.4-alpha" in result.stdout
 
 
 def test_cli_help_preserves_dependency_hints_and_current_doctor_text() -> None:
@@ -75,7 +77,11 @@ def test_serve_exports_actual_cli_port_to_application(monkeypatch) -> None:  # n
     assert os.environ["BLC_APP_ROOT"] == os.getcwd()
 
 
-def test_record_pipeline_default_persists_scheduler_switches(temp_db: None, monkeypatch) -> None:  # noqa: ANN001
+def test_record_pipeline_default_persists_scheduler_switches(
+    temp_db: None,
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+) -> None:
     """CLI 未显式传参时应读取全局默认值并把 db_id 传给回调。"""
     from app.commands import record as record_cmd
     from app.db.entities import LiveRoom
@@ -97,12 +103,19 @@ def test_record_pipeline_default_persists_scheduler_switches(temp_db: None, monk
 
         return _callback
 
-    def fake_run(coro) -> None:  # noqa: ANN001
-        coro.close()
+    async def fake_record(self: record_cmd.Recorder) -> None:
+        assert self.source_room.platform == "bilibili" and self.source_room.source_id == "1"
+
+    from app.plugins.manager import PluginManager
+    from app.sources.registry import source_registry
+
+    monkeypatch.setattr(
+        "app.plugins.runtime.plugin_manager", PluginManager(tmp_path / "plugin", registry=source_registry)
+    )
 
     monkeypatch.setattr("app.pipeline.orchestrator.make_pipeline_callback", fake_callback)
     monkeypatch.setattr("app.core.settings_store.recording_pipeline_enabled", lambda: True)
-    monkeypatch.setattr(record_cmd.asyncio, "run", fake_run)
+    monkeypatch.setattr(record_cmd.Recorder, "run", fake_record)
 
     record_cmd.cmd_record(db_id, pipeline=None, produce=True)
 
@@ -114,10 +127,14 @@ def test_record_pipeline_default_persists_scheduler_switches(temp_db: None, monk
     assert callback_args == {"produce": True, "room_id": db_id}
 
 
-def test_record_rejects_produce_without_pipeline() -> None:
+def test_record_rejects_produce_without_pipeline(
+    temp_db: None, monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
     """避免接受永远不会生效的 ``--produce`` 组合。"""
     from app.commands.record import cmd_record
+    from app.plugins.manager import PluginManager
 
+    monkeypatch.setattr("app.plugins.runtime.plugin_manager", PluginManager(tmp_path / "plugin"))
     try:
         cmd_record(1, pipeline=False, produce=True)
     except typer.Exit as exc:

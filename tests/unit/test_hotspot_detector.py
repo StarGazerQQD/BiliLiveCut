@@ -3,7 +3,7 @@
 from __future__ import annotations
 
 import json
-from datetime import datetime, timedelta
+from datetime import UTC, datetime, timedelta
 from typing import TYPE_CHECKING
 
 import numpy as np
@@ -263,6 +263,22 @@ def test_builder_compensates_danmaku_receive_lag(
     session_id, _room_id = _create_recording()
     monkeypatch.setattr(settings, "collect_danmaku", True)
     monkeypatch.setattr(settings, "danmaku_event_lag_s", 7.5)
+    from app.db.entities import AppSetting
+    from app.plugins.live_source import DanmakuStatus
+    from app.recording.danmaku import CaptureInterval, DanmakuEvidence
+
+    with get_session() as db:
+        evidence = DanmakuEvidence(
+            status=DanmakuStatus.AVAILABLE,
+            lag_s=7.5,
+            intervals=[
+                CaptureInterval(
+                    start=_START.replace(tzinfo=UTC), end=(_START + timedelta(seconds=130)).replace(tzinfo=UTC)
+                )
+            ],
+        )
+        db.add(AppSetting(key=f"session_danmaku:{session_id}", value=evidence.model_dump_json()))
+
     with get_session() as db:
         segment = RawSegment(
             session_id=session_id,

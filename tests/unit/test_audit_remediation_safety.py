@@ -13,6 +13,8 @@ import httpx
 import pytest
 from sqlmodel import select
 
+from app.plugins.live_source import SourceRoom, StreamSpec
+
 
 def test_journal_replay_preserves_success_written_during_replay(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
@@ -299,7 +301,6 @@ async def test_disk_guard_stops_active_ffmpeg_and_releases_watchers(
 ) -> None:
     from app.pipeline import storage_lifecycle
     from app.recording import recorder as module
-    from app.sources.bilibili.client import StreamInfo
 
     finished = asyncio.Event()
     checked = asyncio.Event()
@@ -332,11 +333,14 @@ async def test_disk_guard_stops_active_ffmpeg_and_releases_watchers(
 
     monkeypatch.setattr(storage_lifecycle, "should_stop_recording", disk_critical)
     monkeypatch.setattr(module.asyncio, "create_subprocess_exec", create_process)
-    recorder = module.Recorder(db_room_id=1, room_id=1)
+    recorder = module.Recorder(
+        source_room=SourceRoom(platform="bilibili", source_id="1", canonical_url="https://live.bilibili.com/1"),
+        db_room_id=1,
+    )
     operation = asyncio.create_task(
         recorder._record_once(
-            StreamInfo(
-                url="https://example.invalid/stream", protocol="flv", format_name="flv", codec_name="avc", quality=10000
+            StreamSpec(
+                url="https://example.invalid/stream", transport="flv", container="flv", codec="avc", quality_id="10000"
             ),
             tmp_path,
         )

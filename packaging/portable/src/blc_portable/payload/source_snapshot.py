@@ -11,6 +11,7 @@ import subprocess
 from datetime import UTC, datetime
 from pathlib import Path
 
+from .file_plan import PAYLOAD_ITEMS
 from .manifest import (
     RELEASE_VERSION,
     SOURCE_COMMIT_FULL,
@@ -20,48 +21,7 @@ from .manifest import (
 _logger = logging.getLogger(__name__)
 _REPOSITORY_ROOT = Path(__file__).resolve().parents[5]
 
-# 需要从 Commit 中提取的文件/目录
-PAYLOAD_ITEMS = [
-    "app/",
-    "config/",
-    "pyproject.toml",
-    "setup.py",
-    "setup_c.py",
-    ".env.example",
-    "LICENSE",
-]
-
-# 禁止进入 Payload 的路径模式
-EXCLUDE_PATTERNS = [
-    ".git",
-    ".github",
-    "tests/",
-    "docs/",
-    "__pycache__/",
-    "*.pyc",
-    "storage/",
-    ".env",
-    ".venv/",
-    "build/",
-    "dist/",
-    "models/",
-    "vendor/",
-    "bin/",
-    "*.log",
-    "*.db",
-    "*.sqlite3",
-    "*.egg-info/",
-    ".pytest_cache/",
-    ".ruff_cache/",
-    ".mypy_cache/",
-    ".audit_cache/",
-    ".vscode/",
-    ".idea/",
-    ".DS_Store",
-    "Thumbs.db",
-    ".git_msg.txt",
-    ".gitignore",
-]
+# 冻结基线与归档打包共用 file_plan.py 的收录清单。
 
 
 def _git_path_list(command: list[str]) -> list[str]:

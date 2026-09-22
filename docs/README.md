@@ -21,6 +21,8 @@
 | [原生加速模块](native-acceleration.md) | C、Cython、Rust 边界、构建与诊断 |
 | [Portable 构建说明](../packaging/portable/README.md) | Lite/Full、Engine Pack、Payload、Runtime 与发行检查 |
 | [插件开发](../plugin/README.md) | 插件 API、清单 Schema 和示例 |
+| [直播源插件](live-source-plugins.md) | 平台身份、录制/监控契约、可选弹幕、安装与真实 FFmpeg 验收 |
+| [抖音插件接入交接](douyin-plugin-handoff.md) | 可直接交给独立插件项目的公共接口与实施要求 |
 
 ## 版本历史
 

@@ -224,7 +224,155 @@ def test_terminal_commit_scores_event_confirmed_after_compute(
         task = db.get(SegmentTask, task_id)
         hotspot = db.get(HotspotEvent, hotspot_event_id)
         candidates = db.exec(select(HighlightCandidate).where(HighlightCandidate.session_id == session_id)).all()
-    assert task is not None and task.stage == TaskStatus.COMPLETED
+    assert task is not None and task.stage == TaskStatus.CANDIDATE_CREATED
+    assert task.candidate_id == hotspot.candidate_id and task.event_id is not None
     assert hotspot is not None and hotspot.status == HotspotStatus.CONFIRMED
     assert hotspot.candidate_id is not None
     assert len(candidates) == 1
+
+
+def test_late_confirmation_rechecks_lease_after_model_call(
+    temp_db: None,
+    monkeypatch: MonkeyPatch,
+) -> None:
+    from app.analysis import event_enricher
+    from app.pipeline.workers.analyze import analyze_compute, commit_highlight
+
+    task_id, event_id, _session_id = _seed_candidate_pass(strong=True)
+    with get_session() as db:
+        event = db.get(HotspotEvent, event_id)
+        event.status = HotspotStatus.PROVISIONAL
+        db.add(event)
+    _patch_compute_dependencies(monkeypatch)
+    result = analyze_compute(task_id)
+
+    def replacing_worker(prompt: str, **kwargs: object) -> None:
+        with get_session() as db:
+            task = db.get(SegmentTask, task_id)
+            task.lease_token = "replacement-owner-token"
+            db.add(task)
+        return None
+
+    monkeypatch.setattr(event_enricher.llm, "call_text", replacing_worker)
+    commit_highlight(_lease(task_id), result, 50)
+    with get_session() as db:
+        assert db.get(SegmentTask, task_id).lease_token == "replacement-owner-token"
+        assert db.get(SegmentTask, task_id).stage == TaskStatus.ANALYZING
+        assert not db.exec(select(HighlightCandidate)).all()
+        assert not db.exec(select(HighlightEvent)).all()
+
+
+def test_late_confirmation_commit_is_idempotent_and_keeps_review_gate(
+    temp_db: None,
+    monkeypatch: MonkeyPatch,
+) -> None:
+    from app.pipeline.scheduler import advance_candidate
+    from app.pipeline.workers.analyze import analyze_compute, commit_highlight
+
+    task_id, event_id, _session_id = _seed_candidate_pass(strong=True)
+    with get_session() as db:
+        event = db.get(HotspotEvent, event_id)
+        event.status = HotspotStatus.PROVISIONAL
+        db.add(event)
+    _patch_compute_dependencies(monkeypatch)
+    result = analyze_compute(task_id)
+    commit_highlight(_lease(task_id), result, 50)
+    commit_highlight(_lease(task_id), result, 50)
+    advance_candidate()
+    with get_session() as db:
+        task = db.get(SegmentTask, task_id)
+        assert task.stage == TaskStatus.AWAITING_REVIEW
+        assert task.candidate_id == db.get(HotspotEvent, event_id).candidate_id
+        assert len(db.exec(select(HighlightCandidate)).all()) == len(db.exec(select(HighlightEvent)).all()) == 1
+        assert len(db.exec(select(SegmentTask)).all()) == 1
+
+
+def test_partial_candidate_batch_rolls_back_before_followup_failure(
+    temp_db: None,
+    monkeypatch: MonkeyPatch,
+) -> None:
+    import pytest
+
+    from app.analysis import event_enricher
+    from app.analysis.clip_scorer import compute_hotspot_clip_draft
+    from app.pipeline.workers.analyze import HighlightDecision, commit_highlight
+
+    task_id, event_id, session_id = _seed_candidate_pass(strong=True)
+    _patch_compute_dependencies(monkeypatch)
+    with get_session() as db:
+        event = db.get(HotspotEvent, event_id)
+        second = HotspotEvent(**event.model_dump(exclude={"id"}))
+        second.event_key = "second-pending-event"
+        second.start_ts = _START + timedelta(seconds=200)
+        second.peak_ts = _START + timedelta(seconds=230)
+        second.end_ts = _START + timedelta(seconds=260)
+        db.add(second)
+        segment_id = db.get(SegmentTask, task_id).segment_id
+    draft = compute_hotspot_clip_draft(event_id)
+    assert draft.decision == HighlightDecision.CANDIDATE
+
+    def model_unavailable(prompt: str, **kwargs: object) -> None:
+        raise OSError("模型连接中断")
+
+    monkeypatch.setattr(event_enricher.llm, "call_text", model_unavailable)
+    with pytest.raises(OSError, match="模型连接中断"):
+        commit_highlight(
+            _lease(task_id),
+            {
+                "decision": HighlightDecision.CANDIDATE,
+                "segment_id": segment_id,
+                "session_id": session_id,
+                "hotspot_drafts": [],
+                "event_clip_results": [{"event_id": event_id, "enrichment": None, "clip_draft": draft}],
+            },
+            50,
+        )
+    with get_session() as db:
+        assert not db.exec(select(HighlightCandidate)).all()
+        assert not db.exec(select(HighlightEvent)).all()
+        assert db.get(HotspotEvent, event_id).candidate_id is None
+        assert db.get(SegmentTask, task_id).stage == TaskStatus.ANALYZING
+
+
+def test_late_confirmation_retries_model_failure_without_orphan_candidate(
+    temp_db: None,
+    monkeypatch: MonkeyPatch,
+) -> None:
+    from app.analysis import event_enricher
+    from app.pipeline import scheduler
+    from app.pipeline.claiming import pop_and_claim
+
+    task_id, event_id, _session_id = _seed_candidate_pass(strong=True)
+    with get_session() as db:
+        event = db.get(HotspotEvent, event_id)
+        event.status = HotspotStatus.PROVISIONAL
+        task = db.get(SegmentTask, task_id)
+        task.stage = TaskStatus.QUEUED_FOR_ANALYSIS
+        task.claimed_by = task.lease_token = None
+        db.add(event)
+        db.add(task)
+    _patch_compute_dependencies(monkeypatch)
+
+    def model_unavailable(prompt: str, **kwargs: object) -> None:
+        raise OSError("模型连接中断")
+
+    monkeypatch.setattr(event_enricher.llm, "call_text", model_unavailable)
+    claim = pop_and_claim(TaskStatus.QUEUED_FOR_ANALYSIS)
+    assert claim is not None
+    scheduler.execute_task(claim.id, claim.stage, claim.lease_token)
+    with get_session() as db:
+        task = db.get(SegmentTask, task_id)
+        assert task.stage == TaskStatus.TRANSIENT_FAILED and task.failed_stage == TaskStatus.ANALYZING
+        assert task.attempts == 1 and task.next_retry_at is not None
+        assert not db.exec(select(HighlightCandidate)).all()
+        assert not db.exec(select(HighlightEvent)).all()
+    monkeypatch.setattr(event_enricher.llm, "call_text", lambda *_args, **_kwargs: None)
+    monkeypatch.setattr(scheduler, "now_utc", lambda: datetime.now(UTC) + timedelta(hours=1))
+    scheduler.retry_expired()
+    claim = pop_and_claim(TaskStatus.QUEUED_FOR_ANALYSIS)
+    assert claim is not None
+    scheduler.execute_task(claim.id, claim.stage, claim.lease_token)
+    with get_session() as db:
+        task = db.get(SegmentTask, task_id)
+        assert task.stage == TaskStatus.CANDIDATE_CREATED and task.candidate_id is not None
+        assert len(db.exec(select(HighlightCandidate)).all()) == len(db.exec(select(SegmentTask)).all()) == 1

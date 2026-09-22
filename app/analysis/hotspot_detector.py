@@ -394,9 +394,6 @@ def build_segment_signal_buckets(
     duration_s = max(0.0, datetime_epoch(end_ts) - datetime_epoch(start_ts))
     bucket_count = max(1, math.ceil(duration_s / cfg.bucket_s))
     builders = [_BucketBuilder() for _ in range(bucket_count)]
-    has_danmaku = session_has_danmaku(session_id)
-    for builder in builders:
-        builder.danmaku_available = has_danmaku
     _fill_danmaku(builders, danmaku_rows, start_ts, duration_s, cfg.bucket_s, lag_s=lag_s)
     _fill_audio(builders, audio_features, duration_s, cfg.bucket_s)
     _fill_transcript(builders, transcript, duration_s, cfg.bucket_s)
@@ -407,6 +404,7 @@ def build_segment_signal_buckets(
     for index, builder in enumerate(builders):
         bucket_start = start_ts + timedelta(seconds=index * cfg.bucket_s)
         bucket_end = min(end_ts, bucket_start + timedelta(seconds=cfg.bucket_s))
+        builder.danmaku_available = session_has_danmaku(session_id, bucket_start + lag, bucket_end + lag)
         bucket = builder.freeze(
             start_ts=bucket_start,
             end_ts=bucket_end,
@@ -440,7 +438,7 @@ class _BucketBuilder:
     """构建 ``SignalBucket`` 的可变内部缓冲。"""
 
     def __init__(self) -> None:
-        self.danmaku_available = bool(settings.collect_danmaku)
+        self.danmaku_available = False
         self.danmaku_total = 0
         self.danmaku_users: set[str] = set()
         self.danmaku_texts: list[str] = []

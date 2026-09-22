@@ -4,7 +4,13 @@
   "title": "BiliLiveCut plugin manifest",
   "type": "object",
   "additionalProperties": false,
-  "required": ["id", "name", "version", "api_version", "entrypoint"],
+  "required": [
+    "id",
+    "name",
+    "version",
+    "api_version",
+    "entrypoint"
+  ],
   "properties": {
     "id": {
       "type": "string",
@@ -40,10 +46,44 @@
     "capabilities": {
       "type": "array",
       "items": {
-        "enum": ["highlight_scorer"]
+        "enum": [
+          "highlight_scorer",
+          "live_source"
+        ]
       },
       "uniqueItems": true,
       "default": []
+    },
+    "live_source_api_version": {
+      "const": "1"
     }
-  }
+  },
+  "allOf": [
+    {
+      "if": {
+        "properties": {
+          "capabilities": {
+            "contains": {
+              "const": "live_source"
+            }
+          }
+        },
+        "required": [
+          "capabilities"
+        ]
+      },
+      "then": {
+        "required": [
+          "live_source_api_version"
+        ]
+      },
+      "else": {
+        "not": {
+          "required": [
+            "live_source_api_version"
+          ]
+        }
+      }
+    }
+  ]
 }

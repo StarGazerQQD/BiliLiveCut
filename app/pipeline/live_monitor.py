@@ -18,10 +18,11 @@ from sqlmodel import select
 
 from app.analysis.room_config import load_room_config
 from app.core.config import settings
-from app.core.cookie import get_bilibili_cookie
 from app.db.entities import LiveRoom
 from app.db.session import get_session
-from app.sources.bilibili.client import BilibiliLiveClient
+from app.plugins.live_source import LiveStatus, SourceError, SourceRoom
+from app.sources.registry import source_registry
+from app.sources.rooms import room_source
 
 
 class LiveMonitor:
@@ -42,6 +43,7 @@ class LiveMonitor:
         self._errors: dict[int, str] = {}
         self._reconnect_totals: dict[int, int] = {}
         self._pending_stops: dict[int, asyncio.Task[None]] = {}
+        self._platform_checks: dict[str, asyncio.Task[None]] = {}
 
     async def start(self) -> None:
         """启动后台监控循环。"""
@@ -61,7 +63,8 @@ class LiveMonitor:
                 await self._task
             except asyncio.CancelledError:
                 pass
-        pending = list(self._pending_stops.values())
+        pending = [*self._pending_stops.values(), *self._platform_checks.values()]
+        self._platform_checks.clear()
         self._pending_stops.clear()
         for task in pending:
             task.cancel()
@@ -112,112 +115,106 @@ class LiveMonitor:
         """主监控循环。"""
         while not self._stop.is_set():
             try:
-                await self._check_all()
+                await self._check_all(wait=False)
             except Exception as exc:  # noqa: BLE001
                 logger.error("直播监控循环异常: {}", exc)
             await self._sleep_or_stop(settings.live_poll_interval_s)
 
-    async def _check_all(self) -> None:
+    async def _check_all(self, *, wait: bool = True) -> None:
         """对所有启用了 auto_record 的房间检查开播状态。"""
         with get_session() as db:
-            rooms = db.exec(
-                select(LiveRoom).where(
-                    LiveRoom.auto_record == True,  # noqa: E712
-                    LiveRoom.room_id.is_not(None),
-                )
-            ).all()
-            # V0.1.8.2: 在 session 内提取标量属性,避免 session 关闭后懒加载触发 DetachedInstanceError。
-            room_info: list[dict[str, object]] = [
-                {
-                    "db_id": r.id,
-                    "room_id": r.room_id,
-                    "auto_analyze": r.auto_analyze,
-                    "auto_render": r.auto_render,
-                    "recording_paused": load_room_config(r).get("recording_paused", False),
-                    "auto_restart_suppressed": load_room_config(r).get("recording_auto_restart_suppressed", False),
-                    "wait_for_next_live": load_room_config(r).get("recording_wait_for_next_live", False),
-                }
-                for r in rooms
-            ]
+            rooms = list(db.exec(select(LiveRoom).where(LiveRoom.auto_record == True)).all())  # noqa: E712
+        # 每个平台独立排队；一个来源的请求预算不会阻塞另一来源开始检测。
+        groups: dict[str, list[LiveRoom]] = {}
+        for room in rooms:
+            if room.platform != "local":
+                groups.setdefault(room.platform, []).append(room)
 
+        async def check_platform(items: list[LiveRoom]) -> None:
+            for room in items:
+                if self._stop is not None and self._stop.is_set():
+                    return
+                await self._check_room(room)
+
+        for platform, items in groups.items():
+            current = self._platform_checks.get(platform)
+            if current is not None and not current.done():
+                continue
+            task = asyncio.create_task(check_platform(items))
+            self._platform_checks[platform] = task
+
+            def finished(done: asyncio.Task[None]) -> None:
+                if not done.cancelled() and done.exception() is not None:
+                    logger.error("来源轮询异常 error={}", type(done.exception()).__name__)
+
+            task.add_done_callback(finished)
+        if wait:
+            await asyncio.gather(*self._platform_checks.values())
+
+    async def _check_room(self, room: LiveRoom) -> None:
+        """只把明确下播作为停止证据；未知和查询失败均保留当前录制。"""
         from app.web.service import recorder_manager
 
-        async with BilibiliLiveClient(cookie=get_bilibili_cookie()) as client:
-            for room_state in room_info:
-                if self._stop.is_set():
-                    return
-                db_id: int = room_state["db_id"]
-                room_id: int = room_state["room_id"]
-                auto_analyze: bool = room_state["auto_analyze"]
-                auto_render: bool = room_state["auto_render"]
-                if room_state["recording_paused"] or room_state["auto_restart_suppressed"]:
-                    continue
+        db_id = room.id
+        if db_id is None:
+            return
+        config = load_room_config(room)
+        if config.get("recording_paused") or config.get("recording_auto_restart_suppressed") or db_id in self._starting:
+            return
+        if settings.require_authorization and not room.authorized:
+            self._errors[db_id] = "直播间尚未确认授权"
+            return
+        try:
+            identity = room_source(room)
+            latest = await source_registry.get_room_info(identity)
+        except SourceError as exc:
+            self._errors[db_id] = f"开播检测失败：{exc.code}"
+            self._cancel_pending_stop(db_id)
+            self._offline_counts.pop(db_id, None)
+            logger.warning("开播检测失败 db_id={} code={}", db_id, exc.code)
+            return
+        if latest.status == LiveStatus.UNKNOWN:
+            self._errors[db_id] = "直播源返回未知状态，保留当前录制"
+            self._cancel_pending_stop(db_id)
+            self._offline_counts.pop(db_id, None)
+            return
+        self._last_check_at[db_id] = datetime.now(UTC).timestamp()
+        self._errors.pop(db_id, None)
+        is_live = latest.status == LiveStatus.LIVE
+        is_recording = recorder_manager.is_running(db_id)
+        if config.get("recording_wait_for_next_live"):
+            if is_live:
+                return
+            recorder_manager.release_retry_hold(db_id)
+            logger.info("房间 {} 已确认离线,下次开播将恢复自动录制。", db_id)
+        if is_live:
+            self._cancel_pending_stop(db_id)
+            self._offline_counts[db_id] = 0
+            if not is_recording:
+                await self._start_recording(db_id, room.auto_analyze, room.auto_render)
+            elif db_id in self._started_at:
+                elapsed = asyncio.get_running_loop().time() - self._started_at[db_id]
+                if elapsed > settings.recording_max_duration_s:
+                    await recorder_manager.stop(db_id)
+                    recorder_manager._set_recording_flags(db_id, wait_for_next_live=True)
+                    self._started_at.pop(db_id, None)
+        elif is_recording:
+            count = self._offline_counts.get(db_id, 0) + 1
+            self._offline_counts[db_id] = count
+            if count >= settings.live_offline_confirm_count and db_id not in self._pending_stops:
+                self._schedule_delayed_stop(db_id, identity)
+        else:
+            self._cancel_pending_stop(db_id)
+            self._offline_counts.pop(db_id, None)
 
-                if db_id in self._starting:
-                    continue  # 正在启动中,跳过
-
-                try:
-                    latest = await client.get_room_info(str(room_id), include_detail=False)
-                    if latest.room_id != room_id:
-                        raise ValueError("直播状态返回了不同房间号")
-                    self._last_check_at[db_id] = datetime.now(UTC).timestamp()
-                    self._errors.pop(db_id, None)
-                except Exception as exc:
-                    self._errors[db_id] = f"开播检测失败：{type(exc).__name__}"
-                    logger.warning("房间 {} 状态查询失败: {}", room_id, exc)
-                    continue
-
-                is_live = latest.live_status == 1
-                is_recording = recorder_manager.is_running(db_id)
-
-                if room_state["wait_for_next_live"]:
-                    if is_live:
-                        continue
-                    recorder_manager.release_retry_hold(db_id)
-                    room_state["wait_for_next_live"] = False
-                    logger.info("房间 {} 已确认离线,下次开播将恢复自动录制。", room_id)
-
-                if is_live and not is_recording:
-                    # 开播,启动录制。
-                    self._cancel_pending_stop(db_id)
-                    self._offline_counts[db_id] = 0
-                    await self._start_recording(db_id, auto_analyze, auto_render)
-                elif is_live and is_recording:
-                    # 持续直播,重置离线计数。
-                    self._cancel_pending_stop(db_id)
-                    self._offline_counts[db_id] = 0
-                    # 检查最大录制时长。
-                    if db_id in self._started_at:
-                        elapsed = asyncio.get_event_loop().time() - self._started_at[db_id]
-                        if elapsed > settings.recording_max_duration_s:
-                            logger.warning(
-                                "房间 {} 录制已达 {} 秒上限,自动停止。",
-                                db_id,
-                                settings.recording_max_duration_s,
-                            )
-                            await recorder_manager.stop(db_id)
-                            recorder_manager._set_recording_flags(db_id, wait_for_next_live=True)
-                            self._started_at.pop(db_id, None)
-                elif not is_live and is_recording:
-                    # 可能下播,累积离线计数。
-                    count = self._offline_counts.get(db_id, 0) + 1
-                    self._offline_counts[db_id] = count
-                    if count >= settings.live_offline_confirm_count and db_id not in self._pending_stops:
-                        logger.info(
-                            "房间 {} 连续 {} 次检测到未开播,延迟 {} 秒后停止录制。",
-                            room_id,
-                            count,
-                            settings.live_session_end_delay_s,
-                        )
-                        self._schedule_delayed_stop(db_id, room_id)
-                elif not is_live and not is_recording:
-                    # 未开播也未录制,重置状态。
-                    self._cancel_pending_stop(db_id)
-                    self._offline_counts.pop(db_id, None)
-
-    def _schedule_delayed_stop(self, db_id: int, room_id: int) -> None:
+    def _schedule_delayed_stop(self, db_id: int, identity: SourceRoom) -> None:
         """登记唯一的延迟停止任务，并在完成时清理句柄。"""
-        task = asyncio.create_task(self._delayed_stop(db_id, room_id))
+        from app.web.service import recorder_manager
+
+        token = recorder_manager.recording_token(db_id)
+        if token is None:
+            return
+        task = asyncio.create_task(self._delayed_stop(db_id, identity, token))
         self._pending_stops[db_id] = task
 
         def _cleanup(done: asyncio.Task[None]) -> None:
@@ -233,29 +230,27 @@ class LiveMonitor:
             task.cancel()
             logger.info("房间 {} 在延迟收尾期间恢复直播,已撤销停止。", db_id)
 
-    async def _delayed_stop(self, db_id: int, room_id: int) -> None:
+    async def _delayed_stop(self, db_id: int, identity: SourceRoom, token: object) -> None:
         """延迟后再次向直播源确认，仍离线才停止录制。"""
         await self._sleep_or_stop(settings.live_session_end_delay_s)
         if self._stop is None or self._stop.is_set():
             return
 
         try:
-            async with BilibiliLiveClient(cookie=get_bilibili_cookie()) as client:
-                latest = await client.get_room_info(str(room_id), include_detail=False)
-        except Exception as exc:  # noqa: BLE001 - 网络边界失败时保守地保留录制
-            logger.warning("房间 {} 停录前复核失败,本轮保留录制: {}", room_id, exc)
+            latest = await source_registry.get_room_info(identity)
+        except SourceError as exc:
+            logger.warning("房间 {} 停录前复核失败,本轮保留录制: {}", db_id, exc.code)
             return
-        if latest.live_status == 1:
+        if latest.status != LiveStatus.OFFLINE:
             self._offline_counts[db_id] = 0
-            logger.info("房间 {} 停录前复核已恢复直播,继续当前会话。", room_id)
+            logger.info("房间 {} 停录前未确认下播,继续当前会话。", db_id)
             return
 
         from app.web.service import recorder_manager
 
-        if recorder_manager.is_running(db_id):
-            await recorder_manager.stop(db_id)
-        self._offline_counts.pop(db_id, None)
-        self._started_at.pop(db_id, None)
+        if await recorder_manager.stop_if_current(db_id, token):
+            self._offline_counts.pop(db_id, None)
+            self._started_at.pop(db_id, None)
 
     async def _start_recording(self, db_id: int, auto_analyze: bool, auto_render: bool) -> None:
         """启动录制。
@@ -292,8 +287,8 @@ class LiveMonitor:
                 if session:
                     self._reconnect_totals[db_id] = session.reconnect_count
         except Exception as exc:
-            self._errors[db_id] = f"自动启动失败：{exc}"
-            logger.error("自动启动录制失败 db_id={}: {}", db_id, exc)
+            self._errors[db_id] = f"自动启动失败：{type(exc).__name__}"
+            logger.error("自动启动录制失败 db_id={}: {}", db_id, type(exc).__name__)
         finally:
             self._starting.discard(db_id)
 
