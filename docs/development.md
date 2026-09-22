@@ -37,6 +37,8 @@ node scripts/check_frontend_interactions.mjs
 node scripts/check_configuration_interactions.mjs
 ```
 
+GitHub Actions 的 macOS 全量测试仅在 `main` 推送时运行。覆盖率测试步骤上限为 90 分钟，整个 job 上限为 120 分钟，为依赖安装和报告上传保留余量。超时配置更新仅对使用新提交的运行生效，重跑旧提交仍使用其原有时限。
+
 完整门禁需要可用的原生扩展、真实 Payload 等前置产物，缺少前置条件时应先完成构建；不将跳过项目计为通过。以下入口按仓库配置执行依赖审计、测试和相关构建检查：
 
 ```powershell
