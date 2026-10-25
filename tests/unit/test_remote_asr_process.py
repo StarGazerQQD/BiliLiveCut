@@ -126,3 +126,71 @@ def test_real_remote_process_reuses_slot_or_stops_blocked_request(
         serving.join(timeout=5)
         server.server_close()
         assert not serving.is_alive()
+
+
+@pytest.mark.parametrize("routed", [False, True])
+def test_revocation_between_chunks_stops_next_upload(
+    temp_db: None, pcm_wav: Path, monkeypatch: pytest.MonkeyPatch, routed: bool
+) -> None:
+    from app.core.runtime_settings import settings_scope
+    from app.models.configuration import ModelAuthorizationError
+
+    calls: list[str] = []
+
+    class Handler(BaseHTTPRequestHandler):
+        def log_message(self, format: str, *args: object) -> None:
+            pass
+
+        def do_POST(self) -> None:
+            calls.append(self.path)
+            self.rfile.read(int(self.headers["Content-Length"]))
+            # 第一块已经提交给服务端；撤销后，父进程不得许可第二块上传。
+            if routed:
+                revised = definition.model_copy(deep=True)
+                revised.revision = 1
+                revised.connections[0].api_key = ""
+                revised.connections[0].clear_api_key = True
+                save_model_configuration(revised)
+            else:
+                save_configuration(ConfigurationChange(clear=["asr_remote_api_key"]))
+            payload = json.dumps({"text": "第一块的有效文本"}).encode()
+            self.send_response(200)
+            self.send_header("Content-Type", "application/json")
+            self.send_header("Content-Length", str(len(payload)))
+            self.end_headers()
+            self.wfile.write(payload)
+
+    server = HTTPServer(("127.0.0.1", 0), Handler)
+    endpoint = f"http://127.0.0.1:{server.server_port}/v1"
+    monkeypatch.setattr(settings, "asr_primary", "openai_compatible")
+    monkeypatch.setattr(settings, "asr_remote_base_url", endpoint)
+    monkeypatch.setattr(settings, "asr_remote_api_key", "revocable-key")
+    monkeypatch.setattr(settings, "asr_remote_model", "fixture-model")
+    monkeypatch.setattr(settings, "asr_remote_chunk_s", 4)
+    monkeypatch.setattr(settings, "asr_fallback_whisper", False)
+    definition = ModelConfigurationChange(
+        revision=0,
+        connections=[ConnectionChange(id="speech", name="测试", base_url=endpoint, api_key="revocable-key")],
+        routes=[ModelRoute(id="speech", name="测试", connection_id="speech", capability="asr", model="fixture-model")],
+    )
+    if routed:
+        save_model_configuration(definition)
+        monkeypatch.setattr(settings, "asr_remote_route_id", "speech")
+    else:
+        # 模型目录存在也不应阻止独立 ASR 配置；二者的授权来源必须区分。
+        save_model_configuration(ModelConfigurationChange(revision=0, connections=[], routes=[]))
+    serving = threading.Thread(target=server.serve_forever, kwargs={"poll_interval": 0.05})
+    serving.start()
+    pool = ASRProcessPool()
+    try:
+        with settings_scope():
+            with pytest.raises(ModelAuthorizationError):
+                IsolatedPipeline(pool=pool).transcribe(str(pcm_wav))
+        assert calls == ["/v1/audio/transcriptions"]
+        assert not pool._slots and all(value == 0 for value in pool._roles.values())
+    finally:
+        pool.shutdown(0)
+        server.shutdown()
+        serving.join(timeout=5)
+        server.server_close()
+        assert not serving.is_alive()

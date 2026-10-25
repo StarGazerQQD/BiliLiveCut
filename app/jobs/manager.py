@@ -44,6 +44,7 @@ class JobManager:
         self._started = False
         self._stopping = False
         self._start_lock = asyncio.Lock()
+        self._release_ownership: Callable[[], None] | None = None
 
     def register(self, job_type: str, handler: JobHandler) -> None:
         """在组合入口注册业务处理器。"""
@@ -58,10 +59,16 @@ class JobManager:
                 await self._start()
 
     async def _start(self) -> None:
-        jobs = await asyncio.to_thread(lambda: list(job_store.iter_active_jobs()))
-        recovered = []
-        for job in jobs:
-            recovered.append(await asyncio.to_thread(job_store.recover, JobAttempt(job["id"], job["attempt"])))
+        release = job_store.acquire_execution()
+        try:
+            jobs = await run_sync(lambda: list(job_store.iter_active_jobs()))
+            recovered = []
+            for job in jobs:
+                recovered.append(await run_sync(partial(job_store.recover, JobAttempt(job["id"], job["attempt"]))))
+        except BaseException:
+            release()
+            raise
+        self._release_ownership = release
         self._semaphore = asyncio.Semaphore(self._max_concurrency)
         self._stopping = False
         self._started = True
@@ -94,6 +101,9 @@ class JobManager:
                 raise RuntimeError(f"{len(pending)} 个 Web 作业未确认退出，关闭未完成")
         self._tasks.clear()
         self._cancel_events.clear()
+        if self._release_ownership is not None:
+            self._release_ownership()
+            self._release_ownership = None
         self._started = False
         self._start_lock = asyncio.Lock()
 

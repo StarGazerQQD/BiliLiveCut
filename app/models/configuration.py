@@ -1,7 +1,10 @@
 # ruff: noqa: D100
 from __future__ import annotations
 
+import hmac
 import json
+from collections.abc import Callable
+from functools import partial
 from typing import TYPE_CHECKING
 
 from pydantic import ValidationError
@@ -44,6 +47,66 @@ def configured_models() -> ModelConfiguration | None:
     """实际调用读取任务快照；尚未启用独立路由时保留原有业务配置。"""
     value = get_setting(MODEL_CONFIGURATION_KEY, "")
     return _parse(value) if value else None
+
+
+class ModelAuthorizationError(RuntimeError):
+    """当前连接已撤销或变更，旧执行上下文不得继续发起请求。"""
+
+
+def authorize_model_call(connection_id: str, route_id: str, base_url: str, api_key: str) -> None:
+    """请求发送前直读持久授权；模型参数仍由任务快照决定，不记录任何密钥。"""
+    with get_session() as db:
+        db.connection().exec_driver_sql("BEGIN")
+        core, _ = _core(db)
+        current = _read(db, core)
+        connection = next((item for item in current.connections if item.id == connection_id), None)
+        route = next((item for item in current.routes if item.id == route_id), None)
+        if (
+            connection is None
+            or not connection.enabled
+            or connection.base_url.rstrip("/") != base_url.rstrip("/")
+            or not hmac.compare_digest(connection.api_key.encode(), api_key.encode())
+            or route is None
+            or not route.enabled
+            or route.connection_id != connection_id
+        ):
+            raise ModelAuthorizationError("模型连接授权已撤销或变更，请使用当前配置重新发起操作")
+
+
+def authorize_model_probe(revision: int) -> None:
+    """草稿允许使用未保存的连接，但配置变更后不能继续测试或重试旧草稿。"""
+    with get_session() as db:
+        _, current = _core(db)
+        if current != revision:
+            raise ModelAuthorizationError("模型测试期间配置已变更，请重新加载后再测试")
+
+
+def _authorize_direct_asr(base_url: str, api_key: str) -> None:
+    # 未选择目录路由时，独立 ASR 配置仍是授权来源，与文字模型目录是否启用无关。
+    with get_session() as db:
+        db.connection().exec_driver_sql("BEGIN")
+        core, _ = _core(db)
+        if core.asr_remote_base_url.rstrip("/") != base_url.rstrip("/") or not hmac.compare_digest(
+            core.asr_remote_api_key.encode(), api_key.encode()
+        ):
+            raise ModelAuthorizationError("远程 ASR 连接授权已撤销或变更，请使用当前配置重新发起操作")
+
+
+def asr_call_authorizer(payload: dict[str, object]) -> Callable[[], None]:
+    """授权仅在父进程核对，子进程每次上传音频前必须等待父进程许可。"""
+    selected = effective_settings().asr_remote_route_id
+    if not selected:
+        return partial(_authorize_direct_asr, str(payload["asr_remote_base_url"]), str(payload["asr_remote_api_key"]))
+    selection = _validate_selection(configured_models(), selected)
+    assert selection is not None
+    connection_id, route_id = selection[1].id, selection[0].id
+    return partial(
+        authorize_model_call,
+        connection_id,
+        route_id,
+        str(payload["asr_remote_base_url"]),
+        str(payload["asr_remote_api_key"]),
+    )
 
 
 def _legacy(db: Session, core: Settings) -> ModelConfiguration:

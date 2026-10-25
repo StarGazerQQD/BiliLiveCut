@@ -15,7 +15,7 @@ from app.analysis.transcription.audio_normalization import (
 from app.analysis.transcription.models import ASRSegmentResult, ASRTranscriptResult, EmotionEvent, Word
 from app.analysis.transcription.process_pool import ASRProcessPool, get_process_pool
 from app.core.runtime_settings import effective_settings
-from app.models.configuration import asr_worker_settings
+from app.models.configuration import asr_call_authorizer, asr_worker_settings
 from app.pipeline.lease import LeaseLostError, TaskLease, still_owns_lease
 
 
@@ -103,16 +103,18 @@ class IsolatedPipeline:
             config.asr_inference_max_timeout_s,
             config.asr_inference_base_timeout_s + evidence.duration_s * config.asr_inference_timeout_rtf,
         )
+        payload = _settings_payload()
         response = self._pool.execute(
             {
                 "audio_path": audio_path,
                 "initial_prompt": initial_prompt,
-                "settings": _settings_payload(),
+                "settings": payload,
                 "context": self._context,
                 "audio_evidence": asdict(evidence),
             },
             timeout_s=budget,
             check_cancelled=self.check_cancelled,
+            authorize_remote=asr_call_authorizer(payload) if payload["asr_primary"] == "openai_compatible" else None,
         )
         raw = response["result"]
         # JSON 类型仅位于 IPC 边界，业务层恢复为既有强类型结果。

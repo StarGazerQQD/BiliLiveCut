@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import asyncio
+from functools import partial
 from typing import Any
 
 from loguru import logger
@@ -105,7 +106,15 @@ async def test_llm_providers(items: list[dict[str, Any]] | None = None) -> dict[
             logger.opt(exception=exc).warning("LLM 连通测试失败 provider={} model={}", p.id, p.model)
             return {"id": p.id, "name": p.name, "ok": False, "detail": safe_exception_summary(exc)}
 
-    candidates = provs.active_providers() if items is None else provs.merge_providers(items)
+    if items is None:
+        candidates = provs.active_providers()
+    else:
+        from app.models.configuration import authorize_model_probe, model_configuration_view
+
+        revision = model_configuration_view().revision
+        candidates = provs.merge_providers(items)
+        for provider in candidates:
+            provider.authorize = partial(authorize_model_probe, revision)
     providers = [p for p in candidates if p.enabled and p.api_key and p.base_url]
     results = await asyncio.to_thread(lambda: [_probe(p) for p in providers])
     return {"results": results}
@@ -117,7 +126,12 @@ def test_model_route(change: ModelProbe) -> ModelProbeResult:
 
     from app.analysis.llm import EmptyLLMResponseError, probe_provider
     from app.analysis.llm_providers import from_route
-    from app.models.configuration import probe_configuration, resolve_routes
+    from app.models.configuration import (
+        ModelAuthorizationError,
+        authorize_model_probe,
+        probe_configuration,
+        resolve_routes,
+    )
 
     config = probe_configuration(change)
     route = next((item for item in config.routes if item.id == change.route_id), None)
@@ -134,7 +148,9 @@ def test_model_route(change: ModelProbe) -> ModelProbeResult:
         if _today_spend() >= settings.llm_daily_budget:
             raise ValueError("已达到每日模型预算，无法发起测试请求")
     try:
-        result = probe_provider(from_route(*selected))
-    except (OpenAIError, EmptyLLMResponseError) as exc:
+        provider = from_route(*selected)
+        provider.authorize = partial(authorize_model_probe, change.revision)
+        result = probe_provider(provider)
+    except (OpenAIError, EmptyLLMResponseError, ModelAuthorizationError) as exc:
         return ModelProbeResult(id=route.id, ok=False, detail=safe_exception_summary(exc))
     return ModelProbeResult(id=route.id, ok=True, detail=result[:80])

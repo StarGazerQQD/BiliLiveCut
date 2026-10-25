@@ -400,7 +400,7 @@ print('EXIT_PROBE_COMPLETE')
 """
     try:
         result = run_cancellable(
-            [sys.executable, "-c", script, str(pid_file)], env=env, capture_output=True, text=True, timeout=35
+            [sys.executable, "-c", script, str(pid_file)], env=env, capture_output=True, encoding="utf-8", timeout=35
         )
     except subprocess.TimeoutExpired as exc:
         exc.add_note(f"Uvicorn stdout: {exc.stdout!r}\nUvicorn stderr: {exc.stderr!r}")
