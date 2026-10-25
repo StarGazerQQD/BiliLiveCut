@@ -2,11 +2,17 @@
 from __future__ import annotations
 
 import json
-from collections.abc import Iterator
+from collections.abc import Callable, Iterator
 from contextlib import contextmanager
 from datetime import UTC, datetime
+from pathlib import Path
+from threading import Lock
+from urllib.parse import unquote
+from weakref import WeakKeyDictionary
 
+from filelock import FileLock, Timeout
 from pydantic import JsonValue
+from sqlalchemy.engine import Engine
 from sqlmodel import Session, select
 
 from app.core.sanitize import sanitize_diagnostic
@@ -15,6 +21,38 @@ from app.db.session import get_session
 from app.jobs.contracts import ACTIVE, TERMINAL, JobAttempt, JobData, JobSuperseded, decode_job, now_iso, validate_job
 
 _PREFIX = "web_job:"
+
+
+_memory_owners: WeakKeyDictionary[Engine, Lock] = WeakKeyDictionary()
+_memory_owners_lock = Lock()
+
+
+def acquire_execution() -> Callable[[], None]:
+    """非阻塞取得数据库级执行所有权；持有到处理器确认退出，不删除锁文件。"""
+    from app.db.session import engine
+
+    if engine.url.get_backend_name() != "sqlite":
+        raise RuntimeError("Web 作业执行锁当前仅支持 SQLite")
+    database = engine.url.database
+    if str(engine.url.query.get("uri", "")).lower() in {"1", "true"}:
+        if engine.url.query.get("mode") == "memory" or database == "file::memory:":
+            raise RuntimeError("Web 作业执行锁不支持共享内存 URI，请使用普通 SQLite 文件数据库")
+        if database and database.startswith("file:"):
+            database = unquote(database[5:])
+    if not database or database == ":memory:":
+        with _memory_owners_lock:
+            owner = _memory_owners.setdefault(engine, Lock())
+        if not owner.acquire(blocking=False):
+            raise RuntimeError("当前数据库已有 Web 作业执行实例，不能重复启动或恢复作业")
+        return owner.release
+    # resolve 使相对路径和符号链接指向同一所有权，操作系统在进程退出时释放锁。
+    path = Path(database).resolve()
+    owner = FileLock(str(path) + ".web-jobs.lock", thread_local=False)
+    try:
+        owner.acquire(timeout=0)
+    except Timeout:
+        raise RuntimeError("当前数据库已有 Web 作业执行实例，不能重复启动或恢复作业") from None
+    return owner.release
 
 
 def _lock(db: Session) -> None:

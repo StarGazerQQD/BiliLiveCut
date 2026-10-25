@@ -127,7 +127,17 @@ def _asr_child(connection: Connection) -> None:
             return
         emit = _request_emitter(connection, request["request_id"])
 
-        def progress(stage: str, details: dict[str, object], emit: Callable[..., None] = emit) -> None:
+        def progress(
+            stage: str,
+            details: dict[str, object],
+            emit: Callable[..., None] = emit,
+            request_id: str = request["request_id"],
+        ) -> None:
+            if stage == "remote_request":
+                emit("authorization_required")
+                permit = _receive(connection)
+                if permit != {"kind": "authorization_granted", "request_id": request_id}:
+                    raise RuntimeError("ASR remote request authorization rejected")
             emit("progress", stage=stage, details=details, models=model_pool.infos())
 
         set_progress_sink(progress)
@@ -328,7 +338,12 @@ class ASRProcessPool:
             raise ASRTimeoutError(f"ASR inference deadline reached stage={stage}")
 
     def execute(
-        self, request: dict[str, Any], *, timeout_s: float, check_cancelled: Callable[[], None]
+        self,
+        request: dict[str, Any],
+        *,
+        timeout_s: float,
+        check_cancelled: Callable[[], None],
+        authorize_remote: Callable[[], None] | None = None,
     ) -> dict[str, Any]:
         """等待资源、运行并监管一次请求，退出确认完成后才归还槽与角色名额。"""
         from app.core.config import Settings
@@ -438,7 +453,12 @@ class ASRProcessPool:
                     raise RuntimeError("ASR IPC stale request result rejected")
                 if "models" in message:
                     slot.models = message["models"]
-                if message["kind"] == "metric":
+                if message["kind"] == "authorization_required":
+                    if authorize_remote is None:
+                        raise RuntimeError("远程 ASR 缺少父进程授权检查")
+                    authorize_remote()
+                    slot.outgoing.put({"kind": "authorization_granted", "request_id": request["request_id"]})
+                elif message["kind"] == "metric":
                     from app.analysis.asr_metrics import apply_event
 
                     apply_event(message["event"], message["values"])

@@ -88,7 +88,7 @@ FunASR 在加载前检查 Torch 构建、可见 GPU 和实际 CUDA 运算，加�
 
 远程转写独立于 LLM 服务商：选择它会将标准化音频上传到所配服务。默认 `json` 接收正文，字幕使用明确的估算时间；仅在服务支持时选择 `verbose_json`，同时请求词与句的时间戳。程序校验时间戳范围、顺序、句段不重叠、响应格式、单块 2 MiB 及整次任务累计 8 MiB 响应上限，不把服务未提供的置信度当作零或满分。接口格式参考 [OpenAI 官方转写接口](https://developers.openai.com/api/reference/resources/audio/subresources/transcriptions/methods/create)。
 
-`ASR_REMOTE_CHUNK_S` 默认 300 秒、范围 1~600 秒，音频统一为 16kHz 单声道 PCM16，每块低于 20 MB，串行上传并恢复原窗口时间轴；长录音的分块边界可能截断词句，可按服务要求调整。任一块失败则整个本次转写失败，不保存部分文本。空文本仍需本地 VAD 确认无语音，所以运行环境需保留现有 `asr-whisper` 音频/VAD 依赖；无需下载 Whisper 模型即可做这项核验。
+`ASR_REMOTE_CHUNK_S` 默认 300 秒、范围 1~600 秒，音频统一为 16kHz 单声道 PCM16，每块低于 20 MB，串行上传并恢复原窗口时间轴；长录音的分块边界可能截断词句，可按服务要求调整。每块上传前由父进程核对当前连接授权，撤销或变更凭据后不再许可后续上传；子进程不读取数据库。任一块失败则整个本次转写失败，不保存部分文本。空文本仍需本地 VAD 确认无语音，所以运行环境需保留现有 `asr-whisper` 音频/VAD 依赖；无需下载 Whisper 模型即可做这项核验。
 
 远程主引擎不加载 FunASR、SenseVoice 或局部复核模型；`ASR_PRIMARY_MAX_CONCURRENCY` 控制远程任务并发，主引擎 device/keep_loaded 对 HTTP 调用不生效。`ASR_FALLBACK_WHISPER` 开启时，远程失败或文本退化会按现有机制回退本地 Whisper，需准备本地模型；关闭后保留远程失败，由任务已有的有限重试处理。HTTP 客户端本身不自动重试；`ASR_REMOTE_TIMEOUT_S` 控制读写超时，ASR 总推理预算、取消和租约丢失继续由生产子进程监管。接口响应成功并不代表费用为零，远程 ASR 费用不计入 LLM 文本预算。
 

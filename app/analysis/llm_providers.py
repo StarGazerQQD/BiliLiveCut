@@ -16,7 +16,9 @@ from __future__ import annotations
 import json
 import math
 import uuid
+from collections.abc import Callable
 from dataclasses import dataclass, field
+from functools import partial
 
 from loguru import logger
 from sqlmodel import Session
@@ -25,7 +27,7 @@ from app.core import settings_store
 from app.core.config import settings
 from app.core.configuration import configuration_transaction
 from app.db.entities import AppSetting
-from app.models.configuration import MODEL_CONFIGURATION_KEY, configured_models
+from app.models.configuration import MODEL_CONFIGURATION_KEY, authorize_model_call, configured_models
 from app.models.contracts import TEXT_CAPABILITIES, ModelConnection, ModelRoute, TextCapability
 
 _STORE_KEY = "llm_providers"
@@ -59,6 +61,7 @@ class LLMProvider:
     priority: int = 100
     connection_id: str = ""
     max_output_tokens: int | None = None
+    authorize: Callable[[], None] | None = field(default=None, repr=False, compare=False)
 
     def to_dict(self) -> dict:
         """序列化为可持久化字典(含明文 key)。
@@ -223,8 +226,21 @@ def load_providers(capability: TextCapability = "analysis") -> list[LLMProvider]
                     model=settings.trend_model,
                     web_search_param=settings.trend_web_search_param,
                     priority=min((item.priority for item in items), default=100) - 1,
+                    authorize=partial(
+                        authorize_model_call,
+                        "dedicated-trends",
+                        "dedicated-trends",
+                        settings.trend_base_url,
+                        settings.trend_api_key,
+                    ),
                 ),
             )
+    for provider in items:
+        if provider.authorize is not None:
+            continue
+        connection_id = provider.connection_id or f"legacy-{provider.id}"
+        route_id = provider.id if provider.connection_id else f"{capability}-{provider.id}"
+        provider.authorize = partial(authorize_model_call, connection_id, route_id, provider.base_url, provider.api_key)
     return sorted(items, key=lambda p: (p.priority, p.name))
 
 

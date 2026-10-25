@@ -354,6 +354,8 @@ def _create_completion(
     extra_body: dict[str, object] | None,
 ) -> object:
     """发起一次 OpenAI Chat Completions 请求。"""
+    if provider.authorize is not None:
+        provider.authorize()
     return client.chat.completions.create(  # type: ignore[attr-defined,no-any-return]
         model=provider.model,
         max_tokens=max_tokens,
