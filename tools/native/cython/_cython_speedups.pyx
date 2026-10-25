@@ -406,6 +406,8 @@ def cluster_similarity_matrix(list items):
     :param items: list[dict], 每个 dict 含 asr_text/keywords/start_ts。
     :returns: list[list[float]], N×N 相似度矩阵。
     """
+    from datetime import datetime as _dt
+
     cdef Py_ssize_t n = len(items)
     if n < 2:
         return [[0.0] * n for _ in range(n)]
@@ -430,7 +432,15 @@ def cluster_similarity_matrix(list items):
         bigrams = fast_char_bigrams(text)
         bigram_vecs.append(Counter(bigrams))
         kw_sets.append(set(item.get("keywords", []) or []))
-        tss.append(item.get("start_ts"))
+        ts = item.get("start_ts")
+        if isinstance(ts, str):
+            try:
+                ts = _dt.fromisoformat(ts)
+            except ValueError:
+                ts = None
+        elif not isinstance(ts, _dt):
+            ts = None
+        tss.append(ts)
 
     # 构建矩阵
     cdef list matrix = [[0.0] * n for _ in range(n)]
@@ -486,16 +496,10 @@ cdef double _event_sim_fast(
 
     # 时间接近度
     time_sim = 0.0
-    if ts_a and ts_b:
-        from datetime import datetime as _dt
-        if isinstance(ts_a, str):
-            ts_a = _dt.fromisoformat(ts_a)
-        if isinstance(ts_b, str):
-            ts_b = _dt.fromisoformat(ts_b)
-        if isinstance(ts_a, _dt) and isinstance(ts_b, _dt):
-            diff_s = abs((ts_a - ts_b).total_seconds())
-            if diff_s < 3600:
-                time_sim = max(0.0, 1.0 - diff_s / 3600.0)
+    if ts_a is not None and ts_b is not None:
+        diff_s = abs((ts_a - ts_b).total_seconds())
+        if diff_s < 3600:
+            time_sim = max(0.0, 1.0 - diff_s / 3600.0)
 
     score = sim_text * 0.55 + sim_kw * 0.25 + time_sim * 0.20
     return round(score, 4)

@@ -106,7 +106,14 @@ def test_fused_clustering_keeps_groups_roots_and_exact_average(size: int, thresh
 
 
 @pytest.mark.parametrize("text", ["中文", "\ud800abc", "😀𠀀\x00", "\U0010ffff"])
-def test_fused_clustering_preserves_mixed_timezone_and_unicode_behavior(text: str) -> None:
+@pytest.mark.parametrize("backend", ["default", "without_rust", "python"])
+def test_fused_clustering_preserves_mixed_timezone_and_unicode_behavior(
+    text: str, backend: str, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    if backend != "default":
+        monkeypatch.setattr(dispatcher, "_rust_backend", None)
+    if backend == "python":
+        monkeypatch.setattr(dispatcher, "_cython_backend", None)
     items: list[dispatcher.ClusterItem] = [
         {"asr_text": text, "start_ts": datetime(2026, 10, 25, tzinfo=UTC)},
         {"asr_text": text, "start_ts": datetime(2026, 10, 25, 8, tzinfo=timezone(timedelta(hours=8)))},
@@ -115,6 +122,32 @@ def test_fused_clustering_preserves_mixed_timezone_and_unicode_behavior(text: st
     assert dispatcher.cluster_candidate_groups(items, 0.4) == reference.cluster_groups(
         reference.cluster_similarity_matrix(items), 0.4
     )
+
+
+@pytest.mark.parametrize("timestamp", [None, "", "invalid", "2026-02-30", "2026-10-25T08:00:00+08:00"])
+def test_cython_clustering_preserves_missing_invalid_and_iso_timestamps(
+    timestamp: str | None, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    monkeypatch.setattr(dispatcher, "_rust_backend", None)
+    items: list[dispatcher.ClusterItem] = [
+        {"asr_text": "相同正文", "start_ts": datetime(2026, 10, 25, tzinfo=UTC)},
+        {"asr_text": "相同正文", "start_ts": timestamp},
+        {"asr_text": "相同正文", "start_ts": "2026-10-25T00:30:00+00:00"},
+    ]
+    assert dispatcher.cluster_similarity_matrix(items) == reference.cluster_similarity_matrix(items)
+    assert dispatcher.cluster_candidate_groups(items, 0.4) == reference.cluster_groups(
+        reference.cluster_similarity_matrix(items), 0.4
+    )
+
+
+def test_cython_clustering_preserves_naive_aware_datetime_error(monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.setattr(dispatcher, "_rust_backend", None)
+    items: list[dispatcher.ClusterItem] = [
+        {"asr_text": "相同正文", "start_ts": datetime(2026, 10, 25, tzinfo=UTC)},
+        {"asr_text": "相同正文", "start_ts": datetime(2026, 10, 25)},
+    ]
+    with pytest.raises(TypeError):
+        dispatcher.cluster_candidate_groups(items, 0.4)
 
 
 @pytest.mark.parametrize("threshold", [math.inf, -math.inf, math.nan])
