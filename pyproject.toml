@@ -24,6 +24,7 @@ dependencies = [
     "psutil>=7.2.2",          # 实测内存及进程资源
     "numpy>=1.26",            # 音频特征计算(RMS 包络、静音检测)
     "filelock>=4.2.1",        # 共享预算账本与模型缓存锁，包含官方安全修复
+    "rapidfuzz>=3.14.6,<4",   # CPU 精确编辑距离；Windows wheel 随附所需 C++ 运行库
 ]
 
 [project.optional-dependencies]

@@ -85,7 +85,7 @@ python-dotenv==1.2.2 --hash=sha256:1d8214789a24de455a8b8bd8ae6fe3c6b69a5e3d64aa8
 python-multipart==0.0.32 --hash=sha256:ff6d3f776f16878c894e52e107296ffc890e913c611b1a4ec6c44e2821fe2e23  # python_multipart-0.0.32-py3-none-any.whl
 pyyaml==6.0.3 --hash=sha256:9f3bfb4965eb874431221a3ff3fdcddc7e74e3b07799e0e84ca4a0f867d449bf  # pyyaml-6.0.3-cp311-cp311-win_amd64.whl
 qrcode==8.2 --hash=sha256:16e64e0716c14960108e85d853062c9e8bba5ca8252c0b4d0231b9df4060ff4f  # qrcode-8.2-py3-none-any.whl
-rapidfuzz==3.14.5 --hash=sha256:d7ca16637c0ede8243f84074044bd0b2335a0341421f8227c85756de2d18c819  # rapidfuzz-3.14.5-cp311-cp311-win_amd64.whl
+rapidfuzz==3.14.6 --hash=sha256:737a57cbca3e5c16decac86e205727bcd4b99c52f77c48bb44123078c5cd9a7a  # rapidfuzz-3.14.6-cp311-cp311-win_amd64.whl
 regex==2026.7.19 --hash=sha256:8d3469c91dd92ee41b7c95280edbd975ef1ba9195086686623a1c6e8935ce965  # regex-2026.7.19-cp311-cp311-win_amd64.whl
 requests==2.34.2 --hash=sha256:2a0d60c172f83ac6ab31e4554906c0f3b3588d37b5cb939b1c061f4907e278e0  # requests-2.34.2-py3-none-any.whl
 rich==15.0.0 --hash=sha256:33bd4ef74232fb73fe9279a257718407f169c09b78a87ad3d296f548e27de0bb  # rich-15.0.0-py3-none-any.whl

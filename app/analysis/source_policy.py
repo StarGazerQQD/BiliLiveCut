@@ -3,12 +3,56 @@
 from __future__ import annotations
 
 import json
+from bisect import bisect_right
+from dataclasses import dataclass
 from datetime import UTC, datetime
 
 from sqlmodel import Session
 
 from app.db.entities import AppSetting, LiveRoom, RecordingSession
 from app.db.session import get_session
+
+
+@dataclass(frozen=True, slots=True)
+class DanmakuCoverageSnapshot:
+    """一次分析使用的覆盖快照，不跨调用缓存采集状态。"""
+
+    lag_s: float
+    local_has_comments: bool | None
+    starts: tuple[datetime, ...]
+    furthest_ends: tuple[datetime, ...]
+
+    def contains(self, start: datetime | None = None, end: datetime | None = None) -> bool:
+        """要求至少一个原始连接区间完整覆盖窗口，不拼接相邻区间。"""
+        if self.local_has_comments is not None:
+            return self.local_has_comments
+        if start is None or end is None:
+            return bool(self.starts)
+        left = start.replace(tzinfo=UTC) if start.tzinfo is None else start.astimezone(UTC)
+        right = end.replace(tzinfo=UTC) if end.tzinfo is None else end.astimezone(UTC)
+        index = bisect_right(self.starts, left) - 1
+        return index >= 0 and self.furthest_ends[index] >= right
+
+
+def load_danmaku_coverage(db: Session, session_id: int) -> DanmakuCoverageSnapshot:
+    """从当前数据库会话一次读取延迟与完整覆盖，保留本地导入的证据语义。"""
+    from app.recording.danmaku import read_evidence
+
+    evidence = read_evidence(db, session_id)
+    lag_s = evidence.lag_s if evidence is not None else 0.0
+    if is_local_session(session_id, db):
+        row = db.get(AppSetting, f"local_source:{session_id}")
+        available = row is not None and json.loads(row.value).get("has_comments") is True
+        return DanmakuCoverageSnapshot(lag_s, available, (), ())
+    if evidence is None:
+        return DanmakuCoverageSnapshot(lag_s, None, (), ())
+    starts: list[datetime] = []
+    ends: list[datetime] = []
+    for interval in sorted(evidence.intervals, key=lambda item: item.start):
+        starts.append(interval.start)
+        end = interval.end or evidence.confirmed_until or interval.start
+        ends.append(max(end, ends[-1]) if ends else end)
+    return DanmakuCoverageSnapshot(lag_s, None, tuple(starts), tuple(ends))
 
 
 def is_local_session(session_id: int, db: Session | None = None) -> bool:

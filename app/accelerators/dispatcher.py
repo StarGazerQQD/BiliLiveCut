@@ -10,7 +10,11 @@ from __future__ import annotations
 import logging
 from collections.abc import Sequence
 from datetime import datetime as _dt
+from functools import lru_cache
+from math import isfinite
 from typing import Any, TypedDict
+
+from rapidfuzz.distance import Levenshtein
 
 from app.accelerators.python_fallback import speedups_round2 as _fallback_round2
 
@@ -28,14 +32,19 @@ _logger = logging.getLogger(__name__)
 
 # C: Aho-Corasick、字符 bigram、余弦相似度和梗词计数。
 try:
+    from app.accelerators._c_speedups import (
+        danmaku_sentiment_statistics as _native_sentiment_statistics,
+    )
     from app.accelerators._c_speedups import (  # type: ignore[import]
         fast_aho_has_match,
         fast_ahocorasick_build,
         fast_ahocorasick_search,
         fast_char_bigrams,
         fast_cosine_similarity,
-        fast_match_keywords,
         fast_meme_count,
+    )
+    from app.accelerators._c_speedups import (
+        fast_match_keywords as _uncached_match_keywords,
     )
 
     _BACKEND = "C"
@@ -47,8 +56,10 @@ except ImportError:
         fast_ahocorasick_search,
         fast_char_bigrams,
         fast_cosine_similarity,
-        fast_match_keywords,
         fast_meme_count,
+    )
+    from app.accelerators.python_fallback.speedups import (
+        fast_match_keywords as _uncached_match_keywords,
     )
 
     _BACKEND = "python"
@@ -89,11 +100,100 @@ except ImportError:
     _logger.info("加速模块(Rust): 使用 Python 参考实现")
 
 
+@lru_cache(maxsize=8)
+def _keyword_automaton(patterns: tuple[str, ...]) -> object:
+    return fast_ahocorasick_build(patterns)
+
+
+def fast_match_keywords(text: str, patterns: tuple[str, ...]) -> list[str]:
+    """复用有界关键词自动机；按完整词表隔离房间和配置变更。"""
+    if not text or not patterns:
+        return []
+    # 限制保留的词表与节点规模；大词表仍走完整匹配，不截断命中结果。
+    if len(patterns) <= 64 and all(isinstance(word, str) for word in patterns):
+        words = tuple(patterns)
+        if sum(map(len, words)) <= 512:
+            return fast_ahocorasick_search(_keyword_automaton(words), text)
+    return _uncached_match_keywords(text, patterns)
+
+
+def danmaku_sentiment_statistics(texts: list[str], memes: tuple[str, ...]) -> tuple[int, int, int]:
+    """复用梗词自动机并合并重复率与感叹号统计，不修改情绪公式。"""
+    if not texts:
+        return 0, 0, 0
+    if _BACKEND == "C":
+        automaton = (
+            _keyword_automaton(memes)
+            if len(memes) <= 64 and sum(map(len, memes)) <= 512
+            else fast_ahocorasick_build(memes)
+        )
+        return _native_sentiment_statistics(texts, automaton)
+    counts: dict[str, int] = {}
+    exclamations = 0
+    for text in texts:
+        counts[text] = counts.get(text, 0) + 1
+        exclamations += "!" in text or "！" in text
+    return max(counts.values()), exclamations, fast_meme_count(texts, memes)
+
+
+def levenshtein_distance(a: str, b: str) -> int:
+    """计算逐 Unicode 字符的精确编辑距离，保留复核阈值和原因中的比率。"""
+    if not a:
+        return len(b)
+    if not b:
+        return len(a)
+    return Levenshtein.distance(a, b)
+
+
 def _float64_contiguous(values: Sequence[float]) -> Any:
     """把数值序列转换为 Cython ``double[::1]`` 所需的连续缓冲区。"""
     import numpy as np
 
     return np.ascontiguousarray(values, dtype=np.float64)
+
+
+def representative_danmaku_statistics(
+    messages: Sequence[str | None], reaction_words: set[str], humor_words: tuple[str, ...]
+) -> list[tuple[str, str, int, int, float, float, float]]:
+    """一次生成代表弹幕排序所需的全部稳定统计。"""
+    if _cython_backend is None:
+        return _fallback_round2.representative_danmaku_statistics(messages, reaction_words, humor_words)
+    return _cython_backend.representative_danmaku_statistics(messages, reaction_words, humor_words)
+
+
+def normalize_asr_text(text: str) -> str:
+    """执行保留 Unicode 语义的 ASR 规范化。"""
+    if _cython_backend is None:
+        return _fallback_round2.normalize_asr_text(text)
+    return _cython_backend.normalize_asr_text(text)
+
+
+def normalize_asr_with_indexes(text: str) -> tuple[str, list[int]]:
+    """规范化 ASR 文本并返回精确原文位置。"""
+    if _cython_backend is None:
+        return _fallback_round2.normalize_asr_with_indexes(text)
+    return _cython_backend.normalize_asr_with_indexes(text)
+
+
+def interval_conflicts(
+    peak: float,
+    start: float,
+    end: float,
+    selected: list[tuple[float, float, float]],
+    cooldown_s: float,
+    iou_threshold: float,
+) -> bool:
+    """检查候选与已选区间，时间对象和业务排序由调用方处理。"""
+    if _cython_backend is None:
+        return _fallback_round2.interval_conflicts(peak, start, end, selected, cooldown_s, iou_threshold)
+    return _cython_backend.interval_conflicts(peak, start, end, selected, cooldown_s, iou_threshold)
+
+
+def audio_bucket_indices(times: Sequence[float], duration_s: float, bucket_s: float, count: int) -> list[list[int]]:
+    """为主机端 RMS 数组构建稳定分桶索引。"""
+    if _cython_backend is None:
+        return _fallback_round2.audio_bucket_indices(times, duration_s, bucket_s, count)
+    return _cython_backend.audio_bucket_indices(_float64_contiguous(times), duration_s, bucket_s, count)
 
 
 def consecutive_repeat_details(text: str) -> tuple[int, int, int]:
@@ -202,6 +302,8 @@ def group_srt_blocks(
     min_display_ms: int = 800,
     max_display_ms: int = 5000,
     line_gap_ms: int = 200,
+    *,
+    duration_s: float | None = None,
 ) -> str:
     """把词级条目聚合为 SRT 字幕块。"""
     if _cython_backend is None:
@@ -211,6 +313,7 @@ def group_srt_blocks(
             min_display_ms,
             max_display_ms,
             line_gap_ms,
+            duration_s=duration_s,
         )
     return str(
         _cython_backend.group_srt_blocks(
@@ -219,8 +322,38 @@ def group_srt_blocks(
             min_display_ms,
             max_display_ms,
             line_gap_ms,
+            duration_s=duration_s,
         )
     )
+
+
+def _cluster_inputs(items: list[ClusterItem]) -> tuple[list[str], list[list[str]], list[int | None]] | None:
+    texts: list[str] = []
+    keywords: list[list[str]] = []
+    dates: list[_dt | None] = []
+    for item in items:
+        texts.append(item.get("asr_text", "") or "")
+        keywords.append([str(keyword) for keyword in (item.get("keywords", []) or [])])
+        timestamp = item.get("start_ts")
+        if isinstance(timestamp, str):
+            try:
+                timestamp = _dt.fromisoformat(timestamp)
+            except ValueError:
+                timestamp = None
+        dates.append(timestamp if isinstance(timestamp, _dt) else None)
+    anchor = next((value for value in dates if value is not None), None)
+    timestamps: list[int | None] = []
+    for value in dates:
+        if value is None:
+            timestamps.append(None)
+            continue
+        assert anchor is not None
+        if value.tzinfo is not anchor.tzinfo:
+            # 不同动态时区的 datetime 减法可能不满足可加性，保留逐对的 Python 时间语义。
+            return None
+        delta = value - anchor
+        timestamps.append((delta.days * 86400 + delta.seconds) * 1_000_000 + delta.microseconds)
+    return texts, keywords, timestamps
 
 
 def cluster_similarity_matrix(items: list[ClusterItem]) -> list[list[float]]:
@@ -230,33 +363,11 @@ def cluster_similarity_matrix(items: list[ClusterItem]) -> list[list[float]]:
     if len(items) == 1:
         return [[0.0]]
     if _rust_backend is not None:
-        texts: list[str] = []
-        keywords: list[list[str]] = []
-        dates: list[_dt | None] = []
-        for item in items:
-            texts.append(item.get("asr_text", "") or "")
-            keywords.append([str(keyword) for keyword in (item.get("keywords", []) or [])])
-            timestamp = item.get("start_ts")
-            if isinstance(timestamp, str):
-                try:
-                    timestamp = _dt.fromisoformat(timestamp)
-                except ValueError:
-                    timestamp = None
-            dates.append(timestamp if isinstance(timestamp, _dt) else None)
-        anchor = next((value for value in dates if value is not None), None)
-        timestamps: list[int | None] = []
-        for value in dates:
-            if value is None:
-                timestamps.append(None)
-                continue
-            assert anchor is not None
-            if value.tzinfo is not anchor.tzinfo:
-                # 不同动态时区的 datetime 减法可能不满足可加性，保留逐对的 Python 时间语义。
-                return _fallback_round2.cluster_similarity_matrix(items)
-            delta = value - anchor
-            timestamps.append((delta.days * 86400 + delta.seconds) * 1_000_000 + delta.microseconds)
+        inputs = _cluster_inputs(items)
+        if inputs is None:
+            return _fallback_round2.cluster_similarity_matrix(items)
         try:
-            return _rust_backend.cluster_similarity_matrix(texts, keywords, timestamps)
+            return _rust_backend.cluster_similarity_matrix(*inputs)
         except UnicodeEncodeError:
             return _fallback_round2.cluster_similarity_matrix(items)
 
@@ -265,11 +376,45 @@ def cluster_similarity_matrix(items: list[ClusterItem]) -> list[list[float]]:
     return _fallback_round2.cluster_similarity_matrix(items)
 
 
+def cluster_candidate_groups(items: list[ClusterItem], threshold: float) -> list[tuple[int, list[int], float]]:
+    """在一次 CPU 调用中计算并消费矩阵，保留根编号、顺序和簇内均值。"""
+    if len(items) < 2:
+        if not isfinite(threshold):
+            raise ValueError("threshold must be finite")
+        return []
+    if _rust_backend is not None:
+        inputs = _cluster_inputs(items)
+        if inputs is not None:
+            try:
+                return _rust_backend.cluster_candidate_groups(*inputs, threshold)
+            except UnicodeEncodeError:
+                # 孤立代理码点无法传入 Rust，使用同语义参考实现。
+                matrix = _fallback_round2.cluster_similarity_matrix(items)
+                return _fallback_round2.cluster_groups(matrix, threshold)
+    return cluster_groups(cluster_similarity_matrix(items), threshold)
+
+
 def cluster_groups(matrix: list[list[float]], threshold: float) -> list[tuple[int, list[int], float]]:
     """以独立 CPU 内核执行并查集和簇内统计，保持原根编号与输出顺序。"""
     if _rust_backend is None:
         return _fallback_round2.cluster_groups(matrix, threshold)
     return _rust_backend.cluster_groups(matrix, threshold)
+
+
+def novelty_features(text: str) -> tuple[set[str], set[str]]:
+    """抽取滚动检测可复用的词项和实体，不保留全局文本缓存。"""
+    if _cython_backend is None:
+        return _fallback_round2.novelty_features(text)
+    return _cython_backend.novelty_features(text)
+
+
+def novelty_from_features(
+    left: set[str], right: set[str], entities: set[str], baseline_entities: set[str]
+) -> tuple[float, float, float]:
+    """计算已提取集合之间的新颖度。"""
+    if _cython_backend is None:
+        return _fallback_round2.novelty_from_features(left, right, entities, baseline_entities)
+    return _cython_backend.novelty_from_features(left, right, entities, baseline_entities)
 
 
 def text_novelty(current: str, baseline: str, *, include_entities: bool = True) -> tuple[float, float, float | None]:
@@ -309,6 +454,16 @@ def get_cluster_backend() -> str:
 
 
 __all__ = [
+    "interval_conflicts",
+    "danmaku_sentiment_statistics",
+    "representative_danmaku_statistics",
+    "novelty_features",
+    "novelty_from_features",
+    "audio_bucket_indices",
+    "normalize_asr_text",
+    "normalize_asr_with_indexes",
+    "cluster_candidate_groups",
+    "levenshtein_distance",
     "cluster_groups",
     "text_novelty",
     "pcm16_statistics",

@@ -5,6 +5,7 @@ import json
 from collections.abc import Iterator
 from contextlib import contextmanager
 from datetime import UTC, datetime
+from heapq import nlargest
 
 from pydantic import JsonValue
 from sqlmodel import Session, select
@@ -86,12 +87,14 @@ def iter_active_jobs() -> Iterator[JobData]:
 def list_jobs(limit: int = 100, *, owner: str | None = None) -> list[JobData]:
     """按当前权限范围返回最新持久状态。"""
     with get_session() as db:
-        rows = db.exec(select(AppSetting).where(AppSetting.key.startswith(_PREFIX))).all()
-        jobs = [decode_job(row.value) for row in rows]
-    if owner is not None:
-        jobs = [job for job in jobs if job["owner"] == owner]
-    jobs.sort(key=lambda job: job["updated_at"], reverse=True)
-    return jobs[: max(1, min(limit, 500))]
+        rows = db.exec(select(AppSetting.value).where(AppSetting.key.startswith(_PREFIX))).yield_per(128)
+        try:
+            # 全部记录先解码校验，保留其他用户或旧作业损坏时的明确报错。
+            decoded = (decode_job(value) for value in rows)
+            visible = (job for job in decoded if owner is None or job["owner"] == owner)
+            return nlargest(max(1, min(limit, 500)), visible, key=lambda job: job["updated_at"])
+        finally:
+            rows.close()
 
 
 def register(job: JobData) -> JobData:
@@ -102,18 +105,21 @@ def register(job: JobData) -> JobData:
     with get_session() as db:
         _lock(db)
         if job["dedup_key"]:
-            rows = db.exec(select(AppSetting).where(AppSetting.key.startswith(_PREFIX))).all()
-            for row in rows:
-                existing = decode_job(row.value)
-                if (
-                    existing["status"] in ACTIVE
-                    and existing["owner"] == job["owner"]
-                    and existing["type"] == job["type"]
-                    and existing["dedup_key"] == job["dedup_key"]
-                ):
-                    if existing["payload"] != job["payload"]:
-                        raise ValueError("相同作业去重键对应不同请求，请等待原操作结束")
-                    return existing
+            rows = db.exec(select(AppSetting.value).where(AppSetting.key.startswith(_PREFIX))).yield_per(128)
+            try:
+                for value in rows:
+                    existing = decode_job(value)
+                    if (
+                        existing["status"] in ACTIVE
+                        and existing["owner"] == job["owner"]
+                        and existing["type"] == job["type"]
+                        and existing["dedup_key"] == job["dedup_key"]
+                    ):
+                        if existing["payload"] != job["payload"]:
+                            raise ValueError("相同作业去重键对应不同请求，请等待原操作结束")
+                        return existing
+            finally:
+                rows.close()
         if db.get(AppSetting, f"{_PREFIX}{job['id']}") is not None:
             raise ValueError("作业标识已经登记")
         _write(db, job)

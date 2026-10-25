@@ -17,6 +17,104 @@ from collections.abc import Sequence
 from statistics import median
 
 
+def normalize_asr_text(text: str) -> str:
+    """保留 Unicode 字母数字并执行完整 casefold。"""
+    return "".join(character.casefold() for character in text if character.isalnum())
+
+
+_DANMAKU_SPACE_PATTERN = re.compile(r"\s+")
+_DANMAKU_REACTION_PATTERN = re.compile(r"^[?？!！6wW哈啊哦草艹绷]+$")
+_DANMAKU_TOKEN_PATTERN = re.compile(r"[A-Za-z0-9_]+|[\u4e00-\u9fff]{2,}")
+
+
+def representative_danmaku_statistics(
+    messages: Sequence[str | None], reaction_words: set[str], humor_words: tuple[str, ...]
+) -> list[tuple[str, str, int, int, float, float, float]]:
+    """每条规范化正文只计算一次代表弹幕评分。"""
+    unique: dict[str, tuple[str, int, int]] = {}
+    for index, content in enumerate(messages):
+        text = _DANMAKU_SPACE_PATTERN.sub(" ", str(content or "")).strip()
+        if not text or len(text) > 120:
+            continue
+        key = text.casefold()
+        previous = unique.get(key)
+        unique[key] = (text, 1, index) if previous is None else (previous[0], previous[1] + 1, previous[2])
+    result: list[tuple[str, str, int, int, float, float, float]] = []
+    for key, (text, count, index) in unique.items():
+        normalized = key.replace("？", "?").replace("！", "!")
+        reaction = (
+            1.0
+            if normalized in reaction_words
+            else (
+                min(1.0, 0.55 + len(normalized) / 24.0)
+                if len(normalized) <= 12 and _DANMAKU_REACTION_PATTERN.fullmatch(normalized)
+                else 0.0
+            )
+        )
+        semantic = Counter(char for char in text if char.isalnum() or "\u4e00" <= char <= "\u9fff")
+        size = sum(semantic.values())
+        information = 0.0
+        if size >= 4 and not (reaction > 0.0 and size <= 8):
+            information = max(
+                0.0,
+                min(
+                    1.0,
+                    min(1.0, size / 24.0) * 0.45
+                    + len(semantic) / size * 0.35
+                    + min(1.0, len(_DANMAKU_TOKEN_PATTERN.findall(text)) / 4.0) * 0.20
+                    - max(semantic.values()) / size * 0.15,
+                ),
+            )
+        hits = sum(token in text for token in humor_words)
+        humor = max(0.0, min(1.0, 0.45 + hits * 0.15 + information * 0.40)) if hits else 0.0
+        result.append((key, text, count, index, reaction, information, humor))
+    return result
+
+
+def normalize_asr_with_indexes(text: str) -> tuple[str, list[int]]:
+    """保留展开后的每个字符到原始码点位置的映射。"""
+    characters: list[str] = []
+    indexes: list[int] = []
+    for index, character in enumerate(text):
+        if character.isalnum():
+            folded = character.casefold()
+            characters.append(folded)
+            indexes.extend([index] * len(folded))
+    return "".join(characters), indexes
+
+
+def interval_conflicts(
+    peak: float,
+    start: float,
+    end: float,
+    selected: list[tuple[float, float, float]],
+    cooldown_s: float,
+    iou_threshold: float,
+) -> bool:
+    """检查已换算为 UTC 秒数的区间，保持原贪心筛选条件。"""
+    for other_peak, other_start, other_end in selected:
+        intersection = max(0.0, min(end, other_end) - max(start, other_start))
+        union = max(0.0, max(end, other_end) - min(start, other_start))
+        overlap = intersection / union if union else 0.0
+        if abs(peak - other_peak) < cooldown_s or overlap >= iou_threshold:
+            return True
+    return False
+
+
+def audio_bucket_indices(times: Sequence[float], duration_s: float, bucket_s: float, count: int) -> list[list[int]]:
+    """分配样本下标，保留原顺序、边界排除及 Python 浮点整除语义。"""
+    groups: list[list[int]] = [[] for _ in range(max(0, count))]
+    if count <= 0:
+        return groups
+    for position, raw in enumerate(times):
+        offset = float(raw)
+        if offset < 0.0 or offset >= duration_s:
+            continue
+        index = min(int(offset // bucket_s), count - 1)
+        groups[index].append(position)
+    return groups
+
+
 def pcm16_statistics(raw: bytes) -> tuple[int, int, int]:
     """汇总小端 PCM16 字节的样本数、精确整数平方和与绝对峰值。"""
     if not isinstance(raw, bytes):
@@ -255,6 +353,8 @@ def group_srt_blocks(
     min_display_ms: int = 800,
     max_display_ms: int = 5000,
     line_gap_ms: int = 200,
+    *,
+    duration_s: float | None = None,
 ) -> str:
     """把词级条目聚合成 SRT 字幕块 — V0.1.10 优化版。
 
@@ -288,6 +388,7 @@ def group_srt_blocks(
         bt.append(cur_text)
 
     lines: list[str] = []
+    limit = None if duration_s is None else round(duration_s * 1000)
     for i in range(len(bs)):
         s, e = bs[i], be[i]
         dur_ms = (e - s) * 1000.0
@@ -295,9 +396,36 @@ def group_srt_blocks(
             e = s + min_display_ms / 1000.0
         elif dur_ms > max_display_ms:
             e = s + max_display_ms / 1000.0
-        lines.append(f"{i + 1}\n{_fmt_time(s)} --> {_fmt_time(e)}\n{bt[i]}\n")
+        if limit is None:
+            lines.append(f"{i + 1}\n{_fmt_time(s)} --> {_fmt_time(e)}\n{bt[i]}\n")
+        else:
+            start_ms = _time_milliseconds(s)
+            end_ms = min(_time_milliseconds(e), limit, _time_milliseconds(bs[i + 1]) if i + 1 < len(bs) else limit)
+            if start_ms < end_ms:
+                content = bt[i].rstrip() if i + 1 == len(bs) else bt[i]
+                lines.append(
+                    f"{len(lines) + 1}\n{_fmt_milliseconds(start_ms)} --> {_fmt_milliseconds(end_ms)}\n{content}\n"
+                )
 
     return "\n".join(lines)
+
+
+def _time_milliseconds(t: float) -> int:
+    """保留原分段取整顺序，避免直接乘 1000 改变边界毫秒。"""
+    h = int(t // 3600)
+    t -= h * 3600
+    m = int(t // 60)
+    t -= m * 60
+    s = int(t)
+    return ((h * 60 + m) * 60 + s) * 1000 + int((t - s) * 1000)
+
+
+def _fmt_milliseconds(value: int) -> str:
+    """格式化已经约束好边界的整数毫秒。"""
+    seconds, fraction = divmod(value, 1000)
+    minutes, seconds = divmod(seconds, 60)
+    hours, minutes = divmod(minutes, 60)
+    return f"{hours:02}:{minutes:02}:{seconds:02},{fraction:03}"
 
 
 def _fmt_time(t: float) -> str:
@@ -330,6 +458,24 @@ def _entity_tokens(text: str) -> set[str]:
         for token in _NOVELTY_WORD_PATTERN.findall(text)
         if any(char.isdigit() or char.isascii() and char.isalpha() for char in token) or 2 <= len(token) <= 8
     }
+
+
+def novelty_features(text: str) -> tuple[set[str], set[str]]:
+    """抽取可在同一检测周期内复用的词项和实体集合。"""
+    return _lexical_tokens(text), _entity_tokens(text)
+
+
+def novelty_from_features(
+    left: set[str], right: set[str], entities: set[str], baseline_entities: set[str]
+) -> tuple[float, float, float]:
+    """消费已提取集合并保留原新颖度、主题变化和实体变化公式。"""
+    common = len(left & right)
+    union_size = len(left) + len(right) - common
+    return (
+        (len(left) - common) / len(left) if left else 0.0,
+        1.0 - common / union_size if union_size else 0.0,
+        len(entities - baseline_entities) / len(entities) if entities else 0.0,
+    )
 
 
 def text_novelty(current: str, baseline: str, *, include_entities: bool = True) -> tuple[float, float, float | None]:

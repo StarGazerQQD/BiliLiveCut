@@ -10,6 +10,7 @@ from collections import Counter
 from dataclasses import dataclass
 
 from app.accelerators.dispatcher import consecutive_repeat_details as _max_consecutive_repeat_details
+from app.accelerators.dispatcher import normalize_asr_text, normalize_asr_with_indexes
 
 
 @dataclass(frozen=True, slots=True)
@@ -51,7 +52,7 @@ def transcript_quality_payload(quality: TranscriptQuality) -> dict[str, object]:
 
 def _normalize_text(text: str) -> str:
     """保留字母、数字和中日韩文字，去除标点与空白。"""
-    return "".join(character.casefold() for character in text if character.isalnum())
+    return normalize_asr_text(text)
 
 
 def _max_consecutive_repeat(text: str) -> tuple[int, int]:
@@ -93,14 +94,7 @@ def repair_local_decode_loop(text: str, *, max_ratio: float = 0.35) -> Repetitio
 
 def _normalize_with_indexes(text: str) -> tuple[str, list[int]]:
     """规范化文本并保留规范化字符到原文下标的映射。"""
-    characters: list[str] = []
-    indexes: list[int] = []
-    for index, character in enumerate(text):
-        if character.isalnum():
-            folded = character.casefold()
-            characters.append(folded)
-            indexes.extend([index] * len(folded))
-    return "".join(characters), indexes
+    return normalize_asr_with_indexes(text)
 
 
 def assess_transcript_quality(text: str) -> TranscriptQuality:

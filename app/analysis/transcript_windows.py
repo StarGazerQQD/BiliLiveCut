@@ -5,6 +5,7 @@ from __future__ import annotations
 import json
 import math
 import re
+from bisect import bisect_left
 from collections.abc import Sequence
 from dataclasses import dataclass
 from datetime import UTC, datetime
@@ -35,6 +36,57 @@ class TimedTranscriptPart:
     semantic_text: str | None = None
 
 
+@dataclass(frozen=True, slots=True)
+class _WordIndex:
+    """保留输入顺序的只读词快照及起点、前缀最远终点索引。"""
+
+    words: tuple[tuple[str, float, float], ...]
+    order: tuple[int, ...]
+    starts: tuple[float, ...]
+    furthest_ends: tuple[float, ...]
+
+    @classmethod
+    def build(cls, words_json: str | None) -> _WordIndex:
+        """完整验证一次输入，允许乱序、嵌套区间和零时长词。"""
+        words = tuple((str(word["w"]), float(word["start"]), float(word["end"])) for word in _decode_words(words_json))
+        order = tuple(sorted(range(len(words)), key=lambda index: words[index][1]))
+        ends: list[float] = []
+        furthest = -math.inf
+        for index in order:
+            furthest = max(furthest, words[index][2])
+            ends.append(furthest)
+        return cls(words, order, tuple(words[index][1] for index in order), tuple(ends))
+
+    def select(self, start: float, end: float) -> list[dict[str, object]]:
+        """缩小候选范围后按原输入顺序返回独立词对象。"""
+        lower = bisect_left(self.furthest_ends, start)
+        upper = bisect_left(self.starts, end)
+        selected: list[int] = []
+        for index in self.order[lower:upper]:
+            _text, word_start, word_end = self.words[index]
+            if (word_end > start) or (word_end == word_start and word_start >= start):
+                selected.append(index)
+        return [
+            {"w": self.words[index][0], "start": self.words[index][1], "end": self.words[index][2]}
+            for index in sorted(selected)
+        ]
+
+
+class TranscriptWindowCache:
+    """仅在一次多峰分析中复用索引，以完整 JSON 内容区分更新后的转写。"""
+
+    def __init__(self) -> None:
+        self._indexes: dict[str | None, _WordIndex] = {}
+
+    def get(self, words_json: str | None) -> _WordIndex:
+        """相同词快照只解析一次；返回值不会暴露可变的缓存数据。"""
+        index = self._indexes.get(words_json)
+        if index is None:
+            index = _WordIndex.build(words_json)
+            self._indexes[words_json] = index
+        return index
+
+
 def extract_transcript_window(
     text: str,
     words_json: str | None,
@@ -43,6 +95,7 @@ def extract_transcript_window(
     end_s: float,
     duration_s: float,
     semantic_text: str | None = None,
+    word_cache: TranscriptWindowCache | None = None,
 ) -> TranscriptWindow:
     """只返回与指定片内时间窗重叠的转写内容。
 
@@ -63,17 +116,23 @@ def extract_transcript_window(
         start = min(start, duration)
         end = min(end, duration)
 
-    words = _decode_words(words_json)
-    selected = [word for word in words if _word_overlaps(word, start, end)]
-    if semantic_text is not None and (not words or (start <= 0 and end >= duration)):
+    if word_cache is None:
+        words = _decode_words(words_json)
+        has_words = bool(words)
+        selected = [word for word in words if _word_overlaps(word, start, end)]
+    else:
+        index = word_cache.get(words_json)
+        has_words = bool(index.words)
+        selected = index.select(start, end)
+    if semantic_text is not None and (not has_words or (start <= 0 and end >= duration)):
         # 整理正文没有词对齐信息：有词时间戳的局部窗口保留精确原文，
         # 整段或原本无词时间戳时使用整理正文。原始词仍用于语速与字幕。
         return TranscriptWindow(
             text=_proportional_text_slice(semantic_text, start_s=start, end_s=end, duration_s=duration),
             words=selected,
-            precise=bool(words) and start <= 0 and end >= duration,
+            precise=has_words and start <= 0 and end >= duration,
         )
-    if words:
+    if has_words:
         return TranscriptWindow(
             text=_join_word_tokens(selected),
             words=selected,
@@ -92,6 +151,7 @@ def extract_session_transcript_window(
     *,
     start_ts: datetime,
     end_ts: datetime,
+    word_cache: TranscriptWindowCache | None = None,
 ) -> TranscriptWindow:
     """跨连续录制分段提取一个绝对时间窗内的转写。
 
@@ -125,6 +185,7 @@ def extract_session_transcript_window(
             end_s=local_end,
             duration_s=duration,
             semantic_text=part.semantic_text,
+            word_cache=word_cache,
         )
         if window.text:
             texts.append(window.text)

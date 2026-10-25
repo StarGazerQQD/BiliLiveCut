@@ -23,28 +23,29 @@ use std::collections::{HashMap, HashSet};
 // ── 字符 bigram 提取 ────────────────────────────────────────────
 
 /// 提取中文字符级 bigram (与 Python `fast_char_bigrams` 等价的 Rust 实现)。
-fn char_bigrams(text: &str) -> HashMap<String, f64> {
+fn char_bigrams(text: &str) -> HashMap<u64, f64> {
     // Python 的单字符快速路径保留 ASCII 空白；多字符输入才过滤空白。
     if text.len() == 1 {
-        return HashMap::from([(text.to_string(), 1.0)]);
+        return HashMap::from([(((u64::from(text.as_bytes()[0]) + 1) << 21), 1.0)]);
     }
     let chars: Vec<char> = text.chars().filter(|ch| *ch > ' ').collect();
     if chars.is_empty() {
         return HashMap::new();
     }
     if chars.len() == 1 {
-        return HashMap::from([(chars[0].to_string(), 1.0)]);
+        return HashMap::from([(((u64::from(chars[0]) + 1) << 21), 1.0)]);
     }
-    let mut bigrams: HashMap<String, f64> = HashMap::with_capacity(chars.len() - 1);
+    let mut bigrams: HashMap<u64, f64> = HashMap::with_capacity(chars.len() - 1);
     for w in chars.windows(2) {
-        let bg: String = w.iter().collect();
+        // 两个码点各占 21 位；低位零保留给单字符，避免字符串分配且保持无歧义。
+        let bg = ((u64::from(w[0]) + 1) << 21) | (u64::from(w[1]) + 1);
         *bigrams.entry(bg).or_insert(0.0) += 1.0;
     }
     bigrams
 }
 
 /// 在频率表上直接累加 TF-IDF 余弦，避免每对候选分配两张加权字典。
-fn weighted_cosine(a: &HashMap<String, f64>, b: &HashMap<String, f64>) -> f64 {
+fn weighted_cosine(a: &HashMap<u64, f64>, b: &HashMap<u64, f64>) -> f64 {
     if a.is_empty() || b.is_empty() {
         return 0.0;
     }
@@ -125,11 +126,11 @@ fn round_similarity(score: f64) -> f64 {
 /// 计算两个候选事件的全维度综合相似度。
 fn pairwise_sim(
     t_a: &str,
-    bg_a: &HashMap<String, f64>,
+    bg_a: &HashMap<u64, f64>,
     kw_a: &HashSet<String>,
     ts_a: Option<i64>,
     t_b: &str,
-    bg_b: &HashMap<String, f64>,
+    bg_b: &HashMap<u64, f64>,
     kw_b: &HashSet<String>,
     ts_b: Option<i64>,
 ) -> f64 {
@@ -173,49 +174,77 @@ fn cluster_similarity_matrix(
         ));
     }
 
+    Ok(py.detach(move || similarity_matrix(&texts, keywords, &timestamps)))
+}
+
+/// 计算和消费矩阵均留在 Rust 内，避免为聚类创建 N² 个 Python 浮点对象。
+fn similarity_matrix(
+    texts: &[String],
+    keywords: Vec<Vec<String>>,
+    timestamps: &[Option<i64>],
+) -> Vec<Vec<f64>> {
+    let n = texts.len();
     // 快速路径: 0 或 1 个元素
     if n < 2 {
-        return Ok(vec![vec![0.0; n]; n]);
+        return vec![vec![0.0; n]; n];
     }
 
-    // 所有输入已归 Rust 所有；计算期间释放 GIL，不占用模型调度线程。
-    let matrix = py.detach(move || {
-        let bigrams: Vec<HashMap<String, f64>> = texts.iter().map(|t| char_bigrams(t)).collect();
-        let keywords: Vec<HashSet<String>> = keywords
-            .into_iter()
-            .map(|v| v.into_iter().collect())
-            .collect();
-        let mut matrix = vec![vec![0.0; n]; n];
-        let compute = |(i, row): (usize, &mut Vec<f64>)| {
-            row[i] = 1.0;
-            for (j, value) in row.iter_mut().enumerate().skip(i + 1) {
-                *value = pairwise_sim(
-                    &texts[i],
-                    &bigrams[i],
-                    &keywords[i],
-                    timestamps[i],
-                    &texts[j],
-                    &bigrams[j],
-                    &keywords[j],
-                    timestamps[j],
-                );
-            }
-        };
-        // 更轻的成对运算提高并行分界，避免小矩阵线程调度回退。
-        if n < 128 {
-            matrix.iter_mut().enumerate().for_each(compute);
-        } else {
-            matrix.par_iter_mut().enumerate().for_each(compute);
+    let bigrams: Vec<HashMap<u64, f64>> = texts.iter().map(|t| char_bigrams(t)).collect();
+    let keywords: Vec<HashSet<String>> = keywords
+        .into_iter()
+        .map(|v| v.into_iter().collect())
+        .collect();
+    let mut matrix = vec![vec![0.0; n]; n];
+    let compute = |(i, row): (usize, &mut Vec<f64>)| {
+        row[i] = 1.0;
+        for (j, value) in row.iter_mut().enumerate().skip(i + 1) {
+            *value = pairwise_sim(
+                &texts[i],
+                &bigrams[i],
+                &keywords[i],
+                timestamps[i],
+                &texts[j],
+                &bigrams[j],
+                &keywords[j],
+                timestamps[j],
+            );
         }
-        for i in 0..n {
-            for j in (i + 1)..n {
-                matrix[j][i] = matrix[i][j];
-            }
+    };
+    // 更轻的成对运算提高并行分界，避免小矩阵线程调度回退。
+    if n < 128 {
+        matrix.iter_mut().enumerate().for_each(compute);
+    } else {
+        matrix.par_iter_mut().enumerate().for_each(compute);
+    }
+    for i in 0..n {
+        for j in (i + 1)..n {
+            matrix[j][i] = matrix[i][j];
         }
-        matrix
-    });
+    }
+    matrix
+}
 
-    Ok(matrix)
+/// 一次完成相似度、并查集和簇内统计，仅返回最终分组。
+#[pyfunction]
+fn cluster_candidate_groups(
+    py: Python<'_>,
+    texts: Vec<String>,
+    keywords: Vec<Vec<String>>,
+    timestamps: Vec<Option<i64>>,
+    threshold: f64,
+) -> PyResult<Vec<(usize, Vec<usize>, f64)>> {
+    if keywords.len() != texts.len() || timestamps.len() != texts.len() {
+        return Err(pyo3::exceptions::PyValueError::new_err(
+            "texts, keywords and timestamps must have equal lengths",
+        ));
+    }
+    if !threshold.is_finite() {
+        return Err(pyo3::exceptions::PyValueError::new_err(
+            "threshold must be finite",
+        ));
+    }
+    Ok(py
+        .detach(move || group_matrix(&similarity_matrix(&texts, keywords, &timestamps), threshold)))
 }
 
 /// 单遍汇总弹幕文本特征。
@@ -310,43 +339,46 @@ fn cluster_groups(
             "cluster matrix must be square and finite; threshold must be finite",
         ));
     }
-    Ok(py.detach(move || {
-        let mut parent: Vec<usize> = (0..n).collect();
-        for (i, row) in matrix.iter().enumerate() {
-            for (j, &similarity) in row.iter().enumerate().skip(i + 1) {
-                if similarity >= threshold {
-                    let a = find_root(&mut parent, i);
-                    let b = find_root(&mut parent, j);
-                    if a != b {
-                        parent[b] = a;
-                    }
+    Ok(py.detach(move || group_matrix(&matrix, threshold)))
+}
+
+fn group_matrix(matrix: &[Vec<f64>], threshold: f64) -> Vec<(usize, Vec<usize>, f64)> {
+    let n = matrix.len();
+    let mut parent: Vec<usize> = (0..n).collect();
+    for (i, row) in matrix.iter().enumerate() {
+        for (j, &similarity) in row.iter().enumerate().skip(i + 1) {
+            if similarity >= threshold {
+                let a = find_root(&mut parent, i);
+                let b = find_root(&mut parent, j);
+                if a != b {
+                    parent[b] = a;
                 }
             }
         }
-        let mut positions = vec![usize::MAX; n];
-        let mut groups: Vec<(usize, Vec<usize>, f64)> = Vec::new();
-        for i in 0..n {
-            let root = find_root(&mut parent, i);
-            if positions[root] == usize::MAX {
-                positions[root] = groups.len();
-                groups.push((root, Vec::new(), 0.0));
-            }
-            groups[positions[root]].1.push(i);
+    }
+    let mut positions = vec![usize::MAX; n];
+    let mut groups: Vec<(usize, Vec<usize>, f64)> = Vec::new();
+    for i in 0..n {
+        let root = find_root(&mut parent, i);
+        if positions[root] == usize::MAX {
+            positions[root] = groups.len();
+            groups.push((root, Vec::new(), 0.0));
         }
-        groups.retain(|(_, members, _)| members.len() >= 2);
-        for (_, members, average) in &mut groups {
-            let mut total = 0.0;
-            let mut count = 0usize;
-            for (position, &a) in members.iter().enumerate() {
-                for &b in &members[position + 1..] {
-                    total += matrix[a][b];
-                    count += 1;
-                }
+        groups[positions[root]].1.push(i);
+    }
+    groups.retain(|(_, members, _)| members.len() >= 2);
+    for (_, members, average) in &mut groups {
+        let mut total = 0.0;
+        let mut count = 0usize;
+        for (position, &a) in members.iter().enumerate() {
+            for &b in &members[position + 1..] {
+                total += matrix[a][b];
+                count += 1;
             }
-            *average = total / count as f64;
         }
-        groups
-    }))
+        *average = total / count as f64;
+    }
+    groups
 }
 
 // ── 模块注册 ─────────────────────────────────────────────────────
@@ -356,5 +388,6 @@ fn _rust_speedups(m: &Bound<'_, PyModule>) -> PyResult<()> {
     m.add_function(wrap_pyfunction!(cluster_similarity_matrix, m)?)?;
     m.add_function(wrap_pyfunction!(danmaku_text_features, m)?)?;
     m.add_function(wrap_pyfunction!(cluster_groups, m)?)?;
+    m.add_function(wrap_pyfunction!(cluster_candidate_groups, m)?)?;
     Ok(())
 }

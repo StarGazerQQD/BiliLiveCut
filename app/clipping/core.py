@@ -615,41 +615,14 @@ def _build_srt(segments: list[RawSegment], cut_offset: float, duration: float) -
         logger.info("字幕使用正文估时：部分转写无词级时间戳，字幕时间近似定位")
 
     # 把词聚合成短句字幕(每约 N 个字或遇到停顿断行)。 V0.1.10: 使用加速版 SRT 组装。
-    return _bound_srt(
-        group_srt_blocks(
-            entries, max_chars=max_chars, min_display_ms=min_ms, max_display_ms=max_ms, line_gap_ms=line_gap
-        ),
-        duration,
+    return group_srt_blocks(
+        entries,
+        max_chars=max_chars,
+        min_display_ms=min_ms,
+        max_display_ms=max_ms,
+        line_gap_ms=line_gap,
+        duration_s=duration,
     )
-
-
-def _bound_srt(srt: str, duration: float) -> str:
-    """限制生成字幕的最短显示延长，避免相邻块重叠或越过剪辑结束。"""
-
-    def milliseconds(value: str) -> int:
-        hours, minutes, seconds, fraction = map(int, value.replace(",", ":").split(":"))
-        return ((hours * 60 + minutes) * 60 + seconds) * 1000 + fraction
-
-    def timestamp(value: int) -> str:
-        seconds, fraction = divmod(value, 1000)
-        minutes, seconds = divmod(seconds, 60)
-        hours, minutes = divmod(minutes, 60)
-        return f"{hours:02}:{minutes:02}:{seconds:02},{fraction:03}"
-
-    blocks: list[tuple[int, int, str]] = []
-    for block in srt.strip().split("\n\n"):
-        if not block:
-            continue
-        _, timing, content = block.split("\n", 2)
-        start, end = timing.split(" --> ")
-        blocks.append((milliseconds(start), milliseconds(end), content))
-    rendered = []
-    limit = round(duration * 1000)
-    for index, (start, end, content) in enumerate(blocks):
-        end = min(end, limit, blocks[index + 1][0] if index + 1 < len(blocks) else limit)
-        if start < end:
-            rendered.append(f"{len(rendered) + 1}\n{timestamp(start)} --> {timestamp(end)}\n{content}\n")
-    return "\n".join(rendered)
 
 
 def _group_srt(

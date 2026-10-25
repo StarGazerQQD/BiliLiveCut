@@ -23,6 +23,7 @@ from app.analysis import audio as audio_mod
 from app.analysis.keywords import match_keywords
 from app.analysis.room_config import room_highlight_keywords
 from app.analysis.source_policy import session_danmaku_lag_s
+from app.analysis.transcript_windows import TranscriptWindowCache
 from app.analysis.transcription.content import refined_transcript_text
 from app.core.config import settings
 from app.core.sanitize import safe_exception_summary, sanitize_diagnostic
@@ -1212,11 +1213,13 @@ def _score_segment_drafts(
 
     outcomes: list[dict[str, Any]] = []
     candidates: list[dict[str, Any]] = []
+    word_cache = TranscriptWindowCache() if len(offsets) > 1 else None
     for peak_offset in offsets:
         draft = _score_segment_draft(
             segment_id,
             peak_offset_s=peak_offset,
             audio_features=features,
+            word_cache=word_cache,
         )
         if draft is None:
             continue
@@ -1251,6 +1254,7 @@ def _score_segment_draft(
     *,
     peak_offset_s: float | None = None,
     audio_features: audio_mod.AudioFeatures | None = None,
+    word_cache: TranscriptWindowCache | None = None,
 ) -> dict[str, Any] | None:
     """纯评分计算, 不写 DB, 不创建 Candidate。
 
@@ -1359,6 +1363,7 @@ def _score_segment_draft(
         transcript_parts,
         start_ts=analysis_start_ts,
         end_ts=analysis_end_ts,
+        word_cache=word_cache,
     )
     judgement_text = analysis_window.text
     analysis_duration_s = (analysis_end_ts - analysis_start_ts).total_seconds()

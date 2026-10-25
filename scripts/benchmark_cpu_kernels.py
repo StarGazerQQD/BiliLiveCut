@@ -21,10 +21,16 @@ from app.accelerators import dispatcher as native  # noqa: E402
 from app.accelerators.python_fallback import speedups_round2 as reference  # noqa: E402
 
 
-def duration(function: Callable[[], object], count: int) -> float:
-    """预热后报告七轮中位数微秒，包括 Python 参数转换与返回值处理。"""
-    function()
-    return statistics.median(timeit.repeat(function, number=count, repeat=7)) / count * 1e6
+def durations(before: Callable[[], object], after: Callable[[], object], count: int) -> tuple[float, float]:
+    """预热后交替测量七轮，减少系统温度和频率变化对前后顺序的影响。"""
+    before()
+    after()
+    samples: tuple[list[float], list[float]] = ([], [])
+    functions = (before, after)
+    for repeat in range(7):
+        for index in (0, 1) if repeat % 2 == 0 else (1, 0):
+            samples[index].append(timeit.timeit(functions[index], number=count) / count * 1e6)
+    return statistics.median(samples[0]), statistics.median(samples[1])
 
 
 def previous_docker_matrix(items: list[dict[str, object]]) -> list[list[float]]:
@@ -73,6 +79,26 @@ def previous_cluster_groups(matrix: list[list[float]], threshold: float) -> list
     return result
 
 
+def previous_edit_distance(a: str, b: str) -> int:
+    """保留原 ASR 逐字符动态规划作为性能基线。"""
+    if len(a) < len(b):
+        a, b = b, a
+    if not b:
+        return len(a)
+    previous = list(range(len(b) + 1))
+    for i, ca in enumerate(a, 1):
+        row = [i]
+        for j, cb in enumerate(b, 1):
+            row.append(min(row[-1] + 1, previous[j] + 1, previous[j - 1] + (ca != cb)))
+        previous = row
+    return previous[-1]
+
+
+def previous_cluster_pipeline(items: list[native.ClusterItem]) -> list[tuple[int, list[int], float]]:
+    """使用相同矩阵实现，仅测量省去 Python 矩阵往返的收益。"""
+    return native.cluster_groups(native.cluster_similarity_matrix(items), 0.82)
+
+
 def benchmark() -> list[dict[str, object]]:
     """要求真实原生扩展，校验结果相等，再逐项测量大小输入。"""
     if (
@@ -86,8 +112,7 @@ def benchmark() -> list[dict[str, object]]:
     def measure(name: str, size: int, before: Callable[[], object], after: Callable[[], object], count: int) -> None:
         if before() != after():
             raise AssertionError(f"{name}/{size} 输出不一致")
-        baseline_us = duration(before, count)
-        native_us = duration(after, count)
+        baseline_us, native_us = durations(before, after, count)
         rows.append(
             {
                 "kernel": name,
@@ -98,6 +123,83 @@ def benchmark() -> list[dict[str, object]]:
             }
         )
 
+    for size in [0, 1, 8, 64, 256, 1024]:
+        a = ("中文直播测试" * (size // 6 + 1))[:size]
+        b = a[:-1] + "新" if a else ""
+        measure(
+            "exact_edit_distance",
+            size,
+            partial(previous_edit_distance, a, b),
+            partial(native.levenshtein_distance, a, b),
+            1000 if size < 10 else (20 if size < 300 else 2),
+        )
+        b = "".join(chr(0x6000 + index) for index in range(size))
+        measure(
+            "edit_distance_unrelated",
+            size,
+            partial(previous_edit_distance, a, b),
+            partial(native.levenshtein_distance, a, b),
+            1000 if size < 10 else (20 if size < 300 else 2),
+        )
+    for size in [0, 1, 8, 128, 4096]:
+        text = ("Aßİ𠀀! 复读文本" * (size // 10 + 1))[:size]
+        for name, before, after in [
+            ("asr_normalize", reference.normalize_asr_text, native.normalize_asr_text),
+            ("asr_normalize_indexes", reference.normalize_asr_with_indexes, native.normalize_asr_with_indexes),
+            ("novelty_features", reference.novelty_features, native.novelty_features),
+        ]:
+            measure(name, size, partial(before, text), partial(after, text), 100 if size > 128 else 1000)
+        words = [(index * 0.37, index * 0.37 + 0.13, "词") for index in range(size)]
+        measure(
+            "bounded_srt",
+            size,
+            partial(reference.group_srt_blocks, words, duration_s=max(1.0, size * 0.37)),
+            partial(native.group_srt_blocks, words, duration_s=max(1.0, size * 0.37)),
+            20 if size > 128 else 500,
+        )
+        messages = [f"剧情讲解第{index}段! 高能 哈哈" for index in range(size)]
+        reactions, humor = {"666", "哈哈", "高能"}, ("哈哈", "节目效果")
+        measure(
+            "representative_statistics",
+            size,
+            partial(reference.representative_danmaku_statistics, messages, reactions, humor),
+            partial(native.representative_danmaku_statistics, messages, reactions, humor),
+            10 if size > 128 else 200,
+        )
+        times = [index * 0.01 for index in range(size)]
+        measure(
+            "audio_bucket_indices",
+            size,
+            partial(reference.audio_bucket_indices, times, 60.0, 10.0, 6),
+            partial(native.audio_bucket_indices, times, 60.0, 10.0, 6),
+            20 if size > 128 else 500,
+        )
+    for size in [0, 1, 8, 20, 128]:
+        patterns = tuple(f"关键词{i}" for i in range(size))
+        text = "关键词0和关键词7，每个房间保持独立" * 20
+        measure(
+            "keyword_reuse",
+            size,
+            partial(native._uncached_match_keywords, text, patterns),
+            partial(native.fast_match_keywords, text, patterns),
+            1000,
+        )
+    for size in [0, 1, 2, 8, 32, 128, 256]:
+        items = [
+            {
+                "asr_text": f"中文直播游戏第{index % 7}个操作！",
+                "keywords": ["游戏", str(index % 5)],
+                "start_ts": datetime(2026, 1, 1) + timedelta(seconds=index * 10),
+            }
+            for index in range(size)
+        ]
+        measure(
+            "cluster_fused_boundary",
+            size,
+            partial(previous_cluster_pipeline, items),
+            partial(native.cluster_candidate_groups, items, 0.82),
+            1000 if size < 10 else 10,
+        )
     for size in [0, 1, 8, 64, 1024, 65536]:
         raw = bytes([0, 128]) * size
         measure(

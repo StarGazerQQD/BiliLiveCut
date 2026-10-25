@@ -27,7 +27,7 @@ from typing import TYPE_CHECKING, Protocol, Self, cast
 
 from loguru import logger
 
-from app.accelerators.dispatcher import review_text_statistics
+from app.accelerators.dispatcher import levenshtein_distance, review_text_statistics
 from app.analysis import asr_metrics
 from app.analysis.model_pool import model_pool
 from app.analysis.transcription.models import (  # single source of truth — no duplicates
@@ -1143,23 +1143,7 @@ def _merge_review_text(
 
 def _levenshtein_distance(a: str, b: str) -> int:
     """计算编辑距离。"""
-    if len(a) < len(b):
-        a, b = b, a
-    if len(b) == 0:
-        return len(a)
-    prev = list(range(len(b) + 1))
-    for i, ca in enumerate(a, 1):
-        curr = [i]
-        for j, cb in enumerate(b, 1):
-            curr.append(
-                min(
-                    curr[-1] + 1,
-                    prev[j] + 1,
-                    prev[j - 1] + (0 if ca == cb else 1),
-                )
-            )
-        prev = curr
-    return prev[-1]
+    return levenshtein_distance(a, b)
 
 
 # ═══════════════════════════════════════════════════════════

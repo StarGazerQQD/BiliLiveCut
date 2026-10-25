@@ -19,6 +19,7 @@ from datetime import UTC, datetime, timedelta
 from loguru import logger
 from sqlmodel import select
 
+from app.accelerators.dispatcher import danmaku_sentiment_statistics
 from app.analysis import audio as audio_mod
 from app.core.config import settings
 from app.core.runtime_settings import configured_task
@@ -307,22 +308,7 @@ def danmaku_sentiment_score(session_id: int, start_ts: object, end_ts: object) -
     if len(window_texts) < 5:
         return 0.0
 
-    # 1) 重复率:统计完全相同文本的出现率(归一化到 0-1)。
-    text_counts: dict[str, int] = {}
-    for t in window_texts:
-        text_counts[t] = text_counts.get(t, 0) + 1
-    max_dup = max(text_counts.values(), default=1)
-    dup_rate = max_dup / max(len(window_texts), 1) if len(window_texts) > 0 else 0
-    # 重复率 >= 10% 开始给分(如 20 条里 2 条相同不算), >= 40% 满分。
-    dup_score = max(0.0, min((dup_rate - 0.1) / 0.3, 1.0))
-
-    # 2) 感叹号密度:带"!"的弹幕占比。
-    exclaim_count = sum(1 for t in window_texts if "!" in t or "！" in t)
-    exclaim_rate = exclaim_count / len(window_texts)
-    # >= 10% 开始给分, >= 50% 满分。
-    exclaim_score = max(0.0, min((exclaim_rate - 0.1) / 0.4, 1.0))
-
-    # 3) 高情绪梗:特定关键词的出现密度(V0.1.9 AC 加速)。
+    # 高频梗词保持原定义，统计由独立 CPU 内核一次完成。
     hot_memes = (
         "卧槽",
         "绝了",
@@ -342,7 +328,13 @@ def danmaku_sentiment_score(session_id: int, start_ts: object, end_ts: object) -
         "天秀",
         "牛逼",
     )
-    meme_hits = _fast_meme_hit_count(window_texts, hot_memes)
+    max_dup, exclaim_count, meme_hits = danmaku_sentiment_statistics(window_texts, hot_memes)
+    dup_rate = max_dup / len(window_texts)
+    # 重复率 >= 10% 开始给分，>= 40% 满分。
+    dup_score = max(0.0, min((dup_rate - 0.1) / 0.3, 1.0))
+    exclaim_rate = exclaim_count / len(window_texts)
+    # 感叹号 >= 10% 开始给分，>= 50% 满分。
+    exclaim_score = max(0.0, min((exclaim_rate - 0.1) / 0.4, 1.0))
     meme_rate = meme_hits / len(window_texts)
     # >= 5% 开始给分, >= 30% 满分。
     meme_score = max(0.0, min((meme_rate - 0.05) / 0.25, 1.0))

@@ -27,6 +27,7 @@ brotli==1.2.1
 cryptography==50.0.0
 pyyaml==6.0.3
 numpy==2.4.6
+rapidfuzz==3.14.6
 psutil==7.2.2
 torch==2.13.0
 torchaudio==2.11.0
