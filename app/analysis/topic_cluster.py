@@ -24,11 +24,11 @@ import re
 from collections import Counter
 
 from loguru import logger
+from sqlalchemy import func
 from sqlmodel import select
 
 from app.accelerators.dispatcher import (
-    cluster_groups,
-    cluster_similarity_matrix,
+    cluster_candidate_groups,
     fast_char_bigrams,
     fast_cosine_similarity,
 )
@@ -36,8 +36,10 @@ from app.db.entities import (
     HighlightCandidate,
     HighlightEvent,
     HighlightTopic,
+    RawSegment,
     Topic,
     TopicStatus,
+    Transcript,
     utcnow,
 )
 from app.db.session import get_session
@@ -207,9 +209,27 @@ def cluster_candidates(session_id: int) -> list[dict[str, object]]:
     :param session_id: 录制会话 id。
     :returns: 创建/更新的 topic 列表。
     """
+    # 只在事件正文缺失时读取首个完整覆盖片段，避免每个候选重新开启连接。
+    segment_ids = (
+        select(RawSegment.id)
+        .where(
+            RawSegment.session_id == HighlightCandidate.session_id,
+            RawSegment.start_ts <= HighlightCandidate.start_ts,
+            RawSegment.end_ts >= HighlightCandidate.end_ts,
+        )
+        .correlate(HighlightCandidate)
+    )
+    fallback_text = (
+        select(Transcript.final_text)
+        .where(Transcript.segment_id.in_(segment_ids))
+        .limit(1)
+        .correlate(HighlightCandidate)
+        .scalar_subquery()
+    )
+    asr_text_column = func.coalesce(func.nullif(HighlightEvent.asr_text, ""), fallback_text, "")
     with get_session() as db:
         candidates = db.exec(
-            select(HighlightCandidate, HighlightEvent)
+            select(HighlightCandidate, HighlightEvent, asr_text_column)
             .join(HighlightEvent, HighlightEvent.candidate_id == HighlightCandidate.id)
             .where(
                 HighlightCandidate.session_id == session_id,
@@ -222,32 +242,13 @@ def cluster_candidates(session_id: int) -> list[dict[str, object]]:
 
     # 收集候选数据。
     items: list[dict] = []
-    for c, event in candidates:
+    for c, event, asr_text in candidates:
         features = {}
         if c.features_json:
             try:
                 features = json.loads(c.features_json)
             except json.JSONDecodeError:
                 pass
-        # 尝试取转写文本:通过时间范围匹配 RawSegment 再关联 Transcript。
-        asr_text = event.asr_text or ""
-        with get_session() as db:
-            from app.db.entities import RawSegment, Transcript
-
-            for seg in db.exec(
-                select(Transcript).where(
-                    Transcript.segment_id.in_(
-                        select(RawSegment.id).where(
-                            RawSegment.session_id == c.session_id,
-                            RawSegment.start_ts <= c.start_ts,
-                            RawSegment.end_ts >= c.end_ts,
-                        )
-                    )
-                )
-            ).all():
-                asr_text = asr_text or seg.text or ""
-                break
-
         items.append(
             {
                 "id": event.id,
@@ -259,10 +260,8 @@ def cluster_candidates(session_id: int) -> list[dict[str, object]]:
             }
         )
 
-    # 两两相似度 — V0.1.10: 使用预提取 bigram/kw 加速 O(N**2) 矩阵构建 (5-15x)。
-    matrix = cluster_similarity_matrix(items)
-    # 独立 CPU 内核完成并查集及簇内均值，数据库状态仅由当前事务维护。
-    groups = cluster_groups(matrix, TOPIC_CONFIDENCE_HIGH)
+    # 矩阵和簇内统计留在 CPU 内核，只返回分组；数据库状态仍由当前事务维护。
+    groups = cluster_candidate_groups(items, TOPIC_CONFIDENCE_HIGH)
 
     # 写入数据库。
     topics_created = []

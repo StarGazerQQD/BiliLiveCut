@@ -3,13 +3,19 @@ from __future__ import annotations
 import asyncio
 import os
 import sys
+from collections.abc import Iterator
 from pathlib import Path
 from threading import Event
+from typing import Never
 
 import pytest
+from pydantic import JsonValue
 from sqlmodel import create_engine
 
+from app.core.process_control import run_cancellable
 from app.db import job_store, session
+from app.jobs.context import JobContext
+from app.jobs.contracts import JobData
 from app.jobs.manager import JobManager
 
 
@@ -18,7 +24,7 @@ async def test_live_manager_cannot_be_recovered_by_another_manager(temp_db: None
     entered, release = Event(), Event()
     calls: list[str] = []
 
-    def handler(context, payload):
+    def handler(context: JobContext, payload: dict[str, JsonValue]) -> dict[str, JsonValue]:
         calls.append(context.job_id)
         entered.set()
         assert release.wait(10)
@@ -50,7 +56,7 @@ async def test_shutdown_timeout_keeps_exclusive_ownership(temp_db: None) -> None
     first, second = JobManager(), JobManager()
     entered, release = Event(), Event()
 
-    def handler(context, payload):
+    def handler(context: JobContext, payload: dict[str, JsonValue]) -> dict[str, JsonValue]:
         entered.set()
         assert release.wait(10)
         return {}
@@ -75,7 +81,7 @@ async def test_shutdown_timeout_keeps_exclusive_ownership(temp_db: None) -> None
 async def test_failed_start_releases_ownership(temp_db: None, monkeypatch: pytest.MonkeyPatch) -> None:
     manager = JobManager()
 
-    def broken():
+    def broken() -> Never:
         raise OSError("cannot scan jobs")
 
     with monkeypatch.context() as patch:
@@ -113,32 +119,39 @@ def test_database_path_alias_cannot_bypass_ownership(
 
 async def test_crashed_process_releases_owner_before_recovery(temp_db: None, tmp_path: Path) -> None:
     ready = tmp_path / "ready"
+    crash = tmp_path / "crash"
     program = """
-import asyncio, sys
+import asyncio, os, sys
 from pathlib import Path
 from threading import Event
+from pydantic import JsonValue
 from app.db.session import init_db
+from app.jobs.context import JobContext
 from app.jobs.manager import JobManager
 init_db()
-async def main():
+async def main() -> None:
     manager = JobManager()
-    def handler(context, payload):
+    def handler(context: JobContext, payload: dict[str, JsonValue]) -> dict[str, JsonValue]:
         Path(sys.argv[1]).write_text(context.job_id)
         Event().wait(60)
         return {}
     manager.register("test", handler)
     await manager.enqueue("test", {}, label="crash", owner="alice")
-    await asyncio.Event().wait()
+    while not Path(sys.argv[2]).exists():
+        await asyncio.sleep(0.02)
+    os._exit(7)
 asyncio.run(main())
 """
-    child = await asyncio.create_subprocess_exec(
-        sys.executable,
-        "-c",
-        program,
-        str(ready),
-        env=os.environ.copy(),
-        stdout=asyncio.subprocess.DEVNULL,
-        stderr=asyncio.subprocess.DEVNULL,
+    # Windows 虚拟环境可能先启动转发器；由真实解释器崩溃并等待整棵进程树退出。
+    child = asyncio.create_task(
+        asyncio.to_thread(
+            run_cancellable,
+            [sys.executable, "-c", program, str(ready), str(crash)],
+            env=dict(os.environ, PYTHONUTF8="1"),
+            capture_output=True,
+            encoding="utf-8",
+            timeout=30,
+        )
     )
     contender = JobManager()
     calls: list[str] = []
@@ -146,7 +159,7 @@ asyncio.run(main())
     try:
         async with asyncio.timeout(15):
             while True:
-                assert child.returncode is None
+                assert not child.done(), (await child).stderr
                 if ready.exists() and len(job_id := ready.read_text()) == 32:
                     break
                 await asyncio.sleep(0.02)
@@ -155,17 +168,17 @@ asyncio.run(main())
         with pytest.raises(RuntimeError, match="已有 Web 作业执行实例"):
             await contender.start()
         assert job_store.get_job(job_id) == before and calls == []
-        child.kill()
-        await child.wait()
+        crash.touch()
+        result = await child
+        assert result.returncode == 7, result.stderr
         await contender.start()
         await asyncio.gather(*tuple(contender._tasks.values()))
         after = job_store.get_job(job_id)
         assert after["status"] == "succeeded" and after["attempt"] == 2 and after["recovered"]
         assert calls == [job_id]
     finally:
-        if child.returncode is None:
-            child.kill()
-        await child.wait()
+        crash.touch()
+        await child
         await contender.stop()
 
 
@@ -176,7 +189,7 @@ async def test_cancelled_recovery_keeps_owner_until_database_work_finishes(
     first, second = JobManager(), JobManager()
     original = job_store.iter_active_jobs
 
-    def blocked_scan():
+    def blocked_scan() -> Iterator[JobData]:
         entered.set()
         assert release.wait(10)
         return original()

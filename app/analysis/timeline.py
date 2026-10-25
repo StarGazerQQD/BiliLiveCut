@@ -2,8 +2,6 @@
 
 from __future__ import annotations
 
-import re
-from collections import Counter
 from collections.abc import Callable, Sequence
 from dataclasses import dataclass
 from datetime import UTC, datetime, timedelta
@@ -11,6 +9,7 @@ from typing import Any
 
 from sqlmodel import select
 
+from app.accelerators.dispatcher import interval_conflicts, representative_danmaku_statistics
 from app.core.config import settings
 from app.db.entities import Danmaku, DanmakuType
 from app.db.session import get_session
@@ -38,7 +37,6 @@ _REACTION_WORDS = {
     "牛逼",
 }
 _HUMOR_WORDS = ("哈哈", "笑", "绷", "草", "乐", "典", "节目效果", "梗")
-_REACTION_ONLY_PATTERN = re.compile(r"^[?？!！6wW哈啊哦草艹绷]+$")
 
 
 @dataclass(slots=True)
@@ -49,6 +47,9 @@ class _DanmakuStat:
     text: str
     count: int
     first_index: int
+    reaction: float
+    information: float
+    humor: float
 
 
 def align_danmaku_window(
@@ -112,18 +113,7 @@ def select_representative_danmaku(
     """
     if limit <= 0:
         return []
-    stats_by_key: dict[str, _DanmakuStat] = {}
-    for index, content in enumerate(messages):
-        text = _clean_danmaku(content)
-        if not text:
-            continue
-        key = text.casefold()
-        existing = stats_by_key.get(key)
-        if existing is None:
-            stats_by_key[key] = _DanmakuStat(key=key, text=text, count=1, first_index=index)
-        else:
-            existing.count += 1
-    stats = list(stats_by_key.values())
+    stats = [_DanmakuStat(*row) for row in representative_danmaku_statistics(messages, _REACTION_WORDS, _HUMOR_WORDS)]
     if not stats:
         return []
 
@@ -144,25 +134,25 @@ def select_representative_danmaku(
         chosen.append((selected, role))
         used.add(selected.key)
 
-    reactions = [item for item in stats if _reaction_score(item.text) > 0.0]
+    reactions = [item for item in stats if item.reaction > 0.0]
     choose(
         reactions,
         "reaction",
-        lambda item: (-item.count, -_reaction_score(item.text), item.first_index, item.key),
+        lambda item: (-item.count, -item.reaction, item.first_index, item.key),
     )
-    informative = [item for item in stats if _information_score(item.text) > 0.0]
+    informative = [item for item in stats if item.information > 0.0]
     choose(
         informative,
         "information",
-        lambda item: (-_information_score(item.text), -item.count, item.first_index, item.key),
+        lambda item: (-item.information, -item.count, item.first_index, item.key),
     )
-    humorous = [item for item in stats if _humor_score(item.text) > 0.0]
+    humorous = [item for item in stats if item.humor > 0.0]
     choose(
         humorous,
         "humorous",
         lambda item: (
-            -_humor_score(item.text),
-            -_information_score(item.text),
+            -item.humor,
+            -item.information,
             -item.count,
             item.first_index,
             item.key,
@@ -170,11 +160,11 @@ def select_representative_danmaku(
     )
     for item in sorted(
         (item for item in stats if item.key not in used),
-        key=lambda item: (-item.count, -_information_score(item.text), item.first_index, item.key),
+        key=lambda item: (-item.count, -item.information, item.first_index, item.key),
     ):
         if len(chosen) >= limit:
             break
-        role = "reaction" if _reaction_score(item.text) > 0.0 else "information"
+        role = "reaction" if item.reaction > 0.0 else "information"
         chosen.append((item, role))
         used.add(item.key)
 
@@ -227,32 +217,29 @@ def suppress_clustered_drafts(
     limit: int,
 ) -> list[dict[str, Any]]:
     """按分数保留分散候选，抑制同一爆点附近的重复节点。"""
-    if limit <= 0:
+    if limit <= 0 or not drafts:
         return []
     selected: list[dict[str, Any]] = []
+    coordinates: list[tuple[float, float, float]] = []
+    cooldown = max(0.0, cooldown_s)
     for draft in sorted(drafts, key=lambda item: float(item.get("highlight_score", 0.0)), reverse=True):
         peak = _as_datetime(draft.get("peak_ts"))
         start = _as_datetime(draft.get("start_ts"))
         end = _as_datetime(draft.get("end_ts"))
         if peak is None or start is None or end is None:
             continue
-        clustered = False
-        for existing in selected:
-            existing_peak = _as_datetime(existing.get("peak_ts"))
-            existing_start = _as_datetime(existing.get("start_ts"))
-            existing_end = _as_datetime(existing.get("end_ts"))
-            if existing_peak is None or existing_start is None or existing_end is None:
-                continue
-            peak_gap = datetime_distance_s(peak, existing_peak)
-            overlap = interval_iou(start, end, existing_start, existing_end)
-            if peak_gap < max(0.0, cooldown_s) or overlap >= iou_threshold:
-                clustered = True
-                break
+        if limit == 1 or len(drafts) == 1:
+            return [draft]
+        numeric = (datetime_epoch(peak), datetime_epoch(start), datetime_epoch(end))
+        clustered = coordinates and interval_conflicts(*numeric, coordinates, cooldown, iou_threshold)
         if not clustered:
             selected.append(draft)
+            coordinates.append(numeric)
         if len(selected) >= limit:
             break
-    return sorted(selected, key=lambda item: _datetime_sort_key(_as_datetime(item.get("peak_ts"))))
+    return [
+        draft for _coordinate, draft in sorted(zip(coordinates, selected, strict=True), key=lambda item: item[0][0])
+    ]
 
 
 def interval_iou(start: datetime, end: datetime, other_start: datetime, other_end: datetime) -> float:
@@ -277,47 +264,6 @@ def datetime_distance_s(left: datetime, right: datetime) -> float:
     return abs(datetime_epoch(left) - datetime_epoch(right))
 
 
-def _clean_danmaku(content: str | None) -> str:
-    """规范化用于频次统计的弹幕文本。"""
-    value = re.sub(r"\s+", " ", str(content or "")).strip()
-    if not value or len(value) > 120:
-        return ""
-    return value
-
-
-def _reaction_score(text: str) -> float:
-    """返回短促情绪反应强度；零表示不是 reaction。"""
-    normalized = text.casefold().replace("？", "?").replace("！", "!")
-    if normalized in _REACTION_WORDS:
-        return 1.0
-    if len(normalized) <= 12 and _REACTION_ONLY_PATTERN.fullmatch(normalized):
-        return min(1.0, 0.55 + len(normalized) / 24.0)
-    return 0.0
-
-
-def _information_score(text: str) -> float:
-    """估计事件主题承载量，并抑制纯标点/复读反应。"""
-    compact = re.sub(r"\s+", "", text)
-    semantic = [char for char in compact if char.isalnum() or "\u4e00" <= char <= "\u9fff"]
-    if len(semantic) < 4 or (_reaction_score(text) > 0.0 and len(semantic) <= 8):
-        return 0.0
-    counts = Counter(semantic)
-    repetition = max(counts.values()) / len(semantic)
-    unique_ratio = len(counts) / len(semantic)
-    length_score = min(1.0, len(semantic) / 24.0)
-    token_count = len(re.findall(r"[A-Za-z0-9_]+|[\u4e00-\u9fff]{2,}", text))
-    token_score = min(1.0, token_count / 4.0)
-    return _clamp(length_score * 0.45 + unique_ratio * 0.35 + token_score * 0.20 - repetition * 0.15)
-
-
-def _humor_score(text: str) -> float:
-    """返回可选幽默代表强度。"""
-    hits = sum(token in text for token in _HUMOR_WORDS)
-    if hits == 0:
-        return 0.0
-    return _clamp(0.45 + hits * 0.15 + _information_score(text) * 0.40)
-
-
 def _clamp(value: float) -> float:
     return max(0.0, min(1.0, float(value)))
 
@@ -331,10 +277,3 @@ def _as_datetime(value: object) -> datetime | None:
         except ValueError:
             return None
     return None
-
-
-def _datetime_sort_key(value: datetime | None) -> float:
-    """把有/无时区时间统一成数值排序键，避免混合比较抛出 TypeError。"""
-    if value is None:
-        return float("-inf")
-    return datetime_epoch(value)

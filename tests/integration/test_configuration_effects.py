@@ -41,7 +41,11 @@ def test_restart_values_stay_active_until_a_new_process_loads_saved_configuratio
         "[f['pending_restart'] for f in configuration_view()['fields'] if f['key']=='asr_preload_on_start']]))"
     )
     result = subprocess.run(
-        [sys.executable, "-c", script], env=os.environ.copy(), capture_output=True, text=True, timeout=30
+        [sys.executable, "-c", script],
+        env=dict(os.environ, PYTHONUTF8="1"),
+        capture_output=True,
+        encoding="utf-8",
+        timeout=30,
     )
     assert result.returncode == 0, result.stderr
     assert "RESTART:[true, 12, [false]]" in result.stdout
@@ -137,9 +141,9 @@ def test_registered_storage_writes_validate_atomically_and_refresh_running_proce
 def test_cli_batch_save_is_one_revision_and_next_boundary_refreshes_other_process(temp_db: None) -> None:
     result = subprocess.run(
         [sys.executable, "-m", "app.cli", "set-upload", "--biliup", "--auto"],
-        env=os.environ.copy(),
+        env=dict(os.environ, PYTHONUTF8="1"),
         capture_output=True,
-        text=True,
+        encoding="utf-8",
         timeout=30,
     )
     assert result.returncode == 0, result.stderr

@@ -13,9 +13,17 @@ from typing import TYPE_CHECKING
 
 import numpy as np
 from loguru import logger
+from numpy.typing import NDArray
 from sqlmodel import Session, select
 
-from app.accelerators.dispatcher import danmaku_text_features, robust_relative_uplift, text_novelty
+from app.accelerators.dispatcher import (
+    audio_bucket_indices,
+    danmaku_text_features,
+    novelty_features,
+    novelty_from_features,
+    robust_relative_uplift,
+    text_novelty,
+)
 from app.analysis.keywords import match_keywords
 from app.analysis.room_config import room_highlight_keywords
 from app.analysis.timeline import datetime_epoch
@@ -234,6 +242,13 @@ class HotspotDetector:
         tick_count = int(self.config.detector_tick_s / self.config.bucket_s)
         detections: list[_TickDetection] = []
         start_index = self.config.min_baseline_buckets
+        # 多次扫描较长转写时复用词项；短场次只复用单个 tick 的统计结果。
+        tokenized = (
+            [novelty_features((bucket.asr_text or "").strip()) for bucket in buckets]
+            if len(buckets) > baseline_count + 2 * tick_count
+            and sum(len(bucket.asr_text or "") for bucket in buckets) >= 1024
+            else None
+        )
         for index in range(start_index, len(buckets), tick_count):
             current = buckets[index : index + tick_count]
             if not current:
@@ -241,7 +256,20 @@ class HotspotDetector:
             baseline = buckets[max(0, index - baseline_count) : index]
             if len(baseline) < self.config.min_baseline_buckets:
                 continue
-            detection = self._detect_tick(current, baseline)
+            text_features = None
+            if tokenized is not None:
+                left = tokenized[index : index + tick_count]
+                right = tokenized[max(0, index - baseline_count) : index]
+                text_features = (
+                    _join_bucket_text(current),
+                    novelty_from_features(
+                        set().union(*(item[0] for item in left)),
+                        set().union(*(item[0] for item in right)),
+                        set().union(*(item[1] for item in left)),
+                        set().union(*(item[1] for item in right)),
+                    ),
+                )
+            detection = self._detect_tick(current, baseline, text_features=text_features)
             if detection is not None:
                 detections.append(detection)
         return self._merge_detections(session_id, detections)
@@ -250,12 +278,16 @@ class HotspotDetector:
         self,
         current: Sequence[SignalBucket],
         baseline: Sequence[SignalBucket],
+        *,
+        text_features: tuple[str, tuple[float, float, float]] | None = None,
     ) -> _TickDetection | None:
+        if text_features is None:
+            text_features = _tick_text_features(current, baseline)
         modality_scores: dict[str, float | None] = {
             "danmaku": _danmaku_modality_score(current, baseline),
             "audio": _audio_modality_score(current, baseline),
             "sensevoice": _sensevoice_modality_score(current),
-            "asr": _asr_modality_score(current, baseline),
+            "asr": _asr_modality_score(current, baseline, text_features=text_features),
             "trend": _trend_modality_score(current),
         }
         heat_score, evidence_coverage = dynamic_weighted_score(modality_scores, _HEAT_WEIGHTS)
@@ -277,8 +309,8 @@ class HotspotDetector:
         start_ts = current[0].start_ts
         end_ts = current[-1].end_ts
         peak_bucket = max(current, key=_bucket_peak_strength)
-        evidence = _build_tick_evidence(current, baseline, modality_scores)
-        transcript_text = _join_bucket_text(current)
+        evidence = _build_tick_evidence(current, baseline, modality_scores, text_features=text_features)
+        transcript_text = text_features[0]
         features: dict[str, object] = {
             "detector_version": _DETECTOR_VERSION,
             "bucket_s": self.config.bucket_s,
@@ -376,9 +408,10 @@ def build_segment_signal_buckets(
         recording = db.get(RecordingSession, segment.session_id)
         room = db.get(LiveRoom, recording.room_id) if recording is not None else None
         keywords = room_highlight_keywords(room)
-        from app.analysis.source_policy import session_danmaku_lag_s, session_has_danmaku
+        from app.analysis.source_policy import load_danmaku_coverage
 
-        lag_s = session_danmaku_lag_s(segment.session_id)
+        coverage = load_danmaku_coverage(db, segment.session_id)
+        lag_s = coverage.lag_s
         lag = timedelta(seconds=lag_s)
         query_start = _database_datetime(segment.start_ts + lag)
         query_end = _database_datetime(segment.end_ts + lag)
@@ -407,7 +440,7 @@ def build_segment_signal_buckets(
     for index, builder in enumerate(builders):
         bucket_start = start_ts + timedelta(seconds=index * cfg.bucket_s)
         bucket_end = min(end_ts, bucket_start + timedelta(seconds=cfg.bucket_s))
-        builder.danmaku_available = session_has_danmaku(session_id, bucket_start + lag, bucket_end + lag)
+        builder.danmaku_available = coverage.contains(bucket_start + lag, bucket_end + lag)
         bucket = builder.freeze(
             start_ts=bucket_start,
             end_ts=bucket_end,
@@ -446,7 +479,7 @@ class _BucketBuilder:
         self.danmaku_total = 0
         self.danmaku_users: set[str] = set()
         self.danmaku_texts: list[str] = []
-        self.audio_values: list[tuple[float, float]] | None = None
+        self.audio_values: tuple[NDArray[np.float64], NDArray[np.float64]] | None = None
         self.asr_available = False
         self.asr_words: list[str] = []
         self.sensevoice_available = False
@@ -471,9 +504,8 @@ class _BucketBuilder:
         silence_ratio: float | None = None
         local_peak: float | None = None
         peak_offset_s: float | None = None
-        if self.audio_values:
-            offsets = np.asarray([offset for offset, _value in self.audio_values], dtype=np.float64)
-            values = np.asarray([value for _offset, value in self.audio_values], dtype=np.float64)
+        if self.audio_values is not None:
+            offsets, values = self.audio_values
             audio_mean = float(np.mean(values))
             peak_index = int(np.argmax(values))
             audio_peak = float(values[peak_index])
@@ -557,13 +589,13 @@ def _fill_audio(
     if features is None or features.rms.size == 0 or features.times.size == 0:
         return
     size = min(features.rms.size, features.times.size)
-    for time_s, value in zip(features.times[:size], features.rms[:size], strict=True):
-        index = _bucket_index(float(time_s), duration_s, bucket_s, len(builders))
-        if index is None:
-            continue
-        if builders[index].audio_values is None:
-            builders[index].audio_values = []
-        builders[index].audio_values.append((float(time_s), float(value)))
+    times = np.asarray(features.times[:size], dtype=np.float64)
+    values = np.asarray(features.rms[:size], dtype=np.float64)
+    for builder, indexes in zip(
+        builders, audio_bucket_indices(times, duration_s, bucket_s, len(builders)), strict=True
+    ):
+        if indexes:
+            builder.audio_values = (times[indexes], values[indexes])
 
 
 def _fill_transcript(
@@ -706,18 +738,30 @@ def _sensevoice_modality_score(current: Sequence[SignalBucket]) -> float | None:
     return max(values) if values else None
 
 
+def _tick_text_features(
+    current: Sequence[SignalBucket], baseline: Sequence[SignalBucket]
+) -> tuple[str, tuple[float, float, float]]:
+    text = _join_bucket_text(current)
+    if not any(bucket.asr_text is not None for bucket in current):
+        return text, (0.0, 0.0, 0.0)
+    novelty, change, entities = text_novelty(text, _join_bucket_text(baseline))
+    assert entities is not None
+    return text, (novelty, change, entities)
+
+
 def _asr_modality_score(
     current: Sequence[SignalBucket],
     baseline: Sequence[SignalBucket],
+    *,
+    text_features: tuple[str, tuple[float, float, float]] | None = None,
 ) -> float | None:
     if not any(bucket.asr_text is not None for bucket in current):
         return None
-    current_text = _join_bucket_text(current)
+    current_text, (semantic_novelty, topic_change, entity_change) = (
+        _tick_text_features(current, baseline) if text_features is None else text_features
+    )
     if not current_text:
         return 0.0
-    baseline_text = _join_bucket_text(baseline)
-    semantic_novelty, topic_change, entity_change = text_novelty(current_text, baseline_text)
-    assert entity_change is not None
     keyword_score = max(bucket.asr_keyword_score or 0.0 for bucket in current)
     speech_rate = float(np.mean([bucket.asr_speech_rate or 0.0 for bucket in current]))
     baseline_rates = [bucket.asr_speech_rate for bucket in baseline if bucket.asr_speech_rate is not None]
@@ -749,6 +793,8 @@ def _build_tick_evidence(
     current: Sequence[SignalBucket],
     baseline: Sequence[SignalBucket],
     scores: Mapping[str, float | None],
+    *,
+    text_features: tuple[str, tuple[float, float, float]] | None = None,
 ) -> tuple[EvidenceItem, ...]:
     start_ts = current[0].start_ts
     end_ts = current[-1].end_ts
@@ -827,9 +873,9 @@ def _build_tick_evidence(
         )
     asr_score = scores.get("asr")
     if asr_score is not None:
-        current_text = _join_bucket_text(current)
-        baseline_text = _join_bucket_text(baseline)
-        semantic_novelty, topic_change, _ = text_novelty(current_text, baseline_text, include_entities=False)
+        current_text, (semantic_novelty, topic_change, _) = (
+            _tick_text_features(current, baseline) if text_features is None else text_features
+        )
         evidence.append(
             EvidenceItem(
                 type="asr",

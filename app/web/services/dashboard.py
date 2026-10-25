@@ -109,13 +109,20 @@ def danmaku_overview(limit: int = 50, session_id: int | None = None) -> dict[str
         stmt = select(Danmaku).order_by(Danmaku.ts.desc())  # type: ignore[attr-defined]
         if session_id is not None:
             stmt = stmt.where(Danmaku.session_id == session_id)
-        recent_rows = db.exec(stmt).all()[:limit]
+        recent_rows = db.exec(stmt.limit(limit)).all() if limit >= 0 else db.exec(stmt).all()[:limit]
 
         # 按会话聚合数量(简单热度指标)。
         agg_stmt = select(Danmaku.session_id, Danmaku.value)
         if session_id is not None:
             agg_stmt = agg_stmt.where(Danmaku.session_id == session_id)
-        all_rows = db.exec(agg_stmt).all()
+        # 按原查询顺序累计浮点值，流式读取避免保留全部历史弹幕。
+        counts: dict[int, dict[str, float]] = {}
+        total = 0
+        for sid, value in db.exec(agg_stmt).yield_per(512):
+            bucket = counts.setdefault(sid, {"count": 0.0, "intensity": 0.0})
+            bucket["count"] += 1
+            bucket["intensity"] += float(value)
+            total += 1
         from app.web.services.source_identity import source_identities_for_sessions, unknown_source_identity
 
         session_stmt = select(RecordingSession.id).order_by(RecordingSession.id.desc()).limit(limit)
@@ -123,18 +130,15 @@ def danmaku_overview(limit: int = 50, session_id: int | None = None) -> dict[str
             session_stmt = session_stmt.where(RecordingSession.id == session_id)
         source_session_ids = set(db.exec(session_stmt).all())
         source_session_ids.update(row.session_id for row in recent_rows)
-        source_session_ids.update(sid for sid, _ in all_rows)
+        source_session_ids.update(counts)
         sources = source_identities_for_sessions(db, source_session_ids)
 
     from app.analysis.source_policy import session_danmaku_view
     from app.recording.danmaku_archive import archive_view
 
     evidence = {sid: session_danmaku_view(sid) for sid in source_session_ids}
-    counts: dict[int, dict[str, float]] = {sid: {"count": 0.0, "intensity": 0.0} for sid in source_session_ids}
-    for sid, value in all_rows:
-        bucket = counts.setdefault(sid, {"count": 0.0, "intensity": 0.0})
-        bucket["count"] += 1
-        bucket["intensity"] += float(value)
+    for sid in source_session_ids:
+        counts.setdefault(sid, {"count": 0.0, "intensity": 0.0})
 
     sessions = [
         {
@@ -163,7 +167,7 @@ def danmaku_overview(limit: int = 50, session_id: int | None = None) -> dict[str
     ]
     return {
         "available": any(item["available"] for item in evidence.values()),
-        "total": len(all_rows),
+        "total": total,
         "recent": recent,
         "sessions": sessions,
     }

@@ -23,12 +23,121 @@ from libc.stdint cimport SIZE_MAX
 from cpython.mem cimport PyMem_Malloc, PyMem_Free
 from cpython cimport PyFloat_AsDouble
 from cpython.bytes cimport PyBytes_AS_STRING
-from cpython.unicode cimport PyUnicode_READ_CHAR
+from cpython.unicode cimport PyUnicode_READ_CHAR, Py_UNICODE_ISALNUM
+
+from app.accelerators.python_fallback.speedups_round2 import (
+    _DANMAKU_SPACE_PATTERN, _DANMAKU_REACTION_PATTERN, _DANMAKU_TOKEN_PATTERN,
+)
 
 
 # ============================================================================
 # 0. 共享数值辅助函数
 # ============================================================================
+
+def representative_danmaku_statistics(messages, set reaction_words, tuple humor_words) -> list:
+    """合并清洗、频次和三类代表评分，保持首次文本及稳定输入顺序。"""
+    cdef dict unique = {}, counts
+    cdef list result = []
+    cdef str text, key, normalized, character
+    cdef Py_ssize_t index, position, size, hits
+    cdef double reaction, information, humor
+    cdef Py_UCS4 value
+    for index, content in enumerate(messages):
+        text = _DANMAKU_SPACE_PATTERN.sub(" ", str(content or "")).strip()
+        if not text or len(text) > 120:
+            continue
+        key = text.casefold()
+        previous = unique.get(key)
+        unique[key] = (text, 1, index) if previous is None else (previous[0], previous[1] + 1, previous[2])
+    for key, (text, count, index) in unique.items():
+        normalized = key.replace("？", "?").replace("！", "!")
+        reaction = 0.0
+        if normalized in reaction_words:
+            reaction = 1.0
+        elif len(normalized) <= 12 and _DANMAKU_REACTION_PATTERN.fullmatch(normalized):
+            reaction = min(1.0, 0.55 + len(normalized) / 24.0)
+        counts = {}
+        size = 0
+        for position in range(len(text)):
+            value = PyUnicode_READ_CHAR(text, position)
+            if Py_UNICODE_ISALNUM(value) or 0x4e00 <= value <= 0x9fff:
+                character = text[position]
+                counts[character] = counts.get(character, 0) + 1
+                size += 1
+        information = 0.0
+        if size >= 4 and not (reaction > 0.0 and size <= 8):
+            information = max(0.0, min(1.0,
+                min(1.0, size / 24.0) * 0.45 + len(counts) / <double>size * 0.35
+                + min(1.0, len(_DANMAKU_TOKEN_PATTERN.findall(text)) / 4.0) * 0.20
+                - max(counts.values()) / <double>size * 0.15))
+        hits = 0
+        for token in humor_words:
+            hits += token in text
+        humor = max(0.0, min(1.0, 0.45 + hits * 0.15 + information * 0.40)) if hits else 0.0
+        result.append((key, text, count, index, reaction, information, humor))
+    return result
+
+
+def normalize_asr_text(str text not None) -> str:
+    """按 CPython Unicode 分类和完整 casefold 规范化 ASR 文本。"""
+    cdef list characters = []
+    cdef Py_ssize_t index
+    for index in range(len(text)):
+        if Py_UNICODE_ISALNUM(PyUnicode_READ_CHAR(text, index)):
+            characters.append(text[index].casefold())
+    return "".join(characters)
+
+
+def normalize_asr_with_indexes(str text not None) -> tuple[str, list[int]]:
+    """casefold 扩展字符保持同一原文下标，供精确局部复读修复使用。"""
+    cdef list characters = [], indexes = []
+    cdef Py_ssize_t index, expanded
+    cdef str folded
+    for index in range(len(text)):
+        if Py_UNICODE_ISALNUM(PyUnicode_READ_CHAR(text, index)):
+            folded = text[index].casefold()
+            characters.append(folded)
+            for expanded in range(len(folded)):
+                indexes.append(index)
+    return "".join(characters), indexes
+
+
+def interval_conflicts(
+    double peak, double start, double end, list selected,
+    double cooldown_s, double iou_threshold,
+) -> bool:
+    """以纯数值坐标检查区间，保持严格冷却距离和包含端点的 IoU 阈值。"""
+    cdef double other_peak, other_start, other_end, intersection, union, overlap
+    for other_peak, other_start, other_end in selected:
+        intersection = max(0.0, min(end, other_end) - max(start, other_start))
+        union = max(0.0, max(end, other_end) - min(start, other_start))
+        overlap = intersection / union if union else 0.0
+        if fabs(peak - other_peak) < cooldown_s or overlap >= iou_threshold:
+            return True
+    return False
+
+
+def audio_bucket_indices(
+    const double[::1] times, double duration_s, double bucket_s, Py_ssize_t count
+) -> list[list[int]]:
+    """只返回各桶样本下标，避免逐样本创建浮点二元组。"""
+    cdef list groups = [[] for _ in range(max(0, count))]
+    cdef Py_ssize_t position, index
+    cdef double offset, quotient
+    if count <= 0:
+        return groups
+    for position in range(times.shape[0]):
+        offset = times[position]
+        if offset < 0.0 or offset >= duration_s:
+            continue
+        quotient = offset // bucket_s
+        if not isfinite(quotient):
+            # 与 Python int(float) 保持相同的异常，不把 NaN 转为数组下标。
+            int(quotient)
+        index = min(int(quotient), count - 1)
+        groups[index].append(position)
+    return groups
+
 
 def pcm16_statistics(bytes raw not None) -> tuple[int, int, int]:
     """单遍汇总小端 PCM16；每 65536 样本提升至 Python 整数，长输入也不溢出。"""
@@ -297,6 +406,8 @@ def cluster_similarity_matrix(list items):
     :param items: list[dict], 每个 dict 含 asr_text/keywords/start_ts。
     :returns: list[list[float]], N×N 相似度矩阵。
     """
+    from datetime import datetime as _dt
+
     cdef Py_ssize_t n = len(items)
     if n < 2:
         return [[0.0] * n for _ in range(n)]
@@ -321,7 +432,15 @@ def cluster_similarity_matrix(list items):
         bigrams = fast_char_bigrams(text)
         bigram_vecs.append(Counter(bigrams))
         kw_sets.append(set(item.get("keywords", []) or []))
-        tss.append(item.get("start_ts"))
+        ts = item.get("start_ts")
+        if isinstance(ts, str):
+            try:
+                ts = _dt.fromisoformat(ts)
+            except ValueError:
+                ts = None
+        elif not isinstance(ts, _dt):
+            ts = None
+        tss.append(ts)
 
     # 构建矩阵
     cdef list matrix = [[0.0] * n for _ in range(n)]
@@ -377,16 +496,10 @@ cdef double _event_sim_fast(
 
     # 时间接近度
     time_sim = 0.0
-    if ts_a and ts_b:
-        from datetime import datetime as _dt
-        if isinstance(ts_a, str):
-            ts_a = _dt.fromisoformat(ts_a)
-        if isinstance(ts_b, str):
-            ts_b = _dt.fromisoformat(ts_b)
-        if isinstance(ts_a, _dt) and isinstance(ts_b, _dt):
-            diff_s = abs((ts_a - ts_b).total_seconds())
-            if diff_s < 3600:
-                time_sim = max(0.0, 1.0 - diff_s / 3600.0)
+    if ts_a is not None and ts_b is not None:
+        diff_s = abs((ts_a - ts_b).total_seconds())
+        if diff_s < 3600:
+            time_sim = max(0.0, 1.0 - diff_s / 3600.0)
 
     score = sim_text * 0.55 + sim_kw * 0.25 + time_sim * 0.20
     return round(score, 4)
@@ -441,6 +554,8 @@ def group_srt_blocks(
     int min_display_ms=800,
     int max_display_ms=5000,
     int line_gap_ms=200,
+    *,
+    duration_s=None,
 ):
     """把词级条目聚合成 SRT 字幕块,返回 text 列表。
 
@@ -496,6 +611,8 @@ def group_srt_blocks(
     cdef double fstart, fend
     cdef str fstart_str, fend_str
     cdef str block_text
+    cdef object limit = None if duration_s is None else round(duration_s * 1000)
+    cdef object start_ms, end_ms
 
     for i in range(block_count):
         fstart = <double>blocks_start[i]
@@ -508,14 +625,38 @@ def group_srt_blocks(
         elif dur_ms > max_display_ms:
             fend = fstart + max_display_ms / 1000.0
 
-        # 时间格式化 (替代 Python divmod + f-string)
-        fstart_str = _fmt_time(fstart)
-        fend_str = _fmt_time(fend)
         block_text = <str>blocks_text[i]
-
-        lines.append(f"{i+1}\n{fstart_str} --> {fend_str}\n{block_text}\n")
+        if limit is None:
+            fstart_str = _fmt_time(fstart)
+            fend_str = _fmt_time(fend)
+            lines.append(f"{i+1}\n{fstart_str} --> {fend_str}\n{block_text}\n")
+        else:
+            start_ms = _time_milliseconds(fstart)
+            end_ms = min(_time_milliseconds(fend), limit,
+                         _time_milliseconds(blocks_start[i + 1]) if i + 1 < block_count else limit)
+            if start_ms < end_ms:
+                if i + 1 == block_count:
+                    block_text = block_text.rstrip()
+                lines.append(f"{len(lines)+1}\n{_fmt_milliseconds(start_ms)} --> {_fmt_milliseconds(end_ms)}\n{block_text}\n")
 
     return "\n".join(lines)
+
+
+cdef object _time_milliseconds(double t):
+    """按现有时分秒拆分顺序取整，保留浮点边界行为。"""
+    cdef int h = <int>(t / 3600.0)
+    t -= h * 3600.0
+    cdef int m = <int>(t / 60.0)
+    t -= m * 60.0
+    cdef int s = <int>t
+    return ((<object>h * 60 + m) * 60 + s) * 1000 + <int>((t - s) * 1000.0)
+
+
+cdef str _fmt_milliseconds(object value):
+    seconds, fraction = divmod(value, 1000)
+    minutes, seconds = divmod(seconds, 60)
+    hours, minutes = divmod(minutes, 60)
+    return f"{hours:02}:{minutes:02}:{seconds:02},{fraction:03}"
 
 
 cdef str _fmt_time(double t):
@@ -582,6 +723,24 @@ cdef Py_ssize_t _intersection_count(set left, set right):
         if token in right:
             count += 1
     return count
+
+
+def novelty_features(str text not None) -> tuple[set[str], set[str]]:
+    """一次提取一个信号桶的词项与实体，后续窗口复用集合。"""
+    return _novelty_tokens(text, False), _novelty_tokens(text, True)
+
+
+def novelty_from_features(
+    set left not None, set right not None, set entities not None, set baseline_entities not None
+) -> tuple[float, float, float]:
+    """统计已有集合，避免重复扫描滚动窗口文本。"""
+    cdef Py_ssize_t common = _intersection_count(left, right)
+    cdef Py_ssize_t union_size = len(left) + len(right) - common
+    return (
+        (len(left) - common) / <double>len(left) if left else 0.0,
+        1.0 - common / <double>union_size if union_size else 0.0,
+        (len(entities) - _intersection_count(entities, baseline_entities)) / <double>len(entities) if entities else 0.0,
+    )
 
 
 def text_novelty(str current not None, str baseline not None, *, bint include_entities=True) -> tuple[float, float, float | None]:

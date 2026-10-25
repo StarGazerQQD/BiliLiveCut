@@ -20,25 +20,10 @@
 #define PY_SSIZE_T_CLEAN
 #include <Python.h>
 #include <stdint.h>
+#include <limits.h>
 #include <string.h>
 #include <math.h>
 #include <wchar.h>
-
-/* MSVC 兼容: strndup 是 POSIX 函数, MSVC 不提供 */
-#ifdef _MSC_VER
-#ifndef strndup
-static inline char *strndup(const char *s, size_t n) {
-    size_t len = 0;
-    while (len < n && s[len]) len++;
-    char *dup = (char *)malloc(len + 1);
-    if (dup) {
-        memcpy(dup, s, len);
-        dup[len] = '\0';
-    }
-    return dup;
-}
-#endif
-#endif
 
 /* ── UTF-8 校验 (V0.1.12.5) ────────────────────────────────────────── */
 
@@ -77,11 +62,16 @@ static int _is_valid_utf8(const char *s, Py_ssize_t len) {
 #define AC_MAX_NODES 16384
 
 typedef struct {
+    char *text;
+    Py_ssize_t length;
+} ACOutput;
+
+typedef struct {
     int next[AC_ALPHABET];   /* 子节点索引, -1 表示无 */
     int fail;                /* 失败链接 */
     int output_len;          /* 输出模式数量 */
-    char *outputs[8];        /* 最多 8 个同节点输出 */
-    int output_lens[8];      /* 对应 pattern 长度 */
+    int output_cap;
+    ACOutput *outputs;
 } ACNode;
 
 typedef struct {
@@ -92,15 +82,21 @@ typedef struct {
     PyObject *patterns;      /* 原始模式列表(保持引用防止GC) */
 } ACAutomaton;
 
-static void ac_automaton_dealloc(ACAutomaton *self) {
+static void ac_clear(ACAutomaton *self) {
     if (self->nodes) {
         for (int i = 0; i < self->node_count; i++) {
             for (int j = 0; j < self->nodes[i].output_len; j++) {
-                free(self->nodes[i].outputs[j]);
+                free(self->nodes[i].outputs[j].text);
             }
+            free(self->nodes[i].outputs);
         }
         free(self->nodes);
+        self->nodes = NULL;
     }
+}
+
+static void ac_automaton_dealloc(ACAutomaton *self) {
+    ac_clear(self);
     Py_XDECREF(self->patterns);
     Py_TYPE(self)->tp_free((PyObject *)self);
 }
@@ -115,6 +111,10 @@ static PyTypeObject ACAutomatonType = {
 
 static int ac_add_node(ACAutomaton *self) {
     if (self->node_count >= self->node_cap) {
+        if (self->node_cap > INT_MAX / 2 || (size_t)self->node_cap > SIZE_MAX / (2 * sizeof(ACNode))) {
+            PyErr_NoMemory();
+            return -1;
+        }
         int new_cap = self->node_cap * 2;
         ACNode *new_nodes = realloc(self->nodes, new_cap * sizeof(ACNode));
         if (!new_nodes) return -1;
@@ -133,9 +133,30 @@ static int ac_add_node(ACAutomaton *self) {
     return idx;
 }
 
-static int ac_insert_pattern(ACAutomaton *self, const char *pattern, int plen) {
+static int ac_add_output(ACNode *node, const char *pattern, Py_ssize_t length) {
+    if (node->output_len == node->output_cap) {
+        if (node->output_cap > INT_MAX / 2 || (size_t)node->output_cap > SIZE_MAX / (2 * sizeof(ACOutput))) {
+            PyErr_NoMemory();
+            return -1;
+        }
+        int capacity = node->output_cap ? node->output_cap * 2 : 4;
+        ACOutput *outputs = realloc(node->outputs, (size_t)capacity * sizeof(ACOutput));
+        if (!outputs) { PyErr_NoMemory(); return -1; }
+        node->outputs = outputs;
+        node->output_cap = capacity;
+    }
+    /* 使用显式长度复制，保留内嵌 NUL，禁止按 C 字符串截断。 */
+    char *copy = malloc((size_t)length + 1);
+    if (!copy) { PyErr_NoMemory(); return -1; }
+    memcpy(copy, pattern, (size_t)length);
+    copy[length] = '\0';
+    node->outputs[node->output_len++] = (ACOutput){copy, length};
+    return 0;
+}
+
+static int ac_insert_pattern(ACAutomaton *self, const char *pattern, Py_ssize_t plen) {
     int node = 0;
-    for (int i = 0; i < plen; i++) {
+    for (Py_ssize_t i = 0; i < plen; i++) {
         unsigned char c = (unsigned char)pattern[i];
         if (self->nodes[node].next[c] == -1) {
             int child = ac_add_node(self);
@@ -144,13 +165,7 @@ static int ac_insert_pattern(ACAutomaton *self, const char *pattern, int plen) {
         }
         node = self->nodes[node].next[c];
     }
-    if (self->nodes[node].output_len < 8) {
-        int oi = self->nodes[node].output_len++;
-        self->nodes[node].outputs[oi] = strndup(pattern, plen);
-        if (!self->nodes[node].outputs[oi]) { self->nodes[node].output_len--; return -1; }
-        self->nodes[node].output_lens[oi] = plen;
-    }
-    return 0;
+    return ac_add_output(&self->nodes[node], pattern, plen);
 }
 
 /* BFS 构造失败链接 — V0.1.9.1: 使用堆分配队列防止节点数超 AC_MAX_NODES 时栈溢出。 */
@@ -188,17 +203,14 @@ static void ac_build_failure(ACAutomaton *self) {
                 int f = self->nodes[r].fail;
                 while (self->nodes[f].next[c] == -1) f = self->nodes[f].fail;
                 self->nodes[child].fail = self->nodes[f].next[c];
-                /* 合并输出 — V0.1.9.2: strndup 独立副本,避免 double-free。
-                   原代码直接复制指针,导致 child 和 of 持有同一堆地址,
-                   dealloc 时对同一指针多次 free()。 */
+                /* 保留全部后缀命中及原遍历顺序，各节点独立持有输出。 */
                 int of = self->nodes[child].fail;
                 for (int j = 0; j < self->nodes[of].output_len; j++) {
-                    if (self->nodes[child].output_len >= 8) break;
-                    int oi = self->nodes[child].output_len++;
-                    char *dup = strndup(self->nodes[of].outputs[j], self->nodes[of].output_lens[j]);
-                    if (!dup) { self->nodes[child].output_len--; continue; }
-                    self->nodes[child].outputs[oi] = dup;
-                    self->nodes[child].output_lens[oi] = self->nodes[of].output_lens[j];
+                    ACOutput output = self->nodes[of].outputs[j];
+                    if (ac_add_output(&self->nodes[child], output.text, output.length) < 0) {
+                        free(queue);
+                        return;
+                    }
                 }
             } else {
                 self->nodes[r].next[c] = -1;
@@ -221,10 +233,11 @@ static PyObject *fast_ahocorasick_build(PyObject *self, PyObject *args) {
 
     ACAutomaton *am = PyObject_New(ACAutomaton, &ACAutomatonType);
     if (!am) return NULL;
-    am->node_cap = 1024;
+    am->patterns = NULL;
+    am->node_count = 0;
+    am->node_cap = 16;
     am->nodes = calloc(am->node_cap, sizeof(ACNode));
     if (!am->nodes) { Py_DECREF(am); return PyErr_NoMemory(); }
-    am->node_count = 0;
     am->patterns = patterns; Py_INCREF(patterns);
 
     /* 初始化根节点 */
@@ -241,8 +254,9 @@ static PyObject *fast_ahocorasick_build(PyObject *self, PyObject *args) {
         } else if (PyBytes_Check(item)) {
             PyBytes_AsStringAndSize(item, (char **)&pstr, &plen);
         }
-        if (pstr && plen > 0 && plen < 256) {
-            if (ac_insert_pattern(am, pstr, (int)plen) < 0) {
+        if (PyErr_Occurred()) { Py_DECREF(item); Py_DECREF(am); return NULL; }
+        if (pstr && plen > 0) {
+            if (ac_insert_pattern(am, pstr, plen) < 0) {
                 Py_DECREF(item);
                 Py_DECREF(am);
                 return PyErr_NoMemory();
@@ -280,7 +294,8 @@ static PyObject *fast_ahocorasick_search(PyObject *self, PyObject *args) {
         PyErr_SetString(PyExc_TypeError, "text must be str or bytes");
         return NULL;
     }
-    if (!text || tlen <= 0) return PyList_New(0);
+    if (!text) return NULL;
+    if (tlen <= 0) return PyList_New(0);
 
     PyObject *result = PyList_New(0);
     if (!result) return NULL;
@@ -295,8 +310,9 @@ static PyObject *fast_ahocorasick_search(PyObject *self, PyObject *args) {
 
         for (int j = 0; j < am->nodes[node].output_len; j++) {
             PyObject *s = PyUnicode_FromStringAndSize(
-                am->nodes[node].outputs[j], am->nodes[node].output_lens[j]);
-            if (s) {
+                am->nodes[node].outputs[j].text, am->nodes[node].outputs[j].length);
+            if (!s) { Py_DECREF(result); return NULL; }
+            {
                 if (PyList_Append(result, s) < 0) {
                     Py_DECREF(s);
                     Py_DECREF(result);
@@ -429,7 +445,8 @@ static PyObject *fast_aho_has_match(PyObject *self, PyObject *args) {
     } else {
         return PyBool_FromLong(0);
     }
-    if (!text || tlen <= 0) return PyBool_FromLong(0);
+    if (!text) return NULL;
+    if (tlen <= 0) return PyBool_FromLong(0);
 
     int node = 0;
     for (Py_ssize_t i = 0; i < tlen; i++) {
@@ -461,7 +478,8 @@ static PyObject *fast_match_keywords(PyObject *self, PyObject *args) {
         PyErr_SetString(PyExc_TypeError, "text must be str");
         return NULL;
     }
-    if (!text || tlen <= 0) return PyList_New(0);
+    if (!text) return NULL;
+    if (tlen <= 0) return PyList_New(0);
 
     if (!PyTuple_Check(patterns_obj) && !PyList_Check(patterns_obj)) {
         PyErr_SetString(PyExc_TypeError, "patterns must be tuple or list");
@@ -472,7 +490,7 @@ static PyObject *fast_match_keywords(PyObject *self, PyObject *args) {
     /* 构建自动机 */
     ACAutomaton am_local;
     memset(&am_local, 0, sizeof(am_local));
-    am_local.node_cap = 1024;
+    am_local.node_cap = 16;
     am_local.nodes = calloc(am_local.node_cap, sizeof(ACNode));
     if (!am_local.nodes) return PyErr_NoMemory();
     for (int i = 0; i < AC_ALPHABET; i++) am_local.nodes[0].next[i] = -1;
@@ -481,18 +499,16 @@ static PyObject *fast_match_keywords(PyObject *self, PyObject *args) {
 
     for (Py_ssize_t i = 0; i < np; i++) {
         PyObject *item = PySequence_GetItem(patterns_obj, i);
-        if (!item) { free(am_local.nodes); return NULL; }
+        if (!item) { ac_clear(&am_local); return NULL; }
         const char *pstr = NULL; Py_ssize_t plen = 0;
         if (PyUnicode_Check(item)) {
             pstr = PyUnicode_AsUTF8AndSize(item, &plen);
         }
-        if (pstr && plen > 0 && plen < 256) {
-            if (ac_insert_pattern(&am_local, pstr, (int)plen) < 0) {
+        if (PyErr_Occurred()) { Py_DECREF(item); ac_clear(&am_local); return NULL; }
+        if (pstr && plen > 0) {
+            if (ac_insert_pattern(&am_local, pstr, plen) < 0) {
                 Py_DECREF(item);
-                for (int k = 0; k < am_local.node_count; k++)
-                    for (int j = 0; j < am_local.nodes[k].output_len; j++)
-                        free(am_local.nodes[k].outputs[j]);
-                free(am_local.nodes);
+                ac_clear(&am_local);
                 return PyErr_NoMemory();
             }
         }
@@ -500,19 +516,13 @@ static PyObject *fast_match_keywords(PyObject *self, PyObject *args) {
     }
     ac_build_failure(&am_local);
     if (PyErr_Occurred()) {
-        for (int i = 0; i < am_local.node_count; i++)
-            for (int j = 0; j < am_local.nodes[i].output_len; j++)
-                free(am_local.nodes[i].outputs[j]);
-        free(am_local.nodes);
+        ac_clear(&am_local);
         return NULL;
     }
 
     PyObject *result = PyList_New(0);
     if (!result) {
-        for (int i = 0; i < am_local.node_count; i++)
-            for (int j = 0; j < am_local.nodes[i].output_len; j++)
-                free(am_local.nodes[i].outputs[j]);
-        free(am_local.nodes);
+        ac_clear(&am_local);
         return NULL;
     }
 
@@ -525,8 +535,9 @@ static PyObject *fast_match_keywords(PyObject *self, PyObject *args) {
         if (next != -1) node = next;
         for (int j = 0; j < am_local.nodes[node].output_len; j++) {
             PyObject *s = PyUnicode_FromStringAndSize(
-                am_local.nodes[node].outputs[j], am_local.nodes[node].output_lens[j]);
-            if (s) {
+                am_local.nodes[node].outputs[j].text, am_local.nodes[node].outputs[j].length);
+            if (!s) { Py_DECREF(result); goto error_cleanup; }
+            {
                 if (PyList_Append(result, s) < 0) {
                     Py_DECREF(s);
                     Py_DECREF(result);
@@ -538,21 +549,11 @@ static PyObject *fast_match_keywords(PyObject *self, PyObject *args) {
     }
 
     /* 清理本地自动机 */
-    for (int i = 0; i < am_local.node_count; i++) {
-        for (int j = 0; j < am_local.nodes[i].output_len; j++) {
-            free(am_local.nodes[i].outputs[j]);
-        }
-    }
-    free(am_local.nodes);
+    ac_clear(&am_local);
     return result;
 
 error_cleanup:
-    for (int i = 0; i < am_local.node_count; i++) {
-        for (int j = 0; j < am_local.nodes[i].output_len; j++) {
-            free(am_local.nodes[i].outputs[j]);
-        }
-    }
-    free(am_local.nodes);
+    ac_clear(&am_local);
     return NULL;
 }
 
@@ -572,7 +573,7 @@ static PyObject *fast_meme_count(PyObject *self, PyObject *args) {
     /* 构建梗词自动机 */
     ACAutomaton am_local;
     memset(&am_local, 0, sizeof(am_local));
-    am_local.node_cap = 1024;
+    am_local.node_cap = 16;
     am_local.nodes = calloc(am_local.node_cap, sizeof(ACNode));
     if (!am_local.nodes) return PyErr_NoMemory();
     for (int i = 0; i < AC_ALPHABET; i++) am_local.nodes[0].next[i] = -1;
@@ -584,19 +585,15 @@ static PyObject *fast_meme_count(PyObject *self, PyObject *args) {
         if (PyUnicode_Check(item)) {
             pstr = PyUnicode_AsUTF8AndSize(item, &plen);
         }
-        if (pstr && plen > 0) {
-            if (ac_insert_pattern(&am_local, pstr, (int)plen) < 0) {
-                /* 梗词 OOM: 静默跳过个别模式,构建失败则返回 0 */
-                continue;
-            }
+        if (PyErr_Occurred()) { ac_clear(&am_local); return NULL; }
+        if (pstr && plen > 0 && ac_insert_pattern(&am_local, pstr, plen) < 0) {
+            ac_clear(&am_local);
+            return PyErr_NoMemory();
         }
     }
     ac_build_failure(&am_local);
     if (PyErr_Occurred()) {
-        for (int i = 0; i < am_local.node_count; i++)
-            for (int j = 0; j < am_local.nodes[i].output_len; j++)
-                free(am_local.nodes[i].outputs[j]);
-        free(am_local.nodes);
+        ac_clear(&am_local);
         return NULL;
     }
 
@@ -607,7 +604,8 @@ static PyObject *fast_meme_count(PyObject *self, PyObject *args) {
         const char *text; Py_ssize_t tlen;
         if (!PyUnicode_Check(t)) continue;
         text = PyUnicode_AsUTF8AndSize(t, &tlen);
-        if (!text || tlen <= 0) continue;
+        if (!text) { ac_clear(&am_local); return NULL; }
+        if (tlen <= 0) continue;
 
         int node = 0, found = 0;
         for (Py_ssize_t j = 0; j < tlen && !found; j++) {
@@ -621,17 +619,72 @@ static PyObject *fast_meme_count(PyObject *self, PyObject *args) {
         if (found) count++;
     }
 
-    for (int i = 0; i < am_local.node_count; i++)
-        for (int j = 0; j < am_local.nodes[i].output_len; j++)
-            free(am_local.nodes[i].outputs[j]);
-    free(am_local.nodes);
+    ac_clear(&am_local);
     return PyLong_FromLong(count);
 }
 
 /* ───────────────────────────────────────────────────────────────────────
  * 模块方法列表
  * ─────────────────────────────────────────────────────────────────────── */
+static PyObject *danmaku_sentiment_statistics(PyObject *self, PyObject *args) {
+    PyObject *texts_obj, *automaton_obj;
+    if (!PyArg_ParseTuple(args, "OO", &texts_obj, &automaton_obj)) return NULL;
+    if (!PyList_Check(texts_obj) || !PyObject_TypeCheck(automaton_obj, &ACAutomatonType)) {
+        PyErr_SetString(PyExc_TypeError, "expected (list[str], ACAutomaton)");
+        return NULL;
+    }
+    /* 固定元素引用，避免字符串子类的哈希回调改变调用方列表。 */
+    PyObject *texts = PySequence_Tuple(texts_obj);
+    if (!texts) return NULL;
+    PyObject *counts = PyDict_New();
+    if (!counts) { Py_DECREF(texts); return NULL; }
+    ACAutomaton *am = (ACAutomaton *)automaton_obj;
+    Py_ssize_t max_dup = 0, exclamations = 0, hits = 0;
+    for (Py_ssize_t i = 0; i < PyTuple_GET_SIZE(texts); i++) {
+        PyObject *item = PyTuple_GET_ITEM(texts, i);
+        if (!PyUnicode_Check(item)) {
+            PyErr_SetString(PyExc_TypeError, "texts must contain str");
+            goto sentiment_error;
+        }
+        PyObject *previous = PyDict_GetItemWithError(counts, item);
+        if (!previous && PyErr_Occurred()) goto sentiment_error;
+        Py_ssize_t count = previous ? PyLong_AsSsize_t(previous) + 1 : 1;
+        if (count > max_dup) max_dup = count;
+        PyObject *updated = PyLong_FromSsize_t(count);
+        if (!updated) goto sentiment_error;
+        int result = PyDict_SetItem(counts, item, updated);
+        Py_DECREF(updated);
+        if (result < 0) goto sentiment_error;
+        Py_ssize_t size = PyUnicode_GET_LENGTH(item);
+        Py_ssize_t bang = PyUnicode_FindChar(item, '!', 0, size, 1);
+        if (bang == -2) goto sentiment_error;
+        if (bang < 0) bang = PyUnicode_FindChar(item, 0xff01, 0, size, 1);
+        if (bang == -2) goto sentiment_error;
+        if (bang >= 0) exclamations++;
+        Py_ssize_t length;
+        const char *text = PyUnicode_AsUTF8AndSize(item, &length);
+        if (!text) goto sentiment_error;
+        int node = 0;
+        for (Py_ssize_t j = 0; j < length; j++) {
+            unsigned char c = (unsigned char)text[j];
+            while (node != 0 && am->nodes[node].next[c] == -1) node = am->nodes[node].fail;
+            int next = am->nodes[node].next[c];
+            if (next != -1) node = next;
+            if (am->nodes[node].output_len > 0) { hits++; break; }
+        }
+    }
+    Py_DECREF(counts);
+    Py_DECREF(texts);
+    return Py_BuildValue("(nnn)", max_dup, exclamations, hits);
+sentiment_error:
+    Py_DECREF(counts);
+    Py_DECREF(texts);
+    return NULL;
+}
+
 static PyMethodDef speedups_methods[] = {
+    {"danmaku_sentiment_statistics", danmaku_sentiment_statistics, METH_VARARGS,
+     "一次汇总最大重复次数、感叹号条数和梗命中条数。"},
     {"fast_ahocorasick_build", fast_ahocorasick_build, METH_VARARGS,
      "构建 Aho-Corasick 多模式匹配自动机。\n\n:param patterns: 模式字符串列表。\n:returns: ACAutomaton 对象。"},
     {"fast_ahocorasick_search", fast_ahocorasick_search, METH_VARARGS,
