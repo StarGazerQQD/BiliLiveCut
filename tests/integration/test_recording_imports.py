@@ -471,9 +471,25 @@ def test_imported_hotspot_reanalysis_replaces_cached_fallback_with_llm(temp_db: 
         mark_event_clip_evaluated(db, event, cached_score)
     assert event_id not in pending_hotspot_event_ids(session_id)
 
-    calls = install_editorial_service(
-        monkeypatch,
-        lambda *_args, **_kwargs: json.dumps(
+    def model_response(prompt: str, **_kwargs: object) -> str:
+        if '"verdict"' in prompt:
+            return json.dumps(
+                {
+                    "schema_version": "editorial-review-v1",
+                    "verdict": "recommend",
+                    "interest_rating": 3,
+                    "hook": "周末挑战的规则与奖励",
+                    "reason": "挑战说明具有明确的信息价值。",
+                    "evidence_ids": ["evidence:asr:import"],
+                    "standalone": True,
+                    "boundary_status": "complete",
+                    "suggested_bounds": None,
+                    "missing_context": None,
+                    "uncertainties": [],
+                },
+                ensure_ascii=False,
+            )
+        return json.dumps(
             {
                 "title": "主播宣布周末挑战规则",
                 "summary": text,
@@ -482,9 +498,9 @@ def test_imported_hotspot_reanalysis_replaces_cached_fallback_with_llm(temp_db: 
                 "semantic_confidence": 0.8,
                 "evidence_ids": ["evidence:asr:import"],
             }
-        ),
-        grounded=True,
-    )
+        )
+
+    calls = install_editorial_service(monkeypatch, model_response, grounded=True)
     assert queue_session_reanalysis(session_id, reason="llm_enabled").queued == 3
     result = analyze_compute(task_id)
     drafts = result["event_clip_results"]
@@ -492,7 +508,13 @@ def test_imported_hotspot_reanalysis_replaces_cached_fallback_with_llm(temp_db: 
     enrichment = drafts[0]["enrichment"]
     assert enrichment is not None and enrichment.source == "llm"
     assert enrichment.title == "主播宣布周末挑战规则"
-    assert len(calls) == 2 and text in str(calls[0]["messages"])
+    review = drafts[0]["review"].execution
+    assert review.status == "succeeded" and review.result.verdict == "recommend"
+    assert review.attempt_offset == 2 and review.attempts[0].number == 3
+    assert len(calls) == 3 and text in str(calls[0]["messages"])
+    assert json.loads(drafts[0]["clip_draft"].features_json)["editorial_review"]["execution"] == review.model_dump(
+        mode="json"
+    )
     with get_session() as db:
         assert commit_event_enrichment(db, enrichment)
         event = db.get(HotspotEvent, event_id)

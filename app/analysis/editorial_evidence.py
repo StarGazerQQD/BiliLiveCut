@@ -14,6 +14,7 @@ from sqlmodel import Session, select
 from app.analysis.editorial_contracts import (
     INPUT_MAX_BYTES,
     OUTPUT_MAX_BYTES,
+    ContextDirection,
     EditorialEvidence,
     EditorialReviewInputV1,
     EditorialTarget,
@@ -204,6 +205,7 @@ def build_event_input(
     context_s: float,
     max_evidence_chars: int,
     max_excerpt_chars: int,
+    context_direction: ContextDirection | None = None,
 ) -> EditorialReviewInputV1:
     """从现有录制元数据和证据构造有界输入，保留缺失时间和录制缺口。"""
     session = db.get(RecordingSession, event.session_id)
@@ -230,7 +232,8 @@ def build_event_input(
     if block is None:
         raise EvidenceContextUnavailable("峰值不在任何已记录的连续录制范围")
     window = TimeRange(
-        start_s=max(block.start_s, bounds.start_s - context_s), end_s=min(block.end_s, bounds.end_s + context_s)
+        start_s=max(block.start_s, bounds.start_s - (30.0 if context_direction == "after" else context_s)),
+        end_s=min(block.end_s, bounds.end_s + (30.0 if context_direction == "before" else context_s)),
     )
     evidence: list[EditorialEvidence] = []
     complete_event = raw_start >= 0 and window.contains(bounds)
@@ -363,3 +366,102 @@ def build_event_input(
         remaining -= length
         selected.append(item)
     return EditorialReviewInputV1(**base, evidence=selected)
+
+
+def build_segment_input(
+    db: Session,
+    segment_id: int,
+    *,
+    start_ts: datetime,
+    end_ts: datetime,
+    peak_ts: datetime,
+    metrics: Mapping[str, float],
+    danmaku: list[dict[str, object]],
+    context_direction: ContextDirection | None = None,
+) -> EditorialReviewInputV1:
+    """旧分段使用真实连续录制和精确文本，复用统一证据契约。"""
+    segment = db.get(RawSegment, segment_id)
+    session = db.get(RecordingSession, segment.session_id) if segment is not None else None
+    if segment is None or session is None:
+        raise EvidenceContextUnavailable("分段或场次不存在")
+    segments = list(db.exec(select(RawSegment).where(RawSegment.session_id == session.id)).all())
+    origin = min(
+        [
+            datetime_epoch(session.started_at),
+            *(datetime_epoch(item.start_ts) for item in segments if item.start_ts is not None),
+        ]
+    )
+    bounds = TimeRange(start_s=datetime_epoch(start_ts) - origin, end_s=datetime_epoch(end_ts) - origin)
+    peak = datetime_epoch(peak_ts) - origin
+    block = next((item for item in _recording_ranges(segments, origin) if item.start_s <= peak < item.end_s), None)
+    if block is None:
+        raise EvidenceContextUnavailable("分段峰值没有连续录制范围")
+    window = TimeRange(
+        start_s=max(block.start_s, bounds.start_s - (90.0 if context_direction in {"before", "both"} else 0.0)),
+        end_s=min(block.end_s, bounds.end_s + (90.0 if context_direction in {"after", "both"} else 0.0)),
+    )
+    evidence, truncated = _context(db, segments, origin, window, bounds, 2000)
+    for kind, names in (("audio", {"volume"}), ("danmaku", {"danmaku", "danmaku_sentiment"})):
+        selected = {name: float(value) for name, value in metrics.items() if name in names}
+        if selected:
+            evidence.append(
+                EditorialEvidence(
+                    evidence_id=f"segment:{segment_id}:{kind}",
+                    type=kind,
+                    state="available",
+                    start_s=None,
+                    end_s=None,
+                    timing_precision="unknown",
+                    context_role="unknown",
+                    excerpts=[],
+                    detail=EvidenceDetail(metrics=selected),
+                )
+            )
+    for index, item in enumerate(danmaku[:32] if window.contains(bounds) else []):
+        if not (text := _text(item.get("text"), 2000)):
+            continue
+        evidence.append(
+            EditorialEvidence(
+                evidence_id=f"segment:{segment_id}:danmaku:{index}",
+                type="danmaku",
+                state="available",
+                start_s=None,
+                end_s=None,
+                timing_precision="unknown",
+                context_role="unknown",
+                excerpts=[text],
+            )
+        )
+    source = EditorialReviewInputV1(
+        time_origin_epoch_s=origin,
+        target=EditorialTarget(
+            kind="segment",
+            session_id=session.id,
+            target_id=segment_id,
+            target_key=f"segment:{segment_id}:{peak:.6f}",
+            bounds=bounds,
+            peak_s=peak,
+        ),
+        window=window,
+        recording_ranges=[block],
+        truncated=truncated or not window.contains(bounds),
+        audience_profile=AUDIENCE_PROFILE,
+        preference_version=PREFERENCE_VERSION,
+        evidence=[],
+    )
+    selected_evidence: list[EditorialEvidence] = []
+    remaining = 12000
+    for item in evidence:
+        length = sum(map(len, item.excerpts))
+        payload = source.model_dump()
+        payload["evidence"] = [*selected_evidence, item]
+        if len(selected_evidence) >= 128 or length > remaining:
+            source = source.model_copy(update={"truncated": True})
+            continue
+        candidate = EditorialReviewInputV1.model_validate(payload)
+        if len(candidate.model_dump_json().encode()) > INPUT_MAX_BYTES - OUTPUT_MAX_BYTES - 2048:
+            source = source.model_copy(update={"truncated": True})
+            continue
+        selected_evidence.append(item)
+        remaining -= length
+    return EditorialReviewInputV1.model_validate(dict(source.model_dump(), evidence=selected_evidence))

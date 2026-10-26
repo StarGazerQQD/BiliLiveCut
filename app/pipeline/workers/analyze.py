@@ -27,6 +27,7 @@ from app.analysis.source_policy import session_danmaku_lag_s
 from app.analysis.transcript_windows import TranscriptWindowCache
 from app.analysis.transcription.content import refined_transcript_text
 from app.core.config import settings
+from app.core.runtime_settings import configured_task
 from app.core.sanitize import safe_exception_summary, sanitize_diagnostic
 from app.db.entities import (
     CandidateStatus,
@@ -156,6 +157,7 @@ def _record_plugin_dispatch(db: Session, compute_result: dict[str, Any]) -> None
     )
 
 
+@configured_task
 def analyze_compute(task_id: int) -> dict[str, Any]:
     """仅执行分析计算, 不写 DB, 不创建 Candidate/Event。
 
@@ -234,7 +236,7 @@ def analyze_compute(task_id: int) -> dict[str, Any]:
         }
 
     try:
-        draft = _score_segment_drafts(segment_id, audio_features=audio_features)
+        draft = _score_segment_drafts(segment_id, audio_features=audio_features, lease=lease)
     except ValueError as exc:
         return {
             "error": safe_exception_summary(exc),
@@ -292,6 +294,11 @@ def commit_highlight(lease: TaskLease, compute_result: dict[str, Any], ms: int) 
                 or segment.session_id != task.session_id
             ):
                 mark_failed(task, "highlight compute result source mismatch", permanent=True)
+                db.add(task)
+                db.commit()
+                return
+            if not _store_segment_editorial(db, segment_id, compute_result):
+                mark_failed(task, "编辑判断输入或配置已变化，等待重新计算", permanent=False)
                 db.add(task)
                 db.commit()
                 return
@@ -538,9 +545,11 @@ def _compute_event_clip_result(
     """在事务外补全并评分；证据变化最多立即重算一次，持续变化交给任务重试。"""
     from app.analysis import llm
     from app.analysis.clip_scorer import compute_hotspot_clip_draft
+    from app.analysis.editorial_review_sources import compute_event_review
     from app.analysis.event_enricher import (
         EventEvidenceChangedError,
         EventTargetUnavailableError,
+        build_event_evidence_bundle,
         compute_event_enrichment,
     )
 
@@ -548,9 +557,24 @@ def _compute_event_clip_result(
     for attempt in range(2):
         try:
             enrichment = compute_event_enrichment(event_id, budget=budget)
+            if budget.interruption(before_request=False) == "cancelled":
+                return None
+            with get_session() as db:
+                current = db.get(HotspotEvent, event_id)
+                if current is None or current.status != HotspotStatus.CONFIRMED or current.candidate_id is not None:
+                    return None
+                if (
+                    enrichment is not None
+                    and build_event_evidence_bundle(db, event_id).fingerprint != enrichment.bundle_fingerprint
+                ):
+                    raise EventEvidenceChangedError("解释期间输入已变化，编辑判断需要同一快照")
+            review = compute_event_review(event_id, budget)
+            if review.execution.status == "cancelled":
+                return None
             draft = compute_hotspot_clip_draft(
                 event_id,
                 enrichment=enrichment,
+                review=review,
                 audio_features=audio_features,
                 audio_segment_id=audio_segment_id,
             )
@@ -562,7 +586,13 @@ def _compute_event_clip_result(
                 raise
             _logger.info("event_analysis_recompute: event_id=%s", event_id)
         else:
-            return {"event_id": event_id, "enrichment": enrichment, "clip_draft": draft, "model_budget": budget}
+            return {
+                "event_id": event_id,
+                "enrichment": enrichment,
+                "review": review,
+                "clip_draft": draft,
+                "model_budget": budget,
+            }
     raise RuntimeError("事件重算循环未返回结果")
 
 
@@ -644,6 +674,12 @@ def _commit_event_clip_results(
             raise ValueError("event_clip_results 只能包含对象")
         clip_draft = raw.get("clip_draft")
         enrichment = raw.get("enrichment")
+        review = raw.get("review")
+        from app.analysis.editorial_review import EditorialReviewDraft
+        from app.analysis.editorial_review_sources import event_review_is_current
+
+        if review is not None and not isinstance(review, EditorialReviewDraft):
+            raise ValueError("事件编辑结果类型无效")
         if not isinstance(clip_draft, EventClipDraft):
             raise ValueError("event_clip_results 缺少 EventClipDraft")
         if enrichment is not None and not isinstance(enrichment, EventEnrichmentDraft):
@@ -658,6 +694,17 @@ def _commit_event_clip_results(
         current = db.get(HotspotEvent, clip_draft.hotspot_event_id)
         if current is None or current.status != HotspotStatus.CONFIRMED or current.candidate_id is not None:
             continue
+        if review is not None:
+            if not event_review_is_current(db, clip_draft.hotspot_event_id, review):
+                continue
+            candidate_features = _json_object(clip_draft.features_json)
+            metadata = candidate_features.get("editorial_review")
+            if not isinstance(metadata, dict) or metadata.get("execution") != review.execution.model_dump(mode="json"):
+                raise ValueError("候选与编辑判断必须来自同一计算结果")
+            features = _json_object(current.features_json)
+            features["editorial_review"] = metadata
+            current.features_json = json.dumps(features, ensure_ascii=False, allow_nan=False)
+            db.add(current)
         if enrichment is not None and not commit_event_enrichment(db, enrichment):
             continue
         event = validate_event_clip_draft(db, clip_draft)
@@ -742,6 +789,7 @@ def _unscored_confirmed_event_ids(
     ]
 
 
+@configured_task
 def score_hotspot_event(event_id: int) -> HighlightCandidate | None:
     """同步补全并评分一个 confirmed 热点，达到房间阈值时创建候选。"""
     from app.analysis.clip_scorer import EventClipDraft, event_clip_score_is_current
@@ -785,6 +833,7 @@ def score_hotspot_event(event_id: int) -> HighlightCandidate | None:
         return candidate
 
 
+@configured_task
 def score_segment_direct(segment_id: int) -> HighlightCandidate | None:
     """供 CLI/同步编排器复用正式多峰评分链，并提交全部去簇候选。
 
@@ -830,10 +879,6 @@ def score_segment_direct(segment_id: int) -> HighlightCandidate | None:
     if compute_result is None:
         _mark_scored_direct(segment_id)
         return None
-    if compute_result.get("decision") != HighlightDecision.CANDIDATE:
-        _mark_scored_direct(segment_id)
-        return None
-
     drafts = [compute_result]
     additional = compute_result.get("additional_candidates", [])
     if isinstance(additional, list):
@@ -843,6 +888,10 @@ def score_segment_direct(segment_id: int) -> HighlightCandidate | None:
     with get_session() as db:
         from app.analysis.scoring_config import get_scoring_config
 
+        if db.get_bind().dialect.name == "sqlite":
+            db.connection().exec_driver_sql("BEGIN IMMEDIATE")
+        if not _store_segment_editorial(db, segment_id, compute_result):
+            raise ValueError("编辑判断输入已变化，不能提交旧分段结果")
         segment = db.get(RawSegment, segment_id)
         if segment is None:
             raise ValueError(f"片段不存在: id={segment_id}")
@@ -904,6 +953,18 @@ def _mark_scored_direct(segment_id: int) -> None:
     """在同步评分入口没有候选时持久化分段完成状态。"""
     with get_session() as db:
         _mark_scored_in_db(db, segment_id)
+
+
+def _store_segment_editorial(db: Session, segment_id: int, result: Mapping[str, object]) -> bool:
+    from app.analysis.editorial_review_sources import SegmentReviewSnapshot, store_segment_reviews
+
+    snapshots = result.get("editorial_outcomes")
+    if snapshots is None:
+        single = result.get("editorial_snapshot")
+        snapshots = [] if single is None else [single]
+    if not isinstance(snapshots, list) or any(not isinstance(item, SegmentReviewSnapshot) for item in snapshots):
+        raise ValueError("分段编辑判断快照格式无效")
+    return store_segment_reviews(db, segment_id, snapshots)
 
 
 def _build_hotspot_attention_windows(
@@ -1243,6 +1304,7 @@ def _score_segment_drafts(
     segment_id: int,
     *,
     audio_features: audio_mod.AudioFeatures | None = None,
+    lease: TaskLease | None = None,
 ) -> dict[str, Any] | None:
     """对一个录制分段的多个局部峰值分别评分并执行防扎堆筛选。
 
@@ -1272,12 +1334,22 @@ def _score_segment_drafts(
     outcomes: list[dict[str, Any]] = []
     candidates: list[dict[str, Any]] = []
     word_cache = TranscriptWindowCache() if len(offsets) > 1 else None
+    from app.analysis import llm
+
+    def cancelled() -> bool:
+        if lease is None:
+            return False
+        with get_session() as db:
+            return not still_owns_lease(db, lease)
+
+    budget = llm.new_editorial_budget(cancelled=cancelled)
     for peak_offset in offsets:
         draft = _score_segment_draft(
             segment_id,
             peak_offset_s=peak_offset,
             audio_features=features,
             word_cache=word_cache,
+            budget=budget,
         )
         if draft is None:
             continue
@@ -1288,7 +1360,11 @@ def _score_segment_drafts(
     if not candidates:
         if not outcomes:
             return None
-        return max(outcomes, key=lambda item: float(item.get("highlight_score", 0.0)))
+        primary = max(outcomes, key=lambda item: float(item.get("highlight_score", 0.0)))
+        primary["editorial_outcomes"] = [
+            item["editorial_snapshot"] for item in outcomes if "editorial_snapshot" in item
+        ]
+        return primary
 
     from app.analysis.scoring_config import get_scoring_config  # noqa: PLC0415
 
@@ -1304,6 +1380,7 @@ def _score_segment_drafts(
     primary = max(selected, key=lambda item: float(item.get("highlight_score", 0.0)))
     primary["additional_candidates"] = [draft for draft in selected if draft is not primary]
     primary["candidate_count"] = len(selected)
+    primary["editorial_outcomes"] = [item["editorial_snapshot"] for item in outcomes if "editorial_snapshot" in item]
     return primary
 
 
@@ -1313,6 +1390,7 @@ def _score_segment_draft(
     peak_offset_s: float | None = None,
     audio_features: audio_mod.AudioFeatures | None = None,
     word_cache: TranscriptWindowCache | None = None,
+    budget: ModelCallBudget | None = None,
 ) -> dict[str, Any] | None:
     """纯评分计算, 不写 DB, 不创建 Candidate。
 
@@ -1336,7 +1414,6 @@ def _score_segment_draft(
         contiguous_recording_range,
         danmaku_score_explain,
         danmaku_sentiment_score,
-        fuse_scores,
         laughter_score,
         speech_rate_score,
         weighted_rule_score,
@@ -1370,7 +1447,6 @@ def _score_segment_draft(
         file_path = segment.file_path
         room_auto_approve = bool(room.auto_approve) if room else False
         room_auto_approve_threshold = room.auto_approve_threshold if room else settings.highlight_auto_approve_threshold
-        room_review_threshold = room.review_threshold if room else settings.highlight_review_threshold
         from app.core.settings_store import get_bool
 
         use_dm_sentiment = (
@@ -1498,49 +1574,41 @@ def _score_segment_draft(
         trend_hits,
     )
 
-    # 2) 初筛 — 不写 DB, 返回显式决策以便 commit 留存插件观测。
-    if primary_score < settings.highlight_init_threshold:
-        return {
-            "decision": HighlightDecision.BELOW_THRESHOLD,
-            "segment_id": segment_id,
-            "session_id": session_id,
-            "room_id": room_id,
-            "score": primary_score,
-            "rule_score": rule_score,
-            "llm_score": 0.0,
-            "highlight_score": primary_score,
-            "start_ts": None,
-            "end_ts": None,
-            "peak_ts": None,
-            "reason": "低于初筛阈值",
-            "dedup_hash": None,
-            "features_json": _merge_plugin_metadata("{}", plugin_payload),
-            "initial_status": CandidateStatus.REJECTED,
-            "config_hash": cfg.model_dump_json() if hasattr(cfg, "model_dump_json") else "",
-            "highlight_plugin": plugin_payload,
-        }
-
-    # 3) LLM 复核
-    top_danmaku = representative_danmaku(session_id, analysis_start_ts, analysis_end_ts)
-    danmaku_summary = "；".join(str(item["text"]) for item in top_danmaku)
-    judgement = (
-        llm_mod.judge_highlight(judgement_text, features, danmaku_summary, analysis_start_s)
-        if semantic_text_available
-        else None
+    # 编辑价值单独判断，低热度不再阻止真实内容进入编辑调用。
+    from app.analysis.editorial_review import editorial_auto_approvable, editorial_candidate
+    from app.analysis.editorial_review_sources import (
+        SegmentReviewSnapshot,
+        compute_segment_review,
+        media_bounds_accessible,
     )
-    llm_score = judgement.score if judgement else None
-    if judgement is not None:
-        reason = judgement.reason
-    elif asr_evidence_state == "degraded":
-        reason = "ASR 语义证据质量较低，依据音频与互动信号命中"
-    elif asr_evidence_state == "unavailable":
-        reason = "ASR 语义证据不可用，依据音频与互动信号命中"
-    else:
-        reason = "规则命中(未启用/未触发 LLM)"
-    highlight_score = fuse_scores(primary_score, llm_score, cfg.alpha, cfg.beta)
+
+    top_danmaku = representative_danmaku(session_id, analysis_start_ts, analysis_end_ts)
+    review = compute_segment_review(
+        segment_id,
+        start_ts=analysis_start_ts,
+        end_ts=analysis_end_ts,
+        peak_ts=peak_ts,
+        metrics=features,
+        danmaku=top_danmaku,
+        budget=budget or llm_mod.new_editorial_budget(),
+    )
+    result = review.execution.result
+    review_metadata = review.metadata()
+    snapshot = SegmentReviewSnapshot(
+        review,
+        segment_id,
+        analysis_start_ts,
+        analysis_end_ts,
+        peak_ts,
+        features,
+        top_danmaku,
+    )
+    llm_score = None
+    reason = result.reason if result is not None else f"编辑判断未完成（{review.execution.error}），需人工复核"
+    highlight_score = primary_score
 
     # 终分不足 — 不写 DB, 返回显式决策。
-    if highlight_score < threshold:
+    if not editorial_candidate(review.execution, technical_score=highlight_score, threshold=threshold):
         return {
             "decision": HighlightDecision.BELOW_THRESHOLD,
             "segment_id": segment_id,
@@ -1553,9 +1621,13 @@ def _score_segment_draft(
             "start_ts": None,
             "end_ts": None,
             "peak_ts": None,
-            "reason": "低于候选阈值",
+            "reason": reason,
             "dedup_hash": None,
-            "features_json": _merge_plugin_metadata("{}", plugin_payload),
+            "features_json": _merge_plugin_metadata(
+                json.dumps({"editorial_review": review_metadata}, ensure_ascii=False),
+                plugin_payload,
+            ),
+            "editorial_snapshot": snapshot,
             "initial_status": CandidateStatus.REJECTED,
             "config_hash": cfg.model_dump_json() if hasattr(cfg, "model_dump_json") else "",
             "highlight_plugin": plugin_payload,
@@ -1567,11 +1639,33 @@ def _score_segment_draft(
         available_start=available_start,
         available_end=available_end,
         peak_offset_s=peak_off,
-        suggested_start_offset_s=judgement.suggested_start_offset if judgement else None,
-        suggested_end_offset_s=judgement.suggested_end_offset if judgement else None,
+        suggested_start_offset_s=None,
+        suggested_end_offset_s=None,
         silences=feats.silences,
         minimum_pre_roll_s=min(cfg.pre_roll_s, settings.highlight_min_pre_roll_s),
         minimum_post_roll_s=min(cfg.post_roll_s, settings.highlight_min_post_roll_s),
+    )
+
+    suggestion = result.suggested_bounds if result is not None else None
+    source = review.source
+    applied = False
+    with get_session() as db:
+        if suggestion is not None and source is not None and source.time_origin_epoch_s is not None:
+            from app.analysis.timeline import datetime_epoch
+
+            origin_offset = source.time_origin_epoch_s - datetime_epoch(seg_start_ts)
+            proposed_start = seg_start_ts + timedelta(seconds=origin_offset + suggestion.start_s)
+            proposed_end = seg_start_ts + timedelta(seconds=origin_offset + suggestion.end_s)
+            if (
+                proposed_start <= peak_ts <= proposed_end
+                and 5.0 < (proposed_end - proposed_start).total_seconds() <= settings.clip_max_duration_s
+                and media_bounds_accessible(db, source, proposed_start, proposed_end)
+            ):
+                start_ts, end_ts, applied = proposed_start, proposed_end, True
+        review_metadata["media_accessible"] = media_bounds_accessible(db, source, start_ts, end_ts)
+    review_metadata["suggested_bounds_applied"] = applied
+    review_metadata["bounds_complete"] = (
+        applied if suggestion is not None else (start_ts <= analysis_start_ts and end_ts >= analysis_end_ts)
     )
 
     # 5) 去重 — 不写 DB, 返回 DUPLICATE 决策
@@ -1599,19 +1693,25 @@ def _score_segment_draft(
             "end_ts": end_ts.isoformat(),
             "peak_ts": peak_ts.isoformat(),
             "reason": "去重: IoU over threshold",
-            "features_json": _merge_plugin_metadata("{}", plugin_payload),
+            "features_json": _merge_plugin_metadata(
+                json.dumps({"editorial_review": review_metadata}, ensure_ascii=False),
+                plugin_payload,
+            ),
+            "editorial_snapshot": snapshot,
             "initial_status": CandidateStatus.REJECTED,
             "config_hash": cfg.model_dump_json() if hasattr(cfg, "model_dump_json") else "",
             "highlight_plugin": plugin_payload,
         }
 
     # 6) 审核状态
-    if room_auto_approve and highlight_score >= room_auto_approve_threshold:
+    if (
+        room_auto_approve
+        and highlight_score >= room_auto_approve_threshold
+        and editorial_auto_approvable(review_metadata)
+    ):
         initial_status = CandidateStatus.APPROVED
-    elif highlight_score >= room_review_threshold:
-        initial_status = CandidateStatus.PENDING
     else:
-        initial_status = CandidateStatus.REJECTED
+        initial_status = CandidateStatus.PENDING
 
     danmaku_explain = (
         danmaku_score_explain(session_id, danmaku_start_ts, danmaku_end_ts)
@@ -1624,6 +1724,8 @@ def _score_segment_draft(
     features_json = _merge_plugin_metadata(
         json.dumps(
             {
+                "editorial_review": review_metadata,
+                "semantic_completeness": result.standalone if result is not None else None,
                 "features": features,
                 "keyword_hits": kw_hits,
                 "audio": _audio_meta(feats),
@@ -1681,4 +1783,5 @@ def _score_segment_draft(
         "score": highlight_score,
         "config_hash": cfg.model_dump_json() if hasattr(cfg, "model_dump_json") else "",
         "highlight_plugin": plugin_payload,
+        "editorial_snapshot": snapshot,
     }

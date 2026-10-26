@@ -261,6 +261,7 @@ class EditorialExecutionV1(_StrictContract):
     result: EditorialReviewResultV1 | None
     error: FailureCode | None
     attempts: list[ModelAttempt] = Field(max_length=32)
+    attempt_offset: int = Field(default=0, ge=0, le=32)
     elapsed_s: Seconds
 
     @model_validator(mode="after")
@@ -279,8 +280,10 @@ class EditorialExecutionV1(_StrictContract):
             raise ValueError("取消状态必须保留取消分类")
         if self.error in {"disabled", "cancelled"} and self.status != self.error:
             raise ValueError("关闭和取消分类必须对应各自执行状态")
-        if [attempt.number for attempt in self.attempts] != list(range(1, len(self.attempts) + 1)):
-            raise ValueError("请求序号必须从 1 连续记录")
+        if [attempt.number for attempt in self.attempts] != list(
+            range(self.attempt_offset + 1, self.attempt_offset + len(self.attempts) + 1)
+        ):
+            raise ValueError("请求序号必须接续实际共享预算连续记录")
         if sum(attempt.elapsed_s for attempt in self.attempts) > self.elapsed_s + 0.001:
             raise ValueError("总耗时不能少于串行请求耗时")
         return self

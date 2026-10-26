@@ -157,8 +157,7 @@ def test_llm_reason_is_limited_to_candidate_time_window(
     monkeypatch: MonkeyPatch,
 ) -> None:
     """高光理由不得读取候选结束后的同一原始分段内容。"""
-    from app.analysis import highlight, llm
-    from app.analysis.llm import HighlightJudgement
+    from app.analysis import highlight
     from app.analysis.scoring_config import ScoringConfig
     from app.pipeline.workers import analyze
 
@@ -195,18 +194,19 @@ def test_llm_reason_is_limited_to_candidate_time_window(
         captured["danmaku_end"] = end_ts
         return 0.0
 
-    def fake_judge(text: str, _features: dict[str, float], _danmaku: str, window_start: float) -> HighlightJudgement:
-        captured["text"] = text
-        captured["window_start"] = window_start
-        return HighlightJudgement(
-            is_highlight=True,
-            score=0.9,
-            reason="当前爆点",
-            suggested_start_offset=1.0,
-            suggested_end_offset=3.0,
+    from tests.editorial_fixtures import install_editorial_service
+    from tests.unit.test_editorial_contracts import _payload
+
+    def model_response(prompt: str, **_kwargs: object) -> str:
+        data = json.loads(prompt.rsplit("\n", 1)[1])
+        text_items = [item for item in data["evidence"] if item["excerpts"]]
+        captured["text"] = " ".join(text for item in text_items for text in item["excerpts"])
+        captured["window_start"] = data["window"]["start_s"]
+        return json.dumps(
+            _payload(evidence_ids=[text_items[0]["evidence_id"]], suggested_bounds=None, reason="当前爆点")
         )
 
-    monkeypatch.setattr(llm, "judge_highlight", fake_judge)
+    install_editorial_service(monkeypatch, model_response)
     monkeypatch.setattr(analyze, "match_keywords", fake_match_keywords)
     monkeypatch.setattr(highlight, "_danmaku_score", fake_danmaku_score)
 
@@ -216,7 +216,7 @@ def test_llm_reason_is_limited_to_candidate_time_window(
     assert result["decision"] == HighlightDecision.CANDIDATE
     assert captured["text"] == "当前爆点"
     assert captured["keyword_text"] == "当前爆点"
-    assert captured["window_start"] == 1.0
+    assert captured["window_start"] == 61.0
     assert captured["danmaku_start"] == datetime(2026, 1, 3, 12, 1, 8, 500000)
     assert captured["danmaku_end"] == datetime(2026, 1, 3, 12, 1, 10, 500000)
     assert result["reason"] == "当前爆点"
@@ -255,8 +255,10 @@ def test_degenerate_transcript_uses_non_semantic_signals_without_llm(
 
     assert result is not None
     assert result["decision"] == HighlightDecision.CANDIDATE
-    assert result["reason"] == "ASR 语义证据质量较低，依据音频与互动信号命中"
+    assert result["reason"] == "编辑判断未完成（disabled），需人工复核"
     metadata = json.loads(result["features_json"])
+    assert metadata["editorial_review"]["execution"]["result"] is None
+    assert result["initial_status"] == "pending"
     assert metadata["asr_evidence"]["state"] == "degraded"
     assert "keywords" not in metadata["features"]
     assert "volume" in metadata["features"]

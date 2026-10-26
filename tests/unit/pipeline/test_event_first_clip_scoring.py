@@ -296,7 +296,8 @@ def test_lost_lease_during_generation_prevents_grounding_and_commit(temp_db: Non
     requests = install_editorial_service(monkeypatch, replacing_worker, grounded=True)
     result = analyze_compute(task_id)
     assert len(requests) == 1
-    assert result["event_clip_results"][0]["enrichment"].error == "cancelled"
+    assert result["event_clip_results"] == []
+    assert result["event_model_budgets"][event_id].attempts[0].error == "cancelled"
     commit_highlight(_lease(task_id), result, 50)
     with get_session() as db:
         assert db.get(HotspotEvent, event_id).title is None
@@ -448,7 +449,7 @@ def test_evidence_changed_during_model_call_is_recomputed_before_scoring(
 
     install_editorial_service(monkeypatch, update_once)
     result = analyze_compute(task_id)
-    assert calls == 2
+    assert calls == 3
     assert len(result["event_clip_results"]) == 1
     commit_highlight(_lease(task_id), result, 50)
     with get_session() as db:
@@ -461,6 +462,8 @@ def test_evidence_changed_during_model_call_is_recomputed_before_scoring(
         assert "尚无可采用的内容摘要" in event.summary
         assert metadata["event_enrichment"]["error"] == "provider_error"
         assert len(metadata["event_enrichment"]["attempts"]) == 2
+        assert metadata["editorial_review"]["execution"]["attempt_offset"] == 2
+        assert metadata["editorial_review"]["execution"]["attempts"][0]["number"] == 3
         assert "新规则" in str(bundle.to_prompt_payload())
         assert db.get(SegmentTask, task_id).candidate_id == event.candidate_id
         assert len(db.exec(select(HighlightCandidate)).all()) == 1
@@ -609,13 +612,15 @@ def test_merged_event_is_recomputed_as_canonical_before_task_completion(
     result = analyze_compute(task_id)
     assert result["event_clip_results"] == []
     commit_highlight(_lease(task_id), result, 50)
-    assert calls == min(2, attempt_limit) and canonical_id is not None
+    assert calls == min(3, attempt_limit) and canonical_id is not None
     with get_session() as db:
         canonical = db.get(HotspotEvent, canonical_id)
         task = db.get(SegmentTask, task_id)
         assert canonical is not None and canonical.candidate_id is not None
         metadata = json.loads(canonical.features_json)["event_enrichment"]
-        assert len(metadata["attempts"]) == calls
+        assert len(metadata["attempts"]) == min(2, attempt_limit)
+        editorial = json.loads(canonical.features_json)["editorial_review"]["execution"]
+        assert len(metadata["attempts"]) + len(editorial["attempts"]) == calls
         assert metadata["error"] == ("attempt_budget" if attempt_limit == 1 else "provider_error")
         assert task is not None and task.stage == TaskStatus.CANDIDATE_CREATED
         assert task.candidate_id == canonical.candidate_id
