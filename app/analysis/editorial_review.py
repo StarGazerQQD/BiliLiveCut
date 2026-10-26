@@ -17,6 +17,7 @@ from app.analysis.editorial_contracts import (
     FailureCode,
     validate_review_evidence,
 )
+from app.analysis.editorial_provenance import ReviewProvenance, capture_provenance
 from app.analysis.model_execution import ModelCallBudget
 from app.core.config import settings
 
@@ -61,13 +62,15 @@ def review_fingerprint(
     initial: EditorialReviewInputV1 | None,
     source: EditorialReviewInputV1 | None,
     revision: str,
+    *,
+    policy: dict[str, object] | None = None,
 ) -> str:
     """共同标识原始输入、实际扩展和调用策略，供提交前重新核验。"""
     payload = {
         "initial": initial.model_dump(mode="json") if initial is not None else None,
         "source": source.model_dump(mode="json") if source is not None else None,
         "revision": revision,
-        "policy": review_policy_identity(),
+        "policy": review_policy_identity() if policy is None else policy,
     }
     return hashlib.sha256(json.dumps(payload, ensure_ascii=False, allow_nan=False, sort_keys=True).encode()).hexdigest()
 
@@ -80,6 +83,7 @@ class EditorialReviewDraft:
     source: EditorialReviewInputV1 | None
     expanded_context: ContextDirection | None
     revision: str
+    provenance: ReviewProvenance
 
     def metadata(self) -> dict[str, object]:
         """序列化版本化结果及可复核证据，不包含本机路径或凭据。"""
@@ -88,6 +92,7 @@ class EditorialReviewDraft:
             "input": self.source.model_dump(mode="json") if self.source is not None else None,
             "expanded_context": self.expanded_context,
             "revision": self.revision,
+            "provenance": self.provenance.model_dump(mode="json"),
         }
 
 
@@ -112,6 +117,13 @@ def judge_editorial(
     started = time.monotonic()
     offset = len(budget.attempts)
     initial = source = load_source(None)
+    policy = review_policy_identity()
+    provenance = capture_provenance(
+        policy,
+        initial,
+        operation_id=budget.operation_id,
+        prior_attempts=list(budget.attempts),
+    )
     expanded: ContextDirection | None = None
     error: FailureCode | None = budget.interruption()
     result: EditorialReviewResultV1 | None = None
@@ -145,7 +157,7 @@ def judge_editorial(
     status = "succeeded" if result is not None else (error if error in {"disabled", "cancelled"} else "failed")
     execution = EditorialExecutionV1(
         status=status,
-        input_fingerprint=review_fingerprint(initial, source, revision),
+        input_fingerprint=review_fingerprint(initial, source, revision, policy=policy),
         policy_version=REVIEW_POLICY_VERSION,
         result=result,
         error=error,
@@ -153,7 +165,7 @@ def judge_editorial(
         attempt_offset=offset,
         elapsed_s=max(0.0, time.monotonic() - started),
     )
-    return EditorialReviewDraft(execution, source, expanded, revision)
+    return EditorialReviewDraft(execution, source, expanded, revision, provenance)
 
 
 def editorial_candidate(execution: EditorialExecutionV1 | None, *, technical_score: float, threshold: float) -> bool:

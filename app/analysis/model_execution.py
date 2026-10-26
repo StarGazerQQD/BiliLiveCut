@@ -8,6 +8,7 @@ from contextlib import contextmanager
 from dataclasses import dataclass, field
 from threading import Lock
 from typing import Generic, TypeVar
+from uuid import uuid4
 
 from app.analysis.editorial_contracts import FailureCode, ModelAttempt, ModelProtocol
 
@@ -42,6 +43,7 @@ class ModelCallBudget:
         if isinstance(max_elapsed_s, bool) or not math.isfinite(max_elapsed_s) or max_elapsed_s <= 0:
             raise ValueError("模型总时间预算必须为有限正数")
         self._max_attempts = max_attempts
+        self._operation_id = uuid4().hex
         self._started = time.monotonic()
         self._deadline = self._started + max_elapsed_s
         self._cancelled = cancelled
@@ -51,6 +53,11 @@ class ModelCallBudget:
         self._empty_used = False
         self._operation = Lock()
         self._protocols: dict[tuple[str, str], ModelProtocol] = {}
+
+    @property
+    def operation_id(self) -> str:
+        """标识同一共享预算，使跨对象成本记录可以去重。"""
+        return self._operation_id
 
     @property
     def elapsed_s(self) -> float:
