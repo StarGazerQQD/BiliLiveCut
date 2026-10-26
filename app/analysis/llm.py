@@ -519,6 +519,17 @@ async def _fetch_structured_response(
     return parsed
 
 
+async def _async_budget_interruption(budget: ModelCallBudget) -> FailureCode | None:
+    # 取消回调可能读取租约数据库，不能阻塞负责接收响应的事件循环。
+    check = asyncio.create_task(asyncio.to_thread(budget.interruption, before_request=False))
+    try:
+        return await asyncio.shield(check)
+    except asyncio.CancelledError:
+        # 线程中的读取无法直接取消，退出前等待它关闭数据库连接。
+        await check
+        raise
+
+
 async def _bounded_structured_response(
     provider: provs.LLMProvider,
     messages: list[ChatCompletionMessageParam],
@@ -527,20 +538,23 @@ async def _bounded_structured_response(
     budget: ModelCallBudget,
     extra_body: dict[str, object] | None,
 ) -> dict[str, object]:
-    timeout = min(settings.llm_request_timeout_s, budget.remaining_s)
+    remaining = budget.remaining_s
+    deadline_limited = remaining <= settings.llm_request_timeout_s
+    timeout = min(settings.llm_request_timeout_s, remaining)
     request = asyncio.create_task(
         _fetch_structured_response(provider, messages, response_format, max_tokens, timeout, extra_body)
     )
     try:
         async with asyncio.timeout(timeout):
             while not request.done():
-                interruption = budget.interruption(before_request=False)
+                interruption = await _async_budget_interruption(budget)
                 if interruption is not None:
                     raise _StructuredFailure(interruption)
                 await asyncio.wait({request}, timeout=0.05)
             return request.result()
     except TimeoutError as exc:
-        raise _StructuredFailure("deadline" if budget.remaining_s <= 0 else "timeout") from exc
+        # Windows 事件循环定时器允许提前一个时钟粒度唤醒；分类依据实际设置的边界。
+        raise _StructuredFailure("deadline" if deadline_limited else "timeout") from exc
     finally:
         if not request.done():
             request.cancel()
@@ -665,7 +679,7 @@ def _structured_attempt(
     except _StructuredFailure as exc:
         error = exc.code
     except APITimeoutError:
-        error = "timeout"
+        error = budget.interruption(before_request=False) or "timeout"
     except APIStatusError as exc:
         if _unsupported_format(exc, protocol):
             error = "unsupported_format"

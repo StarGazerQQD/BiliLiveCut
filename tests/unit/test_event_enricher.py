@@ -6,10 +6,12 @@ import json
 from datetime import UTC, datetime, timedelta
 from typing import TYPE_CHECKING
 
+import pytest
 from sqlmodel import select
 
 from app.analysis.event_enricher import (
     EVENT_ENRICHER_VERSION,
+    EventEnricherConfig,
     build_event_evidence_bundle,
     commit_event_enrichment,
     compute_event_enrichment,
@@ -25,6 +27,7 @@ from app.db.entities import (
     Transcript,
 )
 from app.db.session import get_session
+from tests.editorial_fixtures import install_editorial_service
 
 if TYPE_CHECKING:
     from _pytest.monkeypatch import MonkeyPatch
@@ -160,7 +163,8 @@ def test_bundle_excludes_transcript_after_event_context_window(temp_db: None) ->
     context = next(item for item in bundle.evidence if item.evidence_type == "context_asr")
     assert context.excerpts == ("当前挑战开始",)
     assert context.state == "available"
-    assert context.detail["precise"] is True
+    assert context.timing_precision == "word"
+    assert (context.start_s, context.end_s) == (100.0, 105.0)
     assert "完全无关的新游戏" not in json.dumps(bundle.to_prompt_payload(), ensure_ascii=False)
 
 
@@ -168,7 +172,6 @@ def test_valid_structured_llm_output_is_persisted_and_idempotent(
     temp_db: None,
     monkeypatch: MonkeyPatch,
 ) -> None:
-    from app.analysis import event_enricher
 
     event_id = _seed_event(
         evidence=[
@@ -195,7 +198,7 @@ def test_valid_structured_llm_output_is_persisted_and_idempotent(
             ensure_ascii=False,
         )
 
-    monkeypatch.setattr(event_enricher.llm, "call_text", fake_call_text)
+    requests = install_editorial_service(monkeypatch, fake_call_text, grounded=True)
 
     first = enrich_hotspot_event(event_id)
     second = enrich_hotspot_event(event_id)
@@ -203,6 +206,7 @@ def test_valid_structured_llm_output_is_persisted_and_idempotent(
     assert first is not None and first.source == "llm"
     assert second is None
     assert len(calls) == 1
+    assert len(requests) == 2
     assert calls[0][1] == 65536
     assert "不能修改 heat_score 或 clip_score" in calls[0][0]
     with get_session() as db:
@@ -229,12 +233,10 @@ def test_llm_hallucinated_claim_falls_back_to_grounded_summary(
     temp_db: None,
     monkeypatch: MonkeyPatch,
 ) -> None:
-    from app.analysis import event_enricher
 
     event_id = _seed_event(evidence=[_evidence_item("evidence:asr:grounded", "asr", excerpt="主播介绍周末挑战规则。")])
-    monkeypatch.setattr(
-        event_enricher.llm,
-        "call_text",
+    install_editorial_service(
+        monkeypatch,
         lambda *_args, **_kwargs: json.dumps(
             {
                 "title": "主播意外摔倒受伤",
@@ -246,25 +248,26 @@ def test_llm_hallucinated_claim_falls_back_to_grounded_summary(
             },
             ensure_ascii=False,
         ),
+        grounded=False,
     )
 
     result = enrich_hotspot_event(event_id)
 
     assert result is not None and result.source == "fallback"
-    assert any("叙述包含过多证据外语义" in warning for warning in result.warnings)
+    assert result.error == "invalid_output"
+    assert [item.purpose for item in result.attempts] == ["explanation", "grounding"]
     with get_session() as db:
         event = db.get(HotspotEvent, event_id)
     assert event is not None
     assert "摔倒" not in (event.title or "")
     assert "摔倒" not in (event.summary or "")
-    assert "周末挑战规则" in (event.summary or "")
+    assert "尚无可采用的内容摘要" in (event.summary or "")
 
 
 def test_danmaku_only_claim_must_remain_attributed(
     temp_db: None,
     monkeypatch: MonkeyPatch,
 ) -> None:
-    from app.analysis import event_enricher
 
     event_id = _seed_event(
         evidence=[_evidence_item("signal:audio", "audio")],
@@ -273,9 +276,8 @@ def test_danmaku_only_claim_must_remain_attributed(
     with get_session() as db:
         bundle = build_event_evidence_bundle(db, event_id)
     danmaku_id = next(item.evidence_id for item in bundle.evidence if item.evidence_type == "danmaku")
-    monkeypatch.setattr(
-        event_enricher.llm,
-        "call_text",
+    install_editorial_service(
+        monkeypatch,
         lambda *_args, **_kwargs: json.dumps(
             {
                 "title": "主播正式宣布退役",
@@ -293,38 +295,38 @@ def test_danmaku_only_claim_must_remain_attributed(
 
     assert result is not None and result.source == "fallback"
     assert result.semantic_confidence <= 0.4
-    assert "弹幕" in result.title
-    assert "弹幕集中讨论" in result.summary
-    assert "结合画面确认" in result.summary
+    assert result.error == "invalid_output"
+    assert "正式宣布退役" not in result.title + result.summary
+    assert result.title == "事件内容待复核"
+    assert "人工复核" in result.summary
 
 
 def test_degraded_asr_uses_conservative_fallback_and_low_confidence(
     temp_db: None,
     monkeypatch: MonkeyPatch,
 ) -> None:
-    from app.analysis import event_enricher
 
     event_id = _seed_event(
         evidence=[_evidence_item("signal:audio", "audio")],
         transcript_text="等一下我们先看看" * 20,
         semantic_confidence=0.8,
     )
-    monkeypatch.setattr(event_enricher.llm, "call_text", lambda *_args, **_kwargs: None)
+    install_editorial_service(monkeypatch, lambda *_args, **_kwargs: None)
 
     result = enrich_hotspot_event(event_id)
 
     assert result is not None and result.source == "fallback"
     assert result.semantic_confidence <= 0.45
-    assert result.title == "语音热点内容待确认"
-    assert "转写质量较低" in result.summary
-    assert "仍需人工确认" in result.summary
+    assert result.title == "事件内容待复核"
+    assert result.error == "provider_error"
+    assert "等一下我们先看看" not in result.summary
+    assert "人工复核" in result.summary
 
 
 def test_degraded_llm_claim_without_uncertainty_is_rejected(
     temp_db: None,
     monkeypatch: MonkeyPatch,
 ) -> None:
-    from app.analysis import event_enricher
 
     event_id = _seed_event(
         evidence=[
@@ -337,9 +339,8 @@ def test_degraded_llm_claim_without_uncertainty_is_rejected(
             )
         ]
     )
-    monkeypatch.setattr(
-        event_enricher.llm,
-        "call_text",
+    install_editorial_service(
+        monkeypatch,
         lambda *_args, **_kwargs: json.dumps(
             {
                 "title": "主播宣布周末挑战规则",
@@ -356,18 +357,16 @@ def test_degraded_llm_claim_without_uncertainty_is_rejected(
     result = enrich_hotspot_event(event_id)
 
     assert result is not None and result.source == "fallback"
-    assert any("degraded 语义证据" in warning for warning in result.warnings)
-    assert "转写质量较低" in result.summary
+    assert result.error == "invalid_output"
+    assert "人工复核" in result.summary
     assert result.semantic_confidence <= 0.45
 
 
 def test_unknown_evidence_reference_is_rejected(temp_db: None, monkeypatch: MonkeyPatch) -> None:
-    from app.analysis import event_enricher
 
     event_id = _seed_event(evidence=[_evidence_item("evidence:asr:real", "asr", excerpt="主播介绍挑战规则。")])
-    monkeypatch.setattr(
-        event_enricher.llm,
-        "call_text",
+    install_editorial_service(
+        monkeypatch,
         lambda *_args, **_kwargs: json.dumps(
             {
                 "title": "主播介绍挑战规则",
@@ -384,20 +383,18 @@ def test_unknown_evidence_reference_is_rejected(temp_db: None, monkeypatch: Monk
     result = enrich_hotspot_event(event_id)
 
     assert result is not None and result.source == "fallback"
-    assert any("未知 evidence_id" in warning for warning in result.warnings)
-    assert result.evidence_ids[0] == "evidence:asr:real"
+    assert result.error == "invalid_output"
+    assert result.evidence_ids == ()
 
 
 def test_non_text_signal_cannot_support_specific_llm_fact(temp_db: None, monkeypatch: MonkeyPatch) -> None:
-    from app.analysis import event_enricher
 
     event_id = _seed_event(
         evidence=[_evidence_item("signal:audio", "audio", excerpt="主播完成关键挑战现场反应明显")],
         semantic_confidence=0.6,
     )
-    monkeypatch.setattr(
-        event_enricher.llm,
-        "call_text",
+    install_editorial_service(
+        monkeypatch,
         lambda *_args, **_kwargs: json.dumps(
             {
                 "title": "主播完成关键挑战",
@@ -414,13 +411,12 @@ def test_non_text_signal_cannot_support_specific_llm_fact(temp_db: None, monkeyp
     result = enrich_hotspot_event(event_id)
 
     assert result is not None and result.source == "fallback"
-    assert any("非文本信号" in warning for warning in result.warnings)
+    assert result.error == "invalid_output"
     assert result.semantic_confidence <= 0.3
-    assert "证据不足" in result.summary
+    assert "尚无可采用的内容摘要" in result.summary
 
 
 def test_llm_output_with_surrounding_text_is_rejected(temp_db: None, monkeypatch: MonkeyPatch) -> None:
-    from app.analysis import event_enricher
 
     event_id = _seed_event(evidence=[_evidence_item("evidence:asr:strict", "asr", excerpt="主播介绍挑战规则。")])
     payload = json.dumps(
@@ -434,19 +430,19 @@ def test_llm_output_with_surrounding_text_is_rejected(temp_db: None, monkeypatch
         },
         ensure_ascii=False,
     )
-    monkeypatch.setattr(event_enricher.llm, "call_text", lambda *_args, **_kwargs: f"结果如下：\n{payload}")
+    install_editorial_service(monkeypatch, lambda *_args, **_kwargs: f"结果如下：\n{payload}")
 
     result = enrich_hotspot_event(event_id)
 
     assert result is not None and result.source == "fallback"
-    assert "llm_output_not_json" in result.warnings
+    assert result.error == "invalid_output"
+    assert len(result.attempts) == 2
 
 
 def test_commit_rejects_event_dismissed_during_llm_call(temp_db: None, monkeypatch: MonkeyPatch) -> None:
-    from app.analysis import event_enricher
 
     event_id = _seed_event(evidence=[_evidence_item("evidence:asr:dismiss", "asr", excerpt="主播介绍挑战规则。")])
-    monkeypatch.setattr(event_enricher.llm, "call_text", lambda *_args, **_kwargs: None)
+    install_editorial_service(monkeypatch, lambda *_args, **_kwargs: None)
     draft = compute_event_enrichment(event_id)
     assert draft is not None
     with get_session() as db:
@@ -462,12 +458,10 @@ def test_commit_rejects_event_dismissed_during_llm_call(temp_db: None, monkeypat
 
 
 def test_stale_bundle_is_rejected_before_commit(temp_db: None, monkeypatch: MonkeyPatch) -> None:
-    from app.analysis import event_enricher
 
     event_id = _seed_event(evidence=[_evidence_item("evidence:asr:initial", "asr", excerpt="主播介绍挑战规则。")])
-    monkeypatch.setattr(
-        event_enricher.llm,
-        "call_text",
+    install_editorial_service(
+        monkeypatch,
         lambda *_args, **_kwargs: json.dumps(
             {
                 "title": "主播介绍挑战规则",
@@ -479,6 +473,7 @@ def test_stale_bundle_is_rejected_before_commit(temp_db: None, monkeypatch: Monk
             },
             ensure_ascii=False,
         ),
+        grounded=True,
     )
     draft = compute_event_enrichment(event_id)
     assert draft is not None
@@ -500,12 +495,10 @@ def test_stale_bundle_is_rejected_before_commit(temp_db: None, monkeypatch: Monk
 
 
 def test_number_without_evidence_keeps_conservative_fallback(temp_db: None, monkeypatch: MonkeyPatch) -> None:
-    from app.analysis import event_enricher
 
     event_id = _seed_event(evidence=[_evidence_item("evidence:asr:price", "asr", excerpt="主播正在讨论本轮奖励。")])
-    monkeypatch.setattr(
-        event_enricher.llm,
-        "call_text",
+    install_editorial_service(
+        monkeypatch,
         lambda *_args, **_kwargs: json.dumps(
             {
                 "title": "主播正在讨论本轮奖励",
@@ -520,5 +513,280 @@ def test_number_without_evidence_keeps_conservative_fallback(temp_db: None, monk
     )
     result = enrich_hotspot_event(event_id)
     assert result is not None and result.source == "fallback"
-    assert any("数字不在引用证据中" in warning for warning in result.warnings)
+    assert result.error == "invalid_output"
     assert "1650.86" not in result.title + result.summary
+
+
+def test_event_evidence_preserves_times_and_unknown_values(temp_db: None) -> None:
+    timed = _evidence_item("timed", "danmaku", excerpt="观众讨论比赛")
+    timed.update(
+        start_ts=(_START + timedelta(seconds=95)).isoformat(), end_ts=(_START + timedelta(seconds=105)).isoformat()
+    )
+    event_id = _seed_event(
+        evidence=[timed, _evidence_item("unknown", "asr", excerpt="比赛规则说明")],
+        representative=[{"text": "刚才的操作怎么样"}],
+    )
+    with get_session() as db:
+        source = build_event_evidence_bundle(db, event_id).source
+    assert source is not None
+    items = {item.evidence_id: item for item in source.evidence}
+    assert (items["timed"].start_s, items["timed"].end_s, items["timed"].context_role) == (95.0, 105.0, "event")
+    assert items["unknown"].start_s is None and items["unknown"].timing_precision == "unknown"
+    representative = next(item for item in source.evidence if ":danmaku:" in item.evidence_id)
+    assert representative.detail.count is None and representative.start_s is None
+
+
+def test_context_window_stops_at_actual_recording_gap(temp_db: None) -> None:
+    event_id = _seed_event(
+        evidence=[_evidence_item("unknown", "asr", excerpt="缺口外的发言")],
+        transcript_text="缺口两侧混合的转写",
+        representative=[{"text": "缺口外的评论"}],
+    )
+    with get_session() as db:
+        segment = db.exec(select(RawSegment)).one()
+        segment.start_ts = _START + timedelta(seconds=100)
+        segment.end_ts = _START + timedelta(seconds=140)
+        db.add(segment)
+        db.add(
+            RawSegment(
+                session_id=segment.session_id,
+                seq=1,
+                file_path="next.ts",
+                start_ts=_START + timedelta(seconds=141),
+                end_ts=_START + timedelta(seconds=200),
+                duration_s=59,
+            )
+        )
+    with get_session() as db:
+        source = build_event_evidence_bundle(db, event_id).source
+    assert source is not None and source.truncated
+    assert (source.window.start_s, source.window.end_s) == (100.0, 140.0)
+    assert len(source.recording_ranges) == 1
+    assert "缺口" not in source.model_dump_json()
+
+
+@pytest.mark.parametrize("text", ["", "主播介绍今天的活动规则以及比赛奖励安排。"])
+def test_whole_segment_without_word_times_preserves_real_text(temp_db: None, text: str) -> None:
+    event_id = _seed_event(evidence=[], context_text=text, context_words=[])
+    with get_session() as db:
+        source = build_event_evidence_bundle(db, event_id, config=EventEnricherConfig(context_s=300)).source
+    assert source is not None
+    item = next(item for item in source.evidence if item.type == "context_asr")
+    assert item.state == ("available" if text else "missing")
+    assert item.excerpts == ([text] if text else [])
+    assert item.timing_precision == "segment"
+
+
+def test_unrepresentable_metric_is_not_coerced_or_crashed(temp_db: None) -> None:
+    item = _evidence_item("signal", "audio")
+    item["metrics"] = {"too_large": 10**1000, "valid": 0.5, "invalid": float("inf")}
+    event_id = _seed_event(evidence=[item])
+    with get_session() as db:
+        source = build_event_evidence_bundle(db, event_id).source
+    assert source is not None and source.evidence[0].detail.metrics == {"valid": 0.5}
+
+
+def test_missing_peak_recording_does_not_send_model_request(temp_db: None, monkeypatch: MonkeyPatch) -> None:
+    event_id = _seed_event(evidence=[_evidence_item("speech", "asr", excerpt="主播介绍挑战规则")])
+    requests = install_editorial_service(monkeypatch, lambda *_args, **_kwargs: "{}")
+    with get_session() as db:
+        segment = db.exec(select(RawSegment)).one()
+        segment.end_ts = _START + timedelta(seconds=100)
+        db.add(segment)
+    result = enrich_hotspot_event(event_id)
+    assert result is not None and result.error == "context_unavailable"
+    assert not requests and not result.attempts
+
+
+def test_replayed_media_before_session_creation_keeps_explicit_time_origin(temp_db: None) -> None:
+    event_id = _seed_event(evidence=[_evidence_item("speech", "asr", excerpt="主播介绍挑战规则")])
+    with get_session() as db:
+        segment = db.exec(select(RawSegment)).one()
+        segment.start_ts = _START - timedelta(seconds=50)
+        segment.end_ts = _START + timedelta(seconds=1)
+        db.add(segment)
+        event = db.get(HotspotEvent, event_id)
+        event.start_ts = _START - timedelta(seconds=25)
+        event.peak_ts = _START - timedelta(seconds=10)
+        event.end_ts = _START + timedelta(seconds=1)
+        db.add(event)
+    with get_session() as db:
+        source = build_event_evidence_bundle(db, event_id).source
+        assert source is not None
+        assert source.time_origin_epoch_s == (_START - timedelta(seconds=50)).timestamp()
+        assert source.target.bounds.start_s == 25 and source.target.peak_s == 40
+        assert source.window.start_s == 0 and source.recording_ranges[0].end_s == 51
+        assert db.get(RecordingSession, source.target.session_id).started_at.replace(tzinfo=UTC) == _START
+
+
+@pytest.mark.parametrize("words", [[], [{"w": "不合法时间", "start": "wrong", "end": 130}]])
+def test_unlocalized_context_does_not_invent_proportional_text(temp_db: None, words: list[dict[str, object]]) -> None:
+    event_id = _seed_event(
+        evidence=[], context_text="开场说明。当前事件。很久以后才发生的其他事情。", context_words=words
+    )
+    with get_session() as db:
+        bundle = build_event_evidence_bundle(db, event_id)
+    item = next(item for item in bundle.evidence if item.evidence_type == "context_asr")
+    assert item.state == "missing" and item.excerpts == ()
+    assert item.start_s is None and item.timing_precision == "unknown"
+    assert "很久以后" not in str(bundle.to_prompt_payload())
+
+
+def test_complete_json_budget_includes_metadata_and_marks_truncation(temp_db: None) -> None:
+    evidence = []
+    for index in range(150):
+        item = _evidence_item(f"evidence:{index}", "asr", excerpt="可供核查的发言内容。" * 300)
+        item["detail"]["backend"] = "引擎" * 3000
+        item["metrics"] = {f"metric{number}": float(number) for number in range(100)}
+        evidence.append(item)
+    event_id = _seed_event(evidence=evidence)
+    with get_session() as db:
+        source = build_event_evidence_bundle(
+            db, event_id, config=EventEnricherConfig(max_evidence_chars=100_000)
+        ).source
+    assert source is not None and source.truncated
+    assert len(source.model_dump_json().encode()) < 65536 - 16384
+    assert len(source.evidence) < 128
+    assert all(len(item.detail.metrics) <= 24 and len(item.detail.backend or "") <= 128 for item in source.evidence)
+
+
+def test_prompt_config_model_and_coverage_changes_invalidate_cached_identity(
+    temp_db: None, monkeypatch: MonkeyPatch
+) -> None:
+    from app.analysis import event_enricher
+    from app.analysis.llm_providers import load_providers, save_providers
+
+    event_id = _seed_event(evidence=[_evidence_item("speech", "asr", excerpt="主播介绍挑战规则")])
+    install_editorial_service(monkeypatch, lambda *_args, **_kwargs: None)
+    with get_session() as db:
+        first = build_event_evidence_bundle(db, event_id).fingerprint
+        assert build_event_evidence_bundle(db, event_id, config=EventEnricherConfig(context_s=60)).fingerprint != first
+    providers = load_providers()
+    providers[0].model = "updated-model"
+    save_providers(providers)
+    with get_session() as db:
+        second = build_event_evidence_bundle(db, event_id).fingerprint
+        assert second != first
+        event = db.get(HotspotEvent, event_id)
+        event.evidence_coverage = 0.5
+        db.add(event)
+    with get_session() as db:
+        third = build_event_evidence_bundle(db, event_id).fingerprint
+        assert third != second
+    monkeypatch.setattr(event_enricher, "EXPLANATION_PROMPT", event_enricher.EXPLANATION_PROMPT + "\n更新的核验规则")
+    with get_session() as db:
+        assert build_event_evidence_bundle(db, event_id).fingerprint != third
+
+
+def test_failed_explanation_retries_are_delayed_and_bounded(temp_db: None, monkeypatch: MonkeyPatch) -> None:
+    from app.analysis import event_enricher
+
+    event_id = _seed_event(evidence=[_evidence_item("speech", "asr", excerpt="主播介绍挑战规则")])
+    requests = install_editorial_service(monkeypatch, lambda *_args, **_kwargs: None)
+    clock = datetime(2026, 10, 26, 4, 0)
+    monkeypatch.setattr(event_enricher, "utcnow", lambda: clock)
+    for expected in (1, 2, 3):
+        assert enrich_hotspot_event(event_id).error == "provider_error"
+        assert enrich_hotspot_event(event_id) is None
+        assert len(requests) == expected
+        clock += timedelta(seconds=301)
+    assert enrich_hotspot_event(event_id) is None and len(requests) == 3
+    assert enrich_hotspot_event(event_id, force=True).error == "provider_error"
+    assert len(requests) == 4
+
+
+def test_fact_check_uses_same_attempt_budget_as_generation(temp_db: None, monkeypatch: MonkeyPatch) -> None:
+    from app.analysis.model_execution import ModelCallBudget
+
+    event_id = _seed_event(evidence=[_evidence_item("speech", "asr", excerpt="主播介绍挑战规则")])
+    output = {
+        "title": "挑战规则说明",
+        "summary": "主播介绍挑战规则。",
+        "category": "discussion",
+        "entities": [],
+        "semantic_confidence": 0.8,
+        "evidence_ids": ["speech"],
+    }
+    requests = install_editorial_service(monkeypatch, lambda *_args, **_kwargs: json.dumps(output), grounded=True)
+    result = compute_event_enrichment(event_id, budget=ModelCallBudget(max_attempts=1, max_elapsed_s=20))
+    assert result is not None and result.error == "attempt_budget"
+    assert result.source == "fallback" and len(result.attempts) == len(requests) == 1
+
+
+def test_semantic_paraphrase_is_accepted_after_grounding_despite_low_lexical_overlap(
+    temp_db: None, monkeypatch: MonkeyPatch
+) -> None:
+    event_id = _seed_event(
+        evidence=[_evidence_item("speech", "asr", excerpt="明天开始大家组队进行比赛，胜出者能够获得奖品。")]
+    )
+    output = {
+        "title": "团队竞技安排揭晓",
+        "summary": "直播介绍即将举行的集体竞赛及优胜奖励机制。",
+        "category": "announcement",
+        "entities": [],
+        "semantic_confidence": 0.8,
+        "evidence_ids": ["speech"],
+    }
+    requests = install_editorial_service(monkeypatch, lambda *_args, **_kwargs: json.dumps(output), grounded=True)
+    result = enrich_hotspot_event(event_id)
+    assert result is not None and result.error is None and result.source == "llm"
+    assert result.lexical_coverage < 0.65
+    assert len(requests) == 2 and result.title == output["title"]
+
+
+@pytest.mark.parametrize("fault", ["unknown_id", "invented_quote", "missing_summary", "empty_quotes"])
+def test_grounding_service_cannot_forge_or_omit_evidence(temp_db: None, monkeypatch: MonkeyPatch, fault: str) -> None:
+    event_id = _seed_event(evidence=[_evidence_item("speech", "asr", excerpt="主播介绍挑战规则")])
+    output = {
+        "title": "挑战规则说明",
+        "summary": "主播介绍挑战规则。",
+        "category": "discussion",
+        "entities": [],
+        "semantic_confidence": 0.8,
+        "evidence_ids": ["speech"],
+    }
+
+    def invalid_grounding(_payload: dict[str, object]) -> str:
+        quote = {
+            "evidence_id": "unknown" if fault == "unknown_id" else "speech",
+            "quote": "凭空编造的事实" if fault == "invented_quote" else "主播介绍挑战规则",
+        }
+        return json.dumps(
+            {
+                "judgements": [
+                    {
+                        "field": field,
+                        "supported": True,
+                        "reason": "受控错误响应",
+                        "quotes": [] if fault == "empty_quotes" else [quote],
+                    }
+                    for field in ("title", "title" if fault == "missing_summary" else "summary")
+                ]
+            }
+        )
+
+    requests = install_editorial_service(
+        monkeypatch, lambda *_args, **_kwargs: json.dumps(output), grounding_reply=invalid_grounding
+    )
+    result = enrich_hotspot_event(event_id)
+    assert result is not None and result.error == "invalid_output"
+    assert len(requests) == 3 and [item.purpose for item in result.attempts] == ["explanation", "grounding", "repair"]
+    assert result.title != output["title"] and result.evidence_ids == ()
+
+
+def test_cancelled_explanation_does_not_replace_existing_content(temp_db: None, monkeypatch: MonkeyPatch) -> None:
+    from app.analysis.model_execution import ModelCallBudget
+
+    event_id = _seed_event(evidence=[_evidence_item("speech", "asr", excerpt="主播介绍挑战规则")])
+    requests = install_editorial_service(monkeypatch, lambda *_args, **_kwargs: "{}")
+    with get_session() as db:
+        event = db.get(HotspotEvent, event_id)
+        event.title = "保留已有标题"
+        db.add(event)
+    draft = compute_event_enrichment(
+        event_id, budget=ModelCallBudget(max_attempts=4, max_elapsed_s=20, cancelled=lambda: True)
+    )
+    assert draft is not None and draft.error == "cancelled" and not requests
+    with get_session() as db:
+        assert commit_event_enrichment(db, draft) is False
+        assert db.get(HotspotEvent, event_id).title == "保留已有标题"

@@ -414,6 +414,7 @@ def test_imported_hotspot_reanalysis_replaces_cached_fallback_with_llm(temp_db: 
     from app.db.entities import HotspotEvent, TaskStatus, Transcript
     from app.pipeline.scheduler import advance_recorded
     from app.pipeline.workers.analyze import analyze_compute
+    from tests.editorial_fixtures import install_editorial_service
 
     import_id = _ready_import(monkeypatch, comments=False)
     prepare_import(JobContext(import_id, threading.Event()), import_id)
@@ -470,20 +471,19 @@ def test_imported_hotspot_reanalysis_replaces_cached_fallback_with_llm(temp_db: 
         mark_event_clip_evaluated(db, event, cached_score)
     assert event_id not in pending_hotspot_event_ids(session_id)
 
-    calls = _configure_llm(
+    calls = install_editorial_service(
         monkeypatch,
-        [
-            json.dumps(
-                {
-                    "title": "主播宣布周末挑战规则",
-                    "summary": text,
-                    "category": "announcement",
-                    "entities": ["周末挑战"],
-                    "semantic_confidence": 0.8,
-                    "evidence_ids": ["evidence:asr:import"],
-                }
-            )
-        ],
+        lambda *_args, **_kwargs: json.dumps(
+            {
+                "title": "主播宣布周末挑战规则",
+                "summary": text,
+                "category": "announcement",
+                "entities": ["周末挑战"],
+                "semantic_confidence": 0.8,
+                "evidence_ids": ["evidence:asr:import"],
+            }
+        ),
+        grounded=True,
     )
     assert queue_session_reanalysis(session_id, reason="llm_enabled").queued == 3
     result = analyze_compute(task_id)
@@ -492,7 +492,7 @@ def test_imported_hotspot_reanalysis_replaces_cached_fallback_with_llm(temp_db: 
     enrichment = drafts[0]["enrichment"]
     assert enrichment is not None and enrichment.source == "llm"
     assert enrichment.title == "主播宣布周末挑战规则"
-    assert len(calls) == 1 and text in str(calls[0]["messages"])
+    assert len(calls) == 2 and text in str(calls[0]["messages"])
     with get_session() as db:
         assert commit_event_enrichment(db, enrichment)
         event = db.get(HotspotEvent, event_id)

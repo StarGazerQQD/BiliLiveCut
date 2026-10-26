@@ -21,6 +21,7 @@ from sqlmodel import Session, select
 
 from app.analysis import audio as audio_mod
 from app.analysis.keywords import match_keywords
+from app.analysis.model_execution import ModelCallBudget
 from app.analysis.room_config import room_highlight_keywords
 from app.analysis.source_policy import session_danmaku_lag_s
 from app.analysis.transcript_windows import TranscriptWindowCache
@@ -168,6 +169,11 @@ def analyze_compute(task_id: int) -> dict[str, Any]:
         if task is None:
             return {"error": "task not found", "decision": HighlightDecision.SKIPPED}
         segment_id = task.segment_id
+        lease = (
+            TaskLease(task.id, task.claimed_by, task.lease_token, task.stage)
+            if task.id is not None and task.claimed_by and task.lease_token
+            else None
+        )
         analysis_pass = event_first_context(task.context_json).get("analysis_pass")
         segment = db.get(RawSegment, segment_id)
         if segment is not None and segment.session_id != task.session_id:
@@ -209,10 +215,13 @@ def analyze_compute(task_id: int) -> dict[str, Any]:
         }
 
     if analysis_pass == "candidate":
+        model_budgets: dict[int, ModelCallBudget] = {}
         event_results = _score_pending_hotspot_events(
             session_id,
             audio_features=audio_features,
             audio_segment_id=segment_id,
+            budgets=model_budgets,
+            lease=lease,
         )
         has_candidate = any(result["clip_draft"].decision == HighlightDecision.CANDIDATE for result in event_results)
         return {
@@ -221,6 +230,7 @@ def analyze_compute(task_id: int) -> dict[str, Any]:
             "session_id": session_id,
             "hotspot_drafts": hotspot_payloads,
             "event_clip_results": event_results,
+            "event_model_budgets": model_budgets,
         }
 
     try:
@@ -330,7 +340,7 @@ def commit_highlight(lease: TaskLease, compute_result: dict[str, Any], ms: int) 
                 # 先提交本轮热点事实，仍持有 ANALYZING 租约。证据可能因此发生变化，
                 # 重新评分与候选/任务的原子提交由同一租约继续完成。
                 db.commit()
-                _commit_event_analysis(lease, raw_event_results, ms)
+                _commit_event_analysis(lease, raw_event_results, ms, compute_result.get("event_model_budgets"))
                 return
             _record_plugin_dispatch(db, compute_result)
 
@@ -453,11 +463,24 @@ def commit_highlight(lease: TaskLease, compute_result: dict[str, Any], ms: int) 
         _logger.warning("stale_result_discarded: highlight task=%s 已失去租约", lease.task_id)
 
 
-def _commit_event_analysis(lease: TaskLease, raw_results: list[object], ms: int) -> None:
+def _commit_event_analysis(
+    lease: TaskLease, raw_results: list[object], ms: int, operation_budgets: object = None
+) -> None:
     """在同一租约下重算过期证据，候选与任务承接原子提交。"""
     from app.analysis.clip_scorer import pending_hotspot_event_ids
 
     results = raw_results
+    budgets = {
+        item["event_id"]: item["model_budget"]
+        for item in raw_results
+        if isinstance(item, Mapping) and isinstance(item.get("model_budget"), ModelCallBudget)
+    }
+    if isinstance(operation_budgets, dict):
+        budgets.update(
+            (event_id, budget)
+            for event_id, budget in operation_budgets.items()
+            if type(event_id) is int and isinstance(budget, ModelCallBudget)
+        )
     for attempt in range(2):
         with get_session() as db:
             connection = db.connection()
@@ -500,7 +523,7 @@ def _commit_event_analysis(lease: TaskLease, raw_results: list[object], ms: int)
         # 计算必须在事务之外；最多立即重算一次，持续变化交给原有有界重试。
         results = []
         for event_id in pending_hotspot_event_ids(session_id):
-            result = _compute_event_clip_result(event_id)
+            result = _compute_event_clip_result(event_id, budget=_event_model_budget(event_id, budgets, lease))
             if result is not None:
                 results.append(result)
 
@@ -510,8 +533,10 @@ def _compute_event_clip_result(
     *,
     audio_features: audio_mod.AudioFeatures | None = None,
     audio_segment_id: int | None = None,
+    budget: ModelCallBudget | None = None,
 ) -> dict[str, object] | None:
     """在事务外补全并评分；证据变化最多立即重算一次，持续变化交给任务重试。"""
+    from app.analysis import llm
     from app.analysis.clip_scorer import compute_hotspot_clip_draft
     from app.analysis.event_enricher import (
         EventEvidenceChangedError,
@@ -519,9 +544,10 @@ def _compute_event_clip_result(
         compute_event_enrichment,
     )
 
+    budget = budget or llm.new_editorial_budget()
     for attempt in range(2):
         try:
-            enrichment = compute_event_enrichment(event_id)
+            enrichment = compute_event_enrichment(event_id, budget=budget)
             draft = compute_hotspot_clip_draft(
                 event_id,
                 enrichment=enrichment,
@@ -536,8 +562,37 @@ def _compute_event_clip_result(
                 raise
             _logger.info("event_analysis_recompute: event_id=%s", event_id)
         else:
-            return {"event_id": event_id, "enrichment": enrichment, "clip_draft": draft}
+            return {"event_id": event_id, "enrichment": enrichment, "clip_draft": draft, "model_budget": budget}
     raise RuntimeError("事件重算循环未返回结果")
+
+
+def _event_model_budget(event_id: int, budgets: dict[int, ModelCallBudget], lease: TaskLease | None) -> ModelCallBudget:
+    from app.analysis import llm
+    from app.analysis.hotspot_lifecycle import resolve_merged_hotspot_event
+
+    if event_id in budgets:
+        return budgets[event_id]
+    with get_session() as db:
+        event = db.get(HotspotEvent, event_id)
+        canonical_id = resolve_merged_hotspot_event(db, event).id if event is not None else event_id
+        for previous_id, budget in tuple(budgets.items()):
+            previous = db.get(HotspotEvent, previous_id)
+            if previous is not None and resolve_merged_hotspot_event(db, previous).id == canonical_id:
+                budgets[event_id] = budget
+                db.rollback()
+                return budget
+        db.rollback()
+
+    def cancelled() -> bool:
+        if lease is None:
+            return False
+        with get_session() as db:
+            return not still_owns_lease(db, lease)
+
+    budget = llm.new_editorial_budget(cancelled=cancelled)
+    # 即使目标合并或消失导致没有计算结果，仍保留已经消耗的预算。
+    budgets[event_id] = budget
+    return budget
 
 
 def _score_pending_hotspot_events(
@@ -545,6 +600,8 @@ def _score_pending_hotspot_events(
     *,
     audio_features: audio_mod.AudioFeatures | None,
     audio_segment_id: int,
+    budgets: dict[int, ModelCallBudget],
+    lease: TaskLease | None,
 ) -> list[dict[str, object]]:
     """在事务外依次补全并评分当前场次全部待处理的 confirmed 事件。"""
     from app.analysis.clip_scorer import pending_hotspot_event_ids
@@ -555,6 +612,7 @@ def _score_pending_hotspot_events(
             event_id,
             audio_features=audio_features,
             audio_segment_id=audio_segment_id,
+            budget=_event_model_budget(event_id, budgets, lease),
         )
         if result is not None:
             results.append(result)

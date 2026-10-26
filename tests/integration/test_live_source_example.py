@@ -416,6 +416,7 @@ def _advance_real_pipeline(room_id: int, session_id: int, monkeypatch: pytest.Mo
     from app.pipeline.approval import approve_event_and_task
     from app.pipeline.claiming import pop_and_claim
     from app.publishing.copywriter import generate_copy
+    from tests.editorial_fixtures import install_editorial_service
 
     for key, value in {
         "asr_primary": "whisper",
@@ -467,6 +468,7 @@ def _advance_real_pipeline(room_id: int, session_id: int, monkeypatch: pytest.Mo
 
     monkeypatch.setattr(ASRProcessPool, "execute", offline_model_request)
     monkeypatch.setattr(llm, "call_text", language_model)
+    structured_requests = install_editorial_service(monkeypatch, language_model)
     with get_session() as db:
         room = db.get(LiveRoom, room_id)
         room.highlight_threshold = 0.01
@@ -500,6 +502,7 @@ def _advance_real_pipeline(room_id: int, session_id: int, monkeypatch: pytest.Mo
         assert not db.get(LiveRoom, room_id).auto_approve and not db.get(LiveRoom, room_id).auto_upload
         assert not db.exec(select(FinalClip)).all()
     assert asr_inputs and llm_prompts
+    assert structured_requests
     for task in pending:
         assert approve_event_and_task(
             task_id=task.id,

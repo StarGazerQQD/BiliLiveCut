@@ -319,6 +319,31 @@ def test_trickled_response_cannot_extend_absolute_deadline(temp_db: None, monkey
     assert budget.elapsed_s < 2
 
 
+def test_cancellation_callback_does_not_block_async_response_loop(temp_db: None, monkeypatch: MonkeyPatch) -> None:
+    save_model_configuration(catalog())
+    response_ready = Event()
+    checks = []
+
+    def check_cancelled() -> bool:
+        try:
+            asyncio.get_running_loop()
+        except RuntimeError:
+            checks.append(True)
+        else:
+            pytest.fail("可能访问数据库的取消回调不得在事件循环中同步执行")
+        return False
+
+    async def send(_transport: httpx.AsyncHTTPTransport, request: httpx.Request) -> httpx.Response:
+        await asyncio.sleep(0.08)
+        response_ready.set()
+        return httpx.Response(200, json=response(), request=request)
+
+    monkeypatch.setattr(httpx.AsyncHTTPTransport, "handle_async_request", send)
+    result = call(ModelCallBudget(max_attempts=2, max_elapsed_s=3, cancelled=check_cancelled))
+    assert result.value is not None and result.error is None and response_ready.is_set()
+    assert checks
+
+
 def test_large_http_body_is_closed_and_never_passed_as_business_data(temp_db: None, transport: Transport) -> None:
     save_model_configuration(catalog())
     requests = transport([(200, response("x" * 1_048_576)), (200, response("x" * 1_048_576))])

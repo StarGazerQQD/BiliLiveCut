@@ -280,7 +280,6 @@ def test_score_hotspot_event_is_idempotent_and_links_existing_review_chain(
     temp_db: None,
     monkeypatch: MonkeyPatch,
 ) -> None:
-    from app.analysis import event_enricher
     from app.pipeline.workers.analyze import score_hotspot_event
 
     session_id, _room_id = _seed_session()
@@ -295,7 +294,6 @@ def test_score_hotspot_event_is_idempotent_and_links_existing_review_chain(
         detector_clip=0.90,
         modalities={"danmaku": 0.9, "audio": 0.9, "sensevoice": 0.8, "asr": None, "trend": None},
     )
-    monkeypatch.setattr(event_enricher.llm, "call_text", lambda *_args, **_kwargs: None)
 
     first = score_hotspot_event(event_id)
     second = score_hotspot_event(event_id)

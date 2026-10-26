@@ -130,6 +130,7 @@ class EditorialReviewInputV1(_StrictContract):
 
     schema_version: Literal["editorial-input-v1"] = "editorial-input-v1"
     time_base: Literal["session_seconds"] = "session_seconds"
+    time_origin_epoch_s: Seconds | None = None
     target: EditorialTarget
     window: TimeRange
     recording_ranges: list[TimeRange] = Field(min_length=1, max_length=128)
