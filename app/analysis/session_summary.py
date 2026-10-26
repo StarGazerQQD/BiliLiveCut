@@ -415,8 +415,7 @@ def session_timeline_summary_view(
             "source": result["source"],
             "generated_at": _gmt8_iso(result["generated_at"]),
         }
-    # get_session_timeline 已在读取视图前为缺失/过期结果补登记请求；首个响应
-    # 直接展示等待态，避免把内部签名失效细节暴露成需要用户处理的问题。
+    # GET 仅报告缺失或过期状态；实际请求由生命周期或用户显式操作登记。
     return {**base, "status": "pending", "needs_regeneration": True}
 
 

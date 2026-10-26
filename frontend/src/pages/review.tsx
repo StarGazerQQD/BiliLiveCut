@@ -31,6 +31,7 @@ import { Button } from "@/components/ui/button";
 import { Card, CardContent } from "@/components/ui/card";
 import { Badge } from "@/components/ui/badge";
 import { Checkbox } from "@/components/ui/checkbox";
+import { EditorialResult } from "@/components/editorial-result";
 
 export const decisions = [
   ["approved_solo", "独立成片"],
@@ -486,6 +487,9 @@ function ReviewEditor() {
       <QueryState query={query}>
         <div className="grid items-start gap-6 xl:grid-cols-[minmax(0,1fr)_340px]">
           <div className="space-y-5">
+            {!obj(data.viewer).blinded && (
+              <EditorialResult value={data.editorial} />
+            )}
             <div className="overflow-hidden rounded-2xl border bg-slate-950">
               <video
                 ref={video}
@@ -500,8 +504,17 @@ function ReviewEditor() {
                 </span>
                 <span>
                   {duration(
-                    (Date.parse(text(candidate.end_ts)) -
-                      Date.parse(text(candidate.start_ts))) /
+                    (Date.parse(
+                      text(
+                        obj(data.boundary).adjusted_end_ts || candidate.end_ts,
+                      ),
+                    ) -
+                      Date.parse(
+                        text(
+                          obj(data.boundary).adjusted_start_ts ||
+                            candidate.start_ts,
+                        ),
+                      )) /
                       1000,
                   )}
                 </span>

@@ -10,6 +10,7 @@ from app.web.routers.candidates import router as candidates_router
 from app.web.routers.clips import router as clips_router
 from app.web.routers.container import router as container_router
 from app.web.routers.dashboard import router as dashboard_router
+from app.web.routers.editorial import router as editorial_router
 from app.web.routers.email_notifications import router as email_notifications_router
 from app.web.routers.events import router as events_router
 from app.web.routers.jobs import router as jobs_router
@@ -39,6 +40,7 @@ router.include_router(jobs_router)
 router.include_router(recording_imports_router)
 router.include_router(rooms_router)
 router.include_router(segments_router)
+router.include_router(editorial_router)
 router.include_router(candidates_router)
 router.include_router(clips_router)
 router.include_router(container_router)

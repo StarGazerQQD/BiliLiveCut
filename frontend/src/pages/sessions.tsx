@@ -2,6 +2,8 @@ import { useState } from "react";
 import { Link, useSearchParams } from "react-router";
 import { Clock3, Sparkles } from "lucide-react";
 import { useAction, useApi } from "@/api/client";
+import { EditorialResult } from "@/components/editorial-result";
+import { EditorialReanalysis } from "@/components/editorial-reanalysis";
 import { obj, rows, text, number, time, duration } from "@/lib/data";
 import {
   Page,
@@ -200,6 +202,7 @@ export function SessionsPage() {
                 </div>
               </CardContent>
             </Card>
+            <EditorialReanalysis key={session} sessionId={Number(session)} />
             <details className="rounded-2xl border bg-card p-5">
               <summary className="cursor-pointer font-medium">
                 整场高光总结
@@ -218,9 +221,9 @@ export function SessionsPage() {
             </label>
             {rows(data.points).length ? (
               <div className="relative ml-3 border-l-2 border-primary/15 pl-7">
-                {rows(data.points).map((point, index) => (
+                {rows(data.points).map((point) => (
                   <article
-                    key={index}
+                    key={text(point.key, `hotspot:${point.hotspot_event_id}`)}
                     className="relative mb-7 rounded-2xl border bg-card p-5"
                   >
                     <span className="absolute top-6 -left-[37px] size-4 rounded-full border-4 border-background bg-primary" />
@@ -229,7 +232,12 @@ export function SessionsPage() {
                         {duration(point.offset_s)}
                       </Badge>
                       <span className="text-xs text-muted-foreground">
-                        {duration(point.duration_s)}
+                        {point.hotspot_duration_s != null
+                          ? `热点跨度 ${duration(point.hotspot_duration_s)}`
+                          : `分析范围 ${duration(point.duration_s)}`}
+                        {point.clip_duration_s != null
+                          ? ` · 实际成片 ${duration(point.clip_duration_s)}`
+                          : " · 尚无成片范围"}
                       </span>
                       {point.rejected ? <Status value="rejected" /> : null}
                       {point.candidate_id ? (
@@ -253,9 +261,21 @@ export function SessionsPage() {
                           ))
                         : null}
                       <span className="ml-auto text-xs text-muted-foreground">
-                        热度 {number(point.heat_score).toFixed(2)} · 成片{" "}
-                        {number(point.clip_score).toFixed(2)}
+                        热度{" "}
+                        {point.heat_score == null
+                          ? "未知"
+                          : number(point.heat_score).toFixed(2)}{" "}
+                        · 技术分数{" "}
+                        {point.clip_score == null
+                          ? "未知"
+                          : number(point.clip_score).toFixed(2)}
                       </span>
+                    </div>
+                    <div className="mt-4">
+                      <EditorialResult
+                        value={point.editorial}
+                        heading={false}
+                      />
                     </div>
                     {point.candidate_id ? (
                       <Button asChild size="sm" className="mt-4">

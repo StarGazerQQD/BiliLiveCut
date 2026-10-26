@@ -1461,6 +1461,46 @@ export interface paths {
         patch?: never;
         trace?: never;
     };
+    "/api/sessions/{session_id}/editorial-reanalysis": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /**
+         * Submit Editorial Reanalysis
+         * @description 以当前预览显式排队，可在已有作业接口查询、取消和恢复。
+         */
+        post: operations["submit_editorial_reanalysis_api_sessions__session_id__editorial_reanalysis_post"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/sessions/{session_id}/editorial-reanalysis/preview": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /**
+         * Preview Editorial Reanalysis
+         * @description 只读预览，查询失败或刷新都不启动模型和作业。
+         */
+        post: operations["preview_editorial_reanalysis_api_sessions__session_id__editorial_reanalysis_preview_post"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
     "/api/sessions/{session_id}/reanalyze": {
         parameters: {
             query?: never;
@@ -2613,6 +2653,271 @@ export interface components {
             /** Name */
             name: string;
         };
+        /**
+         * EditorialEvidence
+         * @description 明确记录来源和时间精度的一条不可信素材证据。
+         */
+        EditorialEvidence: {
+            /**
+             * Context Role
+             * @enum {string}
+             */
+            context_role: "before" | "event" | "after" | "mixed" | "unknown";
+            detail?: components["schemas"]["EvidenceDetail"];
+            /** End S */
+            end_s: number | null;
+            /** Evidence Id */
+            evidence_id: string;
+            /** Excerpts */
+            excerpts: string[];
+            /** Start S */
+            start_s: number | null;
+            /**
+             * State
+             * @enum {string}
+             */
+            state: "available" | "degraded" | "missing" | "disabled" | "error" | "pending";
+            /**
+             * Timing Precision
+             * @enum {string}
+             */
+            timing_precision: "word" | "segment" | "event" | "unknown";
+            /**
+             * Type
+             * @enum {string}
+             */
+            type: "asr" | "context_asr" | "danmaku" | "audio" | "sensevoice" | "trend" | "visual";
+        };
+        /**
+         * EditorialExecutionV1
+         * @description 可持久化的执行结果，与编辑结论和人工复核状态分别保存。
+         */
+        EditorialExecutionV1: {
+            /**
+             * Attempt Offset
+             * @default 0
+             */
+            attempt_offset: number;
+            /** Attempts */
+            attempts: components["schemas"]["ModelAttempt"][];
+            /** Elapsed S */
+            elapsed_s: number;
+            /** Error */
+            error: ("disabled" | "daily_budget" | "attempt_budget" | "deadline" | "timeout" | "rate_limited" | "unauthorized" | "provider_error" | "unsupported_format" | "empty_response" | "invalid_output" | "context_unavailable" | "cancelled" | "evidence_changed") | null;
+            /** Input Fingerprint */
+            input_fingerprint: string;
+            /** Policy Version */
+            policy_version: string;
+            result: components["schemas"]["EditorialReviewResultV1"] | null;
+            /**
+             * Schema Version
+             * @default editorial-execution-v1
+             * @constant
+             */
+            schema_version: "editorial-execution-v1";
+            /**
+             * Status
+             * @enum {string}
+             */
+            status: "succeeded" | "failed" | "disabled" | "cancelled";
+        };
+        /**
+         * EditorialJobAccepted
+         * @description 后续通过既有作业 HTTP 接口恢复进度和取消操作。
+         */
+        EditorialJobAccepted: {
+            /** Job Id */
+            job_id: string;
+            /** Status */
+            status: string;
+            /** Status Url */
+            status_url: string;
+        };
+        /**
+         * EditorialPresentation
+         * @description 时间线与审片共用的已验证展示，不携带密钥、路径或原始模型响应。
+         */
+        EditorialPresentation: {
+            /** Candidate Id */
+            candidate_id?: number | null;
+            /**
+             * Editorial State
+             * @default not_run
+             * @enum {string}
+             */
+            editorial_state: "succeeded" | "failed" | "disabled" | "cancelled" | "not_run" | "invalid";
+            /** Event Id */
+            event_id?: number | null;
+            /** Evidence */
+            evidence?: components["schemas"]["EditorialEvidence"][];
+            execution?: components["schemas"]["EditorialExecutionV1"] | null;
+            /** Expanded Context */
+            expanded_context?: ("before" | "after" | "both") | null;
+            /** Explanation Error */
+            explanation_error?: ("disabled" | "daily_budget" | "attempt_budget" | "deadline" | "timeout" | "rate_limited" | "unauthorized" | "provider_error" | "unsupported_format" | "empty_response" | "invalid_output" | "context_unavailable" | "cancelled" | "evidence_changed") | null;
+            /**
+             * Explanation State
+             * @enum {string}
+             */
+            explanation_state: "available" | "failed" | "unverified" | "not_run";
+            /** Hotspot Event Id */
+            hotspot_event_id?: number | null;
+            /**
+             * Schema Version
+             * @default editorial-view-v1
+             * @constant
+             */
+            schema_version: "editorial-view-v1";
+            /** Summary */
+            summary: string;
+            /** Technical Score */
+            technical_score?: number | null;
+            /** Time Origin Epoch S */
+            time_origin_epoch_s?: number | null;
+            /** Title */
+            title: string;
+        };
+        /**
+         * EditorialPreview
+         * @description 服务端生成的有限目标快照。
+         */
+        EditorialPreview: {
+            /** Fingerprint */
+            fingerprint: string;
+            /** Next Offset */
+            next_offset: number | null;
+            /** Session Id */
+            session_id: number;
+            /** Targets */
+            targets: components["schemas"]["ReanalysisTarget"][];
+            /** Total */
+            total: number;
+        };
+        /**
+         * EditorialReviewResultV1
+         * @description 模型的编辑判断；技术调用失败不构造这个业务对象。
+         */
+        EditorialReviewResultV1: {
+            /**
+             * Boundary Status
+             * @enum {string}
+             */
+            boundary_status: "complete" | "needs_expansion" | "uncertain";
+            /** Evidence Ids */
+            evidence_ids: string[];
+            /** Hook */
+            hook: string;
+            /** Interest Rating */
+            interest_rating: number | null;
+            /** Missing Context */
+            missing_context: ("before" | "after" | "both") | null;
+            /** Reason */
+            reason: string;
+            /**
+             * Schema Version
+             * @constant
+             */
+            schema_version: "editorial-review-v1";
+            /** Standalone */
+            standalone: boolean | null;
+            suggested_bounds: components["schemas"]["SuggestedBounds"] | null;
+            /** Uncertainties */
+            uncertainties: string[];
+            /**
+             * Verdict
+             * @enum {string}
+             */
+            verdict: "recommend" | "reject" | "needs_review";
+        };
+        /**
+         * EditorialSubmission
+         * @description 明确提交与预览完全一致的选择。
+         */
+        EditorialSubmission: {
+            /** Fingerprint */
+            fingerprint: string;
+            selection: components["schemas"]["ReanalysisSelection"];
+        };
+        /**
+         * EditorialTimelinePoint
+         * @description 为新增字段提供正式类型，同时保留已有时间线兼容字段。
+         */
+        EditorialTimelinePoint: {
+            /** Candidate Id */
+            candidate_id?: number | null;
+            /** Clip Duration S */
+            clip_duration_s?: number | null;
+            /** Duration S */
+            duration_s: number;
+            editorial: components["schemas"]["EditorialPresentation"];
+            /** Event Id */
+            event_id?: number | null;
+            /** Hotspot Duration S */
+            hotspot_duration_s?: number | null;
+            /** Hotspot Event Id */
+            hotspot_event_id?: number | null;
+            /** Key */
+            key: string;
+            /** Offset S */
+            offset_s: number;
+            /**
+             * Point Type
+             * @enum {string}
+             */
+            point_type: "hotspot" | "segment";
+            /** Rejected */
+            rejected: boolean;
+            /** Summary */
+            summary: string;
+            /** Title */
+            title: string;
+        } & {
+            [key: string]: unknown;
+        };
+        /**
+         * EditorialTimelineResponse
+         * @description 场次读取只投影持久状态，不能隐式发起模型请求。
+         */
+        EditorialTimelineResponse: {
+            /** Counts */
+            counts: {
+                [key: string]: number;
+            };
+            /** Points */
+            points: components["schemas"]["EditorialTimelinePoint"][];
+            /** Session */
+            session: {
+                [key: string]: components["schemas"]["JsonValue"];
+            };
+            /** Timezone */
+            timezone: string;
+            /** Whole Session Summary */
+            whole_session_summary?: {
+                [key: string]: components["schemas"]["JsonValue"];
+            } | null;
+        };
+        /**
+         * EvidenceDetail
+         * @description 允许进入模型输入的有限诊断字段，不接收路径、凭据或任意元数据。
+         */
+        EvidenceDetail: {
+            /** Backend */
+            backend?: string | null;
+            /** Count */
+            count?: number | null;
+            /** Metrics */
+            metrics?: {
+                [key: string]: number;
+            };
+            /** Model */
+            model?: string | null;
+            /** Quality */
+            quality?: string | null;
+            /** Role */
+            role?: string | null;
+            /** Segment Id */
+            segment_id?: number | null;
+        };
         /** HTTPValidationError */
         HTTPValidationError: {
             /** Detail */
@@ -2791,6 +3096,40 @@ export interface components {
             target_id: number;
         };
         /**
+         * ModelAttempt
+         * @description 单次实际请求的诊断，不保存地址、凭据、原始正文或异常。
+         */
+        ModelAttempt: {
+            /** Elapsed S */
+            elapsed_s: number;
+            /** Error */
+            error: ("disabled" | "daily_budget" | "attempt_budget" | "deadline" | "timeout" | "rate_limited" | "unauthorized" | "provider_error" | "unsupported_format" | "empty_response" | "invalid_output" | "context_unavailable" | "cancelled" | "evidence_changed") | null;
+            /** Model */
+            model: string;
+            /** Number */
+            number: number;
+            /**
+             * Protocol
+             * @enum {string}
+             */
+            protocol: "json_schema" | "json_object" | "text";
+            /** Provider Id */
+            provider_id: string;
+            /**
+             * Purpose
+             * @enum {string}
+             */
+            purpose: "explanation" | "review" | "grounding" | "repair" | "context";
+            /** Reported Model */
+            reported_model?: string | null;
+            /**
+             * Status
+             * @enum {string}
+             */
+            status: "success" | "failed";
+            usage?: components["schemas"]["TokenUsage"];
+        };
+        /**
          * ModelConfigurationChange
          * @description 模型配置整体保存，与其他设置共用乐观版本检查。
          */
@@ -2932,6 +3271,79 @@ export interface components {
             retranscribe: boolean;
         };
         /**
+         * ReanalysisSelection
+         * @description 只选择已有分析对象；分页预览不会调用模型或修改数据库。
+         */
+        ReanalysisSelection: {
+            /**
+             * Failed Only
+             * @default false
+             */
+            failed_only: boolean;
+            /** Keys */
+            keys?: string[];
+            /**
+             * Limit
+             * @default 50
+             */
+            limit: number;
+            /**
+             * Offset
+             * @default 0
+             */
+            offset: number;
+            /** Session Id */
+            session_id: number;
+            /** Verdicts */
+            verdicts?: ("recommend" | "reject" | "needs_review" | "unknown")[];
+        };
+        /**
+         * ReanalysisTarget
+         * @description 服务端解析的稳定业务身份和预览快照，提交时必须重新核验。
+         */
+        ReanalysisTarget: {
+            /** Candidate Id */
+            candidate_id?: number | null;
+            /** Event Id */
+            event_id?: number | null;
+            /**
+             * Failed
+             * @default false
+             */
+            failed: boolean;
+            /**
+             * Fingerprint
+             * @default
+             */
+            fingerprint: string;
+            /** Key */
+            key: string;
+            /**
+             * Kind
+             * @enum {string}
+             */
+            kind: "hotspot" | "segment";
+            /**
+             * Peak Ts
+             * Format: date-time
+             */
+            peak_ts: string;
+            /** Protection */
+            protection?: string | null;
+            /** Segment Id */
+            segment_id: number;
+            /** Session Id */
+            session_id: number;
+            /** Source Id */
+            source_id: number;
+            /**
+             * Verdict
+             * @default unknown
+             * @enum {string}
+             */
+            verdict: "recommend" | "reject" | "needs_review" | "unknown";
+        };
+        /**
          * RenderCollectionRequest
          * @description 渲染合集请求。
          */
@@ -3038,6 +3450,32 @@ export interface components {
              * @enum {string}
              */
             mode: "graceful" | "force";
+        };
+        /**
+         * SuggestedBounds
+         * @description 由明确时间证据支持的成片范围建议。
+         */
+        SuggestedBounds: {
+            /** End S */
+            end_s: number;
+            /** Evidence Ids */
+            evidence_ids: string[];
+            /** Start S */
+            start_s: number;
+        };
+        /**
+         * TokenUsage
+         * @description 服务实际报告的用量；缺失值保留为空，价格为配置估算。
+         */
+        TokenUsage: {
+            /** Estimated Cost Usd */
+            estimated_cost_usd?: number | null;
+            /** Input Tokens */
+            input_tokens?: number | null;
+            /** Output Tokens */
+            output_tokens?: number | null;
+            /** Reasoning Tokens */
+            reasoning_tokens?: number | null;
         };
         /**
          * TopicUpdateRequest
@@ -5555,6 +5993,76 @@ export interface operations {
             };
         };
     };
+    submit_editorial_reanalysis_api_sessions__session_id__editorial_reanalysis_post: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                session_id: number;
+            };
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["EditorialSubmission"];
+            };
+        };
+        responses: {
+            /** @description Successful Response */
+            202: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["EditorialJobAccepted"];
+                };
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
+    preview_editorial_reanalysis_api_sessions__session_id__editorial_reanalysis_preview_post: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                session_id: number;
+            };
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["ReanalysisSelection"];
+            };
+        };
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["EditorialPreview"];
+                };
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
     reanalyze_session_api_sessions__session_id__reanalyze_post: {
         parameters: {
             query?: never;
@@ -5611,9 +6119,7 @@ export interface operations {
                     [name: string]: unknown;
                 };
                 content: {
-                    "application/json": {
-                        [key: string]: unknown;
-                    };
+                    "application/json": components["schemas"]["EditorialTimelineResponse"];
                 };
             };
             /** @description Validation Error */
