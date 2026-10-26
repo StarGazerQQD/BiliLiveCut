@@ -505,6 +505,7 @@ def _is_duplicate(
     *,
     peak_ts: datetime | None = None,
     cooldown_s: float = 0.0,
+    exclude_candidate_id: int | None = None,
 ) -> bool:
     """判断新候选区间是否与同会话既有候选高度重叠。
 
@@ -520,6 +521,8 @@ def _is_duplicate(
     with get_session() as db:
         rows = db.exec(select(HighlightCandidate).where(HighlightCandidate.session_id == session_id)).all()
     for c in rows:
+        if c.id == exclude_candidate_id:
+            continue
         existing = (c.start_ts.timestamp(), c.end_ts.timestamp())
         if temporal_iou(interval, existing) >= iou_threshold:
             return True

@@ -217,6 +217,7 @@ def compute_hotspot_clip_draft(
     audio_features: AudioFeatures | None = None,
     audio_segment_id: int | None = None,
     config: ClipScorerConfig | None = None,
+    expected_candidate_id: int | None = None,
 ) -> EventClipDraft:
     """在事务外按完整事件评分，并生成不跨断流缺口的动态候选边界。"""
     cfg = config or ClipScorerConfig.from_settings()
@@ -228,7 +229,7 @@ def compute_hotspot_clip_draft(
             raise EventTargetUnavailableError(
                 f"仅 confirmed HotspotEvent 可评分: event_id={event_id} status={event.status}"
             )
-        if event.candidate_id is not None:
+        if event.candidate_id != expected_candidate_id:
             raise EventTargetUnavailableError(
                 f"HotspotEvent 已关联候选: event_id={event_id} candidate_id={event.candidate_id}"
             )
@@ -381,6 +382,9 @@ def validate_event_clip_draft(
     draft: EventClipDraft,
     *,
     config: ClipScorerConfig | None = None,
+    expected_candidate_id: int | None = None,
+    enrichment: EventEnrichmentDraft | None = None,
+    review: EditorialReviewDraft | None = None,
 ) -> HotspotEvent | None:
     """提交前重算指纹，拒绝计算期间发生边界、证据或配置变化的结果。"""
     cfg = config or ClipScorerConfig.from_settings()
@@ -388,13 +392,13 @@ def validate_event_clip_draft(
     if (
         event is None
         or event.status != HotspotStatus.CONFIRMED
-        or event.candidate_id is not None
+        or event.candidate_id != expected_candidate_id
         or event.event_key != draft.event_key
     ):
         return None
     try:
         bundle = build_event_evidence_bundle(db, draft.hotspot_event_id)
-        context = _load_event_context(db, event, bundle.fingerprint, config=cfg)
+        context = _load_event_context(db, event, bundle.fingerprint, config=cfg, enrichment=enrichment, review=review)
     except ValueError:
         return None
     if bundle.fingerprint != draft.bundle_fingerprint or context.input_fingerprint != draft.input_fingerprint:

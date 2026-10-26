@@ -160,18 +160,20 @@ def test_reanalysis_database_failure_does_not_block_other_sessions(temp_db: None
     for key in (1, 2):
         assert request_session_reanalysis(key, reason="session_finalized")
 
-    def reject_first_delete(
+    def reject_first_task_insert(
         connection: Any, cursor: Any, statement: str, parameters: Any, context: Any, executemany: bool
     ) -> None:
         # DBAPI 边界注入约束故障，保留真实事务、排队和另一个场次的执行。
-        if statement.startswith("DELETE FROM highlight_candidates") and parameters == (1,):
+        if statement.startswith("INSERT INTO segment_tasks") and any(
+            item.get("session_id") == 1 for item in context.compiled_parameters
+        ):
             raise IntegrityError(statement, parameters, ValueError("injected constraint failure"))
 
-    event.listen(database.engine, "before_cursor_execute", reject_first_delete)
+    event.listen(database.engine, "before_cursor_execute", reject_first_task_insert)
     try:
         completed = process_pending_session_reanalyses()
     finally:
-        event.remove(database.engine, "before_cursor_execute", reject_first_delete)
+        event.remove(database.engine, "before_cursor_execute", reject_first_task_insert)
     assert [result.session_id for result in completed] == [2]
     with get_session() as db:
         assert db.get(AppSetting, "session_reanalysis:1") is not None
@@ -437,7 +439,7 @@ def test_manual_confirmation_commits_clip_and_pipeline(temp_db: None, tmp_path: 
         assert task.stage == TaskStatus.COMPLETED and task.completed_at is not None
 
 
-def test_reanalysis_unlinks_hotspot_and_rebuilds_candidate(temp_db: None, tmp_path: Path) -> None:
+def test_reanalysis_retains_hotspot_candidate_link(temp_db: None, tmp_path: Path) -> None:
     from app.analysis.reanalysis import queue_session_reanalysis
     from app.db.entities import HighlightCandidate, HighlightEvent, HotspotEvent, LiveRoom, RawSegment, RecordingSession
     from app.db.session import get_session
@@ -471,8 +473,10 @@ def test_reanalysis_unlinks_hotspot_and_rebuilds_candidate(temp_db: None, tmp_pa
         session_id = recording.id
     queue_session_reanalysis(session_id, reason="session_finalized")
     with get_session() as db:
-        assert db.exec(select(HotspotEvent)).one().candidate_id is None
-        assert not db.exec(select(HighlightCandidate)).all()
+        hotspot = db.exec(select(HotspotEvent)).one()
+        candidate = db.exec(select(HighlightCandidate)).one()
+        event = db.exec(select(HighlightEvent)).one()
+        assert hotspot.candidate_id == candidate.id == event.candidate_id
 
 
 def test_maintenance_preserves_published_candidate_assets(

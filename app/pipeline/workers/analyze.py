@@ -191,6 +191,31 @@ def analyze_compute(task_id: int) -> dict[str, Any]:
             return {"error": "segment not found", "decision": HighlightDecision.SKIPPED, "segment_id": segment_id}
         session_id = segment.session_id
         file_path = segment.file_path
+        reanalysis = _json_object(task.context_json).get("reanalysis")
+
+    if isinstance(reanalysis, dict) and reanalysis.get("preserve_identity") is True:
+        from app.analysis.editorial_reanalysis import compute_reanalysis
+        from app.analysis.reanalysis_targets import list_reanalysis_targets
+
+        with get_session() as db:
+            targets = [
+                item
+                for item in list_reanalysis_targets(db, session_id, own_task_id=task_id)
+                if item.segment_id == segment_id
+            ]
+        if targets:
+
+            def reanalysis_cancelled() -> bool:
+                if lease is None:
+                    return False
+                with get_session() as db:
+                    return not still_owns_lease(db, lease)
+
+            return {
+                "segment_id": segment_id,
+                "session_id": session_id,
+                "reanalysis_results": compute_reanalysis(targets, cancelled=reanalysis_cancelled, own_task_id=task_id),
+            }
 
     audio_features: audio_mod.AudioFeatures | None = None
     try:
@@ -296,6 +321,9 @@ def commit_highlight(lease: TaskLease, compute_result: dict[str, Any], ms: int) 
                 mark_failed(task, "highlight compute result source mismatch", permanent=True)
                 db.add(task)
                 db.commit()
+                return
+            if "reanalysis_results" in compute_result:
+                _commit_pipeline_reanalysis(db, task, compute_result["reanalysis_results"], ms)
                 return
             if not _store_segment_editorial(db, segment_id, compute_result):
                 mark_failed(task, "编辑判断输入或配置已变化，等待重新计算", permanent=False)
@@ -470,6 +498,41 @@ def commit_highlight(lease: TaskLease, compute_result: dict[str, Any], ms: int) 
         _logger.warning("stale_result_discarded: highlight task=%s 已失去租约", lease.task_id)
 
 
+def _commit_pipeline_reanalysis(db: Session, task: SegmentTask, drafts: object, ms: int) -> None:
+    """复用当前分析租约提交原位重评，并保留任务的候选、事件身份。"""
+    from app.analysis.editorial_reanalysis import ReanalysisDraft, commit_reanalysis
+
+    if not isinstance(drafts, list) or not all(isinstance(item, ReanalysisDraft) for item in drafts):
+        raise ValueError("流水线重分析缺少合法计算结果")
+    if any(item.target.session_id != task.session_id or item.target.segment_id != task.segment_id for item in drafts):
+        raise ValueError("流水线重分析结果来源不一致")
+    outcome = commit_reanalysis(db, drafts, own_task_id=task.id)
+    context = _json_object(task.context_json)
+    context["reanalysis"]["result"] = outcome
+    context["reanalysis"]["preserve_identity"] = False
+    task.context_json = json.dumps(context, ensure_ascii=False, allow_nan=False)
+    choices = db.exec(
+        select(HighlightCandidate, HighlightEvent)
+        .join(
+            HighlightEvent,
+            HighlightEvent.candidate_id == HighlightCandidate.id,
+        )
+        .where(
+            HighlightEvent.segment_id == task.segment_id,
+            HighlightCandidate.status.in_([CandidateStatus.PENDING, CandidateStatus.APPROVED]),
+        )
+        .order_by(HighlightCandidate.highlight_score.desc(), HighlightCandidate.id)
+    ).all()
+    _mark_scored_in_db(db, task.segment_id)
+    mark_completed(task, ms)
+    if choices:
+        candidate, event = choices[0]
+        enqueue_next(task, TaskStatus.CANDIDATE_CREATED, candidate_id=candidate.id, event_id=event.id)
+    else:
+        enqueue_next(task, TaskStatus.COMPLETED)
+    db.add(task)
+
+
 def _commit_event_analysis(
     lease: TaskLease, raw_results: list[object], ms: int, operation_budgets: object = None
 ) -> None:
@@ -541,6 +604,8 @@ def _compute_event_clip_result(
     audio_features: audio_mod.AudioFeatures | None = None,
     audio_segment_id: int | None = None,
     budget: ModelCallBudget | None = None,
+    expected_candidate_id: int | None = None,
+    force: bool = False,
 ) -> dict[str, object] | None:
     """在事务外补全并评分；证据变化最多立即重算一次，持续变化交给任务重试。"""
     from app.analysis import llm
@@ -556,12 +621,16 @@ def _compute_event_clip_result(
     budget = budget or llm.new_editorial_budget()
     for attempt in range(2):
         try:
-            enrichment = compute_event_enrichment(event_id, budget=budget)
+            enrichment = compute_event_enrichment(event_id, budget=budget, force=force)
             if budget.interruption(before_request=False) == "cancelled":
                 return None
             with get_session() as db:
                 current = db.get(HotspotEvent, event_id)
-                if current is None or current.status != HotspotStatus.CONFIRMED or current.candidate_id is not None:
+                if (
+                    current is None
+                    or current.status != HotspotStatus.CONFIRMED
+                    or current.candidate_id != expected_candidate_id
+                ):
                     return None
                 if (
                     enrichment is not None
@@ -577,6 +646,7 @@ def _compute_event_clip_result(
                 review=review,
                 audio_features=audio_features,
                 audio_segment_id=audio_segment_id,
+                expected_candidate_id=expected_candidate_id,
             )
         except EventTargetUnavailableError as exc:
             _logger.info("event_analysis_target_changed: event_id=%s error=%s", event_id, exc)
@@ -701,14 +771,10 @@ def _commit_event_clip_results(
             metadata = candidate_features.get("editorial_review")
             if not isinstance(metadata, dict) or metadata.get("execution") != review.execution.model_dump(mode="json"):
                 raise ValueError("候选与编辑判断必须来自同一计算结果")
-            features = _json_object(current.features_json)
-            features["editorial_review"] = metadata
-            current.features_json = json.dumps(features, ensure_ascii=False, allow_nan=False)
-            db.add(current)
-        if enrichment is not None and not commit_event_enrichment(db, enrichment):
-            continue
-        event = validate_event_clip_draft(db, clip_draft)
+        event = validate_event_clip_draft(db, clip_draft, enrichment=enrichment, review=review)
         if event is None:
+            continue
+        if enrichment is not None and not commit_event_enrichment(db, enrichment):
             continue
         processed_event_ids.add(clip_draft.hotspot_event_id)
         committed_draft = clip_draft
@@ -1053,7 +1119,7 @@ def _draft_clusters_existing(
     existing = db.exec(select(HighlightCandidate).where(HighlightCandidate.session_id == session_id)).all()
     for candidate in existing:
         if candidate.dedup_hash == dedup_hash:
-            return False
+            continue
         if interval_iou(start, end, candidate.start_ts, candidate.end_ts) >= iou_threshold:
             return True
         if (
@@ -1391,6 +1457,7 @@ def _score_segment_draft(
     audio_features: audio_mod.AudioFeatures | None = None,
     word_cache: TranscriptWindowCache | None = None,
     budget: ModelCallBudget | None = None,
+    exclude_candidate_id: int | None = None,
 ) -> dict[str, Any] | None:
     """纯评分计算, 不写 DB, 不创建 Candidate。
 
@@ -1607,31 +1674,7 @@ def _score_segment_draft(
     reason = result.reason if result is not None else f"编辑判断未完成（{review.execution.error}），需人工复核"
     highlight_score = primary_score
 
-    # 终分不足 — 不写 DB, 返回显式决策。
-    if not editorial_candidate(review.execution, technical_score=highlight_score, threshold=threshold):
-        return {
-            "decision": HighlightDecision.BELOW_THRESHOLD,
-            "segment_id": segment_id,
-            "session_id": session_id,
-            "room_id": room_id,
-            "score": highlight_score,
-            "rule_score": rule_score,
-            "llm_score": llm_score or 0.0,
-            "highlight_score": highlight_score,
-            "start_ts": None,
-            "end_ts": None,
-            "peak_ts": None,
-            "reason": reason,
-            "dedup_hash": None,
-            "features_json": _merge_plugin_metadata(
-                json.dumps({"editorial_review": review_metadata}, ensure_ascii=False),
-                plugin_payload,
-            ),
-            "editorial_snapshot": snapshot,
-            "initial_status": CandidateStatus.REJECTED,
-            "config_hash": cfg.model_dump_json() if hasattr(cfg, "model_dump_json") else "",
-            "highlight_plugin": plugin_payload,
-        }
+    selected = editorial_candidate(review.execution, technical_score=highlight_score, threshold=threshold)
 
     # 4) 边界吸附
     start_ts, end_ts, peak_ts = candidate_time_bounds(
@@ -1668,43 +1711,22 @@ def _score_segment_draft(
         applied if suggestion is not None else (start_ts <= analysis_start_ts and end_ts >= analysis_end_ts)
     )
 
-    # 5) 去重 — 不写 DB, 返回 DUPLICATE 决策
-    if _is_duplicate(
+    # 去重只改变入选状态，仍保留完整证据和计算字段用于原位重评。
+    duplicate = selected and _is_duplicate(
         session_id,
         (start_ts.timestamp(), end_ts.timestamp()),
         cfg.iou_threshold,
         peak_ts=peak_ts,
         cooldown_s=cfg.cooldown_s,
-    ):
-        dedup_hash_val = hashlib.sha256(
-            f"{session_id}:{start_ts.timestamp():.1f}:{end_ts.timestamp():.1f}".encode()
-        ).hexdigest()
-        return {
-            "decision": HighlightDecision.DUPLICATE,
-            "segment_id": segment_id,
-            "session_id": session_id,
-            "room_id": room_id,
-            "dedup_hash": dedup_hash_val,
-            "score": highlight_score,
-            "rule_score": rule_score,
-            "llm_score": llm_score or 0.0,
-            "highlight_score": highlight_score,
-            "start_ts": start_ts.isoformat(),
-            "end_ts": end_ts.isoformat(),
-            "peak_ts": peak_ts.isoformat(),
-            "reason": "去重: IoU over threshold",
-            "features_json": _merge_plugin_metadata(
-                json.dumps({"editorial_review": review_metadata}, ensure_ascii=False),
-                plugin_payload,
-            ),
-            "editorial_snapshot": snapshot,
-            "initial_status": CandidateStatus.REJECTED,
-            "config_hash": cfg.model_dump_json() if hasattr(cfg, "model_dump_json") else "",
-            "highlight_plugin": plugin_payload,
-        }
+        exclude_candidate_id=exclude_candidate_id,
+    )
+    if duplicate:
+        reason = f"{reason}；与既有候选重叠或处于同事件冷却期"
 
     # 6) 审核状态
-    if (
+    if not selected or duplicate:
+        initial_status = CandidateStatus.REJECTED
+    elif (
         room_auto_approve
         and highlight_score >= room_auto_approve_threshold
         and editorial_auto_approvable(review_metadata)
@@ -1765,7 +1787,11 @@ def _score_segment_draft(
     ).hexdigest()
 
     return {
-        "decision": HighlightDecision.CANDIDATE,
+        "decision": (
+            HighlightDecision.DUPLICATE
+            if duplicate
+            else (HighlightDecision.CANDIDATE if selected else HighlightDecision.BELOW_THRESHOLD)
+        ),
         "segment_id": segment_id,
         "session_id": session_id,
         "room_id": room_id,

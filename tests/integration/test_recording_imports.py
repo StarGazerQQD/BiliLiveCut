@@ -503,8 +503,9 @@ def test_imported_hotspot_reanalysis_replaces_cached_fallback_with_llm(temp_db: 
     calls = install_editorial_service(monkeypatch, model_response, grounded=True)
     assert queue_session_reanalysis(session_id, reason="llm_enabled").queued == 3
     result = analyze_compute(task_id)
-    drafts = result["event_clip_results"]
+    drafts = [item.payload for item in result["reanalysis_results"]]
     assert len(drafts) == 1
+    assert drafts[0] is not None
     enrichment = drafts[0]["enrichment"]
     assert enrichment is not None and enrichment.source == "llm"
     assert enrichment.title == "主播宣布周末挑战规则"
@@ -516,7 +517,11 @@ def test_imported_hotspot_reanalysis_replaces_cached_fallback_with_llm(temp_db: 
         mode="json"
     )
     with get_session() as db:
-        assert commit_event_enrichment(db, enrichment)
+        from app.analysis.editorial_reanalysis import commit_reanalysis
+
+        db.connection().exec_driver_sql("BEGIN IMMEDIATE")
+        committed = commit_reanalysis(db, result["reanalysis_results"], own_task_id=task_id)
+        assert committed["updated"] == 1
         event = db.get(HotspotEvent, event_id)
         assert event is not None and event.title == enrichment.title
 
