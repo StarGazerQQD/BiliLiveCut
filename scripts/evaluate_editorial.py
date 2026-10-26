@@ -2,12 +2,16 @@
 from __future__ import annotations
 
 import argparse
+import io
 import sys
 from pathlib import Path
 
 
 def main() -> int:
     """只读导出真实判断快照或计算离线评估，不启动模型、服务或数据库迁移。"""
+    for stream in (sys.stdout, sys.stderr):
+        if isinstance(stream, io.TextIOWrapper):
+            stream.reconfigure(encoding="utf-8", errors="backslashreplace")
     sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
     from app.analysis.editorial_evaluation import (
         EvaluationLabels,

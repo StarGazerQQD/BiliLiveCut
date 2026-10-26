@@ -5,7 +5,7 @@ import json
 from collections.abc import Callable
 from typing import TYPE_CHECKING
 
-import httpx2
+import httpx
 
 from app.analysis.llm_providers import LLMProvider, save_providers
 
@@ -35,8 +35,12 @@ def install_editorial_service(
         ]
     )
     requests: list[dict[str, object]] = []
+    original_send = httpx.AsyncHTTPTransport.handle_async_request
 
-    async def send(_transport: httpx2.AsyncHTTPTransport, request: httpx2.Request) -> httpx2.Response:
+    async def send(_transport: httpx.AsyncHTTPTransport, request: httpx.Request) -> httpx.Response:
+        if request.url.host != "fixture.invalid":
+            return await original_send(_transport, request)
+        assert request.method == "POST" and request.url.path == "/v1/chat/completions"
         payload = json.loads(request.content)
         requests.append(payload)
         data = json.loads(payload["messages"][1]["content"])
@@ -69,8 +73,8 @@ def install_editorial_service(
                 max_tokens=payload["max_tokens"],
             )
         if text is None:
-            return httpx2.Response(503, json={"error": {"message": "fixture unavailable"}}, request=request)
-        return httpx2.Response(
+            return httpx.Response(503, json={"error": {"message": "fixture unavailable"}}, request=request)
+        return httpx.Response(
             200,
             json={
                 "id": "fixture",
@@ -81,5 +85,5 @@ def install_editorial_service(
             request=request,
         )
 
-    monkeypatch.setattr(httpx2.AsyncHTTPTransport, "handle_async_request", send)
+    monkeypatch.setattr(httpx.AsyncHTTPTransport, "handle_async_request", send)
     return requests

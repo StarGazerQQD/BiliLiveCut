@@ -412,6 +412,9 @@ def test_usage_counts_are_strict_and_cost_is_explicit_estimate() -> None:
         TokenUsage(input_tokens=True)
     with pytest.raises(ValidationError):
         TokenUsage(output_tokens=-1)
+    for name in ("input_tokens", "output_tokens", "reasoning_tokens"):
+        with pytest.raises(ValidationError):
+            TokenUsage(**{name: 2**63})
 
 
 def test_empty_evidence_cannot_claim_to_be_available() -> None:

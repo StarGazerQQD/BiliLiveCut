@@ -8,7 +8,7 @@ from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from threading import Event, Thread, Timer
 from typing import TYPE_CHECKING
 
-import httpx2 as httpx
+import httpx
 import pytest
 from pydantic import BaseModel, ConfigDict
 
@@ -296,7 +296,10 @@ def test_inflight_interruption_waits_for_transport_cleanup(temp_db: None, monkey
     assert len(budget.attempts) == 1
 
 
-def test_trickled_response_cannot_extend_absolute_deadline(temp_db: None, monkeypatch: MonkeyPatch) -> None:
+@pytest.mark.parametrize("status", [200, 500])
+def test_trickled_response_cannot_extend_absolute_deadline(
+    temp_db: None, monkeypatch: MonkeyPatch, status: int
+) -> None:
     save_model_configuration(catalog())
     closed = Event()
 
@@ -310,7 +313,7 @@ def test_trickled_response_cannot_extend_absolute_deadline(temp_db: None, monkey
             closed.set()
 
     async def send(_transport: httpx.AsyncHTTPTransport, request: httpx.Request) -> httpx.Response:
-        return httpx.Response(200, stream=SlowBody(), request=request)
+        return httpx.Response(status, stream=SlowBody(), request=request)
 
     monkeypatch.setattr(httpx.AsyncHTTPTransport, "handle_async_request", send)
     budget = ModelCallBudget(max_attempts=2, max_elapsed_s=0.5)
@@ -344,12 +347,93 @@ def test_cancellation_callback_does_not_block_async_response_loop(temp_db: None,
     assert checks
 
 
+@pytest.mark.parametrize("tokens", [10**400, 2**63], ids=["overflow", "above-int64"])
+def test_unbounded_usage_count_cannot_overflow_cost_or_create_success(
+    temp_db: None, transport: Transport, tokens: int
+) -> None:
+    save_model_configuration(catalog())
+    transport([(200, response(usage={"prompt_tokens": tokens, "completion_tokens": 20}))])
+    budget = ModelCallBudget(max_attempts=1, max_elapsed_s=5)
+    result = call(budget)
+    assert result.value is None
+    assert budget.attempts[0].error == "invalid_output"
+    assert budget.attempts[0].usage.estimated_cost_usd is None
+
+
+@pytest.mark.parametrize("tokens,success", [(10, True), (2**63 - 1, False)])
+def test_cost_math_preserves_finite_estimates_and_rejects_overflow(
+    temp_db: None, transport: Transport, tokens: int, success: bool
+) -> None:
+    configuration = catalog()
+    configuration.routes[0].price_input_per_m = 1e308
+    save_model_configuration(configuration)
+    transport([(200, response(usage={"prompt_tokens": tokens, "completion_tokens": 0}))])
+    budget = ModelCallBudget(max_attempts=1, max_elapsed_s=5)
+    result = call(budget)
+    if success:
+        assert result.value is not None
+        assert budget.attempts[0].usage.estimated_cost_usd == pytest.approx(1e303)
+    else:
+        assert result.value is None and budget.attempts[0].error == "invalid_output"
+
+
 def test_large_http_body_is_closed_and_never_passed_as_business_data(temp_db: None, transport: Transport) -> None:
     save_model_configuration(catalog())
     requests = transport([(200, response("x" * 1_048_576)), (200, response("x" * 1_048_576))])
     budget = llm.new_editorial_budget()
     assert call(budget).error == "invalid_output"
     assert len(requests) == 2 and all(item.usage.input_tokens is None for item in budget.attempts)
+
+
+@pytest.mark.parametrize("status", [200, 400, 401, 429, 500])
+def test_streamed_error_and_success_bodies_share_limit(temp_db: None, monkeypatch: MonkeyPatch, status: int) -> None:
+    save_model_configuration(catalog())
+    closed = Event()
+    reads: list[int] = []
+
+    class LargeBody(httpx.AsyncByteStream):
+        async def __aiter__(self) -> AsyncIterator[bytes]:
+            for index in range(1024):
+                reads.append(index)
+                yield b" " * 16_384
+
+        async def aclose(self) -> None:
+            closed.set()
+
+    async def send(_transport: httpx.AsyncHTTPTransport, request: httpx.Request) -> httpx.Response:
+        return httpx.Response(status, stream=LargeBody(), request=request)
+
+    monkeypatch.setattr(httpx.AsyncHTTPTransport, "handle_async_request", send)
+    budget = ModelCallBudget(max_attempts=1, max_elapsed_s=5)
+    result = call(budget)
+    assert closed.is_set()
+    assert len(reads) <= 65
+    assert result.value is None and budget.attempts[0].error == "invalid_output"
+
+
+@pytest.mark.parametrize("status", [200, 500])
+def test_unsolicited_compression_is_closed_before_body_decode(
+    temp_db: None, monkeypatch: MonkeyPatch, status: int
+) -> None:
+    save_model_configuration(catalog())
+    closed = Event()
+
+    class UnreadBody(httpx.AsyncByteStream):
+        async def __aiter__(self) -> AsyncIterator[bytes]:
+            pytest.fail("不应读取或解压违反 identity 协商的正文")
+            yield b""
+
+        async def aclose(self) -> None:
+            closed.set()
+
+    async def send(_transport: httpx.AsyncHTTPTransport, request: httpx.Request) -> httpx.Response:
+        assert request.headers["accept-encoding"] == "identity"
+        return httpx.Response(status, stream=UnreadBody(), headers={"Content-Encoding": "gzip"}, request=request)
+
+    monkeypatch.setattr(httpx.AsyncHTTPTransport, "handle_async_request", send)
+    budget = ModelCallBudget(max_attempts=1, max_elapsed_s=5)
+    assert call(budget).value is None
+    assert closed.is_set() and budget.attempts[0].error == "invalid_output"
 
 
 def test_network_error_has_no_hidden_sdk_retry(temp_db: None, monkeypatch: MonkeyPatch) -> None:

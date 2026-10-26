@@ -25,7 +25,7 @@ import os
 import re
 import threading
 import time
-from collections.abc import Callable
+from collections.abc import AsyncIterator, Callable
 from contextlib import suppress
 from dataclasses import dataclass
 from datetime import date
@@ -34,6 +34,7 @@ from typing import TYPE_CHECKING, TypeVar, cast
 from urllib.parse import urlsplit
 from uuid import uuid4
 
+import httpx
 from filelock import FileLock, Timeout
 from loguru import logger
 from pydantic import BaseModel, ConfigDict, Field, ValidationError
@@ -41,6 +42,7 @@ from pydantic import BaseModel, ConfigDict, Field, ValidationError
 from app.analysis import llm_providers as provs
 from app.analysis.editorial_contracts import (
     INPUT_MAX_BYTES,
+    MAX_TOKEN_COUNT,
     OUTPUT_MAX_BYTES,
     FailureCode,
     ModelAttempt,
@@ -483,6 +485,45 @@ class _StructuredFailure(RuntimeError):
         super().__init__(code)
 
 
+_HTTP_RESPONSE_MAX_BYTES = 1_048_576
+
+
+class _StructuredResponseStream(httpx.AsyncByteStream):
+    """在 SDK 读取成功或错误正文之前限制实际网络字节数。"""
+
+    def __init__(self, stream: httpx.AsyncByteStream) -> None:
+        self._stream = stream
+
+    async def __aiter__(self) -> AsyncIterator[bytes]:
+        """超过共享上限立即终止读取，并关闭原始响应流。"""
+        size = 0
+        try:
+            async for chunk in self._stream:
+                size += len(chunk)
+                if size > _HTTP_RESPONSE_MAX_BYTES:
+                    raise _StructuredFailure("invalid_output")
+                yield chunk
+        finally:
+            await self.aclose()
+
+    async def aclose(self) -> None:
+        """释放当前请求实际持有的连接。"""
+        await self._stream.aclose()
+
+
+async def _guard_structured_response(response: httpx.Response) -> None:
+    # 请求已明确协商 identity；不允许违约压缩在解码后绕过内存上限。
+    if response.headers.get("content-encoding", "identity").strip().lower() not in {"", "identity"}:
+        raise _StructuredFailure("invalid_output")
+    if response.is_stream_consumed:
+        if len(response.content) > _HTTP_RESPONSE_MAX_BYTES:
+            raise _StructuredFailure("invalid_output")
+        return
+    if not isinstance(response.stream, httpx.AsyncByteStream):
+        raise _StructuredFailure("invalid_output")
+    response.stream = _StructuredResponseStream(response.stream)
+
+
 async def _fetch_structured_response(
     provider: provs.LLMProvider,
     messages: list[ChatCompletionMessageParam],
@@ -494,9 +535,20 @@ async def _fetch_structured_response(
     from openai import AsyncOpenAI
 
     # 每个请求独占客户端，取消时关闭其连接，不中断其他业务复用的同步客户端。
-    async with AsyncOpenAI(
-        api_key=provider.api_key or "not-required", base_url=provider.base_url, max_retries=0
-    ) as client:
+    async with (
+        httpx.AsyncClient(
+            timeout=timeout,
+            follow_redirects=True,
+            headers={"Accept-Encoding": "identity"},
+            event_hooks={"response": [_guard_structured_response]},
+        ) as transport,
+        AsyncOpenAI(
+            api_key=provider.api_key or "not-required",
+            base_url=provider.base_url,
+            max_retries=0,
+            http_client=transport,
+        ) as client,
+    ):
         async with client.chat.completions.with_streaming_response.create(
             model=provider.model,
             messages=messages,
@@ -508,7 +560,7 @@ async def _fetch_structured_response(
             body = bytearray()
             async for chunk in response.iter_bytes(chunk_size=16_384):
                 body.extend(chunk)
-                if len(body) > 1_048_576:
+                if len(body) > _HTTP_RESPONSE_MAX_BYTES:
                     raise _StructuredFailure("invalid_output")
     try:
         parsed = json.loads(body)
@@ -567,6 +619,8 @@ def _reported_usage(provider: provs.LLMProvider, response: object) -> TokenUsage
     usage = _field(response, "usage")
 
     def count(value: object) -> int | None:
+        if type(value) is int and value > MAX_TOKEN_COUNT:
+            raise _StructuredFailure("invalid_output")
         return value if type(value) is int and value >= 0 else None
 
     incoming = count(_field(usage, "prompt_tokens"))
@@ -578,7 +632,9 @@ def _reported_usage(provider: provs.LLMProvider, response: object) -> TokenUsage
         and outgoing is not None
         and (provider.price_input_per_m > 0 or provider.price_output_per_m > 0)
     ):
-        cost = (incoming * provider.price_input_per_m + outgoing * provider.price_output_per_m) / 1_000_000
+        cost = incoming / 1_000_000 * provider.price_input_per_m + outgoing / 1_000_000 * provider.price_output_per_m
+        if not math.isfinite(cost):
+            raise _StructuredFailure("invalid_output")
     return TokenUsage(
         input_tokens=incoming, output_tokens=outgoing, reasoning_tokens=reasoning, estimated_cost_usd=cost
     )
@@ -687,8 +743,9 @@ def _structured_attempt(
             error = "unauthorized"
         else:
             error = "rate_limited" if exc.status_code == 429 else "provider_error"
-    except APIConnectionError:
-        error = "provider_error"
+    except APIConnectionError as exc:
+        # 旧 SDK 会包装响应钩子的异常，保留我们确定的失败分类。
+        error = exc.__cause__.code if isinstance(exc.__cause__, _StructuredFailure) else "provider_error"
     finally:
         budget.record(
             ModelAttempt(

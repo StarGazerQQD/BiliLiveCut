@@ -34,11 +34,13 @@ if TYPE_CHECKING:
     from pytest import MonkeyPatch
 
 
+@pytest.mark.parametrize("console_encoding", ["utf-8", "cp1252"])
 def test_real_judgment_exports_readonly_with_frozen_policy_and_costs(
     temp_db: None,
     pcm_wav: Path,
     monkeypatch: MonkeyPatch,
     tmp_path: Path,
+    console_encoding: str,
 ) -> None:
     hotspot_id, segment_id = _seed(pcm_wav)
     requests = _service(monkeypatch, "recommend")
@@ -100,7 +102,12 @@ def test_real_judgment_exports_readonly_with_frozen_policy_and_costs(
     report_path = tmp_path / "report.json"
     write_result(label_path, labels.model_dump(mode="json"))
     unintended = tmp_path / "must-not-create" / "application.db"
-    env = dict(os.environ, DATABASE_URL=f"sqlite:///{unintended.as_posix()}")
+    env = dict(
+        os.environ,
+        DATABASE_URL=f"sqlite:///{unintended.as_posix()}",
+        PYTHONUTF8="0",
+        PYTHONIOENCODING=f"{console_encoding}:strict",
+    )
     root = Path(__file__).resolve().parents[2]
     command = [sys.executable, str(root / "scripts/evaluate_editorial.py")]
     exported = subprocess.run(
@@ -120,6 +127,7 @@ def test_real_judgment_exports_readonly_with_frozen_policy_and_costs(
         env=env,
         capture_output=True,
         text=True,
+        encoding="utf-8",
         timeout=30,
     )
     assert exported.returncode == 0, exported.stderr
@@ -141,6 +149,7 @@ def test_real_judgment_exports_readonly_with_frozen_policy_and_costs(
         env=env,
         capture_output=True,
         text=True,
+        encoding="utf-8",
         timeout=30,
     )
     assert reported.returncode == 0, reported.stderr

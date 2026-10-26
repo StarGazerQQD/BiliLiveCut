@@ -8,6 +8,7 @@ from pydantic import BaseModel, ConfigDict, Field, model_validator
 
 INPUT_MAX_BYTES = 65_536
 OUTPUT_MAX_BYTES = 16_384
+MAX_TOKEN_COUNT = 2**63 - 1
 REVIEW_SCHEMA_VERSION = "editorial-review-v1"
 Identity = Annotated[str, Field(min_length=1, max_length=256, pattern=r"^[^\s\x00-\x1f\x7f]+$")]
 ShortText = Annotated[str, Field(min_length=1, max_length=240, pattern=r"\S")]
@@ -216,9 +217,9 @@ class EditorialReviewResultV1(_StrictContract):
 class TokenUsage(_StrictContract):
     """服务实际报告的用量；缺失值保留为空，价格为配置估算。"""
 
-    input_tokens: int | None = Field(default=None, ge=0)
-    output_tokens: int | None = Field(default=None, ge=0)
-    reasoning_tokens: int | None = Field(default=None, ge=0)
+    input_tokens: int | None = Field(default=None, ge=0, le=MAX_TOKEN_COUNT)
+    output_tokens: int | None = Field(default=None, ge=0, le=MAX_TOKEN_COUNT)
+    reasoning_tokens: int | None = Field(default=None, ge=0, le=MAX_TOKEN_COUNT)
     estimated_cost_usd: float | None = Field(default=None, ge=0)
 
     @model_validator(mode="after")
