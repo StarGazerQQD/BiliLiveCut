@@ -193,6 +193,8 @@ class Settings(BaseSettings):
     # ---------- AI:大模型(OpenAI 兼容协议,境内推荐 DeepSeek/通义/Kimi/GLM) ----------
     llm_daily_budget: float = Field(default=0.0, ge=0.0)
     llm_request_timeout_s: float = Field(default=90.0, ge=1.0, le=600.0)
+    editorial_model_max_attempts: int = Field(default=8, ge=1, le=32)
+    editorial_model_deadline_s: float = Field(default=180.0, ge=1.0, le=1800.0)
     # 每个录制切片完成 ASR 后，是否调用 LLM 整理正文并生成摘要。
     transcript_llm_refine_enabled: bool = True
     transcript_llm_refine_max_tokens: int = Field(default=65536, ge=128, le=65536)

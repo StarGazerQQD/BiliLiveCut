@@ -2,7 +2,7 @@
 from __future__ import annotations
 
 import json
-from typing import Annotated, Literal, Self
+from typing import Annotated, Literal, NoReturn, Self
 
 from pydantic import BaseModel, ConfigDict, Field, model_validator
 
@@ -15,6 +15,8 @@ Seconds = Annotated[float, Field(ge=0)]
 EvidenceState = Literal["available", "degraded", "missing", "disabled", "error", "pending"]
 EvidenceType = Literal["asr", "context_asr", "danmaku", "audio", "sensevoice", "trend", "visual"]
 ContextDirection = Literal["before", "after", "both"]
+ModelPurpose = Literal["explanation", "review", "grounding", "repair", "context"]
+ModelProtocol = Literal["json_schema", "json_object", "text"]
 FailureCode = Literal[
     "disabled",
     "daily_budget",
@@ -230,10 +232,11 @@ class ModelAttempt(_StrictContract):
     """单次实际请求的诊断，不保存地址、凭据、原始正文或异常。"""
 
     number: int = Field(ge=1, le=32)
-    purpose: Literal["explanation", "review", "grounding", "repair", "context"]
+    purpose: ModelPurpose
     provider_id: Identity
     model: str = Field(min_length=1, max_length=256)
-    protocol: Literal["json_schema", "json_object", "text"]
+    reported_model: str | None = Field(default=None, min_length=1, max_length=256)
+    protocol: ModelProtocol
     status: Literal["success", "failed"]
     error: FailureCode | None
     elapsed_s: Seconds
@@ -324,12 +327,23 @@ def _unique_object(pairs: list[tuple[str, object]]) -> dict[str, object]:
     return result
 
 
-def parse_editorial_review(text: str, source: EditorialReviewInputV1) -> EditorialReviewResultV1:
-    """使用标准 JSON 解析器拒绝围栏、重复字段、超大输出及非法引用。"""
+def parse_model_object(text: str) -> dict[str, object]:
+    """使用标准 JSON 解析器拒绝围栏、重复字段、非对象和超大输出。"""
     if len(text.encode("utf-8")) > OUTPUT_MAX_BYTES:
         raise ValueError("编辑判断输出超过字节上限")
     try:
-        payload = json.loads(text, object_pairs_hook=_unique_object)
+        payload = json.loads(text, object_pairs_hook=_unique_object, parse_constant=_invalid_constant)
     except (json.JSONDecodeError, RecursionError) as exc:
         raise ValueError("编辑判断必须是单个有效 JSON 对象") from exc
-    return validate_review_evidence(EditorialReviewResultV1.model_validate(payload), source)
+    if not isinstance(payload, dict):
+        raise ValueError("模型输出必须是 JSON 对象")
+    return payload
+
+
+def _invalid_constant(value: str) -> NoReturn:
+    raise ValueError("JSON 不允许非有限数值")
+
+
+def parse_editorial_review(text: str, source: EditorialReviewInputV1) -> EditorialReviewResultV1:
+    """解析严格对象后，对照原始输入核验编辑字段和引用。"""
+    return validate_review_evidence(EditorialReviewResultV1.model_validate(parse_model_object(text)), source)
