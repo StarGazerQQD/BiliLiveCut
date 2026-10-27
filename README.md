@@ -5,7 +5,7 @@
 [![License](https://img.shields.io/github/license/StarGazerQQD/BiliLiveCut)](LICENSE)
 [![Docs](https://img.shields.io/badge/docs-online-00AEEC?logo=readthedocs&logoColor=white)](https://stargazerqqd.github.io/BiliLiveCut/)
 
-**当前版本：V0.1.20.0 Alpha** (`0.1.20.0-alpha`) · [更新记录](https://stargazerqqd.github.io/BiliLiveCut/releases/current.html)
+**当前版本：V0.1.20.1 Alpha** (`0.1.20.1-alpha`) · [更新记录](https://stargazerqqd.github.io/BiliLiveCut/releases/current.html)
 
 面向 Bilibili 直播的自动切片工具：**录制 → 转写 → 识别高光 → 人工审核 → 生成切片与文案 → 可选上传**。通过 Web 控制台管理直播间、录制场次、转写、候选和成品。
 
@@ -16,6 +16,7 @@
 - **已有录播分析**：独立页面批量选择视频与可选 XML、JSON、SRT、ASS 弹幕，按文件名配对并顺序上传，预处理后由所选 ASR 引擎转写，再按配置提交 LLM 分析，支持继续上传和失败重试。
 - **弹幕烧录**：独立于 ASR 字幕，支持滚动、顶部与下方样式及字号、颜色、不透明度和密度设置，按场次时间轴用于主片和派生版本。
 - **场次高光时间线**：融合弹幕、音频、语音与趋势信号识别事件，支持跨连续分段的动态剪辑边界。
+- **证据与编辑判断**：分别展示内容解释、推荐/拒绝/待复核和技术分数；管理员可预览并重评已有对象，保留人工操作。支持只读导出与独立标注评估，详见[评估流程](docs/development/editorial-evaluation.md)。
 - **审核与出片**：支持人工修订、多人审核、字幕、封面和后台渲染，并保存任务状态。
 - **统一设置与扩展**：Web 设置中心管理业务配置，支持房间级开关、模型共享连接、独立业务路由和插件；配置按即时读取、安全边界或重启生效。
 - **直播源插件**：通过正式契约接入其他平台，共用监控、录制和分析流水线；平台取流由独立插件提供，弹幕能力可选。

@@ -323,7 +323,9 @@ def get_review_queue(
             total += 1
             if total <= safe_offset or len(items) >= safe_limit:
                 continue
-            blinded = bool(settings.review_blind_mode and role == "reviewer" and not reviewed)
+            blinded = bool(
+                settings.review_blind_mode and role == "reviewer" and (not reviewed or event.review_by == "auto")
+            )
             items.append(
                 {
                     "id": candidate.id,
@@ -394,6 +396,8 @@ def get_review_data(request: Request, candidate_id: int) -> dict:
         Danmaku,
         FinalClip,
         HighlightCandidate,
+        HotspotEvent,
+        HotspotStatus,
         RecordingSession,
     )
     from app.db.session import get_session
@@ -406,6 +410,14 @@ def get_review_data(request: Request, candidate_id: int) -> dict:
         source = source_identities_for_sessions(db, [c.session_id]).get(c.session_id, unknown_source_identity())
 
         event = _require_event(db, c)
+        hotspot = db.exec(
+            _sql_select(HotspotEvent)
+            .where(
+                HotspotEvent.candidate_id == candidate_id,
+                HotspotEvent.status.in_([HotspotStatus.PROVISIONAL, HotspotStatus.ENRICHING, HotspotStatus.CONFIRMED]),
+            )
+            .order_by(HotspotEvent.id)
+        ).first()
 
         # 候选可能跨越多个原始分段；转写必须按时间覆盖关系合并。
         transcript_start = event.adjusted_start_ts or c.start_ts
@@ -521,12 +533,13 @@ def get_review_data(request: Request, candidate_id: int) -> dict:
 
     from app.core.config import settings
     from app.db.entities import ReviewStatus
+    from app.web.services.editorial_view import editorial_presentation, legacy_model_score
     from app.web.services.review_workflow import public_workflow, review_actor
 
     actor, role = review_actor(request)
     reviewed = event.review_status != ReviewStatus.PENDING
-    blinded = bool(settings.review_blind_mode and role == "reviewer" and not reviewed)
-    if blinded:
+    blinded = bool(settings.review_blind_mode and role == "reviewer" and (not reviewed or event.review_by == "auto"))
+    if settings.review_blind_mode and role == "reviewer":
         for adjacent in (*prev_candidates, *next_candidates):
             adjacent["score"] = None
             adjacent["reason"] = None
@@ -546,11 +559,8 @@ def get_review_data(request: Request, candidate_id: int) -> dict:
     # 读取权重计算贡献。
     from app.analysis.scoring_config import get_scoring_config
 
-    try:
-        cfg = get_scoring_config()
-        weights = cfg.weights
-    except Exception:
-        weights = {}
+    cfg = get_scoring_config()
+    weights = cfg.weights
 
     for dim, label in dim_labels.items():
         val = features.get(dim, 0.0) if isinstance(features, dict) else 0.0
@@ -574,13 +584,16 @@ def get_review_data(request: Request, candidate_id: int) -> dict:
             "end_ts": c.end_ts.isoformat() if c.end_ts else None,
             "peak_ts": c.peak_ts.isoformat() if c.peak_ts else None,
             "rule_score": None if blinded else c.rule_score,
-            "llm_score": None if blinded else c.llm_score,
+            "llm_score": None if blinded else legacy_model_score(c),
             "highlight_score": None if blinded else c.highlight_score,
             "reason": None if blinded else c.reason,
             "status": c.status,
             **source,
         },
         "source": source,
+        "editorial": None
+        if blinded
+        else editorial_presentation(hotspot=hotspot, candidate=c, event=event).model_dump(mode="json"),
         "transcript": transcript_data,
         "danmaku_buckets": danmaku_buckets,
         "danmaku_window": danmaku_window,

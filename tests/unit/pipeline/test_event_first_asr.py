@@ -491,7 +491,9 @@ def test_missing_transcript_still_scores_audio_and_danmaku(
     metadata = json.loads(result["features_json"])
     assert metadata["asr_evidence"]["state"] == "unavailable"
     assert metadata["asr_evidence"]["reason"] == "missing_transcript"
-    assert result["reason"] == "ASR 语义证据不可用，依据音频与互动信号命中"
+    assert result["reason"] == "编辑判断未完成（disabled），需人工复核"
+    assert metadata["editorial_review"]["execution"]["result"] is None
+    assert result["initial_status"] == "pending"
 
 
 def test_transcription_claim_prefers_hotspot_priority(temp_db: None) -> None:

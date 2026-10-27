@@ -109,17 +109,23 @@ def test_supervised_backend_drains_lifespan_when_parent_pipe_closes(
 
 
 @pytest.mark.parametrize("command", ["start", "console"])
-def test_console_starts_independent_frontend_and_api_and_cleans_up(tmp_path: Path, command: str):
+def test_console_starts_independent_frontend_and_api_and_cleans_up(tmp_path: Path, command: str) -> None:
     root = Path(__file__).resolve().parents[2]
     dist = tmp_path / "frontend"
     dist.mkdir()
     (dist / "index.html").write_text("<main>independent frontend</main>")
+    diagnostics = tmp_path / "startup-diagnostics"
+    diagnostics.mkdir()
+    # 子进程启动卡住时保留真实线程堆栈，前端和后端沿用相同的诊断环境。
+    (diagnostics / "sitecustomize.py").write_text(
+        "import faulthandler\nfaulthandler.dump_traceback_later(20, repeat=True)\n", encoding="utf-8"
+    )
     with socket.socket() as probe:
         probe.bind(("127.0.0.1", 0))
         port = probe.getsockname()[1]
     env = {
         **os.environ,
-        "PYTHONPATH": str(root),
+        "PYTHONPATH": os.pathsep.join([str(diagnostics), str(root)]),
         "PYTHONIOENCODING": "utf-8",
         "BLC_APP_ROOT": str(tmp_path),
         "STORAGE_ROOT": str(tmp_path / "storage"),

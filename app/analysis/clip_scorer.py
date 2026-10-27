@@ -13,6 +13,13 @@ from typing import TYPE_CHECKING, Any
 from loguru import logger
 from sqlmodel import Session, select
 
+from app.analysis.editorial_review import (
+    EditorialReviewDraft,
+    editorial_auto_approvable,
+    editorial_candidate,
+    review_policy_identity,
+)
+from app.analysis.editorial_review_sources import event_review_is_current, media_bounds_accessible
 from app.analysis.event_enricher import (
     EventEnrichmentDraft,
     EventEvidenceChangedError,
@@ -37,15 +44,14 @@ from app.db.session import get_session
 if TYPE_CHECKING:
     from app.analysis.audio import AudioFeatures
 
-EVENT_CLIP_SCORER_VERSION = 1
+EVENT_CLIP_SCORER_VERSION = 2
 
 _DEFAULT_WEIGHTS: dict[str, float] = {
     "heat": 0.22,
     "detector_clip": 0.16,
     "reaction": 0.22,
     "event_duration": 0.08,
-    "event_completeness": 0.10,
-    "speech_completeness": 0.04,
+    "asr_quality": 0.04,
     "novelty": 0.05,
     "audio_strength": 0.05,
     "evidence_coverage": 0.04,
@@ -207,9 +213,11 @@ def compute_hotspot_clip_draft(
     event_id: int,
     *,
     enrichment: EventEnrichmentDraft | None = None,
+    review: EditorialReviewDraft | None = None,
     audio_features: AudioFeatures | None = None,
     audio_segment_id: int | None = None,
     config: ClipScorerConfig | None = None,
+    expected_candidate_id: int | None = None,
 ) -> EventClipDraft:
     """在事务外按完整事件评分，并生成不跨断流缺口的动态候选边界。"""
     cfg = config or ClipScorerConfig.from_settings()
@@ -221,7 +229,7 @@ def compute_hotspot_clip_draft(
             raise EventTargetUnavailableError(
                 f"仅 confirmed HotspotEvent 可评分: event_id={event_id} status={event.status}"
             )
-        if event.candidate_id is not None:
+        if event.candidate_id != expected_candidate_id:
             raise EventTargetUnavailableError(
                 f"HotspotEvent 已关联候选: event_id={event_id} candidate_id={event.candidate_id}"
             )
@@ -230,6 +238,8 @@ def compute_hotspot_clip_draft(
             raise EventEvidenceChangedError(
                 f"EventEnrichmentDraft 与当前 HotspotEvent 证据快照不一致: event_id={event_id}"
             )
+        if review is not None and not event_review_is_current(db, event_id, review):
+            raise EventEvidenceChangedError(f"编辑判断与当前证据不一致: event_id={event_id}")
         previous = _json_mapping(event.features_json).get("event_enrichment")
         if (
             enrichment is None
@@ -242,6 +252,7 @@ def compute_hotspot_clip_draft(
             event,
             bundle.fingerprint,
             enrichment=enrichment,
+            review=review,
             config=cfg,
         )
 
@@ -264,12 +275,69 @@ def compute_hotspot_clip_draft(
     start_ts, end_ts, peak_ts = _dynamic_event_bounds(context, silences=silences, config=cfg)
     components = _score_components(context)
     clip_score = _weighted_score(components, cfg.weights)
-    if context.heat_score < 0.45 and components["reaction"] < 0.25:
+    if (
+        (review is None or review.execution.result is None)
+        and context.heat_score < 0.45
+        and components["reaction"] < 0.25
+    ):
         clip_score = min(clip_score, cfg.semantic_only_score_cap)
     clip_score = _clamp(clip_score)
-    decision = "candidate" if clip_score >= context.threshold else "below_threshold"
-    initial_status = _initial_candidate_status(context, clip_score)
+    execution = review.execution if review is not None else None
+    decision = (
+        "candidate"
+        if editorial_candidate(
+            execution,
+            technical_score=clip_score,
+            threshold=context.threshold,
+        )
+        else "below_threshold"
+    )
+    review_metadata = review.metadata() if review is not None else None
+    if review is not None:
+        result = review.execution.result
+        suggestion = result.suggested_bounds if result is not None else None
+        source = review.source
+        with get_session() as db:
+            if suggestion is not None and source is not None and source.time_origin_epoch_s is not None:
+                proposed_start = _epoch_like(source.time_origin_epoch_s + suggestion.start_s, start_ts)
+                proposed_end = _epoch_like(source.time_origin_epoch_s + suggestion.end_s, end_ts)
+                if (
+                    proposed_start <= peak_ts <= proposed_end
+                    and 5.0 < (proposed_end - proposed_start).total_seconds() <= cfg.max_duration_s
+                    and media_bounds_accessible(db, source, proposed_start, proposed_end)
+                ):
+                    start_ts, end_ts = proposed_start, proposed_end
+            review_metadata["media_accessible"] = media_bounds_accessible(db, source, start_ts, end_ts)
+            review_metadata["suggested_bounds_applied"] = suggestion is not None and (
+                source is not None
+                and source.time_origin_epoch_s is not None
+                and abs(datetime_epoch(start_ts) - source.time_origin_epoch_s - suggestion.start_s) < 1e-6
+                and abs(datetime_epoch(end_ts) - source.time_origin_epoch_s - suggestion.end_s) < 1e-6
+            )
+            review_metadata["bounds_complete"] = (
+                review_metadata["suggested_bounds_applied"]
+                if suggestion is not None
+                else (
+                    source is not None
+                    and source.time_origin_epoch_s is not None
+                    and datetime_epoch(start_ts) <= source.time_origin_epoch_s + source.target.bounds.start_s
+                    and datetime_epoch(end_ts) >= source.time_origin_epoch_s + source.target.bounds.end_s
+                )
+            )
+    initial_status = CandidateStatus.PENDING
+    if (
+        context.auto_approve
+        and clip_score >= context.auto_approve_threshold
+        and editorial_auto_approvable(review_metadata)
+    ):
+        initial_status = CandidateStatus.APPROVED
     reason = _clip_reason(context, components, clip_score, decision)
+    if execution is not None:
+        reason = (
+            f"{execution.result.reason}；技术分数 {clip_score:.3f}"
+            if execution.result is not None
+            else (f"编辑判断未完成（{execution.error}），需人工复核；技术分数 {clip_score:.3f}")
+        )
     features = _candidate_features(
         context,
         components=components,
@@ -279,6 +347,10 @@ def compute_hotspot_clip_draft(
         end_ts=end_ts,
         config=cfg,
     )
+    if review_metadata is not None:
+        features["editorial_review"] = review_metadata
+        result = review.execution.result
+        features["semantic_completeness"] = result.standalone if result is not None else None
     return EventClipDraft(
         hotspot_event_id=context.event_id,
         event_key=context.event_key,
@@ -310,6 +382,9 @@ def validate_event_clip_draft(
     draft: EventClipDraft,
     *,
     config: ClipScorerConfig | None = None,
+    expected_candidate_id: int | None = None,
+    enrichment: EventEnrichmentDraft | None = None,
+    review: EditorialReviewDraft | None = None,
 ) -> HotspotEvent | None:
     """提交前重算指纹，拒绝计算期间发生边界、证据或配置变化的结果。"""
     cfg = config or ClipScorerConfig.from_settings()
@@ -317,13 +392,13 @@ def validate_event_clip_draft(
     if (
         event is None
         or event.status != HotspotStatus.CONFIRMED
-        or event.candidate_id is not None
+        or event.candidate_id != expected_candidate_id
         or event.event_key != draft.event_key
     ):
         return None
     try:
         bundle = build_event_evidence_bundle(db, draft.hotspot_event_id)
-        context = _load_event_context(db, event, bundle.fingerprint, config=cfg)
+        context = _load_event_context(db, event, bundle.fingerprint, config=cfg, enrichment=enrichment, review=review)
     except ValueError:
         return None
     if bundle.fingerprint != draft.bundle_fingerprint or context.input_fingerprint != draft.input_fingerprint:
@@ -356,6 +431,8 @@ def mark_event_clip_evaluated(db: Session, event: HotspotEvent, draft: EventClip
         },
         "components": candidate_features.get("scoring_components", {}),
     }
+    if "editorial_review" in candidate_features:
+        features["editorial_review"] = candidate_features["editorial_review"]
     event.clip_score = draft.clip_score
     event.features_json = json.dumps(features, ensure_ascii=False, allow_nan=False, separators=(",", ":"))
     db.add(event)
@@ -405,6 +482,7 @@ def _load_event_context(
     bundle_fingerprint: str,
     *,
     enrichment: EventEnrichmentDraft | None = None,
+    review: EditorialReviewDraft | None = None,
     config: ClipScorerConfig,
 ) -> _EventContext:
     if event.id is None:
@@ -433,6 +511,8 @@ def _load_event_context(
         gap_tolerance_s=config.gap_tolerance_s,
     )
     event_features = _json_mapping(event.features_json)
+    review_meta = review.metadata() if review is not None else event_features.get("editorial_review")
+    review_execution = review_meta.get("execution") if isinstance(review_meta, Mapping) else None
     enrichment_meta = event_features.get("event_enrichment")
     meta = dict(enrichment_meta) if isinstance(enrichment_meta, Mapping) else {}
     title = enrichment.title if enrichment is not None else event.title
@@ -460,6 +540,10 @@ def _load_event_context(
     lifecycle_version = lifecycle.get("version") if isinstance(lifecycle, Mapping) else None
     fingerprint_payload = {
         "version": EVENT_CLIP_SCORER_VERSION,
+        "editorial_policy": review_policy_identity(),
+        "editorial_fingerprint": (
+            review_execution.get("input_fingerprint") if isinstance(review_execution, Mapping) else None
+        ),
         "event": {
             "id": event.id,
             "event_key": event.event_key,
@@ -479,7 +563,7 @@ def _load_event_context(
         "bundle_fingerprint": bundle_fingerprint,
         "modality_scores": dict(modality_scores),
         "novelty": novelty,
-        "speech_completeness": speech_completeness,
+        "asr_quality_score": speech_completeness,
         "recording_block": [block_start.isoformat(), block_end.isoformat()],
         "threshold": threshold,
         "review_threshold": review_threshold,
@@ -554,8 +638,7 @@ def _score_components(context: _EventContext) -> dict[str, float]:
         "detector_clip": context.detector_clip_score,
         "reaction": reaction,
         "event_duration": _clamp(duration_s / 30.0),
-        "event_completeness": _clamp(0.5 + min(duration_s / max(settings.hotspot_detector_tick_s, 1.0), 1.0) * 0.5),
-        "speech_completeness": context.speech_completeness,
+        "asr_quality": context.speech_completeness,
         "novelty": context.novelty,
         "audio_strength": _clamp(modality.get("audio") or 0.0),
         "evidence_coverage": context.evidence_coverage,
@@ -650,6 +733,7 @@ def _candidate_features(
         "scoring_components": dict(components),
         "scoring_weights": dict(config.weights),
         "asr_quality": dict(context.asr_quality),
+        "semantic_completeness": None,
         "representative_danmaku": [dict(item) for item in context.representative_danmaku],
         "event": {
             "title": context.title,
@@ -797,16 +881,8 @@ def _clip_reason(
     return (
         f"{summary}；完整事件多信号评分 {clip_score:.3f}，{outcome} "
         f"(热度 {components['heat']:.3f}，互动反应 {components['reaction']:.3f}，"
-        f"事件完整度 {components['event_completeness']:.3f})"
+        "语义完整性需编辑判断确认)"
     )
-
-
-def _initial_candidate_status(context: _EventContext, clip_score: float) -> str:
-    if context.auto_approve and clip_score >= context.auto_approve_threshold:
-        return CandidateStatus.APPROVED
-    if clip_score >= context.review_threshold:
-        return CandidateStatus.PENDING
-    return CandidateStatus.REJECTED
 
 
 def _weighted_score(values: Mapping[str, float], weights: Mapping[str, float]) -> float:

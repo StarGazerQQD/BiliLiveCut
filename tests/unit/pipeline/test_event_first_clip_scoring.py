@@ -26,6 +26,7 @@ from app.db.entities import (
 )
 from app.db.session import get_session
 from app.pipeline.lease import TaskLease
+from tests.editorial_fixtures import install_editorial_service
 
 if TYPE_CHECKING:
     from _pytest.monkeypatch import MonkeyPatch
@@ -49,7 +50,11 @@ def _seed_candidate_pass(*, strong: bool) -> tuple[int, int, int]:
                 "score": score,
                 **({"semantic_novelty": score, "topic_change": score} if name == "asr" else {}),
             },
-            "excerpts": ["主播说明活动规则"] if name == "asr" else [],
+            "excerpts": ["主播说明活动规则"]
+            if name == "asr"
+            else ["大家在讨论这轮挑战规则"]
+            if name == "danmaku"
+            else [],
         }
         for name, score in modalities.items()
         if score is not None
@@ -101,6 +106,10 @@ def _seed_candidate_pass(*, strong: bool) -> tuple[int, int, int]:
             ),
             evidence_json=json.dumps({"version": 1, "items": evidence}, ensure_ascii=False),
             transcript_text="主播说明活动规则" if not strong else None,
+            representative_danmaku_json=json.dumps(
+                [{"text": "大家在讨论这轮挑战规则", "role": "information", "count": 5}] if strong else [],
+                ensure_ascii=False,
+            ),
         )
         db.add(event)
         db.flush()
@@ -129,7 +138,7 @@ def _lease(task_id: int) -> TaskLease:
 
 
 def _patch_compute_dependencies(monkeypatch: MonkeyPatch) -> None:
-    from app.analysis import event_enricher, hotspot_detector
+    from app.analysis import hotspot_detector
     from app.pipeline.workers import analyze
 
     audio = AudioFeatures(
@@ -143,7 +152,6 @@ def _patch_compute_dependencies(monkeypatch: MonkeyPatch) -> None:
     monkeypatch.setattr(analyze.audio_mod, "analyze_audio", lambda _path: audio)
     monkeypatch.setattr(hotspot_detector, "detect_segment_hotspots", lambda *_args, **_kwargs: [])
     monkeypatch.setattr(hotspot_detector, "log_hotspot_detection", lambda *_args, **_kwargs: None)
-    monkeypatch.setattr(event_enricher.llm, "call_text", lambda *_args, **_kwargs: None)
 
 
 def test_candidate_pass_scores_confirmed_event_and_links_task(
@@ -237,7 +245,6 @@ def test_late_confirmation_rechecks_lease_after_model_call(
     temp_db: None,
     monkeypatch: MonkeyPatch,
 ) -> None:
-    from app.analysis import event_enricher
     from app.pipeline.workers.analyze import analyze_compute, commit_highlight
 
     task_id, event_id, _session_id = _seed_candidate_pass(strong=True)
@@ -255,13 +262,46 @@ def test_late_confirmation_rechecks_lease_after_model_call(
             db.add(task)
         return None
 
-    monkeypatch.setattr(event_enricher.llm, "call_text", replacing_worker)
+    install_editorial_service(monkeypatch, replacing_worker)
     commit_highlight(_lease(task_id), result, 50)
     with get_session() as db:
         assert db.get(SegmentTask, task_id).lease_token == "replacement-owner-token"
         assert db.get(SegmentTask, task_id).stage == TaskStatus.ANALYZING
         assert not db.exec(select(HighlightCandidate)).all()
         assert not db.exec(select(HighlightEvent)).all()
+
+
+def test_lost_lease_during_generation_prevents_grounding_and_commit(temp_db: None, monkeypatch: MonkeyPatch) -> None:
+    from app.pipeline.workers.analyze import analyze_compute, commit_highlight
+
+    task_id, event_id, _session_id = _seed_candidate_pass(strong=True)
+    _patch_compute_dependencies(monkeypatch)
+
+    def replacing_worker(_prompt: str, **_kwargs: object) -> str:
+        with get_session() as db:
+            task = db.get(SegmentTask, task_id)
+            task.lease_token = "new-owner"
+            db.add(task)
+        return json.dumps(
+            {
+                "title": "观众讨论挑战规则",
+                "summary": "弹幕在讨论这轮挑战的规则。",
+                "category": "discussion",
+                "entities": [],
+                "semantic_confidence": 0.3,
+                "evidence_ids": ["pipeline-event:danmaku"],
+            }
+        )
+
+    requests = install_editorial_service(monkeypatch, replacing_worker, grounded=True)
+    result = analyze_compute(task_id)
+    assert len(requests) == 1
+    assert result["event_clip_results"] == []
+    assert result["event_model_budgets"][event_id].attempts[0].error == "cancelled"
+    commit_highlight(_lease(task_id), result, 50)
+    with get_session() as db:
+        assert db.get(HotspotEvent, event_id).title is None
+        assert not db.exec(select(HighlightCandidate)).all()
 
 
 def test_late_confirmation_commit_is_idempotent_and_keeps_review_gate(
@@ -295,7 +335,6 @@ def test_partial_candidate_batch_rolls_back_before_followup_failure(
 ) -> None:
     import pytest
 
-    from app.analysis import event_enricher
     from app.analysis.clip_scorer import compute_hotspot_clip_draft
     from app.pipeline.workers.analyze import HighlightDecision, commit_highlight
 
@@ -313,11 +352,17 @@ def test_partial_candidate_batch_rolls_back_before_followup_failure(
     draft = compute_hotspot_clip_draft(event_id)
     assert draft.decision == HighlightDecision.CANDIDATE
 
-    def model_unavailable(prompt: str, **kwargs: object) -> None:
-        raise OSError("模型连接中断")
+    from app.analysis.llm import BudgetAccountingError
 
-    monkeypatch.setattr(event_enricher.llm, "call_text", model_unavailable)
-    with pytest.raises(OSError, match="模型连接中断"):
+    install_editorial_service(monkeypatch, lambda *_args, **_kwargs: "{}")
+    # 模型目录变化使旧评分失效，按实际新目录重算后再测试事务回滚。
+    draft = compute_hotspot_clip_draft(event_id)
+
+    def fail_ledger_write(*_args: object) -> None:
+        raise PermissionError("预算账本不可写")
+
+    monkeypatch.setattr("app.analysis.llm.os.replace", fail_ledger_write)
+    with pytest.raises(BudgetAccountingError):
         commit_highlight(
             _lease(task_id),
             {
@@ -336,11 +381,10 @@ def test_partial_candidate_batch_rolls_back_before_followup_failure(
         assert db.get(SegmentTask, task_id).stage == TaskStatus.ANALYZING
 
 
-def test_late_confirmation_retries_model_failure_without_orphan_candidate(
+def test_late_confirmation_retries_ledger_failure_without_orphan_candidate(
     temp_db: None,
     monkeypatch: MonkeyPatch,
 ) -> None:
-    from app.analysis import event_enricher
     from app.pipeline import scheduler
     from app.pipeline.claiming import pop_and_claim
 
@@ -355,20 +399,23 @@ def test_late_confirmation_retries_model_failure_without_orphan_candidate(
         db.add(task)
     _patch_compute_dependencies(monkeypatch)
 
-    def model_unavailable(prompt: str, **kwargs: object) -> None:
-        raise OSError("模型连接中断")
+    install_editorial_service(monkeypatch, lambda *_args, **_kwargs: "{}")
 
-    monkeypatch.setattr(event_enricher.llm, "call_text", model_unavailable)
+    def fail_ledger_write(*_args: object) -> None:
+        raise PermissionError("预算账本不可写")
+
     claim = pop_and_claim(TaskStatus.QUEUED_FOR_ANALYSIS)
     assert claim is not None
-    scheduler.execute_task(claim.id, claim.stage, claim.lease_token)
+    with monkeypatch.context() as faults:
+        faults.setattr("app.analysis.llm.os.replace", fail_ledger_write)
+        scheduler.execute_task(claim.id, claim.stage, claim.lease_token)
     with get_session() as db:
         task = db.get(SegmentTask, task_id)
         assert task.stage == TaskStatus.TRANSIENT_FAILED and task.failed_stage == TaskStatus.ANALYZING
         assert task.attempts == 1 and task.next_retry_at is not None
         assert not db.exec(select(HighlightCandidate)).all()
         assert not db.exec(select(HighlightEvent)).all()
-    monkeypatch.setattr(event_enricher.llm, "call_text", lambda *_args, **_kwargs: None)
+    install_editorial_service(monkeypatch, lambda *_args, **_kwargs: None)
     monkeypatch.setattr(scheduler, "now_utc", lambda: datetime.now(UTC) + timedelta(hours=1))
     scheduler.retry_expired()
     claim = pop_and_claim(TaskStatus.QUEUED_FOR_ANALYSIS)
@@ -400,9 +447,9 @@ def test_evidence_changed_during_model_call_is_recomputed_before_scoring(
                 event.transcript_text = "主播介绍本轮挑战的新规则。"
                 db.add(event)
 
-    monkeypatch.setattr(event_enricher.llm, "call_text", update_once)
+    install_editorial_service(monkeypatch, update_once)
     result = analyze_compute(task_id)
-    assert calls == 2
+    assert calls == 3
     assert len(result["event_clip_results"]) == 1
     commit_highlight(_lease(task_id), result, 50)
     with get_session() as db:
@@ -412,13 +459,17 @@ def test_evidence_changed_during_model_call_is_recomputed_before_scoring(
         metadata = json.loads(event.features_json or "{}")
         assert metadata["event_enrichment"]["bundle_fingerprint"] == bundle.fingerprint
         assert metadata["event_clip_score"]["bundle_fingerprint"] == bundle.fingerprint
-        assert "新规则" in event.summary
+        assert "尚无可采用的内容摘要" in event.summary
+        assert metadata["event_enrichment"]["error"] == "provider_error"
+        assert len(metadata["event_enrichment"]["attempts"]) == 2
+        assert metadata["editorial_review"]["execution"]["attempt_offset"] == 2
+        assert metadata["editorial_review"]["execution"]["attempts"][0]["number"] == 3
+        assert "新规则" in str(bundle.to_prompt_payload())
         assert db.get(SegmentTask, task_id).candidate_id == event.candidate_id
         assert len(db.exec(select(HighlightCandidate)).all()) == 1
 
 
 def test_continuously_changing_evidence_uses_bounded_task_retry(temp_db: None, monkeypatch: MonkeyPatch) -> None:
-    from app.analysis import event_enricher
     from app.pipeline import scheduler
     from app.pipeline.claiming import pop_and_claim
 
@@ -441,7 +492,7 @@ def test_continuously_changing_evidence_uses_bounded_task_retry(temp_db: None, m
             event.transcript_text = f"主播介绍第 {calls} 轮挑战的新规则。"
             db.add(event)
 
-    monkeypatch.setattr(event_enricher.llm, "call_text", update_always)
+    install_editorial_service(monkeypatch, update_always)
     claim = pop_and_claim(TaskStatus.QUEUED_FOR_ANALYSIS)
     assert claim is not None
     scheduler.execute_task(claim.id, claim.stage, claim.lease_token)
@@ -460,7 +511,6 @@ def test_continuously_changing_evidence_uses_bounded_task_retry(temp_db: None, m
 def test_target_changed_during_model_call_does_not_score_old_event(
     temp_db: None, monkeypatch: MonkeyPatch, status: str
 ) -> None:
-    from app.analysis import event_enricher
     from app.pipeline.workers.analyze import analyze_compute
 
     task_id, event_id, _session_id = _seed_candidate_pass(strong=True)
@@ -482,7 +532,7 @@ def test_target_changed_during_model_call_does_not_score_old_event(
                 event.status = status
                 db.add(event)
 
-    monkeypatch.setattr(event_enricher.llm, "call_text", change_target)
+    install_editorial_service(monkeypatch, change_target)
     result = analyze_compute(task_id)
     assert result["event_clip_results"] == []
     with get_session() as db:
@@ -528,14 +578,16 @@ def test_late_enrichment_does_not_overwrite_already_scored_event(temp_db: None, 
         assert len(db.exec(select(HighlightCandidate)).all()) == 1
 
 
+@pytest.mark.parametrize("attempt_limit", [1, 8])
 def test_merged_event_is_recomputed_as_canonical_before_task_completion(
-    temp_db: None, monkeypatch: MonkeyPatch
+    temp_db: None, monkeypatch: MonkeyPatch, attempt_limit: int
 ) -> None:
-    from app.analysis import event_enricher
+    from app.core.config import settings
     from app.pipeline.workers.analyze import analyze_compute, commit_highlight
 
     task_id, event_id, _session_id = _seed_candidate_pass(strong=True)
     _patch_compute_dependencies(monkeypatch)
+    monkeypatch.setattr(settings, "editorial_model_max_attempts", attempt_limit)
     canonical_id: int | None = None
     calls = 0
 
@@ -556,15 +608,20 @@ def test_merged_event_is_recomputed_as_canonical_before_task_completion(
             event.merged_into_id = canonical_id
             db.add(event)
 
-    monkeypatch.setattr(event_enricher.llm, "call_text", merge_once)
+    install_editorial_service(monkeypatch, merge_once)
     result = analyze_compute(task_id)
     assert result["event_clip_results"] == []
     commit_highlight(_lease(task_id), result, 50)
-    assert calls == 2 and canonical_id is not None
+    assert calls == min(3, attempt_limit) and canonical_id is not None
     with get_session() as db:
         canonical = db.get(HotspotEvent, canonical_id)
         task = db.get(SegmentTask, task_id)
         assert canonical is not None and canonical.candidate_id is not None
+        metadata = json.loads(canonical.features_json)["event_enrichment"]
+        assert len(metadata["attempts"]) == min(2, attempt_limit)
+        editorial = json.loads(canonical.features_json)["editorial_review"]["execution"]
+        assert len(metadata["attempts"]) + len(editorial["attempts"]) == calls
+        assert metadata["error"] == ("attempt_budget" if attempt_limit == 1 else "provider_error")
         assert task is not None and task.stage == TaskStatus.CANDIDATE_CREATED
         assert task.candidate_id == canonical.candidate_id
         assert db.get(HotspotEvent, event_id).candidate_id is None
@@ -572,19 +629,22 @@ def test_merged_event_is_recomputed_as_canonical_before_task_completion(
 
 
 def test_unrelated_value_error_is_not_treated_as_evidence_change(temp_db: None, monkeypatch: MonkeyPatch) -> None:
-    from app.analysis import event_enricher
     from app.pipeline.workers.analyze import analyze_compute
 
     task_id, _event_id, _session_id = _seed_candidate_pass(strong=True)
     _patch_compute_dependencies(monkeypatch)
     calls = 0
 
-    def invalid_model_configuration(prompt: str, **kwargs: object) -> None:
+    def invalid_model_configuration(prompt: str, **kwargs: object) -> str:
+        from app.db.entities import AppSetting
+
         nonlocal calls
         calls += 1
-        raise ValueError("模型配置无效")
+        with get_session() as db:
+            db.add(AppSetting(key="model_configuration", value="invalid-json"))
+        return "{}"
 
-    monkeypatch.setattr(event_enricher.llm, "call_text", invalid_model_configuration)
+    install_editorial_service(monkeypatch, invalid_model_configuration)
     with pytest.raises(ValueError, match="模型配置无效"):
         analyze_compute(task_id)
     assert calls == 1
@@ -609,4 +669,10 @@ def test_saved_enrichment_cannot_be_reused_after_evidence_changes(temp_db: None,
     assert candidate is not None
     with get_session() as db:
         event = db.get(HotspotEvent, event_id)
-        assert event is not None and "新的比赛赛程" in event.summary
+        assert event is not None and "尚无经过核验的内容摘要" in event.summary
+        metadata = json.loads(event.features_json)["event_enrichment"]
+        from app.analysis.event_enricher import build_event_evidence_bundle
+
+        current = build_event_evidence_bundle(db, event_id)
+        assert "新的比赛赛程" in str(current.to_prompt_payload())
+        assert metadata["bundle_fingerprint"] == current.fingerprint

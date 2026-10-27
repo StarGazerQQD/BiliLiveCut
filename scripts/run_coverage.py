@@ -29,6 +29,7 @@
 
 from __future__ import annotations
 
+import argparse
 import os
 import subprocess
 import sys
@@ -96,7 +97,7 @@ def parse_coverage_xml() -> dict | None:
         return None
 
 
-def run_pytest() -> int:
+def run_pytest(*, application_only: bool = False) -> int:
     """Run pytest with coverage, matching CI settings exactly.
 
     :returns: pytest exit code.
@@ -116,7 +117,10 @@ def run_pytest() -> int:
         "--cov-report=xml",
         "--cov-fail-under=50",
         "--fail-on-skip",
+        "--durations=25",
     ]
+    if application_only:
+        cmd.append("--ignore=tests/integration/test_wheel_frontend.py")
 
     print(f"Running: {' '.join(cmd)}")
     print("-" * 60)
@@ -125,7 +129,7 @@ def run_pytest() -> int:
     return result.returncode
 
 
-def main() -> int:
+def main(*, application_only: bool = False) -> int:
     """Entry point.
 
     :returns: 0 if coverage >= 50%, 1 otherwise.
@@ -143,7 +147,7 @@ def main() -> int:
 
     # ── Run pytest ──
     print("\n  Running pytest with coverage...")
-    exit_code = run_pytest()
+    exit_code = run_pytest(application_only=application_only) if application_only else run_pytest()
 
     # ── Parse coverage.xml ──
     data = parse_coverage_xml()
@@ -187,4 +191,10 @@ def main() -> int:
 
 
 if __name__ == "__main__":
-    sys.exit(main())
+    parser = argparse.ArgumentParser(description="Run required tests and the coverage gate")
+    parser.add_argument(
+        "--application-only",
+        action="store_true",
+        help="Run application coverage after the separate required sdist/wheel integration step",
+    )
+    sys.exit(main(application_only=parser.parse_args().application_only))

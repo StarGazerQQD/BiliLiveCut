@@ -13,6 +13,7 @@ ACTIVE = frozenset({"queued", "running", "cancelling"})
 TERMINAL = frozenset({"succeeded", "failed", "cancelled"})
 FORMAT_VERSION = 1
 BUILTIN_PAYLOAD_FIELDS = {
+    "editorial_reanalysis": {"session_id", "targets"},
     "local_import": {"import_id"},
     "candidate_render": {"candidate_id", "reviewed_by"},
     "review_rerender": {"candidate_id", "start_ts", "end_ts", "version"},

@@ -272,7 +272,7 @@ def _group(key: str) -> str:
         "asr": ("asr_", "whisper_"),
         "llm": ("llm_", "transcript_llm_"),
         "trends": ("trend_",),
-        "highlights": ("highlight_", "hotspot_", "threshold_", "near_live_", "background_asr_"),
+        "highlights": ("highlight_", "hotspot_", "editorial_", "threshold_", "near_live_", "background_asr_"),
         "review": ("review_", "reviewer_"),
         "output": ("clip_",),
         "notifications": ("notify_", "smtp_", "dingtalk_", "wecom_", "lark_", "disk_alert_"),

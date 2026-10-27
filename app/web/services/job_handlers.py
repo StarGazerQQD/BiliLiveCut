@@ -20,6 +20,9 @@ def register_job_handlers(manager: JobManager) -> None:
     manager.register("clip_upload", _upload_clip)
     manager.register("upload_retry", _retry_upload)
     manager.register("local_import", _import_recording)
+    from app.analysis.editorial_reanalysis import run_editorial_reanalysis
+
+    manager.register("editorial_reanalysis", run_editorial_reanalysis)
 
 
 def _import_recording(context: JobContext, payload: dict[str, Any]) -> dict[str, object]:

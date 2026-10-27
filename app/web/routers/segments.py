@@ -10,6 +10,7 @@ from fastapi.responses import FileResponse, StreamingResponse
 from pydantic import BaseModel, ConfigDict, Field
 from starlette.background import BackgroundTask
 
+from app.web.editorial_contracts import EditorialTimelineResponse
 from app.web.services import dashboard as dashboard_service
 from app.web.services import rooms as rooms_service
 from app.web.services import transcripts as transcripts_service
@@ -71,7 +72,7 @@ def get_session_history() -> list[dict[str, Any]]:
     return transcripts_service.list_recording_session_history()
 
 
-@router.get("/sessions/{session_id}/timeline")
+@router.get("/sessions/{session_id}/timeline", response_model=EditorialTimelineResponse)
 def get_session_timeline(session_id: int, include_rejected: bool = False) -> dict[str, Any]:
     """返回指定录制场次的 GMT+8 高光时间轴。"""
     from app.web.services.timeline import get_session_timeline as load_timeline

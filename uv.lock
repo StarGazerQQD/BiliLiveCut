@@ -113,7 +113,7 @@ wheels = [
 
 [[package]]
 name = "bili-live-cut"
-version = "0.1.20.0a0"
+version = "0.1.20.1a0"
 source = { editable = "." }
 dependencies = [
     { name = "brotli" },

@@ -72,6 +72,8 @@ LABELS: dict[str, str] = {
     "asr_preload_on_start": "启动预加载模型",
     "llm_daily_budget": "LLM 每日预算（美元，0 不限）",
     "llm_request_timeout_s": "LLM 单次请求超时（秒）",
+    "editorial_model_max_attempts": "编辑分析总请求次数上限",
+    "editorial_model_deadline_s": "编辑分析总时间预算（秒）",
     "transcript_llm_refine_enabled": "LLM 整理转写与摘要",
     "transcript_llm_refine_max_tokens": "转写整理输出 Token 上限",
     "highlight_llm_max_tokens": "高光复核输出 Token 上限",

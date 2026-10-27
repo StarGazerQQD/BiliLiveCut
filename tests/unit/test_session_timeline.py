@@ -326,7 +326,7 @@ def test_session_timeline_exposes_gmt8_summary_danmaku_and_provenance(temp_db: N
         {"text": "笑死", "count": 8},
         {"text": "名场面", "count": 3},
     ]
-    assert point["source_signals"] == ["弹幕高峰", "音频峰值"]
+    assert point["source_signals"] == ["弹幕高峰", "音频信号"]
     assert point["confidence"] == 0.88
     assert point["provenance"]["cross_segment"] is True
     assert point["provenance"]["event_version"] == 1
@@ -349,24 +349,27 @@ def test_session_timeline_can_include_rejected_nodes_and_list_overview(temp_db: 
     assert sum(1 for point in expanded["points"] if point["rejected"]) == 1
 
 
-def test_session_timeline_omits_candidates_without_current_hotspot(temp_db: None) -> None:
-    """没有一等热点的旧候选不得再通过兼容节点出现在时间线。"""
+def test_session_timeline_preserves_legacy_candidate_identity_and_rejections(temp_db: None) -> None:
+    """旧链结果仍可检索，不能伪造热点身份或丢失拒绝统计。"""
     session_id = _seed_timeline()
 
     overview = list_session_timelines()
     payload = get_session_timeline(session_id, include_rejected=True)
 
-    assert overview[0]["timeline_count"] == 0
-    assert overview[0]["highlight_count"] == 0
-    assert overview[0]["rejected_count"] == 0
-    assert payload["points"] == []
+    assert overview[0]["timeline_count"] == 2
+    assert overview[0]["highlight_count"] == 1
+    assert overview[0]["rejected_count"] == 1
+    assert len(payload["points"]) == 2
+    assert all(point["hotspot_event_id"] is None for point in payload["points"])
+    assert all(point["review_url"] == f"/review/{point['candidate_id']}" for point in payload["points"])
+    assert len({point["key"] for point in payload["points"]}) == 2
     assert payload["counts"] == {
-        "visible": 0,
-        "rejected": 0,
-        "total": 0,
+        "visible": 1,
+        "rejected": 1,
+        "total": 2,
         "hotspots": 0,
         "hotspot_only": 0,
-        "candidates": 0,
+        "candidates": 2,
     }
 
 
@@ -382,15 +385,15 @@ def test_event_first_timeline_keeps_hotspots_without_candidates_and_avoids_linke
 
     assert overview[0]["hotspot_count"] == 2
     assert overview[0]["hotspot_only_count"] == 1
-    assert overview[0]["timeline_count"] == 2
+    assert overview[0]["timeline_count"] == 3
     assert overview[0]["highlight_count"] == 1
     assert payload["counts"] == {
         "visible": 2,
-        "rejected": 0,
-        "total": 2,
+        "rejected": 1,
+        "total": 3,
         "hotspots": 2,
         "hotspot_only": 1,
-        "candidates": 1,
+        "candidates": 2,
     }
     assert len(payload["points"]) == 2
     linked = next(point for point in payload["points"] if point["hotspot_event_id"] == linked_id)
@@ -406,7 +409,7 @@ def test_event_first_timeline_keeps_hotspots_without_candidates_and_avoids_linke
         {"text": "这个挑战真的能成功吗", "count": 4},
         {"text": "？？？", "count": 9},
     ]
-    assert standalone["source_signals"] == ["弹幕高峰", "音频峰值", "SenseVoice"]
+    assert standalone["source_signals"] == ["弹幕高峰", "音频信号", "SenseVoice"]
     assert standalone["provenance"]["event_key"] == "timeline-hotspot-only"
     assert all(point["hotspot_event_id"] not in {None} for point in payload["points"])
 
@@ -516,8 +519,8 @@ def test_whole_session_summary_waits_for_final_analysis_and_retries_empty_llm_re
     assert "未返回有效 summary" in request_payload["last_error"]
 
 
-def test_timeline_view_requests_missing_summary_for_finished_session(temp_db: None) -> None:
-    """历史结束场次没有总结时，首次查看时间线应自动补登记持久请求。"""
+def test_timeline_view_does_not_enqueue_missing_summary_for_finished_session(temp_db: None) -> None:
+    """查看历史场次仅报告缺失，不能隐式排队产生计费调用。"""
     session_id = _seed_timeline()
     with get_session() as db:
         pending = db.get(AppSetting, f"session_reanalysis:{session_id}")
@@ -529,7 +532,7 @@ def test_timeline_view_requests_missing_summary_for_finished_session(temp_db: No
     assert payload["whole_session_summary"]["status"] == "pending"
     with get_session() as db:
         row = db.get(AppSetting, f"session_timeline_summary_request:{session_id}")
-        assert row is not None
+        assert row is None
 
 
 def test_whole_session_summary_recovers_running_request_and_rejects_stale_claim(

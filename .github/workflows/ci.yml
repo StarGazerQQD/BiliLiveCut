@@ -1,4 +1,4 @@
-# BiliLiveCut CI (V0.1.20.0 Alpha)
+# BiliLiveCut CI (V0.1.20.1 Alpha)
 # 触发: push/PR 到 main → lint → audit + test → portable → coverage summary
 #
 # Job 结构:
@@ -152,11 +152,19 @@ jobs:
         run: python -m pytest tests/integration/test_frontend_console.py --timeout=120 --fail-on-skip
         timeout-minutes: 3
 
+      # 实际日志显示发行包用例占用约 285 秒；独立验收保留全部检查和各步时限。
+      - name: Run real sdist and wheel integration
+        shell: bash
+        env:
+          ASR_NO_MODEL_DOWNLOAD: "1"
+        run: python -m pytest tests/integration/test_wheel_frontend.py --fail-on-skip --durations=10
+        timeout-minutes: 15
+
       - name: Run pytest with coverage (≥50%)
         shell: bash
         env:
           ASR_NO_MODEL_DOWNLOAD: "1"
-        run: python scripts/run_coverage.py
+        run: python scripts/run_coverage.py --application-only
         timeout-minutes: 15
 
       - name: Upload coverage report

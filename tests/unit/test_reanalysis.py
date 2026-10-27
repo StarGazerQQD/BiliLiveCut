@@ -94,8 +94,8 @@ def _seed_session() -> tuple[int, int, int, int]:
         return session.id, segment_ids[0], candidate_ids[0], candidate_ids[1]
 
 
-def test_reanalysis_replaces_auto_candidate_and_preserves_human_result(temp_db: None) -> None:
-    """重分析只能清理自动候选，不能覆盖人工审核结果。"""
+def test_reanalysis_retains_auto_identity_and_preserves_human_result(temp_db: None) -> None:
+    """排队保留自动候选、事件及任务关联，人工审核记录不改变。"""
     session_id, first_segment_id, auto_candidate_id, human_candidate_id = _seed_session()
 
     result = queue_session_reanalysis(session_id, reason="threshold_changed")
@@ -103,15 +103,17 @@ def test_reanalysis_replaces_auto_candidate_and_preserves_human_result(temp_db: 
     assert result.queued == 1
     assert result.preserved == 1
     with get_session() as db:
-        assert db.get(HighlightCandidate, auto_candidate_id) is None
+        assert db.get(HighlightCandidate, auto_candidate_id) is not None
         assert db.get(HighlightCandidate, human_candidate_id) is not None
         task = db.exec(select(SegmentTask).where(SegmentTask.segment_id == first_segment_id)).one()
         assert task.stage == TaskStatus.QUEUED_FOR_ANALYSIS
-        assert task.candidate_id is None
+        assert task.candidate_id == auto_candidate_id
+        assert db.get(HighlightEvent, task.event_id).candidate_id == auto_candidate_id
+        assert json.loads(task.context_json)["reanalysis"]["preserve_identity"] is True
         assert not event_first_context(task.context_json)  # 历史分段评分入口不被强制迁移。
 
 
-def test_reanalysis_refreshes_hotspot_caches_without_changing_detector_scores_or_human_assets(temp_db: None) -> None:
+def test_reanalysis_retains_previous_hotspot_results_until_valid_replacement(temp_db: None) -> None:
     session_id, first_segment_id, auto_candidate_id, human_candidate_id = _seed_session()
     metadata = {
         "detector_feature": "keep",
@@ -151,9 +153,9 @@ def test_reanalysis_refreshes_hotspot_caches_without_changing_detector_scores_or
     with get_session() as db:
         events = {event.event_key: event for event in db.exec(select(HotspotEvent)).all()}
         automatic = events.pop("auto")
-        assert automatic.candidate_id is None
-        assert json.loads(automatic.features_json) == {"detector_feature": "keep"}
-        assert automatic.semantic_confidence == 0.3 and automatic.clip_score == 0.8
+        assert automatic.candidate_id == auto_candidate_id
+        assert json.loads(automatic.features_json) == metadata
+        assert automatic.semantic_confidence == 0.7 and automatic.clip_score == 0.4
         for event in events.values():
             assert json.loads(event.features_json) == metadata
             assert event.semantic_confidence == 0.7 and event.clip_score == 0.4
@@ -190,7 +192,7 @@ def test_persisted_final_reanalysis_waits_for_old_pipeline_then_runs(temp_db: No
     assert completed[0].preserved == 1
     with get_session() as db:
         assert db.get(AppSetting, f"session_reanalysis:{session_id}") is None
-        assert db.get(HighlightCandidate, auto_candidate_id) is None
+        assert db.get(HighlightCandidate, auto_candidate_id) is not None
         assert db.get(HighlightCandidate, human_candidate_id) is not None
 
 
@@ -217,7 +219,7 @@ def test_reanalysis_waits_for_analysis_retry_but_not_render_retry(temp_db: None)
     assert len(completed) == 1
     with get_session() as db:
         assert db.get(AppSetting, key) is None
-        assert db.get(HighlightCandidate, auto_candidate_id) is None
+        assert db.get(HighlightCandidate, auto_candidate_id) is not None
 
 
 def test_reanalysis_never_partially_resets_when_any_task_is_active(temp_db: None) -> None:

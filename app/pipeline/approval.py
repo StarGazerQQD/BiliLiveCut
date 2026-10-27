@@ -11,11 +11,15 @@ V0.1.12.8: approve_event_and_task 接受可选 db session 参数，
 
 from __future__ import annotations
 
+import json
 from datetime import UTC, datetime
 
 from loguru import logger
 from sqlmodel import Session
 
+from app.analysis.editorial_contracts import EditorialReviewInputV1
+from app.analysis.editorial_review import editorial_auto_approvable
+from app.analysis.editorial_review_sources import media_bounds_accessible
 from app.db.entities import (
     CandidateStatus,
     HighlightCandidate,
@@ -100,6 +104,20 @@ def approve_event_and_task(
                 enqueue_next(task, TaskStatus.APPROVED, event_id=event_id)
                 db.add(task)
             return True
+
+        if source == "auto":
+            features = json.loads(event.features_json or "{}")
+            if not isinstance(features, dict):
+                raise ValueError("复核事件元数据必须为对象")
+            # 历史记录沿用其既有策略；新计算记录必须通过独立的编辑门禁。
+            if "editorial_review" in features and not editorial_auto_approvable(features["editorial_review"]):
+                logger.info("编辑判断未满足自动批准条件: event_id={}", event_id)
+                return False
+            if "editorial_review" in features:
+                evidence = EditorialReviewInputV1.model_validate(features["editorial_review"]["input"])
+                if not media_bounds_accessible(db, evidence, candidate.start_ts, candidate.end_ts):
+                    logger.info("媒体已不可用，保留人工复核: event_id={}", event_id)
+                    return False
 
         event.review_status = review_decision
         event.review_reason = reason

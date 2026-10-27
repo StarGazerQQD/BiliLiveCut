@@ -3,7 +3,6 @@
 from __future__ import annotations
 
 import json
-import math
 from dataclasses import asdict, dataclass
 from datetime import UTC, datetime
 
@@ -11,28 +10,22 @@ from loguru import logger
 from sqlalchemy.exc import SQLAlchemyError
 from sqlmodel import Session, select
 
+from app.analysis.reanalysis_policy import segment_protection_reason, task_is_active
 from app.analysis.source_policy import is_local_session
 from app.analysis.timeline import TIMELINE_ANALYSIS_VERSION
 from app.core.sanitize import safe_exception_summary
 from app.db.entities import (
     AppSetting,
-    ClipVariant,
-    FinalClip,
-    HighlightCandidate,
-    HighlightEvent,
-    HighlightTopic,
     HotspotEvent,
     RawSegment,
     SegmentStatus,
     SegmentTask,
     TaskStatus,
-    ThresholdFeedback,
     Transcript,
 )
 from app.db.session import get_session
 from app.pipeline.stage_result import make_pipeline_key, make_stage_key
 from app.pipeline.task_context import event_first_context, update_event_first_context
-from app.web.services.review_workflow import has_review_draft
 
 _PENDING_KEY_PREFIX = "session_reanalysis:"
 _REQUEST_VERSION = 1
@@ -71,12 +64,14 @@ def queue_session_reanalysis(
 ) -> ReanalysisResult:
     """重新排队一场直播的安全分段，同时保留所有人工成果。
 
-    人工审核、人工边界、审核草稿、阈值反馈、主题或成片任一存在时，整段
-    保持不动。其余自动候选会被清理并重新评分；词典或模型变更可选择先
+    人工认领、审核、边界、草稿、阈值反馈、主题或成片存在时，整段
+    保持不动。其余自动候选保留身份和关联重新评分；词典或模型变更可选择先
     重跑 ASR，但人工纠正过的转写永不被覆盖。
     """
     result = ReanalysisResult(session_id=session_id)
     with get_session() as db:
+        if db.get_bind().dialect.name == "sqlite":
+            db.connection().exec_driver_sql("BEGIN IMMEDIATE")
         segments = db.exec(
             select(RawSegment).where(RawSegment.session_id == session_id).order_by(RawSegment.seq.asc())
         ).all()
@@ -87,23 +82,18 @@ def queue_session_reanalysis(
             task.segment_id: task
             for task in db.exec(select(SegmentTask).where(SegmentTask.session_id == session_id)).all()
         }
-        active_tasks = [task for task in tasks_by_segment.values() if _task_is_active(task)]
+        active_tasks = [task for task in tasks_by_segment.values() if task_is_active(task)]
         if active_tasks:
             # 严禁部分重置：否则一部分任务被重排、另一部分仍在提交旧结果，会形成混合版本时间线。
             result.skipped_active = len(active_tasks)
             return result
 
-        queued_segments: list[RawSegment] = []
-        protected_segments: list[RawSegment] = []
         for segment in segments:
             task = tasks_by_segment.get(segment.id)
-            events = db.exec(select(HighlightEvent).where(HighlightEvent.segment_id == segment.id)).all()
-            if any(_event_is_protected(db, event) for event in events):
-                protected_segments.append(segment)
+            if segment_protection_reason(db, segment.id):
                 result.preserved += 1
                 continue
 
-            _delete_auto_events(db, events)
             transcript = db.exec(select(Transcript).where(Transcript.segment_id == segment.id)).first()
             rerun_asr = bool(retranscribe and transcript is not None and transcript.final_text_source != "manual")
             needs_asr = rerun_asr or transcript is None
@@ -123,9 +113,7 @@ def queue_session_reanalysis(
                 segment.status = SegmentStatus.TRANSCRIBED
             db.add(segment)
             db.add(task)
-            queued_segments.append(segment)
             result.queued += 1
-        _invalidate_hotspot_analysis(db, session_id, queued_segments, protected_segments)
     return result
 
 
@@ -246,50 +234,8 @@ def process_pending_session_reanalyses(*, limit: int = 4) -> list[ReanalysisResu
     return completed
 
 
-def _event_is_protected(db: Session, event: HighlightEvent) -> bool:
-    """判断事件是否包含不可覆盖的人工或下游资产。"""
-    if event.review_by != "auto" or _has_manual_boundary(event) or _has_review_draft(event.features_json):
-        return True
-    candidate = db.get(HighlightCandidate, event.candidate_id)
-    if event.id is not None:
-        if db.exec(select(ClipVariant).where(ClipVariant.event_id == event.id)).first() is not None:
-            return True
-        if db.exec(select(HighlightTopic).where(HighlightTopic.event_id == event.id)).first() is not None:
-            return True
-    if candidate is not None and candidate.id is not None:
-        if db.exec(select(FinalClip).where(FinalClip.candidate_id == candidate.id)).first() is not None:
-            return True
-        if db.exec(select(ThresholdFeedback).where(ThresholdFeedback.candidate_id == candidate.id)).first() is not None:
-            return True
-    return False
-
-
-def _has_review_draft(raw: str | None) -> bool:
-    """检查候选特征中是否保存了人工审核草稿。"""
-    return has_review_draft(raw)
-
-
-def _has_manual_boundary(event: HighlightEvent) -> bool:
-    """只有偏离原始窗口的边界才视为人工资产。"""
-    if event.adjusted_start_ts is not None and event.adjusted_start_ts != event.raw_start_ts:
-        return True
-    return event.adjusted_end_ts is not None and event.adjusted_end_ts != event.raw_end_ts
-
-
-def _delete_auto_events(db: Session, events: list[HighlightEvent]) -> None:
-    """删除确认无人工资产的旧自动分析结果。"""
-    for event in events:
-        candidate = db.get(HighlightCandidate, event.candidate_id)
-        db.delete(event)
-        db.flush()
-        if candidate is not None:
-            detach_hotspot_candidate(db, candidate.id)
-            db.delete(candidate)
-            db.flush()
-
-
 def detach_hotspot_candidate(db: Session, candidate_id: int | None) -> None:
-    """保留热点观测事实，解除即将重建的自动候选引用。"""
+    """显式清理业务对象时解除引用；重新分析流程不调用本函数。"""
     if candidate_id is None:
         return
     for hotspot in db.exec(select(HotspotEvent).where(HotspotEvent.candidate_id == candidate_id)).all():
@@ -299,55 +245,12 @@ def detach_hotspot_candidate(db: Session, candidate_id: int | None) -> None:
     db.flush()
 
 
-def _invalidate_hotspot_analysis(
-    db: Session, session_id: int, queued: list[RawSegment], protected: list[RawSegment]
-) -> None:
-    """使安全重分析范围内的自动摘要与评分失效，保留人工关联及跨段保护。"""
-
-    def overlaps(event: HotspotEvent, segment: RawSegment) -> bool:
-        if segment.start_ts is None or segment.end_ts is None:
-            return True
-        return event.start_ts < segment.end_ts and event.end_ts > segment.start_ts
-
-    for event in db.exec(select(HotspotEvent).where(HotspotEvent.session_id == session_id)).all():
-        if event.candidate_id is not None or not any(overlaps(event, segment) for segment in queued):
-            continue
-        if any(overlaps(event, segment) for segment in protected):
-            continue
-        try:
-            features = json.loads(event.features_json or "{}")
-        except (json.JSONDecodeError, TypeError):
-            features = {}
-        if not isinstance(features, dict):
-            features = {}
-        enrichment = features.pop("event_enrichment", None)
-        if isinstance(enrichment, dict):
-            confidence = enrichment.get("detector_semantic_confidence")
-            if isinstance(confidence, int | float) and not isinstance(confidence, bool) and math.isfinite(confidence):
-                event.semantic_confidence = max(0.0, min(1.0, confidence))
-        clip_metadata = features.pop("event_clip_score", None)
-        if isinstance(clip_metadata, dict):
-            detector_score = clip_metadata.get("detector_clip_score")
-            if (
-                isinstance(detector_score, int | float)
-                and not isinstance(detector_score, bool)
-                and math.isfinite(detector_score)
-            ):
-                event.clip_score = max(0.0, min(1.0, detector_score))
-        event.features_json = json.dumps(features, ensure_ascii=False)
-        event.updated_at = datetime.now(UTC)
-        db.add(event)
-
-
 def _reset_task(task: SegmentTask, *, reason: str, rerun_asr: bool) -> None:
     """把非活跃任务重置到转写或分析队列。"""
     target = TaskStatus.QUEUED_FOR_TRANS if rerun_asr else TaskStatus.QUEUED_FOR_ANALYSIS
     task.stage = target
     task.pipeline_key = make_pipeline_key(task.segment_id)
     task.stage_key = make_stage_key(task.segment_id, target)
-    task.candidate_id = None
-    task.event_id = None
-    task.clip_id = None
     task.failed_stage = None
     task.attempts = 0
     task.next_retry_at = None
@@ -368,6 +271,7 @@ def _reset_task(task: SegmentTask, *, reason: str, rerun_asr: bool) -> None:
                 "reason": reason[:200],
                 "analysis_version": TIMELINE_ANALYSIS_VERSION,
                 "retranscribe": rerun_asr,
+                "preserve_identity": True,
             }
         },
         ensure_ascii=False,
@@ -380,20 +284,6 @@ def _reset_task(task: SegmentTask, *, reason: str, rerun_asr: bool) -> None:
             asr_mode="background" if rerun_asr else "completed",
             asr_evidence_state="pending" if rerun_asr else previous_context.get("asr_evidence_state"),
         )
-
-
-def _task_is_active(task: SegmentTask) -> bool:
-    return (
-        task.stage
-        in {
-            TaskStatus.TRANSCRIBING,
-            TaskStatus.ANALYZING,
-            TaskStatus.RENDERING,
-            TaskStatus.PUBLISHING,
-        }
-        or task.claimed_by is not None
-        or task.lease_token is not None
-    )
 
 
 def _session_analysis_unsettled(session_id: int) -> bool:

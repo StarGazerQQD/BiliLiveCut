@@ -243,6 +243,853 @@
         "title": "ConnectionView",
         "type": "object"
       },
+      "EditorialEvidence": {
+        "additionalProperties": false,
+        "description": "明确记录来源和时间精度的一条不可信素材证据。",
+        "properties": {
+          "context_role": {
+            "enum": [
+              "before",
+              "event",
+              "after",
+              "mixed",
+              "unknown"
+            ],
+            "title": "Context Role",
+            "type": "string"
+          },
+          "detail": {
+            "$ref": "#/components/schemas/EvidenceDetail"
+          },
+          "end_s": {
+            "anyOf": [
+              {
+                "minimum": 0.0,
+                "type": "number"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "End S"
+          },
+          "evidence_id": {
+            "maxLength": 256,
+            "minLength": 1,
+            "pattern": "^[^\\s\\x00-\\x1f\\x7f]+$",
+            "title": "Evidence Id",
+            "type": "string"
+          },
+          "excerpts": {
+            "items": {
+              "maxLength": 2000,
+              "minLength": 1,
+              "pattern": "\\S",
+              "type": "string"
+            },
+            "maxItems": 8,
+            "title": "Excerpts",
+            "type": "array"
+          },
+          "start_s": {
+            "anyOf": [
+              {
+                "minimum": 0.0,
+                "type": "number"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Start S"
+          },
+          "state": {
+            "enum": [
+              "available",
+              "degraded",
+              "missing",
+              "disabled",
+              "error",
+              "pending"
+            ],
+            "title": "State",
+            "type": "string"
+          },
+          "timing_precision": {
+            "enum": [
+              "word",
+              "segment",
+              "event",
+              "unknown"
+            ],
+            "title": "Timing Precision",
+            "type": "string"
+          },
+          "type": {
+            "enum": [
+              "asr",
+              "context_asr",
+              "danmaku",
+              "audio",
+              "sensevoice",
+              "trend",
+              "visual"
+            ],
+            "title": "Type",
+            "type": "string"
+          }
+        },
+        "required": [
+          "evidence_id",
+          "type",
+          "state",
+          "start_s",
+          "end_s",
+          "timing_precision",
+          "context_role",
+          "excerpts"
+        ],
+        "title": "EditorialEvidence",
+        "type": "object"
+      },
+      "EditorialExecutionV1": {
+        "additionalProperties": false,
+        "description": "可持久化的执行结果，与编辑结论和人工复核状态分别保存。",
+        "properties": {
+          "attempt_offset": {
+            "default": 0,
+            "maximum": 32.0,
+            "minimum": 0.0,
+            "title": "Attempt Offset",
+            "type": "integer"
+          },
+          "attempts": {
+            "items": {
+              "$ref": "#/components/schemas/ModelAttempt"
+            },
+            "maxItems": 32,
+            "title": "Attempts",
+            "type": "array"
+          },
+          "elapsed_s": {
+            "minimum": 0.0,
+            "title": "Elapsed S",
+            "type": "number"
+          },
+          "error": {
+            "anyOf": [
+              {
+                "enum": [
+                  "disabled",
+                  "daily_budget",
+                  "attempt_budget",
+                  "deadline",
+                  "timeout",
+                  "rate_limited",
+                  "unauthorized",
+                  "provider_error",
+                  "unsupported_format",
+                  "empty_response",
+                  "invalid_output",
+                  "context_unavailable",
+                  "cancelled",
+                  "evidence_changed"
+                ],
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Error"
+          },
+          "input_fingerprint": {
+            "pattern": "^[0-9a-f]{64}$",
+            "title": "Input Fingerprint",
+            "type": "string"
+          },
+          "policy_version": {
+            "maxLength": 256,
+            "minLength": 1,
+            "pattern": "^[^\\s\\x00-\\x1f\\x7f]+$",
+            "title": "Policy Version",
+            "type": "string"
+          },
+          "result": {
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/EditorialReviewResultV1"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "schema_version": {
+            "const": "editorial-execution-v1",
+            "default": "editorial-execution-v1",
+            "title": "Schema Version",
+            "type": "string"
+          },
+          "status": {
+            "enum": [
+              "succeeded",
+              "failed",
+              "disabled",
+              "cancelled"
+            ],
+            "title": "Status",
+            "type": "string"
+          }
+        },
+        "required": [
+          "status",
+          "input_fingerprint",
+          "policy_version",
+          "result",
+          "error",
+          "attempts",
+          "elapsed_s"
+        ],
+        "title": "EditorialExecutionV1",
+        "type": "object"
+      },
+      "EditorialJobAccepted": {
+        "description": "后续通过既有作业 HTTP 接口恢复进度和取消操作。",
+        "properties": {
+          "job_id": {
+            "title": "Job Id",
+            "type": "string"
+          },
+          "status": {
+            "title": "Status",
+            "type": "string"
+          },
+          "status_url": {
+            "title": "Status Url",
+            "type": "string"
+          }
+        },
+        "required": [
+          "job_id",
+          "status",
+          "status_url"
+        ],
+        "title": "EditorialJobAccepted",
+        "type": "object"
+      },
+      "EditorialPresentation": {
+        "additionalProperties": false,
+        "description": "时间线与审片共用的已验证展示，不携带密钥、路径或原始模型响应。",
+        "properties": {
+          "candidate_id": {
+            "anyOf": [
+              {
+                "type": "integer"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Candidate Id"
+          },
+          "editorial_state": {
+            "default": "not_run",
+            "enum": [
+              "succeeded",
+              "failed",
+              "disabled",
+              "cancelled",
+              "not_run",
+              "invalid"
+            ],
+            "title": "Editorial State",
+            "type": "string"
+          },
+          "event_id": {
+            "anyOf": [
+              {
+                "type": "integer"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Event Id"
+          },
+          "evidence": {
+            "items": {
+              "$ref": "#/components/schemas/EditorialEvidence"
+            },
+            "title": "Evidence",
+            "type": "array"
+          },
+          "execution": {
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/EditorialExecutionV1"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "expanded_context": {
+            "anyOf": [
+              {
+                "enum": [
+                  "before",
+                  "after",
+                  "both"
+                ],
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Expanded Context"
+          },
+          "explanation_error": {
+            "anyOf": [
+              {
+                "enum": [
+                  "disabled",
+                  "daily_budget",
+                  "attempt_budget",
+                  "deadline",
+                  "timeout",
+                  "rate_limited",
+                  "unauthorized",
+                  "provider_error",
+                  "unsupported_format",
+                  "empty_response",
+                  "invalid_output",
+                  "context_unavailable",
+                  "cancelled",
+                  "evidence_changed"
+                ],
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Explanation Error"
+          },
+          "explanation_state": {
+            "enum": [
+              "available",
+              "failed",
+              "unverified",
+              "not_run"
+            ],
+            "title": "Explanation State",
+            "type": "string"
+          },
+          "hotspot_event_id": {
+            "anyOf": [
+              {
+                "type": "integer"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Hotspot Event Id"
+          },
+          "schema_version": {
+            "const": "editorial-view-v1",
+            "default": "editorial-view-v1",
+            "title": "Schema Version",
+            "type": "string"
+          },
+          "summary": {
+            "title": "Summary",
+            "type": "string"
+          },
+          "technical_score": {
+            "anyOf": [
+              {
+                "type": "number"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Technical Score"
+          },
+          "time_origin_epoch_s": {
+            "anyOf": [
+              {
+                "type": "number"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Time Origin Epoch S"
+          },
+          "title": {
+            "title": "Title",
+            "type": "string"
+          }
+        },
+        "required": [
+          "title",
+          "summary",
+          "explanation_state"
+        ],
+        "title": "EditorialPresentation",
+        "type": "object"
+      },
+      "EditorialPreview": {
+        "description": "服务端生成的有限目标快照。",
+        "properties": {
+          "fingerprint": {
+            "pattern": "^[0-9a-f]{64}$",
+            "title": "Fingerprint",
+            "type": "string"
+          },
+          "next_offset": {
+            "anyOf": [
+              {
+                "type": "integer"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Next Offset"
+          },
+          "session_id": {
+            "title": "Session Id",
+            "type": "integer"
+          },
+          "targets": {
+            "items": {
+              "$ref": "#/components/schemas/ReanalysisTarget"
+            },
+            "title": "Targets",
+            "type": "array"
+          },
+          "total": {
+            "title": "Total",
+            "type": "integer"
+          }
+        },
+        "required": [
+          "session_id",
+          "total",
+          "targets",
+          "fingerprint",
+          "next_offset"
+        ],
+        "title": "EditorialPreview",
+        "type": "object"
+      },
+      "EditorialReviewResultV1": {
+        "additionalProperties": false,
+        "description": "模型的编辑判断；技术调用失败不构造这个业务对象。",
+        "properties": {
+          "boundary_status": {
+            "enum": [
+              "complete",
+              "needs_expansion",
+              "uncertain"
+            ],
+            "title": "Boundary Status",
+            "type": "string"
+          },
+          "evidence_ids": {
+            "items": {
+              "maxLength": 256,
+              "minLength": 1,
+              "pattern": "^[^\\s\\x00-\\x1f\\x7f]+$",
+              "type": "string"
+            },
+            "maxItems": 32,
+            "title": "Evidence Ids",
+            "type": "array"
+          },
+          "hook": {
+            "maxLength": 120,
+            "title": "Hook",
+            "type": "string"
+          },
+          "interest_rating": {
+            "anyOf": [
+              {
+                "maximum": 4.0,
+                "minimum": 0.0,
+                "type": "integer"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Interest Rating"
+          },
+          "missing_context": {
+            "anyOf": [
+              {
+                "enum": [
+                  "before",
+                  "after",
+                  "both"
+                ],
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Missing Context"
+          },
+          "reason": {
+            "maxLength": 240,
+            "minLength": 1,
+            "pattern": "\\S",
+            "title": "Reason",
+            "type": "string"
+          },
+          "schema_version": {
+            "const": "editorial-review-v1",
+            "title": "Schema Version",
+            "type": "string"
+          },
+          "standalone": {
+            "anyOf": [
+              {
+                "type": "boolean"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Standalone"
+          },
+          "suggested_bounds": {
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/SuggestedBounds"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "uncertainties": {
+            "items": {
+              "maxLength": 240,
+              "minLength": 1,
+              "pattern": "\\S",
+              "type": "string"
+            },
+            "maxItems": 12,
+            "title": "Uncertainties",
+            "type": "array"
+          },
+          "verdict": {
+            "enum": [
+              "recommend",
+              "reject",
+              "needs_review"
+            ],
+            "title": "Verdict",
+            "type": "string"
+          }
+        },
+        "required": [
+          "schema_version",
+          "verdict",
+          "interest_rating",
+          "hook",
+          "reason",
+          "evidence_ids",
+          "standalone",
+          "boundary_status",
+          "suggested_bounds",
+          "missing_context",
+          "uncertainties"
+        ],
+        "title": "EditorialReviewResultV1",
+        "type": "object"
+      },
+      "EditorialSubmission": {
+        "additionalProperties": false,
+        "description": "明确提交与预览完全一致的选择。",
+        "properties": {
+          "fingerprint": {
+            "pattern": "^[0-9a-f]{64}$",
+            "title": "Fingerprint",
+            "type": "string"
+          },
+          "selection": {
+            "$ref": "#/components/schemas/ReanalysisSelection"
+          }
+        },
+        "required": [
+          "selection",
+          "fingerprint"
+        ],
+        "title": "EditorialSubmission",
+        "type": "object"
+      },
+      "EditorialTimelinePoint": {
+        "additionalProperties": true,
+        "description": "为新增字段提供正式类型，同时保留已有时间线兼容字段。",
+        "properties": {
+          "candidate_id": {
+            "anyOf": [
+              {
+                "type": "integer"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Candidate Id"
+          },
+          "clip_duration_s": {
+            "anyOf": [
+              {
+                "type": "number"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Clip Duration S"
+          },
+          "duration_s": {
+            "title": "Duration S",
+            "type": "number"
+          },
+          "editorial": {
+            "$ref": "#/components/schemas/EditorialPresentation"
+          },
+          "event_id": {
+            "anyOf": [
+              {
+                "type": "integer"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Event Id"
+          },
+          "hotspot_duration_s": {
+            "anyOf": [
+              {
+                "type": "number"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Hotspot Duration S"
+          },
+          "hotspot_event_id": {
+            "anyOf": [
+              {
+                "type": "integer"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Hotspot Event Id"
+          },
+          "key": {
+            "title": "Key",
+            "type": "string"
+          },
+          "offset_s": {
+            "title": "Offset S",
+            "type": "number"
+          },
+          "point_type": {
+            "enum": [
+              "hotspot",
+              "segment"
+            ],
+            "title": "Point Type",
+            "type": "string"
+          },
+          "rejected": {
+            "title": "Rejected",
+            "type": "boolean"
+          },
+          "summary": {
+            "title": "Summary",
+            "type": "string"
+          },
+          "title": {
+            "title": "Title",
+            "type": "string"
+          }
+        },
+        "required": [
+          "key",
+          "point_type",
+          "title",
+          "summary",
+          "offset_s",
+          "duration_s",
+          "rejected",
+          "editorial"
+        ],
+        "title": "EditorialTimelinePoint",
+        "type": "object"
+      },
+      "EditorialTimelineResponse": {
+        "description": "场次读取只投影持久状态，不能隐式发起模型请求。",
+        "properties": {
+          "counts": {
+            "additionalProperties": {
+              "type": "integer"
+            },
+            "title": "Counts",
+            "type": "object"
+          },
+          "points": {
+            "items": {
+              "$ref": "#/components/schemas/EditorialTimelinePoint"
+            },
+            "title": "Points",
+            "type": "array"
+          },
+          "session": {
+            "additionalProperties": {
+              "$ref": "#/components/schemas/JsonValue"
+            },
+            "title": "Session",
+            "type": "object"
+          },
+          "timezone": {
+            "title": "Timezone",
+            "type": "string"
+          },
+          "whole_session_summary": {
+            "anyOf": [
+              {
+                "additionalProperties": {
+                  "$ref": "#/components/schemas/JsonValue"
+                },
+                "type": "object"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Whole Session Summary"
+          }
+        },
+        "required": [
+          "session",
+          "timezone",
+          "points",
+          "counts"
+        ],
+        "title": "EditorialTimelineResponse",
+        "type": "object"
+      },
+      "EvidenceDetail": {
+        "additionalProperties": false,
+        "description": "允许进入模型输入的有限诊断字段，不接收路径、凭据或任意元数据。",
+        "properties": {
+          "backend": {
+            "anyOf": [
+              {
+                "maxLength": 128,
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Backend"
+          },
+          "count": {
+            "anyOf": [
+              {
+                "minimum": 0.0,
+                "type": "integer"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Count"
+          },
+          "metrics": {
+            "additionalProperties": {
+              "type": "number"
+            },
+            "maxProperties": 24,
+            "propertyNames": {
+              "maxLength": 64,
+              "minLength": 1
+            },
+            "title": "Metrics",
+            "type": "object"
+          },
+          "model": {
+            "anyOf": [
+              {
+                "maxLength": 256,
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Model"
+          },
+          "quality": {
+            "anyOf": [
+              {
+                "maxLength": 240,
+                "minLength": 1,
+                "pattern": "\\S",
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Quality"
+          },
+          "role": {
+            "anyOf": [
+              {
+                "maxLength": 64,
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Role"
+          },
+          "segment_id": {
+            "anyOf": [
+              {
+                "minimum": 1.0,
+                "type": "integer"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Segment Id"
+          }
+        },
+        "title": "EvidenceDetail",
+        "type": "object"
+      },
       "HTTPValidationError": {
         "properties": {
           "detail": {
@@ -605,6 +1452,119 @@
         "title": "MergeTopicsRequest",
         "type": "object"
       },
+      "ModelAttempt": {
+        "additionalProperties": false,
+        "description": "单次实际请求的诊断，不保存地址、凭据、原始正文或异常。",
+        "properties": {
+          "elapsed_s": {
+            "minimum": 0.0,
+            "title": "Elapsed S",
+            "type": "number"
+          },
+          "error": {
+            "anyOf": [
+              {
+                "enum": [
+                  "disabled",
+                  "daily_budget",
+                  "attempt_budget",
+                  "deadline",
+                  "timeout",
+                  "rate_limited",
+                  "unauthorized",
+                  "provider_error",
+                  "unsupported_format",
+                  "empty_response",
+                  "invalid_output",
+                  "context_unavailable",
+                  "cancelled",
+                  "evidence_changed"
+                ],
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Error"
+          },
+          "model": {
+            "maxLength": 256,
+            "minLength": 1,
+            "title": "Model",
+            "type": "string"
+          },
+          "number": {
+            "maximum": 32.0,
+            "minimum": 1.0,
+            "title": "Number",
+            "type": "integer"
+          },
+          "protocol": {
+            "enum": [
+              "json_schema",
+              "json_object",
+              "text"
+            ],
+            "title": "Protocol",
+            "type": "string"
+          },
+          "provider_id": {
+            "maxLength": 256,
+            "minLength": 1,
+            "pattern": "^[^\\s\\x00-\\x1f\\x7f]+$",
+            "title": "Provider Id",
+            "type": "string"
+          },
+          "purpose": {
+            "enum": [
+              "explanation",
+              "review",
+              "grounding",
+              "repair",
+              "context"
+            ],
+            "title": "Purpose",
+            "type": "string"
+          },
+          "reported_model": {
+            "anyOf": [
+              {
+                "maxLength": 256,
+                "minLength": 1,
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Reported Model"
+          },
+          "status": {
+            "enum": [
+              "success",
+              "failed"
+            ],
+            "title": "Status",
+            "type": "string"
+          },
+          "usage": {
+            "$ref": "#/components/schemas/TokenUsage"
+          }
+        },
+        "required": [
+          "number",
+          "purpose",
+          "provider_id",
+          "model",
+          "protocol",
+          "status",
+          "error",
+          "elapsed_s"
+        ],
+        "title": "ModelAttempt",
+        "type": "object"
+      },
       "ModelConfigurationChange": {
         "additionalProperties": false,
         "description": "模型配置整体保存，与其他设置共用乐观版本检查。",
@@ -932,6 +1892,170 @@
         "title": "ReanalysisRequest",
         "type": "object"
       },
+      "ReanalysisSelection": {
+        "additionalProperties": false,
+        "description": "只选择已有分析对象；分页预览不会调用模型或修改数据库。",
+        "properties": {
+          "failed_only": {
+            "default": false,
+            "title": "Failed Only",
+            "type": "boolean"
+          },
+          "keys": {
+            "items": {
+              "maxLength": 256,
+              "minLength": 1,
+              "type": "string"
+            },
+            "maxItems": 100,
+            "title": "Keys",
+            "type": "array"
+          },
+          "limit": {
+            "default": 50,
+            "maximum": 100.0,
+            "minimum": 1.0,
+            "title": "Limit",
+            "type": "integer"
+          },
+          "offset": {
+            "default": 0,
+            "minimum": 0.0,
+            "title": "Offset",
+            "type": "integer"
+          },
+          "session_id": {
+            "exclusiveMinimum": 0.0,
+            "title": "Session Id",
+            "type": "integer"
+          },
+          "verdicts": {
+            "items": {
+              "enum": [
+                "recommend",
+                "reject",
+                "needs_review",
+                "unknown"
+              ],
+              "type": "string"
+            },
+            "maxItems": 4,
+            "title": "Verdicts",
+            "type": "array"
+          }
+        },
+        "required": [
+          "session_id"
+        ],
+        "title": "ReanalysisSelection",
+        "type": "object"
+      },
+      "ReanalysisTarget": {
+        "additionalProperties": false,
+        "description": "服务端解析的稳定业务身份和预览快照，提交时必须重新核验。",
+        "properties": {
+          "candidate_id": {
+            "anyOf": [
+              {
+                "exclusiveMinimum": 0.0,
+                "type": "integer"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Candidate Id"
+          },
+          "event_id": {
+            "anyOf": [
+              {
+                "exclusiveMinimum": 0.0,
+                "type": "integer"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Event Id"
+          },
+          "failed": {
+            "default": false,
+            "title": "Failed",
+            "type": "boolean"
+          },
+          "fingerprint": {
+            "default": "",
+            "title": "Fingerprint",
+            "type": "string"
+          },
+          "key": {
+            "maxLength": 256,
+            "minLength": 1,
+            "title": "Key",
+            "type": "string"
+          },
+          "kind": {
+            "enum": [
+              "hotspot",
+              "segment"
+            ],
+            "title": "Kind",
+            "type": "string"
+          },
+          "peak_ts": {
+            "format": "date-time",
+            "title": "Peak Ts",
+            "type": "string"
+          },
+          "protection": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Protection"
+          },
+          "segment_id": {
+            "exclusiveMinimum": 0.0,
+            "title": "Segment Id",
+            "type": "integer"
+          },
+          "session_id": {
+            "exclusiveMinimum": 0.0,
+            "title": "Session Id",
+            "type": "integer"
+          },
+          "source_id": {
+            "exclusiveMinimum": 0.0,
+            "title": "Source Id",
+            "type": "integer"
+          },
+          "verdict": {
+            "default": "unknown",
+            "enum": [
+              "recommend",
+              "reject",
+              "needs_review",
+              "unknown"
+            ],
+            "title": "Verdict",
+            "type": "string"
+          }
+        },
+        "required": [
+          "key",
+          "kind",
+          "source_id",
+          "session_id",
+          "segment_id",
+          "peak_ts"
+        ],
+        "title": "ReanalysisTarget",
+        "type": "object"
+      },
       "RenderCollectionRequest": {
         "additionalProperties": false,
         "description": "渲染合集请求。",
@@ -1167,6 +2291,100 @@
           }
         },
         "title": "StopRequest",
+        "type": "object"
+      },
+      "SuggestedBounds": {
+        "additionalProperties": false,
+        "description": "由明确时间证据支持的成片范围建议。",
+        "properties": {
+          "end_s": {
+            "minimum": 0.0,
+            "title": "End S",
+            "type": "number"
+          },
+          "evidence_ids": {
+            "items": {
+              "maxLength": 256,
+              "minLength": 1,
+              "pattern": "^[^\\s\\x00-\\x1f\\x7f]+$",
+              "type": "string"
+            },
+            "maxItems": 32,
+            "minItems": 1,
+            "title": "Evidence Ids",
+            "type": "array"
+          },
+          "start_s": {
+            "minimum": 0.0,
+            "title": "Start S",
+            "type": "number"
+          }
+        },
+        "required": [
+          "start_s",
+          "end_s",
+          "evidence_ids"
+        ],
+        "title": "SuggestedBounds",
+        "type": "object"
+      },
+      "TokenUsage": {
+        "additionalProperties": false,
+        "description": "服务实际报告的用量；缺失值保留为空，价格为配置估算。",
+        "properties": {
+          "estimated_cost_usd": {
+            "anyOf": [
+              {
+                "minimum": 0.0,
+                "type": "number"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Estimated Cost Usd"
+          },
+          "input_tokens": {
+            "anyOf": [
+              {
+                "maximum": 9.223372036854776e+18,
+                "minimum": 0.0,
+                "type": "integer"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Input Tokens"
+          },
+          "output_tokens": {
+            "anyOf": [
+              {
+                "maximum": 9.223372036854776e+18,
+                "minimum": 0.0,
+                "type": "integer"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Output Tokens"
+          },
+          "reasoning_tokens": {
+            "anyOf": [
+              {
+                "maximum": 9.223372036854776e+18,
+                "minimum": 0.0,
+                "type": "integer"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Reasoning Tokens"
+          }
+        },
+        "title": "TokenUsage",
         "type": "object"
       },
       "TopicUpdateRequest": {
@@ -1545,7 +2763,7 @@
   },
   "info": {
     "title": "BiliLiveCut 控制台",
-    "version": "V0.1.20.0 Alpha (0.1.20.0-alpha)"
+    "version": "V0.1.20.1 Alpha (0.1.20.1-alpha)"
   },
   "openapi": "3.1.0",
   "paths": {
@@ -4690,6 +5908,106 @@
         "summary": "Download Danmaku Archive"
       }
     },
+    "/api/sessions/{session_id}/editorial-reanalysis": {
+      "post": {
+        "description": "以当前预览显式排队，可在已有作业接口查询、取消和恢复。",
+        "operationId": "submit_editorial_reanalysis_api_sessions__session_id__editorial_reanalysis_post",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "session_id",
+            "required": true,
+            "schema": {
+              "title": "Session Id",
+              "type": "integer"
+            }
+          }
+        ],
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/EditorialSubmission"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "202": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/EditorialJobAccepted"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "summary": "Submit Editorial Reanalysis"
+      }
+    },
+    "/api/sessions/{session_id}/editorial-reanalysis/preview": {
+      "post": {
+        "description": "只读预览，查询失败或刷新都不启动模型和作业。",
+        "operationId": "preview_editorial_reanalysis_api_sessions__session_id__editorial_reanalysis_preview_post",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "session_id",
+            "required": true,
+            "schema": {
+              "title": "Session Id",
+              "type": "integer"
+            }
+          }
+        ],
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/ReanalysisSelection"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/EditorialPreview"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "summary": "Preview Editorial Reanalysis"
+      }
+    },
     "/api/sessions/{session_id}/reanalyze": {
       "post": {
         "description": "持久化重分析请求；旧流水线稳定后整场重排，且保留人工成果。",
@@ -4781,9 +6099,7 @@
             "content": {
               "application/json": {
                 "schema": {
-                  "additionalProperties": true,
-                  "title": "Response Get Session Timeline Api Sessions  Session Id  Timeline Get",
-                  "type": "object"
+                  "$ref": "#/components/schemas/EditorialTimelineResponse"
                 }
               }
             },
