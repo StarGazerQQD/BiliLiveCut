@@ -137,6 +137,8 @@ def main() -> int:
                         "musl": "1.2.6-r3",
                         "musl-utils": "1.2.6-r3",
                         "zlib": "1.3.2-r1",
+                        "curl": "8.23.0-r0",
+                        "libcurl": "8.23.0-r0",
                     }.items():
                         docker("exec", name, "apk", "info", "--exists", f"{package}>={minimum}")
                     return url

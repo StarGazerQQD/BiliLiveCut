@@ -16,7 +16,7 @@ Compose 同时构建后端 `app` 和前端 `frontend`。浏览器访问宿主机
 最低版本检查覆盖已知修复要求；发布前仍需扫描完整镜像并审查发行版尚未修复的告警。
 
 前端镜像同样安装 Alpine 官方更新：`brotli-libs >= 1.2.1-r0`、`musl`/`musl-utils >= 1.2.6-r3`、
-`zlib >= 1.3.2-r1`。安装仅在构建阶段使用 root，运行时保持 UID 101；容器验收检查实际用户及包版本。
+`zlib >= 1.3.2-r1`、`curl`/`libcurl >= 8.23.0-r0`。安装仅在构建阶段使用 root，运行时保持 UID 101；容器验收检查实际用户及包版本。
 
 当前 Compose 会在本机构建完整的 CPU 后端和独立前端。后端需要编译 FFmpeg、PyAV 和原生扩展，并安装 PyTorch、FunASR、faster-whisper 等本地转写依赖；前端需要安装 npm 依赖并构建页面。首次部署需要持续联网，系统包、Python 包、Rust crates 和 npm 包的下载速度都会影响耗时。
 
