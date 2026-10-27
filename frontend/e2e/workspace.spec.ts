@@ -646,16 +646,28 @@ test("empty optional ASR settings do not block saving other configuration", asyn
 test("401 pauses reads and retains settings under the reauthentication dialog", async ({
   page,
 }) => {
-  await page.goto("/settings/configuration");
-  await page.getByLabel("分段时长", { exact: false }).fill("90");
-  await page.route("**/api/settings/configuration", (route) =>
-    route.fulfill({ status: 401, json: { detail: "expired" } }),
+  // 本用例验证手动刷新；通知通道拒绝访问时使用 HTTP，通知恢复另有协议回归。
+  await page.route("**/api/events", (route) =>
+    route.fulfill({ status: 403, json: { detail: "通知通道不可用" } }),
   );
+  await page.goto("/settings/configuration");
+  const field = page.getByLabel("分段时长", { exact: false });
+  await field.fill("90");
+  let expiredReads = 0;
+  await page.route("**/api/settings/configuration", (route) => {
+    expiredReads++;
+    return route.fulfill({ status: 401, json: { detail: "expired" } });
+  });
   await page.getByRole("button", { name: "读取最新配置" }).click();
   await expect(page.getByRole("dialog")).toBeVisible();
   await expect(
     page.getByText("登录已失效", { exact: false }).first(),
   ).toBeVisible();
+  await expect(field).toHaveValue("90");
+  await page.clock.install();
+  await page.clock.fastForward(30000);
+  expect(expiredReads).toBe(1);
+  await expect(field).toHaveValue("90");
 });
 
 test.describe("session timezone", () => {
