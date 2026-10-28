@@ -118,21 +118,41 @@ async def test_source_errors_preserve_authentication_and_bounded_retry(
         assert "过期" not in str(caught.value)
 
 
+@pytest.mark.parametrize("response_delay", [0.0, 1.1], ids=["immediate-response", "slow-response"])
 async def test_transient_http_retry_after_does_not_extend_call_budget(
-    temp_db: None, monkeypatch: pytest.MonkeyPatch
+    temp_db: None, monkeypatch: pytest.MonkeyPatch, response_delay: float
 ) -> None:
     calls = 0
+    response_ready, release_response = asyncio.Event(), asyncio.Event()
 
-    def respond(request: httpx.Request) -> httpx.Response:
+    async def respond(request: httpx.Request) -> httpx.Response:
         nonlocal calls
         calls += 1
-        return httpx.Response(503, headers={"Retry-After": "120"})
+        await asyncio.sleep(response_delay)
+        response = httpx.Response(503, headers={"Retry-After": "120"})
+        response_ready.set()
+        await release_response.wait()
+        return response
 
     http_boundary(monkeypatch, respond)
+    registry = SourceRegistry()
     room = SourceRoom(platform="bilibili", source_id="123", canonical_url="https://live.bilibili.com/123")
-    with pytest.raises(SourceTemporaryError) as caught:
-        await asyncio.wait_for(SourceRegistry().get_room_info(room), 1)
-    assert caught.value.retry_after == 120 and calls == 1
+    task = asyncio.create_task(registry.get_room_info(room))
+    try:
+        await asyncio.wait_for(response_ready.wait(), registry.timeout_s)
+        # 从 503 响应就绪后计时，保留原 1 秒重试处理限制，排除响应前耗时。
+        release_response.set()
+        with pytest.raises(SourceTemporaryError) as caught:
+            await asyncio.wait_for(task, 1)
+        assert caught.value.retry_after == 120 and calls == 1
+        with pytest.raises(SourceRateLimited) as cooldown:
+            await asyncio.wait_for(registry.get_room_info(room), 1)
+        assert cooldown.value.retry_after is not None and 0 < cooldown.value.retry_after <= 120
+        assert calls == 1
+    finally:
+        if not task.done():
+            task.cancel()
+        await asyncio.gather(task, return_exceptions=True)
 
 
 @pytest.mark.parametrize("failure", [httpx.ConnectError, httpx.ReadTimeout, httpx.RemoteProtocolError])
