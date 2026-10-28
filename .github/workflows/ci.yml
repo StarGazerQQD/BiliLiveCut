@@ -152,6 +152,14 @@ jobs:
         run: python -m pytest tests/integration/test_frontend_console.py --timeout=120 --fail-on-skip
         timeout-minutes: 3
 
+      - name: Verify SSE state events (Linux)
+        if: runner.os == 'Linux'
+        shell: bash
+        env:
+          ASR_NO_MODEL_DOWNLOAD: "1"
+        run: python -m pytest tests/integration/test_state_events.py --timeout=60 --fail-on-skip --tb=long -vv --durations=10
+        timeout-minutes: 5
+
       # 实际日志显示发行包用例占用约 285 秒；独立验收保留全部检查和各步时限。
       - name: Run real sdist and wheel integration
         shell: bash

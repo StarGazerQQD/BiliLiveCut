@@ -41,6 +41,8 @@ asr-funasr = [
     "bili-live-cut[asr-whisper]", # 所有后端共用 faster-whisper 提供的 CPU Silero VAD
     "funasr>=1.0",
     "modelscope>=1.20",
+    "hydra-core>=1.3.8", # 阻止通过模型配置调用不安全的 YAML 加载器
+    "msgpack>=1.2.4", # 修复解码内存安全问题并限制容器预分配
 ]
 # V0.1.12.2: 全部 ASR 后端 (Whisper + FunASR 多引擎)。
 asr-all = [

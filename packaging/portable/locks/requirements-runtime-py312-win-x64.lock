@@ -36,7 +36,7 @@ httpcore==1.0.9 --hash=sha256:2d400746a40668fc9dec9810239072b40b4484b640a8c38fd6
 httptools==0.8.0 --hash=sha256:cd96f29b4bab1d42fa6e3d008711c75e0f79e94e06827330160e3a304227f150  # httptools-0.8.0-cp312-cp312-win_amd64.whl
 httpx==0.28.1 --hash=sha256:d909fcccc110f8c7faf814ca82a9a4d816bc5a6dbfea25d6591d6985b8ba59ad  # httpx-0.28.1-py3-none-any.whl
 huggingface-hub==1.30.0 --hash=sha256:96ae0a8e99a234374a6fe43e989ebd21c04640b91ab2927e7e5773ba1131ca59  # huggingface_hub-1.30.0-py3-none-any.whl
-hydra-core==1.3.7 --hash=sha256:83606c4a05c770f1e026e0489875f28989829d151799eabd8cfa8cbe82164515  # hydra_core-1.3.7-py3-none-any.whl
+hydra-core==1.3.8 --hash=sha256:d5f184c291691cba835c7f04bc4e36270ad88b1d7e394a3712f5af084c30b394  # hydra_core-1.3.8-py3-none-any.whl
 idna==3.18 --hash=sha256:7f952cbe720b688055e3f87de14f5c3e5fdaa8bc3928985c4077ca689de849a2  # idna-3.18-py3-none-any.whl
 jaconv==0.5.0 --hash=sha256:2914114fe761ca49fc7089e25e6ad4a400c26f262ffce84e13b176916b71610a  # jaconv-0.5.0-py3-none-any.whl
 jamo==0.4.1 --hash=sha256:d4b94fd23324c606ed2fbc4037c603e2c3a7ae9390c05d3473aea1ccb6b1c3fb  # jamo-0.4.1-py3-none-any.whl
@@ -56,7 +56,7 @@ mdurl==0.1.2 --hash=sha256:84008a41e51615a49fc9966191ff91509e3c40b939176e643fd50
 modelscope==1.39.0 --hash=sha256:a363298e4620db83b3ec0057a23a73c4ee1fa122ca11b375e72ef94874123efa  # modelscope-1.39.0-py3-none-any.whl
 modelscope-hub==0.2.0 --hash=sha256:84668c80c1d36d1fb1ea1ce17b707d77e044b92255288618c3b7de5b13834418  # modelscope_hub-0.2.0-py3-none-any.whl
 mpmath==1.3.0 --hash=sha256:a0b2b9fe80bbcd81a6647ff13108738cfb482d481d826cc0e02f5b35e5c88d2c  # mpmath-1.3.0-py3-none-any.whl
-msgpack==1.2.1 --hash=sha256:5c24aa15d5963051e1a5c62b12c50cd705992502b5ec1f3bece6046f33c9fc24  # msgpack-1.2.1-cp312-cp312-win_amd64.whl
+msgpack==1.2.4 --hash=sha256:6e38b123681df22373d545520f54bbeddc4706d9235a1161061f12bd6648497d  # msgpack-1.2.4-cp312-cp312-win_amd64.whl
 narwhals==2.24.0 --hash=sha256:42fdedf44e5b2ca7505630d45b4ac3058f38d8485cba9fe1652ca23152df7489  # narwhals-2.24.0-py3-none-any.whl
 networkx==3.6.1 --hash=sha256:d47fbf302e7d9cbbb9e2555a0d267983d2aa476bac30e90dfbe5669bd57f3762  # networkx-3.6.1-py3-none-any.whl
 numba==0.66.0 --hash=sha256:b075a4e7ebc43dc6294f223e2821659656209fd5e0ce53245877c23d66d6e1a9  # numba-0.66.0-cp312-cp312-win_amd64.whl
