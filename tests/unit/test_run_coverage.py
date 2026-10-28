@@ -39,10 +39,12 @@ def test_run_pytest_preserves_whisper_default(monkeypatch) -> None:
         return Completed()
 
     monkeypatch.delenv("WHISPER_MODEL", raising=False)
+    monkeypatch.setenv("PYTEST_ADDOPTS", "--timeout=120")
     monkeypatch.setattr(run_coverage.subprocess, "run", fake_run)
 
     assert run_coverage.run_pytest() == 0
     assert captured_env["ASR_NO_MODEL_DOWNLOAD"] == "1"
+    assert captured_env["PYTEST_ADDOPTS"] == "--timeout=120"
     assert "WHISPER_MODEL" not in captured_env
     assert "--fail-on-skip" in captured_cmd
 
@@ -92,4 +94,13 @@ def test_application_partition_keeps_coverage_and_required_distribution_step(mon
     assert "--application-only" in coverage["run"]
     for step in (distribution, coverage):
         assert "if" not in step and not step.get("continue-on-error", False)
-        assert step["timeout-minutes"] == 15
+    assert distribution["timeout-minutes"] == 15
+    assert coverage["timeout-minutes"] == 30
+    assert coverage["env"]["PYTEST_ADDOPTS"] == "--timeout=120"
+    for scope in (workflow, workflow["jobs"]["test"], workflow["jobs"]["test-macos"], distribution):
+        assert "PYTEST_ADDOPTS" not in scope.get("env", {})
+    macos_coverage = next(
+        step for step in workflow["jobs"]["test-macos"]["steps"] if "run_coverage.py" in step.get("run", "")
+    )
+    assert "PYTEST_ADDOPTS" not in macos_coverage["env"]
+    assert macos_coverage["timeout-minutes"] == 90

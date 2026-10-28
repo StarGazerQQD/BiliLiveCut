@@ -168,12 +168,15 @@ jobs:
         run: python -m pytest tests/integration/test_wheel_frontend.py --fail-on-skip --durations=10
         timeout-minutes: 15
 
+      # Windows/Python 3.11 的 3358 项全部通过仍耗时 897.96 秒，需为收尾保留余量。
+      # 应用测试单项限时 120 秒；发行包构建仍使用上方独立步骤的预算。
       - name: Run pytest with coverage (≥50%)
         shell: bash
         env:
           ASR_NO_MODEL_DOWNLOAD: "1"
+          PYTEST_ADDOPTS: "--timeout=120"
         run: python scripts/run_coverage.py --application-only
-        timeout-minutes: 15
+        timeout-minutes: 30
 
       - name: Upload coverage report
         if: always()
