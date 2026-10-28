@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import asyncio
 import json
+import socket
 import time
 from collections.abc import AsyncIterator, Callable
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
@@ -139,10 +140,145 @@ def test_explicit_format_unsupported_uses_bounded_protocol_fallback(temp_db: Non
 
 
 @pytest.mark.parametrize(
+    "base_url,protocol",
+    [
+        ("https://api.deepseek.com", "json_object"),
+        ("https://API.DEEPSEEK.COM/v1/", "json_object"),
+        ("https://api.deepseek.com/beta", "json_object"),
+        ("https://api.deepseek.com.evil.invalid/v1", "json_schema"),
+        ("https://proxy.invalid/v1", "json_schema"),
+    ],
+)
+def test_official_endpoint_selects_supported_protocol_without_weakening_validation(
+    temp_db: None, transport: Transport, base_url: str, protocol: str
+) -> None:
+    configuration = catalog(base_url=base_url)
+    configuration.routes[0].model = "deepseek-flash"
+    save_model_configuration(configuration)
+    requests = transport([(200, response('{"answer":12}')), (200, response())])
+    budget = llm.new_editorial_budget()
+    result = call(budget)
+    assert result.value is not None and result.value.answer == "有效正文"
+    assert [json.loads(request.content)["response_format"]["type"] for request in requests] == [protocol, protocol]
+    assert [item.error for item in budget.attempts] == ["invalid_output", None]
+    assert budget.attempts[0].diagnostic.category == "validation"
+    assert budget.attempts[1].diagnostic is None
+
+
+def test_deepseek_rejection_continues_from_initial_protocol_and_keeps_shared_budget(
+    temp_db: None, transport: Transport
+) -> None:
+    save_model_configuration(catalog(base_url="https://api.deepseek.com"))
+    requests = transport(
+        [(400, {"error": {"message": "This response_format type is unavailable now"}}), (200, response())]
+    )
+    budget = ModelCallBudget(max_attempts=2, max_elapsed_s=30)
+    assert call(budget).error is None
+    assert [item.protocol for item in budget.attempts] == ["json_object", "text"]
+    assert "response_format" not in json.loads(requests[1].content)
+    assert call(budget).error == "attempt_budget"
+    assert len(requests) == 2
+
+
+@pytest.mark.parametrize(
+    "message",
+    [
+        "This response_format type is unavailable now",
+        "response_format: unknown variant json_schema, expected text or json_object",
+        "response_format.type: invalid enum value json_schema",
+    ],
+)
+def test_explicit_protocol_rejection_variants_allow_one_step_downgrade(
+    temp_db: None, transport: Transport, message: str
+) -> None:
+    save_model_configuration(catalog())
+    requests = transport([(422, {"error": {"message": message}}), (200, response())])
+    budget = llm.new_editorial_budget()
+    assert call(budget).error is None
+    assert [item.protocol for item in budget.attempts] == ["json_schema", "json_object"]
+    assert len(requests) == 2
+
+
+def test_http_diagnostic_preserves_metadata_without_response_body_or_credentials(
+    temp_db: None, monkeypatch: MonkeyPatch
+) -> None:
+    save_model_configuration(catalog())
+
+    async def send(_transport: httpx.AsyncHTTPTransport, request: httpx.Request) -> httpx.Response:
+        return httpx.Response(
+            400,
+            json={
+                "error": {
+                    "message": "private-test-key prompt=private-input https://fixture.invalid/private Authorization: abc",
+                    "code": "invalid_request_error",
+                    "param": "max_tokens",
+                }
+            },
+            headers={"x-request-id": "request-123"},
+            request=request,
+        )
+
+    monkeypatch.setattr(httpx.AsyncHTTPTransport, "handle_async_request", send)
+    budget = llm.new_editorial_budget()
+    assert call(budget).error == "provider_error"
+    diagnostic = budget.attempts[0].diagnostic
+    assert diagnostic.http_status == 400 and diagnostic.category == "http"
+    assert diagnostic.provider_code == "invalid_request_error"
+    assert diagnostic.parameter == "max_tokens" and diagnostic.request_id == "request-123"
+    saved = budget.attempts[0].model_dump_json()
+    for private in ("private-test-key", "private-input", "fixture.invalid", "Authorization", "abc"):
+        assert private not in saved
+
+
+@pytest.mark.parametrize(
+    "value", ["private-test-key", "https://fixture.invalid/path", "fixture.invalid", "a" * 129, "x\ny"]
+)
+def test_untrusted_error_identifiers_are_discarded(temp_db: None, monkeypatch: MonkeyPatch, value: str) -> None:
+    save_model_configuration(catalog())
+
+    async def send(_transport: httpx.AsyncHTTPTransport, request: httpx.Request) -> httpx.Response:
+        return httpx.Response(
+            500,
+            json={"error": {"code": value, "param": value}},
+            headers={"x-request-id": value},
+            request=request,
+        )
+
+    monkeypatch.setattr(httpx.AsyncHTTPTransport, "handle_async_request", send)
+    budget = llm.new_editorial_budget()
+    assert call(budget).error == "provider_error"
+    diagnostic = budget.attempts[0].diagnostic
+    assert diagnostic.provider_code is None and diagnostic.parameter is None and diagnostic.request_id is None
+
+
+@pytest.mark.parametrize("failure,category", [("dns", "dns"), ("connection", "connection"), ("timeout", "timeout")])
+def test_network_failure_diagnostic_distinguishes_dns_connection_and_timeout(
+    temp_db: None, monkeypatch: MonkeyPatch, failure: str, category: str
+) -> None:
+    save_model_configuration(catalog())
+
+    async def send(_transport: httpx.AsyncHTTPTransport, request: httpx.Request) -> httpx.Response:
+        if failure == "dns":
+            raise httpx.ConnectError("private-test-key", request=request) from socket.gaierror(11001, "private-input")
+        if failure == "timeout":
+            raise httpx.ReadTimeout("private-test-key", request=request)
+        raise httpx.ConnectError("private-test-key", request=request)
+
+    monkeypatch.setattr(httpx.AsyncHTTPTransport, "handle_async_request", send)
+    budget = llm.new_editorial_budget()
+    assert call(budget).error == ("timeout" if failure == "timeout" else "provider_error")
+    assert len(budget.attempts) == 1 and budget.attempts[0].diagnostic.category == category
+    assert "private-test-key" not in budget.attempts[0].model_dump_json()
+    assert "private-input" not in budget.attempts[0].model_dump_json()
+
+
+@pytest.mark.parametrize(
     "status,detail,error",
     [
         (400, {"message": "invalid schema: unsupported keyword", "param": "response_format"}, "provider_error"),
         (400, {"message": "max_tokens unsupported", "param": "max_tokens"}, "provider_error"),
+        (400, {"message": "max_tokens unavailable", "param": "max_tokens"}, "provider_error"),
+        (400, {"message": "invalid schema: unknown variant", "param": "response_format"}, "provider_error"),
         (401, {"message": "response_format unsupported", "param": "response_format"}, "unauthorized"),
         (403, {"message": "denied"}, "unauthorized"),
         (429, {"message": "rate limited"}, "rate_limited"),
@@ -294,6 +430,10 @@ def test_inflight_interruption_waits_for_transport_cleanup(temp_db: None, monkey
     assert closed.is_set()
     assert time.monotonic() - started < 3
     assert len(budget.attempts) == 1
+    if mode == "cancelled":
+        assert budget.attempts[0].diagnostic is None
+    else:
+        assert budget.attempts[0].diagnostic.category == "timeout"
 
 
 @pytest.mark.parametrize("status", [200, 500])
@@ -550,7 +690,13 @@ def test_provider_model_change_uses_snapshot_until_next_operation(temp_db: None,
 
 
 @pytest.mark.parametrize(
-    "change", [{"max_tokens": 0}, {"max_tokens": True}, {"schema": {"large": "x" * 16_385}}, {"purpose": "repair"}]
+    "change",
+    [
+        {"max_tokens": 0},
+        {"max_tokens": True},
+        {"schema": {"large": "x" * (llm.SCHEMA_MAX_BYTES + 1)}},
+        {"purpose": "repair"},
+    ],
 )
 def test_invalid_request_limits_fail_before_network(
     temp_db: None, transport: Transport, change: dict[str, object]
@@ -560,3 +706,102 @@ def test_invalid_request_limits_fail_before_network(
     with pytest.raises(ValueError):
         call(llm.new_editorial_budget(), **change)
     assert not requests
+
+
+@pytest.mark.parametrize(
+    "invalid,detail",
+    [
+        ('{"answer": {"private-secret": "private-secret"}}', "answer: string_type"),
+        ('{"answer":"ok","private-secret":"private-secret"}', "<额外字段>: extra_forbidden"),
+        ('{"private-secret":1,"private-secret":2}', "JSON 不允许重复字段"),
+    ],
+)
+def test_validation_diagnostics_and_repair_use_only_trusted_reasons(
+    temp_db: None, transport: Transport, invalid: str, detail: str
+) -> None:
+    save_model_configuration(catalog())
+    requests = transport([(200, response(invalid)), (200, response())])
+    budget = llm.new_editorial_budget()
+    result = call(budget)
+    assert result.value is not None and len(requests) == 2
+    diagnostic = budget.attempts[0].diagnostic
+    assert diagnostic is not None and detail in diagnostic.summary and len(diagnostic.summary) <= 240
+    repair_system = json.loads(requests[1].content)["messages"][0]["content"]
+    assert diagnostic.summary in repair_system
+    assert "private-secret" not in repair_system
+    assert "private-secret" not in budget.attempts[0].model_dump_json()
+    assert [attempt.purpose for attempt in budget.attempts] == ["review", "repair"]
+
+
+def test_nested_schema_diagnostics_normalize_indices_and_never_echo_extra_keys(
+    temp_db: None, transport: Transport
+) -> None:
+    from app.analysis.editorial_explanation import GroundingOutput
+
+    save_model_configuration(catalog())
+    value = {
+        "judgements": [
+            {
+                "field": field,
+                "supported": False,
+                "reason": "受控核验",
+                "quotes": [{"evidence_id": "known", "quote": 7, "private-secret": "private-secret"}],
+            }
+            for field in ("title", "summary")
+        ]
+    }
+    requests = transport([(200, response(json.dumps(value)))])
+    budget = ModelCallBudget(max_attempts=1, max_elapsed_s=20)
+    call(budget, schema=GroundingOutput.model_json_schema(), validate=GroundingOutput.model_validate)
+    assert len(requests) == 1
+    summary = budget.attempts[0].diagnostic.summary
+    assert "judgements[].quotes[].quote: string_type" in summary
+    assert "<额外字段>: extra_forbidden" in summary
+    assert "private-secret" not in summary and len(summary) <= 240
+
+
+def test_pydantic_business_reason_is_safe_in_the_single_repair_request(temp_db: None, transport: Transport) -> None:
+    from app.analysis.editorial_contracts import EditorialReviewResultV1
+    from tests.unit.test_editorial_contracts import _payload
+
+    save_model_configuration(catalog())
+    invalid = _payload(verdict="needs_review", uncertainties=[], suggested_bounds=None)
+    valid = _payload(verdict="needs_review", uncertainties=["需人工复核"], suggested_bounds=None)
+    requests = transport([(200, response(json.dumps(invalid))), (200, response(json.dumps(valid)))])
+    budget = llm.new_editorial_budget()
+    result = call(
+        budget, schema=EditorialReviewResultV1.model_json_schema(), validate=EditorialReviewResultV1.model_validate
+    )
+    assert result.value is not None and len(requests) == 2
+    assert "待复核必须明确不确定因素" in budget.attempts[0].diagnostic.summary
+    assert "待复核必须明确不确定因素" in json.loads(requests[1].content)["messages"][0]["content"]
+
+
+@pytest.mark.parametrize(
+    "finish,extra,detail",
+    [
+        ("length", {}, "达到输出或上下文长度上限"),
+        ("content_filter", {}, "拒绝提供"),
+        ("refusal", {}, "拒绝提供"),
+        ("tool_calls", {}, "返回工具调用"),
+        ("stop", {"refusal": "private-secret"}, "拒绝提供"),
+        ("stop", {"tool_calls": [{"private-secret": "private-secret"}]}, "返回工具调用"),
+        ("private-secret", {}, "未满足完整性或大小要求"),
+        ({"private-secret": "private-secret"}, {}, "未满足完整性或大小要求"),
+    ],
+)
+def test_known_incomplete_response_reasons_use_safe_fixed_diagnostics(
+    temp_db: None, transport: Transport, finish: object, extra: dict[str, object], detail: str
+) -> None:
+    save_model_configuration(catalog())
+    body = response()
+    body["choices"][0]["finish_reason"] = finish
+    body["choices"][0]["message"].update(extra)
+    requests = transport([(200, body)])
+    budget = ModelCallBudget(max_attempts=1, max_elapsed_s=20)
+    result = call(budget)
+    assert result.error == "invalid_output" and result.value is None and len(requests) == 1
+    attempt = budget.attempts[0]
+    assert attempt.diagnostic.category == "response" and detail in attempt.diagnostic.summary
+    assert attempt.usage.output_tokens == 20
+    assert "private-secret" not in attempt.model_dump_json()

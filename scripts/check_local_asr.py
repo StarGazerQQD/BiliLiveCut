@@ -5,13 +5,53 @@ from __future__ import annotations
 
 import argparse
 import json
+import math
 import os
 import sys
 import tempfile
 import time
 from pathlib import Path
+from typing import TYPE_CHECKING
+
+if TYPE_CHECKING:
+    from app.analysis.transcription.models import ASRTranscriptResult
 
 REPO_ROOT = Path(__file__).resolve().parent.parent
+
+
+def validate_result(result: ASRTranscriptResult, *, engine: str, expect: str) -> bool:
+    """Validate the requested engine and distinguish VAD completion from model inference."""
+    from app.analysis.transcription.speech_evidence import require_final_result
+
+    require_final_result(result)
+    text = (result.final_text or result.text).strip()
+    if result.result_type != expect or bool(text) != (expect == "speech"):
+        raise AssertionError(f"Expected {expect}, got {result.result_type}; text_chars={len(text)}")
+    if any(
+        not (
+            math.isfinite(segment.start)
+            and math.isfinite(segment.end)
+            and 0 <= segment.start <= segment.end <= result.audio_duration + 0.1
+        )
+        for segment in result.segments
+    ):
+        raise AssertionError("ASR segment timestamps are invalid")
+    if expect == "no_speech":
+        return False
+    expected_backend = "funasr-nano" if engine == "funasr_nano" else engine
+    if (
+        result.backend != expected_backend
+        or result.primary_backend not in {"", expected_backend}
+        or result.primary_status == "failed"
+        or result.primary_error_type
+        or result.fallback_backend
+        or result.final_text_source == "fallback"
+    ):
+        raise AssertionError(
+            f"Requested {engine} did not complete primary inference: backend={result.backend} "
+            f"primary={result.primary_backend}/{result.primary_status} fallback={result.fallback_backend}"
+        )
+    return True
 
 
 def main(argv: list[str] | None = None) -> int:
@@ -37,6 +77,8 @@ def main(argv: list[str] | None = None) -> int:
     if args.expect == "no_speech" and args.contains:
         parser.error("--contains cannot be used with --expect no_speech")
 
+    sys.dont_write_bytecode = True
+    os.environ["PYTHONDONTWRITEBYTECODE"] = "1"
     sys.path.insert(0, str(REPO_ROOT))
     sys.path.insert(0, str(REPO_ROOT / "packaging/portable/src"))
     from blc_portable.engine_pack.installer import check_installed_models
@@ -45,10 +87,13 @@ def main(argv: list[str] | None = None) -> int:
     if not valid:
         raise RuntimeError("Installed model verification failed: " + "; ".join(errors))
 
-    # Fresh CLI process only: a temporary cwd and explicit environment prevent reading
-    # the repository .env or writing to the user's database, media or model caches.
+    # 独立 CLI 使用专用临时目录，避免读取仓库 .env 或写入原数据库和模型目录。
     original_cwd = Path.cwd()
-    with tempfile.TemporaryDirectory(prefix="blc-local-asr-") as temporary:
+    original_tempdir = tempfile.tempdir
+    work_root = REPO_ROOT / ".local" / "asr-check"
+    work_root.mkdir(parents=True, exist_ok=True)
+    with tempfile.TemporaryDirectory(prefix="run-", dir=work_root) as temporary:
+        tempfile.tempdir = temporary
         os.chdir(temporary)
         os.environ.update(
             DATABASE_URL="sqlite:///:memory:",
@@ -59,6 +104,11 @@ def main(argv: list[str] | None = None) -> int:
             TRANSFORMERS_OFFLINE="1",
             MODELSCOPE_CACHE=str(Path(temporary) / "modelscope"),
             HF_HOME=str(Path(temporary) / "huggingface"),
+            TORCH_HOME=str(Path(temporary) / "torch"),
+            XDG_CACHE_HOME=str(Path(temporary) / "cache"),
+            NUMBA_CACHE_DIR=str(Path(temporary) / "numba"),
+            TEMP=temporary,
+            TMP=temporary,
             ASR_PRIMARY=args.engine,
             ASR_PRIMARY_DEVICE=args.device,
             ASR_AUXILIARY_DEVICE=args.device,
@@ -76,19 +126,24 @@ def main(argv: list[str] | None = None) -> int:
             started = time.monotonic()
             try:
                 result = IsolatedPipeline(pool=pool, context={"operation": "local_asr_check"}).transcribe(str(audio))
+                model_states = pool.infos()
             finally:
                 pool.shutdown(0)
             text = (result.final_text or result.text).strip()
-            if result.result_type != args.expect or bool(text) != (args.expect == "speech"):
-                raise AssertionError(f"Expected {args.expect}, got {result.result_type}; text_chars={len(text)}")
+            target_engine_verified = validate_result(result, engine=args.engine, expect=args.expect)
             if args.contains and args.contains not in text:
                 raise AssertionError("ASR text does not contain the requested fragment")
-            if any(not (0 <= segment.start <= segment.end) for segment in result.segments):
-                raise AssertionError("ASR segment timestamps are invalid")
             report = {
                 "engine": args.engine,
                 "device": args.device,
                 "backend": result.backend,
+                "primary_backend": result.primary_backend,
+                "primary_status": result.primary_status,
+                "fallback_backend": result.fallback_backend,
+                "review_backend": result.review_backend,
+                "target_engine_verified": target_engine_verified,
+                "model_states": model_states,
+                "cuda_libraries": result.metadata.get("cuda_libraries"),
                 "result_type": result.result_type,
                 "text_chars": len(text),
                 "segments": len(result.segments),
@@ -98,6 +153,7 @@ def main(argv: list[str] | None = None) -> int:
             }
         finally:
             os.chdir(original_cwd)
+            tempfile.tempdir = original_tempdir
     rendered = json.dumps(report, ensure_ascii=False, indent=2)
     if output:
         output.parent.mkdir(parents=True, exist_ok=True)

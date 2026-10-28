@@ -4,11 +4,13 @@ from __future__ import annotations
 
 import threading
 import time as _time_mod
+from collections import Counter
 from typing import TYPE_CHECKING
 
 from sqlmodel import select
 
-from app.analysis.transcription.process_pool import ASRShutdownError
+from app.analysis.transcription.process_pool import ASRShutdownError, RemoteASRError
+from app.core.asr_failures import permanent_device_error
 from app.core.config import settings
 from app.core.execution import resource_scope
 from app.core.process_control import ProcessShutdownError
@@ -45,6 +47,25 @@ if TYPE_CHECKING:
     from sqlmodel import Session
 
 
+_waiting_counts: dict[str, tuple[dict[str, int], tuple[int, ...]]] = {}
+_waiting_counts_lock = threading.Lock()
+
+
+def _log_waiting_counts(stage: str, counts: dict[str, int], samples: tuple[int, ...] = ()) -> None:
+    """只在等待原因或数量变化时记录汇总，保持轮询日志有界。"""
+    import logging
+
+    with _waiting_counts_lock:
+        previous = _waiting_counts.get(stage, ({}, ()))
+        if previous == (counts, samples):
+            return
+        _waiting_counts[stage] = (dict(counts), samples)
+    level = logging.WARNING if counts.get("missing_event") else logging.DEBUG
+    logging.getLogger(__name__).log(
+        level, "scheduler_waiting stage=%s counts=%s sample_task_ids=%s", stage, dict(sorted(counts.items())), samples
+    )
+
+
 def room_cfg_from_task(task: SegmentTask) -> dict[str, bool | float]:
     """从任务读取房间级自动化开关。
 
@@ -73,9 +94,7 @@ def room_cfg_from_task(task: SegmentTask) -> dict[str, bool | float]:
 
 def advance_recorded() -> None:
     """先把 RECORDED 任务送入无 ASR 信号检测，再进入转写。"""
-    import logging
-
-    _logger = logging.getLogger(__name__)
+    waiting: Counter[str] = Counter()
     with get_session() as db:
         tasks = db.exec(select(SegmentTask).where(SegmentTask.stage == TaskStatus.RECORDED)).all()
         for task in tasks:
@@ -83,7 +102,7 @@ def advance_recorded() -> None:
             if seg is not None and seg.status == OldStatus.RECORDED:
                 cfg = room_cfg_from_task(task)
                 if not cfg.get("auto_analyze", False):
-                    _logger.debug("auto_analyze=off, 片段 %s 不自动进入热点检测", task.segment_id)
+                    waiting["auto_analyze=off"] += 1
                     continue
                 session = db.get(RecordingSession, task.session_id)
                 task.priority = (
@@ -107,25 +126,25 @@ def advance_recorded() -> None:
                 )
                 enqueue_next(task, TaskStatus.QUEUED_FOR_ANALYSIS)
                 db.add(task)
+    _log_waiting_counts(TaskStatus.RECORDED, waiting)
 
 
 def advance_transcribed() -> None:
     """TRANSCRIBED → QUEUED_FOR_ANALYSIS，并为活动直播保留一个分段的后视窗口。"""
-    import logging
-
-    _logger = logging.getLogger(__name__)
+    waiting: Counter[str] = Counter()
     with get_session() as db:
         tasks = db.exec(select(SegmentTask).where(SegmentTask.stage == TaskStatus.TRANSCRIBED)).all()
         for task in tasks:
             cfg = room_cfg_from_task(task)
             if not cfg.get("auto_analyze", False):
-                _logger.debug("auto_analyze=off, 片段 %s 不自动创建分析任务", task.segment_id)
+                waiting["auto_analyze=off"] += 1
                 continue
             if not _analysis_lookahead_ready(db, task):
-                _logger.debug("片段 %s 等待下一相邻分段转写，以保留爆点尾部", task.segment_id)
+                waiting["lookahead"] += 1
                 continue
             enqueue_next(task, TaskStatus.QUEUED_FOR_ANALYSIS)
             db.add(task)
+    _log_waiting_counts(TaskStatus.TRANSCRIBED, waiting)
 
 
 def _analysis_lookahead_ready(db: Session, task: SegmentTask) -> bool:
@@ -227,24 +246,30 @@ def advance_awaiting_review() -> None:
     _logger = logging.getLogger(__name__)
     from app.pipeline.approval import approve_event_and_task
 
+    waiting: Counter[str] = Counter()
+    missing_events: list[int] = []
     with get_session() as db:
-        tasks = db.exec(select(SegmentTask).where(SegmentTask.stage == TaskStatus.AWAITING_REVIEW)).all()
+        tasks = db.exec(
+            select(SegmentTask).where(SegmentTask.stage == TaskStatus.AWAITING_REVIEW).order_by(SegmentTask.id)
+        ).all()
         for task in tasks:
             cfg = room_cfg_from_task(task)
             auto_approve = bool(cfg.get("auto_approve", False))
             threshold = float(cfg.get("auto_approve_threshold", settings.highlight_auto_approve_threshold))
 
             if not auto_approve:
-                _logger.debug("auto_approve=off, task %s 留在 awaiting_review", task.id)
+                waiting["auto_approve=off"] += 1
                 continue
 
             candidate = db.get(HighlightCandidate, task.candidate_id) if task.candidate_id else None
             score = candidate.highlight_score if candidate else 0.0
             if score < threshold:
-                _logger.debug("候选 %s 分数 %.2f < 阈值 %.2f, 不自动批准", task.candidate_id, score, threshold)
+                waiting["below_threshold"] += 1
                 continue
             if task.event_id is None:
-                _logger.warning("task %s 缺少 event_id, 无法自动批准", task.id)
+                waiting["missing_event"] += 1
+                if len(missing_events) < 3:
+                    missing_events.append(task.id)
                 continue
 
             ok = approve_event_and_task(
@@ -262,6 +287,7 @@ def advance_awaiting_review() -> None:
                     task.event_id,
                     score,
                 )
+    _log_waiting_counts(TaskStatus.AWAITING_REVIEW, waiting, tuple(missing_events))
 
 
 def advance_approved() -> None:
@@ -321,6 +347,18 @@ def advance_rendered() -> None:
             db.add(task)
 
 
+def _continue_without_asr(task: SegmentTask, reason: str) -> None:
+    """保留明确不可用的 ASR 证据，让非语义热点分析继续。"""
+    task.context_json = update_event_first_context(
+        task.context_json,
+        analysis_pass="candidate",
+        asr_mode="unavailable",
+        asr_evidence_state="unavailable",
+        asr_unavailable_reason=reason[:500],
+    )
+    enqueue_next(task, TaskStatus.TRANSCRIBED)
+
+
 def retry_expired() -> None:
     """TRANSIENT_FAILED 任务超时后重新入队 (或永久失败)。"""
     import logging
@@ -342,14 +380,7 @@ def retry_expired() -> None:
             if task.attempts >= task.max_retries:
                 if task.failed_stage == TaskStatus.TRANSCRIBING:
                     reason = task.last_error or "ASR 重试次数超限"
-                    task.context_json = update_event_first_context(
-                        task.context_json,
-                        analysis_pass="candidate",
-                        asr_mode="unavailable",
-                        asr_evidence_state="unavailable",
-                        asr_unavailable_reason=reason[:500],
-                    )
-                    enqueue_next(task, TaskStatus.TRANSCRIBED)
+                    _continue_without_asr(task, reason)
                     _logger.warning(
                         "任务 %s ASR 已耗尽重试，按 unavailable 证据继续热点分析",
                         task.id,
@@ -450,7 +481,13 @@ def execute_task(task_id: int, active_stage_val: str, lease_token: str | None = 
                 db.connection().exec_driver_sql("BEGIN IMMEDIATE")
             t = db.get(SegmentTask, task_id)
             if t is not None and lease is not None and still_owns_lease(db, lease):
-                mark_failed(t, safe_exception_summary(exc), permanent=False)
+                if active_stage_val == TaskStatus.TRANSCRIBING and (
+                    permanent_device_error(exc) or isinstance(exc, RemoteASRError) and not exc.retryable
+                ):
+                    _continue_without_asr(t, safe_exception_summary(exc))
+                    _logger.warning("任务 %s ASR 设备确定不可用，按 unavailable 证据继续热点分析", task_id)
+                else:
+                    mark_failed(t, safe_exception_summary(exc), permanent=False)
                 db.add(t)
             elif t is not None:
                 _logger.warning("stale_result_discarded: task=%s 已失去租约, 丢弃失败结果", task_id)

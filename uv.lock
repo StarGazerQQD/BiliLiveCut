@@ -113,7 +113,7 @@ wheels = [
 
 [[package]]
 name = "bili-live-cut"
-version = "0.1.20.1a0"
+version = "0.1.20.2a0"
 source = { editable = "." }
 dependencies = [
     { name = "brotli" },
@@ -163,6 +163,7 @@ dev = [
     { name = "cython" },
     { name = "faster-whisper" },
     { name = "huggingface-hub" },
+    { name = "markdown-it-py" },
     { name = "modelscope-hub" },
     { name = "openai" },
     { name = "pillow" },
@@ -214,6 +215,7 @@ requires-dist = [
     { name = "httpx", specifier = ">=0.27" },
     { name = "huggingface-hub", marker = "extra == 'asr-whisper'", specifier = "==1.30.0" },
     { name = "loguru", specifier = ">=0.7" },
+    { name = "markdown-it-py", marker = "extra == 'dev'", specifier = ">=4.2,<5" },
     { name = "modelscope", marker = "extra == 'asr-funasr'", specifier = ">=1.20" },
     { name = "modelscope-hub", marker = "extra == 'dev'", specifier = "==0.2.0" },
     { name = "numpy", specifier = ">=1.26" },

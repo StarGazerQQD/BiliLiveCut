@@ -417,6 +417,39 @@ def test_usage_counts_are_strict_and_cost_is_explicit_estimate() -> None:
             TokenUsage(**{name: 2**63})
 
 
+def test_old_attempts_remain_readable_and_failure_diagnostic_roundtrips() -> None:
+    assert _attempt().diagnostic is None
+    saved = _attempt(
+        status="failed",
+        error="provider_error",
+        diagnostic={"category": "http", "summary": "服务拒绝请求", "http_status": 400, "request_id": "req-1"},
+    )
+    assert ModelAttempt.model_validate_json(saved.model_dump_json()) == saved
+    with pytest.raises(ValidationError, match="成功请求"):
+        _attempt(diagnostic={"category": "http", "summary": "服务拒绝请求"})
+
+
+@pytest.mark.parametrize(
+    "changes",
+    [
+        {"http_status": 200},
+        {"http_status": 600},
+        {"summary": "x" * 241},
+        {"category": "unknown"},
+        {"request_id": "x" * 129},
+        {"provider_code": "private\ntext"},
+        {"raw_body": "private"},
+    ],
+)
+def test_failure_diagnostic_rejects_unbounded_or_unapproved_fields(changes: dict[str, object]) -> None:
+    with pytest.raises(ValidationError):
+        _attempt(
+            status="failed",
+            error="provider_error",
+            diagnostic={"category": "http", "summary": "服务拒绝请求", **changes},
+        )
+
+
 def test_empty_evidence_cannot_claim_to_be_available() -> None:
     with pytest.raises(ValidationError, match="实际正文或测量指标"):
         _evidence(excerpts=[])

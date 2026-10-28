@@ -57,6 +57,15 @@ def test_runtime_locks_are_complete_and_strict() -> None:
     assert _direct_requirement_names() <= set(py311)
 
 
+def test_optional_cublas_is_packaged_without_changing_cpu_lock() -> None:
+    assert "nvidia-cublas-cu12" not in _load_lock("py312")
+    assert (_lock_dir / "requirements-cublas-win-x64.in").is_file()
+    assert (_lock_dir / "requirements-cublas-win-x64.lock").is_file()
+    assert "requirements-cublas-win-x64.lock" in (_portable_dir / "specs/portable_launcher.spec").read_text(
+        encoding="utf-8"
+    )
+
+
 def test_runtime_locks_cover_core_application_imports() -> None:
     required = {
         "brotli",

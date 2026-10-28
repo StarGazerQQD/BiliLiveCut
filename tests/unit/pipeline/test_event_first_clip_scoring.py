@@ -165,8 +165,8 @@ def test_candidate_pass_scores_confirmed_event_and_links_task(
 
     result = analyze_compute(task_id)
 
-    assert result["decision"] == HighlightDecision.CANDIDATE
-    assert len(result["event_clip_results"]) == 1
+    assert result["decision"] == HighlightDecision.EVENT_PASS
+    assert "event_clip_results" not in result
     assert "additional_candidates" not in result
     commit_highlight(_lease(task_id), result, 50)
 
@@ -195,7 +195,7 @@ def test_candidate_pass_keeps_semantic_only_hotspot_without_candidate(
 
     result = analyze_compute(task_id)
 
-    assert result["decision"] == HighlightDecision.BELOW_THRESHOLD
+    assert result["decision"] == HighlightDecision.EVENT_PASS
     commit_highlight(_lease(task_id), result, 50)
     with get_session() as db:
         task = db.get(SegmentTask, task_id)
@@ -226,8 +226,7 @@ def test_terminal_commit_scores_event_confirmed_after_compute(
 
     result = analyze_compute(task_id)
 
-    assert result["decision"] == HighlightDecision.BELOW_THRESHOLD
-    assert result["event_clip_results"] == []
+    assert result["decision"] == HighlightDecision.EVENT_PASS
     commit_highlight(_lease(task_id), result, 50)
 
     with get_session() as db:
@@ -295,11 +294,12 @@ def test_lost_lease_during_generation_prevents_grounding_and_commit(temp_db: Non
 
     requests = install_editorial_service(monkeypatch, replacing_worker, grounded=True)
     result = analyze_compute(task_id)
-    assert len(requests) == 1
-    assert result["event_clip_results"] == []
-    assert result["event_model_budgets"][event_id].attempts[0].error == "cancelled"
+    assert not requests
     commit_highlight(_lease(task_id), result, 50)
+    assert len(requests) == 1
     with get_session() as db:
+        assert db.get(SegmentTask, task_id).lease_token == "new-owner"
+        assert db.get(SegmentTask, task_id).stage == TaskStatus.ANALYZING
         assert db.get(HotspotEvent, event_id).title is None
         assert not db.exec(select(HighlightCandidate)).all()
 
@@ -336,9 +336,9 @@ def test_partial_candidate_batch_rolls_back_before_followup_failure(
     import pytest
 
     from app.analysis.clip_scorer import compute_hotspot_clip_draft
-    from app.pipeline.workers.analyze import HighlightDecision, commit_highlight
+    from app.pipeline.workers.analyze import HighlightDecision, _commit_event_analysis
 
-    task_id, event_id, session_id = _seed_candidate_pass(strong=True)
+    task_id, event_id, _session_id = _seed_candidate_pass(strong=True)
     _patch_compute_dependencies(monkeypatch)
     with get_session() as db:
         event = db.get(HotspotEvent, event_id)
@@ -348,7 +348,6 @@ def test_partial_candidate_batch_rolls_back_before_followup_failure(
         second.peak_ts = _START + timedelta(seconds=230)
         second.end_ts = _START + timedelta(seconds=260)
         db.add(second)
-        segment_id = db.get(SegmentTask, task_id).segment_id
     draft = compute_hotspot_clip_draft(event_id)
     assert draft.decision == HighlightDecision.CANDIDATE
 
@@ -363,15 +362,9 @@ def test_partial_candidate_batch_rolls_back_before_followup_failure(
 
     monkeypatch.setattr("app.analysis.llm.os.replace", fail_ledger_write)
     with pytest.raises(BudgetAccountingError):
-        commit_highlight(
+        _commit_event_analysis(
             _lease(task_id),
-            {
-                "decision": HighlightDecision.CANDIDATE,
-                "segment_id": segment_id,
-                "session_id": session_id,
-                "hotspot_drafts": [],
-                "event_clip_results": [{"event_id": event_id, "enrichment": None, "clip_draft": draft}],
-            },
+            [{"event_id": event_id, "enrichment": None, "clip_draft": draft}],
             50,
         )
     with get_session() as db:
@@ -449,9 +442,9 @@ def test_evidence_changed_during_model_call_is_recomputed_before_scoring(
 
     install_editorial_service(monkeypatch, update_once)
     result = analyze_compute(task_id)
-    assert calls == 3
-    assert len(result["event_clip_results"]) == 1
+    assert calls == 0
     commit_highlight(_lease(task_id), result, 50)
+    assert calls == 3
     with get_session() as db:
         event = db.get(HotspotEvent, event_id)
         assert event is not None and event.candidate_id is not None
@@ -511,9 +504,9 @@ def test_continuously_changing_evidence_uses_bounded_task_retry(temp_db: None, m
 def test_target_changed_during_model_call_does_not_score_old_event(
     temp_db: None, monkeypatch: MonkeyPatch, status: str
 ) -> None:
-    from app.pipeline.workers.analyze import analyze_compute
+    from app.pipeline.workers.analyze import _compute_event_clip_result
 
-    task_id, event_id, _session_id = _seed_candidate_pass(strong=True)
+    _task_id, event_id, _session_id = _seed_candidate_pass(strong=True)
     _patch_compute_dependencies(monkeypatch)
 
     def change_target(prompt: str, **kwargs: object) -> None:
@@ -533,8 +526,7 @@ def test_target_changed_during_model_call_does_not_score_old_event(
                 db.add(event)
 
     install_editorial_service(monkeypatch, change_target)
-    result = analyze_compute(task_id)
-    assert result["event_clip_results"] == []
+    assert _compute_event_clip_result(event_id) is None
     with get_session() as db:
         assert not db.exec(select(HighlightCandidate)).all()
         assert not db.exec(select(HighlightEvent)).all()
@@ -544,15 +536,15 @@ def test_target_changed_during_model_call_does_not_score_old_event(
 def test_commit_rejects_mixed_enrichment_and_clip_snapshots(
     temp_db: None, monkeypatch: MonkeyPatch, mismatch: str
 ) -> None:
-    from app.pipeline.workers.analyze import analyze_compute, commit_highlight
+    from app.pipeline.workers.analyze import _commit_event_analysis, _compute_event_clip_result
 
     task_id, event_id, _session_id = _seed_candidate_pass(strong=True)
     _patch_compute_dependencies(monkeypatch)
-    result = analyze_compute(task_id)
-    item = result["event_clip_results"][0]
+    item = _compute_event_clip_result(event_id)
+    assert item is not None
     item["enrichment"] = replace(item["enrichment"], **{mismatch: event_id + 1 if mismatch == "event_id" else "stale"})
     with pytest.raises(ValueError, match="同一事件和证据快照"):
-        commit_highlight(_lease(task_id), result, 50)
+        _commit_event_analysis(_lease(task_id), [item], 50)
     with get_session() as db:
         assert db.get(HotspotEvent, event_id).title is None
         assert db.get(SegmentTask, task_id).stage == TaskStatus.ANALYZING
@@ -610,7 +602,7 @@ def test_merged_event_is_recomputed_as_canonical_before_task_completion(
 
     install_editorial_service(monkeypatch, merge_once)
     result = analyze_compute(task_id)
-    assert result["event_clip_results"] == []
+    assert calls == 0
     commit_highlight(_lease(task_id), result, 50)
     assert calls == min(3, attempt_limit) and canonical_id is not None
     with get_session() as db:
@@ -629,7 +621,7 @@ def test_merged_event_is_recomputed_as_canonical_before_task_completion(
 
 
 def test_unrelated_value_error_is_not_treated_as_evidence_change(temp_db: None, monkeypatch: MonkeyPatch) -> None:
-    from app.pipeline.workers.analyze import analyze_compute
+    from app.pipeline.workers.analyze import analyze_compute, commit_highlight
 
     task_id, _event_id, _session_id = _seed_candidate_pass(strong=True)
     _patch_compute_dependencies(monkeypatch)
@@ -645,8 +637,9 @@ def test_unrelated_value_error_is_not_treated_as_evidence_change(temp_db: None, 
         return "{}"
 
     install_editorial_service(monkeypatch, invalid_model_configuration)
+    result = analyze_compute(task_id)
     with pytest.raises(ValueError, match="模型配置无效"):
-        analyze_compute(task_id)
+        commit_highlight(_lease(task_id), result, 50)
     assert calls == 1
 
 

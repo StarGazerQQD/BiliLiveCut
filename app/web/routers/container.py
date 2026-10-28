@@ -4,7 +4,7 @@ from __future__ import annotations
 
 from typing import Any
 
-from fastapi import APIRouter, HTTPException, Request
+from fastapi import APIRouter, HTTPException, Query, Request
 from pydantic import BaseModel, ConfigDict
 
 from app.web.services import clips as clips_service
@@ -131,6 +131,14 @@ def get_notifications(since_id: int = 0) -> list[dict[str, Any]]:
 
 
 @router.post("/open-clips-dir")
-def open_clips_dir() -> dict[str, str]:
+def open_clips_dir(
+    session_id: int | None = Query(default=None, gt=0),
+    unknown_session: bool = False,
+) -> dict[str, str]:
     """在本机文件管理器打开切片目录。"""
-    return {"clips_dir": clips_service.open_clips_directory()}
+    if session_id is not None and unknown_session:
+        raise HTTPException(status_code=422, detail="场次筛选与未关联场次不能同时使用")
+    try:
+        return {"clips_dir": clips_service.open_clips_directory(session_id=session_id, unknown_session=unknown_session)}
+    except ValueError as exc:
+        raise HTTPException(status_code=422, detail=str(exc)) from exc

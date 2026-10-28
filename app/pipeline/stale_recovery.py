@@ -256,7 +256,9 @@ def recover_pending_clips() -> int:
 
         for var in pending_variants:
             file_path = var.file_path
-            formal_exists = file_path and Path(file_path).exists()
+            formal_exists = (
+                file_path and Path(file_path).is_file() and (not var.cover_path or Path(var.cover_path).is_file())
+            )
 
             if formal_exists:
                 # 文件已就位 — 标记 READY

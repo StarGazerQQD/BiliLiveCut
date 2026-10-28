@@ -42,6 +42,7 @@ for _lf in sorted(Path(_lock_dir).glob("requirements-runtime-*-win-x64.lock")):
     _lock_files.append((str(_lf), "locks"))
 for _lf in sorted(Path(_lock_dir).glob("requirements-torch-*-win-x64.lock")):
     _lock_files.append((str(_lf), "locks"))
+_lock_files.append((str(Path(_lock_dir) / "requirements-cublas-win-x64.lock"), "locks"))
 
 _bootstrap_wheels = []
 for _wheel in sorted(_bootstrap_wheels_dir.glob("*.whl")):
@@ -106,7 +107,7 @@ exe = EXE(
     a.binaries,
     a.datas,
     [],
-    name="BiliLiveCut-Portable-Lite-v0.1.20.1-alpha-x64",
+    name="BiliLiveCut-Portable-Lite-v0.1.20.2-alpha-x64",
     debug=False,
     bootloader_ignore_signals=False,
     strip=False,

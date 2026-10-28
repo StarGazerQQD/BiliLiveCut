@@ -103,3 +103,14 @@ def test_result_never_contains_both_value_and_failure() -> None:
     with pytest.raises(ValueError):
         StructuredCallResult(value="result", error="timeout")
     assert StructuredCallResult(value={"answer": True}, error=None).value == {"answer": True}
+
+
+def test_initial_protocol_and_negotiated_protocol_are_preserved_for_later_steps() -> None:
+    budget = ModelCallBudget(max_attempts=8, max_elapsed_s=5)
+    assert budget.protocol("a", "x", initial="json_object") == "json_object"
+    assert budget.protocol("a", "x") == "json_object"
+    assert budget.downgrade_protocol("a", "x")
+    assert budget.protocol("a", "x", initial="json_object") == "text"
+    assert not budget.downgrade_protocol("a", "x")
+    assert budget.protocol("b", "x") == "json_schema"
+    assert budget.protocol("a", "y") == "json_schema"

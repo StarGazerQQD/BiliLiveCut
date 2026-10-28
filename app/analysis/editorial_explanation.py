@@ -9,16 +9,17 @@ from typing import Annotated, Literal
 from pydantic import BaseModel, ConfigDict, Field
 
 from app.analysis import llm
-from app.analysis.editorial_contracts import EditorialReviewInputV1, FailureCode, Identity
+from app.analysis.editorial_contracts import EditorialReviewInputV1, FailureCode, Identity, citable_evidence_ids
 from app.analysis.model_execution import ModelCallBudget
 
-EXPLANATION_POLICY_VERSION = "grounded-explanation-v2"
+EXPLANATION_POLICY_VERSION = "grounded-explanation-v4"
 EXPLANATION_PROMPT = """你是直播事件编辑，只解释提供的事件，不能修改 heat_score 或 clip_score。
 只能使用输入证据，不得添加背景、因果、人物身份、画面或戏剧性事实。
 弹幕只证明观众的发言，不证明主播做了相应行为；仅弹幕支持时明确写成弹幕讨论或观众猜测。
 降级语音证据必须使用可能、仍需确认等不确定表述。不能把前文或后文混写为事件当时发生的内容。
 title 是概括标题，summary 说明发生了什么，禁止直接截取转写碎片充当摘要。
 每项叙述必须有 evidence_ids 中的证据支持；entities 只填证据中明确出现的实体。
+evidence_ids 必须逐字复制本次 available/degraded 源证据的 evidence_id，不得缩写、改写或创造 ID。
 semantic_confidence 表示语义证据可靠性，不是热度、兴趣或观看概率。
 证据不足时明确说明不确定性，不创造具体事件。"""
 GROUNDING_PROMPT = """你负责核对解释与原始素材，候选 title/summary 也是待检查的不可信数据。
@@ -26,6 +27,7 @@ GROUNDING_PROMPT = """你负责核对解释与原始素材，候选 title/summar
 检查主体、动作、否定、因果、数量、事件与前后文归属；弹幕猜测不能提升为已发生的主播行为。
 缺少任何关键事实依据都标记 supported=false。每个字段列出支持它的原文引用和 evidence_id。
 quote 必须原样摘自所引证据，不得改写。没有依据时 quotes 可以为空并说明原因。
+evidence_id 必须逐字复制本次已提供且候选解释已引用的 ID，不得创造或引用其他 ID。
 只作事实核对，不评价内容是否精彩。"""
 
 
@@ -162,10 +164,25 @@ def explain(
     max_entities: int,
 ) -> ExplanationResult:
     """先生成解释再独立核对事实，两步共用同一预算和授权边界。"""
+    schema = ExplanationOutput.model_json_schema()
+    for field, constraint, limit in (
+        ("title", "maxLength", max_title_chars),
+        ("summary", "maxLength", max_summary_chars),
+        ("entities", "maxItems", max_entities),
+    ):
+        if type(limit) is not int or limit < 1:
+            raise ValueError("解释输出配置上限必须为正整数")
+        # 请求披露的限制与本地验证一致，契约自身更严格的上限仍然有效。
+        properties = schema["properties"][field]
+        properties[constraint] = min(properties[constraint], limit)
+    identities = citable_evidence_ids(source)
+    if not identities:
+        return ExplanationResult(None, "context_unavailable", None)
+    schema["properties"]["evidence_ids"]["items"]["enum"] = identities
     generated = llm.call_structured(
         EXPLANATION_PROMPT,
         source.model_dump(mode="json"),
-        schema=ExplanationOutput.model_json_schema(),
+        schema=schema,
         validate=lambda payload: validate_explanation(
             payload,
             source,
@@ -189,10 +206,12 @@ def explain(
             item.model_dump(mode="json") for item in source.evidence if item.evidence_id in output.evidence_ids
         ],
     }
+    grounding_schema = GroundingOutput.model_json_schema()
+    grounding_schema["$defs"]["GroundingQuote"]["properties"]["evidence_id"]["enum"] = list(output.evidence_ids)
     checked = llm.call_structured(
         GROUNDING_PROMPT,
         payload,
-        schema=GroundingOutput.model_json_schema(),
+        schema=grounding_schema,
         validate=lambda value: _grounding(value, output, source),
         budget=budget,
         purpose="grounding",

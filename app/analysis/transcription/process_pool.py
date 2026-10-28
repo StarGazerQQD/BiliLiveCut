@@ -24,6 +24,12 @@ from uuid import uuid4
 from loguru import logger
 
 from app.analysis.transcription.process_tree import ProcessTree
+from app.core.asr_failures import (
+    DeviceFailure,
+    device_failure_context,
+    device_failure_scope,
+    permanent_device_error,
+)
 
 if TYPE_CHECKING:
     from loguru import Message
@@ -41,6 +47,10 @@ class ASRShutdownError(RuntimeError):
 
 class RemoteASRError(RuntimeError):
     """保留子进程根异常类型、原始异常链和已脱敏堆栈。"""
+
+    def __init__(self, message: str, *, retryable: bool = True) -> None:
+        super().__init__(message)
+        self.retryable = retryable
 
 
 def _send(connection: Connection, payload: dict[str, Any]) -> None:
@@ -155,8 +165,20 @@ def _asr_child(connection: Connection) -> None:
         sink_id = logger.add(diagnostic, level="WARNING", diagnose=False, backtrace=False)
         try:
             values = Settings.model_validate(request["settings"]).model_dump()
+            if request["device_scope"] != device_failure_scope(values):
+                raise RuntimeError("ASR 设备故障记录与当前运行时不一致，请重启服务")
+            known = request["device_failures"]
+            if not isinstance(known, list) or len(known) > 64:
+                raise ValueError("ASR 设备故障记录无效")
+            failures = [DeviceFailure.model_validate(item) for item in known]
             publish_settings(values, {})
-            with settings_scope(fresh=True, refresh=False), logger.contextualize(**request["context"]):
+            with (
+                settings_scope(fresh=True, refresh=False),
+                logger.contextualize(**request["context"]),
+                device_failure_context(
+                    failures, lambda failure, emit=emit: emit("device_failure", failure=failure.model_dump())
+                ),
+            ):
                 model_pool.cleanup_idle()
                 if request.get("operation") == "preload":
                     preload_models(refresh=False)
@@ -176,6 +198,7 @@ def _asr_child(connection: Connection) -> None:
             emit(
                 "error",
                 error=sanitize_diagnostic(f"{type(exc).__name__}: {exc}\n{traceback.format_exc()}", limit=16000),
+                retryable=not permanent_device_error(exc),
                 models=model_pool.infos(),
             )
         finally:
@@ -198,6 +221,7 @@ class _Slot:
     started: float = field(default_factory=time.monotonic)
     stage_started: float = field(default_factory=time.monotonic)
     settings: dict[str, object] = field(default_factory=dict)
+    device_scope: str = ""
     outgoing: queue.Queue[dict[str, Any]] = field(default_factory=queue.Queue)
     incoming: queue.Queue[dict[str, Any] | Exception] = field(default_factory=queue.Queue)
     io_stop: threading.Event = field(default_factory=threading.Event)
@@ -256,6 +280,7 @@ class ASRProcessPool:
         self._shutdown_at: float | None = None
         self._operations: dict[str, dict[str, object]] = {}
         self._starting: dict[BaseProcess, Connection] = {}
+        self._device_failures: dict[str, dict[tuple[str, str, str], DeviceFailure]] = {}
 
     @contextmanager
     def operation(self, context: dict[str, object]) -> Iterator[None]:
@@ -350,10 +375,11 @@ class ASRProcessPool:
         from app.core.runtime_settings import process_settings
 
         config = Settings.model_validate(request["settings"])
+        scope = device_failure_scope(config.model_dump())
         roles = _roles(config)
         deadline = time.monotonic() + timeout_s
         slot: _Slot | None = None
-        request = {**request, "request_id": uuid4().hex}
+        request = {**request, "request_id": uuid4().hex, "device_scope": scope}
         with self._condition:
             while True:
                 self._check(deadline, check_cancelled, "resource_wait")
@@ -373,8 +399,8 @@ class ASRProcessPool:
                     break
                 self._condition.wait(0.2)
             for item in list(self._slots):
-                if not item.busy and not item.process.is_alive():
-                    self._kill(item)
+                if not item.busy and (not item.process.is_alive() or item.device_scope != scope):
+                    self._retire(item)
             slot = next((item for item in self._slots if not item.busy), None)
             if slot is None:
                 parent, child = multiprocessing.get_context("spawn").Pipe()
@@ -398,7 +424,7 @@ class ASRProcessPool:
                     self._reap_starting(process)
                     release_starting()
                     raise
-                slot = _Slot(process, parent, tree)
+                slot = _Slot(process, parent, tree, device_scope=scope)
                 slot.io_thread = threading.Thread(
                     target=_slot_io, args=(slot,), name=f"asr-ipc-{process.pid}", daemon=True
                 )
@@ -424,6 +450,7 @@ class ASRProcessPool:
             for role in roles:
                 self._roles[role] = self._roles.get(role, 0) + 1
             slot.reserved_roles = roles
+            request["device_failures"] = [item.model_dump() for item in self._device_failures.get(scope, {}).values()]
         finished = False
         try:
             logger.info("asr_process_start context={} pid={} budget_s={}", slot.context, slot.process.pid, timeout_s)
@@ -462,6 +489,15 @@ class ASRProcessPool:
                     from app.analysis.asr_metrics import apply_event
 
                     apply_event(message["event"], message["values"])
+                elif message["kind"] == "device_failure":
+                    failure = DeviceFailure.model_validate(message["failure"])
+                    with self._condition:
+                        if scope not in self._device_failures and len(self._device_failures) >= 8:
+                            self._device_failures.pop(next(iter(self._device_failures)))
+                        failures = self._device_failures.setdefault(scope, {})
+                        if len(failures) >= 64:
+                            raise RuntimeError("ASR 设备故障记录超过上限")
+                        failures[(failure.backend, failure.device, failure.build)] = failure
                 elif message["kind"] == "diagnostic":
                     from app.core.sanitize import sanitize_diagnostic
 
@@ -491,7 +527,10 @@ class ASRProcessPool:
                 elif message["kind"] in {"error", "result"}:
                     self._check(deadline, check_cancelled, slot.stage)
                     if message["kind"] == "error":
-                        raise RemoteASRError(message["error"])
+                        retryable = message.get("retryable", True)
+                        if type(retryable) is not bool or not isinstance(message.get("error"), str):
+                            raise ValueError("ASR 子进程错误协议无效")
+                        raise RemoteASRError(message["error"], retryable=retryable)
                     finished = True
                     return message
                 else:

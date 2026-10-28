@@ -20,6 +20,7 @@ from app.sources.bilibili.danmaku import (
     OP_AUTH,
     OP_AUTH_REPLY,
     DanmakuAccess,
+    DanmakuAuthenticationError,
     DanmakuClient,
     DanmakuProtocolError,
     _iter_raw,
@@ -93,9 +94,9 @@ async def test_logged_error_immediately_falls_back_to_anonymous(monkeypatch: Mon
 
     assert attempts == ["SESSDATA=valid; bili_jct=csrf; DedeUserID=123", ""]
     assert access == DanmakuAccess(server=anonymous, uid=0, uses_cookie=False)
-    assert client._login_failures == 1  # noqa: SLF001
+    assert client._login_failures == 0  # noqa: SLF001
     assert client.login_disabled is False
-    assert client._next_login_retry_at == 130.0  # noqa: SLF001
+    assert client._next_login_retry_at == 160.0  # noqa: SLF001
 
 
 @pytest.mark.asyncio
@@ -210,7 +211,7 @@ async def test_login_auth_errcode_switches_run_loop_to_anonymous(monkeypatch: Mo
     async def consume_access(access: DanmakuAccess) -> DanmakuAccess | None:
         consumed.append(access.uses_cookie)
         if access.uses_cookie:
-            raise DanmakuProtocolError("弹幕鉴权被拒绝 code=-101")
+            raise DanmakuAuthenticationError("弹幕鉴权被拒绝 code=-101")
         client.stop()
         return None
 

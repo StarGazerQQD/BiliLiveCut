@@ -713,6 +713,34 @@ def test_fact_check_uses_same_attempt_budget_as_generation(temp_db: None, monkey
     assert result.source == "fallback" and len(result.attempts) == len(requests) == 1
 
 
+@pytest.mark.parametrize("limits", [(32, 360, 12), (12, 60, 1)])
+def test_explanation_request_schema_uses_actual_configured_limits(
+    temp_db: None, monkeypatch: MonkeyPatch, limits: tuple[int, int, int]
+) -> None:
+    event_id = _seed_event(evidence=[_evidence_item("speech", "asr", excerpt="主播介绍挑战规则")])
+    config = EventEnricherConfig(max_title_chars=limits[0], max_summary_chars=limits[1], max_entities=limits[2])
+    output = {
+        "title": "挑" * (limits[0] + 1),
+        "summary": "主播介绍挑战规则。",
+        "category": "discussion",
+        "entities": [],
+        "semantic_confidence": 0.8,
+        "evidence_ids": ["speech"],
+    }
+    requests = install_editorial_service(monkeypatch, lambda *_args, **_kwargs: json.dumps(output))
+    result = compute_event_enrichment(event_id, config=config)
+    assert result is not None and result.error == "invalid_output" and result.source == "fallback"
+    assert len(requests) == 2
+    for request in requests:
+        properties = request["response_format"]["json_schema"]["schema"]["properties"]
+        assert (
+            properties["title"]["maxLength"],
+            properties["summary"]["maxLength"],
+            properties["entities"]["maxItems"],
+        ) == limits
+    assert "解释字段超过配置上限" in requests[1]["messages"][0]["content"]
+
+
 def test_semantic_paraphrase_is_accepted_after_grounding_despite_low_lexical_overlap(
     temp_db: None, monkeypatch: MonkeyPatch
 ) -> None:

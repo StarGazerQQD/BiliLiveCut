@@ -19,6 +19,7 @@ V0.1.12.2 变更:
 
 from __future__ import annotations
 
+import os
 import re
 import time
 import uuid
@@ -38,6 +39,7 @@ from app.analysis.transcription.models import (  # single source of truth — no
 )
 from app.core.asr_devices import confirm_torch_model_device, require_torch_device, require_whisper_device
 from app.core.config import settings
+from app.core.cuda_libraries import prepare_cublas
 from app.core.sanitize import safe_exception_summary
 
 if TYPE_CHECKING:
@@ -816,6 +818,7 @@ class FasterWhisperBackend:
             kwargs["initial_prompt"] = initial_prompt
         t0 = time.time()
         with model_pool.use("fallback", self.model_identity, self._load_model) as model:
+            actual_device = str(model.model.device)
             fw_segments, info = model.transcribe(audio_path, **kwargs)
             report_progress("result_iteration", backend="whisper")
 
@@ -843,6 +846,9 @@ class FasterWhisperBackend:
 
         elapsed = time.time() - t0
         full_text = "".join(all_text).strip()
+        library = (
+            prepare_cublas(managed_only=os.environ.get("BLC_PORTABLE") == "1") if actual_device == "cuda" else None
+        )
         report_progress("result_ready", backend="whisper", result_type="speech", segment_count=len(segments))
         logger.info("Whisper 兜底转写完成, 耗时 {:.1f}s, 语言={}", elapsed, info.language)
         asr_metrics.record_backend_call("whisper", elapsed, success=True)
@@ -860,6 +866,7 @@ class FasterWhisperBackend:
             audio_duration=audio_duration,
             real_time_factor=_compute_real_time_factor(elapsed, audio_duration),
             language=info.language,
+            metadata={"cuda_libraries": library.payload()} if library is not None else {},
         )
 
     def transcribe_segment(
@@ -878,6 +885,8 @@ def _load_whisper_model(model_size: str, device: str, compute_type: str) -> Whis
     V0.1.13: 加载前检查系统资源, 不足时根据 asr_resource_policy 决定抛异常或仅警告。
     """
     cuda_index = require_whisper_device(device)
+    if device == "auto":
+        device = "cuda" if cuda_index is not None else "cpu"
     # V0.1.13: ASR resource detection before model loading
     from app.core.asr_detection import check_resources_sufficient
 

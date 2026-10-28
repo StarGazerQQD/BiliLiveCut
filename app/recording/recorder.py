@@ -520,7 +520,12 @@ class Recorder:
         """每次异常只写一条后台可见摘要，详细受限 stderr 留在文件日志。"""
         attempts, elapsed = self._reconnect_limits()
         tail = "\n".join(self._stderr_tail)
-        summary = sanitize_diagnostic(tail, limit=600) or "无 stderr，请检查 FFmpeg 安装及上游日志"
+        fatal = [line for line in self._stderr_tail if classify_ffmpeg_error(1, line) == FfmpegErrorType.PROCESS_CRASH]
+        diagnostic = "\n".join(fatal) if fatal else tail
+        summary = (
+            sanitize_diagnostic(diagnostic, secrets=self._diagnostic_secrets, limit=max(len(diagnostic), 600))[-600:]
+            or "无 stderr，请检查 FFmpeg 安装及上游日志"
+        )
         logger.log(
             "WARNING" if retry else "ERROR",
             "录制异常 room={} session={} exit_code={} category={} http_status={} retry={} "
@@ -939,6 +944,8 @@ class Recorder:
             # HTTPS through an inherited HTTP proxy uses a nested CONNECT protocol.
             "http,https,tcp,tls,crypto,httpproxy",
             *(["-headers", headers] if headers else []),
+            # HLS 初始化段失败后复用 HTTP 连接可能触发 FFmpeg 的 v->input 断言。
+            *(["-http_persistent", "0"] if stream.transport == "hls" else []),
             "-i",
             stream.url,
             "-c",
@@ -1265,6 +1272,7 @@ class Recorder:
             )
         # 先前的网络警告不能遮住随后发生的磁盘/配置故障。
         priority = (
+            FfmpegErrorType.PROCESS_CRASH,
             FfmpegErrorType.DISK_FULL,
             FfmpegErrorType.PERMISSION_DENIED,
             FfmpegErrorType.MISSING_BINARY,

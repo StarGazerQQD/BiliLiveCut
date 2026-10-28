@@ -29,7 +29,7 @@ from sqlmodel import select
 
 from app.clipping.drafts import input_fingerprint, publication
 from app.core.config import settings
-from app.core.paths import clips_dir
+from app.core.paths import session_clips_dir
 from app.core.process_control import ProcessCancelledError, run_cancellable
 from app.core.sanitize import safe_exception_summary
 from app.db.entities import (
@@ -150,7 +150,11 @@ def render_collection(
     job_context: JobContext | None = None,
 ) -> ClipVariant | None:
     """在独占输出范围内计算并发布合集，失败或取消时清理未引用文件。"""
-    output = clips_dir() / f"collection_{topic_id}_{uuid4().hex}.mp4"
+    with get_session() as db:
+        topic = db.get(Topic, topic_id)
+        if topic is None:
+            raise ValueError(f"主题不存在: id={topic_id}")
+        output = session_clips_dir(topic.session_id) / f"collection_{topic_id}_{uuid4().hex}.mp4"
     if output.exists():
         raise FileExistsError("当前合集输出已存在，拒绝覆盖")
     with publication((output,)):
@@ -187,7 +191,7 @@ def _render_collection(
     2. 对每个 clip 做响度标准化(EBU R128)。
     3. 生成章节标题卡(可选,纯色背景+白色文字,2秒)。
     4. 用 FFmpeg concat 滤镜拼接。
-    5. 输出到 clips_dir 并写入 ClipVariant 表。
+    5. 输出到主题所属场次的成品目录并写入 ClipVariant 表。
 
     :param topic_id: 主题 id。
     :param event_ids: 按顺序排列的事件 id 列表。
@@ -209,6 +213,8 @@ def _render_collection(
             logger.error("主题 {} 不存在。", topic_id)
             return None
         topic_snapshot = topic.model_dump(mode="json")
+        if output.parent != session_clips_dir(topic.session_id):
+            raise ValueError("主题所属场次已变化，拒绝写入其他场次目录")
         input_snapshots: dict[int, str] = {}
         clip_snapshots: dict[int, dict[str, object]] = {}
 
@@ -224,6 +230,8 @@ def _render_collection(
             if cand is None:
                 logger.warning("事件 {} 找不到候选。", eid)
                 return None
+            if event.session_id != topic.session_id or cand.session_id != topic.session_id:
+                raise ValueError("合集事件与候选必须属于主题的同一场次")
             clips = db.exec(
                 select(FinalClip)
                 .where(

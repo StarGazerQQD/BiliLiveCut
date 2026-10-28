@@ -101,6 +101,7 @@ async def test_metadata_failures_preserve_success_timestamp(
         current = metadata.room_metadata_view(db, room)
         assert room.title == "标题 A"
         assert current["state"] == "stale" and current["error"]
+        assert "stage=" in current["error"] and "budget_s=" in current["error"]
         assert current["observed_at"] == original["observed_at"]
 
 

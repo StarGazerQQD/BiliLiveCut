@@ -13,6 +13,8 @@ from dataclasses import dataclass
 from pathlib import Path
 from urllib.parse import unquote, urlsplit
 
+from packaging.utils import parse_wheel_filename
+
 from blc_portable.atomic_fs import replace_with_retry
 
 RUNTIMES = ("cpu", "cu126", "cu130")
@@ -127,13 +129,68 @@ def choose_torch_runtime(
     return "cpu"
 
 
-def verify_torch_runtime(python: Path, base_lock: Path, runtime: str, environment: Mapping[str, str]) -> None:
+def cublas_wheels(base_lock: Path) -> tuple[TorchWheel, ...]:
+    """Read the independently generated official Windows cuBLAS support lock."""
+    path = base_lock.with_name("requirements-cublas-win-x64.lock")
+    lines = path.read_text(encoding="utf-8").replace("\\\n", " ").splitlines()
+    entries = [line.strip() for line in lines if line.strip() and not line.startswith("#")]
+    wheels: list[TorchWheel] = []
+    for entry in entries:
+        match = re.fullmatch(
+            r"(nvidia-cublas-cu12|nvidia-cuda-nvrtc-cu12) @ (https://\S+)\s+--hash=sha256:([a-f0-9]{64})", entry
+        )
+        if match is None:
+            raise ValueError("Invalid cuBLAS lock entry")
+        package, url, digest = match.groups()
+        parsed = urlsplit(url)
+        filename = unquote(Path(parsed.path).name)
+        name, version, _build, tags = parse_wheel_filename(filename)
+        if (
+            parsed.netloc != "files.pythonhosted.org"
+            or not parsed.path.startswith("/packages/")
+            or parsed.query
+            or parsed.fragment
+            or name != package
+            or {str(tag) for tag in tags} != {"py3-none-win_amd64"}
+            or version.major != 12
+        ):
+            raise ValueError("cuBLAS wheel does not match the official Windows artifact")
+        wheels.append(TorchWheel(str(name), str(version), filename, url, digest))
+    if sorted(wheel.package for wheel in wheels) != ["nvidia-cublas-cu12", "nvidia-cuda-nvrtc-cu12"]:
+        raise ValueError("cuBLAS lock must contain exactly the cuBLAS and NVRTC Windows wheels")
+    return tuple(wheels)
+
+
+def selected_cuda_wheels(base_lock: Path, runtime: str) -> tuple[TorchWheel, ...]:
+    """Return the complete optional CUDA overlay without changing CPU dependencies."""
+    if runtime == "cpu":
+        return ()
+    return (*cuda_wheels(base_lock, runtime), *(cublas_wheels(base_lock) if runtime == "cu130" else ()))
+
+
+def expected_versions(base_lock: Path, runtime: str) -> dict[str, str]:
+    """Use one complete inventory for installation and post-install verification."""
+    versions = dict(re.findall(r"^([a-z0-9.-]+)==([^\s]+)", base_lock.read_text(encoding="utf-8"), re.MULTILINE))
+    versions.update({wheel.package: wheel.version for wheel in selected_cuda_wheels(base_lock, runtime)})
+    return versions
+
+
+def verify_torch_runtime(
+    python: Path,
+    base_lock: Path,
+    runtime: str,
+    environment: Mapping[str, str],
+    *,
+    source_dir: Path | None = None,
+) -> None:
     """Import both installed packages and verify their actual build before persisting."""
-    expected = (
-        {wheel.package: wheel.version for wheel in cuda_wheels(base_lock, runtime)}
-        if runtime != "cpu"
-        else dict(re.findall(r"^(torch|torchaudio)==([^\s]+)", base_lock.read_text(encoding="utf-8"), re.MULTILINE))
-    )
+    expected = expected_versions(base_lock, runtime)
+    env = dict(environment)
+    if runtime != "cpu":
+        if source_dir is None or not (source_dir / "app/core/cuda_libraries.py").is_file():
+            raise RuntimeError("CUDA preflight requires the selected Runtime source directory")
+        env["PYTHONPATH"] = str(source_dir.resolve())
+        env["PYTHONNOUSERSITE"] = "1"
     expected_cuda = {"cpu": None, "cu126": "12.6", "cu130": "13.0"}[runtime]
     script = (
         "import importlib.metadata as m, json, sys; import torch, torchaudio; "
@@ -141,16 +198,38 @@ def verify_torch_runtime(python: Path, base_lock: Path, runtime: str, environmen
         "if actual != expected: raise RuntimeError(f'Torch package versions mismatch: {actual}')\n"
         "cuda=json.loads(sys.argv[2])\n"
         "if torch.version.cuda != cuda: raise RuntimeError(f'Torch CUDA build mismatch: {torch.version.cuda}')\n"
+        "devices=[]; cublas=None\n"
+        "if cuda is not None:\n"
+        " from pathlib import Path\n"
+        " from app.core import cuda_libraries\n"
+        " if not Path(cuda_libraries.__file__).resolve().is_relative_to(Path(sys.argv[3]).resolve()):\n"
+        "  raise RuntimeError('CUDA helper imported outside selected Runtime')\n"
+        " if not torch.cuda.is_available() or torch.cuda.device_count() == 0:\n"
+        "  raise RuntimeError('CUDA runtime has no usable GPU; check NVIDIA driver and CUDA_VISIBLE_DEVICES')\n"
+        " for index in range(torch.cuda.device_count()):\n"
+        "  device={'index':index,'name':torch.cuda.get_device_name(index),"
+        "'capability':list(torch.cuda.get_device_capability(index)),'architectures':torch.cuda.get_arch_list()}\n"
+        "  try:\n"
+        "   probe=torch.zeros(1,device=f'cuda:{index}'); probe.add_(1); torch.cuda.synchronize(index); del probe\n"
+        "  except (RuntimeError, AssertionError) as exc:\n"
+        "   hint='; Blackwell / RTX 50: use --torch-runtime cu130 and restart' if cuda == '12.6' else ''\n"
+        "   raise RuntimeError(f'CUDA kernel verification failed: "
+        "torch={torch.__version__} device={device}{hint}') from exc\n"
+        "  devices.append(device)\n"
+        " library=cuda_libraries.prepare_cublas(managed_only=True)\n"
+        " cublas=library.payload() if library is not None else None\n"
         "print(json.dumps({'torch':str(torch.__version__),'torchaudio':str(torchaudio.__version__),"
-        "'cuda_build':torch.version.cuda,'cuda_available':torch.cuda.is_available()}))"
+        "'cuda_build':torch.version.cuda,'cuda_available':torch.cuda.is_available(),"
+        "'verified_devices':devices,'cublas':cublas}))"
     )
     result = subprocess.run(
-        [str(python), "-c", script, json.dumps(expected), json.dumps(expected_cuda)],
+        [str(python), "-c", script, json.dumps(expected), json.dumps(expected_cuda), str(source_dir)],
         capture_output=True,
         text=True,
         check=True,
         timeout=60,
-        env=dict(environment),
+        env=env,
+        cwd=str(source_dir.resolve()) if source_dir is not None else None,
     )
     print(f"  Torch actual runtime: {result.stdout.strip()}")
     subprocess.run(
@@ -159,22 +238,22 @@ def verify_torch_runtime(python: Path, base_lock: Path, runtime: str, environmen
         text=True,
         check=True,
         timeout=60,
-        env=dict(environment),
+        env=env,
     )
 
 
 @contextmanager
 def install_lock(base_lock: Path, runtime: str, app_root: Path, *, offline: bool) -> Iterator[Path]:
-    """Overlay only Torch wheels; retain all other locked packages and hashes."""
-    if runtime == "cpu":
-        yield base_lock
-        return
+    """Build an exact runtime selection while preserving all original hashes."""
     requirements = [
         line
         for line in base_lock.read_text(encoding="utf-8").splitlines()
-        if not re.match(r"^(torch|torchaudio)==", line)
+        if runtime == "cpu" or not re.match(r"^(torch|torchaudio)==", line)
     ]
-    for wheel in cuda_wheels(base_lock, runtime):
+    if runtime == "cpu":
+        # PEP 440 的 == 接受 +cu 本地版本；=== 保证显式切回基础 CPU wheel。
+        requirements = [re.sub(r"^(torch|torchaudio)==", r"\1===", line) for line in requirements]
+    for wheel in selected_cuda_wheels(base_lock, runtime):
         local = app_root / "vendor" / "wheels" / wheel.filename
         if local.is_file():
             reference = local.resolve().as_uri()

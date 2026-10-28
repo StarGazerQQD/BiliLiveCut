@@ -2762,6 +2762,8 @@ export interface components {
             explanation_state: "available" | "failed" | "unverified" | "not_run";
             /** Hotspot Event Id */
             hotspot_event_id?: number | null;
+            /** Previous Attempts */
+            previous_attempts?: components["schemas"]["ModelAttempt"][];
             /**
              * Schema Version
              * @default editorial-view-v1
@@ -3100,6 +3102,7 @@ export interface components {
          * @description 单次实际请求的诊断，不保存地址、凭据、原始正文或异常。
          */
         ModelAttempt: {
+            diagnostic?: components["schemas"]["ModelFailureDiagnostic"] | null;
             /** Elapsed S */
             elapsed_s: number;
             /** Error */
@@ -3163,6 +3166,27 @@ export interface components {
              * @enum {string}
              */
             source: "legacy" | "routes";
+        };
+        /**
+         * ModelFailureDiagnostic
+         * @description 有界的错误元数据和本地说明，不接收服务正文或异常文本。
+         */
+        ModelFailureDiagnostic: {
+            /**
+             * Category
+             * @enum {string}
+             */
+            category: "http" | "dns" | "connection" | "timeout" | "validation" | "response" | "authorization";
+            /** Http Status */
+            http_status?: number | null;
+            /** Parameter */
+            parameter?: string | null;
+            /** Provider Code */
+            provider_code?: string | null;
+            /** Request Id */
+            request_id?: string | null;
+            /** Summary */
+            summary: string;
         };
         /**
          * ModelProbe
@@ -3795,6 +3819,11 @@ export interface operations {
         parameters: {
             query?: {
                 limit?: number;
+                offset?: number;
+                session_id?: number | null;
+                unknown_session?: boolean;
+                q?: string;
+                status?: string | null;
             };
             header?: never;
             path?: never;
@@ -4983,7 +5012,10 @@ export interface operations {
     };
     open_clips_dir_api_open_clips_dir_post: {
         parameters: {
-            query?: never;
+            query?: {
+                session_id?: number | null;
+                unknown_session?: boolean;
+            };
             header?: never;
             path?: never;
             cookie?: never;
@@ -4999,6 +5031,15 @@ export interface operations {
                     "application/json": {
                         [key: string]: string;
                     };
+                };
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
                 };
             };
         };
@@ -5874,7 +5915,13 @@ export interface operations {
     };
     get_session_history_api_sessions_history_get: {
         parameters: {
-            query?: never;
+            query?: {
+                limit?: number | null;
+                offset?: number;
+                kind?: ("transcripts" | "clips") | null;
+                q?: string;
+                status?: string | null;
+            };
             header?: never;
             path?: never;
             cookie?: never;
@@ -5890,6 +5937,15 @@ export interface operations {
                     "application/json": {
                         [key: string]: unknown;
                     }[];
+                };
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
                 };
             };
         };
@@ -7008,6 +7064,9 @@ export interface operations {
             query?: {
                 limit?: number;
                 session_id?: number | null;
+                offset?: number;
+                unknown_session?: boolean;
+                q?: string;
             };
             header?: never;
             path?: never;

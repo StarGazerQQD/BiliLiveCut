@@ -218,6 +218,10 @@ def test_context_extension_shared_budget_and_single_expansion(temp_db: None, mon
     draft = judge_editorial(load, revision="test", budget=budget)
     assert loaded == [None, "before"]
     assert len(calls) == 2
+    assert [
+        call["response_format"]["json_schema"]["schema"]["properties"]["evidence_ids"]["items"]["enum"]
+        for call in calls
+    ] == [["asr:1"], ["asr:1", "before:1"]]
     assert draft.expanded_context == "before"
     assert draft.execution.result.verdict == "needs_review"
     assert not editorial_auto_approvable(draft.metadata())

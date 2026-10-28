@@ -129,7 +129,7 @@ def test_directory_symlink_is_not_ignored(tmp_path: Path) -> None:
 def test_discovery_uses_current_then_old_standard_names_and_ignores_cwd(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
-    current = tmp_path / "BiliLiveCut-EnginePack-0.1.20.1-alpha.zip"
+    current = tmp_path / "BiliLiveCut-EnginePack-0.1.20.2-alpha.zip"
     old = tmp_path / "BiliLiveCut-EnginePack-0.1.18.5-alpha.zip"
     current.touch()
     old.touch()

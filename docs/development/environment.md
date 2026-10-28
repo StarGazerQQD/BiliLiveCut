@@ -156,6 +156,8 @@ python scripts/check_local_asr.py --models-dir "D:/测试安装/models" --audio 
 
 ## 文档约定
 
+发布前运行 `python scripts/check_acknowledgements.py`，并按现有流程执行 pre-commit/CI。README 的“鸣谢”是名单唯一维护入口，紧邻“许可证”之前；检查器使用开发依赖 `markdown-it-py` 解析 Markdown，检查 GitHub 主页 ID、大小写重复和明确退出名单。`StarGazerQQD` 已明确退出鸣谢，不能通过别名重新加入；正常仓库、Issue、PR 链接和许可证版权不受影响。新增反馈者仍须核对实际来源，保留用户手工维护的 Bilibili 等其他平台条目；该检查器只读取文件，不自动收集或改写名单。
+
 - README 提供项目简介、核心功能、快速开始、重要限制和文档入口；详细用法进入对应指南，避免每个版本继续追加历史小节。
 - 用户可见变更记入当前系列的 `CHANGELOG.md`；旧系列使用既有 `docs/changelog/` 归档，不重复维护多份版本历史。
 - 长期有效的配置说明、架构决策和发行约束留在正式文档，随实现同步维护。一次性任务清单、排查过程和运行日志可留在 PR、Issue 或本地 `.local/` 中，不作为当前使用指南。

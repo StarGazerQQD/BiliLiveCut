@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import sys
 import wave
 from pathlib import Path
 from types import SimpleNamespace
@@ -10,7 +11,7 @@ import numpy as np
 import pytest
 
 from app.analysis.transcription.audio_normalization import inspect_pcm_audio, normalized_asr_audio
-from app.analysis.transcription.backends import FasterWhisperBackend
+from app.analysis.transcription.backends import FasterWhisperBackend, FunASRBackend
 from app.analysis.transcription.models import ASRTranscriptResult, EmotionEvent
 from app.analysis.transcription.pipeline import ASRPipeline
 from app.analysis.transcription.speech_evidence import no_speech_result, require_final_result
@@ -47,7 +48,10 @@ def test_valid_non_speech_bypasses_whisper_and_preserves_evidence(
 def test_valid_speech_with_empty_generator_remains_failed(pcm_wav: Path, monkeypatch: pytest.MonkeyPatch) -> None:
     monkeypatch.setattr(settings, "asr_primary", "whisper")
     monkeypatch.setattr("faster_whisper.vad.get_speech_timestamps", lambda audio: [{"start": 0, "end": len(audio)}])
-    model = SimpleNamespace(transcribe=lambda *args, **kwargs: (iter(()), SimpleNamespace(language="zh")))
+    model = SimpleNamespace(
+        model=SimpleNamespace(device="cpu"),
+        transcribe=lambda *args, **kwargs: (iter(()), SimpleNamespace(language="zh")),
+    )
     monkeypatch.setattr(FasterWhisperBackend, "_load_model", lambda self: model)
     with pytest.raises(RuntimeError, match="ASREmptyOutput"):
         ASRPipeline().transcribe(str(pcm_wav))
@@ -69,6 +73,7 @@ def test_all_engines_empty_preserves_music_and_laughter(pcm_wav: Path, monkeypat
 
 def test_model_exception_cannot_be_hidden_as_silence(pcm_wav: Path, monkeypatch: pytest.MonkeyPatch) -> None:
     monkeypatch.setattr(settings, "asr_primary", "paraformer")
+    monkeypatch.setattr(settings, "asr_fallback_whisper", False)
     monkeypatch.setattr("faster_whisper.vad.get_speech_timestamps", lambda audio: [])
 
     def broken(*args: object) -> ASRTranscriptResult:
@@ -78,6 +83,105 @@ def test_model_exception_cannot_be_hidden_as_silence(pcm_wav: Path, monkeypatch:
     with pytest.raises(RuntimeError, match="invalid model weights") as caught:
         ASRPipeline(primary_backend=backend).transcribe(str(pcm_wav))
     assert isinstance(caught.value.__cause__, ValueError)
+
+
+def test_device_failure_preserves_real_vad_whisper_fallback(pcm_wav: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.setattr(settings, "asr_primary", "funasr_nano")
+    monkeypatch.setattr(settings, "asr_primary_device", "cuda")
+    monkeypatch.setattr(settings, "asr_fallback_whisper", True)
+    monkeypatch.setitem(
+        sys.modules, "torch", SimpleNamespace(__version__="2.13.0+cpu", version=SimpleNamespace(cuda=None))
+    )
+    result = ASRPipeline().transcribe(str(pcm_wav))
+    assert result.result_type == "no_speech" and result.fallback_backend == "whisper"
+    assert result.primary_error_type == "ASRDeviceError"
+    assert result.metadata["vad_speech_segments"] == 0
+    assert result.metadata["audio_evidence"]["sample_count"] == 133376
+
+
+def test_all_enabled_models_blocked_by_device_error_is_not_retryable(
+    pcm_wav: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    from app.core.asr_failures import ASRUnavailableError
+
+    monkeypatch.setattr(settings, "asr_primary", "funasr_nano")
+    monkeypatch.setattr(settings, "asr_primary_device", "cuda")
+    monkeypatch.setattr(settings, "asr_fallback_whisper", False)
+    monkeypatch.setitem(
+        sys.modules, "torch", SimpleNamespace(__version__="2.13.0+cpu", version=SimpleNamespace(cuda=None))
+    )
+    pipeline = ASRPipeline()
+    with pytest.raises(ASRUnavailableError):
+        pipeline.transcribe(str(pcm_wav))
+    assert pipeline._backend_errors == [] and pipeline._last_backend_error is None
+
+
+@pytest.mark.parametrize("speech", [False, True])
+@pytest.mark.parametrize("secondary_text", ["", "重复文本" * 80])
+def test_completed_secondary_prevents_permanent_unavailability(
+    pcm_wav: Path, monkeypatch: pytest.MonkeyPatch, speech: bool, secondary_text: str
+) -> None:
+    from app.core.asr_failures import ASRUnavailableError
+
+    monkeypatch.setattr(
+        "faster_whisper.vad.get_speech_timestamps", lambda audio: [{"start": 0, "end": len(audio)}] if speech else []
+    )
+    monkeypatch.setattr(settings, "asr_primary", "funasr_nano")
+    monkeypatch.setattr(settings, "asr_primary_device", "cuda")
+    monkeypatch.setattr(settings, "asr_fallback_whisper", False)
+    probes = 0
+
+    def zeros(size: int, *, device: str) -> SimpleNamespace:
+        nonlocal probes
+        probes += 1
+        if probes == 1:
+            raise RuntimeError("no kernel image is available for execution on the device")
+        return SimpleNamespace(add_=lambda value: None)
+
+    monkeypatch.setitem(
+        sys.modules,
+        "torch",
+        SimpleNamespace(
+            __version__="2.13.0+cu130",
+            version=SimpleNamespace(cuda="13.0"),
+            cuda=SimpleNamespace(is_available=lambda: True, device_count=lambda: 1, synchronize=lambda index: None),
+            zeros=zeros,
+        ),
+    )
+    module = SimpleNamespace(parameters=lambda: iter([SimpleNamespace(device="cuda:0")]), float=lambda: None)
+    monkeypatch.setitem(
+        sys.modules,
+        "funasr",
+        SimpleNamespace(
+            AutoModel=lambda **kwargs: SimpleNamespace(
+                model=module, vad_model=module, punc_model=module, generate=lambda **kwargs: [{"text": secondary_text}]
+            )
+        ),
+    )
+    pipeline = ASRPipeline(primary_backend=FunASRBackend(sensevoice=False))
+    if secondary_text:
+        with pytest.raises(RuntimeError, match="ASRQualityError") as caught:
+            pipeline.transcribe(str(pcm_wav))
+        assert not isinstance(caught.value, ASRUnavailableError)
+    elif speech:
+        with pytest.raises(RuntimeError, match="ASREmptyOutput") as caught:
+            pipeline.transcribe(str(pcm_wav))
+        assert not isinstance(caught.value, ASRUnavailableError)
+    else:
+        result = pipeline.transcribe(str(pcm_wav))
+        assert result.result_type == "no_speech"
+        assert result.backend == result.fallback_backend == "paraformer"
+        assert result.primary_error_type == "ASRDeviceError"
+        assert result.metadata["vad_speech_segments"] == 0
+    assert probes == 2 and pipeline._backend_completed is False
+
+
+@pytest.mark.parametrize(
+    "metadata", [{}, {"vad_speech_segments": False}, {"vad_speech_segments": 0, "audio_evidence": {}}]
+)
+def test_no_speech_requires_valid_evidence(metadata: dict[str, object]) -> None:
+    with pytest.raises(RuntimeError, match="ASRNoSpeechEvidence"):
+        require_final_result(ASRTranscriptResult(text="", result_type="no_speech", metadata=metadata))
 
 
 @pytest.mark.parametrize("corruption", ["zero_file", "zero_frames", "truncated", "missing"])

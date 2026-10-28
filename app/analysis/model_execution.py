@@ -121,9 +121,9 @@ class ModelCallBudget:
         self._empty_used = True
         return True
 
-    def protocol(self, provider_id: str, model: str) -> ModelProtocol:
-        """同次操作记住服务明确拒绝的格式，默认先请求严格模式。"""
-        return self._protocols.get((provider_id, model), "json_schema")
+    def protocol(self, provider_id: str, model: str, *, initial: ModelProtocol = "json_schema") -> ModelProtocol:
+        """同次操作记住初始能力及已协商格式，避免后续步骤重复发送被拒绝的协议。"""
+        return self._protocols.setdefault((provider_id, model), initial)
 
     def downgrade_protocol(self, provider_id: str, model: str) -> bool:
         """仅由明确不支持格式的调用分支使用，仍保留本地严格校验。"""

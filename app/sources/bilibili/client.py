@@ -58,6 +58,26 @@ class BilibiliStreamUnavailable(BilibiliError):
     """接口确认直播中，但画质协商未取得可用播放地址。"""
 
 
+class BilibiliTransportError(BilibiliError):
+    """网络或 HTTP 传输失败，与平台明确的登录态拒绝分别处理。"""
+
+    def __init__(
+        self, message: str, *, retryable: bool = True, status_code: int | None = None, retry_after_seconds: float = 0.0
+    ) -> None:
+        super().__init__(message)
+        self.retryable = retryable
+        self.status_code = status_code
+        self.retry_after_seconds = retry_after_seconds
+
+
+class BilibiliAuthenticationError(BilibiliError):
+    """HTTP 明确拒绝鉴权；仅实际携带 Cookie 的弹幕登录请求计入登录预算。"""
+
+    def __init__(self, message: str, *, cookie_login_request: bool) -> None:
+        super().__init__(message)
+        self.cookie_login_request = cookie_login_request
+
+
 class HttpErrorType(Enum):
     """Bilibili 接口 HTTP 及业务错误分类。"""
 
@@ -284,8 +304,21 @@ class BilibiliLiveClient:
                 )
 
             resp.raise_for_status()
-        except httpx.HTTPError as exc:
-            raise BilibiliError(f"请求失败 {url}: {exc}") from exc
+        except httpx.HTTPStatusError as exc:
+            status = exc.response.status_code
+            if status == 401:
+                raise BilibiliAuthenticationError(
+                    f"HTTP 401 接口鉴权被拒绝 {url}",
+                    cookie_login_request=url == _DANMU_INFO_URL and bool(exc.request.headers.get("Cookie")),
+                ) from exc
+            raise BilibiliTransportError(
+                f"HTTP {status} 接口请求失败 {url}",
+                retryable=status in {408, 425, 500, 502, 503, 504},
+                status_code=status,
+                retry_after_seconds=retry_after if retry_after_val else 0.0,
+            ) from exc
+        except httpx.RequestError as exc:
+            raise BilibiliTransportError(f"{type(exc).__name__} 接口传输失败 {url}") from exc
 
         try:
             payload = resp.json()
@@ -305,7 +338,16 @@ class BilibiliLiveClient:
         :raises BilibiliRateLimitError: 触发风控/限流/登录态失效时。
         """
         payload = await self._request_payload(url, params)
+        self._validate_api_code(payload)
+        data = payload.get("data", {})
+        return data if isinstance(data, dict) else {}
+
+    @staticmethod
+    def _validate_api_code(payload: dict[str, object], *, anonymous_nav: bool = False) -> None:
+        """统一业务错误分类，匿名导航的 -101 仍允许读取公开 WBI 图片键。"""
         code = payload.get("code")
+        if code == 0 or anonymous_nav and code == -101:
+            return
 
         # 业务级错误码分类处理。
         if code == -101:
@@ -323,10 +365,7 @@ class BilibiliLiveClient:
                 HttpErrorType.ACCOUNT_BANNED,
                 f"请求被拒绝, code=-412 message={payload.get('message')!r}",
             )
-        if code != 0:
-            raise BilibiliError(f"接口返回错误 code={code} message={payload.get('message')!r}")
-        data = payload.get("data", {})
-        return data if isinstance(data, dict) else {}
+        raise BilibiliError(f"接口返回错误 code={code} message={payload.get('message')!r}")
 
     async def _get_wbi_keys(self) -> WbiKeys:
         """匿名读取网页当前使用的 WBI 图片键。
@@ -338,9 +377,7 @@ class BilibiliLiveClient:
         :raises BilibiliError: 响应缺少或包含无效键时。
         """
         payload = await self._request_payload(_WBI_NAV_URL)
-        code = payload.get("code")
-        if code not in {0, -101}:
-            raise BilibiliError(f"WBI 导航接口返回错误 code={code} message={payload.get('message')!r}")
+        self._validate_api_code(payload, anonymous_nav=True)
         data = payload.get("data")
         wbi_img = data.get("wbi_img") if isinstance(data, dict) else None
         if not isinstance(wbi_img, dict):

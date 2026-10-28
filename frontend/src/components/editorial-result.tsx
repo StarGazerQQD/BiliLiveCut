@@ -48,6 +48,11 @@ export const editorialLabels: Record<string, string> = {
   evidence_changed: "证据已变化",
   provider_error: "服务返回错误",
   unsupported_format: "服务不支持请求格式",
+  explanation: "内容解释",
+  review: "编辑判断",
+  grounding: "事实核验",
+  repair: "输出修复",
+  context: "补充上下文",
 };
 
 export function EditorialResult({
@@ -61,6 +66,7 @@ export function EditorialResult({
   const view = value as Schemas["EditorialPresentation"];
   const execution = view.execution;
   const result = execution?.result;
+  const previousAttempts = view.previous_attempts || [];
   return (
     <section
       className="space-y-3 rounded-xl border p-4"
@@ -208,7 +214,11 @@ export function EditorialResult({
             本次判断 {execution.attempts.length} 次请求 ·{" "}
             {execution.elapsed_s.toFixed(2)} 秒
           </p>
-          {execution.attempts.map((attempt) => (
+          <p className="my-2 text-xs">
+            同一操作前序 {execution.attempt_offset || 0} 次请求 · 已保存{" "}
+            {previousAttempts.length} 条前序记录
+          </p>
+          {[...previousAttempts, ...execution.attempts].map((attempt) => (
             <div
               className="mb-2 rounded-lg bg-muted/50 p-3 text-xs leading-6"
               key={attempt.number}
@@ -217,9 +227,36 @@ export function EditorialResult({
                 请求 #{attempt.number} · {attempt.provider_id} · {attempt.model}
               </p>
               <p>
+                {attempt.number <= (execution.attempt_offset || 0)
+                  ? "同一操作前序请求"
+                  : "本次判断请求"}
+                {" · "}
+                用途：
+                {editorialLabels[attempt.purpose] ||
+                  text(attempt.purpose, "未记录")}
+              </p>
+              <p>
                 服务报告模型：{text(attempt.reported_model, "未报告")} ·{" "}
                 {attempt.status === "success" ? "成功" : "失败"}
               </p>
+              <p>响应格式：{text(attempt.protocol, "未记录")}</p>
+              {attempt.diagnostic && (
+                <div role="note" className="whitespace-pre-wrap">
+                  <p>{attempt.diagnostic.summary}</p>
+                  {attempt.diagnostic.http_status != null && (
+                    <p>HTTP 状态：{attempt.diagnostic.http_status}</p>
+                  )}
+                  {attempt.diagnostic.provider_code && (
+                    <p>服务错误码：{attempt.diagnostic.provider_code}</p>
+                  )}
+                  {attempt.diagnostic.parameter && (
+                    <p>相关参数：{attempt.diagnostic.parameter}</p>
+                  )}
+                  {attempt.diagnostic.request_id && (
+                    <p>服务请求标识：{attempt.diagnostic.request_id}</p>
+                  )}
+                </div>
+              )}
               <p>
                 输入 token：{text(attempt.usage?.input_tokens, "未知")} · 输出
                 token：{text(attempt.usage?.output_tokens, "未知")}

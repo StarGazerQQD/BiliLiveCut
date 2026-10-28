@@ -8,6 +8,7 @@ import math
 from collections.abc import Mapping, Sequence
 from dataclasses import asdict, dataclass, field
 from datetime import datetime, timedelta
+from pathlib import Path
 from typing import TYPE_CHECKING, Any
 
 from loguru import logger
@@ -409,6 +410,10 @@ def validate_event_clip_draft(
             context.input_fingerprint[:12],
         )
         return None
+    metadata = _json_mapping(draft.features_json).get("editorial_review")
+    if review is not None and isinstance(metadata, Mapping):
+        if metadata.get("media_accessible") != media_bounds_accessible(db, review.source, draft.start_ts, draft.end_ts):
+            return None
     return event
 
 
@@ -538,6 +543,25 @@ def _load_event_context(
     detector_clip = _detector_clip_score(event, event_features)
     lifecycle = event_features.get("event_lifecycle")
     lifecycle_version = lifecycle.get("version") if isinstance(lifecycle, Mapping) else None
+    media_identity: list[dict[str, object]] = []
+    media_start = max(block_start, event.peak_ts - timedelta(seconds=config.max_duration_s))
+    media_end = min(block_end, event.peak_ts + timedelta(seconds=config.max_duration_s))
+    for item in segments:
+        if item.start_ts is None or item.end_ts is None or item.end_ts <= media_start or item.start_ts >= media_end:
+            continue
+        try:
+            file_stat = Path(item.file_path).stat()
+            identity = [
+                file_stat.st_dev,
+                file_stat.st_ino,
+                file_stat.st_size,
+                file_stat.st_mtime_ns,
+                file_stat.st_ctime_ns,
+            ]
+        except OSError:
+            identity = None
+        # 来源身份只用于本地成片校验，不加入发送给模型的证据。
+        media_identity.append({"id": item.id, "path": item.file_path, "file": identity})
     fingerprint_payload = {
         "version": EVENT_CLIP_SCORER_VERSION,
         "editorial_policy": review_policy_identity(),
@@ -565,6 +589,7 @@ def _load_event_context(
         "novelty": novelty,
         "asr_quality_score": speech_completeness,
         "recording_block": [block_start.isoformat(), block_end.isoformat()],
+        "media_identity": media_identity,
         "threshold": threshold,
         "review_threshold": review_threshold,
         "auto_approve": bool(room.auto_approve) if room is not None else False,

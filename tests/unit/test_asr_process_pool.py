@@ -54,6 +54,23 @@ def sdk_process(connection: Connection) -> None:
                 time.sleep(0.1)
         if mode == "error":
             send("error", error="ValueError: model invalid\nOriginal model traceback", models=[])
+        elif mode == "device_failure":
+            if not request["device_failures"]:
+                send(
+                    "device_failure",
+                    failure={
+                        "backend": "torch",
+                        "device": "cuda:0",
+                        "build": "2.13.0+cu126",
+                        "code": "unsupported_kernel",
+                        "message": "no kernel image",
+                    },
+                )
+            send("error", error="all enabled devices blocked", retryable=False, models=[])
+        elif mode == "invalid_retryable":
+            send("error", error="bad protocol", retryable="false", models=[])
+        elif mode == "inspect_failures":
+            send("result", result={"failures": request["device_failures"]}, pid=os.getpid(), models=[])
         elif mode == "diagnostic":
             send(
                 "diagnostic",
@@ -72,6 +89,16 @@ def sdk_process(connection: Connection) -> None:
             connection.send_bytes(json.dumps({"kind": "result", "request_id": "stale"}).encode())
         else:
             send("result", result={"text": "ok"}, pid=os.getpid(), models=[])
+
+
+def cpu_torch_child(connection: Connection) -> None:
+    """仅替换外部 Torch 构建信息，运行真实子进程入口及 ASR 回退逻辑。"""
+    from types import SimpleNamespace
+
+    from app.analysis.transcription.process_pool import _asr_child
+
+    sys.modules["torch"] = SimpleNamespace(__version__="2.13.0+cpu", version=SimpleNamespace(cuda=None))
+    _asr_child(connection)
 
 
 def request(**context: object) -> dict[str, object]:
@@ -509,6 +536,37 @@ def test_exception_preserves_diagnostics_and_returns_capacity() -> None:
         pool.shutdown(0)
 
 
+def test_device_failure_survives_worker_exit_and_configuration_change_rechecks(monkeypatch: pytest.MonkeyPatch) -> None:
+    pool = ASRProcessPool(sdk_process)
+    try:
+        with pytest.raises(RemoteASRError) as caught:
+            pool.execute(request(mode="device_failure"), timeout_s=15, check_cancelled=no_cancel)
+        assert caught.value.retryable is False
+        result = pool.execute(request(mode="inspect_failures"), timeout_s=15, check_cancelled=no_cancel)
+        assert result["result"]["failures"][0]["code"] == "unsupported_kernel"
+        monkeypatch.setattr(settings, "asr_primary_device", "cuda:1")
+        changed = pool.execute(request(mode="inspect_failures"), timeout_s=15, check_cancelled=no_cancel)
+        assert changed["result"]["failures"] == []
+        assert changed["pid"] != result["pid"]
+        previous_pid = changed["pid"]
+        monkeypatch.setenv("CUDA_VISIBLE_DEVICES", "different-device")
+        changed = pool.execute(request(mode="inspect_failures"), timeout_s=15, check_cancelled=no_cancel)
+        assert changed["result"]["failures"] == []
+        assert changed["pid"] != previous_pid
+    finally:
+        pool.shutdown(0)
+
+
+def test_invalid_remote_retryability_does_not_change_failure_policy() -> None:
+    pool = ASRProcessPool(sdk_process)
+    try:
+        with pytest.raises(ValueError, match="错误协议无效"):
+            pool.execute(request(mode="invalid_retryable"), timeout_s=15, check_cancelled=no_cancel)
+        assert pool._slots == []
+    finally:
+        pool.shutdown(0)
+
+
 def test_wrong_request_result_is_rejected_and_slot_destroyed() -> None:
     pool = ASRProcessPool(sdk_process)
     try:
@@ -617,3 +675,29 @@ def test_real_child_returns_silence_with_cpu_vad_without_model_download(
     finally:
         pool.shutdown(0)
     assert process.exitcode == 0
+
+
+def test_real_child_reports_device_failure_even_when_whisper_vad_recovers(
+    pcm_wav: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    from app.analysis.transcription.isolated import IsolatedPipeline
+
+    monkeypatch.delenv("CUDA_VISIBLE_DEVICES", raising=False)
+    monkeypatch.setattr(settings, "asr_primary", "funasr_nano")
+    monkeypatch.setattr(settings, "asr_primary_device", "cuda")
+    monkeypatch.setattr(settings, "asr_fallback_whisper", True)
+    pool = ASRProcessPool(cpu_torch_child)
+    try:
+        for task_id in (159, 160):
+            result = IsolatedPipeline(pool=pool, context={"task_id": task_id}).transcribe(str(pcm_wav))
+            assert result.result_type == "no_speech" and result.fallback_backend == "whisper"
+            assert len(pool._device_failures) == 1
+            assert len(next(iter(pool._device_failures.values()))) == 1
+        original_pid = pool._slots[0].process.pid
+        monkeypatch.setenv("CUDA_VISIBLE_DEVICES", "0")
+        result = IsolatedPipeline(pool=pool, context={"task_id": 161}).transcribe(str(pcm_wav))
+        assert result.result_type == "no_speech" and result.fallback_backend == "whisper"
+        assert pool._slots[0].process.pid != original_pid
+        assert len(pool._device_failures) == 2
+    finally:
+        pool.shutdown(0)

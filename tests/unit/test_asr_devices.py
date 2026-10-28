@@ -4,11 +4,21 @@ from __future__ import annotations
 
 import sys
 from collections.abc import Iterator
+from pathlib import Path
 from types import SimpleNamespace
 
 import pytest
 
 from app.core import asr_devices
+from app.core.asr_failures import DeviceFailure, device_failure_context, device_failure_scope, permanent_device_error
+from tests.unit.test_cuda_libraries import CudaBoundary, install_boundary
+
+
+@pytest.fixture
+def cublas_boundary(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> CudaBoundary:
+    boundary = install_boundary(tmp_path, monkeypatch)
+    boundary.package("nvidia-cublas-cu12")
+    return boundary
 
 
 class Tensor:
@@ -119,7 +129,7 @@ def test_opaque_model_cannot_claim_cuda_success() -> None:
         asr_devices.confirm_torch_model_device(object(), "cuda", role="primary")
 
 
-def test_whisper_cuda_does_not_depend_on_torch(monkeypatch: pytest.MonkeyPatch) -> None:
+def test_whisper_cuda_does_not_depend_on_torch(monkeypatch: pytest.MonkeyPatch, cublas_boundary: CudaBoundary) -> None:
     monkeypatch.setitem(sys.modules, "torch", None)
     calls: list[tuple[str, int]] = []
 
@@ -136,10 +146,27 @@ def test_whisper_cuda_does_not_depend_on_torch(monkeypatch: pytest.MonkeyPatch) 
     assert calls == [("cuda", 1)]
 
 
-def test_whisper_unavailable_gpu_has_no_cpu_fallback(monkeypatch: pytest.MonkeyPatch) -> None:
+def test_whisper_unavailable_gpu_has_no_cpu_fallback(
+    monkeypatch: pytest.MonkeyPatch, cublas_boundary: CudaBoundary
+) -> None:
     monkeypatch.setitem(sys.modules, "ctranslate2", SimpleNamespace(get_cuda_device_count=lambda: 0))
     with pytest.raises(asr_devices.ASRDeviceError, match="CTranslate2"):
         asr_devices.require_whisper_device("cuda")
+
+
+@pytest.mark.parametrize("gpu_count", [0, 1])
+def test_whisper_auto_prepares_libraries_only_when_cuda_is_selected(
+    monkeypatch: pytest.MonkeyPatch, cublas_boundary: CudaBoundary, gpu_count: int
+) -> None:
+    monkeypatch.setitem(
+        sys.modules,
+        "ctranslate2",
+        SimpleNamespace(
+            get_cuda_device_count=lambda: gpu_count, get_supported_compute_types=lambda device, index: {"float32"}
+        ),
+    )
+    assert asr_devices.require_whisper_device("auto") == (0 if gpu_count else None)
+    assert bool(cublas_boundary.loaded) == bool(gpu_count)
 
 
 @pytest.mark.parametrize(
@@ -180,3 +207,87 @@ def test_nano_primary_uses_primary_device_before_loading(
     monkeypatch.setitem(sys.modules, "funasr", None)
     with pytest.raises(asr_devices.ASRDeviceError, match="primary.*CPU 版"):
         FunASRBackend()._load_funasr(for_primary=True)
+
+
+def test_confirmed_kernel_failure_is_reused_across_roles_and_requests(torch_boundary: SimpleNamespace) -> None:
+    recorded: list[DeviceFailure] = []
+    calls: list[str] = []
+
+    def fail(size: int, *, device: str) -> Tensor:
+        calls.append(device)
+        raise RuntimeError("no kernel image is available for execution on the device")
+
+    torch_boundary.zeros = fail
+    with device_failure_context([], recorded.append):
+        for role in ("primary", "review"):
+            with pytest.raises(asr_devices.ASRDeviceError) as caught:
+                asr_devices.require_torch_device("cuda", role=role)
+            assert permanent_device_error(caught.value)
+    assert calls == ["cuda:0"] and len(recorded) == 1
+    with device_failure_context(recorded[:], recorded.append):
+        with pytest.raises(asr_devices.ASRDeviceError) as caught:
+            asr_devices.require_torch_device("cuda:0", role="primary")
+        assert caught.value.__cause__ is None
+        torch_boundary.__version__ = "2.13.0+cu130"
+        with pytest.raises(asr_devices.ASRDeviceError):
+            asr_devices.require_torch_device("cuda:0", role="primary")
+        with pytest.raises(asr_devices.ASRDeviceError):
+            asr_devices.require_torch_device("cuda:1", role="primary")
+    assert calls == ["cuda:0", "cuda:0", "cuda:1"]
+
+
+@pytest.mark.parametrize("message", ["CUDA out of memory", "CUDA initialization error"])
+def test_transient_kernel_failure_is_not_cached(torch_boundary: SimpleNamespace, message: str) -> None:
+    original = torch_boundary.zeros
+    recorded: list[DeviceFailure] = []
+
+    def fail(size: int, *, device: str) -> Tensor:
+        raise RuntimeError(message)
+
+    torch_boundary.zeros = fail
+    with device_failure_context([], recorded.append):
+        with pytest.raises(asr_devices.ASRDeviceError) as caught:
+            asr_devices.require_torch_device("cuda", role="primary")
+        assert not permanent_device_error(caught.value)
+        torch_boundary.zeros = original
+        asr_devices.require_torch_device("cuda", role="primary")
+    assert recorded == [] and torch_boundary.calls == ["cuda:0", "sync:0"]
+
+
+def test_torch_failure_does_not_disable_whisper(
+    torch_boundary: SimpleNamespace, monkeypatch: pytest.MonkeyPatch, cublas_boundary: CudaBoundary
+) -> None:
+    recorded: list[DeviceFailure] = []
+    torch_boundary.version.cuda = None
+    monkeypatch.setitem(
+        sys.modules,
+        "ctranslate2",
+        SimpleNamespace(get_cuda_device_count=lambda: 1, get_supported_compute_types=lambda *args: {"float16"}),
+    )
+    with device_failure_context([], recorded.append):
+        with pytest.raises(asr_devices.ASRDeviceError):
+            asr_devices.require_torch_device("cuda", role="primary")
+        assert asr_devices.require_whisper_device("cuda") == 0
+    assert len(recorded) == 1 and recorded[0].code == "cpu_build"
+
+
+def test_failure_scope_changes_with_configuration_and_runtime(monkeypatch: pytest.MonkeyPatch) -> None:
+    config = {"asr_primary_device": "cuda", "database_url": "ignored"}
+    before = device_failure_scope(config)
+    assert before == device_failure_scope({**config, "database_url": "different"})
+    assert before != device_failure_scope({**config, "asr_primary_device": "cpu"})
+    monkeypatch.setenv("CUDA_VISIBLE_DEVICES", "another-device")
+    assert before != device_failure_scope(config)
+
+
+def test_failure_scope_changes_when_installed_runtime_changes(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    from app.core import asr_failures
+
+    metadata = tmp_path / "__init__.py"
+    metadata.write_text("", encoding="utf-8")
+    package = SimpleNamespace(version="2.13.0+cu126", locate_file=lambda name: metadata)
+    monkeypatch.setattr(asr_failures, "distribution", lambda name: package)
+    config = {"asr_primary_device": "cuda"}
+    before = device_failure_scope(config)
+    package.version = "2.13.0+cu130"
+    assert before != device_failure_scope(config)
