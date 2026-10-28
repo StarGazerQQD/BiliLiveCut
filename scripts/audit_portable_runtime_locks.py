@@ -7,8 +7,13 @@ import argparse
 import re
 import subprocess
 import sys
+import tempfile
 import time
 from pathlib import Path
+from urllib.parse import unquote, urlsplit
+
+from packaging.requirements import InvalidRequirement, Requirement
+from packaging.utils import InvalidWheelFilename, parse_wheel_filename
 
 if __package__:
     from scripts.check_pip_audit_exemptions import (
@@ -34,6 +39,7 @@ LOCK_DIR = REPO_ROOT / "packaging" / "portable" / "locks"
 DEFAULT_LOCKS = (
     LOCK_DIR / "requirements-runtime-py311-win-x64.lock",
     LOCK_DIR / "requirements-runtime-py312-win-x64.lock",
+    LOCK_DIR / "requirements-cublas-win-x64.lock",
 )
 LOCK_ENTRY_PATTERN = re.compile(r"^(?P<name>[^=\s]+)==(?P<version>\S+)\s+--hash=sha256:[0-9a-f]{64}")
 AUDIT_ATTEMPTS = 3
@@ -43,13 +49,29 @@ AUDIT_RETRY_DELAY_SECONDS = 2
 def locked_dependencies(lock_path: Path) -> frozenset[tuple[str, str]]:
     """Return all normalized package/version pairs from one strict lock."""
     dependencies: set[tuple[str, str]] = set()
-    for raw_line in lock_path.read_text(encoding="utf-8").splitlines():
+    for raw_line in lock_path.read_text(encoding="utf-8").replace("\\\n", " ").splitlines():
         if not raw_line or raw_line.startswith("#"):
             continue
         match = LOCK_ENTRY_PATTERN.match(raw_line)
-        if not match:
-            raise AuditReportError(f"Invalid strict lock entry in {lock_path.name}: {raw_line}")
-        item = (canonicalize_name(match.group("name")), match.group("version"))
+        if match:
+            item = (canonicalize_name(match.group("name")), match.group("version"))
+        else:
+            direct = re.fullmatch(r"(.+?)\s+--hash=sha256:[0-9a-f]{64}", raw_line.strip())
+            if direct is None:
+                raise AuditReportError(f"Invalid strict lock entry in {lock_path.name}: {raw_line}")
+            try:
+                requirement = Requirement(direct[1])
+            except InvalidRequirement as exc:
+                raise AuditReportError(f"Invalid wheel requirement in {lock_path.name}") from exc
+            if not requirement.url or requirement.marker or requirement.extras:
+                raise AuditReportError(f"Invalid direct wheel requirement: {requirement.name}")
+            try:
+                name, version, _build, _tags = parse_wheel_filename(unquote(Path(urlsplit(requirement.url).path).name))
+            except InvalidWheelFilename as exc:
+                raise AuditReportError(f"Invalid wheel filename in {lock_path.name}") from exc
+            if canonicalize_name(requirement.name) != canonicalize_name(name):
+                raise AuditReportError("Direct wheel name does not match its package")
+            item = (canonicalize_name(name), str(version))
         if item in dependencies:
             raise AuditReportError(f"Duplicate lock entry in {lock_path.name}: {item[0]}=={item[1]}")
         dependencies.add(item)
@@ -114,7 +136,12 @@ def audit_lock(lock_path: Path) -> bool:
         "--requirement",
         str(lock_path),
     ]
-    scan = _run_audit_with_retries(command, lock_path)
+    # pip-audit 的无安装模式按确定的名称/版本查询，不重新解析或下载大型直接 URL wheel。
+    with tempfile.TemporaryDirectory(prefix="blc-runtime-audit-") as temporary:
+        normalized = Path(temporary) / "requirements.txt"
+        normalized.write_text("".join(f"{name}=={version}\n" for name, version in sorted(expected)), encoding="utf-8")
+        command[-1] = str(normalized)
+        scan = _run_audit_with_retries(command, lock_path)
     if scan is None:
         return False
     result, report = scan

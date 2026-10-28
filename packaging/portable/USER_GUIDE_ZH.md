@@ -1,6 +1,6 @@
 # BiliLiveCut Portable 小白使用说明
 
-适用版本：`v0.1.20.1-Alpha` · 适用系统：Windows 10/11 x64
+适用版本：`v0.1.20.2-Alpha` · 适用系统：Windows 10/11 x64
 
 本版重构任务提交、执行资源、配置生效、模型路由和页面状态恢复。设置中心显示配置何时生效，同一模型连接可供不同业务独立选择模型；取消任务后不会被迟到结果改成成功。下载、录制和运行失败继续保留根因，Web 错误提供日志定位编号。启动失败记录保存在 `logs/launcher-error.log`，详细排错见[使用指南](../../docs/features/README.md#排错)。升级前应停止服务并备份；数据库完整格式校验通过时可以复用，操作边界见第 13 节。
 
@@ -20,7 +20,7 @@
 - “账号管理”会优先调用电脑已安装的 Google Chrome；没有 Chrome 时会自动下载一次 Playwright Chromium。
 - 第一次测试先完成一小段授权直播录制，并在 `storage/raw/` 找到文件。Cookie、大模型 API 和自动上传都不是首次使用的必需项。
 
-## V0.1.20.1 Alpha 先知道的新流程
+## V0.1.20.2 Alpha 先知道的新流程
 
 - 时间线与复核分别展示证据解释、编辑推荐和技术分数，兴趣等级为 0–4，不代表概率。缺少证据或模型失败会明确提示；管理员可先预览再重评已有对象，人工认领、草稿、边界和决定受到保护。操作与限制见[编辑复核说明](../../docs/features/review-render.md)。
 
@@ -36,7 +36,7 @@
 - 当前 Payload 内置 C、Cython、Rust 三个 `app.accelerators` 原生模块：候选聚类和弹幕文本特征使用 Rust/rayon，音频峰值、静音区间和热点滚动基线使用 Cython；不提供旧模块路径。源码环境没有编译扩展时会按函数使用等价 Python 实现。
 - 设置页的“Web 服务端口”保存的是下次启动值；当前服务不会重新绑定。重启后 Launcher 读取程序根目录 `config\launcher.json`，默认仍为 `8000`，监听地址固定为 `127.0.0.1`。
 - Bilibili 弹幕默认向前校正 `7.5` 秒来对齐画面，同场过近且内容相似的节点会去重，减少一个爆点重复出片。
-- “实时转写”和“弹幕热度”都可用“录制场次”下拉查看数据库中的完整历史；新增直播不会把旧转写挤掉，两个页面会分别记住当前选择。“实时转写”还可以人工改正文，并可填写“错误词=正确词”加入该直播间的专属词典；每条记录会显示并可复制对应的源 TS 文件名，也可“无损导出 MP4”直接进入剪辑软件。导出保留原始编码并校准首个视频帧到 `0s`，不会因 AAC 预滚在开头留下黑帧；保存纠错后可自动重分析本场。
+- “实时转写”按场次卡片浏览并分页，“弹幕热度”可用“录制场次”下拉查看完整历史；新增直播不会把旧转写挤掉。“实时转写”支持校正正文和保存房间词典别名；每条记录会显示并可复制对应的源 TS 文件名，也可下载无损导出的 MP4 直接进入剪辑软件。导出保留原始编码并校准首个视频帧到 `0s`，不会因 AAC 预滚在开头留下黑帧。
 - 修改阈值后使用“按新阈值重分析”；修改房间词典或 ASR 模型后使用“按新词典/模型重新转写”。人工审核、手工边界、草稿、成片和人工正文不会被静默覆盖。
 - 主播下播需连续确认 3 次，再等待 60 秒收尾；期间恢复直播会取消停止。单场默认最长 12 小时，断流仍受 20 次或 180 秒的恢复预算限制；预算耗尽后要等房间真实离线，才允许下一次开播自动录制。
 - 五秒轮询会保留转写纠错、房间词典、房间配置、功能开关和下拉选择中的未保存内容，也会记住原始 ASR、已学习词典及时间线评分详情的展开状态。转写编辑器展开或有未保存内容时，“录制场次”下拉会锁定，保存或取消后才可切换。时间线内容没有变化时不会重建页面；出现新节点或状态变化时也会恢复原滚动位置，阅读摘要或来源评分时不会自动跳到顶部。
@@ -67,9 +67,9 @@ Full 版不要求系统安装 Python、FFmpeg、Visual Studio、Git 或其他编
 
 ## 2. 下载正确的文件
 
-打开项目的 [GitHub Releases 页面](https://github.com/StarGazerQQD/BiliLiveCut/releases)，进入 `v0.1.20.1-Alpha`，下载：
+打开项目的 [GitHub Releases 页面](https://github.com/StarGazerQQD/BiliLiveCut/releases)，进入 `v0.1.20.2-Alpha`，下载：
 
-1. `BiliLiveCut-Portable-Full-0.1.20.1-alpha-x64.zip`
+1. `BiliLiveCut-Portable-Full-0.1.20.2-alpha-x64.zip`
 2. `SHA256SUMS.txt`
 
 不要把下面这些文件当成 Windows 小白版：
@@ -87,7 +87,7 @@ Full 版不要求系统安装 Python、FFmpeg、Visual Studio、Git 或其他编
 3. 复制并执行：
 
 ```powershell
-Get-FileHash ".\BiliLiveCut-Portable-Full-0.1.20.1-alpha-x64.zip" -Algorithm SHA256
+Get-FileHash ".\BiliLiveCut-Portable-Full-0.1.20.2-alpha-x64.zip" -Algorithm SHA256
 ```
 
 4. 将输出的 `Hash` 与 `SHA256SUMS.txt` 中同名文件前面的值比较。英文字母大小写不同不影响结果。
@@ -97,7 +97,7 @@ Get-FileHash ".\BiliLiveCut-Portable-Full-0.1.20.1-alpha-x64.zip" -Algorithm SHA
 
 1. 新建目录，例如 `D:\BiliLiveCut`。
 2. 右键 ZIP，选择“全部解压”。
-3. 打开解压出来的 `BiliLiveCut-Portable-Full-0.1.20.1-alpha-x64` 文件夹。
+3. 打开解压出来的 `BiliLiveCut-Portable-Full-0.1.20.2-alpha-x64` 文件夹。
 4. 确认同一层能看到：
 
 ```text
@@ -125,7 +125,7 @@ Full 版包含运行环境，但不包含四个语音识别模型。
 当前版本新生成的 Engine Pack 文件名是：
 
 ```text
-BiliLiveCut-EnginePack-0.1.20.1-alpha.zip
+BiliLiveCut-EnginePack-0.1.20.2-alpha.zip
 ```
 
 将 ZIP 原样放到 `BiliLiveCut-Portable.exe` 同级目录，不要手动解压。Launcher 会先校验逐引擎内容身份，再把需要的模型原子安装到 `models/`。Engine Pack 内容清单仅支持 schema 5，已安装模型清单仅支持 schema 7，不迁移旧 schema。模型仓库、不可变 revision、格式、子模型/随附组件及逐文件完整性必须符合当前定义；发行版本或源码提交差异仅记录来源警告，内容相同的旧包及完整安装目录可以复用。Runtime、Payload 和数据库继续遵循各自严格身份与格式规则。
@@ -269,6 +269,8 @@ ASR_TASK_MAX_CONCURRENCY=1
 首次启动后，可在“设置中心”的 ASR 分类直接修改设备、计算类型及并发；上面的环境配置作为部署默认。先证明录制链路正常，再单独测试 GPU。启用 CUDA 后可逐步提高“ASR 分段并行数”；实际模型由共享池按角色并发上限分配，过高的模型并发仍可能导致显存不足。页面标明下一任务或下一检查生效，已有任务保留启动快照。
 如果显式设置的 `WHISPER_COMPUTE_TYPE` 不受当前 CPU/CUDA 支持，Whisper 兜底会自动改用 CTranslate2 `auto` 并记录告警；CUDA 驱动、模型文件或显存本身的错误不会被该回退隐藏。
 
+需要 GPU 时，停止服务后使用 `--torch-runtime cu126`；RTX 50 系列等 Blackwell 显卡使用 `--torch-runtime cu130`。安装器核验真实 CUDA 运算，并为 Whisper 配齐官方锁定的 cuBLAS 12 与 NVRTC；cu130 Torch 自带的 CUDA 13 库无法替代这组库。cu126 复用 Torch 自带的配套库。安装器和转写共用 DLL 来源检查，防止从旧安装或系统目录误用动态库。完全离线时需要准备当前 Python ABI 对应的 Torch、TorchAudio，cu130 还需要 `requirements-cublas-win-x64.lock` 指定的两个 NVIDIA wheel，放入 `vendor/wheels/` 后加 `--offline`。默认 CPU 安装保持原依赖范围；`--torch-runtime cpu` 可显式切回 CPU。完整命令及故障恢复见 [ASR 说明](../../docs/features/asr.md#cuda-安装与实际设备确认)。
+
 ## 8. 添加直播间并完成第一次录制
 
 请选用你自己或已明确取得授权、并且当前正在直播的房间做短时测试。
@@ -346,7 +348,7 @@ Cookie 不是公开直播录制或弹幕采集的必需项。程序会按网页 
 
 - 只改了审核阈值，点击场次卡片的“按新阈值重分析”。
 - 改了房间手工词典、人工学习别名或 ASR 模型，点击“按新词典/模型重新转写”。
-- 在“实时转写”先从下拉选择录制场次，再编辑该场正文。可额外输入若干行 `错误词=正确词`，勾选加入直播间词典；编辑器展开或存在未保存内容时，自动刷新不会覆盖草稿，场次下拉也会保持锁定。
+- 在“实时转写”先进入场次卡片，再通过“校正文本”编辑对应分段；可填写别名映射并保存到房间词典。保存前确认选中的场次和原始分段，原始 ASR 仍保留。
 - 重分析会按当前模型、词典和阈值重建本场自动结果；正在运行的任务会阻止操作并显示原因。
 
 审片时请注意：
@@ -359,14 +361,16 @@ Cookie 不是公开直播录制或弹幕采集的必需项。程序会按网页 
 常用目录：
 
 ```text
-storage\raw\              原始录制分片
-storage\clips\            成品切片
-storage\ready_to_upload\  待上传清单
+storage\raw\session_<id>\              每场原始录制分片
+storage\clips\session_<id>\            每场成品、封面、字幕和派生版本
+storage\ready_to_upload\session_<id>\  每场待上传清单
 storage\blc.db             本地数据库
 models\                    本地语音模型
 ```
 
 建议小规模测试期间保持 Biliup 和“成品就绪后自动上传”关闭。
+
+转写和成品页面先选择场次，再分页浏览条目。转写编号按本场原始分段序号显示，搜索与翻页不会改变编号；源分段下载名包含场次和序号，导出缓存位于本场成品目录的 `source_exports` 子目录。旧平铺文件无需搬迁；缺少场次关联的旧记录保留在“未关联场次”，对应新清单使用 `unassigned` 目录。
 
 ## 12. 正常停止和再次启动
 
@@ -435,7 +439,7 @@ storage\
 
 ### 大模型测试提示“未安装 openai”
 
-`v0.1.20.1-Alpha` 的 Portable 运行时包含 OpenAI 兼容 SDK。该提示说明当前 Full 的 `vendor\wheels\` 不完整或目录不是本版本的干净发行包；请重新下载并解压到全新目录。不要在 Portable 目录手工执行 `pip install -e`。
+`v0.1.20.2-Alpha` 的 Portable 运行时包含 OpenAI 兼容 SDK。该提示说明当前 Full 的 `vendor\wheels\` 不完整或目录不是本版本的干净发行包；请重新下载并解压到全新目录。不要在 Portable 目录手工执行 `pip install -e`。
 
 ### 控制台提示 pip 有新版本
 
@@ -443,7 +447,7 @@ storage\
 
 ### 出现 `THESE PACKAGES DO NOT MATCH THE HASHES`
 
-新版 Full 应强制使用本地 wheelhouse，不应访问 PyPI 镜像。确认使用的是 `v0.1.20.1-Alpha` 最新 Full ZIP，并且没有只复制 EXE。不要修改锁文件或添加报错中的 sdist 哈希，直接重新下载并校验 Full ZIP。
+新版 Full 应强制使用本地 wheelhouse，不应访问 PyPI 镜像。确认使用的是 `v0.1.20.2-Alpha` 最新 Full ZIP，并且没有只复制 EXE。不要修改锁文件或添加报错中的 sdist 哈希，直接重新下载并校验 Full ZIP。
 
 ### 模型下载很慢或中断
 
@@ -480,11 +484,11 @@ storage\
 
 ### 候选理由、预览和视频内容不一致
 
-先确认使用 V0.1.20.1 Alpha。新分析先把多源证据聚合成完整热点事件，再用同一事件生成语义、成片分和动态边界；预览与最终成片使用同一候选边界。需要重新计算当前场次时，在“场次时间线”执行重分析；改过词典或 ASR 时选择重新转写。受保护数据不会被静默改写。
+先确认使用 V0.1.20.2 Alpha。新分析先把多源证据聚合成完整热点事件，再用同一事件生成语义、成片分和动态边界；预览与最终成片使用同一候选边界。需要重新计算当前场次时，在“场次时间线”执行重分析；改过词典或 ASR 时选择重新转写。受保护数据不会被静默改写。
 
 ### 拒绝候选后仍在成品列表显示 `reviewing`
 
-V0.1.20.1 Alpha 的拒绝操作会同步拒绝当前候选、关联事件、任务和未发布成片，并默认从时间线过滤。已经发布的成片按设计保留，避免篡改真实外部发布结果。任何非当前精确 Schema 的数据库都会明确拒绝，不会迁移或静默改写。
+V0.1.20.2 Alpha 的拒绝操作会同步拒绝当前候选、关联事件、任务和未发布成片，并默认从时间线过滤。已经发布的成片按设计保留，避免篡改真实外部发布结果。任何非当前精确 Schema 的数据库都会明确拒绝，不会迁移或静默改写。
 
 ### 修改 `.env` 后没有生效
 
@@ -510,7 +514,7 @@ Portable 的受管 Python 子进程忽略外部 `PYTHONPATH`、`PYTHONHOME`、`P
 
 - Windows 版本，例如 Windows 11 23H2；
 - 使用 Full 还是 Lite；
-- 程序版本 `v0.1.20.1-Alpha`；
+- 程序版本 `v0.1.20.2-Alpha`；
 - 解压目录；
 - 问题发生在 `[1/6]`～`[6/6]` 的哪一步；
 - 黑色窗口最后 30 行文字或截图；
@@ -522,7 +526,7 @@ Portable 的受管 Python 子进程忽略外部 `PYTHONPATH`、`PYTHONHOME`、`P
 
 ## 16. 当前 Alpha 的测试边界
 
-`v0.1.20.1-Alpha` 适合小规模、受控测试，不等同于稳定正式版。当前应重点验证：
+`v0.1.20.2-Alpha` 适合小规模、受控测试，不等同于稳定正式版。当前应重点验证：
 
 - Full ZIP 下载、校验和解压；
 - 首次离线依赖安装；

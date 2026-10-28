@@ -19,6 +19,48 @@ if TYPE_CHECKING:
     from _pytest.monkeypatch import MonkeyPatch
 
 
+@pytest.mark.parametrize("transport", ["hls", "flv"])
+def test_recording_http_persistence_is_scoped_to_hls(tmp_path: Path, transport: str) -> None:
+    from app.recording.recorder import Recorder
+
+    recorder = Recorder(SourceRoom(platform="bilibili", source_id="1", canonical_url="https://live.bilibili.com/1"), 1)
+    command = recorder._build_ffmpeg_cmd(
+        StreamSpec(
+            url="https://cdn.example/live", transport=transport, container="ts" if transport == "hls" else "flv"
+        ),
+        tmp_path,
+        "test",
+        tmp_path / "segments.csv",
+    )
+    if transport == "hls":
+        index = command.index("-http_persistent")
+        assert command[index + 1] == "0" and index < command.index("-i")
+    else:
+        assert "-http_persistent" not in command
+
+
+def test_recording_summary_keeps_fatal_tail_and_redacts_credentials() -> None:
+    from loguru import logger
+
+    from app.core.ffmpeg_errors import FfmpegErrorType
+    from app.recording.recorder import Recorder, _ReconnectBudget
+
+    recorder = Recorder(SourceRoom(platform="bilibili", source_id="1", canonical_url="https://live.bilibili.com/1"), 1)
+    recorder._stderr_tail = [
+        "[tcp @ x] connection timed out " * 40,
+        "Assertion v->input failed at libavformat/hls.c:1907 https://cdn.example/live?token=secret",
+    ]
+    recorder._diagnostic_secrets = ["secret"]
+    messages: list[str] = []
+    sink = logger.add(lambda message: messages.append(str(message)), level="WARNING")
+    try:
+        recorder._log_recording_exit(3221226505, FfmpegErrorType.PROCESS_CRASH, _ReconnectBudget(), True, 1)
+    finally:
+        logger.remove(sink)
+    assert len(messages) == 1 and "Assertion v->input failed" in messages[0]
+    assert "category=PROCESS_CRASH" in messages[0] and "secret" not in messages[0]
+
+
 @pytest.fixture(autouse=True)
 def _isolate_notifications() -> Iterator[None]:
     """避免人工打点通知泄漏到其他测试。"""

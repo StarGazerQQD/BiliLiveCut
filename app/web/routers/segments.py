@@ -3,9 +3,9 @@
 from __future__ import annotations
 
 from collections.abc import Iterator
-from typing import Any
+from typing import Any, Literal
 
-from fastapi import APIRouter, HTTPException, Request
+from fastapi import APIRouter, HTTPException, Query, Request
 from fastapi.responses import FileResponse, StreamingResponse
 from pydantic import BaseModel, ConfigDict, Field
 from starlette.background import BackgroundTask
@@ -67,9 +67,15 @@ def get_session_timelines(
 
 
 @router.get("/sessions/history")
-def get_session_history() -> list[dict[str, Any]]:
+def get_session_history(
+    limit: int | None = Query(default=None, ge=1, le=500),
+    offset: int = Query(default=0, ge=0),
+    kind: Literal["transcripts", "clips"] | None = None,
+    q: str = Query(default="", max_length=500),
+    status: str | None = None,
+) -> list[dict[str, Any]]:
     """返回全部录制场次及转写、弹幕数量，供历史列表选择。"""
-    return transcripts_service.list_recording_session_history()
+    return transcripts_service.list_recording_session_history(limit=limit, offset=offset, kind=kind, q=q, status=status)
 
 
 @router.get("/sessions/{session_id}/timeline", response_model=EditorialTimelineResponse)
@@ -168,10 +174,24 @@ def regenerate_session_timeline_summary(session_id: int) -> dict[str, int | bool
 
 
 @router.get("/transcripts")
-def get_transcripts(limit: int = 30, session_id: int | None = None) -> list[dict[str, Any]]:
+def get_transcripts(
+    limit: int = 30,
+    session_id: int | None = Query(default=None, gt=0),
+    offset: int = Query(default=0, ge=0),
+    unknown_session: bool = False,
+    q: str = Query(default="", max_length=500),
+) -> list[dict[str, Any]]:
     """返回全局最近或指定场次的转写文本。"""
     limit = _clamp(limit, 1, _MAX_QUERY_LIMIT)
-    return transcripts_service.list_transcripts(limit=limit, session_id=session_id)
+    if session_id is not None and unknown_session:
+        raise HTTPException(status_code=422, detail="场次筛选与未关联场次不能同时使用")
+    return transcripts_service.list_transcripts(
+        limit=limit,
+        session_id=session_id,
+        offset=offset,
+        unknown_session=unknown_session,
+        q=q,
+    )
 
 
 @router.get("/transcripts/{transcript_id}/source-mp4")

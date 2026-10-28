@@ -598,6 +598,14 @@
             ],
             "title": "Hotspot Event Id"
           },
+          "previous_attempts": {
+            "items": {
+              "$ref": "#/components/schemas/ModelAttempt"
+            },
+            "maxItems": 32,
+            "title": "Previous Attempts",
+            "type": "array"
+          },
           "schema_version": {
             "const": "editorial-view-v1",
             "default": "editorial-view-v1",
@@ -1456,6 +1464,16 @@
         "additionalProperties": false,
         "description": "单次实际请求的诊断，不保存地址、凭据、原始正文或异常。",
         "properties": {
+          "diagnostic": {
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/ModelFailureDiagnostic"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
           "elapsed_s": {
             "minimum": 0.0,
             "title": "Elapsed S",
@@ -1659,6 +1677,92 @@
           "asr_selection"
         ],
         "title": "ModelConfigurationView",
+        "type": "object"
+      },
+      "ModelFailureDiagnostic": {
+        "additionalProperties": false,
+        "description": "有界的错误元数据和本地说明，不接收服务正文或异常文本。",
+        "properties": {
+          "category": {
+            "enum": [
+              "http",
+              "dns",
+              "connection",
+              "timeout",
+              "validation",
+              "response",
+              "authorization"
+            ],
+            "title": "Category",
+            "type": "string"
+          },
+          "http_status": {
+            "anyOf": [
+              {
+                "maximum": 599.0,
+                "minimum": 400.0,
+                "type": "integer"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Http Status"
+          },
+          "parameter": {
+            "anyOf": [
+              {
+                "maxLength": 128,
+                "minLength": 1,
+                "pattern": "^[A-Za-z0-9_.:-]+$",
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Parameter"
+          },
+          "provider_code": {
+            "anyOf": [
+              {
+                "maxLength": 128,
+                "minLength": 1,
+                "pattern": "^[A-Za-z0-9_.:-]+$",
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Provider Code"
+          },
+          "request_id": {
+            "anyOf": [
+              {
+                "maxLength": 128,
+                "minLength": 1,
+                "pattern": "^[A-Za-z0-9_.:-]+$",
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Request Id"
+          },
+          "summary": {
+            "maxLength": 240,
+            "minLength": 1,
+            "title": "Summary",
+            "type": "string"
+          }
+        },
+        "required": [
+          "category",
+          "summary"
+        ],
+        "title": "ModelFailureDiagnostic",
         "type": "object"
       },
       "ModelProbe": {
@@ -2763,7 +2867,7 @@
   },
   "info": {
     "title": "BiliLiveCut 控制台",
-    "version": "V0.1.20.1 Alpha (0.1.20.1-alpha)"
+    "version": "V0.1.20.2 Alpha (0.1.20.2-alpha)"
   },
   "openapi": "3.1.0",
   "paths": {
@@ -3034,6 +3138,71 @@
               "default": 50,
               "title": "Limit",
               "type": "integer"
+            }
+          },
+          {
+            "in": "query",
+            "name": "offset",
+            "required": false,
+            "schema": {
+              "default": 0,
+              "minimum": 0,
+              "title": "Offset",
+              "type": "integer"
+            }
+          },
+          {
+            "in": "query",
+            "name": "session_id",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "exclusiveMinimum": 0,
+                  "type": "integer"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "Session Id"
+            }
+          },
+          {
+            "in": "query",
+            "name": "unknown_session",
+            "required": false,
+            "schema": {
+              "default": false,
+              "title": "Unknown Session",
+              "type": "boolean"
+            }
+          },
+          {
+            "in": "query",
+            "name": "q",
+            "required": false,
+            "schema": {
+              "default": "",
+              "maxLength": 500,
+              "title": "Q",
+              "type": "string"
+            }
+          },
+          {
+            "in": "query",
+            "name": "status",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "Status"
             }
           }
         ],
@@ -4558,6 +4727,35 @@
       "post": {
         "description": "在本机文件管理器打开切片目录。",
         "operationId": "open_clips_dir_api_open_clips_dir_post",
+        "parameters": [
+          {
+            "in": "query",
+            "name": "session_id",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "exclusiveMinimum": 0,
+                  "type": "integer"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "Session Id"
+            }
+          },
+          {
+            "in": "query",
+            "name": "unknown_session",
+            "required": false,
+            "schema": {
+              "default": false,
+              "title": "Unknown Session",
+              "type": "boolean"
+            }
+          }
+        ],
         "responses": {
           "200": {
             "content": {
@@ -4572,6 +4770,16 @@
               }
             },
             "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
           }
         },
         "summary": "Open Clips Dir"
@@ -5730,6 +5938,84 @@
       "get": {
         "description": "返回全部录制场次及转写、弹幕数量，供历史列表选择。",
         "operationId": "get_session_history_api_sessions_history_get",
+        "parameters": [
+          {
+            "in": "query",
+            "name": "limit",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "maximum": 500,
+                  "minimum": 1,
+                  "type": "integer"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "Limit"
+            }
+          },
+          {
+            "in": "query",
+            "name": "offset",
+            "required": false,
+            "schema": {
+              "default": 0,
+              "minimum": 0,
+              "title": "Offset",
+              "type": "integer"
+            }
+          },
+          {
+            "in": "query",
+            "name": "kind",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "enum": [
+                    "transcripts",
+                    "clips"
+                  ],
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "Kind"
+            }
+          },
+          {
+            "in": "query",
+            "name": "q",
+            "required": false,
+            "schema": {
+              "default": "",
+              "maxLength": 500,
+              "title": "Q",
+              "type": "string"
+            }
+          },
+          {
+            "in": "query",
+            "name": "status",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "Status"
+            }
+          }
+        ],
         "responses": {
           "200": {
             "content": {
@@ -5745,6 +6031,16 @@
               }
             },
             "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
           }
         },
         "summary": "Get Session History"
@@ -7284,6 +7580,7 @@
             "schema": {
               "anyOf": [
                 {
+                  "exclusiveMinimum": 0,
                   "type": "integer"
                 },
                 {
@@ -7291,6 +7588,38 @@
                 }
               ],
               "title": "Session Id"
+            }
+          },
+          {
+            "in": "query",
+            "name": "offset",
+            "required": false,
+            "schema": {
+              "default": 0,
+              "minimum": 0,
+              "title": "Offset",
+              "type": "integer"
+            }
+          },
+          {
+            "in": "query",
+            "name": "unknown_session",
+            "required": false,
+            "schema": {
+              "default": false,
+              "title": "Unknown Session",
+              "type": "boolean"
+            }
+          },
+          {
+            "in": "query",
+            "name": "q",
+            "required": false,
+            "schema": {
+              "default": "",
+              "maxLength": 500,
+              "title": "Q",
+              "type": "string"
             }
           }
         ],

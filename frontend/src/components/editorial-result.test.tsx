@@ -100,6 +100,46 @@ it("does not render absent or invalid contracts", () => {
   expect(container).toBeEmptyDOMElement();
 });
 
+it("keeps shared budget prior failures visible when the current judgment sends no request", () => {
+  render(
+    <EditorialResult
+      value={{
+        ...base,
+        previous_attempts: ["explanation", "repair", "review"].map(
+          (purpose, index) => ({
+            number: index + 1,
+            purpose,
+            provider_id: "analysis",
+            model: "deepseek-flash",
+            status: "failed",
+            diagnostic: {
+              category: "validation",
+              summary: `可信字段校验失败 ${index + 1}`,
+            },
+          }),
+        ),
+        execution: {
+          status: "failed",
+          error: "attempt_budget",
+          result: null,
+          elapsed_s: 0.01,
+          attempt_offset: 3,
+          attempts: [],
+        },
+      }}
+    />,
+  );
+  expect(screen.getByText(/本次判断 0 次请求/)).toBeInTheDocument();
+  expect(
+    screen.getByText(/同一操作前序 3 次请求 · 已保存 3 条前序记录/),
+  ).toBeInTheDocument();
+  expect(screen.getAllByRole("note")).toHaveLength(3);
+  expect(
+    screen.getByText("同一操作前序请求 · 用途：内容解释"),
+  ).toBeInTheDocument();
+  expect(screen.queryByText("不建议剪辑")).not.toBeInTheDocument();
+});
+
 it("shows unknown usage when the optional usage object is absent", () => {
   render(
     <EditorialResult
@@ -124,4 +164,47 @@ it("shows unknown usage when the optional usage object is absent", () => {
   );
   expect(screen.getByText(/输入 token：未知/)).toBeInTheDocument();
   expect(screen.getByText(/估算费用（USD）：未知/)).toBeInTheDocument();
+});
+
+it("shows bounded service diagnostics and keeps failed judgments unresolved", () => {
+  render(
+    <EditorialResult
+      value={{
+        ...base,
+        execution: {
+          status: "failed",
+          error: "provider_error",
+          result: null,
+          elapsed_s: 0.5,
+          attempts: [
+            {
+              number: 1,
+              provider_id: "analysis",
+              model: "deepseek-flash",
+              protocol: "json_object",
+              status: "failed",
+              diagnostic: {
+                category: "http",
+                summary: "服务拒绝了请求，请结合状态码和参数检查配置。",
+                http_status: 400,
+                provider_code: "invalid_request_error",
+                parameter: "max_tokens",
+                request_id: "request-123",
+              },
+            },
+          ],
+        },
+      }}
+    />,
+  );
+  expect(screen.getByText("响应格式：json_object")).toBeInTheDocument();
+  expect(screen.getByRole("note")).toHaveTextContent("HTTP 状态：400");
+  expect(screen.getByRole("note")).toHaveTextContent(
+    "服务错误码：invalid_request_error",
+  );
+  expect(screen.getByRole("note")).toHaveTextContent("相关参数：max_tokens");
+  expect(screen.getByRole("note")).toHaveTextContent(
+    "服务请求标识：request-123",
+  );
+  expect(screen.queryByText("不建议剪辑")).not.toBeInTheDocument();
 });

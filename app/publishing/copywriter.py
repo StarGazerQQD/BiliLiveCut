@@ -24,7 +24,7 @@ from app.analysis.transcript_windows import extract_transcript_window
 from app.analysis.transcription.content import refined_transcript_text
 from app.clipping.core import select_covering_segments
 from app.core.config import settings
-from app.core.paths import ready_to_upload_dir
+from app.core.paths import session_upload_dir
 from app.core.runtime_settings import configured_task
 from app.db.entities import (
     ClipStatus,
@@ -328,9 +328,26 @@ def export_manifest(clip_id: int) -> str:
         clip = db.get(FinalClip, clip_id)
         if clip is None:
             raise ValueError(f"切片不存在: id={clip_id}")
+        candidate = db.get(HighlightCandidate, clip.candidate_id)
+        session = db.get(RecordingSession, candidate.session_id) if candidate is not None else None
+        session_id = session.id if session is not None else None
+        from app.recording.metadata import SessionMetadata, read_metadata
+
+        metadata = read_metadata(db, f"session_metadata:{session_id}", SessionMetadata) if session_id else None
+        room = db.get(LiveRoom, session.room_id) if session is not None else None
         manifest = {
             "clip_id": clip.id,
             "candidate_id": clip.candidate_id,
+            "session_id": session_id,
+            "session_title": metadata.last_title if metadata is not None else None,
+            "source_label": (
+                room.uploader_name or room.title or f"场次 #{session_id}"
+                if room
+                else f"场次 #{session_id}"
+                if session_id is not None
+                else "未关联场次"
+            ),
+            "session_started_at": session.started_at.isoformat() if session is not None else None,
             "file_path": clip.file_path,
             "cover_path": clip.cover_path,
             "duration_s": clip.duration_s,
@@ -341,7 +358,7 @@ def export_manifest(clip_id: int) -> str:
             "content_hash": clip.content_hash,
             "status": clip.status,
         }
-    path = ready_to_upload_dir() / f"clip_{clip_id}.json"
+    path = session_upload_dir(session_id) / f"clip_{clip_id}.json"
     path.write_text(json.dumps(manifest, ensure_ascii=False, indent=2), encoding="utf-8")
     logger.info("已导出待上传清单: {}", path)
     return str(path)

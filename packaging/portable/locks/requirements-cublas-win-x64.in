@@ -1,0 +1,4 @@
+# Windows CUDA 13 配套的可选 CUDA 12 库闭包；默认 CPU 和 cu126 不额外安装。
+# 重新生成：uv pip compile --no-header --no-annotate --generate-hashes --python-platform windows --python-version 3.12 packaging/portable/locks/requirements-cublas-win-x64.in -o packaging/portable/locks/requirements-cublas-win-x64.lock
+nvidia-cublas-cu12 @ https://files.pythonhosted.org/packages/20/e2/fc9a0e985249d873150276d5afb02e39a66817fedbf1a385724393e505ed/nvidia_cublas_cu12-12.9.2.10-py3-none-win_amd64.whl
+nvidia-cuda-nvrtc-cu12 @ https://files.pythonhosted.org/packages/52/de/823919be3b9d0ccbf1f784035423c5f18f4267fb0123558d58b813c6ec86/nvidia_cuda_nvrtc_cu12-12.9.86-py3-none-win_amd64.whl

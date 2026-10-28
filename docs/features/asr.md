@@ -1,5 +1,9 @@
 # 语音转写与模型
 
+“实时转写”先按场次展示，每页 12 场；进入后每页展示 30 条转写。搜索覆盖完整历史的有效正文（已成功整理时使用整理正文），筛选后再分页。没有完整场次关联的历史条目保留在“未关联场次”。
+
+转写卡片编号使用原始分段的场次内序号加一，每场从 1 开始；保留历史空号，分页和搜索不会重新编号。校正、重新转写、播放和下载继续使用稳定的数据库 ID。下载文件名包含场次、分段序号和原始分段 ID。
+
 ## ASR 流水线
 
 安装 AI 依赖：
@@ -44,7 +48,7 @@ HIGHLIGHT_LLM_MAX_TOKENS=65536      # 高光复核的最大输出预算（含推
 
 转写整理和高光复核默认各预留 `65536` 个最大输出 token，避免推理模型在处理五分钟切片时耗尽额度而没有正文；可按模型能力分别在 `128-65536` 和 `512-65536` 范围内调低。该值是单次请求上限，实际用量仍以模型返回的 token 数为准。
 
-实时转写页先用“录制场次”下拉选择历史直播，再显示该场全部转写；旧场次不会因为新增记录超过固定条数而消失。“重新识别”会删除当前场次可重建的自动分析结果后重新排队；若存在正在运行的任务，服务端会拒绝并说明原因。每条转写还会显示源 TS 文件名；需要直接进入 NLE 剪辑时使用“无损导出 MP4”，应用会保留原始编码并把首个有效视频帧校准到 `0s`，避免普通 TS→MP4 重封装因 AAC 预滚产生首帧黑画面。
+实时转写页先选择分页场次卡片，再分页查看该场转写；旧场次不会因为新增记录超过固定条数而消失。“重新识别”会删除当前场次可重建的自动分析结果后重新排队；若存在正在运行的任务，服务端会拒绝并说明原因。每条转写还会显示源 TS 文件名；需要直接进入 NLE 剪辑时使用“无损导出 MP4”，应用会保留原始编码并把首个有效视频帧校准到 `0s`，避免普通 TS→MP4 重封装因 AAC 预滚产生首帧黑画面。
 
 **工作原理与成本控制**：先用零成本规则特征（音量峰值、关键词、语速突增、音频特征、弹幕热度）算出 `rule_score`；只有超过初筛阈值才调用大模型复核。新直播间默认初筛/候选/人工审核阈值为 `0.28/0.38/0.32`，自动批准/发布阈值为 `0.72/0.80`，也可通过设置中心的全局阈值调整新房间默认，`.env` 同名参数仍提供部署默认；房间级值可在“直播间”及“房间自动化与端口”中调整。Web「设置中心 → 大模型服务商」没有启用服务商时自动走**纯规则模式**，完全可用、零费用。
 
@@ -61,15 +65,26 @@ Portable 用户先停止服务，在程序目录执行以下命令之一。安�
 ```powershell
 # 按显卡和驱动对 PyTorch 官方发行的支持选择一种；不是本机 nvcc 的版本开关。
 .\BiliLiveCut-Portable.exe --torch-runtime cu126
-# 或使用 cu130；恢复默认 CPU 依赖使用 --torch-runtime cpu。
+# RTX 50 系列等 Blackwell 显卡使用 cu130。
+.\BiliLiveCut-Portable.exe --torch-runtime cu130
+# 恢复默认 CPU 依赖使用 --torch-runtime cpu。
 ```
 
-Lite EXE 使用其实际文件名替换示例。CUDA wheel 体积较大，此操作默认允许从官方地址获取这两个文件，Full 的其余依赖仍使用随附离线包。完全离线时，把当前 Python ABI 对应锁文件中的 Torch 与 TorchAudio wheel 放入 `vendor/wheels/`，再加 `--offline`；缺少文件或哈希不匹配会失败，不会转为联网安装。两套支持的锁为 `packaging/portable/locks/requirements-torch-{cu126|cu130}-{py311|py312}-win-x64.lock`。升级或修复虚拟环境仍读取持久化选择；现有手工安装且完全匹配这两套锁的 CUDA 配套包会被识别和保留，不配套或未知版本明确拒绝自动覆盖。
+Lite EXE 使用其实际文件名替换示例。CUDA wheel 体积较大，此操作默认允许从官方地址获取 Torch 和 TorchAudio；cu130 另外安装 NVIDIA cuBLAS 12 与 NVRTC，cu126 使用 Torch 自带的配套库。Full 的其余依赖仍使用随附离线包。完全离线时，把当前 Python ABI 对应锁文件中的 Torch、TorchAudio，以及 cu130 所需的 `requirements-cublas-win-x64.lock` 两个 NVIDIA wheel 放入 `vendor/wheels/`，再加 `--offline`；缺少文件或哈希不匹配会失败，不会转为联网安装。Torch 锁为 `packaging/portable/locks/requirements-torch-{cu126|cu130}-{py311|py312}-win-x64.lock`。升级或修复虚拟环境仍读取持久化选择；已匹配的 Torch 配套包会保留并补齐缺失依赖，不配套或未知版本明确拒绝自动覆盖。默认 CPU 安装不增加 NVIDIA 依赖；显式切回 CPU 使用精确版本约束替换 CUDA Torch。
 
-源码用户先按项目说明安装基础依赖，然后在已停止服务的目标虚拟环境中应用对应 ABI 的 CUDA 锁。例如 Python 3.12：
+源码用户先按项目说明安装基础依赖，然后在已停止服务的目标虚拟环境中应用对应 ABI 的 CUDA 锁。Python 3.12 选择 cu126 时执行：
 
 ```powershell
 uv pip install --python .venv/Scripts/python.exe --no-deps --require-hashes -r packaging/portable/locks/requirements-torch-cu126-py312-win-x64.lock
+.venv/Scripts/python.exe -m pip check
+.\.venv\Scripts\blc.exe doctor --yes
+```
+
+RTX 50 系列等需要 cu130 的环境改为执行这组完整命令：
+
+```powershell
+uv pip install --python .venv/Scripts/python.exe --no-deps --require-hashes -r packaging/portable/locks/requirements-torch-cu130-py312-win-x64.lock
+uv pip install --python .venv/Scripts/python.exe --require-hashes -r packaging/portable/locks/requirements-cublas-win-x64.lock
 .venv/Scripts/python.exe -m pip check
 .\.venv\Scripts\blc.exe doctor --yes
 ```
@@ -78,9 +93,17 @@ uv pip install --python .venv/Scripts/python.exe --no-deps --require-hashes -r p
 
 随后在「设置中心 → ASR」选择设备；已保存的 Web 配置优先于 `.env`，正在运行的任务仍使用开始时的快照。Fun-ASR-Nano/Paraformer 使用主设备，SenseVoice 使用辅助设备，Paraformer 的局部复核使用复核设备。Whisper 包括直接选择为主引擎时，均使用 `ASR_FALLBACK_DEVICE`。CPU 任务、媒体解码、调度及部分音频预处理仍会使用 CPU；增加并发前应确认显存余量。
 
-FunASR 在加载前检查 Torch 构建、可见 GPU 和实际 CUDA 运算，加载后核对主模型、VAD 与标点模型参数设备；CUDA 不可用时明确失败，保留原有可选后端回退记录。Whisper 使用 CTranslate2，单独检查其 CUDA 能力，不以 Torch 的 CPU/GPU 版本代替判断；它需要对应的 CUDA/cuDNN 动态库，缺失时按诊断修复。远程转写主引擎的 device 配置不决定服务端设备。
+FunASR 在加载前检查 Torch 构建、可见 GPU 和实际 CUDA 运算，加载后核对主模型、VAD 与标点模型参数设备；CUDA 不可用时明确失败，保留原有可选后端回退记录。Whisper 使用 CTranslate2，单独检查其 CUDA 能力。当前 Windows CTranslate2 需要 cuBLAS 12；cu130 Torch 自带 cuBLAS 13，安装器因此另外安装 NVIDIA 官方 cuBLAS 12。预检和 Whisper 共用加载器，核验进程中真实 DLL 路径及版本；cu126 优先复用同环境 Torch 的 cuBLAS 12，拒绝重复来源或混用不同目录的 cuBLASLt。Portable 不接受受管环境外的库，源码启动仍支持已配置的系统 CUDA。远程转写主引擎的 device 配置不决定服务端设备。
 
 `BiliLiveCut-Portable.exe --doctor` 显示实际解释器、Torch 构建、CUDA 可用性和 CTranslate2 可见 GPU 数；源码 `doctor` 另按当前有效角色设备检查，并在显式 CUDA 不可用时返回失败。成功安装 CUDA wheel 与本机可以执行 CUDA 推理是分别核验的两个结果。
+
+安装 CUDA 运行时及后续启动会对每个可见 GPU 执行实际张量运算并同步，输出 GPU 名称、计算能力及 Torch 编译架构；只有验证成功才保存运行时选择。`is_available=True` 无法证明内核可执行。RTX 5090 等计算能力 12.0 的显卡使用 `cu126` 时可能出现 `no kernel image is available`，应停止服务、安装锁定的 `cu130` 后重启。安装不会自动修改主转写、复核或 Whisper 的业务设备配置。
+
+运行期间确认的 CPU 构建不支持 CUDA、无可执行 CUDA 内核错误，会在同一配置和安装运行时下缓存并跨 ASR 子进程复用，避免每个片段重复加载失败。该记录仅影响对应的 Torch 构建和设备，Whisper 的 CTranslate2 回退仍独立执行；显存不足、临时驱动故障和一般模型错误继续保留原重试行为。更改 ASR 配置、安装包或 `CUDA_VISIBLE_DEVICES` 后废弃旧记录并替换空闲子进程，下一请求重新检查；安装运行时仍应停止服务后操作。若所有已启用的识别路径都被确定性设备错误阻断，任务直接记录 ASR `unavailable` 证据并继续非语义热点分析；修复设备后可重新转写。
+
+回退引擎返回空文本时，只有实际 PCM 检查和 VAD 确认没有语音的结果才能作为 `no_speech` 完成。上游设备失败不会覆盖这一有效结果，缺少证据的空输出仍会失败。
+
+已有 Engine Pack 和录音时，可用 `python scripts/check_local_asr.py --audio <本地媒体> --models-dir <模型目录> --engine funasr_nano --device cuda --output .local/asr-check/report.json` 检查真实转写；另两种引擎为 `paraformer`、`whisper`。脚本完整重算模型哈希，使用生产子进程，临时音频、SDK 缓存和存储隔离在 `.local/asr-check/`。语音验收要求选定主引擎实际返回有效文本，其他引擎回退成功仍判定本次目标验收失败。报告包含实际 backend、主引擎状态、回退、复核和加载模型状态，不包含转写正文。`--expect no_speech` 验证真实无语音证据，其 `target_engine_verified=false`，不能作为目标模型 CUDA 推理成功的证明；没有人工标注时也不能据此推断识别准确率。
 
 ## OpenAI 兼容远程转写
 

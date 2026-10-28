@@ -14,7 +14,14 @@ import zipfile
 from dataclasses import dataclass
 from pathlib import Path
 
-from build_portable_runtime_wheels import build_all, sha256_file
+from packaging.requirements import InvalidRequirement, Requirement
+
+if __package__:
+    from scripts.audit_portable_runtime_locks import locked_dependencies
+    from scripts.build_portable_runtime_wheels import build_all, sha256_file
+else:
+    from audit_portable_runtime_locks import locked_dependencies
+    from build_portable_runtime_wheels import build_all, sha256_file
 
 REPO_ROOT = Path(__file__).resolve().parent.parent
 DEFAULT_REQUIREMENTS = REPO_ROOT / "packaging" / "portable" / "locks" / "requirements-runtime.in"
@@ -87,7 +94,9 @@ def render_lock(target: Target, wheel_dir: Path) -> str:
     return "\n".join(header + lines) + "\n"
 
 
-def resolve_target(target: Target, requirements: Path, source_wheels: Path, wheel_dir: Path) -> None:
+def resolve_target(
+    target: Target, requirements: Path, source_wheels: Path, wheel_dir: Path, *, constraints: Path | None = None
+) -> None:
     """Resolve one Windows target to binary wheels only."""
     command = [
         sys.executable,
@@ -111,7 +120,31 @@ def resolve_target(target: Target, requirements: Path, source_wheels: Path, whee
         "--find-links",
         str(source_wheels),
     ]
+    if constraints is not None:
+        command.extend(("--constraint", str(constraints)))
     subprocess.run(command, check=True)
+
+
+def upgrade_package_name(value: str) -> str:
+    """Accept a package name without requirement options or version constraints."""
+    try:
+        requirement = Requirement(value)
+    except InvalidRequirement as exc:
+        raise argparse.ArgumentTypeError(f"Invalid upgrade package name: {value}") from exc
+    if requirement.extras or requirement.specifier or requirement.marker or requirement.url:
+        raise argparse.ArgumentTypeError("--upgrade-package accepts a package name only")
+    return canonicalize_name(requirement.name)
+
+
+def retained_constraints(lock_path: Path, upgrade_packages: frozenset[str]) -> str:
+    """Keep every baseline version except explicitly selected upgrade packages."""
+    if not lock_path.is_file():
+        raise RuntimeError(f"Targeted upgrade requires an existing lock: {lock_path}")
+    dependencies = locked_dependencies(lock_path)
+    missing = upgrade_packages - {name for name, _version in dependencies}
+    if missing:
+        raise RuntimeError(f"Upgrade packages absent from {lock_path.name}: {', '.join(sorted(missing))}")
+    return "".join(f"{name}=={version}\n" for name, version in sorted(dependencies) if name not in upgrade_packages)
 
 
 def direct_requirement_names(requirements: Path) -> set[str]:
@@ -140,13 +173,21 @@ def verify_direct_requirements(requirements: Path, lock_text: str, target: Targe
         raise RuntimeError(f"{target.abi} lock omitted direct requirements: {', '.join(sorted(missing))}")
 
 
-def generate_locks(requirements: Path, output_dir: Path, cache_dir: Path) -> list[Path]:
+def generate_locks(
+    requirements: Path, output_dir: Path, cache_dir: Path, *, upgrade_packages: frozenset[str] = frozenset()
+) -> list[Path]:
     """Build source-only wheels, resolve both targets, and write complete locks."""
     if not requirements.is_file():
         raise RuntimeError(f"Requirements input not found: {requirements}")
+    constraints_by_target = {
+        target.abi: retained_constraints(output_dir / target.lock_filename, upgrade_packages)
+        for target in TARGETS
+        if upgrade_packages
+    }
     output_dir.mkdir(parents=True, exist_ok=True)
 
     generated: list[Path] = []
+    pending: list[tuple[Path, str]] = []
     with tempfile.TemporaryDirectory(prefix="blc-runtime-locks-") as temporary:
         work_dir = Path(temporary)
         source_wheels = work_dir / "source-wheels"
@@ -155,14 +196,22 @@ def generate_locks(requirements: Path, output_dir: Path, cache_dir: Path) -> lis
         for target in TARGETS:
             wheel_dir = work_dir / target.abi
             wheel_dir.mkdir()
+            constraints = None
+            if upgrade_packages:
+                constraints = work_dir / f"{target.abi}-constraints.txt"
+                constraints.write_text(constraints_by_target[target.abi], encoding="utf-8", newline="\n")
             print(f"Resolving {target.abi} Windows wheel closure")
-            resolve_target(target, requirements, source_wheels, wheel_dir)
+            resolve_target(target, requirements, source_wheels, wheel_dir, constraints=constraints)
             lock_text = render_lock(target, wheel_dir)
             verify_direct_requirements(requirements, lock_text, target)
             lock_path = output_dir / target.lock_filename
-            lock_path.write_text(lock_text, encoding="utf-8", newline="\n")
-            generated.append(lock_path)
-            print(f"Wrote {lock_path} ({len(list(wheel_dir.glob('*.whl')))} packages)")
+            pending.append((lock_path, lock_text))
+
+    # 两个 ABI 均解析成功后再发布，避免依赖冲突留下半更新的锁。
+    for lock_path, lock_text in pending:
+        lock_path.write_text(lock_text, encoding="utf-8", newline="\n")
+        generated.append(lock_path)
+        print(f"Wrote {lock_path}")
 
     combined = hashlib.sha256()
     for path in generated:
@@ -177,13 +226,25 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
     parser.add_argument("--requirements", type=Path, default=DEFAULT_REQUIREMENTS)
     parser.add_argument("--output-dir", type=Path, default=DEFAULT_OUTPUT_DIR)
     parser.add_argument("--cache-dir", type=Path, default=Path(".cache/portable-runtime-sdists"))
+    parser.add_argument(
+        "--upgrade-package",
+        action="append",
+        type=upgrade_package_name,
+        default=[],
+        help="Upgrade only this package; retain other versions from both existing output locks. May be repeated.",
+    )
     return parser.parse_args(argv)
 
 
 def main(argv: list[str] | None = None) -> int:
     """Generate both portable Windows runtime locks."""
     args = parse_args(argv)
-    generate_locks(args.requirements.resolve(), args.output_dir.resolve(), args.cache_dir.resolve())
+    generate_locks(
+        args.requirements.resolve(),
+        args.output_dir.resolve(),
+        args.cache_dir.resolve(),
+        upgrade_packages=frozenset(args.upgrade_package),
+    )
     return 0
 
 

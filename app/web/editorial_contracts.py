@@ -5,7 +5,13 @@ from typing import Literal
 
 from pydantic import BaseModel, ConfigDict, Field, JsonValue
 
-from app.analysis.editorial_contracts import ContextDirection, EditorialEvidence, EditorialExecutionV1, FailureCode
+from app.analysis.editorial_contracts import (
+    ContextDirection,
+    EditorialEvidence,
+    EditorialExecutionV1,
+    FailureCode,
+    ModelAttempt,
+)
 from app.analysis.reanalysis_targets import ReanalysisSelection, ReanalysisTarget
 
 
@@ -23,6 +29,7 @@ class EditorialPresentation(BaseModel):
     explanation_error: FailureCode | None = None
     editorial_state: Literal["succeeded", "failed", "disabled", "cancelled", "not_run", "invalid"] = "not_run"
     execution: EditorialExecutionV1 | None = None
+    previous_attempts: list[ModelAttempt] = Field(default_factory=list, max_length=32)
     evidence: list[EditorialEvidence] = Field(default_factory=list)
     time_origin_epoch_s: float | None = None
     expanded_context: ContextDirection | None = None

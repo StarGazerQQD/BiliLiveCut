@@ -1,4 +1,4 @@
-# BiliLiveCut CI (V0.1.20.1 Alpha)
+# BiliLiveCut CI (V0.1.20.2 Alpha)
 # 触发: push/PR 到 main → lint → audit + test → portable → coverage summary
 #
 # Job 结构:
@@ -152,6 +152,14 @@ jobs:
         run: python -m pytest tests/integration/test_frontend_console.py --timeout=120 --fail-on-skip
         timeout-minutes: 3
 
+      - name: Verify SSE state events (Linux)
+        if: runner.os == 'Linux'
+        shell: bash
+        env:
+          ASR_NO_MODEL_DOWNLOAD: "1"
+        run: python -m pytest tests/integration/test_state_events.py --timeout=60 --fail-on-skip --tb=long -vv --durations=10
+        timeout-minutes: 5
+
       # 实际日志显示发行包用例占用约 285 秒；独立验收保留全部检查和各步时限。
       - name: Run real sdist and wheel integration
         shell: bash
@@ -160,12 +168,15 @@ jobs:
         run: python -m pytest tests/integration/test_wheel_frontend.py --fail-on-skip --durations=10
         timeout-minutes: 15
 
+      # Windows/Python 3.11 的 3358 项全部通过仍耗时 897.96 秒，需为收尾保留余量。
+      # 应用测试单项限时 120 秒；发行包构建仍使用上方独立步骤的预算。
       - name: Run pytest with coverage (≥50%)
         shell: bash
         env:
           ASR_NO_MODEL_DOWNLOAD: "1"
+          PYTEST_ADDOPTS: "--timeout=120"
         run: python scripts/run_coverage.py --application-only
-        timeout-minutes: 15
+        timeout-minutes: 30
 
       - name: Upload coverage report
         if: always()

@@ -10,6 +10,7 @@ from app.analysis.editorial_contracts import (
     FailureCode,
     validate_review_evidence,
 )
+from app.analysis.editorial_provenance import ReviewProvenance, canonical_hash
 from app.db.entities import HighlightCandidate, HighlightEvent, HotspotEvent
 from app.web.editorial_contracts import EditorialPresentation
 from app.web.services.review_workflow import decode_features
@@ -84,6 +85,26 @@ def editorial_presentation(
         direction = metadata.get("expanded_context")
         if direction is not None and (not isinstance(direction, str) or direction not in {"before", "after", "both"}):
             raise ValueError("上下文方向无效")
+        previous_attempts = []
+        if metadata.get("provenance") is not None:
+            provenance = ReviewProvenance.model_validate(metadata["provenance"])
+            if [attempt.number for attempt in provenance.prior_attempts] != list(
+                range(1, execution.attempt_offset + 1)
+            ):
+                raise ValueError("共享预算前序请求记录不完整")
+            expected = canonical_hash(
+                {
+                    "initial": provenance.initial_input.model_dump(mode="json")
+                    if provenance.initial_input is not None
+                    else None,
+                    "source": source.model_dump(mode="json") if source is not None else None,
+                    "revision": metadata.get("revision"),
+                    "policy": provenance.policy,
+                }
+            )
+            if expected != execution.input_fingerprint:
+                raise ValueError("执行输入与冻结策略指纹不一致")
+            previous_attempts = provenance.prior_attempts
     except ValueError:
         # 旧记录可读，但损坏的机器判断不能继续作为可信结论展示。
         return view.model_copy(update={"editorial_state": "invalid"})
@@ -91,6 +112,7 @@ def editorial_presentation(
         update={
             "editorial_state": execution.status,
             "execution": execution,
+            "previous_attempts": previous_attempts,
             "evidence": source.evidence if source is not None else [],
             "time_origin_epoch_s": source.time_origin_epoch_s if source is not None else None,
             "expanded_context": direction,

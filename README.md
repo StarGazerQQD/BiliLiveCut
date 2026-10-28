@@ -5,7 +5,7 @@
 [![License](https://img.shields.io/github/license/StarGazerQQD/BiliLiveCut)](LICENSE)
 [![Docs](https://img.shields.io/badge/docs-online-00AEEC?logo=readthedocs&logoColor=white)](https://stargazerqqd.github.io/BiliLiveCut/)
 
-**当前版本：V0.1.20.1 Alpha** (`0.1.20.1-alpha`) · [更新记录](https://stargazerqqd.github.io/BiliLiveCut/releases/current.html)
+**当前版本：V0.1.20.2 Alpha** (`0.1.20.2-alpha`) · [更新记录](https://stargazerqqd.github.io/BiliLiveCut/releases/current.html)
 
 面向 Bilibili 直播的自动切片工具：**录制 → 转写 → 识别高光 → 人工审核 → 生成切片与文案 → 可选上传**。通过 Web 控制台管理直播间、录制场次、转写、候选和成品。
 

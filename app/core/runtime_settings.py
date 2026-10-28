@@ -137,8 +137,14 @@ def snapshot_extra(key: str) -> str | None:
 class SettingsProxy:
     """保持模块导入引用稳定，测试覆盖仅修改进程环境对象。"""
 
+    __slots__ = ()
+
     def __getattr__(self, name: str) -> object:
         """从任务快照或最新进程配置读取属性。"""
+        # 代理没有本地属性字典，也不把底层配置字典暴露为代理自身状态。
+        if name == "__dict__":
+            raise AttributeError(name)
+
         from app.core.config import get_settings
 
         active = _task_view.get()

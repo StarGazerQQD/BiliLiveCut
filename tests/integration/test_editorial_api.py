@@ -7,6 +7,7 @@ from datetime import timedelta
 from pathlib import Path
 from typing import TYPE_CHECKING
 
+import httpx
 import pytest
 from fastapi.testclient import TestClient
 from sqlmodel import select
@@ -23,6 +24,117 @@ if TYPE_CHECKING:
 
 ADMIN = ("admin", "admin-pass")
 REVIEWER = ("alice", "alice-pass")
+
+
+def test_failed_model_diagnostic_survives_real_pipeline_and_timeline_api(
+    review_client: TestClient, pcm_wav: Path, monkeypatch: MonkeyPatch
+) -> None:
+    hotspot_id, _ = _seed(pcm_wav, heat=0.95)
+    _service(monkeypatch, "recommend")
+
+    async def send(_transport: httpx.AsyncHTTPTransport, request: httpx.Request) -> httpx.Response:
+        return httpx.Response(
+            500,
+            json={"error": {"code": "server_error", "message": "private model request must not be exposed"}},
+            headers={"x-request-id": "editorial-request-123"},
+            request=request,
+        )
+
+    monkeypatch.setattr(httpx.AsyncHTTPTransport, "handle_async_request", send)
+    score_hotspot_event(hotspot_id)
+    with get_session() as db:
+        hotspot = db.get(HotspotEvent, hotspot_id)
+        assert hotspot is not None
+        session_id = hotspot.session_id
+        stored = json.loads(hotspot.features_json)["editorial_review"]["execution"]
+    with nullcontext(review_client) as client:
+        result = client.get(f"/api/sessions/{session_id}/timeline?include_rejected=true", auth=ADMIN)
+    assert result.status_code == 200
+    execution = result.json()["points"][0]["editorial"]["execution"]
+    assert execution == stored and execution["status"] == "failed" and execution["result"] is None
+    diagnostic = execution["attempts"][0]["diagnostic"]
+    assert diagnostic["http_status"] == 500 and diagnostic["request_id"] == "editorial-request-123"
+    assert "private model request" not in result.text
+
+
+def test_shared_budget_failure_keeps_prior_calls_in_read_only_presentation(
+    review_client: TestClient, pcm_wav: Path, monkeypatch: MonkeyPatch
+) -> None:
+    from app.core.config import settings
+    from tests.editorial_fixtures import install_editorial_service
+
+    hotspot_id, _ = _seed(pcm_wav, heat=0.95)
+    monkeypatch.setattr(settings, "editorial_model_max_attempts", 3)
+    calls = install_editorial_service(monkeypatch, lambda *_args, **_kwargs: "{}")
+    score_hotspot_event(hotspot_id)
+    with get_session() as db:
+        hotspot = db.get(HotspotEvent, hotspot_id)
+        session_id = hotspot.session_id
+        original = json.loads(hotspot.features_json)["editorial_review"]
+    assert len(calls) == 3
+    # 复现提交重算已耗尽共享预算的历史记录，保留真实三次失败的来源。
+    from app.analysis.editorial_contracts import ModelAttempt
+    from app.analysis.editorial_review_sources import compute_event_review
+    from app.analysis.model_execution import ModelCallBudget
+
+    prior = original["provenance"]["prior_attempts"] + original["execution"]["attempts"]
+    budget = ModelCallBudget(max_attempts=3, max_elapsed_s=30)
+    for item in prior:
+        budget.record(ModelAttempt.model_validate(item))
+    draft = compute_event_review(hotspot_id, budget)
+    with get_session() as db:
+        hotspot = db.get(HotspotEvent, hotspot_id)
+        features = json.loads(hotspot.features_json)
+        features["editorial_review"] = draft.metadata()
+        hotspot.features_json = json.dumps(features)
+    response = review_client.get(f"/api/sessions/{session_id}/timeline?include_rejected=true", auth=ADMIN)
+    assert response.status_code == 200
+    view = response.json()["points"][0]["editorial"]
+    assert view["execution"]["error"] == "attempt_budget" and view["execution"]["attempts"] == []
+    assert view["execution"]["attempt_offset"] == len(view["previous_attempts"]) == 3
+    assert [item["purpose"] for item in view["previous_attempts"]] == ["explanation", "repair", "review"]
+    assert all(item["diagnostic"]["category"] == "validation" for item in view["previous_attempts"])
+    assert len(calls) == 3
+
+
+@pytest.mark.parametrize("change", ["number", "policy", "fingerprint", "missing_initial"])
+def test_damaged_prior_attempt_provenance_is_not_projected(
+    temp_db: None, pcm_wav: Path, monkeypatch: MonkeyPatch, change: str
+) -> None:
+    hotspot_id, _ = _seed(pcm_wav)
+    _service(monkeypatch, "recommend")
+    score_hotspot_event(hotspot_id)
+    with get_session() as db:
+        hotspot = db.get(HotspotEvent, hotspot_id)
+    metadata = json.loads(hotspot.features_json)["editorial_review"]
+    if change == "number":
+        metadata["provenance"]["prior_attempts"][0]["number"] = 2
+    elif change == "policy":
+        metadata["provenance"]["policy"]["private-secret"] = "private-secret"
+    elif change == "fingerprint":
+        metadata["execution"]["input_fingerprint"] = "0" * 64
+    else:
+        del metadata["provenance"]["initial_input"]
+    view = editorial_presentation(hotspot=hotspot, metadata=metadata)
+    assert view.editorial_state == "invalid" and view.execution is None and view.previous_attempts == []
+    assert "private-secret" not in view.model_dump_json()
+
+
+@pytest.mark.parametrize("with_provenance", [False, True])
+def test_legacy_zero_offset_and_unknown_initial_input_remain_readable(temp_db: None, with_provenance: bool) -> None:
+    from app.analysis.editorial_review import judge_editorial
+    from app.analysis.model_execution import ModelCallBudget
+
+    draft = judge_editorial(
+        lambda _direction: None, revision="legacy", budget=ModelCallBudget(max_attempts=3, max_elapsed_s=30)
+    )
+    metadata = draft.metadata()
+    del metadata["execution"]["attempt_offset"]
+    if not with_provenance:
+        del metadata["provenance"]
+    view = editorial_presentation(metadata=metadata)
+    assert view.editorial_state == "failed" and view.execution.error == "context_unavailable"
+    assert view.previous_attempts == [] and view.execution.attempt_offset == 0
 
 
 def test_timeline_and_review_share_persisted_evidence_without_model_calls(

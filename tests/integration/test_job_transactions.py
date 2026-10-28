@@ -487,7 +487,7 @@ def test_collection_real_media_publication_checks_cancellation_and_inputs(
     else:
         with pytest.raises(JobSuperseded if publication_state == "cancelled" else ValueError):
             render()
-        assert not list(clips_dir().glob("collection_*.mp4"))
+        assert not list(clips_dir().rglob("collection_*.mp4"))
     state = job_store.get_job(context.job_id)
     assert (
         state["status"] == {"current": "succeeded", "cancelled": "cancelling", "changed": "running"}[publication_state]

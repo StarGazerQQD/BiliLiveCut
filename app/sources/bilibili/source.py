@@ -21,14 +21,17 @@ from app.plugins.live_source import (
     SourceRateLimited,
     SourceRoom,
     SourceTemporaryError,
+    SourceUnavailable,
     StreamPreference,
     StreamSpec,
 )
 from app.sources.bilibili.client import (
+    BilibiliAuthenticationError,
     BilibiliError,
     BilibiliLiveClient,
     BilibiliRateLimitError,
     BilibiliStreamUnavailable,
+    BilibiliTransportError,
     HttpErrorType,
     parse_room_id,
 )
@@ -47,12 +50,18 @@ class BilibiliSource:
         try:
             async with BilibiliLiveClient(cookie=get_bilibili_cookie()) as client:
                 yield client
+        except BilibiliAuthenticationError as exc:
+            raise SourceAuthenticationError("Bilibili HTTP 401 鉴权被拒绝，请检查平台访问凭据") from exc
         except BilibiliRateLimitError as exc:
             if exc.error_type in {HttpErrorType.COOKIE_EXPIRED, HttpErrorType.ACCOUNT_BANNED}:
                 raise SourceAuthenticationError("Bilibili 登录态失效或账号访问被拒绝，请更新平台凭据") from exc
             raise SourceRateLimited("Bilibili 风控或限流", retry_after=max(0.0, exc.retry_after_seconds)) from exc
         except BilibiliStreamUnavailable as exc:
             raise SourceTemporaryError("直播中但画质序列没有可用地址") from exc
+        except BilibiliTransportError as exc:
+            if not exc.retryable:
+                raise SourceUnavailable(f"Bilibili 接口返回不可重试 HTTP {exc.status_code}") from exc
+            raise SourceTemporaryError(str(exc), retry_after=exc.retry_after_seconds) from exc
         except BilibiliError as exc:
             raise SourceTemporaryError("Bilibili 接口暂时不可用") from exc
 

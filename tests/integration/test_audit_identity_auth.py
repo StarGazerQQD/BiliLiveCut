@@ -165,9 +165,12 @@ def test_collection_reads_and_renders_correct_candidates(topic_media: Path, monk
 
     monkeypatch.setattr(collection, "run_cancellable", ffmpeg)
     monkeypatch.setattr(collection.subprocess, "run", ffprobe)
-    monkeypatch.setattr(collection, "clips_dir", lambda: topic_media)
+    from app.core import paths
+
+    monkeypatch.setattr(paths, "clips_dir", lambda: topic_media)
     variant = collection.render_collection(1, [708, 707], include_chapter_cards=False)
     assert variant is not None and variant.event_id == 708
+    assert Path(variant.file_path).parent == topic_media / "session_1"
     assert [Path(path).name for path in inputs] == ["candidate-1002.mp4", "candidate-1001.mp4"]
     with get_session() as db:
         assert db.get(HighlightCandidate, 1001).status == "merged"

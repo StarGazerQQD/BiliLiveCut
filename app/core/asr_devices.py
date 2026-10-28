@@ -12,11 +12,9 @@ from typing import Protocol, cast
 
 from loguru import logger
 
+from app.core.asr_failures import ASRDeviceError, DeviceFailure, cached_device_failure, remember_device_failure
+from app.core.cuda_libraries import prepare_cublas
 from app.core.sanitize import safe_exception_summary
-
-
-class ASRDeviceError(RuntimeError):
-    """The requested inference device cannot be used without a silent fallback."""
 
 
 class _Parameter(Protocol):
@@ -50,12 +48,18 @@ def require_torch_device(device: str, *, role: str) -> None:
         raise ASRDeviceError("未安装 PyTorch，无法使用 CUDA 转写") from exc
     build = str(torch.__version__)
     cuda_version = torch.version.cuda
+    target = f"cuda:{index}"
+    if (failure := cached_device_failure(target, build)) is not None:
+        raise ASRDeviceError(failure.message, failure=failure)
     if cuda_version is None:
-        raise ASRDeviceError(
+        message = (
             f"{role} 请求 {device}，但 PyTorch {build} 是 CPU 版。"
             "仅修改 ASR_*_DEVICE 不会安装 CUDA；Portable 请运行 --torch-runtime cu126 或 cu130，"
             "源码安装请按 docs/features/asr.md 的 CUDA 锁文件说明修复。"
         )
+        failure = DeviceFailure(device=target, build=build, code="cpu_build", message=message)
+        remember_device_failure(failure)
+        raise ASRDeviceError(message, failure=failure)
     if not torch.cuda.is_available() or index >= torch.cuda.device_count():
         raise ASRDeviceError(
             f"{role} 请求 {device}，PyTorch {build} / CUDA {cuda_version} 无可用的对应 GPU。"
@@ -67,6 +71,14 @@ def require_torch_device(device: str, *, role: str) -> None:
         torch.cuda.synchronize(index)
         del probe
     except (RuntimeError, AssertionError) as exc:
+        if "no kernel image is available for execution on the device" in str(exc).lower():
+            message = (
+                f"{role} 的 {device} 无可执行 CUDA 内核，PyTorch={build} CUDA={cuda_version}。"
+                "RTX 50 系列等 Blackwell 显卡请安装 --torch-runtime cu130 后重启服务。"
+            )
+            failure = DeviceFailure(device=target, build=build, code="unsupported_kernel", message=message)
+            remember_device_failure(failure)
+            raise ASRDeviceError(message, failure=failure) from exc
         raise ASRDeviceError(f"{role} 的 {device} 实际 CUDA 运算失败，请检查驱动和显卡架构支持") from exc
     logger.info("ASR CUDA 验证 role={} device={} torch={} cuda={}", role, device, build, cuda_version)
 
@@ -92,14 +104,25 @@ def confirm_torch_model_device(model: object, device: str, *, role: str) -> None
 def require_whisper_device(device: str) -> int | None:
     """Whisper uses CTranslate2; a CPU Torch build is not evidence about this backend."""
     index = cuda_device_index(device)
-    if index is None:
+    if index is None and device != "auto":
         return None
     try:
         import ctranslate2
     except ImportError as exc:
         raise ASRDeviceError("未安装 CTranslate2，无法使用 Whisper CUDA") from exc
-    if index >= ctranslate2.get_cuda_device_count():
+    count = ctranslate2.get_cuda_device_count()
+    if device == "auto":
+        if count == 0:
+            return None
+        index = 0
+    if index is None or index >= count:
         raise ASRDeviceError(f"Whisper 请求 {device}，但 CTranslate2 未检测到对应 CUDA 设备；请检查 NVIDIA 驱动")
+    try:
+        runtime = prepare_cublas(managed_only=os.environ.get("BLC_PORTABLE") == "1")
+    except (OSError, RuntimeError) as exc:
+        raise ASRDeviceError("Whisper CUDA 运行库不可用，请检查 cuBLAS 12 安装与实际 DLL 来源") from exc
+    if runtime is not None:
+        logger.info("ASR CTranslate2 CUDA library {}", runtime.payload())
     try:
         ctranslate2.get_supported_compute_types("cuda", index)
     except RuntimeError as exc:

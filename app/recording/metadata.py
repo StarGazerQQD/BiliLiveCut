@@ -155,18 +155,23 @@ async def refresh_room_metadata(db_id: int) -> None:
                 return
             metadata = read_metadata(db, f"room_metadata:{db_id}", RoomMetadata) or RoomMetadata()
         metadata.attempted_at = datetime.now(UTC)
+        budget = settings.room_metadata_refresh_timeout_s
+        stage = "room_identity"
         try:
             identity = room_source(room)
-            async with asyncio.timeout(settings.room_metadata_refresh_timeout_s):
+            stage = "source_room_info"
+            async with asyncio.timeout(budget):
                 info = await source_registry.get_room_info(identity)
+            stage = "validate_title"
             if not info.title or not info.title.strip():
                 raise ValueError("房间详情暂未提供有效标题")
         except (TimeoutError, SourceError, ValueError) as exc:
-            metadata.error = f"标题刷新失败：{safe_exception_summary(exc)}"
+            diagnostic = f"stage={stage} budget_s={budget:g} {safe_exception_summary(exc)}"
+            metadata.error = f"标题刷新失败：{diagnostic}"
             with get_session() as db:
                 if db.get(LiveRoom, db_id) is not None:
                     _save(db, f"room_metadata:{db_id}", metadata)
-            logger.warning("标题刷新失败 room={} error={}", db_id, safe_exception_summary(exc))
+            logger.warning("标题刷新失败 room={} platform={} {}", db_id, room.platform, diagnostic)
             return
 
         now = datetime.now(UTC)

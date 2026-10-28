@@ -11,12 +11,246 @@ from collections import deque
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
 
+import httpx
 import pytest
 
 from app.core.config import settings
 from app.plugins.live_source import SourceRoom, StreamSpec
 from app.recording.recorder import Recorder
 from app.recording.stream_race import StreamAttempt, StreamRace
+
+
+@pytest.mark.parametrize("outcome", ["recovers", "budget-exhausted", "cancelled"])
+async def test_recorder_recovers_from_hls_init_failure_through_real_source_chain(
+    temp_db: None, tmp_path: Path, monkeypatch: pytest.MonkeyPatch, outcome: str
+) -> None:
+    from loguru import logger
+    from sqlmodel import select
+
+    from app.db.entities import LiveRoom, RawSegment, RecordingSession
+    from app.db.session import get_session
+    from tests.integration.test_network_recovery import http_boundary
+    from tests.source_fixtures import bind_bilibili_room
+
+    binary = shutil.which(settings.ffmpeg_path)
+    assert binary is not None
+    recover = outcome == "recovers"
+    for name, start, live in (("a", 0, True), ("b", 3, True), ("healthy", 0, False)):
+        subprocess.run(
+            [
+                binary,
+                "-hide_banner",
+                "-loglevel",
+                "error",
+                "-f",
+                "lavfi",
+                "-i",
+                "testsrc2=size=160x90:rate=15",
+                "-t",
+                "3" if name == "a" else "12",
+                "-c:v",
+                "libx264",
+                "-preset",
+                "ultrafast",
+                "-g",
+                "15",
+                "-sc_threshold",
+                "0",
+                "-f",
+                "hls",
+                "-hls_time",
+                "1",
+                "-hls_list_size",
+                "0",
+                "-hls_segment_type",
+                "fmp4",
+                "-hls_fmp4_init_filename",
+                f"init-{name}.mp4",
+                "-start_number",
+                str(start),
+                *(["-hls_flags", "omit_endlist"] if live else []),
+                "-hls_segment_filename",
+                str(tmp_path / f"{name}-%d.m4s"),
+                str(tmp_path / f"{name}.m3u8"),
+            ],
+            capture_output=True,
+            check=True,
+            timeout=20,
+            cwd=tmp_path,
+        )
+    requests: list[str] = []
+    switched = threading.Event()
+    failures = threading.Event()
+    release_failure = threading.Event()
+    processes: list[asyncio.subprocess.Process] = []
+    diagnostics: list[str] = []
+    fetches = 0
+
+    class Handler(BaseHTTPRequestHandler):
+        protocol_version = "HTTP/1.1"
+
+        def do_GET(self) -> None:  # noqa: N802
+            requests.append(self.path)
+            if self.path == "/init-b.mp4":
+                failures.set()
+                if outcome == "cancelled":
+                    release_failure.wait(5)
+                self.send_response(503)
+                self.send_header("Content-Length", "0")
+                self.end_headers()
+                return
+            name = self.path.removeprefix("/")
+            if name == "live.m3u8":
+                name = "b.m3u8" if switched.is_set() else "a.m3u8"
+            path = tmp_path / name
+            if not path.is_file():
+                self.send_error(404)
+                return
+            payload = path.read_bytes()
+            self.send_response(200)
+            self.send_header("Content-Length", str(len(payload)))
+            self.end_headers()
+            try:
+                self.wfile.write(payload)
+                self.wfile.flush()
+                if name == "a-2.m4s":
+                    switched.set()
+            except OSError:
+                pass  # 录制取消时允许关闭正在读取的连接。
+
+        def log_message(self, _format: str, *_args: object) -> None:
+            pass
+
+    original_spawn = asyncio.create_subprocess_exec
+
+    async def spawn(*args: str, **kwargs: object) -> asyncio.subprocess.Process:
+        process = await original_spawn(*args, **kwargs)
+        processes.append(process)
+        return process
+
+    with get_session() as db:
+        room = LiveRoom(input_url="123", room_id=123, authorized=True)
+        db.add(room)
+        db.flush()
+        bind_bilibili_room(db, room)
+        room_id = room.id
+    monkeypatch.setattr(settings, "segment_duration_s", 5)
+    monkeypatch.setattr(settings, "collect_danmaku", False)
+    monkeypatch.setattr(settings, "recording_stream_race_parallel", 1)
+    monkeypatch.setattr(settings, "recording_reconnect_max_attempts", 2)
+    monkeypatch.setattr(settings, "recording_reconnect_max_elapsed_s", 20)
+    monkeypatch.setattr(asyncio, "create_subprocess_exec", spawn)
+    for variable in ("HTTP_PROXY", "HTTPS_PROXY", "ALL_PROXY", "http_proxy", "https_proxy", "all_proxy"):
+        monkeypatch.delenv(variable, raising=False)
+
+    async def segment_ready(segment: RawSegment) -> None:
+        if recover and fetches >= 2 and segment.duration_s >= 5:
+            recorder.stop()
+
+    recorder = Recorder(
+        SourceRoom(platform="bilibili", source_id="123", canonical_url="https://live.bilibili.com/123"),
+        room_id,
+        on_segment=segment_ready,
+    )
+    with ThreadingHTTPServer(("127.0.0.1", 0), Handler) as server:
+        thread = threading.Thread(target=lambda: server.serve_forever(poll_interval=0.01), daemon=True)
+        thread.start()
+
+        def respond(request: httpx.Request) -> httpx.Response:
+            nonlocal fetches
+            if request.url.path.endswith("room_init"):
+                data = {"room_id": 123, "uid": 1, "live_status": 1}
+            elif request.url.path.endswith("getInfoByRoom"):
+                data = {"room_info": {"title": "HLS recovery"}, "anchor_info": {"base_info": {"uname": "fixture"}}}
+            else:
+                assert request.url.path.endswith("getRoomPlayInfo")
+                fetches += 1
+                path = "/healthy.m3u8" if recover and fetches > 1 else "/live.m3u8"
+                data = {
+                    "live_status": 1,
+                    "playurl_info": {
+                        "playurl": {
+                            "stream": [
+                                {
+                                    "protocol_name": "http_hls",
+                                    "format": [
+                                        {
+                                            "format_name": "fmp4",
+                                            "codec": [
+                                                {
+                                                    "codec_name": "avc",
+                                                    "current_qn": 10000,
+                                                    "base_url": path,
+                                                    "url_info": [
+                                                        {"host": f"http://127.0.0.1:{server.server_port}", "extra": ""}
+                                                    ],
+                                                }
+                                            ],
+                                        }
+                                    ],
+                                }
+                            ]
+                        }
+                    },
+                }
+            return httpx.Response(200, json={"code": 0, "data": data})
+
+        http_boundary(monkeypatch, respond)
+        sink = logger.add(lambda message: diagnostics.append(str(message)), level="DEBUG")
+        recording = asyncio.create_task(recorder.run())
+        try:
+            if outcome == "cancelled":
+                async with asyncio.timeout(15):
+                    while not failures.is_set():
+                        assert not recording.done()
+                        await asyncio.sleep(0.01)
+                recorder.stop()
+                release_failure.set()
+            await asyncio.wait_for(asyncio.shield(recording), 35)
+        finally:
+            recorder.stop()
+            release_failure.set()
+            if not recording.done():
+                await asyncio.wait_for(recording, 12)
+            logger.remove(sink)
+            server.shutdown()
+            thread.join(timeout=3)
+    assert failures.is_set() and switched.is_set(), requests
+    assert fetches == (1 if outcome == "cancelled" else 2), (fetches, requests, diagnostics[-12:])
+    assert all(process.returncode is not None for process in processes)
+    assert all(process.returncode not in {3221226505, -1073740791, -6, -11} for process in processes)
+    assert not any("Assertion v->input failed" in message for message in diagnostics)
+    with get_session() as db:
+        session = db.get(RecordingSession, recorder.session_id)
+        assert session is not None and session.reconnect_count == (0 if outcome == "cancelled" else 1)
+        segments = db.exec(select(RawSegment).where(RawSegment.session_id == recorder.session_id)).all()
+    assert len({segment.file_path for segment in segments}) == len(segments)
+    if recover:
+        complete = [segment for segment in segments if segment.duration_s >= 5]
+        assert complete and "/healthy.m3u8" in requests
+        probe = subprocess.run(
+            [
+                settings.ffprobe_path,
+                "-v",
+                "error",
+                "-select_streams",
+                "v:0",
+                "-show_entries",
+                "stream=codec_name",
+                "-of",
+                "default=noprint_wrappers=1:nokey=1",
+                complete[0].file_path,
+            ],
+            capture_output=True,
+            text=True,
+            timeout=5,
+            check=True,
+        )
+        assert "h264" in probe.stdout
+    elif outcome == "budget-exhausted":
+        assert recorder.recording_error is not None and "预算耗尽" in recorder.recording_error
+    else:
+        assert recorder.recording_error is None
 
 
 @pytest.mark.parametrize("legacy_progress", [False, True])

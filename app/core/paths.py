@@ -47,6 +47,30 @@ def ready_to_upload_dir() -> Path:
     return _subdir("ready_to_upload")
 
 
+def _session_directory(root: Path, session_id: int | None) -> Path:
+    if session_id is not None and (type(session_id) is not int or session_id <= 0):
+        raise ValueError("场次 ID 必须为正整数")
+    root = root.resolve()
+    name = f"session_{session_id}" if session_id is not None else "unassigned"
+    path = root / name
+    if path.resolve() != path:
+        raise ValueError("场次目录不能通过链接重定向")
+    path.mkdir(parents=True, exist_ok=True)
+    if path.resolve() != path:
+        raise ValueError("场次目录不能通过链接重定向")
+    return path
+
+
+def session_clips_dir(session_id: int | None) -> Path:
+    """返回受控的场次成品目录；无关联的历史产物使用 unassigned。"""
+    return _session_directory(clips_dir(), session_id)
+
+
+def session_upload_dir(session_id: int | None) -> Path:
+    """返回场次专属待上传清单目录。"""
+    return _session_directory(ready_to_upload_dir(), session_id)
+
+
 def logs_dir() -> Path:
     """日志目录 ``storage/logs``。"""
     return _subdir("logs")

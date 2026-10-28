@@ -31,9 +31,9 @@ from config.launcher_settings import APP_ROOT_ENV, WEB_PORT_ENV, load_launcher_c
 
 # -- Constants ──────────────────────────────────────────────────
 APP_NAME = "BiliLiveCut"
-VERSION = "V0.1.20.1 Alpha"
-RELEASE_VERSION = "0.1.20.1-alpha"
-SOURCE_COMMIT_SHORT = "064ed90"
+VERSION = "V0.1.20.2 Alpha"
+RELEASE_VERSION = "0.1.20.2-alpha"
+SOURCE_COMMIT_SHORT = "00036fd"
 # NOTE: RELEASE_ID 将在获得 Payload SHA-256 后动态生成 (内容寻址)
 SUPPORTED_PYTHON_VERSIONS = frozenset({(3, 11), (3, 12)})
 
@@ -657,7 +657,7 @@ def install_dependencies(
     """
     from blc_portable.launcher.torch_runtime import (
         choose_torch_runtime,
-        cuda_wheels,
+        expected_versions,
         install_lock,
         load_torch_runtime,
         save_torch_runtime,
@@ -692,27 +692,11 @@ def install_dependencies(
                 raise ValueError("dependency inventory entry invalid")
             installed[re.sub(r"[-_.]+", "-", package["name"]).lower()] = package["version"]
         selected_runtime = choose_torch_runtime(lock_file, installed, saved=saved_runtime, requested=torch_runtime)
-        torch_versions = (
-            {wheel.package: wheel.version for wheel in cuda_wheels(lock_file, selected_runtime)}
-            if selected_runtime != "cpu"
-            else {}
-        )
-        missing = []
-        with open(lock_file, encoding="utf-8") as lf:
-            for line in lf:
-                line = line.strip()
-                if not line or line.startswith("#") or line.startswith("--"):
-                    continue
-                if "==" not in line:
-                    continue
-                raw_pkg = line.split("==")[0].strip().lower()
-                # Strip extras like [standard] from package name
-                pkg = re.sub(r"[-_.]+", "-", raw_pkg.split("[")[0])
-                raw_ver = line.split("==", 1)[1].split(";", 1)[0].split("\\", 1)[0].strip().split()[0]
-                raw_ver = torch_versions.get(pkg, raw_ver)
-                actual_ver = installed.get(pkg)
-                if actual_ver is None or actual_ver != raw_ver:
-                    missing.append(f"{raw_pkg}: expected {raw_ver}, got {actual_ver}")
+        missing = [
+            f"{package}: expected {version}, got {installed.get(package)}"
+            for package, version in expected_versions(lock_file, selected_runtime).items()
+            if installed.get(package) != version
+        ]
         if not missing:
             print("  dependencies already installed (version match)")
             needs_install = False
@@ -780,7 +764,7 @@ def install_dependencies(
     if source_dir is not None:
         _run_import_smoke(venv_python, "app.cli", source_dir)
     if torch_runtime is not None or selected_runtime != "cpu":
-        verify_torch_runtime(venv_python, lock_file, selected_runtime, _python_environment())
+        verify_torch_runtime(venv_python, lock_file, selected_runtime, _python_environment(), source_dir=source_dir)
         save_torch_runtime(app_root, selected_runtime)
     print("  deps install complete")
 

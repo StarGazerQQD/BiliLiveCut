@@ -6,14 +6,17 @@ import asyncio
 import json
 from typing import Any
 
+from sqlalchemy import func, or_
 from sqlmodel import select
 
 from app.core import settings_store
 from app.core.osutil import open_path
-from app.core.paths import clips_dir
+from app.core.paths import clips_dir, session_clips_dir
 from app.db.entities import (
     ClipStatus,
     FinalClip,
+    HighlightCandidate,
+    RecordingSession,
 )
 from app.db.session import get_session
 
@@ -72,12 +75,16 @@ async def retry_upload(task_id: int) -> dict[str, Any]:
     return {"task_id": task.id, "status": task.status, "error": task.last_error}
 
 
-def open_clips_directory() -> str:
+def open_clips_directory(*, session_id: int | None = None, unknown_session: bool = False) -> str:
     """在本机文件管理器打开切片目录(供"打开目录"按钮使用)。
 
     :returns: 切片目录路径。
     """
-    path = str(clips_dir())
+    if session_id is not None:
+        with get_session() as db:
+            if db.get(RecordingSession, session_id) is None:
+                raise ValueError("录制场次不存在")
+    path = str(session_clips_dir(session_id) if session_id is not None or unknown_session else clips_dir())
     open_path(path)
     return path
 
@@ -99,20 +106,87 @@ def reject_clip(clip_id: int) -> None:
 # --------------------------------------------------------------------------- #
 
 
-def list_clips(limit: int = 50) -> list[dict[str, Any]]:
+def clip_session_counts(*, q: str = "", status: str | None = None) -> dict[int | None, int]:
+    """按有效场次统计筛选后的成品，缺少关联的数据保留在 None 分组。"""
+    statement = (
+        select(RecordingSession.id, func.count(FinalClip.id))
+        .select_from(FinalClip)
+        .outerjoin(HighlightCandidate, HighlightCandidate.id == FinalClip.candidate_id)
+        .outerjoin(RecordingSession, RecordingSession.id == HighlightCandidate.session_id)
+        .where(FinalClip.status != ClipStatus.REJECTED)
+        .group_by(RecordingSession.id)
+    )
+    if status:
+        statement = statement.where(FinalClip.status == status)
+    if q.strip():
+        statement = statement.where(
+            or_(
+                FinalClip.title.contains(q.strip(), autoescape=True),
+                FinalClip.description.contains(q.strip(), autoescape=True),
+            )
+        )
+    with get_session() as db:
+        return {session_id: int(count) for session_id, count in db.exec(statement)}
+
+
+def list_clips(
+    limit: int = 50,
+    *,
+    offset: int = 0,
+    session_id: int | None = None,
+    unknown_session: bool = False,
+    q: str = "",
+    status: str | None = None,
+) -> list[dict[str, Any]]:
     """列出未拒绝的成品切片(按创建时间降序)。
 
     :param limit: 数量上限。
     :returns: 成品字典列表。
     """
+    from app.web.services.source_identity import source_identities_for_sessions, unknown_source_identity
+
+    # 展示序号在完整场次集合上计算，筛选、分页和拒绝状态不改变编号。
+    numbered = (
+        select(
+            FinalClip.id.label("clip_id"),
+            RecordingSession.id.label("session_id"),
+            func.row_number().over(partition_by=RecordingSession.id, order_by=FinalClip.id).label("display_number"),
+        )
+        .select_from(FinalClip)
+        .outerjoin(HighlightCandidate, HighlightCandidate.id == FinalClip.candidate_id)
+        .outerjoin(RecordingSession, RecordingSession.id == HighlightCandidate.session_id)
+        .subquery()
+    )
+    statement = (
+        select(FinalClip, numbered.c.session_id, numbered.c.display_number)
+        .join(numbered, numbered.c.clip_id == FinalClip.id)
+        .where(FinalClip.status != ClipStatus.REJECTED)
+    )
+    if session_id is not None:
+        statement = statement.where(numbered.c.session_id == session_id)
+    if unknown_session:
+        statement = statement.where(numbered.c.session_id.is_(None))
+    if status:
+        statement = statement.where(FinalClip.status == status)
+    if q.strip():
+        statement = statement.where(
+            or_(
+                FinalClip.title.contains(q.strip(), autoescape=True),
+                FinalClip.description.contains(q.strip(), autoescape=True),
+            )
+        )
     with get_session() as db:
         rows = db.exec(
-            select(FinalClip).where(FinalClip.status != ClipStatus.REJECTED).order_by(FinalClip.created_at.desc())  # type: ignore[attr-defined]
-        ).all()[:limit]
+            statement.order_by(FinalClip.created_at.desc(), FinalClip.id.desc()).offset(offset).limit(limit)
+        ).all()
+        sources = source_identities_for_sessions(db, (sid for _, sid, _ in rows if sid is not None))
     return [
         {
             "id": c.id,
             "candidate_id": c.candidate_id,
+            "session_id": sid,
+            "display_number": int(ordinal) if sid is not None else None,
+            **sources.get(sid, unknown_source_identity()),
             "title": c.title,
             "description": c.description,
             "tags": json.loads(c.tags_json) if c.tags_json else [],
@@ -122,5 +196,5 @@ def list_clips(limit: int = 50) -> list[dict[str, Any]]:
             "cover_path": c.cover_path,
             "publish_suggestion": c.publish_suggestion,
         }
-        for c in rows
+        for c, sid, ordinal in rows
     ]

@@ -700,10 +700,8 @@ test.describe("session timezone", () => {
   });
 });
 
-test("historical session selector sends the real session_id", async ({
-  page,
-}) => {
-  await page.route("**/api/sessions/history", (route) =>
+test("historical session cards send the real session_id", async ({ page }) => {
+  await page.route("**/api/sessions/history?**", (route) =>
     route.fulfill({
       json: [
         {
@@ -729,10 +727,168 @@ test("historical session selector sends the real session_id", async ({
       new URL(request.url()).pathname === "/api/transcripts" &&
       new URL(request.url()).searchParams.get("session_id") === "41",
   );
-  await page.getByRole("combobox", { name: "筛选录制场次" }).selectOption("41");
+  await page.getByRole("button", { name: "查看本场转写" }).first().click();
   await request;
   await expect(page).toHaveURL(/session=41/);
 });
+
+for (const kind of ["transcripts", "clips"] as const) {
+  test(`${kind} library groups sessions and paginates using real ids`, async ({
+    page,
+  }) => {
+    let itemCalls = 0;
+    await page.route("**/api/sessions/history?**", (route) => {
+      const params = new URL(route.request().url()).searchParams;
+      const sessions: object[] = Array.from({ length: 14 }, (_, index) => ({
+        session_id: index + 100,
+        session_title: `测试场次 ${index + 100}`,
+        started_at: "2026-10-16T00:00:00Z",
+        matching_count: 45,
+      }));
+      sessions.push({
+        session_id: null,
+        session_title: "未关联场次",
+        matching_count: 1,
+      });
+      const offset = Number(params.get("offset"));
+      return route.fulfill({
+        json: sessions.slice(offset, offset + Number(params.get("limit"))),
+      });
+    });
+    await page.route(`**/api/${kind}?**`, (route) => {
+      itemCalls += 1;
+      const params = new URL(route.request().url()).searchParams;
+      const entries = Array.from({ length: 45 }, (_, index) => ({
+        id: 701 + index,
+        segment_id: 901 + index,
+        segment_seq: index,
+        session_id: Number(params.get("session_id")),
+        display_number: index + 1,
+        title: `成品标题 ${index + 1}`,
+        text: `转写正文 ${index + 1}`,
+        status: "ready",
+        source_mp4_available: true,
+      }));
+      const offset = Number(params.get("offset"));
+      return route.fulfill({
+        json: (params.get("q") ? entries.slice(-1) : entries).slice(
+          offset,
+          offset + Number(params.get("limit")),
+        ),
+      });
+    });
+    await page.goto(`/${kind}`);
+    await expect(
+      page.getByRole("button", {
+        name: kind === "clips" ? "查看本场成品" : "查看本场转写",
+      }),
+    ).toHaveCount(12);
+    expect(itemCalls).toBe(0);
+    await page.getByRole("button", { name: "下一页", exact: true }).click();
+    await expect(page.getByText("测试场次 112", { exact: true })).toBeVisible();
+    await page
+      .getByRole("button", {
+        name: kind === "clips" ? "查看本场成品" : "查看本场转写",
+      })
+      .first()
+      .click();
+    await expect(page).toHaveURL(/session=112/);
+    await expect(page).not.toHaveURL(/offset=/);
+    await expect(
+      page.getByText(
+        kind === "clips" ? /本场成品 #1$/ : /场次 #112 · 分段 #1$/,
+      ),
+    ).toBeVisible();
+    if (kind === "clips") {
+      await expect(page.locator("video").first()).toHaveAttribute(
+        "src",
+        "/api/clips/701/video",
+      );
+    }
+    await page.getByRole("button", { name: "下一页", exact: true }).click();
+    await expect(page).toHaveURL(/offset=30/);
+    await expect(
+      page.getByText(
+        kind === "clips" ? /本场成品 #31$/ : /场次 #112 · 分段 #31$/,
+      ),
+    ).toBeVisible();
+    if (kind === "clips") {
+      const statusRequest = page.waitForRequest((request) => {
+        const url = new URL(request.url());
+        return (
+          url.pathname === "/api/clips" &&
+          url.searchParams.get("status") === "ready" &&
+          url.searchParams.get("offset") === "0"
+        );
+      });
+      await page.getByLabel("成品状态").selectOption("ready");
+      await statusRequest;
+      await expect(page).not.toHaveURL(/offset=/);
+      await page.getByRole("button", { name: "下一页", exact: true }).click();
+      await expect(page).toHaveURL(/offset=30/);
+    }
+    await page
+      .getByPlaceholder(
+        kind === "clips" ? "搜索成品标题或简介…" : "搜索转写内容…",
+      )
+      .fill("目标");
+    await expect(page).not.toHaveURL(/offset=/);
+    await expect(
+      page.getByText(
+        kind === "clips" ? /本场成品 #45$/ : /场次 #112 · 分段 #45$/,
+      ),
+    ).toBeVisible();
+    await expect(
+      page.getByRole("button", { name: "下一页", exact: true }),
+    ).toBeDisabled();
+    const target =
+      kind === "clips"
+        ? "/api/clips/745/publish"
+        : "/api/transcripts/745/retranscribe";
+    await page.route(`**${target}`, (route) =>
+      route.fulfill({ json: { status: "accepted" } }),
+    );
+    const mutation = page.waitForRequest(
+      (request) =>
+        new URL(request.url()).pathname === target &&
+        request.method() === "POST",
+    );
+    await page
+      .getByRole("button", {
+        name: kind === "clips" ? "发布 / 标记就绪" : "重新转写",
+        exact: true,
+      })
+      .click();
+    await page
+      .getByRole("alertdialog")
+      .getByRole("button", { name: "确认操作", exact: true })
+      .click();
+    await mutation;
+    await page.getByRole("button", { name: "返回场次", exact: false }).click();
+    await expect(page).not.toHaveURL(/session=|offset=/);
+    await page.getByRole("button", { name: "下一页", exact: true }).click();
+    await expect(
+      page.getByRole("heading", { name: "未关联场次", exact: true }),
+    ).toBeVisible();
+    const unknownRequest = page.waitForRequest((request) => {
+      const url = new URL(request.url());
+      return (
+        url.pathname === `/api/${kind}` &&
+        url.searchParams.get("unknown_session") === "true" &&
+        !url.searchParams.has("session_id")
+      );
+    });
+    await page
+      .getByRole("button", {
+        name: kind === "clips" ? "查看本场成品" : "查看本场转写",
+      })
+      .last()
+      .click();
+    await unknownRequest;
+    await expect(page).toHaveURL(/unknown_session=1/);
+    await expect(page).not.toHaveURL(/offset=/);
+  });
+}
 
 test("queue selection uses candidate ids and reports partial failure", async ({
   page,

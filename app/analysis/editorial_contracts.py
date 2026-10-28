@@ -8,6 +8,8 @@ from pydantic import BaseModel, ConfigDict, Field, model_validator
 
 INPUT_MAX_BYTES = 65_536
 OUTPUT_MAX_BYTES = 16_384
+# 请求模式最多包含主引用与边界引用两份源 ID 集合，业务输出限制保持独立。
+SCHEMA_MAX_BYTES = 2 * INPUT_MAX_BYTES + OUTPUT_MAX_BYTES
 MAX_TOKEN_COUNT = 2**63 - 1
 REVIEW_SCHEMA_VERSION = "editorial-review-v1"
 Identity = Annotated[str, Field(min_length=1, max_length=256, pattern=r"^[^\s\x00-\x1f\x7f]+$")]
@@ -230,6 +232,17 @@ class TokenUsage(_StrictContract):
         return self
 
 
+class ModelFailureDiagnostic(_StrictContract):
+    """有界的错误元数据和本地说明，不接收服务正文或异常文本。"""
+
+    category: Literal["http", "dns", "connection", "timeout", "validation", "response", "authorization"]
+    summary: str = Field(min_length=1, max_length=240)
+    http_status: int | None = Field(default=None, ge=400, le=599)
+    provider_code: str | None = Field(default=None, min_length=1, max_length=128, pattern=r"^[A-Za-z0-9_.:-]+$")
+    parameter: str | None = Field(default=None, min_length=1, max_length=128, pattern=r"^[A-Za-z0-9_.:-]+$")
+    request_id: str | None = Field(default=None, min_length=1, max_length=128, pattern=r"^[A-Za-z0-9_.:-]+$")
+
+
 class ModelAttempt(_StrictContract):
     """单次实际请求的诊断，不保存地址、凭据、原始正文或异常。"""
 
@@ -243,12 +256,15 @@ class ModelAttempt(_StrictContract):
     error: FailureCode | None
     elapsed_s: Seconds
     usage: TokenUsage = Field(default_factory=TokenUsage)
+    diagnostic: ModelFailureDiagnostic | None = None
 
     @model_validator(mode="after")
     def error_matches_status(self) -> Self:
         """成功请求和失败请求具有互斥的错误状态。"""
         if (self.status == "failed") != (self.error is not None):
             raise ValueError("请求状态与错误分类不一致")
+        if self.status == "success" and self.diagnostic is not None:
+            raise ValueError("成功请求不能携带失败诊断")
         return self
 
 
@@ -288,6 +304,32 @@ class EditorialExecutionV1(_StrictContract):
         if sum(attempt.elapsed_s for attempt in self.attempts) > self.elapsed_s + 0.001:
             raise ValueError("总耗时不能少于串行请求耗时")
         return self
+
+
+def citable_evidence_ids(source: EditorialReviewInputV1, *, timed: bool = False) -> list[str]:
+    """按现有引用校验的可用状态和时间条件列出源 ID，不修改证据身份。"""
+    return [
+        item.evidence_id
+        for item in source.evidence
+        if item.state in {"available", "degraded"}
+        and (not timed or (item.timing_precision != "unknown" and item.start_s is not None and item.end_s is not None))
+    ]
+
+
+def review_response_schema(source: EditorialReviewInputV1) -> dict[str, object]:
+    """将本次可引用 ID 写入请求模式，跨字段和具体时间范围仍由本地校验。"""
+    schema = EditorialReviewResultV1.model_json_schema()
+    identities = citable_evidence_ids(source)
+    if identities:
+        schema["properties"]["evidence_ids"]["items"]["enum"] = identities
+    else:
+        schema["properties"]["evidence_ids"]["maxItems"] = 0
+    timed = citable_evidence_ids(source, timed=True)
+    if timed:
+        schema["$defs"]["SuggestedBounds"]["properties"]["evidence_ids"]["items"]["enum"] = timed
+    else:
+        schema["properties"]["suggested_bounds"] = {"type": "null"}
+    return schema
 
 
 def validate_review_evidence(

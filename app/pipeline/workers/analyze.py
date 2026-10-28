@@ -1,7 +1,7 @@
 """分析阶段 Worker — compute/commit 真正分离。
 
-analyze_compute 只做热点检测与候选评分计算, 不创建 ORM 对象, 不写 DB。
-commit_highlight 在租约保护下幂等写入 provisional Hotspot 与 Candidate/Event。
+analyze_compute 只做热点检测与旧分段评分计算, 不创建 ORM 对象, 不写 DB。
+commit_highlight 在租约保护下先提交热点事实，再于事务外评分并原子提交 Candidate/Event。
 """
 
 from __future__ import annotations
@@ -65,6 +65,7 @@ class HighlightDecision(StrEnum):
     DUPLICATE = "duplicate"
     SKIPPED = "skipped"
     SIGNAL_PASS = "signal_pass"
+    EVENT_PASS = "event_pass"
 
 
 @dataclass(frozen=True)
@@ -242,22 +243,12 @@ def analyze_compute(task_id: int) -> dict[str, Any]:
         }
 
     if analysis_pass == "candidate":
-        model_budgets: dict[int, ModelCallBudget] = {}
-        event_results = _score_pending_hotspot_events(
-            session_id,
-            audio_features=audio_features,
-            audio_segment_id=segment_id,
-            budgets=model_budgets,
-            lease=lease,
-        )
-        has_candidate = any(result["clip_draft"].decision == HighlightDecision.CANDIDATE for result in event_results)
         return {
-            "decision": HighlightDecision.CANDIDATE if has_candidate else HighlightDecision.BELOW_THRESHOLD,
+            "decision": HighlightDecision.EVENT_PASS,
             "segment_id": segment_id,
             "session_id": session_id,
             "hotspot_drafts": hotspot_payloads,
-            "event_clip_results": event_results,
-            "event_model_budgets": model_budgets,
+            "event_audio_features": audio_features,
         }
 
     try:
@@ -285,7 +276,7 @@ def analyze_compute(task_id: int) -> dict[str, Any]:
 
 
 def commit_highlight(lease: TaskLease, compute_result: dict[str, Any], ms: int) -> None:
-    """单事务提交热点与候选分析结果: 先校验租约再执行 DB 写操作。
+    """租约内提交热点事实，在事务外计算编辑结果，再原子提交候选及任务。
 
     决策分支:
     - BELOW_THRESHOLD: _mark_scored + 推进 Task 到 COMPLETED
@@ -299,6 +290,7 @@ def commit_highlight(lease: TaskLease, compute_result: dict[str, Any], ms: int) 
     """
     segment_id = compute_result.get("segment_id", 0)
     decision = compute_result.get("decision", HighlightDecision.SKIPPED)
+    started = time.monotonic()
 
     try:
         with get_session() as db:
@@ -370,12 +362,18 @@ def commit_highlight(lease: TaskLease, compute_result: dict[str, Any], ms: int) 
                 )
                 return
 
-            raw_event_results = compute_result.get("event_clip_results")
-            if isinstance(raw_event_results, list):
-                # 先提交本轮热点事实，仍持有 ANALYZING 租约。证据可能因此发生变化，
-                # 重新评分与候选/任务的原子提交由同一租约继续完成。
+            if decision == HighlightDecision.EVENT_PASS:
+                # 首次模型判断必须读取本轮已提交的事实，避免新增 ASR 使自己的草稿失效。
                 db.commit()
-                _commit_event_analysis(lease, raw_event_results, ms, compute_result.get("event_model_budgets"))
+                budgets: dict[int, ModelCallBudget] = {}
+                results = _score_pending_hotspot_events(
+                    task.session_id,
+                    audio_features=compute_result.get("event_audio_features"),
+                    audio_segment_id=segment_id,
+                    budgets=budgets,
+                    lease=lease,
+                )
+                _commit_event_analysis(lease, results, ms + int((time.monotonic() - started) * 1000), budgets)
                 return
             _record_plugin_dispatch(db, compute_result)
 
@@ -539,6 +537,7 @@ def _commit_event_analysis(
     """在同一租约下重算过期证据，候选与任务承接原子提交。"""
     from app.analysis.clip_scorer import pending_hotspot_event_ids
 
+    started = time.monotonic()
     results = raw_results
     budgets = {
         item["event_id"]: item["model_budget"]
@@ -568,7 +567,7 @@ def _commit_event_analysis(
             remaining = _unscored_confirmed_event_ids(db, session_id, exclude=processed)
             if not remaining:
                 _mark_scored_in_db(db, task.segment_id)
-                mark_completed(task, ms)
+                mark_completed(task, ms + int((time.monotonic() - started) * 1000))
                 if created:
                     primary = max(created, key=lambda item: item[2])
                     enqueue_next(task, TaskStatus.CANDIDATE_CREATED, candidate_id=primary[0], event_id=primary[1])
@@ -588,14 +587,62 @@ def _commit_event_analysis(
                 if task is None:
                     raise LeaseLostError()
                 mark_failed(task, "热点证据在提交期间变化，等待重新分析", permanent=False)
+                task.processing_time_ms = ms + int((time.monotonic() - started) * 1000)
                 db.add(task)
                 return
         # 计算必须在事务之外；最多立即重算一次，持续变化交给原有有界重试。
+        previous = {
+            item["event_id"]: item
+            for item in results
+            if isinstance(item, Mapping) and type(item.get("event_id")) is int
+        }
         results = []
         for event_id in pending_hotspot_event_ids(session_id):
-            result = _compute_event_clip_result(event_id, budget=_event_model_budget(event_id, budgets, lease))
+            result = _reusable_event_result(previous.get(event_id), event_id, lease)
+            if result is None:
+                result = _compute_event_clip_result(event_id, budget=_event_model_budget(event_id, budgets, lease))
             if result is not None:
                 results.append(result)
+
+
+def _reusable_event_result(previous: object, event_id: int, lease: TaskLease) -> dict[str, object] | None:
+    """整批回滚后复用未变化草稿，仍核对租约、身份、解释、编辑输入及成片策略。"""
+    from app.analysis.clip_scorer import EventClipDraft, validate_event_clip_draft
+    from app.analysis.editorial_review import EditorialReviewDraft
+    from app.analysis.editorial_review_sources import event_review_is_current
+    from app.analysis.event_enricher import EventEnrichmentDraft
+
+    if not isinstance(previous, dict) or previous.get("event_id") != event_id:
+        return None
+    clip = previous.get("clip_draft")
+    review = previous.get("review")
+    enrichment = previous.get("enrichment")
+    if not isinstance(clip, EventClipDraft) or not isinstance(review, EditorialReviewDraft):
+        return None
+    if clip.hotspot_event_id != event_id:
+        return None
+    if enrichment is not None and (
+        not isinstance(enrichment, EventEnrichmentDraft)
+        or enrichment.event_id != event_id
+        or enrichment.bundle_fingerprint != clip.bundle_fingerprint
+    ):
+        return None
+    metadata = _json_object(clip.features_json).get("editorial_review")
+    if not isinstance(metadata, dict) or metadata.get("execution") != review.execution.model_dump(mode="json"):
+        return None
+    with get_session() as db:
+        if db.get_bind().dialect.name == "sqlite":
+            db.connection().exec_driver_sql("BEGIN")
+        if not still_owns_lease(db, lease):
+            raise LeaseLostError()
+        task = db.get(SegmentTask, lease.task_id)
+        if task is None or clip.session_id != task.session_id:
+            return None
+        if validate_event_clip_draft(db, clip, enrichment=enrichment, review=review) is None:
+            return None
+        if not event_review_is_current(db, event_id, review):
+            return None
+    return previous
 
 
 def _compute_event_clip_result(
@@ -1355,9 +1402,9 @@ def run_analyze(lease: TaskLease) -> None:
 
     :param lease: 任务租约。
     """
-    t0 = time.time()
+    t0 = time.monotonic()
     compute_result = analyze_compute(lease.task_id)
-    ms_val = int((time.time() - t0) * 1000)
+    ms_val = int((time.monotonic() - t0) * 1000)
     commit_highlight(lease, compute_result, ms_val)
 
 

@@ -39,6 +39,54 @@ def _report(*, vulnerabilities: list[dict[str, object]] | None = None) -> str:
     )
 
 
+def test_default_audit_includes_optional_official_cublas_lock() -> None:
+    lock = next(path for path in lock_audit.DEFAULT_LOCKS if "cublas" in path.name)
+    assert lock_audit.locked_dependencies(lock) == frozenset(
+        {("nvidia-cublas-cu12", "12.9.2.10"), ("nvidia-cuda-nvrtc-cu12", "12.9.86")}
+    )
+
+
+@pytest.mark.parametrize(
+    "requirement",
+    [
+        "wrong @ https://example.org/nvidia_cublas_cu12-12.9.2.10-py3-none-win_amd64.whl",
+        "bad @ https://example.org/bad.whl",
+        "bad[extra] @ https://example.org/bad-1.0-py3-none-any.whl",
+        "not a requirement",
+    ],
+)
+def test_invalid_direct_audit_entry_fails_closed(tmp_path: Path, requirement: str) -> None:
+    lock = tmp_path / "runtime.lock"
+    lock.write_text(requirement + " --hash=sha256:" + "a" * 64, encoding="utf-8")
+    with pytest.raises(AuditReportError):
+        lock_audit.locked_dependencies(lock)
+
+
+def test_direct_wheel_audit_uses_version_inventory_without_downloading_wheel(monkeypatch: MonkeyPatch) -> None:
+    lock = next(path for path in lock_audit.DEFAULT_LOCKS if "cublas" in path.name)
+
+    def run(command: list[str], **kwargs: object) -> subprocess.CompletedProcess[str]:
+        normalized = Path(command[command.index("--requirement") + 1]).read_text()
+        assert normalized == "nvidia-cublas-cu12==12.9.2.10\nnvidia-cuda-nvrtc-cu12==12.9.86\n"
+        return subprocess.CompletedProcess(
+            command,
+            0,
+            stdout=json.dumps(
+                {
+                    "dependencies": [
+                        {"name": name, "version": version, "vulns": []}
+                        for name, version in lock_audit.locked_dependencies(lock)
+                    ],
+                    "fixes": [],
+                }
+            ),
+            stderr="",
+        )
+
+    monkeypatch.setattr(lock_audit.subprocess, "run", run)
+    assert lock_audit.audit_lock(lock)
+
+
 def _exemptions(*entries: dict[str, object]) -> dict[str, object]:
     return {"format_version": 1, "exemptions": list(entries)}
 

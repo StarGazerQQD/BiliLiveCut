@@ -9,6 +9,7 @@ import time
 from collections.abc import Callable
 from concurrent.futures import ThreadPoolExecutor
 from datetime import UTC, datetime, timedelta
+from pathlib import Path
 from types import SimpleNamespace
 
 import pytest
@@ -85,6 +86,38 @@ def test_final_transcription_failure_remains_error(
         task = db.get(SegmentTask, task_id)
         assert task is not None and task.stage == TaskStatus.TRANSIENT_FAILED
         assert "所有 ASR 引擎均不可用" in task.last_error
+
+
+def test_confirmed_device_failure_continues_without_asr_evidence(
+    temp_db: None, pcm_wav: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    from app.analysis.transcription.process_pool import ASRProcessPool
+    from app.core.config import settings
+    from tests.unit.test_asr_process_pool import cpu_torch_child
+
+    task_id, segment_id, _ = seed()
+    with get_session() as db:
+        segment = db.get(RawSegment, segment_id)
+        assert segment is not None
+        segment.file_path = str(pcm_wav)
+        db.add(segment)
+    monkeypatch.setattr(settings, "asr_primary", "funasr_nano")
+    monkeypatch.setattr(settings, "asr_primary_device", "cuda")
+    monkeypatch.setattr(settings, "asr_fallback_whisper", False)
+    monkeypatch.setattr(scheduler, "_WORKER_ID", "worker")
+    pool = ASRProcessPool(cpu_torch_child)
+    monkeypatch.setattr("app.analysis.transcription.isolated.get_process_pool", lambda: pool)
+    try:
+        scheduler.execute_task(task_id, TaskStatus.TRANSCRIBING, "old")
+    finally:
+        pool.shutdown(0)
+    with get_session() as db:
+        task = db.get(SegmentTask, task_id)
+        assert task is not None and task.stage == TaskStatus.TRANSCRIBED
+        context = json.loads(task.context_json)["event_first"]
+        assert context["asr_evidence_state"] == "unavailable"
+        assert "CPU" in context["asr_unavailable_reason"]
+        assert task.next_retry_at is None and task.claimed_by is None and task.lease_token is None
 
 
 @pytest.mark.parametrize("stage", [TaskStatus.FAILED, TaskStatus.CANCELLED, TaskStatus.COMPLETED])

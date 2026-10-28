@@ -93,7 +93,7 @@ def test_manual_upload_success_and_publish(temp_db: None, tmp_path: Path) -> Non
     task = enqueue_and_upload(cid)
     assert task.status == UploadStatus.SUCCESS
     assert task.uploader == "manual"
-    assert (ready_to_upload_dir() / f"clip_{cid}.json").exists()
+    assert (ready_to_upload_dir() / "unassigned" / f"clip_{cid}.json").exists()
     # V0.1.12.7: ManualUploader 不再标记 FinalClip 为 PUBLISHED
     with get_session() as db:
         clip = db.get(FinalClip, cid)

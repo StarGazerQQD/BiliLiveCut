@@ -23,6 +23,7 @@ import json
 import math
 import os
 import re
+import socket
 import threading
 import time
 from collections.abc import AsyncIterator, Callable
@@ -44,8 +45,10 @@ from app.analysis.editorial_contracts import (
     INPUT_MAX_BYTES,
     MAX_TOKEN_COUNT,
     OUTPUT_MAX_BYTES,
+    SCHEMA_MAX_BYTES,
     FailureCode,
     ModelAttempt,
+    ModelFailureDiagnostic,
     ModelProtocol,
     ModelPurpose,
     TokenUsage,
@@ -54,7 +57,7 @@ from app.analysis.editorial_contracts import (
 from app.analysis.model_execution import ModelCallBudget, StructuredCallResult
 from app.core.config import settings
 from app.core.paths import storage_root
-from app.core.sanitize import safe_exception_summary
+from app.core.sanitize import safe_exception_summary, sanitize_diagnostic
 from app.models.configuration import ModelAuthorizationError
 from app.models.contracts import TextCapability
 
@@ -480,8 +483,9 @@ def new_editorial_budget(*, cancelled: Callable[[], bool] | None = None) -> Mode
 
 
 class _StructuredFailure(RuntimeError):
-    def __init__(self, code: FailureCode) -> None:
+    def __init__(self, code: FailureCode, diagnostic: ModelFailureDiagnostic | None = None) -> None:
         self.code = code
+        self.diagnostic = diagnostic
         super().__init__(code)
 
 
@@ -640,6 +644,11 @@ def _reported_usage(provider: provs.LLMProvider, response: object) -> TokenUsage
     )
 
 
+def _initial_structured_protocol(provider: provs.LLMProvider) -> ModelProtocol:
+    """官方 DeepSeek Chat Completions 使用 JSON 模式，代理仍按其自身能力协商。"""
+    return "json_object" if urlsplit(provider.base_url).hostname == "api.deepseek.com" else "json_schema"
+
+
 def _unsupported_format(error: object, protocol: ModelProtocol) -> bool:
     if protocol == "text" or _field(error, "status_code") not in {400, 422}:
         return False
@@ -664,12 +673,229 @@ def _unsupported_format(error: object, protocol: ModelProtocol) -> bool:
             "does not support",
             "unsupported",
             "not available",
+            "unavailable",
             "unrecognized request argument",
             "unknown parameter",
             "unknown argument",
+            "unknown variant",
+            "invalid enum",
         )
     )
     return mentions_format and explicit
+
+
+def _diagnostic_identifier(value: object, provider: provs.LLMProvider) -> str | None:
+    """仅接收短协议标识；任何脱敏命中、地址或自由文本都不进入持久诊断。"""
+    if not isinstance(value, str) or not 1 <= len(value) <= 128:
+        return None
+    if sanitize_diagnostic(value, secrets=(provider.api_key,), limit=128) != value:
+        return None
+    host = urlsplit(provider.base_url).hostname
+    if host and host.casefold() in value.casefold():
+        return None
+    if not re.fullmatch(r"[A-Za-z0-9_.:-]+", value) or "." in value and value.count(".") > 1:
+        return None
+    return value
+
+
+def _http_failure_diagnostic(
+    error: object, provider: provs.LLMProvider, *, unsupported: bool
+) -> ModelFailureDiagnostic:
+    """保留 HTTP 拒绝的定位字段，说明由本地生成，服务原文可能包含请求素材。"""
+    body = _field(error, "body")
+    detail = _field(body, "error") or body
+    status = _field(error, "status_code")
+    summary = "服务拒绝了请求，请结合状态码和参数检查配置。"
+    if unsupported:
+        summary = "服务明确不支持所请求的响应格式。"
+    elif status in {401, 403}:
+        summary = "服务拒绝模型授权，请检查连接凭据及权限。"
+    elif status == 429:
+        summary = "服务限制请求频率或账户额度。"
+    elif isinstance(status, int) and status >= 500:
+        summary = "模型服务发生服务器错误。"
+    return ModelFailureDiagnostic(
+        category="http",
+        summary=summary,
+        http_status=status if type(status) is int and 400 <= status <= 599 else None,
+        provider_code=_diagnostic_identifier(_field(detail, "code"), provider),
+        parameter=_diagnostic_identifier(_field(detail, "param"), provider),
+        request_id=_diagnostic_identifier(_field(error, "request_id"), provider),
+    )
+
+
+def _connection_failure_diagnostic(error: BaseException) -> ModelFailureDiagnostic:
+    """依据异常类型和系统错误码识别 DNS，不保存异常中可能夹带的请求内容。"""
+    current: BaseException | None = error
+    seen: set[int] = set()
+    while current is not None and id(current) not in seen and len(seen) < 8:
+        seen.add(id(current))
+        if isinstance(current, socket.gaierror) or (
+            isinstance(current, OSError) and current.errno in {11001, 11002, socket.EAI_AGAIN, socket.EAI_NONAME}
+        ):
+            return ModelFailureDiagnostic(category="dns", summary="模型服务域名解析失败，请检查 DNS 与网络连接。")
+        current = current.__cause__ or (None if current.__suppress_context__ else current.__context__)
+    return ModelFailureDiagnostic(category="connection", summary="无法建立或维持模型服务连接。")
+
+
+def _structured_failure_diagnostic(error: FailureCode) -> ModelFailureDiagnostic | None:
+    """按真实错误解释响应和超时，取消及预算控制结果保留原状态。"""
+    if error in {"timeout", "deadline"}:
+        return ModelFailureDiagnostic(category="timeout", summary="模型请求超过时间预算。")
+    if error == "unauthorized":
+        return ModelFailureDiagnostic(category="authorization", summary="模型连接的授权已撤销或配置已变化。")
+    if error == "empty_response":
+        return ModelFailureDiagnostic(category="response", summary="模型服务未返回最终正文。")
+    if error == "invalid_output":
+        return ModelFailureDiagnostic(category="response", summary="模型响应未满足完整性或大小要求。")
+    return None
+
+
+def _response_failure_diagnostic(choice: object, message: object) -> ModelFailureDiagnostic:
+    """已知结束状态只映射本地固定说明，未知值和拒答正文不回显。"""
+    finish = _field(choice, "finish_reason")
+    if finish in ("content_filter", "refusal") or _field(message, "refusal"):
+        summary = "模型服务拒绝提供本次最终正文。"
+    elif finish == "length":
+        summary = "模型响应达到输出或上下文长度上限，未完成最终正文。"
+    elif finish in ("tool_calls", "function_call") or _field(message, "tool_calls"):
+        summary = "模型服务返回工具调用，未提供所需的最终正文。"
+    else:
+        summary = "模型响应未满足完整性或大小要求。"
+    return ModelFailureDiagnostic(category="response", summary=summary)
+
+
+_VALIDATION_REASONS = frozenset(
+    {
+        "JSON 不允许重复字段",
+        "JSON 不允许非有限数值",
+        "编辑判断输出超过字节上限",
+        "编辑判断必须是单个有效 JSON 对象",
+        "模型输出必须是 JSON 对象",
+        "解释正文不能为空",
+        "解释字段超过配置上限",
+        "证据引用不能重复",
+        "解释引用未知或不可用证据",
+        "非文本信号不能支持具体事件叙述",
+        "解释实体缺少原文依据",
+        "解释数字缺少原文依据",
+        "弹幕内容需要明确归因",
+        "降级转写需要不确定性表述",
+        "事实核验必须分别覆盖标题和摘要",
+        "支持结论缺少原文依据",
+        "事实核验不能引用候选解释未引用的证据",
+        "事实核验引用不在原文中",
+        "时间范围终点必须晚于起点",
+        "判断引用不能重复",
+        "推荐与拒绝必须提供证据引用",
+        "推荐必须说明吸引点和兴趣等级",
+        "待复核必须明确不确定因素",
+        "需要扩展时必须明确缺少前文、后文或两者",
+        "完整边界必须已有独立可理解的判断依据",
+        "边界证据必须是无重复的判断证据子集",
+        "判断引用了不存在或不可用的证据",
+        "仅有降级证据时需要人工复核",
+        "建议范围超出已提供上下文或跨越录制缺口",
+        "建议范围没有覆盖目标事件",
+        "没有时间定位的证据不能支持边界建议",
+        "边界证据与建议范围没有交集",
+        "单纯技术信号不能支持确定的编辑判断",
+    }
+)
+_VALIDATION_TYPES = frozenset(
+    {
+        "missing",
+        "extra_forbidden",
+        "literal_error",
+        "string_type",
+        "string_too_short",
+        "string_too_long",
+        "string_pattern_mismatch",
+        "int_type",
+        "float_type",
+        "bool_type",
+        "list_type",
+        "dict_type",
+        "model_type",
+        "finite_number",
+        "greater_than",
+        "greater_than_equal",
+        "less_than",
+        "less_than_equal",
+        "too_short",
+        "too_long",
+        "value_error",
+    }
+)
+
+
+def _validation_schema_paths(schema: dict[str, object]) -> set[tuple[str, ...]]:
+    """只识别应用模式中的属性和数组路径，不处理任意附加键或外部引用。"""
+    paths: set[tuple[str, ...]] = {()}
+    definitions = schema.get("$defs")
+
+    def visit(node: object, path: tuple[str, ...], refs: frozenset[str], depth: int) -> None:
+        if not isinstance(node, dict) or depth > 16 or len(paths) >= 512:
+            return
+        reference = node.get("$ref")
+        if isinstance(reference, str) and reference.startswith("#/$defs/") and reference not in refs:
+            name = reference.removeprefix("#/$defs/")
+            if isinstance(definitions, dict) and name in definitions:
+                visit(definitions[name], path, refs | {reference}, depth + 1)
+        properties = node.get("properties")
+        if isinstance(properties, dict):
+            for name, child in properties.items():
+                if isinstance(name, str) and re.fullmatch(r"[A-Za-z_][A-Za-z0-9_]{0,63}", name):
+                    nested = (*path, name)
+                    paths.add(nested)
+                    visit(child, nested, refs, depth + 1)
+                    if len(paths) >= 512:
+                        return
+        if isinstance(node.get("items"), dict):
+            nested = (*path, "[]")
+            paths.add(nested)
+            visit(node["items"], nested, refs, depth + 1)
+        for keyword in ("anyOf", "oneOf", "allOf"):
+            choices = node.get(keyword)
+            if isinstance(choices, list):
+                for child in choices[:32]:
+                    visit(child, path, refs, depth + 1)
+
+    visit(schema, (), frozenset(), 0)
+    return paths
+
+
+def _validation_failure_diagnostic(error: ValueError, schema: dict[str, object]) -> ModelFailureDiagnostic:
+    """只回显可信模式字段、固定错误类型和精确白名单原因，禁止保存原始输入。"""
+    details: list[str] = []
+    if isinstance(error, ValidationError):
+        paths = _validation_schema_paths(schema)
+        for issue in error.errors(include_input=False, include_context=False, include_url=False)[:64]:
+            kind = issue["type"] if issue["type"] in _VALIDATION_TYPES else "schema_invalid"
+            path: tuple[str, ...] = ()
+            unknown = False
+            for part in issue["loc"]:
+                item = "[]" if type(part) is int and part >= 0 else part
+                if not isinstance(item, str) or (*path, item) not in paths:
+                    unknown = True
+                    break
+                path = (*path, item)
+            field = ".".join(path).replace(".[]", "[]") or "对象"
+            if unknown:
+                field += ".<额外字段>" if kind == "extra_forbidden" else ".<结构>"
+            reason = next((text for text in _VALIDATION_REASONS if issue["msg"] == f"Value error, {text}"), None)
+            detail = f"{field}: {reason or kind}"
+            if detail not in details:
+                details.append(detail)
+            if len(details) == 4:
+                break
+    elif str(error) in _VALIDATION_REASONS:
+        # 只输出本地常量，异常文本即使仅多出一个字符也不能进入诊断。
+        details.append(next(reason for reason in _VALIDATION_REASONS if str(error) == reason))
+    summary = "模型输出未通过结构或证据引用校验。"
+    if details:
+        summary = ("模型输出校验失败：" + "；".join(details))[:240]
+    return ModelFailureDiagnostic(category="validation", summary=summary)
 
 
 def _structured_attempt(
@@ -684,7 +910,7 @@ def _structured_attempt(
 ) -> StructuredCallResult[_Result]:
     from openai import APIConnectionError, APIStatusError, APITimeoutError
 
-    protocol = budget.protocol(provider.id, provider.model)
+    protocol = budget.protocol(provider.id, provider.model, initial=_initial_structured_protocol(provider))
     response_format = (
         None
         if protocol == "text"
@@ -700,6 +926,7 @@ def _structured_attempt(
     reported_model = None
     error: FailureCode | None = "provider_error"
     value: _Result | None = None
+    diagnostic: ModelFailureDiagnostic | None = None
     try:
         response = asyncio.run(
             _bounded_structured_response(provider, messages, response_format, max_tokens, budget, extra_body)
@@ -718,26 +945,32 @@ def _structured_attempt(
         choice = _first_choice(response)
         message = _field(choice, "message")
         if _field(choice, "finish_reason") != "stop" or _field(message, "refusal") or _field(message, "tool_calls"):
-            raise _StructuredFailure("invalid_output")
+            raise _StructuredFailure("invalid_output", _response_failure_diagnostic(choice, message))
         text = _extract_text(response)
         if not text:
             raise _StructuredFailure("empty_response")
         try:
             value = validate(parse_model_object(text))
-        except ValueError:
+        except ValueError as exc:
             error = "invalid_output"
+            diagnostic = _validation_failure_diagnostic(exc, schema)
         else:
             error = budget.interruption(before_request=False)
             if error is not None:
                 value = None
     except ModelAuthorizationError:
         error = "unauthorized"
+        diagnostic = _structured_failure_diagnostic(error)
     except _StructuredFailure as exc:
         error = exc.code
+        diagnostic = exc.diagnostic or _structured_failure_diagnostic(error)
     except APITimeoutError:
         error = budget.interruption(before_request=False) or "timeout"
+        diagnostic = _structured_failure_diagnostic(error)
     except APIStatusError as exc:
-        if _unsupported_format(exc, protocol):
+        unsupported = _unsupported_format(exc, protocol)
+        diagnostic = _http_failure_diagnostic(exc, provider, unsupported=unsupported)
+        if unsupported:
             error = "unsupported_format"
         elif exc.status_code in {401, 403}:
             error = "unauthorized"
@@ -746,6 +979,11 @@ def _structured_attempt(
     except APIConnectionError as exc:
         # 旧 SDK 会包装响应钩子的异常，保留我们确定的失败分类。
         error = exc.__cause__.code if isinstance(exc.__cause__, _StructuredFailure) else "provider_error"
+        diagnostic = (
+            _structured_failure_diagnostic(error)
+            if isinstance(exc.__cause__, _StructuredFailure)
+            else _connection_failure_diagnostic(exc)
+        )
     finally:
         budget.record(
             ModelAttempt(
@@ -759,8 +997,22 @@ def _structured_attempt(
                 error=error,
                 elapsed_s=max(0.0, time.monotonic() - started),
                 usage=usage,
+                diagnostic=diagnostic,
             )
         )
+        if error is not None:
+            logger.warning(
+                "structured_model_call_failed operation={} attempt={} purpose={} provider={} model={} protocol={} "
+                "error={} diagnostic={}",
+                budget.operation_id,
+                len(budget.attempts),
+                purpose,
+                provider.id,
+                provider.model,
+                protocol,
+                error,
+                diagnostic.model_dump(exclude_none=True) if diagnostic is not None else None,
+            )
     return StructuredCallResult(value=value, error=error)
 
 
@@ -778,7 +1030,7 @@ def call_structured(
     """严格结构化调用，格式协商、一次修复与路由切换全部消耗共享预算。"""
     encoded = json.dumps(payload, ensure_ascii=False, allow_nan=False, separators=(",", ":"))
     schema_text = json.dumps(schema, ensure_ascii=False, allow_nan=False, separators=(",", ":"))
-    if len(encoded.encode("utf-8")) > INPUT_MAX_BYTES or len(schema_text.encode("utf-8")) > OUTPUT_MAX_BYTES:
+    if len(encoded.encode("utf-8")) > INPUT_MAX_BYTES or len(schema_text.encode("utf-8")) > SCHEMA_MAX_BYTES:
         raise ValueError("结构化请求的输入或模式超过大小上限")
     if not instructions.strip() or len(instructions.encode("utf-8")) > OUTPUT_MAX_BYTES:
         raise ValueError("结构化请求需要有界的系统说明")
@@ -800,6 +1052,7 @@ def call_structured(
         last: StructuredCallResult[_Result] = StructuredCallResult(value=None, error="provider_error")
         for provider in providers:
             repairing = False
+            repair_reason = ""
             extra_body = None
             while True:
                 interruption = budget.interruption()
@@ -822,6 +1075,7 @@ def call_structured(
                         "content": system
                         + (
                             "\n上次输出未通过结构或证据引用校验。请逐项检查模式和输入证据，仅返回修正后的 JSON。"
+                            + repair_reason
                             if repairing
                             else ""
                         ),
@@ -844,6 +1098,9 @@ def call_structured(
                     continue
                 if last.error == "invalid_output" and budget.claim_repair():
                     repairing = True
+                    diagnostic = budget.attempts[-1].diagnostic
+                    if diagnostic is not None and diagnostic.category == "validation":
+                        repair_reason = "\n本地校验原因：" + diagnostic.summary
                     continue
                 if last.error == "empty_response" and budget.claim_empty_retry():
                     extra_body = _low_reasoning_options(provider) or None

@@ -8,7 +8,7 @@ import threading
 from datetime import UTC, datetime, timedelta, timezone
 from difflib import SequenceMatcher
 from pathlib import Path
-from typing import Any
+from typing import Any, Literal
 from uuid import uuid4
 
 from sqlalchemy import func
@@ -185,7 +185,7 @@ def remux_transcript_source(transcript_id: int) -> Path:
     :raises TranscriptNotFoundError: 转写或片段不存在。
     :raises TranscriptMediaError: 源文件越界、缺失、探测或 FFmpeg 失败。
     """
-    from app.core.paths import clips_dir, raw_dir
+    from app.core.paths import raw_dir, session_clips_dir
 
     with get_session() as db:
         transcript = db.get(Transcript, transcript_id)
@@ -206,9 +206,12 @@ def remux_transcript_source(transcript_id: int) -> Path:
 
     stat = source.stat()
     fingerprint = f"{stat.st_size:x}_{stat.st_mtime_ns:x}"
-    export_root = (clips_dir() / "source_exports").resolve()
+    session_root = session_clips_dir(segment.session_id)
+    export_root = session_root / "source_exports"
+    if export_root.resolve() != export_root:
+        raise TranscriptMediaError("原片导出目录不能通过链接重定向")
     export_root.mkdir(parents=True, exist_ok=True)
-    output = (export_root / f"segment_{segment.id}_{fingerprint}.mp4").resolve()
+    output = (export_root / f"segment_{segment.seq + 1}_{segment.id}_{fingerprint}.mp4").resolve()
     if output.parent != export_root:
         raise TranscriptMediaError("导出路径越界")
     if output.is_file() and output.stat().st_size > 0:
@@ -218,7 +221,9 @@ def remux_transcript_source(transcript_id: int) -> Path:
     with lock:
         if output.is_file() and output.stat().st_size > 0:
             return output
-        _render_source_export(source, output, int(segment.id), export_root)
+        _render_source_export(
+            source, output, int(segment.id), export_root, cache_prefix=f"segment_{segment.seq + 1}_{segment.id}_"
+        )
     return output
 
 
@@ -228,7 +233,9 @@ def _source_export_lock(segment_id: int) -> threading.Lock:
         return _SOURCE_EXPORT_LOCKS.setdefault(segment_id, threading.Lock())
 
 
-def _render_source_export(source: Path, output: Path, segment_id: int, export_root: Path) -> None:
+def _render_source_export(
+    source: Path, output: Path, segment_id: int, export_root: Path, *, cache_prefix: str | None = None
+) -> None:
     """执行一次无损重封装并原子发布到导出缓存。"""
     from app.core.config import settings
     from app.core.ffmpeg_errors import classify_ffmpeg_error
@@ -273,7 +280,7 @@ def _render_source_export(source: Path, output: Path, segment_id: int, export_ro
             f"FFmpeg 无损导出失败 [{error_type.name}]: {sanitize_diagnostic(stderr, limit=len(stderr))[-1500:]}"
         )
     temp_output.replace(output)
-    for stale in export_root.glob(f"segment_{segment_id}_*.mp4"):
+    for stale in export_root.glob(f"{cache_prefix or f'segment_{segment_id}_'}*.mp4"):
         if stale != output:
             try:
                 stale.unlink(missing_ok=True)
@@ -330,21 +337,41 @@ def _probe_stream_start_times(source: Path) -> tuple[float | None, float | None]
     return video_start, min(starts) if starts else None
 
 
-def list_recording_session_history() -> list[dict[str, Any]]:
-    """返回全部录制场次及其转写、弹幕数量，供历史选择器使用。
+def list_recording_session_history(
+    *,
+    limit: int | None = None,
+    offset: int = 0,
+    kind: Literal["transcripts", "clips"] | None = None,
+    q: str = "",
+    status: str | None = None,
+) -> list[dict[str, Any]]:
+    """返回录制场次及其内容数量，供历史选择器和场次分页使用。
 
-    该查询不设置“最近 N 场”上限，避免较早场次再次因为列表截断而不可访问。
+    默认返回全部历史；显式 limit/offset 在筛选后分页，保留较早场次入口。
 
     :returns: 按开录时间倒序排列的场次摘要。
     """
-    with get_session() as db:
-        sessions = db.exec(
-            select(RecordingSession).order_by(RecordingSession.started_at.desc())  # type: ignore[attr-defined]
-        ).all()
-        session_ids = [session.id for session in sessions if session.id is not None]
-        if not session_ids:
-            return []
+    from app.web.services.clips import clip_session_counts
 
+    selected_counts = (
+        transcript_session_counts(q=q)
+        if kind == "transcripts"
+        else clip_session_counts(q=q, status=status)
+        if kind == "clips"
+        else None
+    )
+    unknown_count = selected_counts.get(None, 0) if selected_counts is not None else 0
+    known_count = len(selected_counts) - bool(unknown_count) if selected_counts is not None else 0
+    include_unknown = bool(unknown_count and offset <= known_count and (limit is None or offset + limit > known_count))
+    with get_session() as db:
+        statement = select(RecordingSession).order_by(RecordingSession.started_at.desc(), RecordingSession.id.desc())
+        if selected_counts is not None:
+            statement = statement.where(RecordingSession.id.in_([sid for sid in selected_counts if sid is not None]))
+        statement = statement.offset(offset)
+        if limit is not None:
+            statement = statement.limit(limit)
+        sessions = db.exec(statement).all()
+        session_ids = [session.id for session in sessions if session.id is not None]
         transcript_rows = db.exec(
             select(RawSegment.session_id, func.count(Transcript.id))
             .join(Transcript, Transcript.segment_id == RawSegment.id)
@@ -364,7 +391,8 @@ def list_recording_session_history() -> list[dict[str, Any]]:
 
     transcript_counts = {int(session_id): int(count) for session_id, count in transcript_rows}
     danmaku_counts = {int(session_id): int(count) for session_id, count in danmaku_rows}
-    return [
+    clip_counts = clip_session_counts()
+    result = [
         {
             "session_id": int(session.id),
             "status": session.status,
@@ -374,12 +402,27 @@ def list_recording_session_history() -> list[dict[str, Any]]:
             "ended_at_gmt8": _iso_gmt8(session.ended_at),
             "transcript_count": transcript_counts.get(int(session.id), 0),
             "danmaku_count": danmaku_counts.get(int(session.id), 0),
+            "clip_count": clip_counts.get(int(session.id), 0),
+            "matching_count": selected_counts.get(int(session.id), 0) if selected_counts is not None else None,
             "danmaku_evidence": session_danmaku_view(int(session.id)),
             **sources.get(int(session.id), unknown_source_identity()),
         }
         for session in sessions
         if session.id is not None
     ]
+    if include_unknown:
+        result.append(
+            {
+                "session_id": None,
+                "session_title": "未关联场次",
+                "status": "unknown",
+                "started_at": None,
+                "transcript_count": unknown_count if kind == "transcripts" else 0,
+                "clip_count": unknown_count if kind == "clips" else 0,
+                "matching_count": unknown_count,
+            }
+        )
+    return result
 
 
 def _as_utc(value: datetime) -> datetime:
@@ -399,7 +442,41 @@ def _iso_gmt8(value: datetime | None) -> str | None:
     return _as_utc(value).astimezone(_GMT8).isoformat() if value is not None else None
 
 
-def list_transcripts(limit: int = 30, session_id: int | None = None) -> list[dict[str, Any]]:
+def transcript_session_counts(*, q: str = "") -> dict[int | None, int]:
+    """统计实际展示正文匹配的转写，缺少片段或场次时保留未关联分组。"""
+    query = q.strip().casefold()
+    with get_session() as db:
+        if not query:
+            statement = (
+                select(RecordingSession.id, func.count(Transcript.id))
+                .select_from(Transcript)
+                .outerjoin(RawSegment, RawSegment.id == Transcript.segment_id)
+                .outerjoin(RecordingSession, RecordingSession.id == RawSegment.session_id)
+                .group_by(RecordingSession.id)
+            )
+            return {sid: int(count) for sid, count in db.exec(statement)}
+        matches: dict[int | None, int] = {}
+        statement = (
+            select(Transcript, RecordingSession.id)
+            .select_from(Transcript)
+            .outerjoin(RawSegment, RawSegment.id == Transcript.segment_id)
+            .outerjoin(RecordingSession, RecordingSession.id == RawSegment.session_id)
+            .execution_options(yield_per=100)
+        )
+        for transcript, sid in db.exec(statement):
+            if query in transcript_text(transcript).casefold():
+                matches[sid] = matches.get(sid, 0) + 1
+        return matches
+
+
+def list_transcripts(
+    limit: int = 30,
+    session_id: int | None = None,
+    *,
+    offset: int = 0,
+    unknown_session: bool = False,
+    q: str = "",
+) -> list[dict[str, Any]]:
     """列出最近的转写文本(用于"实时转写"视图)。
 
     :param limit: 数量上限。
@@ -407,28 +484,40 @@ def list_transcripts(limit: int = 30, session_id: int | None = None) -> list[dic
     :returns: 转写字典列表(按时间降序)。
     """
     with get_session() as db:
-        statement = select(Transcript)
+        statement = (
+            select(Transcript, RawSegment, RecordingSession.id)
+            .select_from(Transcript)
+            .outerjoin(RawSegment, RawSegment.id == Transcript.segment_id)
+            .outerjoin(RecordingSession, RecordingSession.id == RawSegment.session_id)
+        )
         if session_id is not None:
-            statement = statement.join(RawSegment, RawSegment.id == Transcript.segment_id).where(
-                RawSegment.session_id == session_id
-            )
-        rows = db.exec(
-            statement.order_by(Transcript.created_at.desc()).limit(limit)  # type: ignore[attr-defined]
-        ).all()
-        segments = {
-            segment.id: segment
-            for segment in db.exec(select(RawSegment).where(RawSegment.id.in_([row.segment_id for row in rows]))).all()
-        }
+            statement = statement.where(RecordingSession.id == session_id)
+        if unknown_session:
+            statement = statement.where(RecordingSession.id.is_(None))
+        statement = statement.order_by(Transcript.created_at.desc(), Transcript.id.desc())
+        query = q.strip().casefold()
+        if query:
+            rows = []
+            matched = 0
+            for row in db.exec(statement.execution_options(yield_per=100)):
+                if query not in transcript_text(row[0]).casefold():
+                    continue
+                if matched >= offset:
+                    rows.append(row)
+                    if len(rows) >= limit:
+                        break
+                matched += 1
+        else:
+            rows = db.exec(statement.offset(offset).limit(limit)).all()
         from app.web.services.source_identity import source_identities_for_sessions, unknown_source_identity
 
         sources = source_identities_for_sessions(
             db,
-            (segment.session_id for segment in segments.values()),
+            (sid for _, _, sid in rows if sid is not None),
         )
     result: list[dict[str, Any]] = []
-    for transcript in rows:
-        segment = segments.get(transcript.segment_id)
-        source = sources.get(segment.session_id, unknown_source_identity()) if segment else unknown_source_identity()
+    for transcript, segment, sid in rows:
+        source = sources.get(sid, unknown_source_identity())
         refinement: dict[str, Any] = {}
         auxiliary: dict[str, Any] = {}
         if transcript.auxiliary_json:
@@ -453,7 +542,8 @@ def list_transcripts(limit: int = 30, session_id: int | None = None) -> list[dic
                 "result_type": auxiliary.get("result_type", "speech"),
                 "audio_evidence": auxiliary.get("audio_evidence"),
                 "created_at": transcript.created_at.isoformat() if transcript.created_at else None,
-                "session_id": segment.session_id if segment else None,
+                "session_id": sid,
+                "segment_seq": segment.seq if segment else None,
                 "source_file_name": _source_file_name(segment.file_path) if segment else None,
                 "source_mp4_available": bool(segment and Path(segment.file_path).suffix.lower() == ".ts"),
                 **source,

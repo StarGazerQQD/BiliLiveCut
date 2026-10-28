@@ -1,6 +1,6 @@
 # Portable 安装与构建
 
-**版本：V0.1.20.1 Alpha** (`0.1.20.1-alpha`)
+**版本：V0.1.20.2 Alpha** (`0.1.20.2-alpha`)
 
 本文介绍 Windows Portable 的发行结构、模型准备、运行依赖和构建方法。第一次使用请按下方用户指南完成安装；升级前停止服务并备份运行目录，数据库完整格式校验通过时可复用，不兼容格式会保留并拒绝启动。常见问题见[故障排查](../../docs/features/troubleshooting.md)。
 
@@ -119,7 +119,7 @@ python build_engine_pack.py --from-cache  # 从已验证缓存构建
 
 输出:
 
-- dist/engine-pack/BiliLiveCut-EnginePack-0.1.20.1-alpha.zip
+- dist/engine-pack/BiliLiveCut-EnginePack-0.1.20.2-alpha.zip
 - dist/engine-pack/engine-pack-manifest.json
 - dist/engine-pack/CRC32SUMS.txt
 - dist/engine-pack/SHA256SUMS.txt
@@ -230,7 +230,7 @@ packaging/portable/                     # ★ 即插即用分发版根目录 (�
 ├── runtime/                  # ★ Runtime 版本管理
 │   ├── current.json          #   当前激活的 Release 信息
 │   └── releases/
-│       └── 0.1.20.1-alpha+<source-sha>+<payload-hash>/  # 内容寻址的固定版本源码
+│       └── 0.1.20.2-alpha+<source-sha>+<payload-hash>/  # 内容寻址的固定版本源码
 │
 ├── .venv/                    # Python 虚拟环境（launcher.exe 自动创建）
 ├── models/                   # 四引擎 ASR 模型 (由 Engine Pack 或在线下载安装)

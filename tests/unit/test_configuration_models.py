@@ -166,7 +166,10 @@ def test_whisper_lazy_output_is_consumed_under_model_lease(monkeypatch: MonkeyPa
         assert model_pool.infos()[0]["active_users"] == 1
         yield SimpleNamespace(start=0, end=1, text="可用语音", words=[], avg_logprob=-0.1)
 
-    model = SimpleNamespace(transcribe=lambda *_args, **_kwargs: (segments(), SimpleNamespace(language="zh")))
+    model = SimpleNamespace(
+        model=SimpleNamespace(device="cpu"),
+        transcribe=lambda *_args, **_kwargs: (segments(), SimpleNamespace(language="zh")),
+    )
     monkeypatch.setattr(backends, "_probe_audio_duration", lambda _path: 1)
     monkeypatch.setattr(backends.FasterWhisperBackend, "_load_model", lambda _self: model)
     monkeypatch.setattr("faster_whisper.vad.get_speech_timestamps", lambda audio: [{"start": 0, "end": len(audio)}])

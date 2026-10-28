@@ -54,6 +54,7 @@ from app.analysis.transcription.quality import (
     repair_local_decode_loop,
     transcript_quality_payload,
 )
+from app.core.asr_failures import ASRUnavailableError, permanent_device_error
 from app.core.config import settings
 from app.core.runtime_settings import configured_task
 from app.core.sanitize import safe_exception_summary
@@ -90,6 +91,8 @@ class ASRPipeline:
         self._primary = primary_backend
         self._whisper = whisper_backend
         self._last_backend_error: Exception | None = None
+        self._backend_errors: list[Exception] = []
+        self._backend_completed = False
         self._use_fallback = settings.asr_fallback_whisper
         self._review_risk_threshold = getattr(
             settings,
@@ -142,23 +145,38 @@ class ASRPipeline:
         initial_prompt: str | None = None,
     ) -> ASRTranscriptResult:
         """执行模型并为最终结果分类，空文本不得冒充成功。"""
-        from app.analysis.transcription.speech_evidence import no_speech_result, require_final_result
+        from app.analysis.transcription.speech_evidence import (
+            has_no_speech_evidence,
+            no_speech_result,
+            require_final_result,
+        )
 
         self._last_backend_error = None
+        self._backend_errors.clear()
+        self._backend_completed = False
         try:
             result = self._run_backends(audio_path, initial_prompt)
             model_failed = bool(result.primary_error_type and result.primary_error_type != "ASRQualityError")
             if not (result.final_text or result.text).strip():
-                if model_failed:
-                    raise RuntimeError(
-                        f"ASR 模型异常且无可用回退: {result.primary_error_type}: {result.primary_error_message}"
-                    ) from self._last_backend_error
+                if model_failed and not self._backend_completed and not has_no_speech_evidence(result):
+                    message = f"ASR 模型异常且无可用回退: {result.primary_error_type}: {result.primary_error_message}"
+                    if (
+                        not result.fallback_backend
+                        and self._backend_errors
+                        and all(permanent_device_error(error) for error in self._backend_errors)
+                    ):
+                        raise ASRUnavailableError(message) from self._last_backend_error
+                    raise RuntimeError(message) from self._last_backend_error
                 if result.result_type != "no_speech":
                     empty = no_speech_result(audio_path, backend=result.backend)
                     if empty is not None:
                         empty.emotions = result.emotions
                         empty.primary_backend = result.primary_backend
+                        empty.primary_status = result.primary_status
+                        empty.primary_error_type = result.primary_error_type
+                        empty.primary_error_message = result.primary_error_message
                         empty.fallback_backend = result.fallback_backend
+                        empty.fallback_trigger_reason = result.fallback_trigger_reason
                         result = empty
             result = require_final_result(result)
             if result.fallback_backend:
@@ -174,6 +192,8 @@ class ASRPipeline:
         finally:
             # 缓存的流水线不能持有失败初始化/推理帧中的模型与 GPU 张量。
             self._last_backend_error = None
+            self._backend_errors.clear()
+            self._backend_completed = False
 
     def _run_backends(
         self,
@@ -189,8 +209,10 @@ class ASRPipeline:
         if primary_name == "funasr_nano":
             try:
                 result = self._get_primary().transcribe_funasr(audio_path, initial_prompt)
+                self._backend_completed = True
             except Exception as exc:
                 self._last_backend_error = exc
+                self._backend_errors.append(exc)
                 logger.warning("Fun-ASR-Nano 主引擎转写失败: {}", safe_exception_summary(exc, limit=500))
                 result = ASRTranscriptResult(
                     text="",
@@ -234,6 +256,7 @@ class ASRPipeline:
                 secondary = self._get_primary().transcribe(audio_path, initial_prompt)
             except Exception as exc:
                 self._last_backend_error = exc
+                self._backend_errors.append(exc)
                 logger.warning("Paraformer 次级引擎转写失败: {}", safe_exception_summary(exc, limit=500))
                 result.metadata["secondary_error"] = {
                     "backend": "paraformer",
@@ -241,26 +264,33 @@ class ASRPipeline:
                     "error_message": safe_exception_summary(exc, limit=500),
                 }
             else:
+                self._backend_completed = True
                 _merge_auxiliary(result, secondary)
                 secondary_text = secondary.final_text or secondary.text
                 secondary_quality = assess_transcript_quality(secondary_text)
+                _merge_auxiliary(secondary, result)
+                secondary.base_text = secondary.text or secondary_text
+                secondary.final_text = secondary_text
+                secondary.final_text_source = "fallback"
+                secondary.primary_backend = "funasr-nano"
+                secondary.primary_status = "failed"
+                secondary.primary_error_type = result.primary_error_type
+                secondary.primary_error_message = result.primary_error_message
+                secondary.fallback_backend = "paraformer"
+                secondary.fallback_trigger_reason = trigger_reason
                 if secondary_quality.usable:
-                    _merge_auxiliary(secondary, result)
-                    secondary.base_text = secondary.text or secondary_text
-                    secondary.final_text = secondary_text
-                    secondary.final_text_source = "fallback"
-                    secondary.primary_backend = "funasr-nano"
-                    secondary.primary_status = "failed"
-                    secondary.primary_error_type = result.primary_error_type
-                    secondary.primary_error_message = result.primary_error_message
-                    secondary.fallback_backend = "paraformer"
-                    secondary.fallback_trigger_reason = trigger_reason
                     return secondary
                 logger.warning(
                     "Paraformer 次级输出仍不可用（{}，重复占比 {:.1%}）",
                     secondary_quality.reason,
                     secondary_quality.repetition_ratio,
                 )
+                if not self._use_fallback:
+                    if secondary_text.strip():
+                        raise RuntimeError(
+                            f"ASRQualityError: Paraformer 次级输出不可用: {secondary_quality.reason}"
+                        ) from self._last_backend_error
+                    return secondary
 
             if self._use_fallback:
                 logger.info("Fun-ASR-Nano 与 Paraformer 均无有效输出，切换 Whisper 兜底")
@@ -285,8 +315,10 @@ class ASRPipeline:
         if primary_name == "paraformer":
             try:
                 result = self._get_primary().transcribe(audio_path, initial_prompt)
+                self._backend_completed = True
             except Exception as exc:
                 self._last_backend_error = exc
+                self._backend_errors.append(exc)
                 logger.warning("Paraformer 主引擎转写失败: {}", safe_exception_summary(exc, limit=500))
                 result = ASRTranscriptResult(
                     text="",

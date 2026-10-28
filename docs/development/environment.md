@@ -52,7 +52,9 @@ Ruff 与 pre-commit 的版本固定在项目配置中，外部 hook 和新增 Ac
 
 源码依赖要求 `sqlmodel>=0.0.22,<0.0.45`，Portable 完整锁继续使用 `0.0.39`。当前 Schema 与 API 使用既有无时区 UTC 时间约定；[SQLModel 0.0.45 起改变默认日期时间行为](https://sqlmodel.tiangolo.com/advanced/datetime/#upgrade-existing-applications)，直接升级会影响入库、查询、时间比较与响应格式。依赖上限用于保持现有数据契约，不触发数据库迁移。
 
-Portable 依赖锁固定 `hydra-core==1.3.7` 和 `urllib3==2.8.0`，对应 [Hydra 安全修复](https://github.com/hydra-ecosystem/hydra/releases/tag/v1.3.7)与 [urllib3 安全修复](https://github.com/urllib3/urllib3/releases/tag/2.8.0)。两者沿用现有依赖范围，纯 Python wheel 适用于两个 Windows ABI；更新时核对实际下载文件的 SHA-256，运行双 ABI 依赖解析及审计。Hydra 会拒绝危险配置目标，urllib3 更严格地隔离 HTTPS 代理和目标站点 TLS 配置；自定义第三方配置不能依赖旧的不安全行为。
+Portable 依赖锁固定 `hydra-core==1.3.8`、`msgpack==1.2.4` 和 `urllib3==2.8.0`，对应 [Hydra 安全修复](https://github.com/hydra-ecosystem/hydra/releases/tag/v1.3.8)、[MessagePack 解码修复](https://github.com/msgpack/msgpack-python/blob/v1.2.4/CHANGELOG.md)与 [urllib3 安全修复](https://github.com/urllib3/urllib3/releases/tag/2.8.0)。源码 ASR 依赖同步要求 Hydra 和 MessagePack 的修复版本。Hydra 拒绝不安全的 YAML 配置目标，MessagePack 修复解码内存安全问题并限制容器预分配，urllib3 更严格地隔离 HTTPS 代理和目标站点 TLS 配置；自定义第三方配置不能依赖旧的不安全行为。更新 `requirements-runtime.in` 后使用 `scripts/generate_portable_runtime_locks.py` 生成两个 Windows ABI 的完整锁，核对实际 wheel 的 SHA-256、传递依赖变更及审计结果；MessagePack 分别使用 CPython 3.11/3.12 的 Windows wheel。
+
+定向更新时执行 `uv run --locked python scripts/generate_portable_runtime_locks.py --upgrade-package hydra-core --upgrade-package msgpack --cache-dir .local/portable-runtime-sdists`。可重复的 `--upgrade-package` 从输出目录已有的两个完整锁中保留其他包版本，交由 pip 重新解析依赖并下载真实 wheel；原锁或目标包缺失时立即失败，依赖冲突不会自动放宽其他版本。未提供该选项时仍完整解析全部传递依赖。两个 ABI 均成功后才写入新锁。
 
 Windows 的 `FFMPEG_PATH`、`FFPROBE_PATH` 应指向真实二进制文件，避免指向 Chocolatey 的 `bin` 包装程序。包装进程可能在停止时留下仍持有管道的 FFmpeg 子进程。Windows CI 共用 `scripts/download_release_ffmpeg.py` 的 Release 下载入口，沿用 BtbN/Gyan 来源、每源最多三次尝试及 ZIP 完整性校验，绕开 Chocolatey 服务超时后返回成功但未安装文件的问题。通过 `--github-env` 指定 Actions 环境文件时，脚本先执行两个二进制的版本探测并确认 `subtitles`、`drawtext` 滤镜，全部成功后才写入真实绝对路径，并把已验证目录加入后续步骤的 PATH；失败保留具体原因并返回非零状态。Portable Full 已使用随包二进制的绝对路径。
 
@@ -155,6 +157,8 @@ python scripts/check_local_asr.py --models-dir "D:/测试安装/models" --audio 
 `--engine` 可选 `whisper`、`paraformer`、`funasr_nano`；`--device cuda` 用于具备匹配驱动的 GPU 环境；合法静音使用 `--expect no_speech` 并去掉 `--contains`。命令先逐文件重算已安装模型的 SHA-256，再执行生产隔离流水线，核对结果分类、非空语音文本和时间戳，并确认进程回收。输入、依赖、模型或推理异常直接失败，报告不包含转写正文。运行前按当前依赖安装运行环境并提供 FFmpeg；该检查独立于 CI 的确定性回归，CPU 通过不能代替现场 GPU 故障复现。
 
 ## 文档约定
+
+发布前运行 `python scripts/check_acknowledgements.py`，并按现有流程执行 pre-commit/CI。README 的“鸣谢”是名单唯一维护入口，紧邻“许可证”之前；检查器使用开发依赖 `markdown-it-py` 解析 Markdown，检查 GitHub 主页 ID、大小写重复和明确退出名单。`StarGazerQQD` 已明确退出鸣谢，不能通过别名重新加入；正常仓库、Issue、PR 链接和许可证版权不受影响。新增反馈者仍须核对实际来源，保留用户手工维护的 Bilibili 等其他平台条目；该检查器只读取文件，不自动收集或改写名单。
 
 - README 提供项目简介、核心功能、快速开始、重要限制和文档入口；详细用法进入对应指南，避免每个版本继续追加历史小节。
 - 用户可见变更记入当前系列的 `CHANGELOG.md`；旧系列使用既有 `docs/changelog/` 归档，不重复维护多份版本历史。

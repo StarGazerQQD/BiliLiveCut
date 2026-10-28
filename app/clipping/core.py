@@ -34,7 +34,7 @@ from app.clipping.drafts import ClipDraft, input_fingerprint, publication, publi
 from app.clipping.models import ClipOptions
 from app.core.config import settings
 from app.core.ffmpeg_errors import classify_ffmpeg_error
-from app.core.paths import clips_dir
+from app.core.paths import session_clips_dir
 from app.core.process_control import ProcessCancelledError, run_cancellable
 from app.core.runtime_settings import configured_task
 from app.db.entities import (
@@ -789,7 +789,11 @@ def prepare_clip(
     """计算独占文件草稿；失败只清理本次预先声明的输出文件。"""
     suffix = output_suffix or (f"lease_{task_lease.lease_token}" if task_lease is not None else uuid4().hex)
     stem = f"clip_{candidate_id}{_normalize_output_suffix(suffix)}"
-    root = clips_dir()
+    with get_session() as db:
+        candidate = db.get(HighlightCandidate, candidate_id)
+        if candidate is None:
+            raise ValueError(f"候选不存在: id={candidate_id}")
+        root = session_clips_dir(candidate.session_id)
     paths = tuple(
         root / f"{stem}{ending}"
         for ending in (
@@ -814,6 +818,7 @@ def prepare_clip(
             start_ts=start_ts,
             end_ts=end_ts,
             output_suffix=suffix,
+            output_root=root,
             progress_callback=progress_callback,
             cancel_check=cancel_check,
             render_variants=render_variants,
@@ -834,6 +839,7 @@ def _prepare_clip(
     start_ts: datetime | None = None,
     end_ts: datetime | None = None,
     output_suffix: str,
+    output_root: Path,
     progress_callback: Callable[[int, str], None] | None = None,
     cancel_check: Callable[[], bool] | None = None,
     render_variants: bool = True,
@@ -862,6 +868,8 @@ def _prepare_clip(
             raise ValueError(f"候选不存在: id={candidate_id}")
         source_fingerprint = input_fingerprint(db, candidate_id)
         session_id = cand.session_id
+        if output_root != session_clips_dir(session_id):
+            raise ValueError("候选所属场次已变化，拒绝写入其他场次目录")
         if (start_ts is None) != (end_ts is None):
             raise ValueError("显式剪辑起点和终点必须同时提供。")
         resolved_start_ts = _as_utc_naive(start_ts or cand.start_ts)
@@ -885,8 +893,8 @@ def _prepare_clip(
     peak_rel = max(0.0, (peak_ts - resolved_start_ts).total_seconds())
 
     output_stem = f"clip_{candidate_id}{_normalize_output_suffix(output_suffix)}"
-    out_path = clips_dir() / f"{output_stem}.mp4"
-    cover_path = clips_dir() / f"{output_stem}.jpg"
+    out_path = output_root / f"{output_stem}.mp4"
+    cover_path = output_root / f"{output_stem}.jpg"
     if out_path.exists() or cover_path.exists():
         raise FileExistsError("当前执行的成片或封面路径已存在，拒绝覆盖")
 

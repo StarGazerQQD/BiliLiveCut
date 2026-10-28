@@ -4,7 +4,7 @@ from __future__ import annotations
 
 from typing import Any
 
-from fastapi import APIRouter, HTTPException
+from fastapi import APIRouter, HTTPException, Query
 
 from app.web.services import clips as clips_service
 
@@ -20,10 +20,26 @@ router = APIRouter()
 
 
 @router.get("/clips")
-def get_clips(limit: int = 50) -> list[dict[str, Any]]:
+def get_clips(
+    limit: int = 50,
+    offset: int = Query(default=0, ge=0),
+    session_id: int | None = Query(default=None, gt=0),
+    unknown_session: bool = False,
+    q: str = Query(default="", max_length=500),
+    status: str | None = None,
+) -> list[dict[str, Any]]:
     """返回成品切片列表。"""
     limit = _clamp(limit, 1, _MAX_QUERY_LIMIT)
-    return clips_service.list_clips(limit=limit)
+    if session_id is not None and unknown_session:
+        raise HTTPException(status_code=422, detail="场次筛选与未关联场次不能同时使用")
+    return clips_service.list_clips(
+        limit=limit,
+        offset=offset,
+        session_id=session_id,
+        unknown_session=unknown_session,
+        q=q,
+        status=status,
+    )
 
 
 @router.post("/clips/{clip_id}/publish")

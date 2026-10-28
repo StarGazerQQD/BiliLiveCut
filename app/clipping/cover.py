@@ -12,6 +12,7 @@ from __future__ import annotations
 import subprocess
 import tempfile
 from pathlib import Path
+from uuid import uuid4
 
 from loguru import logger
 
@@ -23,6 +24,8 @@ def extract_cover_candidates(
     video_path: str | Path,
     count: int = 5,
     out_dir: str | Path | None = None,
+    *,
+    session_id: int | None = None,
 ) -> list[dict]:
     """从视频中抽取多帧封面候选并按质量排序。
 
@@ -106,9 +109,9 @@ def extract_cover_candidates(
 
         # 若是自动创建的临时目录,将 Top 候选复制到持久化位置并清理临时目录。
         if own_tmp and result:
-            from app.core.paths import clips_dir
+            from app.core.paths import session_clips_dir
 
-            persistent = clips_dir() / "covers"
+            persistent = session_clips_dir(session_id) / "covers" / uuid4().hex
             persistent.mkdir(parents=True, exist_ok=True)
             for c in result:
                 src = Path(c["file_path"])

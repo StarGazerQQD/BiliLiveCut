@@ -3,12 +3,14 @@
 from __future__ import annotations
 
 import sys
-from types import ModuleType
+from pathlib import Path
+from types import ModuleType, SimpleNamespace
 
 import pytest
 
 from app.analysis.transcription import backends
 from app.core import asr_detection
+from tests.unit.test_cuda_libraries import install_boundary
 
 
 def test_unsupported_compute_type_retries_with_auto(monkeypatch: pytest.MonkeyPatch) -> None:
@@ -59,10 +61,12 @@ def test_unrelated_value_error_is_not_retried(monkeypatch: pytest.MonkeyPatch) -
 
 
 @pytest.fixture(autouse=True)
-def cuda_runtime_boundary(monkeypatch: pytest.MonkeyPatch) -> None:
+def cuda_runtime_boundary(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
     """Model constructor tests use an available CUDA library boundary."""
     from types import SimpleNamespace
 
+    boundary = install_boundary(tmp_path, monkeypatch)
+    boundary.package("nvidia-cublas-cu12")
     monkeypatch.setitem(
         sys.modules,
         "ctranslate2",
@@ -71,3 +75,28 @@ def cuda_runtime_boundary(monkeypatch: pytest.MonkeyPatch) -> None:
             get_supported_compute_types=lambda device, index: {"float32", "int8_float32"},
         ),
     )
+
+
+@pytest.mark.parametrize("gpu_count", [0, 1])
+def test_auto_device_resolves_before_model_constructor(monkeypatch: pytest.MonkeyPatch, gpu_count: int) -> None:
+    monkeypatch.setitem(
+        sys.modules,
+        "ctranslate2",
+        SimpleNamespace(
+            get_cuda_device_count=lambda: gpu_count, get_supported_compute_types=lambda device, index: {"float32"}
+        ),
+    )
+    monkeypatch.setattr(asr_detection, "check_resources_sufficient", lambda *_args: (True, "ok"))
+    calls: list[dict[str, object]] = []
+
+    def create(model: str, **kwargs: object) -> object:
+        calls.append(kwargs)
+        return object()
+
+    monkeypatch.setitem(sys.modules, "faster_whisper", SimpleNamespace(WhisperModel=create))
+    backends._load_whisper_model("local-model", "auto", "float32")
+    assert calls == [
+        {"device": "cuda", "device_index": 0, "compute_type": "float32"}
+        if gpu_count
+        else {"device": "cpu", "compute_type": "float32"}
+    ]

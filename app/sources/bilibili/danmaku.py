@@ -36,9 +36,11 @@ from app.db.entities import Danmaku, DanmakuType
 from app.db.session import get_session
 from app.plugins.live_source import DanmakuStateSink, DanmakuStatus
 from app.sources.bilibili.client import (
+    BilibiliAuthenticationError,
     BilibiliError,
     BilibiliLiveClient,
     BilibiliRateLimitError,
+    BilibiliTransportError,
     DanmakuServer,
     HttpErrorType,
     parse_uid_from_cookie,
@@ -77,6 +79,10 @@ _USER_AGENT = (
 
 class DanmakuProtocolError(BilibiliError):
     """弹幕 WebSocket 鉴权或协议响应无效。"""
+
+
+class DanmakuAuthenticationError(DanmakuProtocolError):
+    """服务端明确返回非零鉴权结果，允许计入登录失败次数。"""
 
 
 class _WebSocketConnection(Protocol):
@@ -256,6 +262,7 @@ class DanmakuConnection:
         self._login_retry_max_attempts = max_attempts
         self._login_retry_interval_s = retry_interval
         self._login_failures = 0
+        self._login_blocked_reason: str | None = None
         self._connection_failures = 0
         self._next_login_retry_at = 0.0
 
@@ -280,7 +287,10 @@ class DanmakuConnection:
             except DanmakuProtocolError as exc:
                 await self._report_state(DanmakuStatus.FAILED)
                 if access is not None and access.uses_cookie:
-                    self._record_login_failure(exc)
+                    if isinstance(exc, DanmakuAuthenticationError):
+                        self._record_login_failure(exc)
+                    else:
+                        self._schedule_login_recovery(exc)
                     access = None
                     continue
                 access = None
@@ -311,6 +321,17 @@ class DanmakuConnection:
                     "弹幕连接异常 room={}: {},{}s 后重连。", self.room_id, safe_exception_summary(exc), backoff
                 )
             except (BilibiliError, OSError, TimeoutError, WebSocketException) as exc:
+                if isinstance(exc, BilibiliAuthenticationError) or (
+                    isinstance(exc, BilibiliTransportError) and not exc.retryable
+                ):
+                    logger.error(
+                        "匿名弹幕接口永久失败，停止采集 room={} session={}；录制继续: {}",
+                        self.room_id,
+                        self.session_id,
+                        safe_exception_summary(exc),
+                    )
+                    await self._report_state(DanmakuStatus.FAILED)
+                    return
                 if isinstance(exc, OSError) and exc.errno in {errno.EACCES, errno.EPERM, errno.ENOSPC, errno.EROFS}:
                     logger.opt(exception=exc).error(
                         "弹幕本地资源故障，停止采集 room={} session={}", self.room_id, self.session_id
@@ -318,6 +339,8 @@ class DanmakuConnection:
                     await self._report_state(DanmakuStatus.FAILED)
                     return
                 await self._report_state(DanmakuStatus.FAILED)
+                if access is not None and access.uses_cookie:
+                    self._schedule_login_recovery(exc)
                 access = None
                 logger.warning(
                     "弹幕连接异常 room={}: {},{}s 后重连。", self.room_id, safe_exception_summary(exc), backoff
@@ -335,7 +358,11 @@ class DanmakuConnection:
     @property
     def login_disabled(self) -> bool:
         """本场录制是否已禁用登录 Cookie 弹幕访问。"""
-        return not self._cookie or self._login_failures >= self._login_retry_max_attempts
+        return (
+            not self._cookie
+            or self._login_failures >= self._login_retry_max_attempts
+            or self._login_blocked_reason is not None
+        )
 
     async def _select_access(self) -> DanmakuAccess:
         """选择当前应使用的登录或匿名访问模式。"""
@@ -351,8 +378,22 @@ class DanmakuConnection:
         try:
             server = await self._fetch_server(self._cookie)
         except BilibiliError as exc:
-            self._record_login_failure(exc)
+            if isinstance(exc, BilibiliAuthenticationError):
+                if exc.cookie_login_request:
+                    self._record_login_failure(exc)
+                else:
+                    self._block_logged_access(exc)
+            elif isinstance(exc, BilibiliTransportError) and not exc.retryable:
+                self._block_logged_access(exc)
+            elif isinstance(exc, BilibiliRateLimitError) and exc.error_type in {
+                HttpErrorType.COOKIE_EXPIRED,
+                HttpErrorType.ACCOUNT_BANNED,
+            }:
+                self._record_login_failure(exc)
+            else:
+                self._schedule_login_recovery(exc)
             return None
+        self._next_login_retry_at = 0.0
         logger.info(
             "登录 Cookie 弹幕访问成功 room={} uid={} prior_failures={}",
             self.room_id,
@@ -374,6 +415,29 @@ class DanmakuConnection:
         """
         async with BilibiliLiveClient(cookie=cookie) as client:
             return await client.get_danmaku_server(self.room_id)
+
+    def _schedule_login_recovery(self, exc: Exception) -> None:
+        """独立安排登录探测，不把网络及协议故障计入 Cookie 拒绝次数。"""
+        delay = self._login_retry_interval_s
+        if isinstance(exc, (BilibiliRateLimitError, BilibiliTransportError)):
+            delay = max(delay, exc.retry_after_seconds)
+        self._next_login_retry_at = time.monotonic() + delay
+        logger.warning(
+            "弹幕登录链路暂不可用 room={} retry_s={}；保留 Cookie 失败次数并尝试匿名: {}",
+            self.room_id,
+            delay,
+            safe_exception_summary(exc),
+        )
+
+    def _block_logged_access(self, exc: BilibiliError) -> None:
+        """永久请求失败只停用本场登录探测，保留可用匿名连接与原始诊断。"""
+        self._login_blocked_reason = safe_exception_summary(exc)
+        self._next_login_retry_at = 0.0
+        logger.warning(
+            "弹幕登录请求永久失败 room={}；本场停止登录探测并尝试匿名，Cookie 拒绝次数不变: {}",
+            self.room_id,
+            self._login_blocked_reason,
+        )
 
     def _record_login_failure(self, exc: Exception) -> None:
         """记录一次登录链路失败并安排重试或熔断本场登录访问。"""
@@ -404,7 +468,7 @@ class DanmakuConnection:
 
     async def _consume_access(self, access: DanmakuAccess) -> DanmakuAccess | None:
         """消费当前连接；匿名模式下并行等待下一次登录探测。"""
-        if access.uses_cookie or self.login_disabled or self._login_failures == 0:
+        if access.uses_cookie or self.login_disabled or self._next_login_retry_at == 0:
             await self._connect_and_consume(access)
             return None
         return await self._consume_anonymous_with_login_retry(access)
@@ -464,7 +528,7 @@ class DanmakuConnection:
                 raise
             except DanmakuProtocolError:
                 raise
-            except (OSError, TimeoutError, WebSocketException) as exc:
+            except (BilibiliTransportError, OSError, TimeoutError, WebSocketException) as exc:
                 if isinstance(exc, OSError) and exc.errno in {errno.EACCES, errno.EPERM, errno.ENOSPC, errno.EROFS}:
                     raise
                 last_error = exc
@@ -477,7 +541,7 @@ class DanmakuConnection:
                     len(endpoints),
                     safe_exception_summary(exc),
                 )
-        raise BilibiliError(f"全部 {len(endpoints)} 个弹幕节点均不可用") from last_error
+        raise BilibiliTransportError(f"全部 {len(endpoints)} 个弹幕节点均不可用") from last_error
 
     async def _consume_endpoint(self, host: str, port: int, access: DanmakuAccess) -> None:
         """连接单个节点，完成鉴权后持续消费消息。
@@ -539,7 +603,8 @@ class DanmakuConnection:
         :param token: ``getDanmuInfo`` 返回的短期 token。
         :param uid: 登录用户 UID；匿名模式为 0。
         :returns: 完整首帧，保留与鉴权回复聚合发送的业务消息。
-        :raises DanmakuProtocolError: 超时、缺少鉴权回复或服务端拒绝时。
+        :raises BilibiliTransportError: 等待鉴权回复超时时。
+        :raises DanmakuProtocolError: 缺少有效鉴权回复或服务端明确拒绝时。
         """
         auth = {
             "uid": uid,
@@ -553,7 +618,7 @@ class DanmakuConnection:
         try:
             frame = await asyncio.wait_for(ws.recv(), timeout=_AUTH_TIMEOUT_S)
         except TimeoutError as exc:
-            raise DanmakuProtocolError("等待弹幕鉴权回复超时") from exc
+            raise BilibiliTransportError("等待弹幕鉴权回复超时") from exc
         if isinstance(frame, str):
             frame = frame.encode("utf-8")
         for operation, parsed in decode(frame):
@@ -562,8 +627,10 @@ class DanmakuConnection:
             if not isinstance(parsed, dict):
                 raise DanmakuProtocolError("弹幕鉴权回复不是有效 JSON")
             code = parsed.get("code")
+            if type(code) is not int:
+                raise DanmakuProtocolError("弹幕鉴权回复缺少有效结果码")
             if code != 0:
-                raise DanmakuProtocolError(f"弹幕鉴权被拒绝 code={code!r}")
+                raise DanmakuAuthenticationError(f"弹幕鉴权被拒绝 code={code!r}")
             return frame
         raise DanmakuProtocolError("服务端首帧缺少弹幕鉴权回复")
 

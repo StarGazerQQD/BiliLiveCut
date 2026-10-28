@@ -57,6 +57,15 @@ def test_runtime_locks_are_complete_and_strict() -> None:
     assert _direct_requirement_names() <= set(py311)
 
 
+def test_optional_cublas_is_packaged_without_changing_cpu_lock() -> None:
+    assert "nvidia-cublas-cu12" not in _load_lock("py312")
+    assert (_lock_dir / "requirements-cublas-win-x64.in").is_file()
+    assert (_lock_dir / "requirements-cublas-win-x64.lock").is_file()
+    assert "requirements-cublas-win-x64.lock" in (_portable_dir / "specs/portable_launcher.spec").read_text(
+        encoding="utf-8"
+    )
+
+
 def test_runtime_locks_cover_core_application_imports() -> None:
     required = {
         "brotli",
@@ -89,10 +98,11 @@ def test_runtime_locks_keep_security_upgrades_pinned() -> None:
         "faster-whisper": "1.2.1",
         "filelock": "4.2.1",
         "funasr": "1.3.30",
-        "hydra-core": "1.3.7",
+        "hydra-core": "1.3.8",
         "huggingface-hub": "1.30.0",
         "jinja2": "3.1.6",
         "modelscope": "1.39.0",
+        "msgpack": "1.2.4",
         "openai": "2.51.0",
         "orjson": "3.11.9",
         "pip": "26.2",

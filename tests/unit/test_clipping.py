@@ -310,7 +310,7 @@ def test_lossless_source_export_rebases_video_without_dropping_packets(
     output = transcript_service.remux_transcript_source(transcript_id)
     stream_start, first_frame_pts = _video_start_times(output)
 
-    assert output.parent == (storage_root / "clips" / "source_exports").resolve()
+    assert output.parent == (storage_root / "clips" / "session_1" / "source_exports").resolve()
     assert stream_start == pytest.approx(0.0, abs=0.001)
     assert first_frame_pts == pytest.approx(0.0, abs=0.001)
     assert _stream_packet_count(output, "v:0") == source_video_packets
@@ -465,7 +465,7 @@ def test_produce_clip_end_to_end(
     assert finished.title
     # AUTO 模式 + worth_publishing 默认 True -> READY,且导出清单。
     assert finished.status == ClipStatus.READY
-    manifest = ready_to_upload_dir() / f"clip_{clip.id}.json"
+    manifest = ready_to_upload_dir() / f"session_{session.id}" / f"clip_{clip.id}.json"
     assert manifest.exists()
 
     with get_session() as db:

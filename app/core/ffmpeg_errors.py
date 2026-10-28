@@ -47,6 +47,9 @@ class FfmpegErrorType(Enum):
     UNKNOWN = auto()
     """无法归类的未知错误。"""
 
+    PROCESS_CRASH = auto()
+    """FFmpeg 断言或原生进程崩溃，需要保留致命诊断并由调用方控制恢复预算。"""
+
 
 @dataclass(slots=True)
 class FfmpegError:
@@ -66,6 +69,7 @@ def classify_ffmpeg_error(return_code: int, stderr: str) -> FfmpegErrorType:
     """根据退出码和 stderr 分类 FFmpeg 错误。
 
     分类规则按优先级从高到低:
+    - 断言或原生崩溃退出码 → PROCESS_CRASH
     - return_code==255 + 文件不存在模式 → MISSING_BINARY
     - 磁盘空间相关关键字 → DISK_FULL
     - 权限相关关键字 → PERMISSION_DENIED
@@ -82,6 +86,13 @@ def classify_ffmpeg_error(return_code: int, stderr: str) -> FfmpegErrorType:
     :returns: 分类后的错误类型。
     """
     stderr_lower = stderr.lower()
+
+    if (
+        any("assertion " in line and " failed" in line for line in stderr_lower.splitlines())
+        or "segmentation fault" in stderr_lower
+        or return_code in {-6, -11, 134, 139, 0xC0000005, 0xC0000409, -1073741819, -1073740791}
+    ):
+        return FfmpegErrorType.PROCESS_CRASH
 
     # MISSING_BINARY: return_code 255 + 文件不存在模式
     if return_code == 255 and ("no such file" in stderr_lower or "not found" in stderr_lower):
@@ -197,7 +208,7 @@ def is_retryable(error_type: FfmpegErrorType) -> bool:
     永久失败:
     - DISK_FULL, MISSING_BINARY, PERMISSION_DENIED,
       INVALID_ARGUMENT, UNSUPPORTED_CODEC, CORRUPTED_INPUT,
-      CANCELLED, UNKNOWN
+      CANCELLED, PROCESS_CRASH, UNKNOWN
 
     :param error_type: 已分类的错误类型。
     :returns: 是否可通过重试恢复。
