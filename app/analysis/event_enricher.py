@@ -12,7 +12,14 @@ from loguru import logger
 from sqlmodel import Session
 
 from app.analysis import llm, llm_providers
-from app.analysis.editorial_contracts import EditorialReviewInputV1, FailureCode, ModelAttempt
+from app.analysis.editorial_contracts import (
+    CONTEXT_SECONDS,
+    EVIDENCE_MAX_CHARS,
+    EXCERPT_MAX_CHARS,
+    EditorialReviewInputV1,
+    FailureCode,
+    ModelAttempt,
+)
 from app.analysis.editorial_evidence import EVIDENCE_POLICY_VERSION, EvidenceContextUnavailable, build_event_input
 from app.analysis.editorial_explanation import EXPLANATION_POLICY_VERSION, EXPLANATION_PROMPT, GROUNDING_PROMPT, explain
 from app.analysis.hotspot_lifecycle import resolve_merged_hotspot_event
@@ -22,6 +29,7 @@ from app.core.config import settings
 from app.core.runtime_settings import configured_task
 from app.db.entities import AppSetting, HotspotEvent, HotspotStatus, utcnow
 from app.db.session import get_session
+from app.models.capacity import capacity_identity
 
 EVENT_ENRICHER_VERSION = 2
 _RETRY_LIMIT = 3
@@ -41,20 +49,20 @@ class EventEvidenceChangedError(ValueError):
 class EventEnricherConfig:
     """事件解释的集中输入与输出边界。"""
 
-    context_s: float = 30.0
-    max_evidence_chars: int = 12_000
-    max_excerpt_chars: int = 2_000
+    context_s: float = CONTEXT_SECONDS
+    max_evidence_chars: int = EVIDENCE_MAX_CHARS
+    max_excerpt_chars: int = EXCERPT_MAX_CHARS
     max_entities: int = 12
     max_title_chars: int = 32
     max_summary_chars: int = 360
 
     def __post_init__(self) -> None:
         """拒绝无界或非有限的上下文和输出配置。"""
-        if isinstance(self.context_s, bool) or not math.isfinite(self.context_s) or not 0 <= self.context_s <= 300:
-            raise ValueError("context_s 必须在 0~300 秒之间")
+        if isinstance(self.context_s, bool) or not math.isfinite(self.context_s) or not 0 <= self.context_s <= 900:
+            raise ValueError("context_s 必须在 0~900 秒之间")
         bounds = {
-            "max_evidence_chars": (1000, 100000),
-            "max_excerpt_chars": (100, 2000),
+            "max_evidence_chars": (1000, EVIDENCE_MAX_CHARS),
+            "max_excerpt_chars": (100, EXCERPT_MAX_CHARS),
             "max_entities": (1, 50),
             "max_title_chars": (12, 64),
             "max_summary_chars": (60, 1000),
@@ -206,6 +214,7 @@ def build_event_evidence_bundle(
             "connection_id": item.connection_id,
             "model": item.model,
             "max_output_tokens": item.max_output_tokens,
+            "capacity": capacity_identity(item),
             "priority": item.priority,
         }
         for item in llm_providers.active_providers("analysis")

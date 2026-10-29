@@ -389,4 +389,4 @@ def test_refine_transcript_prompt_requests_conservative_repetition_cleanup(monke
     assert result is not None
     assert "ASR 解码或 VAD 分句边界产生的连续重复词句" in str(captured["prompt"])
     assert "保留主播有明确语义的强调、复述和口头禅" in str(captured["prompt"])
-    assert captured["max_tokens"] == 65536
+    assert captured["max_tokens"] == 1048576

@@ -21,6 +21,7 @@ from app.analysis.editorial_contracts import (
 from app.analysis.editorial_provenance import ReviewProvenance, capture_provenance
 from app.analysis.model_execution import ModelCallBudget
 from app.core.config import settings
+from app.models.capacity import capacity_identity
 
 REVIEW_POLICY_VERSION = "editorial-decision-v2"
 REVIEW_PROMPT = """判断给定片段对目标观众是否值得独立剪辑。兴趣等级 0–4 是序数，不是概率。
@@ -50,6 +51,7 @@ def review_policy_identity() -> dict[str, object]:
                 "connection": route.connection_id,
                 "model": route.model,
                 "tokens": route.max_output_tokens,
+                "capacity": capacity_identity(route),
                 "priority": route.priority,
             }
             for route in llm_providers.active_providers("analysis")

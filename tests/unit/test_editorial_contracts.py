@@ -6,6 +6,7 @@ import pytest
 from pydantic import ValidationError
 
 from app.analysis.editorial_contracts import (
+    EXCERPT_MAX_CHARS,
     INPUT_MAX_BYTES,
     OUTPUT_MAX_BYTES,
     EditorialEvidence,
@@ -231,7 +232,7 @@ def test_unknown_time_stays_null_and_cannot_support_boundary_suggestion() -> Non
         {"end_s": 80.0},
         {"start_s": True},
         {"evidence_id": " "},
-        {"excerpts": ["x" * 2_001]},
+        {"excerpts": ["x" * (EXCERPT_MAX_CHARS + 1)]},
         {"detail": {"api_key": "must-not-be-accepted"}},
     ],
 )
@@ -287,7 +288,7 @@ def test_total_budget_includes_detail_and_serialization_overhead() -> None:
     evidence = [
         _evidence(
             evidence_id=f"asr:{index}",
-            excerpts=["证据" * 1_000] * 8,
+            excerpts=["证据" * 10_000] * 8,
             detail={"metrics": {f"指标{n}": float(n) for n in range(24)}},
         )
         for index in range(2)
@@ -468,3 +469,14 @@ def test_cancel_and_disabled_cannot_be_reported_as_other_failure(error: str) -> 
 def test_elapsed_time_cannot_hide_time_spent_in_retries() -> None:
     with pytest.raises(ValidationError, match="总耗时"):
         _execution(elapsed_s=0.1)
+
+
+def test_large_multibyte_evidence_retains_full_text_and_still_rejects_new_boundary() -> None:
+    text = "原始讲解内容。" * 2000
+    source = _source(evidence=[_evidence(evidence_id=f"asr:{index}", excerpts=[text]) for index in range(6)])
+    assert len(source.model_dump_json().encode()) > 65536
+    assert source.evidence[0].excerpts == [text]
+    with pytest.raises(ValidationError):
+        _evidence(excerpts=["中" * (EXCERPT_MAX_CHARS + 1)])
+    with pytest.raises(ValidationError, match="完整编辑输入超过字节上限"):
+        _source(evidence=[_evidence(evidence_id=f"asr:{index}", excerpts=[text]) for index in range(30)])

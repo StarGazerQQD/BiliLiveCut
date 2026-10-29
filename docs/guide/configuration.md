@@ -151,14 +151,14 @@ Web 中保存的业务设置优先于环境或项目默认值。保存前会校�
 | `asr_inference_base_timeout_s` | ASR 加载及推理基础超时（秒） | 语音转写 / 全局 | 600 | 整数；30～7200 | 下次任务 |
 | `asr_inference_timeout_rtf` | 每秒音频追加预算（秒） | 语音转写 / 全局 | 10 | 数值；1～100 | 下次任务 |
 | `asr_inference_max_timeout_s` | 单次 ASR 总预算上限（秒） | 语音转写 / 全局 | 7200 | 整数；60～43200 | 下次任务 |
-| `llm_request_timeout_s` | LLM 单次请求超时（秒） | 大模型 / 全局 | 90 | 数值；1～600 | 下次任务 |
+| `llm_request_timeout_s` | LLM 单次请求超时（秒） | 大模型 / 全局 | 600 | 数值；1～3600 | 下次任务 |
 | `editorial_model_max_attempts` | 编辑分析总请求次数上限 | 高光分析 / 全局 | 8 | 整数；1～32 | 下次任务 |
-| `editorial_model_deadline_s` | 编辑分析总时间预算（秒） | 高光分析 / 全局 | 180 | 数值；1～1800 | 下次任务 |
+| `editorial_model_deadline_s` | 编辑分析总时间预算（秒） | 高光分析 / 全局 | 1800 | 数值；1～14400 | 下次任务 |
 | `llm_daily_budget` | LLM 每日预算（美元，0 不限） | 大模型 / 全局 | 0.0 | 数值；0.0～不限 | 下次任务 |
 | `transcript_llm_refine_enabled` | LLM 整理转写与摘要 | 大模型 / 全局 | True | 开关 | 下次任务 |
-| `transcript_llm_refine_max_tokens` | 转写整理输出 Token 上限 | 大模型 / 全局 | 65536 | 整数；128～65536 | 下次任务 |
-| `highlight_llm_max_tokens` | 高光复核输出 Token 上限 | 高光分析 / 全局 | 65536 | 整数；512～65536 | 下次任务 |
-| `hotspot_enrichment_llm_max_tokens` | 热点解释输出 Token 上限 | 高光分析 / 全局 | 65536 | 整数；512～65536 | 下次任务 |
+| `transcript_llm_refine_max_tokens` | 转写整理输出 Token 上限 | 大模型 / 全局 | 1048576 | 整数；128～2097152 | 下次任务 |
+| `highlight_llm_max_tokens` | 高光复核输出 Token 上限 | 高光分析 / 全局 | 1048576 | 整数；512～2097152 | 下次任务 |
+| `hotspot_enrichment_llm_max_tokens` | 热点解释输出 Token 上限 | 高光分析 / 全局 | 1048576 | 整数；512～2097152 | 下次任务 |
 | `trend_enabled` | 启用网感资料库 | 热点趋势 / 全局 | False | 开关 | 下次任务 |
 | `trend_api_key` | 网感专用 API 密钥 | 热点趋势 / 全局 | 不回显 | 文本 | 下次任务 |
 | `trend_base_url` | 网感专用服务地址 | 热点趋势 / 全局 |  | 文本 | 下次任务 |
@@ -298,3 +298,5 @@ biliup_config 通过上传命令模板中的 {config} 占位符使用；不猜�
 ASR 预算为 `min(asr_inference_max_timeout_s, asr_inference_base_timeout_s + 实测音频秒数 × asr_inference_timeout_rtf)`，覆盖资源等待、模型加载、调用、结果迭代与 IPC；音频标准化另有 300 秒上限且可取消。父进程一次预约可能用到的全部角色，避免跨进程资源死锁，因此兜底角色并发为 1 时也会限制整条管线并发。提高并发前需考虑每个模型槽独立占用的内存/显存。
 
 LLM 每次 SDK 请求受 `llm_request_timeout_s` 限制，不再执行 SDK 隐式重试；业务空响应重试和服务商故障切换仍有明确次数。停机时同步 HTTP 可能在期限内继续收尾，任务/总结代数使其迟到结果不可写回。
+
+大模型路由可分别设置共享上下文、最大输入和最大输出，允许上限为 2097152 token。留空时，已核实的原厂端点与精确型号使用[模型容量目录](../reference/llm-capacity.md)；未知容量保持未知，未知输出沿用 65536 的本地默认，可依据实际模型卡手动提高。已有数据库与环境变量中的显式小值保留。界面展示的容量还会受业务预算和完整请求剩余窗口约束。扩大输出额度可能增加思考时间、费用与内存；实际用量以服务返回值为准，超时仍独立生效。

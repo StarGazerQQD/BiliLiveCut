@@ -44,7 +44,6 @@ from app.analysis import llm_providers as provs
 from app.analysis.editorial_contracts import (
     INPUT_MAX_BYTES,
     MAX_TOKEN_COUNT,
-    OUTPUT_MAX_BYTES,
     SCHEMA_MAX_BYTES,
     FailureCode,
     ModelAttempt,
@@ -58,8 +57,9 @@ from app.analysis.model_execution import ModelCallBudget, StructuredCallResult
 from app.core.config import settings
 from app.core.paths import storage_root
 from app.core.sanitize import safe_exception_summary, sanitize_diagnostic
+from app.models.capacity import DEFAULT_OUTPUT_TOKENS, ModelCapacityError, output_arguments, output_budget
 from app.models.configuration import ModelAuthorizationError
-from app.models.contracts import TextCapability
+from app.models.contracts import MAX_CONFIGURABLE_TOKENS, TextCapability
 
 if TYPE_CHECKING:
     from openai import OpenAI
@@ -382,7 +382,7 @@ def _create_completion(
         provider.authorize()
     return client.chat.completions.create(  # type: ignore[attr-defined,no-any-return]
         model=provider.model,
-        max_tokens=max_tokens,
+        **output_arguments(provider, max_tokens),
         messages=[{"role": "user", "content": prompt}],
         timeout=settings.llm_request_timeout_s,
         **({"extra_body": extra_body} if extra_body else {}),
@@ -425,8 +425,7 @@ def _complete_using_client(
     client: object, provider: provs.LLMProvider, prompt: str, max_tokens: int, extra_body: dict[str, object] | None
 ) -> str:
     """在客户端租用期间完成正文提取和空正文重试。"""
-    if provider.max_output_tokens is not None:
-        max_tokens = min(max_tokens, provider.max_output_tokens)
+    max_tokens = output_budget(provider, max_tokens, [{"role": "user", "content": prompt}])
     resp = _create_completion(client, provider, prompt, max_tokens, extra_body)
     _account_usage(provider, resp)
     text = _extract_text(resp)
@@ -489,7 +488,7 @@ class _StructuredFailure(RuntimeError):
         super().__init__(code)
 
 
-_HTTP_RESPONSE_MAX_BYTES = 1_048_576
+_HTTP_RESPONSE_MAX_BYTES = 33_554_432
 
 
 class _StructuredResponseStream(httpx.AsyncByteStream):
@@ -556,7 +555,7 @@ async def _fetch_structured_response(
         async with client.chat.completions.with_streaming_response.create(
             model=provider.model,
             messages=messages,
-            max_tokens=max_tokens,
+            **output_arguments(provider, max_tokens),
             timeout=timeout,
             extra_body=extra_body,
             **({"response_format": response_format} if response_format is not None else {}),
@@ -921,6 +920,17 @@ def _structured_attempt(
             else {"type": protocol},
         )
     )
+    try:
+        max_tokens = output_budget(provider, max_tokens, messages, response_format)
+    except ModelCapacityError as exc:
+        logger.warning(
+            "structured_model_capacity_rejected operation={} provider={} model={} diagnostic={}",
+            budget.operation_id,
+            provider.id,
+            provider.model,
+            str(exc),
+        )
+        return StructuredCallResult(value=None, error="context_unavailable")
     started = time.monotonic()
     usage = TokenUsage()
     reported_model = None
@@ -1032,9 +1042,9 @@ def call_structured(
     schema_text = json.dumps(schema, ensure_ascii=False, allow_nan=False, separators=(",", ":"))
     if len(encoded.encode("utf-8")) > INPUT_MAX_BYTES or len(schema_text.encode("utf-8")) > SCHEMA_MAX_BYTES:
         raise ValueError("结构化请求的输入或模式超过大小上限")
-    if not instructions.strip() or len(instructions.encode("utf-8")) > OUTPUT_MAX_BYTES:
+    if not instructions.strip() or len(instructions.encode("utf-8")) > 65_536:
         raise ValueError("结构化请求需要有界的系统说明")
-    if type(max_tokens) is not int or not 1 <= max_tokens <= 65_536:
+    if type(max_tokens) is not int or not 1 <= max_tokens <= MAX_CONFIGURABLE_TOKENS:
         raise ValueError("结构化请求的输出 token 上限无效")
     if purpose not in {"explanation", "review", "grounding", "context"}:
         raise ValueError("结构化请求用途无效")
@@ -1086,7 +1096,7 @@ def call_structured(
                     provider,
                     messages,
                     schema,
-                    min(max_tokens, provider.max_output_tokens or max_tokens),
+                    max_tokens,
                     budget,
                     "repair" if repairing else purpose,
                     validate,
@@ -1109,7 +1119,9 @@ def call_structured(
         return last
 
 
-def call_text(prompt: str, max_tokens: int = 512, *, capability: TextCapability = "analysis") -> str | None:
+def call_text(
+    prompt: str, max_tokens: int = DEFAULT_OUTPUT_TOKENS, *, capability: TextCapability = "analysis"
+) -> str | None:
     """按优先级遍历多个大模型完成文本生成,失败自动降级到下一个。
 
     任何 provider 成功返回非空文本即采用;全部不可用/失败返回 ``None``,
@@ -1142,7 +1154,7 @@ def call_text(prompt: str, max_tokens: int = 512, *, capability: TextCapability 
 
 def call_web_search(
     prompt: str,
-    max_tokens: int = 2048,
+    max_tokens: int = DEFAULT_OUTPUT_TOKENS,
     *,
     capability: TextCapability = "trends",
 ) -> str | None:
@@ -1195,7 +1207,7 @@ def call_web_search(
 
 def call_trend_search(
     prompt: str,
-    max_tokens: int = 2048,
+    max_tokens: int = DEFAULT_OUTPUT_TOKENS,
 ) -> str | None:
     """按热点路由生成内容；旧专用配置由兼容适配器读取，全部受预算限制。"""
     return call_web_search(prompt, max_tokens, capability="trends")

@@ -18,6 +18,9 @@ from urllib.parse import urlsplit
 from pydantic import Field, field_validator, model_validator
 from pydantic_settings import BaseSettings, SettingsConfigDict
 
+from app.models.capacity import DEFAULT_OUTPUT_TOKENS
+from app.models.contracts import MAX_CONFIGURABLE_TOKENS
+
 
 class Settings(BaseSettings):
     """全局配置项。
@@ -192,16 +195,16 @@ class Settings(BaseSettings):
 
     # ---------- AI:大模型(OpenAI 兼容协议,境内推荐 DeepSeek/通义/Kimi/GLM) ----------
     llm_daily_budget: float = Field(default=0.0, ge=0.0)
-    llm_request_timeout_s: float = Field(default=90.0, ge=1.0, le=600.0)
+    llm_request_timeout_s: float = Field(default=600.0, ge=1.0, le=3600.0)
     editorial_model_max_attempts: int = Field(default=8, ge=1, le=32)
-    editorial_model_deadline_s: float = Field(default=180.0, ge=1.0, le=1800.0)
+    editorial_model_deadline_s: float = Field(default=1800.0, ge=1.0, le=14400.0)
     # 每个录制切片完成 ASR 后，是否调用 LLM 整理正文并生成摘要。
     transcript_llm_refine_enabled: bool = True
-    transcript_llm_refine_max_tokens: int = Field(default=65536, ge=128, le=65536)
+    transcript_llm_refine_max_tokens: int = Field(default=DEFAULT_OUTPUT_TOKENS, ge=128, le=MAX_CONFIGURABLE_TOKENS)
     # 高光复核需要同时容纳五分钟转写、模型推理和结构化判断结果。
-    highlight_llm_max_tokens: int = Field(default=65536, ge=512, le=65536)
+    highlight_llm_max_tokens: int = Field(default=DEFAULT_OUTPUT_TOKENS, ge=512, le=MAX_CONFIGURABLE_TOKENS)
     # EventEnricher 解释完整证据束并返回严格结构化 JSON。
-    hotspot_enrichment_llm_max_tokens: int = Field(default=65536, ge=512, le=65536)
+    hotspot_enrichment_llm_max_tokens: int = Field(default=DEFAULT_OUTPUT_TOKENS, ge=512, le=MAX_CONFIGURABLE_TOKENS)
 
     # ---------- 网感资料库(联网采集热门内容,供评分/文案参考) ----------
     trend_enabled: bool = False  # 是否启用网感资料库(默认关闭,按需开启)

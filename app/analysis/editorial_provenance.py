@@ -31,10 +31,20 @@ def editorial_code_identity() -> str:
         "analysis/event_enricher.py",
         "analysis/model_execution.py",
         "analysis/llm.py",
+        "models/capacity.py",
         "analysis/clip_scorer.py",
         "pipeline/workers/analyze.py",
     )
     return canonical_hash({name: files("app").joinpath(name).read_text(encoding="utf-8") for name in names})
+
+
+class _CapacityPolicy(BaseModel):
+    model_config = ConfigDict(extra="forbid", strict=True, hide_input_in_errors=True)
+    policy: str = Field(min_length=1, max_length=128)
+    profile: str | None = Field(max_length=128)
+    context: int | None = Field(gt=0)
+    input: int | None = Field(gt=0)
+    output: int | None = Field(gt=0)
 
 
 class _PolicyRoute(BaseModel):
@@ -44,6 +54,7 @@ class _PolicyRoute(BaseModel):
     model: str = Field(min_length=1, max_length=256)
     tokens: int | None = Field(gt=0)
     priority: int
+    capacity: _CapacityPolicy | None = None
 
 
 class _Policy(BaseModel):
@@ -73,7 +84,7 @@ class ReviewProvenance(BaseModel):
     @classmethod
     def safe_policy(cls, value: dict[str, JsonValue]) -> dict[str, JsonValue]:
         """导入历史记录时同样拒绝地址、凭据和任意额外配置。"""
-        return _Policy.model_validate(value).model_dump(mode="json")
+        return _Policy.model_validate(value).model_dump(mode="json", exclude_unset=True)
 
 
 def capture_provenance(

@@ -69,7 +69,12 @@ def test_probe_uses_verified_model_options_and_bounded_budget(
     calls = completion_api([_response("pong")])
     assert llm.probe_provider(_provider(base_url, model)) == "pong"
     assert len(calls) == 1
-    assert calls[0]["max_tokens"] == 4096
+    parameter = (
+        "max_completion_tokens"
+        if model == "MiniMax-M3.1-Flash" and base_url == "https://api.minimax.cn/v1"
+        else "max_tokens"
+    )
+    assert calls[0][parameter] == 4096
     assert calls[0].get("extra_body") == expected
 
 
@@ -88,7 +93,7 @@ def test_minimax_retry_keeps_thinking_and_accounts_both_requests(
     assert len(calls) == 2
     assert calls[0]["extra_body"] == {"enable_search": True}
     assert calls[1]["extra_body"] == {"enable_search": True, "reasoning_effort": "low"}
-    assert [call["max_tokens"] for call in calls] == [512, 512]
+    assert [call["max_completion_tokens"] for call in calls] == [512, 512]
     assert original == {"enable_search": True}
     assert json.loads(budget.read_text())["spend_usd"] == pytest.approx(0.00042)
 
@@ -147,6 +152,6 @@ def test_draft_probe_reaches_completion_with_minimax_options(temp_db: None, comp
     assert response.status_code == 200
     assert response.json()["results"][0]["ok"] is True
     assert response.json()["results"][0]["detail"] == "pong"
-    assert calls[0]["max_tokens"] == 4096
+    assert calls[0]["max_completion_tokens"] == 4096
     assert calls[0]["extra_body"] == {"reasoning_effort": "low"}
     assert llm_providers._read_raw() == []

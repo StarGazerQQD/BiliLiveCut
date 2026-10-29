@@ -6,10 +6,16 @@ from typing import Annotated, Literal, NoReturn, Self
 
 from pydantic import BaseModel, ConfigDict, Field, model_validator
 
-INPUT_MAX_BYTES = 65_536
-OUTPUT_MAX_BYTES = 16_384
+INPUT_MAX_BYTES = 524_288
+OUTPUT_MAX_BYTES = 16_777_216
+EVIDENCE_MAX_CHARS = 120_000
+EXCERPT_MAX_CHARS = 20_000
+CONTEXT_SECONDS = 180.0
+EXPANDED_CONTEXT_SECONDS = 600.0
+# 为事实核验候选正文预留输入空间，不能与响应大小上限相减。
+EVIDENCE_MAX_BYTES = INPUT_MAX_BYTES - 65_536
 # 请求模式最多包含主引用与边界引用两份源 ID 集合，业务输出限制保持独立。
-SCHEMA_MAX_BYTES = 2 * INPUT_MAX_BYTES + OUTPUT_MAX_BYTES
+SCHEMA_MAX_BYTES = 2 * INPUT_MAX_BYTES + 65_536
 MAX_TOKEN_COUNT = 2**63 - 1
 REVIEW_SCHEMA_VERSION = "editorial-review-v1"
 Identity = Annotated[str, Field(min_length=1, max_length=256, pattern=r"^[^\s\x00-\x1f\x7f]+$")]
@@ -110,7 +116,9 @@ class EditorialEvidence(_StrictContract):
     end_s: Seconds | None
     timing_precision: Literal["word", "segment", "event", "unknown"]
     context_role: Literal["before", "event", "after", "mixed", "unknown"]
-    excerpts: list[Annotated[str, Field(min_length=1, max_length=2_000, pattern=r"\S")]] = Field(max_length=8)
+    excerpts: list[Annotated[str, Field(min_length=1, max_length=EXCERPT_MAX_CHARS, pattern=r"\S")]] = Field(
+        max_length=8
+    )
     detail: EvidenceDetail = Field(default_factory=EvidenceDetail)
 
     @model_validator(mode="after")

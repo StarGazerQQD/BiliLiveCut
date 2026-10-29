@@ -86,6 +86,21 @@ async function fixture(page: Page, introduceConflict = false) {
           routes,
           asr_selection: "",
           active_counts: { analysis: routes.length },
+          model_capacities: [
+            {
+              id: "deepseek",
+              base_urls: ["https://api.deepseek.com"],
+              models: ["deepseek-flash"],
+              context_window_tokens: 1000000,
+              max_input_tokens: null,
+              max_output_tokens: 393216,
+              sources: [
+                "https://api-docs.deepseek.com/zh-cn/quick_start/pricing/",
+              ],
+              checked_on: "2026-10-29",
+              note: "输出包含思考",
+            },
+          ],
         },
       });
     }
@@ -94,6 +109,55 @@ async function fixture(page: Page, introduceConflict = false) {
   });
   return writes;
 }
+
+test("large custom limits persist and official capacity follows the edited endpoint", async ({
+  page,
+}) => {
+  const writes = await fixture(page);
+  await page.goto("/settings/llm");
+  await expect(page.getByLabel("模型容量")).toContainText("型号容量未核实");
+  await page
+    .getByLabel("路由上下文 Token 上限", { exact: true })
+    .fill("1048576");
+  await page.getByLabel("路由输入 Token 上限", { exact: true }).fill("800000");
+  await page.getByLabel("路由输出 Token 上限", { exact: true }).fill("393216");
+  await page
+    .getByRole("button", { name: "保存连接与路由", exact: true })
+    .click();
+  await expect.poll(() => writes.length).toBe(1);
+  expect(writes[0].routes[0]).toMatchObject({
+    context_window_tokens: 1048576,
+    max_input_tokens: 800000,
+    max_output_tokens: 393216,
+  });
+  await page.reload();
+  await expect(
+    page.getByLabel("路由输出 Token 上限", { exact: true }),
+  ).toHaveValue("393216");
+  await page.getByLabel("模型名称", { exact: false }).fill("deepseek-flash");
+  await page
+    .getByLabel("API 地址", { exact: false })
+    .fill("https://API.DEEPSEEK.COM:443");
+  await expect(page.getByLabel("模型容量")).toContainText("输出包含思考");
+  await page.getByLabel("路由输出 Token 上限", { exact: true }).fill("4096");
+  await expect(page.getByLabel("模型容量")).toContainText("4,096");
+  await page
+    .getByLabel("业务能力", { exact: false })
+    .last()
+    .selectOption("asr");
+  await expect(
+    page.getByLabel("路由输出 Token 上限", { exact: true }),
+  ).toHaveCount(0);
+  await page
+    .getByRole("button", { name: "保存连接与路由", exact: true })
+    .click();
+  await expect.poll(() => writes.length).toBe(2);
+  expect(writes[1].routes[0]).toMatchObject({
+    context_window_tokens: null,
+    max_input_tokens: null,
+    max_output_tokens: null,
+  });
+});
 
 test("provider presets create editable drafts without reusing existing credentials", async ({
   page,

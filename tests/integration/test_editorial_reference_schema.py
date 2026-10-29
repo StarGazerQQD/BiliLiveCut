@@ -134,7 +134,7 @@ def test_empty_source_keeps_empty_review_references_and_no_suggested_bounds() ->
 
 
 def test_legal_long_reference_sets_are_sent_without_truncating_ids(temp_db: None, monkeypatch: MonkeyPatch) -> None:
-    from app.analysis.editorial_contracts import INPUT_MAX_BYTES, OUTPUT_MAX_BYTES, SCHEMA_MAX_BYTES
+    from app.analysis.editorial_contracts import INPUT_MAX_BYTES, SCHEMA_MAX_BYTES
     from app.analysis.editorial_review import judge_editorial
 
     evidence = [_evidence(evidence_id=f"id{index:03d}:" + "x" * 240, excerpts=["规则"]) for index in range(100)]
@@ -142,7 +142,7 @@ def test_legal_long_reference_sets_are_sent_without_truncating_ids(temp_db: None
     schema = review_response_schema(source)
     assert len(source.model_dump_json().encode()) <= INPUT_MAX_BYTES
     schema_size = len(json.dumps(schema, separators=(",", ":")).encode())
-    assert OUTPUT_MAX_BYTES < schema_size < SCHEMA_MAX_BYTES
+    assert 16384 < schema_size < SCHEMA_MAX_BYTES
     calls = install_editorial_service(
         monkeypatch,
         lambda *_args, **_kwargs: json.dumps(
