@@ -155,7 +155,7 @@ def test_release_workflow_performs_real_offline_installs() -> None:
     assert workflow.count("--require-hashes") >= 3
     assert workflow.count("--no-index") >= 1
     assert 'portable-python\\python.exe" -m venv' in workflow
-    assert "from blc_portable.launcher.main import install_dependencies" in workflow
+    assert '& "$root\\BiliLiveCut-Portable.exe" --offline --torch-runtime cpu' in workflow
     assert "Full Bundle launcher dependency install failed" in workflow
     assert "Full bundle offline installation OK" in workflow
     assert workflow.count("assert m.version('pip') == '26.2'") >= 2

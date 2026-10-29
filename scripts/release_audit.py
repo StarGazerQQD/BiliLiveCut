@@ -180,6 +180,11 @@ def check_ci_bypass(audit: AuditResult) -> None:
             if full_smoke_start >= 0 and full_smoke_end > full_smoke_start
             else ""
         )
+        frozen_install = full_smoke.find('& "$root\\BiliLiveCut-Portable.exe" --offline --torch-runtime cpu')
+        clear_pythonpath = full_smoke.find("Remove-Item Env:PYTHONPATH")
+        payload_pythonpath = full_smoke.find(
+            '$env:PYTHONPATH = "$runtimeSource$pathSeparator$launcherSource$pathSeparator$repoRoot"'
+        )
         audit.check("release.yml 无 BLC_CI_BUILD", "BLC_CI_BUILD" not in content)
         audit.check(
             "release.yml 无 BLC_FIXTURE_BUILD",
@@ -195,19 +200,17 @@ def check_ci_bypass(audit: AuditResult) -> None:
             "release.yml CLI smoke 导入真实入口",
             "from app.cli import app" in content
             and "from app.cli import main" not in content
-            and "source_dir=Path(os.environ['BLC_SMOKE_SOURCE_DIR'])" in content
+            and frozen_install >= 0
             and "actual.is_relative_to(source)" in content,
             "CLI smoke test 必须使用已安装 Runtime 源码导入 Click app",
         )
         audit.check(
-            "release.yml Full smoke Launcher 配置与 Payload 导入隔离",
+            "release.yml Full smoke 冻结安装与 Payload 导入隔离",
             '$repoRoot = (Resolve-Path ".").Path' in full_smoke
             and "$pathSeparator = [System.IO.Path]::PathSeparator" in full_smoke
-            and '$env:PYTHONPATH = "$launcherSource$pathSeparator$repoRoot"' in full_smoke
-            and (
-                '$env:PYTHONPATH = "$runtimeSource$pathSeparator$launcherSource$pathSeparator$repoRoot"' in full_smoke
-            ),
-            "Full smoke 必须让源码 Launcher 解析 config 包，并让已构建 Payload 保持最高导入优先级",
+            and 0 <= clear_pythonpath < frozen_install < payload_pythonpath
+            and "$env:PYTHONPATH =" not in full_smoke[:frozen_install],
+            "Full smoke 必须由冻结 EXE 安装依赖，随后让已构建 Payload 保持最高导入优先级",
         )
         audit.check(
             "release.yml 冻结 Launcher 模型准备 smoke",

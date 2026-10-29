@@ -604,13 +604,11 @@ jobs:
             $repoRoot = (Resolve-Path ".").Path
             $launcherSource = (Resolve-Path "packaging/portable/src").Path
             $pathSeparator = [System.IO.Path]::PathSeparator
-            $env:PYTHONPATH = "$launcherSource$pathSeparator$repoRoot"
-            $env:BLC_SMOKE_VENV_PYTHON = $venvPython
-            $env:BLC_SMOKE_APP_ROOT = $root
-            $env:BLC_SMOKE_SOURCE_DIR = $runtimeSource
+            # 空 venv 仅作为安装目标，由冻结 Launcher 提供引导所需依赖。
+            Remove-Item Env:PYTHONPATH -ErrorAction SilentlyContinue
             Push-Location $root
             try {
-              & $venvPython -c "import os; from pathlib import Path; from blc_portable.launcher.main import install_dependencies; install_dependencies(Path(os.environ['BLC_SMOKE_VENV_PYTHON']), Path(os.environ['BLC_SMOKE_APP_ROOT']), source_dir=Path(os.environ['BLC_SMOKE_SOURCE_DIR']))"
+              & "$root\BiliLiveCut-Portable.exe" --offline --torch-runtime cpu
             }
             finally {
               Pop-Location

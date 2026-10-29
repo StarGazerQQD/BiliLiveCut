@@ -179,7 +179,7 @@ def test_release_full_cli_smoke_uses_offline_venv() -> None:
     assert 'python -c "from app.cli import app;' not in content
     assert "Download Payload" in content
     assert "$runtimeSource\\app\\cli.py" in content
-    assert "source_dir=Path(os.environ['BLC_SMOKE_SOURCE_DIR'])" in content
+    assert '& "$root\\BiliLiveCut-Portable.exe" --offline --torch-runtime cpu' in content
     assert "actual.is_relative_to(source)" in content
     assert "Push-Location $root" in content[full_smoke_start:full_smoke_end]
 
@@ -197,8 +197,29 @@ def test_release_full_smoke_exposes_launcher_config_without_shadowing_payload() 
 
     assert '$repoRoot = (Resolve-Path ".").Path' in full_smoke
     assert "$pathSeparator = [System.IO.Path]::PathSeparator" in full_smoke
-    assert '$env:PYTHONPATH = "$launcherSource$pathSeparator$repoRoot"' in full_smoke
     assert '$env:PYTHONPATH = "$runtimeSource$pathSeparator$launcherSource$pathSeparator$repoRoot"' in full_smoke
+
+
+def test_release_full_smoke_bootstraps_empty_venv_with_frozen_launcher() -> None:
+    release_yml = _PROJ_ROOT / ".github" / "workflows" / "release.yml"
+    workflow = yaml.safe_load(release_yml.read_text(encoding="utf-8"))
+    full_smoke = next(
+        step["run"]
+        for step in workflow["jobs"]["smoke-test"]["steps"]
+        if step.get("name") == "Full Bundle offline install test"
+    )
+    create_venv = full_smoke.index('& "$root\\portable-python\\python.exe" -m venv $venv')
+    clear_source = full_smoke.index("Remove-Item Env:PYTHONPATH")
+    install = full_smoke.index('& "$root\\BiliLiveCut-Portable.exe" --offline --torch-runtime cpu')
+    check_exit = full_smoke.index('if ($LASTEXITCODE -ne 0) { throw "Full Bundle launcher dependency install failed" }')
+    check_dependencies = full_smoke.index("& $venvPython -m pip check")
+    import_payload = full_smoke.index('$env:PYTHONPATH = "$runtimeSource')
+
+    assert create_venv < clear_source < install < check_exit < check_dependencies < import_payload
+    assert "BLC_SMOKE_" not in full_smoke
+    assert "from blc_portable.launcher.main import install_dependencies" not in full_smoke
+    assert "-m pip install" not in full_smoke[:check_dependencies]
+    assert "$env:PYTHONPATH =" not in full_smoke[:install]
 
 
 def test_release_runs_frozen_full_launcher_through_model_preparation() -> None:
