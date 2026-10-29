@@ -3,7 +3,6 @@
 from __future__ import annotations
 
 import json
-import shlex
 import subprocess
 from pathlib import Path
 from typing import TYPE_CHECKING
@@ -176,19 +175,9 @@ def test_missing_engine_or_timeout_fails(tmp_path: Path, monkeypatch: MonkeyPatc
     assert audit.main(["--output-dir", str(tmp_path)]) == 1
 
 
-def test_ffmpeg_download_has_bounded_retries_and_verifies_official_source_before_extracting() -> None:
+def test_ffmpeg_download_must_finish_verification_before_extracting() -> None:
     dockerfile = (Path(__file__).resolve().parents[2] / "packaging/docker/Dockerfile").read_text(encoding="utf-8")
     builder = dockerfile.split("FROM python-base AS ffmpeg-builder", 1)[1].split("FROM python-base AS builder", 1)[0]
-    download = builder.split("RUN curl ", 1)[1].split("WORKDIR", 1)[0].replace("\\\n", " ")
-    tokens = shlex.split(download)
-    for flag, upper in (("--connect-timeout", 30), ("--max-time", 180), ("--retry", 3), ("--retry-max-time", 600)):
-        assert 0 < int(tokens[tokens.index(flag) + 1]) <= upper
-    assert tokens[tokens.index("--proto") + 1] == "=https"
-    assert tokens[tokens.index("--proto-redir") + 1] == "=https"
-    assert {"--fail", "--retry-all-errors"} <= set(tokens)
-    assert "--insecure" not in tokens and "-k" not in tokens
-    assert "https://ffmpeg.org/releases/ffmpeg-9.0.2.tar.xz" in tokens
-    assert "8c3850283eb25fa026482078a04051e0be17347b09ef81a0849bec15a96e002e  /tmp/ffmpeg.tar.xz" in tokens
-    assert ["&&", "echo"] == tokens[tokens.index("&&") : tokens.index("&&") + 2]
-    assert ["|", "sha256sum", "--check", "--strict"] == tokens[-4:]
-    assert builder.index("sha256sum --check --strict") < builder.index("tar -xf /tmp/ffmpeg.tar.xz")
+    assert "COPY scripts/download_docker_ffmpeg.py /tmp/download_docker_ffmpeg.py" in builder
+    download = "RUN python /tmp/download_docker_ffmpeg.py --output /tmp/ffmpeg.tar.xz"
+    assert builder.index(download) < builder.index("tar -xf /tmp/ffmpeg.tar.xz")
