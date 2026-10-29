@@ -9,6 +9,7 @@ from pydantic import BaseModel, ConfigDict, Field, field_validator, model_valida
 TextCapability = Literal["analysis", "transcript", "trends", "summary", "copywriting"]
 Capability = Literal[TextCapability, "asr"]
 TEXT_CAPABILITIES: tuple[TextCapability, ...] = ("analysis", "transcript", "trends", "summary", "copywriting")
+MAX_CONFIGURABLE_TOKENS = 2_097_152
 Identity = Annotated[str, Field(min_length=1, max_length=128, pattern=r"^[^\x00-\x20\x7F]+$")]
 Name = Annotated[
     str, Field(min_length=1, max_length=200, pattern=r"^[^\s\x00-\x1F\x7F](?:[^\x00-\x1F\x7F]*[^\s\x00-\x1F\x7F])?$")
@@ -67,7 +68,9 @@ class ModelRoute(BaseModel):
     enabled: bool = True
     priority: int = Field(default=100, ge=-1000000, le=1000000)
     web_search_param: str = Field(default="", max_length=64, pattern=r"^(?:[A-Za-z][A-Za-z0-9_]*)?$")
-    max_output_tokens: int | None = Field(default=None, ge=16, le=65536)
+    context_window_tokens: int | None = Field(default=None, ge=1024, le=MAX_CONFIGURABLE_TOKENS)
+    max_input_tokens: int | None = Field(default=None, ge=128, le=MAX_CONFIGURABLE_TOKENS)
+    max_output_tokens: int | None = Field(default=None, ge=16, le=MAX_CONFIGURABLE_TOKENS)
     price_input_per_m: float = Field(default=0.0, ge=0)
     price_output_per_m: float = Field(default=0.0, ge=0)
 
@@ -86,6 +89,8 @@ class ModelRoute(BaseModel):
             raise ValueError("搜索开关键不能覆盖协议字段")
         if self.capability == "asr" and (
             self.web_search_param
+            or self.context_window_tokens is not None
+            or self.max_input_tokens is not None
             or self.max_output_tokens is not None
             or self.price_input_per_m
             or self.price_output_per_m
@@ -147,6 +152,24 @@ class ModelConfigurationView(BaseModel):
     routes: list[ModelRoute]
     active_counts: dict[Capability, int]
     asr_selection: str
+    model_capacities: list[ModelCapacity] = Field(default_factory=list)
+
+
+class ModelCapacity(BaseModel):
+    """按原厂端点和精确型号核查的能力；未公布的限制保留为空。"""
+
+    model_config = ConfigDict(frozen=True)
+    id: str
+    base_urls: tuple[str, ...]
+    models: tuple[str, ...]
+    context_window_tokens: int | None = None
+    max_input_tokens: int | None = None
+    max_output_tokens: int | None = None
+    output_parameter: Literal["max_tokens", "max_completion_tokens"] = "max_tokens"
+    reasoning_reserve_tokens: int = 0
+    sources: tuple[str, ...]
+    checked_on: str = "2026-10-29"
+    note: str = ""
 
 
 class ModelProbeResult(BaseModel):

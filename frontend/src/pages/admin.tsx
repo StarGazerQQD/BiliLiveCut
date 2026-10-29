@@ -266,12 +266,30 @@ const routeFields: FieldSpec[] = [
   },
   { name: "web_search_param", label: "联网搜索参数" },
   {
+    name: "context_window_tokens",
+    label: "路由上下文 Token 上限",
+    type: "number",
+    min: 1024,
+    max: 2097152,
+    description:
+      "输入与生成共享窗口。留空采用已核实型号容量；自定义模型请依据服务文档填写。",
+  },
+  {
+    name: "max_input_tokens",
+    label: "路由输入 Token 上限",
+    type: "number",
+    min: 128,
+    max: 2097152,
+    description: "包含系统说明、素材、模式与修复消息；与共享上下文分别约束。",
+  },
+  {
     name: "max_output_tokens",
     label: "路由输出 Token 上限",
     type: "number",
     min: 16,
-    max: 65536,
-    description: "留空使用业务预算；填写后取两者较小值，包含模型思考开销。",
+    max: 2097152,
+    description:
+      "留空采用型号额度。实际取业务预算、手动限制、型号上限与剩余窗口的较小值；思考计数依服务协议。",
   },
   {
     name: "price_input_per_m",
@@ -296,9 +314,86 @@ function normalizedModels(view: Row) {
     routes: rows(view.routes).map((value) => ({
       id: value.id,
       connection_id: value.connection_id,
+      context_window_tokens: null,
+      max_input_tokens: null,
+      max_output_tokens: null,
       ...serializeFields(value, routeFields),
     })),
   };
+}
+function ModelCapacitySummary({
+  route,
+  connection,
+  capacities,
+}: {
+  route: Row;
+  connection?: Row;
+  capacities: Row[];
+}) {
+  let endpoint = "";
+  try {
+    const url = new URL(text(connection?.base_url));
+    if (
+      url.protocol === "https:" &&
+      !url.username &&
+      !url.password &&
+      !url.search &&
+      !url.hash &&
+      !url.port
+    ) {
+      endpoint = `${url.origin}${url.pathname.replace(/\/+$/, "")}`;
+    }
+  } catch {
+    // 编辑中的地址可能尚不完整，保存时由正式契约校验。
+  }
+  const profile = capacities.find(
+    (item) =>
+      Array.isArray(item.base_urls) &&
+      item.base_urls.includes(endpoint) &&
+      Array.isArray(item.models) &&
+      item.models.includes(route.model),
+  );
+  const effective = (name: string) => {
+    const values = [route[name], profile?.[name]]
+      .filter((value) => value !== null && value !== undefined && value !== "")
+      .map(Number)
+      .filter((value) => Number.isFinite(value) && value > 0);
+    return values.length ? Math.min(...values).toLocaleString() : "未核实";
+  };
+  return (
+    <div
+      className="space-y-1 text-xs text-muted-foreground"
+      aria-label="模型容量"
+    >
+      <p>
+        上下文：{effective("context_window_tokens")} · 输入：
+        {effective("max_input_tokens")} · 输出：{effective("max_output_tokens")}{" "}
+        Token
+      </p>
+      <p>
+        完整请求使用 UTF-8
+        字节数加协议余量保守估算，实际输出还受业务预算和剩余窗口限制。已保存的较小值会保留；清空可恢复自动额度。
+      </p>
+      <p>
+        {profile
+          ? text(profile.note)
+          : "型号容量未核实；请按当前服务的模型卡填写。输出留空沿用 65536 本地预算。"}
+      </p>
+      {profile &&
+        Array.isArray(profile.sources) &&
+        profile.sources.map((source, index) => (
+          <a
+            key={String(source)}
+            href={String(source)}
+            target="_blank"
+            rel="noreferrer"
+            className="mr-3 underline"
+          >
+            官方依据 {index + 1}（{text(profile.checked_on)}）
+          </a>
+        ))}
+    </div>
+  );
 }
 function SetupPanel({
   description,
@@ -575,6 +670,8 @@ export function LlmPage({
                         enabled: true,
                         priority: 100,
                         web_search_param: "",
+                        context_window_tokens: null,
+                        max_input_tokens: null,
                         max_output_tokens: null,
                         price_input_per_m: 0,
                         price_output_per_m: 0,
@@ -652,6 +749,8 @@ export function LlmPage({
                         route.capability !== "asr" ||
                         ![
                           "web_search_param",
+                          "context_window_tokens",
+                          "max_input_tokens",
                           "max_output_tokens",
                           "price_input_per_m",
                           "price_output_per_m",
@@ -667,6 +766,8 @@ export function LlmPage({
                             field.name === "capability" && value === "asr"
                               ? {
                                   web_search_param: "",
+                                  context_window_tokens: null,
+                                  max_input_tokens: null,
                                   max_output_tokens: null,
                                   price_input_per_m: 0,
                                   price_output_per_m: 0,
@@ -683,6 +784,15 @@ export function LlmPage({
                       />
                     ))}
                 </fieldset>
+                {route.capability !== "asr" && (
+                  <ModelCapacitySummary
+                    route={route}
+                    connection={providers.find(
+                      (item) => item.id === route.connection_id,
+                    )}
+                    capacities={rows(view.model_capacities)}
+                  />
+                )}
               </CardContent>
             </Card>
           ))}

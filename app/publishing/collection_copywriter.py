@@ -87,7 +87,7 @@ def _llm_copywriter(
 只输出 JSON,不要其他内容。""".strip()
 
     try:
-        raw = call_text(prompt, max_tokens=1024, capability="copywriting")
+        raw = call_text(prompt, capability="copywriting")
         if raw is None:
             return None
         match = re.search(r"\{[\s\S]*\}", raw)

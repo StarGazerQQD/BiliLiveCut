@@ -14,6 +14,7 @@ from app.core.runtime_settings import effective_settings
 from app.core.settings_store import get_setting
 from app.db.entities import AppSetting
 from app.db.session import get_session
+from app.models.capacity import MODEL_CAPACITIES
 from app.models.contracts import (
     TEXT_CAPABILITIES,
     Capability,
@@ -208,6 +209,7 @@ def _view(config: ModelConfiguration, core: Settings, revision: int, *, legacy: 
         revision=revision,
         source="legacy" if legacy else "routes",
         asr_selection=core.asr_remote_route_id,
+        model_capacities=list(MODEL_CAPACITIES),
         connections=[
             ConnectionView(
                 id=item.id,

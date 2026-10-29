@@ -132,7 +132,7 @@ export const llmPresets: readonly LlmPreset[] = [
     baseUrl: "https://api.hunyuan.cloud.tencent.com/v1",
     model: "hunyuan-turbos-latest",
     docsUrl: "https://cloud.tencent.com/document/product/1729/111007",
-    note: "仅供仍持有旧平台服务的账号使用；新购模型请使用 TokenHub，两平台密钥不混用。",
+    note: "官方公告旧平台已于 2026-09-30 停服；保留旧配置供核对，请迁移到 TokenHub 并使用新模型及专属密钥。",
   },
   {
     id: "lkeap-legacy",

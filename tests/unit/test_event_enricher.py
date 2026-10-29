@@ -9,6 +9,7 @@ from typing import TYPE_CHECKING
 import pytest
 from sqlmodel import select
 
+from app.analysis.editorial_contracts import EVIDENCE_MAX_BYTES
 from app.analysis.event_enricher import (
     EVENT_ENRICHER_VERSION,
     EventEnricherConfig,
@@ -158,7 +159,7 @@ def test_bundle_excludes_transcript_after_event_context_window(temp_db: None) ->
     )
 
     with get_session() as db:
-        bundle = build_event_evidence_bundle(db, event_id)
+        bundle = build_event_evidence_bundle(db, event_id, config=EventEnricherConfig(context_s=30))
 
     context = next(item for item in bundle.evidence if item.evidence_type == "context_asr")
     assert context.excerpts == ("当前挑战开始",)
@@ -166,6 +167,23 @@ def test_bundle_excludes_transcript_after_event_context_window(temp_db: None) ->
     assert context.timing_precision == "word"
     assert (context.start_s, context.end_s) == (100.0, 105.0)
     assert "完全无关的新游戏" not in json.dumps(bundle.to_prompt_payload(), ensure_ascii=False)
+
+
+def test_expanded_default_window_retains_earlier_and_later_word_evidence(temp_db: None) -> None:
+    event_id = _seed_event(
+        evidence=[],
+        context_text="前文背景。事件内容。后续结果。",
+        context_words=[
+            {"w": "前文背景", "start": 10.0, "end": 15.0},
+            {"w": "事件内容", "start": 100.0, "end": 105.0},
+            {"w": "后续结果", "start": 260.0, "end": 265.0},
+        ],
+    )
+    with get_session() as db:
+        source = build_event_evidence_bundle(db, event_id).source
+    assert source is not None and source.window.start_s == 0 and source.window.end_s == 300
+    text = "".join(part for item in source.evidence for part in item.excerpts)
+    assert all(part in text for part in ("前文背景", "事件内容", "后续结果"))
 
 
 def test_valid_structured_llm_output_is_persisted_and_idempotent(
@@ -625,7 +643,7 @@ def test_unlocalized_context_does_not_invent_proportional_text(temp_db: None, wo
         evidence=[], context_text="开场说明。当前事件。很久以后才发生的其他事情。", context_words=words
     )
     with get_session() as db:
-        bundle = build_event_evidence_bundle(db, event_id)
+        bundle = build_event_evidence_bundle(db, event_id, config=EventEnricherConfig(context_s=30))
     item = next(item for item in bundle.evidence if item.evidence_type == "context_asr")
     assert item.state == "missing" and item.excerpts == ()
     assert item.start_s is None and item.timing_precision == "unknown"
@@ -645,7 +663,7 @@ def test_complete_json_budget_includes_metadata_and_marks_truncation(temp_db: No
             db, event_id, config=EventEnricherConfig(max_evidence_chars=100_000)
         ).source
     assert source is not None and source.truncated
-    assert len(source.model_dump_json().encode()) < 65536 - 16384
+    assert 65536 < len(source.model_dump_json().encode()) <= EVIDENCE_MAX_BYTES
     assert len(source.evidence) < 128
     assert all(len(item.detail.metrics) <= 24 and len(item.detail.backend or "") <= 128 for item in source.evidence)
 

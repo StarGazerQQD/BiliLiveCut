@@ -11,7 +11,14 @@ from pathlib import Path
 
 from sqlmodel import Session, select
 
-from app.analysis.editorial_contracts import ContextDirection, EditorialReviewInputV1
+from app.analysis.editorial_contracts import (
+    CONTEXT_SECONDS,
+    EVIDENCE_MAX_CHARS,
+    EXCERPT_MAX_CHARS,
+    EXPANDED_CONTEXT_SECONDS,
+    ContextDirection,
+    EditorialReviewInputV1,
+)
 from app.analysis.editorial_evidence import EvidenceContextUnavailable, build_event_input, build_segment_input
 from app.analysis.editorial_review import EditorialReviewDraft, judge_editorial, review_fingerprint
 from app.analysis.event_enricher import EventTargetUnavailableError, build_event_evidence_bundle
@@ -32,9 +39,9 @@ def event_review_source(
         return build_event_input(
             db,
             event,
-            context_s=90.0 if direction is not None else 30.0,
-            max_evidence_chars=12000,
-            max_excerpt_chars=2000,
+            context_s=EXPANDED_CONTEXT_SECONDS if direction is not None else CONTEXT_SECONDS,
+            max_evidence_chars=EVIDENCE_MAX_CHARS,
+            max_excerpt_chars=EXCERPT_MAX_CHARS,
             context_direction=direction,
         )
     except EvidenceContextUnavailable:

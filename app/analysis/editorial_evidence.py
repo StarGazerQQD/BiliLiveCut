@@ -12,8 +12,11 @@ from typing import cast
 from sqlmodel import Session, select
 
 from app.analysis.editorial_contracts import (
-    INPUT_MAX_BYTES,
-    OUTPUT_MAX_BYTES,
+    CONTEXT_SECONDS,
+    EVIDENCE_MAX_BYTES,
+    EVIDENCE_MAX_CHARS,
+    EXCERPT_MAX_CHARS,
+    EXPANDED_CONTEXT_SECONDS,
     ContextDirection,
     EditorialEvidence,
     EditorialReviewInputV1,
@@ -29,7 +32,7 @@ from app.analysis.transcription.content import refined_transcript_text
 from app.analysis.transcription.quality import assess_transcript_quality
 from app.db.entities import HotspotEvent, RawSegment, RecordingSession, Transcript
 
-EVIDENCE_POLICY_VERSION = "bounded-evidence-v2"
+EVIDENCE_POLICY_VERSION = "bounded-evidence-v3"
 AUDIENCE_PROFILE = "面向不了解该场次前后经过的普通观众，证据不足时保留人工复核。"
 PREFERENCE_VERSION = "general-audience-v1"
 _TYPES = {"asr", "context_asr", "danmaku", "audio", "sensevoice", "trend", "visual"}
@@ -232,8 +235,8 @@ def build_event_input(
     if block is None:
         raise EvidenceContextUnavailable("峰值不在任何已记录的连续录制范围")
     window = TimeRange(
-        start_s=max(block.start_s, bounds.start_s - (30.0 if context_direction == "after" else context_s)),
-        end_s=min(block.end_s, bounds.end_s + (30.0 if context_direction == "before" else context_s)),
+        start_s=max(block.start_s, bounds.start_s - (CONTEXT_SECONDS if context_direction == "after" else context_s)),
+        end_s=min(block.end_s, bounds.end_s + (CONTEXT_SECONDS if context_direction == "before" else context_s)),
     )
     evidence: list[EditorialEvidence] = []
     complete_event = raw_start >= 0 and window.contains(bounds)
@@ -268,7 +271,11 @@ def build_event_input(
                 or len(values) > 8
                 or any(isinstance(item, str) and len(item) > max_excerpt_chars for item in values[:8])
             )
-        texts = [_text(item, min(max_excerpt_chars, 2000)) for item in values[:8]] if isinstance(values, list) else []
+        texts = (
+            [_text(item, min(max_excerpt_chars, EXCERPT_MAX_CHARS)) for item in values[:8]]
+            if isinstance(values, list)
+            else []
+        )
         texts = [item for item in texts if item][:8] if state in {"available", "degraded"} else []
         if not texts and not detail.metrics and state in {"available", "degraded"}:
             state = "missing"
@@ -283,7 +290,7 @@ def build_event_input(
             )
         )
     existing = {text.casefold() for item in evidence for text in item.excerpts}
-    event_text = _text(event.transcript_text, min(max_excerpt_chars, 2000))
+    event_text = _text(event.transcript_text, min(max_excerpt_chars, EXCERPT_MAX_CHARS))
     truncated = truncated or bool(event.transcript_text and len(event.transcript_text) > max_excerpt_chars)
     if complete_event and event_text and event_text.casefold() not in existing:
         quality = assess_transcript_quality(event_text)
@@ -307,7 +314,7 @@ def build_event_input(
         raise ValueError("代表弹幕必须为数组")
     truncated = truncated or len(representatives) > 128
     for index, raw in enumerate(representatives[:128] if complete_event else []):
-        if not isinstance(raw, dict) or not (text := _text(raw.get("text"), min(max_excerpt_chars, 2000))):
+        if not isinstance(raw, dict) or not (text := _text(raw.get("text"), min(max_excerpt_chars, EXCERPT_MAX_CHARS))):
             continue
         count = raw.get("count")
         truncated = truncated or len(raw["text"]) > max_excerpt_chars
@@ -359,7 +366,7 @@ def build_event_input(
         if (
             len(selected) >= 128
             or length > remaining
-            or len(json.dumps(tentative, ensure_ascii=False).encode()) > INPUT_MAX_BYTES - OUTPUT_MAX_BYTES - 2048
+            or len(json.dumps(tentative, ensure_ascii=False).encode()) > EVIDENCE_MAX_BYTES
         ):
             base["truncated"] = True
             continue
@@ -397,10 +404,16 @@ def build_segment_input(
     if block is None:
         raise EvidenceContextUnavailable("分段峰值没有连续录制范围")
     window = TimeRange(
-        start_s=max(block.start_s, bounds.start_s - (90.0 if context_direction in {"before", "both"} else 0.0)),
-        end_s=min(block.end_s, bounds.end_s + (90.0 if context_direction in {"after", "both"} else 0.0)),
+        start_s=max(
+            block.start_s,
+            bounds.start_s - (EXPANDED_CONTEXT_SECONDS if context_direction in {"before", "both"} else 0.0),
+        ),
+        end_s=min(
+            block.end_s,
+            bounds.end_s + (EXPANDED_CONTEXT_SECONDS if context_direction in {"after", "both"} else 0.0),
+        ),
     )
-    evidence, truncated = _context(db, segments, origin, window, bounds, 2000)
+    evidence, truncated = _context(db, segments, origin, window, bounds, EXCERPT_MAX_CHARS)
     for kind, names in (("audio", {"volume"}), ("danmaku", {"danmaku", "danmaku_sentiment"})):
         selected = {name: float(value) for name, value in metrics.items() if name in names}
         if selected:
@@ -418,7 +431,7 @@ def build_segment_input(
                 )
             )
     for index, item in enumerate(danmaku[:32] if window.contains(bounds) else []):
-        if not (text := _text(item.get("text"), 2000)):
+        if not (text := _text(item.get("text"), EXCERPT_MAX_CHARS)):
             continue
         evidence.append(
             EditorialEvidence(
@@ -450,16 +463,17 @@ def build_segment_input(
         evidence=[],
     )
     selected_evidence: list[EditorialEvidence] = []
-    remaining = 12000
+    remaining = EVIDENCE_MAX_CHARS
     for item in evidence:
         length = sum(map(len, item.excerpts))
-        payload = source.model_dump()
-        payload["evidence"] = [*selected_evidence, item]
         if len(selected_evidence) >= 128 or length > remaining:
             source = source.model_copy(update={"truncated": True})
             continue
-        candidate = EditorialReviewInputV1.model_validate(payload)
-        if len(candidate.model_dump_json().encode()) > INPUT_MAX_BYTES - OUTPUT_MAX_BYTES - 2048:
+        serialized = dict(
+            source.model_dump(mode="json"),
+            evidence=[part.model_dump(mode="json") for part in [*selected_evidence, item]],
+        )
+        if len(json.dumps(serialized, ensure_ascii=False).encode()) > EVIDENCE_MAX_BYTES:
             source = source.model_copy(update={"truncated": True})
             continue
         selected_evidence.append(item)

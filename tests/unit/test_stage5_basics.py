@@ -51,9 +51,9 @@ def test_settings_fields_boundary_values() -> None:
     assert s.danmaku_login_retry_max_attempts == 5
     assert s.danmaku_login_retry_interval_s == 60.0
     assert s.transcript_llm_refine_enabled is True
-    assert s.transcript_llm_refine_max_tokens == 65536
-    assert s.highlight_llm_max_tokens == 65536
-    assert s.hotspot_enrichment_llm_max_tokens == 65536
+    assert s.transcript_llm_refine_max_tokens == 1048576
+    assert s.highlight_llm_max_tokens == 1048576
+    assert s.hotspot_enrichment_llm_max_tokens == 1048576
     assert s.highlight_min_post_roll_s == 30.0
     assert s.asr_primary_max_concurrency >= 1
     assert s.asr_task_max_concurrency == 1

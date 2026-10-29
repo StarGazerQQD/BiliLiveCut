@@ -3133,6 +3133,47 @@ export interface components {
             usage?: components["schemas"]["TokenUsage"];
         };
         /**
+         * ModelCapacity
+         * @description 按原厂端点和精确型号核查的能力；未公布的限制保留为空。
+         */
+        ModelCapacity: {
+            /** Base Urls */
+            base_urls: string[];
+            /**
+             * Checked On
+             * @default 2026-10-29
+             */
+            checked_on: string;
+            /** Context Window Tokens */
+            context_window_tokens?: number | null;
+            /** Id */
+            id: string;
+            /** Max Input Tokens */
+            max_input_tokens?: number | null;
+            /** Max Output Tokens */
+            max_output_tokens?: number | null;
+            /** Models */
+            models: string[];
+            /**
+             * Note
+             * @default
+             */
+            note: string;
+            /**
+             * Output Parameter
+             * @default max_tokens
+             * @enum {string}
+             */
+            output_parameter: "max_tokens" | "max_completion_tokens";
+            /**
+             * Reasoning Reserve Tokens
+             * @default 0
+             */
+            reasoning_reserve_tokens: number;
+            /** Sources */
+            sources: string[];
+        };
+        /**
          * ModelConfigurationChange
          * @description 模型配置整体保存，与其他设置共用乐观版本检查。
          */
@@ -3157,6 +3198,8 @@ export interface components {
             asr_selection: string;
             /** Connections */
             connections: components["schemas"]["ConnectionView"][];
+            /** Model Capacities */
+            model_capacities?: components["schemas"]["ModelCapacity"][];
             /** Revision */
             revision: number;
             /** Routes */
@@ -3226,6 +3269,8 @@ export interface components {
             capability: "analysis" | "transcript" | "trends" | "summary" | "copywriting" | "asr";
             /** Connection Id */
             connection_id: string;
+            /** Context Window Tokens */
+            context_window_tokens?: number | null;
             /**
              * Enabled
              * @default true
@@ -3233,6 +3278,8 @@ export interface components {
             enabled: boolean;
             /** Id */
             id: string;
+            /** Max Input Tokens */
+            max_input_tokens?: number | null;
             /** Max Output Tokens */
             max_output_tokens?: number | null;
             /** Model */

@@ -61,6 +61,8 @@ class LLMProvider:
     priority: int = 100
     connection_id: str = ""
     max_output_tokens: int | None = None
+    context_window_tokens: int | None = None
+    max_input_tokens: int | None = None
     authorize: Callable[[], None] | None = field(default=None, repr=False, compare=False)
 
     def to_dict(self) -> dict:
@@ -195,6 +197,8 @@ def from_route(route: ModelRoute, connection: ModelConnection) -> LLMProvider:
         priority=route.priority,
         connection_id=connection.id,
         max_output_tokens=route.max_output_tokens,
+        context_window_tokens=route.context_window_tokens,
+        max_input_tokens=route.max_input_tokens,
     )
 
 

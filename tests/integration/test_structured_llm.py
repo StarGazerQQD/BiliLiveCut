@@ -519,7 +519,9 @@ def test_cost_math_preserves_finite_estimates_and_rejects_overflow(
 
 def test_large_http_body_is_closed_and_never_passed_as_business_data(temp_db: None, transport: Transport) -> None:
     save_model_configuration(catalog())
-    requests = transport([(200, response("x" * 1_048_576)), (200, response("x" * 1_048_576))])
+    requests = transport(
+        [(200, response("x" * llm._HTTP_RESPONSE_MAX_BYTES)), (200, response("x" * llm._HTTP_RESPONSE_MAX_BYTES))]
+    )
     budget = llm.new_editorial_budget()
     assert call(budget).error == "invalid_output"
     assert len(requests) == 2 and all(item.usage.input_tokens is None for item in budget.attempts)
@@ -533,7 +535,7 @@ def test_streamed_error_and_success_bodies_share_limit(temp_db: None, monkeypatc
 
     class LargeBody(httpx.AsyncByteStream):
         async def __aiter__(self) -> AsyncIterator[bytes]:
-            for index in range(1024):
+            for index in range(llm._HTTP_RESPONSE_MAX_BYTES // 16_384 + 100):
                 reads.append(index)
                 yield b" " * 16_384
 
@@ -547,7 +549,7 @@ def test_streamed_error_and_success_bodies_share_limit(temp_db: None, monkeypatc
     budget = ModelCallBudget(max_attempts=1, max_elapsed_s=5)
     result = call(budget)
     assert closed.is_set()
-    assert len(reads) <= 65
+    assert len(reads) == llm._HTTP_RESPONSE_MAX_BYTES // 16_384 + 1
     assert result.value is None and budget.attempts[0].error == "invalid_output"
 
 
@@ -608,7 +610,7 @@ def test_editorial_budget_configuration_retains_task_snapshot(temp_db: None) -> 
             ConfigurationChange(values={"editorial_model_max_attempts": 1, "editorial_model_deadline_s": 10})
         )
         assert settings.editorial_model_max_attempts == 8
-        assert settings.editorial_model_deadline_s == 180
+        assert settings.editorial_model_deadline_s == 1800
     assert settings.editorial_model_max_attempts == 1
     assert settings.editorial_model_deadline_s == 10
 
@@ -805,3 +807,71 @@ def test_known_incomplete_response_reasons_use_safe_fixed_diagnostics(
     assert attempt.diagnostic.category == "response" and detail in attempt.diagnostic.summary
     assert attempt.usage.output_tokens == 20
     assert "private-secret" not in attempt.model_dump_json()
+
+
+@pytest.mark.parametrize(
+    ("endpoint", "model", "parameter", "expected"),
+    [
+        ("https://api.deepseek.com", "deepseek-flash", "max_tokens", 393216),
+        ("https://api.minimax.cn/v1", "MiniMax-M3.1-Flash", "max_completion_tokens", 524288),
+        ("https://api.xiaomimimo.com/v1", "mimo-v2.6-pro", "max_completion_tokens", 131072),
+        ("https://dashscope.aliyuncs.com/compatible-mode/v1", "qwen-plus", "max_tokens", 32768),
+    ],
+)
+def test_actual_sdk_sends_official_large_output_parameter(
+    temp_db: None, transport: Transport, endpoint: str, model: str, parameter: str, expected: int
+) -> None:
+    config = catalog(base_url=endpoint)
+    config.routes[0].model = model
+    config.routes[0].max_output_tokens = None
+    save_model_configuration(config)
+    requests = transport([(200, response())])
+    result = call(llm.new_editorial_budget(), max_tokens=1048576)
+    assert result.error is None
+    body = json.loads(requests[0].content)
+    assert body[parameter] == expected
+    assert ("max_tokens" in body) != ("max_completion_tokens" in body)
+
+
+def test_large_input_output_and_reasoning_are_preserved_through_actual_sdk(temp_db: None, transport: Transport) -> None:
+    save_model_configuration(catalog())
+    expected = "完整解释" * 3000
+    reply = response(json.dumps({"answer": expected}, ensure_ascii=False))
+    reply["choices"][0]["message"]["reasoning_content"] = "思考" * 200000
+    requests = transport([(200, reply)])
+    source = {"evidence": "原始素材" * 15000}
+    result = llm.call_structured(
+        "依据完整素材",
+        source,
+        schema=Answer.model_json_schema(),
+        validate=Answer.model_validate,
+        budget=llm.new_editorial_budget(),
+        purpose="explanation",
+        max_tokens=393216,
+    )
+    assert result.error is None and result.value.answer == expected
+    assert json.loads(json.loads(requests[0].content)["messages"][1]["content"]) == source
+
+
+def test_context_rejection_does_not_send_or_repair_and_fallback_keeps_full_payload(
+    temp_db: None, transport: Transport
+) -> None:
+    config = catalog(routes=2)
+    config.routes[0].context_window_tokens = 1024
+    save_model_configuration(config)
+    requests = transport([(200, response())])
+    budget = ModelCallBudget(max_attempts=1, max_elapsed_s=20)
+    source = {"evidence": "必须完整保留" * 500}
+    result = llm.call_structured(
+        "依据完整素材",
+        source,
+        schema=Answer.model_json_schema(),
+        validate=Answer.model_validate,
+        budget=budget,
+        purpose="explanation",
+        max_tokens=1048576,
+    )
+    assert result.error is None and len(requests) == 1
+    assert json.loads(requests[0].content)["model"] == "model1"
+    assert json.loads(json.loads(requests[0].content)["messages"][1]["content"]) == source
+    assert len(budget.attempts) == 1 and budget.attempts[0].status == "success"

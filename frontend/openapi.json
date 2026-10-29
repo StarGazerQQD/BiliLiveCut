@@ -282,7 +282,7 @@
           },
           "excerpts": {
             "items": {
-              "maxLength": 2000,
+              "maxLength": 20000,
               "minLength": 1,
               "pattern": "\\S",
               "type": "string"
@@ -1583,6 +1583,101 @@
         "title": "ModelAttempt",
         "type": "object"
       },
+      "ModelCapacity": {
+        "description": "按原厂端点和精确型号核查的能力；未公布的限制保留为空。",
+        "properties": {
+          "base_urls": {
+            "items": {
+              "type": "string"
+            },
+            "title": "Base Urls",
+            "type": "array"
+          },
+          "checked_on": {
+            "default": "2026-10-29",
+            "title": "Checked On",
+            "type": "string"
+          },
+          "context_window_tokens": {
+            "anyOf": [
+              {
+                "type": "integer"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Context Window Tokens"
+          },
+          "id": {
+            "title": "Id",
+            "type": "string"
+          },
+          "max_input_tokens": {
+            "anyOf": [
+              {
+                "type": "integer"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Max Input Tokens"
+          },
+          "max_output_tokens": {
+            "anyOf": [
+              {
+                "type": "integer"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Max Output Tokens"
+          },
+          "models": {
+            "items": {
+              "type": "string"
+            },
+            "title": "Models",
+            "type": "array"
+          },
+          "note": {
+            "default": "",
+            "title": "Note",
+            "type": "string"
+          },
+          "output_parameter": {
+            "default": "max_tokens",
+            "enum": [
+              "max_tokens",
+              "max_completion_tokens"
+            ],
+            "title": "Output Parameter",
+            "type": "string"
+          },
+          "reasoning_reserve_tokens": {
+            "default": 0,
+            "title": "Reasoning Reserve Tokens",
+            "type": "integer"
+          },
+          "sources": {
+            "items": {
+              "type": "string"
+            },
+            "title": "Sources",
+            "type": "array"
+          }
+        },
+        "required": [
+          "id",
+          "base_urls",
+          "models",
+          "sources"
+        ],
+        "title": "ModelCapacity",
+        "type": "object"
+      },
       "ModelConfigurationChange": {
         "additionalProperties": false,
         "description": "模型配置整体保存，与其他设置共用乐观版本检查。",
@@ -1646,6 +1741,13 @@
               "$ref": "#/components/schemas/ConnectionView"
             },
             "title": "Connections",
+            "type": "array"
+          },
+          "model_capacities": {
+            "items": {
+              "$ref": "#/components/schemas/ModelCapacity"
+            },
+            "title": "Model Capacities",
             "type": "array"
           },
           "revision": {
@@ -1854,6 +1956,19 @@
             "title": "Connection Id",
             "type": "string"
           },
+          "context_window_tokens": {
+            "anyOf": [
+              {
+                "maximum": 2097152.0,
+                "minimum": 1024.0,
+                "type": "integer"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Context Window Tokens"
+          },
           "enabled": {
             "default": true,
             "title": "Enabled",
@@ -1866,10 +1981,23 @@
             "title": "Id",
             "type": "string"
           },
+          "max_input_tokens": {
+            "anyOf": [
+              {
+                "maximum": 2097152.0,
+                "minimum": 128.0,
+                "type": "integer"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Max Input Tokens"
+          },
           "max_output_tokens": {
             "anyOf": [
               {
-                "maximum": 65536.0,
+                "maximum": 2097152.0,
                 "minimum": 16.0,
                 "type": "integer"
               },
