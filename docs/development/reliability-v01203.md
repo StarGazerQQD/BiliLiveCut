@@ -266,3 +266,7 @@ S5 仍为 `IN_PROGRESS`，等待最新提交的全部适用远端阶段验收；
 随后提交 `2f18cba` 的 Windows Python 3.12 完整集合为 3690 passed、1 failed，端口占用测试超过原有 30 秒期限；其余六个应用矩阵及 Docker、Frontend、Documentation、CodeQL 均成功。修改前本地真实端口占用确认启动了四代 API，原断言运行 29.49 秒；新增单代断言在旧生产代码上实际失败，记录四次启动。现仅在真实监听绑定边界分类地址占用、权限不足及地址不可用，保留 POSIX/Winsock 错误及原异常链；内部退出码 `78` 经 console/Launcher 清理后映射为公开失败码 `1`，不消费崩溃恢复预算。前端 `78` 优先于同轮后端退出，清理未确认的 `75` 继续优先；其他异常仍使用原有限恢复。
 
 本次目标命令 `python -m pytest tests/unit/test_frontend_server.py tests/unit/test_cli_basic.py tests/unit/test_service_restart.py tests/integration/test_frontend_console.py packaging/portable/tests/test_launcher_entrypoint.py --timeout=120 --fail-on-skip --durations=10 -o addopts=--tb=short -q` 为 129 passed。真实 console、委托监督和 Launcher 端口占用均只启动一代且清理 API；原 30 秒期限未变。本次生产源码及 Launcher 均有变化，须重新固定 Payload 来源、完成完整回归和冻结制品验收后再推送，S5 保持 `IN_PROGRESS`。
+
+绑定失败修复已固定为业务来源 `e0eadee`，五处来源引用及正式 fixture 元数据同步后，默认 Payload 双次构建一致。上述完整应用与 Portable 命令重新通过 **4187 项测试，覆盖率 85.60%**，包含真实 wheel；全部 pre-commit、OpenAPI、文档 22 项测试与 57 页构建通过，完整发布审计为 **63 PASS / 0 WARN / 0 FAIL**。正式新 EXE 为 67151532 字节，SHA-256 `0ded1fce18ce6c76ba8a92a9885e2a49e9e09dadbea5527e014c9a746d5aeeb2`，CRC32 `6AC9EB41`；内嵌 Payload、LICENSE、来源及 1951 个冻结模块的路径检查通过。
+
+新冻结 EXE 在隔离 Portable 副本中离线更新，真实后端、前端和 console 分别异常终止后均恢复唯一完整新代，旧树和旧 API 端口回收，宿主退出不影响无关进程。另在 Launcher 通过端口预检、console 已启动后实际抢占前端端口，确认只启动一代 API、无恢复重试、公开退出码 `1`，全部已登记所属进程和 API 端口关闭。完整本地门禁已通过；S5 继续等待该修复的全部适用远端 CI，S6 至 S8 尚未开始。
