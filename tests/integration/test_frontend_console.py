@@ -17,6 +17,45 @@ import psutil
 import pytest
 
 
+def _service_snapshot(parent: psutil.Process) -> dict[tuple[int, float], tuple[psutil.Process, str, int]]:
+    result = {}
+    for child in parent.children(recursive=True):
+        try:
+            command = child.cmdline()
+            if command[1:3] == ["-m", "app.cli"] and command[3:4] in (["backend"], ["frontend"]):
+                result[(child.pid, child.create_time())] = (child, command[3], child.ppid())
+        except psutil.NoSuchProcess:
+            # 旧代正在退出，仍由保留的原进程对象和 wait_procs 验证最终回收。
+            continue
+    return result
+
+
+def _service_leaves(
+    snapshot: dict[tuple[int, float], tuple[psutil.Process, str, int]],
+) -> dict[str, list[psutil.Process]]:
+    result = {}
+    for role in ("backend", "frontend"):
+        members = [(process, parent_pid) for process, kind, parent_pid in snapshot.values() if kind == role]
+        parents = {parent_pid for _, parent_pid in members}
+        result[role] = [process for process, _ in members if process.pid not in parents]
+    return result
+
+
+def _service_tree(snapshot: dict[tuple[int, float], tuple[psutil.Process, str, int]]) -> list[psutil.Process]:
+    owned = {identity: process for identity, (process, _, _) in snapshot.items()}
+    for process, _, _ in snapshot.values():
+        try:
+            descendants = process.children(recursive=True)
+        except psutil.NoSuchProcess:
+            continue
+        for child in descendants:
+            try:
+                owned[(child.pid, child.create_time())] = child
+            except psutil.NoSuchProcess:
+                continue
+    return list(owned.values())
+
+
 def _stop_console(process: subprocess.Popen) -> None:
     if process.stdin is not None:
         process.stdin.close()
@@ -127,7 +166,7 @@ def test_console_starts_independent_frontend_and_api_and_cleans_up(
         "import faulthandler\nfaulthandler.dump_traceback_later(20, repeat=True)\n", encoding="utf-8"
     )
     with socket.socket() as probe:
-        probe.bind(("127.0.0.1", 0))
+        probe.bind((host, 0))
         port = probe.getsockname()[1]
     env = {
         **os.environ,
@@ -195,31 +234,23 @@ def test_console_starts_independent_frontend_and_api_and_cleans_up(
             children = psutil.Process(process.pid).children(recursive=True)
             if crash is not None:
                 # Windows venv 的常驻 Python 转发进程也在 descendants 中，只回收服务代次。
-                services = [
-                    child
-                    for child in children
-                    if "app.cli" in child.cmdline() and any(name in child.cmdline() for name in ("backend", "frontend"))
-                ]
-                assert services
-                children = services
-                old_pids = {child.pid for child in children}
-                target = next(child for child in children if child.cmdline()[1:4] == ["-m", "app.cli", crash])
-                target.kill()
+                old_snapshot = _service_snapshot(psutil.Process(process.pid))
+                leaves = _service_leaves(old_snapshot)
+                assert all(len(members) == 1 for members in leaves.values()), leaves
+                # 保存服务完整后代，包括退出时会重新归属的 POSIX guardian。
+                children = _service_tree(old_snapshot)
+                leaves[crash][0].kill()
                 deadline = time.monotonic() + 40
                 while True:
                     assert process.poll() is None, "单个服务异常退出后监管进程不应退出"
-                    new_children = [
-                        child
-                        for child in psutil.Process(process.pid).children(recursive=True)
-                        if "app.cli" in child.cmdline()
-                        and any(name in child.cmdline() for name in ("backend", "frontend"))
-                    ]
+                    new_snapshot = _service_snapshot(psutil.Process(process.pid))
+                    leaves = _service_leaves(new_snapshot)
                     try:
                         with opener.open(f"http://127.0.0.1:{port}/auth/status", timeout=1) as response:
                             if (
                                 response.status == 200
-                                and new_children
-                                and all(child.pid not in old_pids for child in new_children)
+                                and all(len(members) == 1 for members in leaves.values())
+                                and old_snapshot.keys().isdisjoint(new_snapshot)
                             ):
                                 break
                     except (OSError, URLError):
@@ -237,7 +268,7 @@ def test_console_starts_independent_frontend_and_api_and_cleans_up(
             _, alive = psutil.wait_procs(children, timeout=5)
             assert not alive, "停止后不能遗留前端或后端进程"
             with socket.socket() as probe:
-                assert probe.connect_ex(("127.0.0.1", port)) != 0
+                assert probe.connect_ex((host, port)) != 0
         finally:
             if process.poll() is None:
                 _stop_console(process)
