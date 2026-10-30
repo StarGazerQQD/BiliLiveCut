@@ -13,7 +13,7 @@
 | S2 数据库并发与事务 | COMPLETED | M07 至 M10 | 并发和锁竞争测试通过，租约、证据和清理互斥保持有效 |
 | S3 生命周期与资源所有权 | COMPLETED | M11 至 M12 | 正常关闭、超时取消、异常终止均回收所属资源，不影响其他实例 |
 | S4 录制断流恢复 | COMPLETED | M13 至 M15 | 短暂断流、连续短片、无进度、正常下播和人工暂停按状态处理 |
-| S5 崩溃与持久断点恢复 | IN_PROGRESS | M16 至 M22 | 关键提交点终止后可恢复，不丢失已确认结果，不重复外部副作用 |
+| S5 崩溃与持久断点恢复 | COMPLETED | M16 至 M22 | 关键提交点终止后可恢复，不丢失已确认结果，不重复外部副作用 |
 | S6 LLM 与证据正确性 | PENDING | M23 至 M28 | 保留大容量和真实性校验，各类故障分别可诊断、可恢复 |
 | S7 路径与业务正确性 | PENDING | M29 至 M32 | 搬迁副本、审核到渲染、统计和端点恢复验证通过 |
 | S8 版本与最终验收 | PENDING | 同步版本、内容和来源信息，完成最终工程及制品验收 | 最终源码状态的全部必需门禁通过 |
@@ -274,3 +274,7 @@ S5 仍为 `IN_PROGRESS`，等待最新提交的全部适用远端阶段验收；
 提交 `0122ebe` 的 macOS 进程专项为 64 passed、1 failed：切换服务代次时，psutil 的 `sysctl(KERN_PROCARGS2)` 返回 `EINVAL` 并映射为 `AccessDenied`。新增受控读取故障用例在原轮询中实际复现失败。快照辅助函数继续拒绝返回部分结果，仅在既有 40 秒恢复轮询边界允许下一轮重新读取；持续权限错误仍在原期限内失败并保留诊断。成功仍要求完整快照、HTTP 200、两类服务各唯一、旧新身份不相交，旧树及 POSIX guardian 的回收断言保持有效。
 
 本次仅调整测试及验收记录。进程目标命令 `python -m pytest tests/unit/test_process_tree.py tests/unit/test_process_control.py tests/unit/test_service_shutdown.py tests/integration/test_frontend_console.py --timeout=120 --fail-on-skip --durations=10 -o addopts=--tb=short -q` 为 **67 passed**；格式固定后两项新增回归再次通过。完整应用与 Portable 命令为 **4189 passed、覆盖率 85.60%**，保留一条 setuptools 安装接口弃用 warning。业务来源 `e0eadee` 及已验证制品未变化，继续使用原冻结验收证据；S5 远端验收仍在进行，S6 至 S8 保持 `PENDING`。
+
+最终远端验收覆盖 `dbd5727ffa7da6c7e4cd03d99cc5407c8ef5ee6d`：CI `41127143615`、Docker `41127143669`、Frontend `41127143748`、Documentation `41127143651`、CodeQL `41127143602` 均在 attempt 1 成功结束。CI 全部 15 个 job 成功，包含七个应用矩阵、三个 uv 验证、Portable、审计、coverage summary 和 CI status；23 项 commit checks 中 22 项成功，Pages 部署按 PR 条件跳过，无 legacy statuses。macOS 原失败专项及其完整集合均实际执行成功。上一提交的文档缓存出口限制取消保留为历史，本次两平台文档构建均通过，没有重跑或关闭检查。
+
+S5 的本地、冻结制品和远端验收均已通过，状态为 `COMPLETED`。本次完成记录只修改文档，执行文档检查、共享质量、文档构建及实际 diff；应用完整回归和制品结果继续覆盖未变化的源码。S6 至 S8 保持 `PENDING`，随后按顺序进入 S6。
