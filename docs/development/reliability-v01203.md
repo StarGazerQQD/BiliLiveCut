@@ -8,7 +8,7 @@
 
 | 阶段 | 状态 | 工作项 | 验收条件 |
 | --- | --- | --- | --- |
-| S0 基线与恢复契约 | IN_PROGRESS | 建立 PR、复现基线，明确状态、租约、取消和新增持久状态的兼容规则 | 问题证据及基线可复查，已有资产得到保留 |
+| S0 基线与恢复契约 | COMPLETED | 建立 PR、复现基线，明确状态、租约、取消和新增持久状态的兼容规则 | 问题证据及基线可复查，已有资产得到保留 |
 | S1 安全与外部输入 | PENDING | M01 至 M06 | 认证、CSRF、合法上传、恶意输入和慢通知回归通过 |
 | S2 数据库并发与事务 | PENDING | M07 至 M10 | 并发和锁竞争测试通过，租约、证据和清理互斥保持有效 |
 | S3 生命周期与资源所有权 | PENDING | M11 至 M12 | 正常关闭、超时取消、异常终止均回收所属资源，不影响其他实例 |
@@ -74,4 +74,25 @@
 
 ### S0 建立交付入口
 
-本地 `main` 已通过快进同步至上述基线，`main...origin/main` 为 `0/0`。原有未跟踪文件保持原状。初始提交只建立本实施清单，尚未修改业务源码、版本或依赖。S0 其余复现和恢复契约仍在进行。
+本地 `main` 已通过快进同步至上述基线，`main...origin/main` 为 `0/0`。PR #99 先由实施清单建立，随后使用隔离工作树实施。主目录的旧配置、原开发环境和未跟踪资料保持原状。业务源码和版本尚未修改，第三方依赖按现有锁文件安装至专用环境。
+
+恢复契约如下：
+
+- 新运行意图、累计崩溃预算和块级 checkpoint 复用 `AppSetting` 的独立版本化 JSON 命名空间，不扩表，不经配置保存入口增加全局 `configuration_revision`。
+- 不向严格校验的房间配置直接添加未知字段；人工暂停、永久错误抑制、临时断流和正常退出分别处理。
+- 提交和批量心跳继续校验 `task_id + worker_id + lease_token + expected_stage`；失去租约的结果不进入新执行。
+- 取消后保留执行占位，确认线程或所属进程物理退出后释放；服务单实例、任务租约和操作系统进程归属分别管理。
+- 保留 Web 作业代次、结果事务、已有摘要 claim 及有限重试；已落盘上传成功回放，远端结果未知时进入核对状态。
+- 进程内预算使用 monotonic，持久截止时间使用 UTC；记录 PID 不单独构成进程归属证据。
+
+基线命令及结果：
+
+1. `uv sync --locked` 在专用环境安装 118 项锁定依赖；原生 C、Cython 和 C++ 扩展均已构建。首次在主目录执行测试时，旧 `.env` 的七个已移除字段阻止收集；隔离工作树解决了配置混入，无需修改用户配置。
+2. 恢复、租约、录制和生命周期目标测试：158 passed。
+3. 首次完整基线：3847 passed、8 failed、41 skipped；失败及跳过由缺少本地 Payload 前置制品引起。正式 `python packaging/portable/build_payload.py` 保留源码冻结和两次可重复构建，补齐前置制品后，Portable 集合 471 passed。
+4. `python -m pytest tests packaging/portable/tests --cov=app --cov-report=xml --cov-fail-under=50 --timeout=600 --fail-on-skip` 复验：3896 passed，覆盖率 84.98%。600 秒覆盖既有真实 wheel 构建的预算，未删除用例或放宽断言。
+5. `python -m pre_commit run --all-files --show-diff-on-failure` 全部通过，包含 Ruff、格式、版本、快速发布审计、架构和 React 检查。
+6. 初始文档提交的远端 19 项检查全部结束：18 success，文档部署按 PR 条件 skipped。
+7. `python scripts/release_audit.py`：63 PASS、0 WARN、0 FAIL；实际 diff 与空白检查通过，只有本实施文档变化。
+
+后续涉及 Payload 内容的阶段，在源码提交后更新来源元数据，再执行正式构建；不得沿用旧 source pin 构建，或绕过工作区源码冻结检查。
