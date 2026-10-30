@@ -21,7 +21,7 @@ from config.launcher_settings import (
     runtime_app_root,
     validate_web_port,
 )
-from config.service_restart import RestartBudget
+from config.service_restart import RESTART_OWNER_ENV, SERVICE_BIND_FAILED_EXIT, RestartBudget
 
 console = Console()
 
@@ -304,14 +304,20 @@ def cmd_frontend(
     不启动后端、不初始化数据库；后端不可用时 API 请求返回 502。
     开发热更新请在 frontend 目录执行 npm run dev。
     """
-    from app.web.frontend_server import serve_frontend, validate_backend
+    from app.web.frontend_server import FrontendBindError, serve_frontend, validate_backend
 
     directory = _frontend_directory(frontend_dir)
     try:
         validate_backend(backend)
     except ValueError as exc:
         raise click.BadParameter(str(exc), param_hint="--backend") from None
-    serve_frontend(directory, backend, host, port)
+    try:
+        serve_frontend(directory, backend, host, port)
+    except FrontendBindError as exc:
+        logger.opt(exception=exc).error("前端监听绑定失败，请检查地址、端口占用及权限")
+        if os.environ.get(RESTART_OWNER_ENV) == "console":
+            raise click.exceptions.Exit(SERVICE_BIND_FAILED_EXIT) from exc
+        raise click.ClickException(safe_exception_summary(exc)) from exc
 
 
 @click.option("--host", default="127.0.0.1", type=str, help="前端监听地址", show_default=True)
@@ -333,7 +339,7 @@ def cmd_console(
     import threading
     import time
 
-    from config.service_restart import CLEANUP_UNCONFIRMED_EXIT, RESTART_OWNER_ENV
+    from config.service_restart import CLEANUP_UNCONFIRMED_EXIT
 
     parent_stopped = threading.Event()
     parent_error: OSError | ValueError | None = None
@@ -364,6 +370,8 @@ def cmd_console(
                 break
             if externally_supervised:
                 raise
+            if isinstance(exc, click.exceptions.Exit) and exc.exit_code == SERVICE_BIND_FAILED_EXIT:
+                raise click.ClickException("前端监听绑定失败，所属服务已关闭，请检查地址、端口占用及权限。") from exc
             delay = budget.failed(time.monotonic())
             if delay is None:
                 raise click.ClickException("前后端连续异常退出，自动恢复预算已耗尽，请检查服务日志。") from exc
@@ -478,6 +486,7 @@ def _console_generation(
                     "--port",
                     str(actual_port),
                 ],
+                env={**os.environ, RESTART_OWNER_ENV: "console"},
                 **process_options,
             )
         )
@@ -504,9 +513,14 @@ def _console_generation(
                     raise RuntimeError("独立前端未能通过 API 就绪检查")
                 next_probe = time.monotonic() + 1
             time.sleep(0.25)
-        code = next(
-            (process.returncode for process in processes if process.returncode is not None),
-            0 if parent_stopped.is_set() else 1,
+        codes = [process.poll() for process in processes]
+        code = (
+            SERVICE_BIND_FAILED_EXIT
+            if codes[-1] == SERVICE_BIND_FAILED_EXIT
+            else next(
+                (code for code in codes if code is not None),
+                0 if parent_stopped.is_set() else 1,
+            )
         )
         if code:
             raise click.exceptions.Exit(code=code if code > 0 else 1)

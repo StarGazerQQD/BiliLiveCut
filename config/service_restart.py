@@ -5,6 +5,7 @@ from dataclasses import dataclass
 
 RESTART_OWNER_ENV = "_BLC_RESTART_OWNER"
 CLEANUP_UNCONFIRMED_EXIT = 75
+SERVICE_BIND_FAILED_EXIT = 78
 # 后端允许的关闭配置上限为 3600 秒，外层额外保留所属树退出时间。
 OUTER_SHUTDOWN_LIMIT_S = 3620.0
 

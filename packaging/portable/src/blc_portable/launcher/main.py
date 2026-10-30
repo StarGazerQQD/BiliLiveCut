@@ -1232,6 +1232,7 @@ def _run_service(command: list[str], *, env: dict[str, str], cwd: str) -> int:
         CLEANUP_UNCONFIRMED_EXIT,
         OUTER_SHUTDOWN_LIMIT_S,
         RESTART_OWNER_ENV,
+        SERVICE_BIND_FAILED_EXIT,
         RestartBudget,
     )
 
@@ -1276,6 +1277,9 @@ def _run_service(command: list[str], *, env: dict[str, str], cwd: str) -> int:
             return code if code is not None and code >= 0 else 130
         if code in {0, CLEANUP_UNCONFIRMED_EXIT}:
             return code
+        if code == SERVICE_BIND_FAILED_EXIT:
+            print("[ERROR] 前端监听绑定失败，所属服务已关闭，请检查地址、端口占用及权限。")
+            return 1
         delay = budget.failed(time.monotonic())
         if delay is None:
             print("[ERROR] 服务连续异常退出，自动恢复预算已耗尽，请检查日志后重新启动。")

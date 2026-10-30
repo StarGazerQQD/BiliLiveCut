@@ -577,11 +577,12 @@ def test_frozen_entry_collects_engine_pack_config_dependencies() -> None:
     assert 'str(_project_root / "config" / _name), "provisioner/config"' in content
 
 
-@pytest.mark.parametrize("exit_code,starts", [(0, 1), (7, 4), (75, 1)])
+@pytest.mark.parametrize("exit_code,starts,expected_code", [(0, 1, 0), (7, 4, 7), (75, 1, 75), (78, 1, 1)])
 def test_launcher_owns_one_bounded_restart_budget_for_real_processes(
     tmp_path: Path,
     exit_code: int,
     starts: int,
+    expected_code: int,
 ) -> None:
     from blc_portable.launcher.main import _run_service
 
@@ -599,7 +600,7 @@ def test_launcher_owns_one_bounded_restart_budget_for_real_processes(
         str(counter),
         str(exit_code),
     ]
-    assert _run_service(command, env=dict(os.environ), cwd=str(tmp_path)) == exit_code
+    assert _run_service(command, env=dict(os.environ), cwd=str(tmp_path)) == expected_code
     assert counter.read_text() == "1" * starts
 
 

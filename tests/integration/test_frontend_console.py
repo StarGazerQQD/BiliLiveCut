@@ -340,7 +340,8 @@ def test_frontend_alone_serves_build_without_opening_database(tmp_path: Path):
             process.wait(timeout=20)
 
 
-def test_start_cleans_up_api_when_frontend_port_is_occupied(tmp_path: Path):
+@pytest.mark.parametrize("supervisor,exit_code", [("console", 1), ("delegated", 78), ("launcher", 1)])
+def test_start_cleans_up_api_when_frontend_port_is_occupied(tmp_path: Path, supervisor: str, exit_code: int) -> None:
     import re
 
     root = Path(__file__).resolve().parents[2]
@@ -349,7 +350,7 @@ def test_start_cleans_up_api_when_frontend_port_is_occupied(tmp_path: Path):
     (dist / "index.html").write_text("<main>built frontend</main>")
     env = {
         **os.environ,
-        "PYTHONPATH": str(root),
+        "PYTHONPATH": os.pathsep.join([str(root), str(root / "packaging/portable/src")]),
         "_BLC_PARENT_STDIN": "1",
         "PYTHONIOENCODING": "utf-8",
         "BLC_APP_ROOT": str(tmp_path),
@@ -362,15 +363,26 @@ def test_start_cleans_up_api_when_frontend_port_is_occupied(tmp_path: Path):
         "TREND_SCHEDULE_ENABLED": "false",
         "ASR_NO_MODEL_DOWNLOAD": "1",
     }
+    if supervisor == "delegated":
+        env["_BLC_RESTART_OWNER"] = "launcher"
     with socket.socket() as occupied:
         if hasattr(socket, "SO_EXCLUSIVEADDRUSE"):
             occupied.setsockopt(socket.SOL_SOCKET, socket.SO_EXCLUSIVEADDRUSE, 1)
         occupied.bind(("127.0.0.1", 0))
         occupied.listen()
         port = occupied.getsockname()[1]
+        command = [sys.executable, "-m", "app.cli", "start", "--port", str(port), "--frontend-dir", str(dist)]
+        if supervisor == "launcher":
+            command = [
+                sys.executable,
+                "-c",
+                "import os, sys; from blc_portable.launcher.main import _run_service; "
+                "sys.exit(_run_service(sys.argv[1:], env=dict(os.environ), cwd=os.getcwd()))",
+                *command,
+            ]
         with (tmp_path / "start.log").open("w+", encoding="utf-8") as log:
             process = subprocess.Popen(
-                [sys.executable, "-m", "app.cli", "start", "--port", str(port), "--frontend-dir", str(dist)],
+                command,
                 cwd=tmp_path,
                 env=env,
                 stdin=subprocess.PIPE,
@@ -378,11 +390,13 @@ def test_start_cleans_up_api_when_frontend_port_is_occupied(tmp_path: Path):
                 stderr=log,
             )
             try:
-                assert process.wait(timeout=30) == 1
+                assert process.wait(timeout=30) == exit_code
                 log.seek(0)
                 output = log.read()
                 api_ports = {int(value) for value in re.findall(r"http://127\.0\.0\.1:(\d+)", output)} - {port}
                 assert api_ports, output
+                assert output.count("API 启动中") == 1, output
+                assert "秒后恢复" not in output, output
                 for api_port in api_ports:
                     with socket.socket() as probe:
                         assert probe.connect_ex(("127.0.0.1", api_port)) != 0, output

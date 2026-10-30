@@ -380,8 +380,9 @@ def test_record_rejects_produce_without_pipeline(
         raise AssertionError("--produce without --pipeline must fail")
 
 
+@pytest.mark.parametrize("backend_exit", [None, 0, 1])
 def test_console_isolates_terminal_signals_and_waits_for_backend_cleanup(
-    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, backend_exit: int | None
 ) -> None:
     import signal
     import time
@@ -392,6 +393,7 @@ def test_console_isolates_terminal_signals_and_waits_for_backend_cleanup(
     from app.analysis.transcription import process_tree
     from app.commands.serve import cmd_console
 
+    binding_failure = backend_exit is not None
     (tmp_path / "index.html").write_text("frontend")
     processes = []
     options = []
@@ -407,7 +409,9 @@ def test_console_isolates_terminal_signals_and_waits_for_backend_cleanup(
             self.waits = 0
             self.stdin = None
 
-        def poll(self):
+        def poll(self) -> int | None:
+            if binding_failure and len(processes) == 2:
+                self.returncode = 78 if self.pid == 2 else backend_exit
             if self.stopping:
                 self.waits += 1
                 if self.waits > 5:
@@ -425,10 +429,12 @@ def test_console_isolates_terminal_signals_and_waits_for_backend_cleanup(
         def kill(self):
             pytest.fail("正常关闭不能由启动器提前强杀后端")
 
-        def wait(self, timeout=None):
+        def wait(self, timeout: float | None = None) -> int:
             assert timeout == 5, "已经确认结束的服务仍须有限确认启动进程退出"
-            assert self.returncode == 0
-            return 0
+            expected_code = (78 if self.pid == 2 else backend_exit) if binding_failure else 0
+            assert self.returncode == expected_code
+            assert expected_code is not None
+            return expected_code
 
     def spawn(*args, **kwargs):
         process = Process()
@@ -470,7 +476,7 @@ def test_console_isolates_terminal_signals_and_waits_for_backend_cleanup(
                 os.close(self.parent_pipe)
                 self.parent_pipe = None
             for process in processes:
-                if process.stdin is None:
+                if process.stdin is None and process.returncode is None:
                     process.returncode = 0
 
     monkeypatch.setattr(process_tree, "ProcessTree", SystemOwnership)
@@ -481,7 +487,12 @@ def test_console_isolates_terminal_signals_and_waits_for_backend_cleanup(
         "build_opener",
         lambda *args: SimpleNamespace(open=lambda *args, **kwargs: nullcontext(SimpleNamespace(status=200))),
     )
-    cmd_console(frontend_dir=str(tmp_path), port=8080)
+    if binding_failure:
+        with pytest.raises(click.ClickException, match="前端监听绑定失败") as caught:
+            cmd_console(frontend_dir=str(tmp_path), port=8080)
+        assert caught.value.exit_code == 1
+    else:
+        cmd_console(frontend_dir=str(tmp_path), port=8080)
     assert len(processes) == 2
     assert ownership == (
         ["attach", "resume", "attach", "resume", "terminate", "terminate", "terminate"]
@@ -494,6 +505,27 @@ def test_console_isolates_terminal_signals_and_waits_for_backend_cleanup(
         else:
             assert kwargs["start_new_session"] is True
     assert all(signal.getsignal(number) == handler for number, handler in original_signals.items())
+    assert options[1]["env"]["_BLC_RESTART_OWNER"] == "console"
+
+
+def test_standalone_frontend_binding_failure_returns_public_failure_code(tmp_path: Path) -> None:
+    import socket
+
+    from app.cli import app
+
+    (tmp_path / "index.html").write_text("frontend")
+    with socket.socket() as occupied:
+        if hasattr(socket, "SO_EXCLUSIVEADDRUSE"):
+            occupied.setsockopt(socket.SOL_SOCKET, socket.SO_EXCLUSIVEADDRUSE, 1)
+        occupied.bind(("127.0.0.1", 0))
+        occupied.listen()
+        result = CliRunner().invoke(
+            app,
+            ["frontend", "--port", str(occupied.getsockname()[1]), "--frontend-dir", str(tmp_path)],
+            env={"_BLC_RESTART_OWNER": ""},
+        )
+    assert result.exit_code == 1, result.output
+    assert "FrontendBindError" in result.output
 
 
 def test_windows_console_stops_without_console_signals() -> None:

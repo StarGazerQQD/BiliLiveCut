@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import argparse
+import errno
 import http.client
 import mimetypes
 import re
@@ -61,12 +62,30 @@ def _response_header(key: str, value: str) -> tuple[str, str]:
     return name, content
 
 
+class FrontendBindError(OSError):
+    """监听地址或权限需要修正，自动重启不能解决此次绑定失败。"""
+
+
 class FrontendHTTPServer(ThreadingHTTPServer):
     """绑定静态服务不做反向 DNS 查询，启动不依赖主机名解析服务。"""
 
     def server_bind(self) -> None:
         """沿用 TCP 绑定规则，以实际监听地址填写 HTTP 服务元数据。"""
-        TCPServer.server_bind(self)
+        try:
+            TCPServer.server_bind(self)
+        except OSError as exc:
+            # Windows socket 保留 Winsock 错误码，不能只检查 POSIX errno。
+            binding_errors = {
+                errno.EADDRINUSE,
+                errno.EACCES,
+                errno.EADDRNOTAVAIL,
+                getattr(errno, "WSAEADDRINUSE", errno.EADDRINUSE),
+                getattr(errno, "WSAEACCES", errno.EACCES),
+                getattr(errno, "WSAEADDRNOTAVAIL", errno.EADDRNOTAVAIL),
+            }
+            if exc.errno not in binding_errors:
+                raise
+            raise FrontendBindError(exc.errno, str(exc)) from exc
         self.server_name, self.server_port = self.server_address[:2]
 
 

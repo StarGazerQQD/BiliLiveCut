@@ -262,3 +262,7 @@ S5 为 `IN_PROGRESS`，基线为 S4 完成提交 `89e6839570204f920cc7d7f4f0314c
 S5 仍为 `IN_PROGRESS`，等待最新提交的全部适用远端阶段验收；S6 至 S8 保持 `PENDING`。没有新增实际模型服务调用、依赖升级、版本发布或运行目录修改。
 
 首轮远端提交 `a99a4d1` 的七个应用矩阵暴露测试进程枚举竞态：服务被终止后，读取旧子进程命令行可能得到 `NoSuchProcess` 或 `ZombieProcess`。Ubuntu 三个矩阵均为四项相同失败、3691 项通过；macOS 还确认前端绑定未配置的 `127.0.0.2` 返回 `Errno 49`。现将进程快照读取限制在精确退出异常范围，使用 PID 与创建时间区分代次，并要求后端与前端各有一个实际服务叶节点；旧服务完整后代保留供退出验证，包含 POSIX guardian。macOS CI 显式准备回环别名，测试开始和结束均验证实际监听地址，保留全部用例与原 HTTP、退出及资源回收断言。修正后相关目标 65 passed，完整应用与 Portable 回归为 4176 passed、覆盖率 85.54%。本次仅修改测试、CI 前置条件和验收记录；业务源码与冻结制品未变。更新后的远端门禁继续执行。
+
+随后提交 `2f18cba` 的 Windows Python 3.12 完整集合为 3690 passed、1 failed，端口占用测试超过原有 30 秒期限；其余六个应用矩阵及 Docker、Frontend、Documentation、CodeQL 均成功。修改前本地真实端口占用确认启动了四代 API，原断言运行 29.49 秒；新增单代断言在旧生产代码上实际失败，记录四次启动。现仅在真实监听绑定边界分类地址占用、权限不足及地址不可用，保留 POSIX/Winsock 错误及原异常链；内部退出码 `78` 经 console/Launcher 清理后映射为公开失败码 `1`，不消费崩溃恢复预算。前端 `78` 优先于同轮后端退出，清理未确认的 `75` 继续优先；其他异常仍使用原有限恢复。
+
+本次目标命令 `python -m pytest tests/unit/test_frontend_server.py tests/unit/test_cli_basic.py tests/unit/test_service_restart.py tests/integration/test_frontend_console.py packaging/portable/tests/test_launcher_entrypoint.py --timeout=120 --fail-on-skip --durations=10 -o addopts=--tb=short -q` 为 129 passed。真实 console、委托监督和 Launcher 端口占用均只启动一代且清理 API；原 30 秒期限未变。本次生产源码及 Launcher 均有变化，须重新固定 Payload 来源、完成完整回归和冻结制品验收后再推送，S5 保持 `IN_PROGRESS`。

@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import errno
 import http.client
 import socket
 import threading
@@ -13,7 +14,48 @@ from pathlib import Path
 
 import pytest
 
-from app.web.frontend_server import FrontendHandler, FrontendHTTPServer
+from app.web.frontend_server import FrontendBindError, FrontendHandler, FrontendHTTPServer
+
+
+@pytest.mark.parametrize(
+    "error_code",
+    sorted(
+        {
+            errno.EADDRINUSE,
+            errno.EACCES,
+            errno.EADDRNOTAVAIL,
+            getattr(errno, "WSAEADDRINUSE", errno.EADDRINUSE),
+            getattr(errno, "WSAEACCES", errno.EACCES),
+            getattr(errno, "WSAEADDRNOTAVAIL", errno.EADDRNOTAVAIL),
+        }
+    ),
+)
+def test_frontend_bind_configuration_errors_preserve_original_cause(
+    monkeypatch: pytest.MonkeyPatch, error_code: int
+) -> None:
+    failure = OSError(error_code, "controlled socket bind failure")
+
+    def fail_bind(connection: socket.socket, address: tuple[str, int]) -> None:
+        raise failure
+
+    monkeypatch.setattr(socket.socket, "bind", fail_bind)
+    with pytest.raises(FrontendBindError) as caught:
+        FrontendHTTPServer(("127.0.0.1", 0), FrontendHandler)
+    assert caught.value.errno == error_code
+    assert caught.value.__cause__ is failure
+
+
+def test_frontend_other_socket_failure_keeps_original_classification(monkeypatch: pytest.MonkeyPatch) -> None:
+    failure = OSError(errno.ENOBUFS, "controlled socket resource exhaustion")
+
+    def fail_bind(connection: socket.socket, address: tuple[str, int]) -> None:
+        raise failure
+
+    monkeypatch.setattr(socket.socket, "bind", fail_bind)
+    with pytest.raises(OSError) as caught:
+        FrontendHTTPServer(("127.0.0.1", 0), FrontendHandler)
+    assert caught.value is failure
+    assert not isinstance(caught.value, FrontendBindError)
 
 
 @pytest.fixture
