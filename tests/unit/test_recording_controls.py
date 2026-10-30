@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import asyncio
 import json
+import os
 import sys
 from collections.abc import Iterator
 from datetime import UTC, datetime, timedelta
@@ -587,6 +588,9 @@ async def test_transport_eof_refreshes_signed_address_and_stops_at_budget(
 
     async def spawn(*args: str, **kwargs: object) -> asyncio.subprocess.Process:
         launched.append(args[args.index("-i") + 1])
+        if os.name != "nt":
+            # 仅替换外部 FFmpeg 命令，保留真实监管器及其启动握手。
+            return await original_spawn(*args[:7], sys.executable, sys.executable, str(fake_ffmpeg), **kwargs)
         return await original_spawn(sys.executable, str(fake_ffmpeg), **kwargs)
 
     monkeypatch.setattr(asyncio, "create_subprocess_exec", spawn)

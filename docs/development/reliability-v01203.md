@@ -174,3 +174,7 @@ S3 为 `IN_PROGRESS`，仅实施 M11、M12；S4 至 S8 保持 `PENDING`。依赖
 4. Payload、fixture ZIP 和实际 Lite EXE 的来源、大小、SHA-256、CRC32、许可证及内容校验通过。EXE 内嵌 Payload 和共享锁源文件与输入完全一致，1950 个冻结 Python 模块及其嵌套代码对象未包含绝对源码路径。未提交本地运行配置、下载缓存或大型制品。
 
 本地验收记录与来源元数据将追加到同一 PR。S3 仍为 `IN_PROGRESS`，等待远端全部适用 CI；Windows 本地结果不代替 POSIX 真实进程验收。S4 至 S8 保持 `PENDING`。
+
+提交 `4a2f525` 的 Ubuntu / Python 3.12 首次远端验收出现三项失败，3582 项通过，覆盖率 85.20%；Python 3.11 与 macOS 出现相同三项失败。两个录制 EOF 用例在替换外部命令时移除了 POSIX 监管器，诊断用例的 `Popen` 替身未返回启动握手，均在原业务断言之前失败。已将真实 EOF 子进程保留在正式监管链中，并补齐诊断测试的 OS 握手和管道清理；重连次数、签名地址刷新、错误状态、取消异常、清理占位与脱敏断言保持不变。修正目标 55 passed，本地完整集 4057 passed。
+
+同次 Ubuntu / Python 3.13 检查还暴露了启动握手的生产缺陷：合法文件描述符编号超过 `select()` 容量时抛出 `ValueError`，引发 109 项失败。握手改用 Python 标准库 `selectors.DefaultSelector`，保留原期限、EOF、容量及真实 exec 错误检查。新增隔离进程回归，真实占用低编号描述符后重复启动同步/异步命令，核对输出、缺失命令错误及每轮描述符数量。Windows 三个矩阵、Portable、uv、Docker、Frontend、CodeQL 与 Documentation 已通过旧 HEAD；该结果不能代替新修正的验收。S3 保持 `IN_PROGRESS`。

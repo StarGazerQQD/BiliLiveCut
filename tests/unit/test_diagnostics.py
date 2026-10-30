@@ -4,8 +4,10 @@ from __future__ import annotations
 
 import io
 import logging
+import os
 import subprocess
 import sys
+from collections.abc import Sequence
 from pathlib import Path
 
 import pytest
@@ -247,8 +249,16 @@ def test_cancel_error_keeps_cleanup_failure_note_without_credentials(monkeypatch
     process.pid = -1
     process.poll.return_value = None
     process.terminate.side_effect = PermissionError("terminate denied token=private-cleanup")
-    monkeypatch.setattr(process_control.subprocess, "Popen", lambda *args, **kwargs: process)
+    parent_pipes: list[int] = []
+
+    def spawn(command: Sequence[str], **kwargs: object) -> subprocess.Popen:
+        if os.name != "nt":
+            os.write(int(command[4]), b'{"kind":"ready","guardian":987654321}\n')
+        return process
+
+    monkeypatch.setattr(process_control.subprocess, "Popen", spawn)
     tree = Mock(spec=process_control.ProcessTree)
+    tree.own_parent_pipe.side_effect = parent_pipes.append
     monkeypatch.setattr(process_control, "ProcessTree", lambda pid: tree)
 
     def failed_cancel() -> bool:
@@ -262,8 +272,12 @@ def test_cancel_error_keeps_cleanup_failure_note_without_credentials(monkeypatch
         assert "private-cleanup" not in summary
         assert process in lifecycle._subprocesses
     finally:
-        process.poll.return_value = 0
-        lifecycle.cleanup_subprocesses()
+        try:
+            process.poll.return_value = 0
+            lifecycle.cleanup_subprocesses()
+        finally:
+            for descriptor in parent_pipes:
+                os.close(descriptor)
 
 
 def test_multi_gpu_resource_probe_uses_first_device(monkeypatch: pytest.MonkeyPatch) -> None:

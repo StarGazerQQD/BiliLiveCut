@@ -45,6 +45,71 @@ async def test_owned_spawn_preserves_missing_executable_error(tmp_path: Path, as
     assert error.value.errno == errno.ENOENT
 
 
+@pytest.mark.parametrize("minimum_descriptor", [0] if os.name == "nt" else [0, 1100])
+def test_repeated_owned_spawns_release_descriptors_above_select_limit(tmp_path: Path, minimum_descriptor: int) -> None:
+    root = Path(__file__).resolve().parents[2]
+    actor = """
+import asyncio, errno, os, subprocess, sys
+from contextlib import ExitStack
+from pathlib import Path
+import psutil
+from app.core.process_spawn import spawn_owned, spawn_owned_async, terminate_owned_async
+
+async def exercise():
+    owner = psutil.Process()
+    baseline = owner.num_fds() if os.name != 'nt' else None
+    command = [sys.executable, '-c', 'print("owned", end="")']
+    missing = [str(Path.cwd() / 'missing-command')]
+    for _ in range(4):
+        process, tree = spawn_owned(command, stdout=subprocess.PIPE, stderr=subprocess.PIPE)
+        try:
+            output, error = process.communicate(timeout=5)
+            assert process.returncode == 0 and output == b'owned' and error == b''
+        finally:
+            tree.terminate()
+            process.wait(timeout=5)
+        process, tree = await spawn_owned_async(command, stdout=subprocess.PIPE, stderr=subprocess.PIPE)
+        try:
+            output, error = await asyncio.wait_for(process.communicate(), 5)
+            assert process.returncode == 0 and output == b'owned' and error == b''
+        finally:
+            await terminate_owned_async(process, tree, drain_output=True)
+        for asynchronous in (False, True):
+            try:
+                if asynchronous:
+                    await spawn_owned_async(missing)
+                else:
+                    spawn_owned(missing)
+            except FileNotFoundError as exc:
+                assert exc.errno == errno.ENOENT
+            else:
+                raise AssertionError('missing command unexpectedly started')
+        await asyncio.sleep(0)
+        if baseline is not None:
+            assert owner.num_fds() == baseline, (baseline, owner.num_fds())
+
+with ExitStack() as reserved:
+    minimum = int(sys.argv[1])
+    if minimum:
+        import resource
+        soft, hard = resource.getrlimit(resource.RLIMIT_NOFILE)
+        if soft < minimum + 128:
+            resource.setrlimit(resource.RLIMIT_NOFILE, (minimum + 128, hard))
+        while reserved.enter_context(open(os.devnull, 'rb')).fileno() < minimum:
+            pass
+    asyncio.run(exercise())
+"""
+    result = subprocess.run(
+        [sys.executable, "-c", actor, str(minimum_descriptor)],
+        cwd=tmp_path,
+        env={**os.environ, "PYTHONPATH": str(root)},
+        capture_output=True,
+        text=True,
+        timeout=60,
+    )
+    assert result.returncode == 0, result.stdout + result.stderr
+
+
 async def test_direct_process_exit_is_observed_before_descendant_pipe_closes(tmp_path: Path) -> None:
     marker = tmp_path / "descendant.pid"
     command = [

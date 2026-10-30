@@ -4,7 +4,7 @@ from __future__ import annotations
 import asyncio
 import json
 import os
-import select
+import selectors
 import subprocess
 import sys
 import time
@@ -105,16 +105,18 @@ class SpawnPlan(AbstractContextManager):
             return
         deadline = shutdown_deadline(10)
         content = bytearray()
-        while True:
-            remaining = deadline - time.monotonic()
-            if remaining <= 0 or not select.select([self._status], [], [], remaining)[0]:
-                raise TimeoutError("所属进程启动握手超时")
-            chunk = os.read(self._status, 4096)
-            if not chunk:
-                break
-            content.extend(chunk)
-            if len(content) > 8192:
-                raise RuntimeError("所属进程启动握手超过容量")
+        with selectors.DefaultSelector() as selector:
+            selector.register(self._status, selectors.EVENT_READ)
+            while True:
+                remaining = deadline - time.monotonic()
+                if remaining <= 0 or not selector.select(remaining):
+                    raise TimeoutError("所属进程启动握手超时")
+                chunk = os.read(self._status, 4096)
+                if not chunk:
+                    break
+                content.extend(chunk)
+                if len(content) > 8192:
+                    raise RuntimeError("所属进程启动握手超过容量")
         records = [json.loads(line) for line in content.splitlines()]
         ready = next((record for record in records if record.get("kind") == "ready"), None)
         if ready is not None:
