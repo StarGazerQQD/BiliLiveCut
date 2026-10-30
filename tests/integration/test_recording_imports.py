@@ -98,7 +98,15 @@ def _configure_llm(monkeypatch: MonkeyPatch, replies: list[str | None]) -> list[
         assert replies, "出现了未预期的 LLM 请求"
         content = replies.pop(0)
         if content is None:
-            raise RuntimeError("模拟服务暂不可用")
+            import httpx
+            from openai import APIStatusError
+
+            reply = httpx.Response(
+                503,
+                headers={"Retry-After": "0"},
+                request=httpx.Request("POST", "https://example.invalid/v1/chat/completions"),
+            )
+            raise APIStatusError("模拟服务暂不可用", response=reply, body={})
         return SimpleNamespace(
             choices=[SimpleNamespace(message=SimpleNamespace(content=content), finish_reason="stop")], usage=None
         )
@@ -348,7 +356,7 @@ def test_local_asr_uses_configured_llm_for_refinement_and_full_summary(
     replies = (
         [json.dumps({"clean_text": cleaned, "summary": "游戏操作方法"}), json.dumps({"summary": expected_summary})]
         if provider_mode == "enabled"
-        else [None, None]
+        else [None, None, None, None]
     )
     calls = _configure_llm(monkeypatch, replies)
     if provider_mode == "disabled":
@@ -369,8 +377,8 @@ def test_local_asr_uses_configured_llm_for_refinement_and_full_summary(
     result = transcribe_compute(task_id=task_id)
     assert result["final_text"] == text  # 带时间戳的原始转写保留，整理文本单独展示。
     assert result["text"] == (cleaned if provider_mode == "enabled" else text)
-    refinement = json.loads(result["auxiliary_json"]).get("transcript_refinement")
-    assert bool(refinement and refinement["applied"]) == (provider_mode == "enabled")
+    refinement = result["refinement_draft"]
+    assert (refinement.status == "succeeded") == (provider_mode == "enabled")
     assert len(asr_calls) == 1
     with get_session() as db:
         for task in db.exec(select(SegmentTask)).all():
@@ -382,7 +390,7 @@ def test_local_asr_uses_configured_llm_for_refinement_and_full_summary(
     if provider_mode != "enabled":
         with pytest.raises(RuntimeError, match="整场 ASR 分析未返回有效 summary"):
             build_session_timeline_summary(session_id)
-        assert len(calls) == (0 if provider_mode == "disabled" else 2)
+        assert len(calls) == (0 if provider_mode == "disabled" else 4)
         return
     summary = build_session_timeline_summary(session_id)
     assert summary["source"] == "llm" and summary["summary"] == expected_summary
@@ -472,6 +480,8 @@ def test_imported_hotspot_reanalysis_replaces_cached_fallback_with_llm(temp_db: 
     assert event_id not in pending_hotspot_event_ids(session_id)
 
     def model_response(prompt: str, **_kwargs: object) -> str:
+        evidence = json.loads(prompt.rsplit("\n", 1)[1])["evidence"]
+        evidence_ids = [item["evidence_id"] for item in evidence if item["excerpts"]]
         if '"verdict"' in prompt:
             return json.dumps(
                 {
@@ -480,7 +490,7 @@ def test_imported_hotspot_reanalysis_replaces_cached_fallback_with_llm(temp_db: 
                     "interest_rating": 3,
                     "hook": "周末挑战的规则与奖励",
                     "reason": "挑战说明具有明确的信息价值。",
-                    "evidence_ids": ["evidence:asr:import"],
+                    "evidence_ids": evidence_ids,
                     "standalone": True,
                     "boundary_status": "complete",
                     "suggested_bounds": None,
@@ -496,7 +506,7 @@ def test_imported_hotspot_reanalysis_replaces_cached_fallback_with_llm(temp_db: 
                 "category": "announcement",
                 "entities": ["周末挑战"],
                 "semantic_confidence": 0.8,
-                "evidence_ids": ["evidence:asr:import"],
+                "evidence_ids": evidence_ids,
             }
         )
 

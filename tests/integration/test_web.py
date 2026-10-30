@@ -383,23 +383,36 @@ def test_backend_does_not_serve_frontend_pages(temp_db: None) -> None:
 
 def test_llm_connectivity_uses_unsaved_form_payload(temp_db: None, monkeypatch: MonkeyPatch) -> None:
     """模型连通测试应使用当前表单配置，无需先持久化。"""
-    from app.analysis import llm as llm_mod
+    import json
+
+    import httpx
+
     from app.analysis import llm_providers as provs
     from app.web.main import app
 
-    def fake_complete(
-        provider: provs.LLMProvider,
-        prompt: str,
-        max_tokens: int,
-        extra_body: dict | None = None,
-    ) -> str:
-        assert provider.api_key == "draft-secret"
-        assert prompt == "只回复 pong"
-        assert max_tokens == 4096
-        assert extra_body is None
-        return "pong"
+    requests: list[httpx.Request] = []
 
-    monkeypatch.setattr(llm_mod, "_complete", fake_complete)
+    async def send(_transport: httpx.AsyncHTTPTransport, request: httpx.Request) -> httpx.Response:
+        requests.append(request)
+        assert request.headers["authorization"] == "Bearer draft-secret"
+        assert str(request.url) == "https://example.invalid/v1/chat/completions"
+        payload = json.loads(request.content)
+        assert payload["model"] == "draft-model"
+        assert payload["messages"] == [{"role": "user", "content": "只回复 pong"}]
+        assert payload["max_tokens"] == 4096
+        return httpx.Response(
+            200,
+            json={
+                "id": "draft-probe",
+                "object": "chat.completion",
+                "created": 1,
+                "model": "draft-model",
+                "choices": [{"index": 0, "message": {"role": "assistant", "content": "pong"}, "finish_reason": "stop"}],
+                "usage": {"prompt_tokens": 5, "completion_tokens": 1, "total_tokens": 6},
+            },
+        )
+
+    monkeypatch.setattr(httpx.AsyncHTTPTransport, "handle_async_request", send)
 
     with TestClient(app) as client:
         response = client.post(
@@ -422,6 +435,7 @@ def test_llm_connectivity_uses_unsaved_form_payload(temp_db: None, monkeypatch: 
     assert response.json()["results"] == [
         {"id": response.json()["results"][0]["id"], "name": "草稿模型", "ok": True, "detail": "pong"}
     ]
+    assert len(requests) == 1
     assert provs._read_raw() == []  # noqa: SLF001
 
 

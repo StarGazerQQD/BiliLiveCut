@@ -41,19 +41,29 @@ def test_extract_transcript_window_uses_word_timestamps() -> None:
     assert [word["w"] for word in result.words] == ["目标"]
 
 
-def test_extract_transcript_window_falls_back_to_proportional_slice() -> None:
-    """当前引擎没有词级时间戳时仍不得返回整段后续正文。"""
+@pytest.mark.parametrize("semantic_text", [None, "开场很快说完的全部整理正文"])
+def test_extract_transcript_window_does_not_invent_localization_without_timestamps(semantic_text: str | None) -> None:
     result = extract_transcript_window(
         "甲乙丙丁戊己庚辛壬癸",
         None,
         start_s=20,
         end_s=40,
         duration_s=100,
+        semantic_text=semantic_text,
     )
 
-    assert result.text == "丙丁"
+    assert result.text == ""
     assert result.precise is False
     assert result.words == []
+
+
+@pytest.mark.parametrize("semantic_text", [None, "整理正文"])
+def test_complete_segment_without_timestamps_keeps_all_available_text(semantic_text: str | None) -> None:
+    result = extract_transcript_window(
+        "完整原文", None, start_s=0, end_s=100, duration_s=100, semantic_text=semantic_text
+    )
+    assert result.text == (semantic_text or "完整原文")
+    assert not result.precise and not result.words
 
 
 def test_extract_transcript_window_keeps_precise_empty_window_empty() -> None:

@@ -3149,6 +3149,8 @@ export interface components {
             model: string;
             /** Number */
             number: number;
+            /** Output Tokens Limit */
+            output_tokens_limit?: number | null;
             /**
              * Protocol
              * @enum {string}
@@ -3160,9 +3162,11 @@ export interface components {
              * Purpose
              * @enum {string}
              */
-            purpose: "explanation" | "review" | "grounding" | "repair" | "context";
+            purpose: "explanation" | "review" | "grounding" | "repair" | "context" | "text" | "probe";
             /** Reported Model */
             reported_model?: string | null;
+            /** Request Id */
+            request_id?: string | null;
             /**
              * Status
              * @enum {string}
@@ -3238,6 +3242,8 @@ export interface components {
             connections: components["schemas"]["ConnectionView"][];
             /** Model Capacities */
             model_capacities?: components["schemas"]["ModelCapacity"][];
+            /** Probe Diagnostics */
+            probe_diagnostics?: components["schemas"]["ModelProbeDiagnostic"][];
             /** Revision */
             revision: number;
             /** Routes */
@@ -3284,16 +3290,79 @@ export interface components {
             routes: components["schemas"]["ModelRoute"][];
         };
         /**
+         * ModelProbeDiagnostic
+         * @description 有限样本的实际协议观察，不推断服务最大容量或参数执行效果。
+         */
+        ModelProbeDiagnostic: {
+            /** Attempts */
+            attempts: number;
+            /** Base Url */
+            base_url: string;
+            /** Connection Id */
+            connection_id: string;
+            /** Detail */
+            detail: string;
+            /** Elapsed S */
+            elapsed_s: number;
+            /** Estimated Cost Usd */
+            estimated_cost_usd?: number | null;
+            /** Model */
+            model: string;
+            /**
+             * Observed At
+             * Format: date-time
+             */
+            observed_at: string;
+            /** Output Limits */
+            output_limits?: number[];
+            /**
+             * Reasoning Parameter
+             * @enum {string}
+             */
+            reasoning_parameter: "not_sent" | "unknown" | "accepted" | "rejected";
+            /** Request Ids */
+            request_ids?: string[];
+            /** Route Id */
+            route_id: string;
+            /**
+             * Schema Version
+             * @default 1
+             * @constant
+             */
+            schema_version: 1;
+            /**
+             * Structured
+             * @enum {string}
+             */
+            structured: "unknown" | "accepted" | "rejected";
+            /**
+             * Structured Protocol
+             * @enum {string}
+             */
+            structured_protocol: "json_schema" | "json_object";
+            /**
+             * Text
+             * @enum {string}
+             */
+            text: "unknown" | "accepted" | "rejected";
+        };
+        /**
          * ModelProbeResult
          * @description 单条文本路由的有限调用结果。
          */
         ModelProbeResult: {
             /** Detail */
             detail: string;
+            diagnostic?: components["schemas"]["ModelProbeDiagnostic"] | null;
             /** Id */
             id: string;
             /** Ok */
             ok: boolean;
+            /**
+             * Persisted
+             * @default false
+             */
+            persisted: boolean;
         };
         /**
          * ModelRoute

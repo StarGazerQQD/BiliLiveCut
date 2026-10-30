@@ -8,12 +8,14 @@ from dataclasses import asdict, dataclass
 from datetime import UTC, datetime
 
 from loguru import logger
+from sqlalchemy import delete
 from sqlalchemy.exc import SQLAlchemyError
 from sqlmodel import Session, select
 
 from app.analysis.reanalysis_policy import segment_protection_reason, task_is_active
 from app.analysis.source_policy import is_local_session
 from app.analysis.timeline import TIMELINE_ANALYSIS_VERSION
+from app.analysis.transcription.refinement import refinement_needs_retry
 from app.core.media_usage import media_reference_scope
 from app.core.sanitize import safe_exception_summary
 from app.db.entities import (
@@ -32,6 +34,7 @@ from app.pipeline.task_context import event_first_context, update_event_first_co
 _PENDING_KEY_PREFIX = "session_reanalysis:"
 _REQUEST_VERSION = 1
 _REQUEST_FIELDS = {"version", "session_id", "reason", "retranscribe", "requested_at"}
+_REFINEMENT_REQUEST_FIELDS = _REQUEST_FIELDS | {"retry_refinement"}
 _UNSETTLED_ANALYSIS_STAGES = {
     TaskStatus.RECORDED,
     TaskStatus.QUEUED_FOR_TRANS,
@@ -64,6 +67,7 @@ def queue_session_reanalysis(
     *,
     reason: str,
     retranscribe: bool = False,
+    retry_refinement: bool = False,
 ) -> ReanalysisResult:
     """重新排队一场直播的安全分段，同时保留所有人工成果。
 
@@ -100,13 +104,14 @@ def queue_session_reanalysis(
             transcript = db.exec(select(Transcript).where(Transcript.segment_id == segment.id)).first()
             rerun_asr = bool(retranscribe and transcript is not None and transcript.final_text_source != "manual")
             needs_asr = rerun_asr or transcript is None
+            refinement_only = bool(retry_refinement and not needs_asr and refinement_needs_retry(db, transcript))
             if task is None:
                 task = SegmentTask(
                     segment_id=segment.id,
                     session_id=session_id,
                     pipeline_key=make_pipeline_key(segment.id),
                 )
-            _reset_task(task, reason=reason, rerun_asr=needs_asr)
+            _reset_task(task, reason=reason, rerun_asr=needs_asr, refinement_only=refinement_only)
             if needs_asr:
                 if rerun_asr and transcript is not None:
                     db.delete(transcript)
@@ -126,12 +131,13 @@ def request_session_reanalysis(
     *,
     reason: str,
     retranscribe: bool = False,
+    explicit: bool = False,
     db: Session | None = None,
 ) -> bool:
     """持久化场次重分析请求，等待当前尾段流水线稳定后执行。
 
     同一场次的重复请求会合并；只要任一请求要求重新转写，最终请求就保留该要求。
-    没有原始分段，或既没有流水线任务也未启用自动分析的场次不会入队。
+    自动触发仍要求已有任务或已启用自动分析；明确的人工请求可为已有素材建立任务。
     """
     from app.db.entities import LiveRoom, RecordingSession
 
@@ -147,7 +153,7 @@ def request_session_reanalysis(
             return False
         has_tasks = db.exec(select(SegmentTask.id).where(SegmentTask.session_id == session_id).limit(1)).first()
         room = db.get(LiveRoom, recording.room_id)
-        if has_tasks is None and (room is None or not room.auto_analyze):
+        if not explicit and has_tasks is None and (room is None or not room.auto_analyze):
             return False
 
         existing = db.get(AppSetting, key)
@@ -157,6 +163,7 @@ def request_session_reanalysis(
             "session_id": session_id,
             "reason": reason[:200],
             "retranscribe": bool(retranscribe or previous.get("retranscribe", False)),
+            "retry_refinement": bool(explicit or previous.get("retry_refinement", False)),
             "requested_at": datetime.now(UTC).isoformat(),
         }
         if existing is None:
@@ -192,7 +199,7 @@ def process_pending_session_reanalyses(*, limit: int = 4) -> list[ReanalysisResu
         payload = _decode_pending_payload(raw_payload)
         session_id = _session_id_from_pending(key, payload)
         if session_id is None:
-            _delete_pending_request(key)
+            _delete_pending_request(key, raw_payload)
             logger.warning("已清理无效的场次重分析请求 key={}", key)
             continue
         if _session_analysis_unsettled(session_id):
@@ -202,9 +209,10 @@ def process_pending_session_reanalyses(*, limit: int = 4) -> list[ReanalysisResu
                 session_id,
                 reason=str(payload.get("reason") or "session_finalized"),
                 retranscribe=bool(payload.get("retranscribe", False)),
+                retry_refinement=bool(payload.get("retry_refinement", False)),
             )
         except ValueError as exc:
-            _delete_pending_request(key)
+            _delete_pending_request(key, raw_payload)
             logger.warning("场次重分析请求不可执行并已清理 session={}: {}", session_id, exc)
             continue
         except SQLAlchemyError as exc:
@@ -224,7 +232,7 @@ def process_pending_session_reanalyses(*, limit: int = 4) -> list[ReanalysisResu
             continue
         if result.skipped_active:
             continue
-        _delete_pending_request(key)
+        _delete_pending_request(key, raw_payload)
         completed.append(result)
         logger.info(
             "场次最终重分析已入队 session={} queued={} preserved={}",
@@ -246,9 +254,9 @@ def detach_hotspot_candidate(db: Session, candidate_id: int | None) -> None:
     db.flush()
 
 
-def _reset_task(task: SegmentTask, *, reason: str, rerun_asr: bool) -> None:
+def _reset_task(task: SegmentTask, *, reason: str, rerun_asr: bool, refinement_only: bool = False) -> None:
     """把非活跃任务重置到转写或分析队列。"""
-    target = TaskStatus.QUEUED_FOR_TRANS if rerun_asr else TaskStatus.QUEUED_FOR_ANALYSIS
+    target = TaskStatus.QUEUED_FOR_TRANS if rerun_asr or refinement_only else TaskStatus.QUEUED_FOR_ANALYSIS
     task.stage = target
     task.pipeline_key = make_pipeline_key(task.segment_id)
     task.stage_key = make_stage_key(task.segment_id, target)
@@ -272,6 +280,7 @@ def _reset_task(task: SegmentTask, *, reason: str, rerun_asr: bool) -> None:
                 "reason": reason[:200],
                 "analysis_version": TIMELINE_ANALYSIS_VERSION,
                 "retranscribe": rerun_asr,
+                "refinement_only": refinement_only,
                 "preserve_identity": True,
             }
         },
@@ -306,14 +315,14 @@ def _session_analysis_unsettled(session_id: int) -> bool:
 
 
 def _decode_pending_payload(raw: str | None) -> dict[str, object]:
-    """只接受当前版本且字段精确匹配的重分析请求。"""
+    """校验重分析请求；未携带人工补做授权的已登记请求保持原语义。"""
     if not raw:
         return {}
     try:
         payload = json.loads(raw)
     except (json.JSONDecodeError, TypeError):
         return {}
-    if not isinstance(payload, dict) or set(payload) != _REQUEST_FIELDS:
+    if not isinstance(payload, dict) or set(payload) not in (_REQUEST_FIELDS, _REFINEMENT_REQUEST_FIELDS):
         return {}
     if payload["version"] != _REQUEST_VERSION:
         return {}
@@ -322,6 +331,8 @@ def _decode_pending_payload(raw: str | None) -> dict[str, object]:
     if not isinstance(payload["reason"], str) or not payload["reason"]:
         return {}
     if not isinstance(payload["retranscribe"], bool):
+        return {}
+    if "retry_refinement" in payload and not isinstance(payload["retry_refinement"], bool):
         return {}
     if not isinstance(payload["requested_at"], str) or not payload["requested_at"]:
         return {}
@@ -337,8 +348,6 @@ def _session_id_from_pending(key: str, payload: dict[str, object]) -> int | None
     return value
 
 
-def _delete_pending_request(key: str) -> None:
+def _delete_pending_request(key: str, expected_payload: str) -> None:
     with get_session() as db:
-        row = db.get(AppSetting, key)
-        if row is not None:
-            db.delete(row)
+        db.exec(delete(AppSetting).where(AppSetting.key == key, AppSetting.value == expected_payload))

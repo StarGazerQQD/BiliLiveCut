@@ -122,15 +122,14 @@ async def test_llm_providers(items: list[dict[str, Any]] | None = None) -> dict[
 
 def test_model_route(change: ModelProbe) -> ModelProbeResult:
     """按完整草稿解析一次文本调用，远程 ASR 需由用户明确提交音频测试。"""
-    from openai import OpenAIError
-
-    from app.analysis.llm import EmptyLLMResponseError, probe_provider
     from app.analysis.llm_providers import from_route
+    from app.analysis.model_probe import diagnose_provider
     from app.models.configuration import (
-        ModelAuthorizationError,
         authorize_model_probe,
         probe_configuration,
+        probe_is_saved,
         resolve_routes,
+        save_probe_diagnostic,
     )
 
     config = probe_configuration(change)
@@ -147,10 +146,15 @@ def test_model_route(change: ModelProbe) -> ModelProbeResult:
 
         if _today_spend() >= settings.llm_daily_budget:
             raise ValueError("已达到每日模型预算，无法发起测试请求")
-    try:
-        provider = from_route(*selected)
-        provider.authorize = partial(authorize_model_probe, change.revision)
-        result = probe_provider(provider)
-    except (OpenAIError, EmptyLLMResponseError, ModelAuthorizationError) as exc:
-        return ModelProbeResult(id=route.id, ok=False, detail=safe_exception_summary(exc))
-    return ModelProbeResult(id=route.id, ok=True, detail=result[:80])
+    saved = probe_is_saved(*selected)
+    provider = from_route(*selected)
+    provider.authorize = partial(authorize_model_probe, change.revision)
+    diagnostic = diagnose_provider(provider)
+    persisted = saved and save_probe_diagnostic(*selected, diagnostic)
+    return ModelProbeResult(
+        id=route.id,
+        ok=diagnostic.text == "accepted",
+        detail=diagnostic.detail,
+        diagnostic=diagnostic,
+        persisted=persisted,
+    )

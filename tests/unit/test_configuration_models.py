@@ -193,11 +193,11 @@ def test_pipeline_refreshes_global_and_thread_cache_next_task(temp_db: None, con
         assert next_task._review_risk_threshold == 0.9
 
 
-def test_llm_same_prefix_rotation_does_not_close_active_client(monkeypatch: MonkeyPatch) -> None:
+def test_llm_same_prefix_rotation_does_not_close_active_client(temp_db: None, monkeypatch: MonkeyPatch) -> None:
     import sys
 
     import httpx
-    from openai import DEFAULT_CONNECTION_LIMITS
+    from openai import DEFAULT_CONNECTION_LIMITS, APIConnectionError, APIStatusError, APITimeoutError
 
     from app.analysis import llm
     from app.analysis.llm_providers import LLMProvider
@@ -221,6 +221,9 @@ def test_llm_same_prefix_rotation_does_not_close_active_client(monkeypatch: Monk
     module = ModuleType("openai")
     module.OpenAI = FakeClient
     module.DEFAULT_CONNECTION_LIMITS = DEFAULT_CONNECTION_LIMITS
+    module.APIConnectionError = APIConnectionError
+    module.APIStatusError = APIStatusError
+    module.APITimeoutError = APITimeoutError
     monkeypatch.setitem(sys.modules, "openai", module)
     monkeypatch.setattr(llm, "_client_cache", {})
     first = LLMProvider("rotation", "first", "https://example.invalid", "samehead-old", "test")
@@ -230,7 +233,7 @@ def test_llm_same_prefix_rotation_does_not_close_active_client(monkeypatch: Monk
         entered.set()
         assert release.wait(5)
         assert not client.closed
-        return {"choices": [{"message": {"content": "success"}}]}
+        return {"choices": [{"message": {"content": "success"}, "finish_reason": "stop"}]}
 
     monkeypatch.setattr(llm, "_create_completion", completion)
     with ThreadPoolExecutor(max_workers=1) as executor:

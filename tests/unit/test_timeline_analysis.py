@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import json
 from datetime import UTC, datetime, timedelta
 
 import pytest
@@ -94,16 +95,26 @@ def test_timeline_clustering_accepts_mixed_timezone_datetimes() -> None:
     ) == pytest.approx(1.0)
 
 
-def test_session_transcript_window_crosses_segment_boundary() -> None:
+@pytest.mark.parametrize("has_timestamps", [True, False])
+def test_session_transcript_window_crosses_segment_boundary(has_timestamps: bool) -> None:
     """爆点前后文本应跨过五分钟录制分段边界连续提供给 LLM。"""
     base = datetime(2026, 8, 5, 12, 0, tzinfo=UTC)
     parts = [
-        TimedTranscriptPart(base, base + timedelta(seconds=300), "前段结尾", None),
+        TimedTranscriptPart(
+            base,
+            base + timedelta(seconds=300),
+            "前段结尾",
+            json.dumps([{"w": "前段结", "start": 0, "end": 280}, {"w": "尾", "start": 295, "end": 299}])
+            if has_timestamps
+            else None,
+        ),
         TimedTranscriptPart(
             base + timedelta(seconds=300),
             base + timedelta(seconds=600),
             "后段开头",
-            None,
+            json.dumps([{"w": "后", "start": 1, "end": 5}, {"w": "段开头", "start": 20, "end": 300}])
+            if has_timestamps
+            else None,
         ),
     ]
 
@@ -113,8 +124,11 @@ def test_session_transcript_window_crosses_segment_boundary() -> None:
         end_ts=base + timedelta(seconds=310),
     )
 
-    assert window.text == "尾\n后"
-    assert window.precise is False
+    assert window.text == ("尾\n后" if has_timestamps else "")
+    assert window.words == (
+        [{"w": "尾", "start": 5.0, "end": 9.0}, {"w": "后", "start": 11.0, "end": 15.0}] if has_timestamps else []
+    )
+    assert window.precise is has_timestamps
 
 
 def test_session_transcript_window_accepts_mixed_utc_representations() -> None:

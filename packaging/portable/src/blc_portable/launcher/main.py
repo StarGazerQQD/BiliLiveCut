@@ -1448,9 +1448,7 @@ def _run_launcher(args: argparse.Namespace) -> int:
         env["BLC_SOURCE_DIR"] = str(source_dir)
         env["PYTHONPATH"] = str(source_dir)
 
-        # 清除代理环境变量：Portable 模式仅需服务 localhost，httpx 不需要 SOCKS
-        for proxy_var in ("ALL_PROXY", "HTTP_PROXY", "HTTPS_PROXY", "all_proxy", "http_proxy", "https_proxy"):
-            env.pop(proxy_var, None)
+        # 保留外部模型、平台和下载使用的代理；API 启动时合并本地 NO_PROXY。
 
         models_dir = app_root / "models"
         if models_dir.exists():

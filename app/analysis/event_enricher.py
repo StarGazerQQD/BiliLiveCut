@@ -27,9 +27,8 @@ from app.analysis.model_execution import ModelCallBudget
 from app.analysis.timeline import datetime_epoch
 from app.core.config import settings
 from app.core.runtime_settings import configured_task
-from app.db.entities import AppSetting, HotspotEvent, HotspotStatus, utcnow
+from app.db.entities import HotspotEvent, HotspotStatus, utcnow
 from app.db.session import get_session
-from app.models.capacity import capacity_identity
 
 EVENT_ENRICHER_VERSION = 2
 _RETRY_LIMIT = 3
@@ -107,7 +106,7 @@ class EventEvidence:
 
 @dataclass(frozen=True, slots=True)
 class EventEvidenceBundle:
-    """内容与执行策略共同寻址的事件证据快照。"""
+    """由实际内容与语义策略寻址的事件证据快照。"""
 
     event_id: int
     event_key: str
@@ -207,14 +206,12 @@ def build_event_evidence_bundle(
         if source is not None
         else ()
     )
-    revision = db.get(AppSetting, "configuration_revision")
     routes = [
         {
             "id": item.id,
             "connection_id": item.connection_id,
             "model": item.model,
-            "max_output_tokens": item.max_output_tokens,
-            "capacity": capacity_identity(item),
+            "endpoint_sha256": hashlib.sha256(item.base_url.encode()).hexdigest(),
             "priority": item.priority,
         }
         for item in llm_providers.active_providers("analysis")
@@ -231,13 +228,8 @@ def build_event_evidence_bundle(
         "prompts": hashlib.sha256((EXPLANATION_PROMPT + GROUNDING_PROMPT).encode()).hexdigest(),
         "config": asdict(cfg),
         "routes": routes,
-        "configuration_revision": revision.value if revision is not None else "0",
-        "max_tokens": settings.hotspot_enrichment_llm_max_tokens,
         "evidence_coverage": event.evidence_coverage,
         "detector_semantic_confidence": _detector_confidence(event),
-        "attempt_budget": settings.editorial_model_max_attempts,
-        "deadline": settings.editorial_model_deadline_s,
-        "request_timeout": settings.llm_request_timeout_s,
     }
     fingerprint = hashlib.sha256(
         json.dumps(snapshot, ensure_ascii=False, allow_nan=False, sort_keys=True, separators=(",", ":")).encode()
@@ -296,7 +288,7 @@ def compute_event_enrichment(
 ) -> EventEnrichmentDraft | None:
     """在事务外生成与核验解释，缓存成功和有限失败重试分别处理。"""
     cfg = config or EventEnricherConfig()
-    budget = budget or llm.new_editorial_budget()
+    budget = budget or llm.new_editorial_budget(target=f"hotspot:{event_id}")
     with get_session() as db:
         bundle = build_event_evidence_bundle(db, event_id, config=cfg)
         event = db.get(HotspotEvent, bundle.event_id)
@@ -434,7 +426,9 @@ def enrich_hotspot_event(
     event_id: int, *, force: bool = False, config: EventEnricherConfig | None = None
 ) -> EventEnrichmentDraft | None:
     """同步解释入口，同一预算覆盖生成和事实核验，写入前再次验证快照。"""
-    draft = compute_event_enrichment(event_id, force=force, config=config, budget=llm.new_editorial_budget())
+    draft = compute_event_enrichment(
+        event_id, force=force, config=config, budget=llm.new_editorial_budget(target=f"hotspot:{event_id}")
+    )
     if draft is None:
         return None
     with get_session() as db:

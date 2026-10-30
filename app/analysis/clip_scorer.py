@@ -17,7 +17,7 @@ from app.analysis.editorial_review import (
     EditorialReviewDraft,
     editorial_auto_approvable,
     editorial_candidate,
-    review_policy_identity,
+    semantic_review_policy,
 )
 from app.analysis.editorial_review_sources import (
     event_review_is_current,
@@ -416,7 +416,7 @@ def validate_event_clip_draft(
         return None
     metadata = _json_mapping(draft.features_json).get("editorial_review")
     if review is not None and isinstance(metadata, Mapping):
-        if not media_snapshot_is_current(db, draft.session_id):
+        if not media_snapshot_is_current(db, draft.session_id, start=draft.start_ts, end=draft.end_ts):
             return None
         if metadata.get("media_accessible") != media_bounds_accessible(db, review.source, draft.start_ts, draft.end_ts):
             return None
@@ -557,10 +557,18 @@ def _load_event_context(
             continue
         identity = media_file_identity(item)
         # 来源身份只用于本地成片校验，不加入发送给模型的证据。
-        media_identity.append({"id": item.id, "path": item.file_path, "file": identity})
+        media_identity.append(
+            {
+                "id": item.id,
+                "path": item.file_path,
+                "file": identity,
+                "start": str(item.start_ts),
+                "end": str(item.end_ts),
+            }
+        )
     fingerprint_payload = {
         "version": EVENT_CLIP_SCORER_VERSION,
-        "editorial_policy": review_policy_identity(),
+        "editorial_policy": semantic_review_policy(),
         "editorial_fingerprint": (
             review_execution.get("input_fingerprint") if isinstance(review_execution, Mapping) else None
         ),
@@ -584,7 +592,7 @@ def _load_event_context(
         "modality_scores": dict(modality_scores),
         "novelty": novelty,
         "asr_quality_score": speech_completeness,
-        "recording_block": [block_start.isoformat(), block_end.isoformat()],
+        "recording_window": [media_start.isoformat(), media_end.isoformat()],
         "media_identity": media_identity,
         "threshold": threshold,
         "review_threshold": review_threshold,

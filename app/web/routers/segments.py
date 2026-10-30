@@ -257,6 +257,7 @@ def reanalyze_session(session_id: int, payload: ReanalysisRequest) -> dict[str, 
             session_id,
             reason=payload.reason,
             retranscribe=payload.retranscribe,
+            explicit=True,
         )
         return {"session_id": session_id, "requested": requested}
     except ValueError as exc:

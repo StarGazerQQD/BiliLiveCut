@@ -86,7 +86,7 @@ def test_actual_sdk_explanation_and_grounding_restrict_to_their_actual_reference
         "category": "discussion",
         "entities": [],
         "semantic_confidence": 0.8,
-        "evidence_ids": ["asr:1"],
+        "evidence_ids": ["E1"],
     }
     calls = install_editorial_service(monkeypatch, lambda *_args, **_kwargs: json.dumps(output), grounded=True)
     result = explain(
@@ -98,14 +98,15 @@ def test_actual_sdk_explanation_and_grounding_restrict_to_their_actual_reference
         max_entities=12,
     )
     assert result.output is not None and len(calls) == 2
+    assert result.output.evidence_ids == ["asr:1"]
     assert calls[0]["response_format"]["json_schema"]["schema"]["properties"]["evidence_ids"]["items"]["enum"] == [
-        "asr:1",
-        "degraded:2",
+        "E1",
+        "E2",
     ]
     assert calls[1]["response_format"]["json_schema"]["schema"]["$defs"]["GroundingQuote"]["properties"]["evidence_id"][
         "enum"
-    ] == ["asr:1"]
-    assert "逐字复制" in calls[0]["messages"][0]["content"] and "逐字复制" in calls[1]["messages"][0]["content"]
+    ] == ["E1"]
+    assert "E 编号" in calls[0]["messages"][0]["content"] and "Q 编号" in calls[1]["messages"][0]["content"]
 
 
 def test_explanation_without_citable_evidence_stops_before_network(temp_db: None, monkeypatch: MonkeyPatch) -> None:
@@ -133,7 +134,9 @@ def test_empty_source_keeps_empty_review_references_and_no_suggested_bounds() ->
     validate_review_evidence(result, source)
 
 
-def test_legal_long_reference_sets_are_sent_without_truncating_ids(temp_db: None, monkeypatch: MonkeyPatch) -> None:
+def test_legal_long_reference_sets_are_mapped_and_restored_without_truncation(
+    temp_db: None, monkeypatch: MonkeyPatch
+) -> None:
     from app.analysis.editorial_contracts import INPUT_MAX_BYTES, SCHEMA_MAX_BYTES
     from app.analysis.editorial_review import judge_editorial
 
@@ -146,7 +149,9 @@ def test_legal_long_reference_sets_are_sent_without_truncating_ids(temp_db: None
     calls = install_editorial_service(
         monkeypatch,
         lambda *_args, **_kwargs: json.dumps(
-            _payload(verdict="needs_review", evidence_ids=[], uncertainties=["需要核验"], suggested_bounds=None)
+            _payload(
+                verdict="needs_review", evidence_ids=["E1", "E100"], uncertainties=["需要核验"], suggested_bounds=None
+            )
         ),
     )
     draft = judge_editorial(
@@ -154,7 +159,9 @@ def test_legal_long_reference_sets_are_sent_without_truncating_ids(temp_db: None
     )
     assert draft.execution.status == "succeeded" and len(calls) == 1
     sent = calls[0]["response_format"]["json_schema"]["schema"]
-    assert sent["properties"]["evidence_ids"]["items"]["enum"] == [item.evidence_id for item in evidence]
+    assert sent["properties"]["evidence_ids"]["items"]["enum"] == [f"E{index}" for index in range(1, 101)]
     assert sent["$defs"]["SuggestedBounds"]["properties"]["evidence_ids"]["items"]["enum"] == [
-        item.evidence_id for item in evidence
+        f"E{index}" for index in range(1, 101)
     ]
+    assert draft.execution.result.evidence_ids == [evidence[0].evidence_id, evidence[-1].evidence_id]
+    assert [item.evidence_id for item in draft.source.evidence] == [item.evidence_id for item in evidence]

@@ -45,9 +45,7 @@ def _setup_proxy_env() -> None:
     不篡改用户代理配置 (HTTP_PROXY/HTTPS_PROXY/ALL_PROXY),
     但确保 localhost 始终绕过代理以支持本地 Dashboard 访问。
 
-    NO_PROXY 合并规则:
-    - 如果用户已设置 NO_PROXY, 追加 localhost 项
-    - 如果用户未设置, 设置 NO_PROXY=127.0.0.1,localhost,::1
+    合并大小写 NO_PROXY 中的全部条目，追加本地地址并同步写回两种拼写。
 
     SOCKS 诊断:
     - 如果检测到 ALL_PROXY 使用 socks:// scheme,
@@ -56,23 +54,21 @@ def _setup_proxy_env() -> None:
     import os as _os
 
     no_proxy_defaults = ["127.0.0.1", "localhost", "::1"]
-    existing = _os.environ.get("NO_PROXY", "") or _os.environ.get("no_proxy", "")
+    existing_items = [
+        item.strip()
+        for name in ("NO_PROXY", "no_proxy")
+        for item in _os.environ.get(name, "").split(",")
+        if item.strip()
+    ]
+    merged = ",".join(dict.fromkeys([*existing_items, *no_proxy_defaults]))
+    _os.environ["NO_PROXY"] = _os.environ["no_proxy"] = merged
 
-    if existing:
-        existing_items = [x.strip() for x in existing.split(",") if x.strip()]
-        for item in no_proxy_defaults:
-            if item not in existing_items:
-                existing_items.append(item)
-        _os.environ["NO_PROXY"] = ",".join(existing_items)
-    else:
-        _os.environ["NO_PROXY"] = ",".join(no_proxy_defaults)
-
-    # SOCKS diagnostic
+    # 本地访问绕过代理；SOCKS 配置仍影响外部模型、平台和下载请求。
     all_proxy = _os.environ.get("ALL_PROXY", "") or _os.environ.get("all_proxy", "")
     if all_proxy and all_proxy.lower().startswith("socks"):
         logger.warning(
             "检测到 SOCKS 代理配置。"
-            "请确认 httpx[socks] 已安装, 否则本地 Dashboard 请求可能失败。"
+            "请确认 httpx[socks] 已安装，否则外部模型、平台或下载请求可能失败。"
             "安装: pip install httpx[socks]",
         )
 

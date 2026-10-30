@@ -175,7 +175,7 @@ def test_disabled_review_preserves_unknown_and_has_no_requests(temp_db: None) ->
 def test_audio_measurement_cannot_become_definitive_editorial_verdict(temp_db: None, monkeypatch: MonkeyPatch) -> None:
     source = _source(evidence=[_evidence(type="audio", excerpts=[], detail={"metrics": {"rms": 0.8}})])
     requests = install_editorial_service(
-        monkeypatch, lambda *_args, **_kwargs: json.dumps(_payload(suggested_bounds=None))
+        monkeypatch, lambda *_args, **_kwargs: json.dumps(_payload(evidence_ids=["E1"], suggested_bounds=None))
     )
     draft = judge_editorial(lambda _direction: source, revision="test", budget=_budget())
     assert draft.execution.status == "failed"
@@ -211,6 +211,7 @@ def test_context_extension_shared_budget_and_single_expansion(temp_db: None, mon
                 missing_context="before",
                 suggested_bounds=None,
                 uncertainties=["缺少比赛结果"],
+                evidence_ids=["E1"],
             )
         ),
     )
@@ -221,7 +222,7 @@ def test_context_extension_shared_budget_and_single_expansion(temp_db: None, mon
     assert [
         call["response_format"]["json_schema"]["schema"]["properties"]["evidence_ids"]["items"]["enum"]
         for call in calls
-    ] == [["asr:1"], ["asr:1", "before:1"]]
+    ] == [["E1"], ["E1", "E2"]]
     assert draft.expanded_context == "before"
     assert draft.execution.result.verdict == "needs_review"
     assert not editorial_auto_approvable(draft.metadata())
@@ -338,7 +339,7 @@ def test_no_asr_still_requests_review_using_real_audio_evidence(
         lambda *_args, **_kwargs: json.dumps(
             _payload(
                 verdict="needs_review",
-                evidence_ids=[f"segment:{segment_id}:audio"],
+                evidence_ids=["E1"],
                 interest_rating=None,
                 standalone=None,
                 boundary_status="uncertain",
@@ -383,7 +384,9 @@ def test_editorial_transport_failure_keeps_real_failure_not_business_reject(
     draft = judge_editorial(lambda _direction: _source(), revision="test", budget=_budget())
     assert draft.execution.error == "provider_error"
     assert draft.execution.status == "failed" and draft.execution.result is None
-    assert len(requests) == len(draft.execution.attempts) == 1
+    assert len(requests) == len(draft.execution.attempts) == 2
+    assert [attempt.number for attempt in draft.execution.attempts] == [1, 2]
+    assert all(attempt.diagnostic.http_status == 503 for attempt in draft.execution.attempts)
 
 
 def test_context_expansion_without_new_evidence_does_not_make_second_request(
@@ -399,6 +402,7 @@ def test_context_expansion_without_new_evidence_does_not_make_second_request(
                 missing_context="after",
                 suggested_bounds=None,
                 uncertainties=["缺少后文"],
+                evidence_ids=["E1"],
             )
         ),
     )

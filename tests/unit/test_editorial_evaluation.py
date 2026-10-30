@@ -17,6 +17,7 @@ from app.analysis.editorial_evaluation import (
     label_template,
     match_intervals,
     snapshot_digest,
+    snapshot_payload,
 )
 from app.analysis.editorial_evaluation_io import read_contract, write_result
 from app.analysis.editorial_provenance import ReviewProvenance, canonical_hash, capture_provenance
@@ -189,7 +190,7 @@ def test_shared_budget_costs_are_deduplicated_and_unknown_costs_stay_unknown() -
     current = _attempt(number=2)
     provenance = capture_provenance(
         {
-            "policy": "fixture",
+            "policy": "editorial-decision-v2",
             "prompt": "0" * 64,
             "routes": [],
             "attempts": 8,
@@ -239,6 +240,65 @@ def test_files_are_bounded_and_never_overwritten(tmp_path: Path, monkeypatch: Mo
         read_contract(path, EvaluationSnapshot)
     with pytest.raises(ValueError, match="超过"):
         write_result(tmp_path / "large.json", {"large": "x" * 10})
+
+
+@pytest.mark.parametrize("metadata", ["absent", "unknown", "known"])
+def test_snapshot_request_metadata_preserves_existing_label_identity(tmp_path: Path, metadata: str) -> None:
+    provenance = capture_provenance(
+        {
+            "policy": "editorial-decision-v2",
+            "prompt": "0" * 64,
+            "routes": [],
+            "attempts": 8,
+            "deadline": 30.0,
+            "request_timeout": 10.0,
+            "max_tokens": 512,
+        },
+        _source(),
+        operation_id="b" * 32,
+        prior_attempts=[_attempt(purpose="explanation")],
+    )
+    raw = _snapshot().model_dump(mode="json")
+    record = raw["records"][0]
+    record["provenance"] = provenance.model_dump(mode="json")
+    record["revision"] = "frozen"
+    execution = record["execution"]
+    execution["attempt_offset"] = 1
+    execution["attempts"][0]["number"] = 2
+    execution["input_fingerprint"] = canonical_hash(
+        {"initial": record["input"], "source": record["input"], "revision": "frozen", "policy": provenance.policy}
+    )
+    for attempt in execution["attempts"] + record["provenance"]["prior_attempts"]:
+        if metadata == "absent":
+            attempt.pop("request_id")
+            attempt.pop("output_tokens_limit")
+        else:
+            attempt["request_id"] = "request-1" if metadata == "known" else None
+            attempt["output_tokens_limit"] = 4096 if metadata == "known" else None
+        assert attempt["reported_model"] is None and attempt["diagnostic"] is None
+        assert attempt["usage"]["estimated_cost_usd"] is None
+    path = tmp_path / "frozen.json"
+    write_result(path, raw)
+    snapshot = read_contract(path, EvaluationSnapshot)
+    expected = canonical_hash(raw)
+    assert snapshot_digest(snapshot) == expected
+    assert snapshot_payload(snapshot) == raw
+    roundtrip_path = tmp_path / "exported.json"
+    write_result(roundtrip_path, snapshot_payload(snapshot))
+    assert snapshot_digest(read_contract(roundtrip_path, EvaluationSnapshot)) == expected
+    labels = _labels(snapshot).model_copy(update={"snapshot_sha256": expected})
+    assert evaluate(snapshot, labels, mode="fixed_candidates")["snapshot_sha256"] == expected
+
+
+@pytest.mark.parametrize("field,value", [("request_id", "request-2"), ("output_tokens_limit", 8192)])
+def test_known_request_metadata_is_part_of_snapshot_identity(field: str, value: object) -> None:
+    record = _record()
+    original = _attempt(request_id="request-1", output_tokens_limit=4096)
+    record = record.model_copy(update={"execution": _execution(attempts=[original])})
+    snapshot = _snapshot([record])
+    changed = record.model_copy(update={"execution": _execution(attempts=[original.model_copy(update={field: value})])})
+    with pytest.raises(ValueError, match="指纹"):
+        evaluate(_snapshot([changed]), _labels(snapshot), mode="fixed_candidates")
 
 
 def test_duplicate_json_fields_are_rejected(tmp_path: Path) -> None:

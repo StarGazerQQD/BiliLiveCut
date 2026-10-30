@@ -2,7 +2,12 @@ import { test, expect, type Page } from "@playwright/test";
 
 type Provider = Record<string, unknown>;
 
-async function fixture(page: Page, introduceConflict = false) {
+async function fixture(
+  page: Page,
+  introduceConflict = false,
+  persistProbe = false,
+) {
+  let diagnostics: Provider[] = [];
   let providers: Provider[] = [
     {
       id: "existing-service",
@@ -62,14 +67,31 @@ async function fixture(page: Page, introduceConflict = false) {
             status: 409,
             json: { detail: "配置已在其他页面修改" },
           });
-        if (path.endsWith("/test"))
+        if (path.endsWith("/test")) {
+          const diagnostic = {
+            route_id: body.route_id,
+            text: "accepted",
+            structured: "unknown",
+            structured_protocol: "json_schema",
+            reasoning_parameter: "not_sent",
+            observed_at: "2026-10-31T06:00:00Z",
+            attempts: 2,
+            output_limits: [4096, 4096],
+            request_ids: ["probe-first", "probe-second"],
+            estimated_cost_usd: null,
+            detail: "本地测试响应",
+          };
+          if (persistProbe) diagnostics = [diagnostic];
           return route.fulfill({
             json: {
               id: body.route_id,
               ok: true,
               detail: "本地测试响应",
+              diagnostic,
+              persisted: persistProbe,
             },
           });
+        }
         providers = incoming.map(({ api_key, clear_api_key, ...provider }) => ({
           ...provider,
           api_key_set:
@@ -86,6 +108,7 @@ async function fixture(page: Page, introduceConflict = false) {
           routes,
           asr_selection: "",
           active_counts: { analysis: routes.length },
+          probe_diagnostics: diagnostics,
           model_capacities: [
             {
               id: "deepseek",
@@ -109,6 +132,57 @@ async function fixture(page: Page, introduceConflict = false) {
   });
   return writes;
 }
+
+test("saved probe diagnostics survive reload without saving configuration", async ({
+  page,
+}) => {
+  const writes = await fixture(page, false, true);
+  await page.goto("/settings/llm");
+  await page.getByRole("button", { name: "测试此路由", exact: true }).click();
+  await expect(page.getByText("诊断已保存", { exact: true })).toBeVisible();
+  await expect(
+    page.getByText("existing-route · 已保存的探测诊断", { exact: true }),
+  ).toBeVisible();
+  expect(writes).toHaveLength(1);
+  expect(writes[0].path).toBe("/api/model-configuration/test");
+  await page.reload();
+  await expect(page.getByLabel("模型探测诊断")).toHaveCount(1);
+  await expect(page.getByLabel("模型探测诊断")).toContainText(
+    "json_schema：未确认",
+  );
+  await expect(page.getByLabel("模型探测诊断")).toContainText("费用 未知");
+  await expect(page.getByLabel("模型探测诊断")).toContainText(
+    "probe-first / probe-second",
+  );
+  await page.getByLabel("模型名称", { exact: false }).fill("new-draft-model");
+  await expect(
+    page.getByText("existing-route · 已保存的探测诊断", { exact: true }),
+  ).toHaveCount(0);
+  expect(writes).toHaveLength(1);
+});
+
+test("draft probe remains temporary and keeps unsaved model values", async ({
+  page,
+}) => {
+  const writes = await fixture(page);
+  await page.goto("/settings/llm");
+  await page.getByLabel("模型名称", { exact: false }).fill("draft-probe-model");
+  await page.getByRole("button", { name: "测试此路由", exact: true }).click();
+  await expect(
+    page.getByText("临时诊断；草稿或测试期间已变化的配置不会保存诊断", {
+      exact: true,
+    }),
+  ).toBeVisible();
+  await expect(page.getByLabel("模型名称", { exact: false })).toHaveValue(
+    "draft-probe-model",
+  );
+  await expect(
+    page.getByRole("button", { name: "保存连接与路由", exact: true }),
+  ).toBeEnabled();
+  expect(writes).toHaveLength(1);
+  expect(writes[0].path).toBe("/api/model-configuration/test");
+  expect(writes[0].routes[0].model).toBe("draft-probe-model");
+});
 
 test("large custom limits persist and official capacity follows the edited endpoint", async ({
   page,

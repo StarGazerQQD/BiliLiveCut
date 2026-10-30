@@ -395,6 +395,46 @@ function ModelCapacitySummary({
     </div>
   );
 }
+function ModelProbeSummary({ diagnostic }: { diagnostic: Row }) {
+  const labels: Record<string, string> = {
+    accepted: "样本通过",
+    rejected: "明确拒绝",
+    unknown: "未确认",
+    not_sent: "未发送",
+  };
+  return (
+    <div
+      aria-label="模型探测诊断"
+      className="space-y-1 text-xs text-muted-foreground"
+    >
+      <p>
+        文本：{labels[text(diagnostic.text)] ?? "未确认"} ·{" "}
+        {text(diagnostic.structured_protocol)}：
+        {labels[text(diagnostic.structured)] ?? "未确认"} · 思考参数请求：
+        {labels[text(diagnostic.reasoning_parameter)] ?? "未确认"}
+      </p>
+      <p>
+        实际请求 {text(diagnostic.attempts)} 次 · 输出上限{" "}
+        {Array.isArray(diagnostic.output_limits) &&
+        diagnostic.output_limits.length
+          ? diagnostic.output_limits.join(" / ")
+          : "未发送"}{" "}
+        token · 费用{" "}
+        {diagnostic.estimated_cost_usd == null
+          ? "未知"
+          : `$${text(diagnostic.estimated_cost_usd)}`}
+      </p>
+      <p>探测不验证最大上下文、最大输出或思考控制的实际效果。</p>
+      <p>
+        观察时间：{text(diagnostic.observed_at)} · 请求 ID：
+        {Array.isArray(diagnostic.request_ids) && diagnostic.request_ids.length
+          ? diagnostic.request_ids.join(" / ")
+          : "服务未提供"}
+      </p>
+    </div>
+  );
+}
+
 function SetupPanel({
   description,
   actions,
@@ -462,8 +502,10 @@ export function LlmPage({
           ...(routeId ? { route_id: routeId } : {}),
         },
       );
-      if (routeId) setResults([result]);
-      else {
+      if (routeId) {
+        setResults([result]);
+        if (result.persisted) await query.refetch();
+      } else {
         draft.reset();
         await cache.invalidateQueries({ queryKey: ["api"] });
         toast.success("连接与业务路由已保存；新任务使用新配置");
@@ -611,6 +653,18 @@ export function LlmPage({
               </CardContent>
             </Card>
           ))}
+          {!draft.dirty &&
+            rows(view.probe_diagnostics).map((diagnostic) => (
+              <Card key={text(diagnostic.route_id)}>
+                <CardContent className="space-y-2">
+                  <strong>
+                    {text(diagnostic.route_id)} · 已保存的探测诊断
+                  </strong>
+                  <p className="text-sm">{text(diagnostic.detail)}</p>
+                  <ModelProbeSummary diagnostic={diagnostic} />
+                </CardContent>
+              </Card>
+            ))}
           {!providers.length && (
             <Empty
               title="还没有配置大模型服务"
@@ -822,6 +876,16 @@ export function LlmPage({
                 <span className="text-muted-foreground">
                   {text(result.detail)}
                 </span>
+                {result.diagnostic != null && (
+                  <div className="w-full space-y-1">
+                    <p>
+                      {result.persisted
+                        ? "诊断已保存"
+                        : "临时诊断；草稿或测试期间已变化的配置不会保存诊断"}
+                    </p>
+                    <ModelProbeSummary diagnostic={obj(result.diagnostic)} />
+                  </div>
+                )}
               </div>
             ))}
           </CardContent>

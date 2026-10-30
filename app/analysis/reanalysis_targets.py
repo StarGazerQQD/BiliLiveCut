@@ -4,17 +4,19 @@ from __future__ import annotations
 import hashlib
 import json
 from dataclasses import asdict
-from datetime import datetime
+from datetime import datetime, timedelta
 from typing import Annotated, Literal
 
 from pydantic import BaseModel, ConfigDict, Field
 from sqlmodel import Session, select
 
-from app.analysis.editorial_review import review_policy_identity
-from app.analysis.editorial_review_sources import segment_review_revision
+from app.analysis.editorial_contracts import CONTEXT_SECONDS
+from app.analysis.editorial_review import semantic_review_policy
+from app.analysis.editorial_review_sources import event_review_source, segment_review_revision
 from app.analysis.reanalysis_policy import event_protection_reason, segment_protection_reason
 from app.analysis.scoring_config import get_scoring_config
 from app.analysis.timeline import datetime_epoch
+from app.core.config import settings
 from app.db.entities import (
     AppSetting,
     HighlightCandidate,
@@ -102,14 +104,30 @@ def target_protection(db: Session, target: ReanalysisTarget, own_task_id: int | 
     return None
 
 
+def target_media_bounds(db: Session, target: ReanalysisTarget) -> tuple[datetime, datetime]:
+    """覆盖本对象可能使用的上下文和最大评分范围，不扩到整场后续录制。"""
+    margin = timedelta(seconds=CONTEXT_SECONDS)
+    duration = timedelta(seconds=settings.clip_max_duration_s)
+    start, end = target.peak_ts - duration, target.peak_ts + duration
+    source = (
+        db.get(HotspotEvent, target.source_id) if target.kind == "hotspot" else db.get(RawSegment, target.segment_id)
+    )
+    if source is not None and source.start_ts is not None and source.end_ts is not None:
+        start, end = min(start, source.start_ts - margin), max(end, source.end_ts + margin)
+    return start, end
+
+
 def target_fingerprint(db: Session, target: ReanalysisTarget, own_task_id: int | None = None) -> str:
     """散列真实来源、人工状态和配置；公开结果只有指纹，不包含路径或凭据。"""
     recording = db.get(RecordingSession, target.session_id)
     if recording is None:
         raise ValueError("重分析场次不存在")
     room = db.get(LiveRoom, recording.room_id)
+    lower, upper = target_media_bounds(db, target)
     segments = db.exec(
-        select(RawSegment).where(RawSegment.session_id == target.session_id).order_by(RawSegment.id)
+        select(RawSegment)
+        .where(RawSegment.session_id == target.session_id, RawSegment.start_ts < upper, RawSegment.end_ts > lower)
+        .order_by(RawSegment.id)
     ).all()
     transcripts = db.exec(
         select(Transcript).where(Transcript.segment_id.in_([item.id for item in segments])).order_by(Transcript.id)
@@ -121,6 +139,16 @@ def target_fingerprint(db: Session, target: ReanalysisTarget, own_task_id: int |
         select(SegmentTask).where(SegmentTask.segment_id == target.segment_id).order_by(SegmentTask.id)
     ).all()
     record = db.get(AppSetting, f"editorial_segment:{target.segment_id}") if target.kind == "segment" else None
+    if target.kind == "hotspot" and hotspot is not None:
+        inputs = [event_review_source(db, target.source_id, None)]
+        features = decode_features(hotspot.features_json)
+        review = features.get("editorial_review")
+        direction = review.get("expanded_context") if isinstance(review, dict) else None
+        if direction in {"before", "after", "both"}:
+            inputs.append(event_review_source(db, target.source_id, direction))
+        transcript_input = [item.model_dump(mode="json") if item is not None else None for item in inputs]
+    else:
+        transcript_input = [item.model_dump(mode="json") for item in transcripts]
     return _hash(
         {
             "target": [
@@ -132,8 +160,9 @@ def target_fingerprint(db: Session, target: ReanalysisTarget, own_task_id: int |
                 target.candidate_id,
                 target.event_id,
             ],
-            "source_revision": segment_review_revision(db, target.segment_id),
-            "transcripts": [item.model_dump(mode="json") for item in transcripts],
+            "source_revision": segment_review_revision(db, target.segment_id, start_ts=lower, end_ts=upper),
+            "transcripts": transcript_input,
+            "transcript_edits": [{"id": item.id, "final_text": item.final_text} for item in transcripts],
             "candidate": candidate.model_dump(mode="json") if candidate is not None else None,
             "event": event.model_dump(mode="json") if event is not None else None,
             "hotspot": hotspot.model_dump(mode="json") if hotspot is not None else None,
@@ -163,7 +192,7 @@ def target_fingerprint(db: Session, target: ReanalysisTarget, own_task_id: int |
             if room is not None
             else None,
             "scoring": asdict(get_scoring_config()),
-            "policy": review_policy_identity(),
+            "policy": semantic_review_policy(),
         }
     )
 
@@ -174,12 +203,17 @@ def _decorate(db: Session, target: ReanalysisTarget, metadata: object, own_task_
     verdict = result.get("verdict", "unknown") if isinstance(result, dict) else "unknown"
     if verdict not in {"recommend", "reject", "needs_review", "unknown"}:
         raise ValueError("已有编辑判断包含无效结论")
+    enrichment_failed = False
+    if target.kind == "hotspot":
+        hotspot = db.get(HotspotEvent, target.source_id)
+        enrichment = decode_features(hotspot.features_json).get("event_enrichment") if hotspot is not None else None
+        enrichment_failed = isinstance(enrichment, dict) and enrichment.get("status") == "failed"
     return target.model_copy(
         update={
             "fingerprint": target_fingerprint(db, target, own_task_id),
             "protection": target_protection(db, target, own_task_id),
             "verdict": verdict,
-            "failed": isinstance(execution, dict) and execution.get("status") == "failed",
+            "failed": enrichment_failed or isinstance(execution, dict) and execution.get("status") == "failed",
         }
     )
 

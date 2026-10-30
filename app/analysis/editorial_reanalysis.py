@@ -24,6 +24,7 @@ from app.analysis.reanalysis_targets import (
     ReanalysisTarget,
     list_reanalysis_targets,
     target_fingerprint,
+    target_media_bounds,
     target_protection,
 )
 from app.analysis.timeline import datetime_epoch
@@ -59,7 +60,8 @@ def _current(db: Session, target: ReanalysisTarget, own_task_id: int | None) -> 
     reason = target_protection(db, target, own_task_id)
     if reason:
         return reason
-    if not media_snapshot_is_current(db, target.session_id):
+    lower, upper = target_media_bounds(db, target)
+    if not media_snapshot_is_current(db, target.session_id, start=lower, end=upper):
         return "state_changed"
     if target_fingerprint(db, target, own_task_id) != target.fingerprint:
         return "state_changed"
@@ -78,7 +80,10 @@ def compute_reanalysis(
 
     if len(targets) > 100 or len({item.key for item in targets}) != len(targets):
         raise ValueError("重分析每次最多选择 100 个不同对象")
-    budget = llm.new_editorial_budget(cancelled=cancelled)
+    budget = llm.new_editorial_budget(
+        cancelled=cancelled,
+        target=f"task:{own_task_id}:reanalysis" if own_task_id is not None else "editorial_reanalysis",
+    )
     results: list[ReanalysisDraft] = []
     for target in targets:
         interruption = budget.interruption()

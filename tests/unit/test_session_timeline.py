@@ -450,7 +450,7 @@ def test_whole_session_summary_analyzes_all_final_asr_once_in_time_order(
 
     prompts: list[str] = []
 
-    def fake_call_text(prompt: str, max_tokens: int, *, capability: str) -> str:
+    def fake_call_text(prompt: str, max_tokens: int, *, capability: str, **_kwargs: object) -> str:
         prompts.append(prompt)
         assert max_tokens == 1048576
         assert capability == "summary"
@@ -613,7 +613,7 @@ def test_whole_session_summary_recovers_running_request_and_rejects_stale_claim(
     monkeypatch.setattr(
         session_summary,
         "build_session_timeline_summary",
-        lambda _session_id: {
+        lambda _session_id, **_kwargs: {
             "version": 2,
             "session_id": session_id,
             "analysis_basis": "full_session_asr",
@@ -650,7 +650,7 @@ def test_whole_session_summary_stops_retrying_after_three_failures(
 
     assert request_session_timeline_summary(session_id, reason="retry-test", force=True) is True
 
-    def fail_summary(_session_id: int) -> dict[str, object]:
+    def fail_summary(_session_id: int, **_kwargs: object) -> dict[str, object]:
         raise RuntimeError("模拟总结故障")
 
     monkeypatch.setattr(session_summary, "build_session_timeline_summary", fail_summary)

@@ -11,7 +11,7 @@ from typing import TYPE_CHECKING
 
 import httpx
 import pytest
-from openai import DEFAULT_CONNECTION_LIMITS
+from openai import DEFAULT_CONNECTION_LIMITS, APIConnectionError, APIStatusError, APITimeoutError
 
 from app.analysis import llm
 from app.analysis.llm_providers import LLMProvider
@@ -45,6 +45,9 @@ def clients(monkeypatch: MonkeyPatch) -> list[FakeClient]:
     module = ModuleType("openai")
     module.OpenAI = create
     module.DEFAULT_CONNECTION_LIMITS = DEFAULT_CONNECTION_LIMITS
+    module.APIConnectionError = APIConnectionError
+    module.APIStatusError = APIStatusError
+    module.APITimeoutError = APITimeoutError
     monkeypatch.setitem(sys.modules, "openai", module)
     monkeypatch.setattr(llm, "_client_cache", {})
     monkeypatch.setattr(llm, "_client_active", {})
@@ -126,7 +129,7 @@ def test_rotation_waits_for_last_active_request_even_when_it_fails(
         assert client.close_count == 0
         if prompt == "failure":
             raise OSError("request failed")
-        return {"choices": [{"message": {"content": "success"}}]}
+        return {"choices": [{"finish_reason": "stop", "message": {"content": "success"}}]}
 
     monkeypatch.setattr(llm, "_create_completion", completion)
     with ThreadPoolExecutor(max_workers=2) as executor:

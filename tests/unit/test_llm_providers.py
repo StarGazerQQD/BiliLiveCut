@@ -159,7 +159,7 @@ def test_call_text_failover(temp_db: None, monkeypatch: MonkeyPatch) -> None:
 
     monkeypatch.setattr(httpx.AsyncHTTPTransport, "handle_async_request", transport)
     assert llm_mod.call_text("hi") == "from-P2"
-    assert calls == ["p1.example", "p2.example"]
+    assert calls == ["p1.example", "p1.example", "p2.example"]
 
 
 def test_call_text_all_fail_returns_none(temp_db: None, monkeypatch: MonkeyPatch) -> None:
@@ -177,7 +177,7 @@ def test_call_text_all_fail_returns_none(temp_db: None, monkeypatch: MonkeyPatch
 
     monkeypatch.setattr(httpx.AsyncHTTPTransport, "handle_async_request", transport)
     assert llm_mod.call_text("hi") is None
-    assert calls == ["x"]
+    assert calls == ["x", "x"]
 
 
 def test_extract_text_supports_openai_content_parts() -> None:
@@ -199,7 +199,7 @@ def test_extract_text_supports_openai_content_parts() -> None:
     assert llm_mod._extract_text(response) == "第一段\n第二段"
 
 
-def test_complete_retries_reasoning_only_deepseek_without_thinking(monkeypatch: MonkeyPatch) -> None:
+def test_complete_retries_reasoning_only_deepseek_without_thinking(temp_db: None, monkeypatch: MonkeyPatch) -> None:
     """DeepSeek 仅返回推理且最终正文为空时，应关闭思考模式重试。"""
     provider = provs.LLMProvider(
         id="deepseek",
@@ -248,7 +248,7 @@ def test_complete_retries_reasoning_only_deepseek_without_thinking(monkeypatch: 
     assert calls[1]["extra_body"] == {"thinking": {"type": "disabled"}}
 
 
-def test_complete_rejects_repeated_empty_content(monkeypatch: MonkeyPatch) -> None:
+def test_complete_rejects_repeated_empty_content(temp_db: None, monkeypatch: MonkeyPatch) -> None:
     """服务连续返回空正文时应抛出可诊断错误，不能被当作连通成功。"""
     provider = _p("empty", 1)
     empty_response = SimpleNamespace(

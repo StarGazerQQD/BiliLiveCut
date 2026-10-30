@@ -4,6 +4,7 @@ from __future__ import annotations
 
 from typing import TYPE_CHECKING
 
+import pytest
 from sqlmodel import select
 
 if TYPE_CHECKING:
@@ -74,7 +75,6 @@ def test_transcribe_compute_does_not_read_undefined_settings(temp_db: None, monk
 
     task_id, segment_id = _seed_claimed_task()
     monkeypatch.setattr(pipeline_module, "get_default_pipeline", lambda: FakePipeline())
-    monkeypatch.setattr(pipeline_module, "_refine_transcript_for_storage", lambda _text: None)
 
     result = transcribe_compute(task_id)
 
@@ -85,17 +85,23 @@ def test_transcribe_compute_does_not_read_undefined_settings(temp_db: None, monk
     assert "text_version" not in result
 
 
+@pytest.mark.parametrize("shutdown_before_commit", [False, True])
 def test_transcribe_compute_stores_clean_text_summary_and_raw_asr(
     temp_db: None,
     monkeypatch: MonkeyPatch,
+    shutdown_before_commit: bool,
 ) -> None:
     """LLM 整理正文供分析使用，同时保留原始 ASR 并把摘要写入辅助元数据。"""
     import json
 
-    from app.analysis import llm
+    import httpx
+
     from app.analysis.transcription import pipeline as pipeline_module
     from app.analysis.transcription.models import ASRTranscriptResult
+    from app.core import settings_store
+    from app.models.configuration import save_model_configuration
     from app.pipeline.workers.transcribe import transcribe_compute
+    from tests.integration.test_structured_llm import catalog, response
 
     class FakePipeline:
         def transcribe(self, _audio_path: str, initial_prompt: str | None = None) -> ASRTranscriptResult:
@@ -109,26 +115,45 @@ def test_transcribe_compute_stores_clean_text_summary_and_raw_asr(
 
     task_id, _segment_id = _seed_claimed_task()
     monkeypatch.setattr(pipeline_module, "get_default_pipeline", lambda: FakePipeline())
-    monkeypatch.setattr(
-        pipeline_module,
-        "_refine_transcript_for_storage",
-        lambda _text: llm.TranscriptRefinement(clean_text="整理后的可读转写。", summary="片段摘要"),
+    config = catalog()
+    save_model_configuration(
+        config.model_copy(
+            update={"routes": [route.model_copy(update={"capability": "transcript"}) for route in config.routes]}
+        )
     )
+    monkeypatch.setattr(settings_store, "transcript_llm_refine_enabled", lambda: True)
+
+    async def send(_transport: httpx.AsyncHTTPTransport, _request: httpx.Request) -> httpx.Response:
+        return httpx.Response(200, json=response('{"clean_text":"整理后的可读转写。","summary":"片段摘要"}'))
+
+    monkeypatch.setattr(httpx.AsyncHTTPTransport, "handle_async_request", send)
 
     result = transcribe_compute(task_id)
     auxiliary = json.loads(result["auxiliary_json"])
 
     assert result["text"] == "整理后的可读转写。"
     assert result["final_text"] == "原始没有标点的转写"
-    assert auxiliary["transcript_refinement"] == {
-        "version": 1,
-        "applied": True,
-        "clean_text": "整理后的可读转写。",
-        "summary": "片段摘要",
-    }
+    assert "transcript_refinement" not in auxiliary
+    assert result["refinement_draft"].status == "succeeded"
     from app.pipeline.workers.transcribe import commit_transcript
     from app.web.services.transcripts import list_transcripts
 
+    if shutdown_before_commit:
+        from app.core.cancellation import OperationShutdownError, shutdown_event
+        from app.db.entities import AppSetting, SegmentTask, TaskStatus, Transcript
+        from app.db.session import get_session
+
+        shutdown_event.set()
+        try:
+            with pytest.raises(OperationShutdownError):
+                commit_transcript(_lease(task_id), result, 1)
+            with get_session() as db:
+                assert db.exec(select(Transcript)).all() == []
+                assert db.get(AppSetting, f"transcript_refinement:v1:{_segment_id}") is None
+                assert db.get(SegmentTask, task_id).stage == TaskStatus.TRANSCRIBING
+        finally:
+            shutdown_event.clear()
+        return
     commit_transcript(_lease(task_id), result, 1)
     stored = list_transcripts()[0]
     assert stored["text"] == "整理后的可读转写。"
@@ -153,12 +178,14 @@ def test_transcribe_compute_persists_degenerate_text_as_degraded_without_llm(
             repeated = "等一下我们先看看" * 20
             return ASRTranscriptResult(text=repeated, final_text=repeated, backend="whisper")
 
-    def fail_refine(_text: str) -> None:
+    from app.analysis import llm
+
+    def fail_refine(_text: str, **_kwargs: object) -> None:
         raise AssertionError("退化文本不得进入 LLM")
 
     task_id, segment_id = _seed_claimed_task()
     monkeypatch.setattr(pipeline_module, "get_default_pipeline", lambda: FakePipeline())
-    monkeypatch.setattr(pipeline_module, "_refine_transcript_for_storage", fail_refine)
+    monkeypatch.setattr(llm, "refine_transcript", fail_refine)
 
     result = transcribe_compute(task_id)
 

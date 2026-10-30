@@ -416,7 +416,6 @@ def test_background_asr_still_runs_after_hotspot_pass(
             raise AssertionError("后台工作负载不得重复局部 ASR")
 
     monkeypatch.setattr(pipeline_module, "get_task_pipeline", lambda: FakePipeline())
-    monkeypatch.setattr(pipeline_module, "_refine_transcript_for_storage", lambda _text: None)
     result = transcribe_compute(task_id)
 
     assert result["transcribed"] is True

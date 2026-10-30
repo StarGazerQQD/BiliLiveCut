@@ -524,8 +524,10 @@ def test_changed_input_during_generation_is_requeued(temp_db: None, monkeypatch:
     claim = session_summary.claim_pending_session_summary()
     original = session_summary.build_session_timeline_summary
 
-    def change_input(recording_id: int) -> dict[str, object]:
-        result = original(recording_id)
+    def change_input(
+        recording_id: int, *, claim: session_summary.SessionSummaryClaim | None = None
+    ) -> dict[str, object]:
+        result = original(recording_id, claim=claim)
         with get_session() as db:
             db.add(Transcript(segment_id=segment_id, final_text="晚到的转写"))
         return result

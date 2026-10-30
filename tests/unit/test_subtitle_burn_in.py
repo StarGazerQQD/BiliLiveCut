@@ -52,10 +52,25 @@ def test_dense_estimated_subtitles_do_not_overlap_or_extend_past_clip(temp_db: N
     ]
 
 
-def test_text_only_transcript_generates_subtitles_for_the_selected_window(temp_db: None) -> None:
+def test_text_only_transcript_does_not_guess_subtitles_for_a_partial_window(temp_db: None) -> None:
     segment = RawSegment(id=7, session_id=1, seq=6, file_path="segment.ts", duration_s=12)
     with get_session() as db:
         db.add(Transcript(segment_id=7, final_text="跳过跳过跳过保留保留保留", words_json="[]"))
+    assert _build_srt([segment], 6, 6) == ""
+
+
+def test_timed_transcript_generates_subtitles_for_the_selected_window(temp_db: None) -> None:
+    segment = RawSegment(id=7, session_id=1, seq=6, file_path="segment.ts", duration_s=12)
+    with get_session() as db:
+        db.add(
+            Transcript(
+                segment_id=7,
+                final_text="跳过跳过跳过保留保留保留",
+                words_json=json.dumps(
+                    [{"w": "跳过跳过跳过", "start": 0, "end": 5}, {"w": "保留保留保留", "start": 6, "end": 12}]
+                ),
+            )
+        )
     srt = _build_srt([segment], 6, 6)
     assert "保留保留保留" in srt and "跳过" not in srt
     assert "00:00:00,000 -->" in srt

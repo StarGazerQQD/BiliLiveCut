@@ -267,7 +267,8 @@ def test_network_failure_diagnostic_distinguishes_dns_connection_and_timeout(
     monkeypatch.setattr(httpx.AsyncHTTPTransport, "handle_async_request", send)
     budget = llm.new_editorial_budget()
     assert call(budget).error == ("timeout" if failure == "timeout" else "provider_error")
-    assert len(budget.attempts) == 1 and budget.attempts[0].diagnostic.category == category
+    assert len(budget.attempts) == 2
+    assert all(attempt.diagnostic.category == category for attempt in budget.attempts)
     assert "private-test-key" not in budget.attempts[0].model_dump_json()
     assert "private-input" not in budget.attempts[0].model_dump_json()
 
@@ -289,12 +290,13 @@ def test_other_api_failures_do_not_weaken_protocol(
     temp_db: None, transport: Transport, status: int, detail: dict[str, object], error: str
 ) -> None:
     save_model_configuration(catalog())
-    requests = transport([(status, {"error": detail})])
+    expected_attempts = 2 if status in {429, 500} else 1
+    requests = transport([(status, {"error": detail})] * expected_attempts)
     budget = llm.new_editorial_budget()
     result = call(budget)
     assert result.value is None and result.error == error
-    assert len(requests) == 1
-    assert budget.attempts[0].protocol == "json_schema"
+    assert len(requests) == expected_attempts
+    assert all(attempt.protocol == "json_schema" for attempt in budget.attempts)
 
 
 def test_format_repair_is_once_for_the_whole_operation_and_all_usage_is_counted(
@@ -326,12 +328,12 @@ def test_invalid_outputs_cannot_bypass_validation_in_text_fallback(
 
 def test_route_switches_and_later_operations_share_attempt_cap(temp_db: None, transport: Transport) -> None:
     save_model_configuration(catalog(routes=3))
-    requests = transport([(500, {"error": {"message": "failure"}}), (200, response())])
-    budget = ModelCallBudget(max_attempts=2, max_elapsed_s=30)
+    requests = transport([(500, {"error": {"message": "failure"}})] * 2 + [(200, response())])
+    budget = ModelCallBudget(max_attempts=3, max_elapsed_s=30)
     assert call(budget).error is None
     assert call(budget).error == "attempt_budget"
-    assert len(requests) == 2
-    assert [item.provider_id for item in budget.attempts] == ["route0", "route1"]
+    assert len(requests) == 3
+    assert [item.provider_id for item in budget.attempts] == ["route0", "route0", "route1"]
 
 
 def test_empty_retry_cannot_replenish_after_later_step(temp_db: None, transport: Transport) -> None:
@@ -415,7 +417,7 @@ def test_inflight_interruption_waits_for_transport_cleanup(temp_db: None, monkey
 
     monkeypatch.setattr(httpx.AsyncHTTPTransport, "handle_async_request", send)
     monkeypatch.setattr(settings, "llm_request_timeout_s", 1 if mode == "timeout" else 2)
-    budget = ModelCallBudget(max_attempts=2, max_elapsed_s=0.3 if mode == "deadline" else 3, cancelled=cancelled.is_set)
+    budget = ModelCallBudget(max_attempts=1, max_elapsed_s=0.3 if mode == "deadline" else 3, cancelled=cancelled.is_set)
     timer = Timer(0.2, cancelled.set)
     if mode == "cancelled":
         timer.start()
@@ -589,7 +591,8 @@ def test_network_error_has_no_hidden_sdk_retry(temp_db: None, monkeypatch: Monke
     monkeypatch.setattr(httpx.AsyncHTTPTransport, "handle_async_request", send)
     budget = llm.new_editorial_budget()
     assert call(budget).error == "provider_error"
-    assert len(requests) == 2 and len(budget.attempts) == 2
+    assert len(requests) == 4 and len(budget.attempts) == 4
+    assert [attempt.provider_id for attempt in budget.attempts] == ["route0", "route0", "route1", "route1"]
 
 
 def test_disabled_and_pre_cancelled_calls_have_no_requests(temp_db: None, transport: Transport) -> None:
@@ -747,7 +750,7 @@ def test_nested_schema_diagnostics_normalize_indices_and_never_echo_extra_keys(
                 "field": field,
                 "supported": False,
                 "reason": "受控核验",
-                "quotes": [{"evidence_id": "known", "quote": 7, "private-secret": "private-secret"}],
+                "quotes": [{"evidence_id": "known", "quote_id": 7, "private-secret": "private-secret"}],
             }
             for field in ("title", "summary")
         ]
@@ -757,7 +760,7 @@ def test_nested_schema_diagnostics_normalize_indices_and_never_echo_extra_keys(
     call(budget, schema=GroundingOutput.model_json_schema(), validate=GroundingOutput.model_validate)
     assert len(requests) == 1
     summary = budget.attempts[0].diagnostic.summary
-    assert "judgements[].quotes[].quote: string_type" in summary
+    assert "judgements[].quotes[].quote_id: string_type" in summary
     assert "<额外字段>: extra_forbidden" in summary
     assert "private-secret" not in summary and len(summary) <= 240
 

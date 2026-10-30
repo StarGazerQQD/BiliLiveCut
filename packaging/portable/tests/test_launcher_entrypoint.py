@@ -120,6 +120,9 @@ def test_launcher_uses_persisted_port_for_command_and_runtime_env(
     venv_python.write_bytes(b"fixture")
     save_launcher_config(tmp_path, web_port=8080)
     captured: dict[str, object] = {}
+    monkeypatch.setenv("HTTPS_PROXY", "http://proxy.invalid:8080")
+    monkeypatch.setenv("ALL_PROXY", "http://fallback.invalid:8081")
+    monkeypatch.setenv("NO_PROXY", ".internal")
 
     monkeypatch.chdir(tmp_path)
     monkeypatch.setattr(launcher_module, "get_app_root", lambda: tmp_path)
@@ -180,6 +183,9 @@ def test_launcher_uses_persisted_port_for_command_and_runtime_env(
     assert env["BLC_APP_ROOT"] == str(tmp_path)
     assert env["BLC_SOURCE_DIR"] == str(source_dir)
     assert env["_BLC_PARENT_STDIN"] == "1"
+    assert env["HTTPS_PROXY"] == "http://proxy.invalid:8080"
+    assert env["ALL_PROXY"] == "http://fallback.invalid:8081"
+    assert env["NO_PROXY"] == ".internal"
     assert captured["cwd"] == str(tmp_path)
     assert captured["owned"] and captured["resumed"] and captured["terminated"]
 

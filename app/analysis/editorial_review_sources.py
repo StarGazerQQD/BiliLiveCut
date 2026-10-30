@@ -7,8 +7,8 @@ import stat
 from collections.abc import Iterable, Iterator, Mapping
 from contextlib import contextmanager
 from contextvars import ContextVar
-from dataclasses import dataclass
-from datetime import datetime
+from dataclasses import dataclass, replace
+from datetime import UTC, datetime
 from pathlib import Path
 from threading import get_ident
 
@@ -61,9 +61,20 @@ class _MediaSnapshot:
     engine: object
     thread: int
 
-    def matches(self, rows: list[RawSegment], session_id: int) -> bool:
-        return tuple(_MediaRow.from_segment(row) for row in rows) == tuple(
-            row for row in self.rows if row.session_id == session_id
+    def matches(
+        self, rows: list[RawSegment], session_id: int, start: datetime | None = None, end: datetime | None = None
+    ) -> bool:
+        def selected(row: _MediaRow) -> bool:
+            return row.session_id == session_id and (
+                start is None
+                or end is None
+                or row.start is None
+                or row.end is None
+                or (datetime_epoch(row.start) < datetime_epoch(end) and datetime_epoch(row.end) > datetime_epoch(start))
+            )
+
+        return tuple(row for item in rows if selected(row := _MediaRow.from_segment(item))) == tuple(
+            row for row in self.rows if selected(row)
         )
 
 
@@ -117,13 +128,15 @@ def media_validation_scope(*, session_ids: Iterable[int] = (), task_id: int | No
             _media_snapshot.reset(token)
 
 
-def media_snapshot_is_current(db: Session, session_id: int) -> bool:
-    """事务内拒绝新增、替换或改界后的媒体引用，不访问文件系统。"""
+def media_snapshot_is_current(
+    db: Session, session_id: int, *, start: datetime | None = None, end: datetime | None = None
+) -> bool:
+    """事务内拒绝实际使用范围的媒体引用变化，不访问文件系统。"""
     snapshot = _current_media_snapshot()
     if snapshot is None:
         return True
     rows = db.exec(select(RawSegment).where(RawSegment.session_id == session_id).order_by(RawSegment.id)).all()
-    return snapshot.matches(rows, session_id)
+    return snapshot.matches(rows, session_id, start, end)
 
 
 def media_file_identity(segment: RawSegment) -> list[int] | None:
@@ -182,34 +195,67 @@ def event_review_is_current(db: Session, event_id: int, draft: EditorialReviewDr
     return draft.execution.input_fingerprint == review_fingerprint(initial, source, bundle.fingerprint)
 
 
-def segment_review_revision(db: Session, segment_id: int) -> str:
-    """纳入录制身份、配置代次与文件元数据，不把路径发送给模型。"""
+def segment_review_revision(
+    db: Session,
+    segment_id: int,
+    *,
+    start_ts: datetime | None = None,
+    end_ts: datetime | None = None,
+) -> str:
+    """核验目标及有限扩展范围的完整媒体身份，不把路径发送给模型。"""
     segment = db.get(RawSegment, segment_id)
     if segment is None:
         raise ValueError(f"编辑判断分段不存在: segment_id={segment_id}")
     rows = db.exec(select(RawSegment).where(RawSegment.session_id == segment.session_id).order_by(RawSegment.id)).all()
-    revision = db.get(AppSetting, "configuration_revision")
+    start = start_ts or segment.start_ts
+    end = end_ts or segment.end_ts
     snapshot = _current_media_snapshot()
-    if snapshot is not None and not snapshot.matches(rows, segment.session_id):
+    if snapshot is not None and not snapshot.matches(rows, segment.session_id, start, end):
         raise ValueError("媒体引用在提交前已发生变化")
     files: list[dict[str, object]] = []
     for item in rows:
+        if (
+            start is not None
+            and end is not None
+            and item.start_ts is not None
+            and item.end_ts is not None
+            and (
+                datetime_epoch(item.end_ts) <= datetime_epoch(start)
+                or datetime_epoch(item.start_ts) >= datetime_epoch(end)
+            )
+        ):
+            continue
         full_identity = media_file_identity(item)
-        identity = full_identity[2:4] if full_identity is not None else None
         files.append(
             {
                 "id": item.id,
                 "path": item.file_path,
                 "start": str(item.start_ts),
                 "end": str(item.end_ts),
-                "file": identity,
+                "file": full_identity,
             }
         )
     payload = {
-        "configuration_revision": revision.value if revision is not None else "0",
         "segments": files,
     }
     return hashlib.sha256(json.dumps(payload, sort_keys=True).encode()).hexdigest()
+
+
+def _source_media_revision(
+    db: Session, segment_id: int, source: EditorialReviewInputV1 | None, start: datetime, end: datetime
+) -> str:
+    if source is not None:
+        start = datetime.fromtimestamp(source.time_origin_epoch_s + source.window.start_s, tz=UTC)
+        end = datetime.fromtimestamp(source.time_origin_epoch_s + source.window.end_s, tz=UTC)
+    return segment_review_revision(db, segment_id, start_ts=start, end_ts=end)
+
+
+def _combined_media_revision(
+    revisions: Mapping[ContextDirection | None, str], expanded: ContextDirection | None
+) -> str:
+    if expanded is None:
+        return revisions[None]
+    return hashlib.sha256(json.dumps([revisions[None], revisions[expanded]]).encode()).hexdigest()
 
 
 def compute_segment_review(
@@ -223,13 +269,12 @@ def compute_segment_review(
     budget: ModelCallBudget,
 ) -> EditorialReviewDraft:
     """为旧分段链提供同一编辑判断和预算，不使用比例文本作为精确证据。"""
-    with get_session() as db:
-        revision = segment_review_revision(db, segment_id)
+    revisions: dict[ContextDirection | None, str] = {}
 
     def load(direction: ContextDirection | None) -> EditorialReviewInputV1 | None:
         with get_session() as db:
             try:
-                return build_segment_input(
+                source = build_segment_input(
                     db,
                     segment_id,
                     start_ts=start_ts,
@@ -240,9 +285,23 @@ def compute_segment_review(
                     context_direction=direction,
                 )
             except EvidenceContextUnavailable:
-                return None
+                source = None
+            revisions[direction] = _source_media_revision(db, segment_id, source, start_ts, end_ts)
+            return source
 
-    return judge_editorial(load, revision=revision, budget=budget)
+    initial = load(None)
+    draft = judge_editorial(
+        lambda direction: initial if direction is None else load(direction), revision=revisions[None], budget=budget
+    )
+    revision = _combined_media_revision(revisions, draft.expanded_context)
+    if revision == draft.revision:
+        return draft
+    execution = draft.execution.model_copy(
+        update={
+            "input_fingerprint": review_fingerprint(initial, draft.source, revision, policy=draft.provenance.policy)
+        }
+    )
+    return replace(draft, revision=revision, execution=execution)
 
 
 @dataclass(frozen=True, slots=True)
@@ -266,12 +325,6 @@ class SegmentReviewSnapshot:
         segment = db.get(RawSegment, self.segment_id)
         if segment is None:
             return False
-        try:
-            revision = segment_review_revision(db, self.segment_id)
-        except ValueError:
-            return False
-        if revision != self.review.revision:
-            return False
         current_danmaku = representative_danmaku(segment.session_id, self.start_ts, self.end_ts, db=db)
         if current_danmaku != self.danmaku:
             return False
@@ -291,10 +344,19 @@ class SegmentReviewSnapshot:
             except EvidenceContextUnavailable:
                 return None
 
-        return self.review.execution.input_fingerprint == review_fingerprint(
-            load(None),
-            load(self.review.expanded_context),
-            self.review.revision,
+        initial = load(None)
+        source = load(self.review.expanded_context) if self.review.expanded_context is not None else initial
+        try:
+            revisions = {None: _source_media_revision(db, self.segment_id, initial, self.start_ts, self.end_ts)}
+            if self.review.expanded_context is not None:
+                revisions[self.review.expanded_context] = _source_media_revision(
+                    db, self.segment_id, source, self.start_ts, self.end_ts
+                )
+            revision = _combined_media_revision(revisions, self.review.expanded_context)
+        except ValueError:
+            return False
+        return revision == self.review.revision and self.review.execution.input_fingerprint == review_fingerprint(
+            initial, source, revision
         )
 
 
@@ -332,7 +394,7 @@ def media_bounds_accessible(db: Session, source: EditorialReviewInputV1 | None, 
         select(RawSegment).where(RawSegment.session_id == source.target.session_id).order_by(RawSegment.id)
     ).all()
     snapshot = _current_media_snapshot()
-    if snapshot is not None and not snapshot.matches(segments, source.target.session_id):
+    if snapshot is not None and not snapshot.matches(segments, source.target.session_id, start, end):
         return False
     covered: list[tuple[float, float]] = []
     lower, upper = datetime_epoch(start), datetime_epoch(end)
