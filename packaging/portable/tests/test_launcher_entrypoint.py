@@ -603,6 +603,57 @@ def test_launcher_owns_one_bounded_restart_budget_for_real_processes(
     assert counter.read_text() == "1" * starts
 
 
+@pytest.mark.parametrize("status", [200, 503, 302])
+def test_launcher_http_readiness_uses_loopback_without_tls_or_proxy(
+    monkeypatch: MonkeyPatch,
+    status: int,
+) -> None:
+    import ssl
+    import threading
+    from http.server import BaseHTTPRequestHandler, HTTPServer
+
+    from blc_portable.launcher.main import _service_http_ready
+
+    calls: list[str] = []
+
+    class Handler(BaseHTTPRequestHandler):
+        def do_GET(self) -> None:  # noqa: N802
+            calls.append(self.path)
+            self.send_response(status)
+            self.send_header("Content-Length", "0")
+            self.end_headers()
+
+        def log_message(self, format: str, *args: object) -> None:
+            pass
+
+    def unavailable_tls(*args: object, **kwargs: object) -> ssl.SSLContext:
+        raise FileNotFoundError("controlled missing frozen TLS data")
+
+    monkeypatch.setattr(ssl, "create_default_context", unavailable_tls)
+    monkeypatch.setenv("HTTP_PROXY", "http://127.0.0.1:1")
+    monkeypatch.setenv("HTTPS_PROXY", "http://127.0.0.1:1")
+    with HTTPServer(("127.0.0.1", 0), Handler) as server:
+        thread = threading.Thread(target=server.serve_forever)
+        thread.start()
+        try:
+            assert _service_http_ready(server.server_port) is (status == 200)
+            assert calls == ["/auth/status"]
+        finally:
+            server.shutdown()
+            thread.join(timeout=5)
+            assert not thread.is_alive()
+
+
+def test_launcher_http_readiness_returns_false_when_connection_is_refused() -> None:
+    import socket
+
+    from blc_portable.launcher.main import _service_http_ready
+
+    with socket.socket() as unserved:
+        unserved.bind(("127.0.0.1", 0))
+        assert not _service_http_ready(unserved.getsockname()[1])
+
+
 def test_launcher_does_not_restart_when_owned_tree_cleanup_is_unconfirmed(
     tmp_path: Path,
     monkeypatch: MonkeyPatch,

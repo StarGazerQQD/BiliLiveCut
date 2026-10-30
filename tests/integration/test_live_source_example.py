@@ -40,9 +40,11 @@ async def test_stopping_before_first_csv_entry_preserves_real_tail(
     media_service: MediaService,
     monkeypatch: pytest.MonkeyPatch,
     force: bool,
+    request: pytest.FixtureRequest,
 ) -> None:
     from app.clipping.core import probe_media
     from app.plugins.live_source import SourceRoom, StreamSpec
+    from app.recording.writer_ownership import SessionWriter
 
     media_service.keep_live = True
     monkeypatch.setattr(settings, "segment_duration_s", 60)
@@ -54,12 +56,20 @@ async def test_stopping_before_first_csv_entry_preserves_real_tail(
     async def receive(segment: RawSegment) -> None:
         delivered.append(segment.id)
 
+    with get_session() as db:
+        room = LiveRoom(input_url="https://live.bilibili.com/1", room_id=1, authorized=True)
+        db.add(room)
+        db.flush()
+        room_id = room.id
     recorder = Recorder(
         SourceRoom(platform="bilibili", source_id="1", canonical_url="https://live.bilibili.com/1"),
-        1,
+        room_id,
         on_segment=receive,
     )
-    recorder._session_id = 1
+    writer = SessionWriter.create(tmp_path / "writers")
+    request.addfinalizer(writer.close)
+    recorder._writer = writer
+    recorder._session_id = recorder._create_session()
     stream = StreamSpec(
         url=media_service.origin + "/media/token-0/index.m3u8",
         transport="hls",
@@ -72,10 +82,11 @@ async def test_stopping_before_first_csv_entry_preserves_real_tail(
             while not any(path.stat().st_size > 0 for path in output.glob("*.ts")):
                 assert not running.done()
                 await asyncio.sleep(0.05)
-        assert not (output / "segments.csv").read_text().strip()
+        listing = next(output.glob("*segments.csv"))
+        assert not listing.read_text().strip()
         if force:
             filename = next(output.glob("*.ts")).name
-            (output / "segments.csv").write_text(f"{filename},0,", encoding="utf-8")
+            listing.write_text(f"{filename},0,", encoding="utf-8")
         recorder.force_stop() if force else recorder.stop()
         await asyncio.wait_for(running, 15)
         with get_session() as db:
@@ -86,7 +97,7 @@ async def test_stopping_before_first_csv_entry_preserves_real_tail(
             assert duration > 0 and width > 0 and height > 0
             assert abs(segment.duration_s - duration) < 1
             assert segment.duration_s < 60
-        await recorder._scan_orphan_segments(output / "segments.csv", output)
+        await recorder._scan_orphan_segments(listing, output)
         assert len(delivered) == len(segments)
     finally:
         recorder.force_stop()

@@ -36,7 +36,7 @@ from config.launcher_settings import APP_ROOT_ENV, WEB_PORT_ENV, load_launcher_c
 APP_NAME = "BiliLiveCut"
 VERSION = "V0.1.20.2 Alpha"
 RELEASE_VERSION = "0.1.20.2-alpha"
-SOURCE_COMMIT_SHORT = "d1a5460"
+SOURCE_COMMIT_SHORT = "241b204"
 # NOTE: RELEASE_ID 将在获得 Payload SHA-256 后动态生成 (内容寻址)
 SUPPORTED_PYTHON_VERSIONS = frozenset({(3, 11), (3, 12)})
 
@@ -1208,11 +1208,24 @@ Examples:
     return parser
 
 
+def _service_http_ready(web_port: int) -> bool:
+    """直接检查固定回环 HTTP，不为本地就绪检查加载代理或 TLS 环境。"""
+    from http.client import HTTPConnection, HTTPException
+
+    connection = HTTPConnection("127.0.0.1", web_port, timeout=1)
+    try:
+        connection.request("GET", "/auth/status")
+        with connection.getresponse() as response:
+            return response.status == 200
+    except (OSError, HTTPException):
+        return False
+    finally:
+        connection.close()
+
+
 def _run_service(command: list[str], *, env: dict[str, str], cwd: str) -> int:
     """Portable 独占有限恢复预算；人工退出不重启，上一代清理失败不启动下一代。"""
     import time
-    from urllib.error import URLError
-    from urllib.request import ProxyHandler, build_opener
 
     from app.core.process_spawn import spawn_owned
     from config.service_restart import (
@@ -1224,7 +1237,6 @@ def _run_service(command: list[str], *, env: dict[str, str], cwd: str) -> int:
 
     options = {"creationflags": subprocess.CREATE_NEW_PROCESS_GROUP} if os.name == "nt" else {}
     budget = RestartBudget()
-    opener = build_opener(ProxyHandler({}))
     web_port = validate_web_port(env[WEB_PORT_ENV]) if WEB_PORT_ENV in env else None
     while True:
         process, tree = spawn_owned(
@@ -1240,12 +1252,7 @@ def _run_service(command: list[str], *, env: dict[str, str], cwd: str) -> int:
             try:
                 while process.poll() is None:
                     if web_port is not None and time.monotonic() >= next_probe:
-                        ready = False
-                        try:
-                            with opener.open(f"http://127.0.0.1:{web_port}/auth/status", timeout=1) as response:
-                                ready = response.status == 200
-                        except (OSError, URLError):
-                            pass
+                        ready = _service_http_ready(web_port)
                         budget.observe(ready=ready, now=time.monotonic())
                         next_probe = time.monotonic() + 1
                     time.sleep(0.25)

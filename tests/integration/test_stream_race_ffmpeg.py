@@ -443,7 +443,11 @@ async def test_real_ffmpeg_keeps_winning_http_connection_and_writes_playable_seg
 
 @pytest.mark.parametrize("parallel", [1, 2], ids=["serial", "race"])
 async def test_shutdown_flushes_final_segment_without_reconnecting(
-    temp_db: None, tmp_path: Path, monkeypatch: pytest.MonkeyPatch, parallel: int
+    temp_db: None,
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    parallel: int,
+    request: pytest.FixtureRequest,
 ) -> None:
     from sqlmodel import select
 
@@ -452,6 +456,7 @@ async def test_shutdown_flushes_final_segment_without_reconnecting(
     from app.pipeline import storage_lifecycle
     from app.pipeline.lifecycle import shutdown_event
     from app.recording import recorder as module
+    from app.recording.writer_ownership import SessionWriter
 
     binary = shutil.which(settings.ffmpeg_path)
     assert binary is not None
@@ -463,27 +468,30 @@ async def test_shutdown_flushes_final_segment_without_reconnecting(
     recorder = Recorder(
         SourceRoom(platform="external", source_id="1", canonical_url="https://example.invalid/1"), room_id
     )
+    writer = SessionWriter.create(tmp_path / "writers")
+    request.addfinalizer(writer.close)
+    recorder._writer = writer
     recorder._session_id = recorder._create_session()
     fetches = []
     processes = []
     spawn = asyncio.create_subprocess_exec
 
-    async def capture_spawn(*args, **kwargs):
+    async def capture_spawn(*args: str, **kwargs: object) -> asyncio.subprocess.Process:
         process = await spawn(*args, **kwargs)
         processes.append(process)
         return process
 
-    async def no_danmaku():
+    async def no_danmaku() -> None:
         pass
 
-    async def fetch():
+    async def fetch() -> StreamSpec:
         fetches.append(1)
         recorder._stream_candidates = [
             StreamSpec(url=f"https://example.invalid/{i}", transport="hls", container="ts") for i in range(parallel)
         ]
         return recorder._stream_candidates[0]
 
-    def command(stream, out_dir, prefix, segment_list):
+    def command(stream: StreamSpec, out_dir: Path, prefix: str, segment_list: Path) -> list[str]:
         return [
             binary,
             "-hide_banner",

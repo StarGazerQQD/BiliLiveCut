@@ -4,7 +4,6 @@ from __future__ import annotations
 
 import json
 import os
-import signal
 import socket
 import subprocess
 import sys
@@ -40,19 +39,8 @@ def _stop_console(process: subprocess.Popen, descendants: list[psutil.Process]) 
         if process.poll() is None:
             children = psutil.Process(process.pid).children(recursive=True)
             owned.update((child.pid, child) for child in children)
-            if os.name == "nt":
-                # blc.exe 和 venv Python 可能还有包装层，终止最内层前端才能让监督器收尾。
-                frontends = []
-                for child in children:
-                    try:
-                        if child.cmdline()[1:4] == ["-m", "app.cli", "frontend"]:
-                            frontends.append(child)
-                    except psutil.NoSuchProcess:
-                        continue
-                assert frontends, "未找到 wheel 启动器监管的前端进程"
-                frontends[-1].terminate()
-            else:
-                process.send_signal(signal.SIGTERM)
+            assert process.stdin is not None
+            process.stdin.close()
             process.wait(timeout=35)
         _, alive = psutil.wait_procs(list(owned.values()), timeout=5)
         assert not alive, f"wheel 启动器遗留子进程: {alive}"
@@ -108,6 +96,7 @@ def main() -> None:
                 "TREND_SCHEDULE_ENABLED": "false",
                 "PLUGIN_DIR": str(runtime / "plugins"),
                 "PYTHONIOENCODING": "utf-8",
+                "_BLC_PARENT_STDIN": "1",
             }
         )
         with socket.socket() as probe:
@@ -116,7 +105,12 @@ def main() -> None:
         opener = build_opener(ProxyHandler({}))
         with (runtime / "start.log").open("w+", encoding="utf-8") as log:
             process = subprocess.Popen(
-                [str(entry), "start", "--port", str(port)], cwd=runtime, env=env, stdout=log, stderr=log
+                [str(entry), "start", "--port", str(port)],
+                cwd=runtime,
+                env=env,
+                stdin=subprocess.PIPE,
+                stdout=log,
+                stderr=log,
             )
             descendants = []
             try:
@@ -144,7 +138,7 @@ def main() -> None:
                     assert json.load(response)["rooms"] == []
             finally:
                 _stop_console(process, descendants)
-            assert process.returncode == 0 or os.name == "nt", process.returncode
+            assert process.returncode == 0, process.returncode
             log.seek(0)
             assert "Web 服务资源已关闭" in log.read(), "wheel 后端没有执行正常生命周期清理"
     print(f"wheel frontend smoke OK: {len(assets.paths)} entry assets, SPA, API proxy, no Node.js at runtime")

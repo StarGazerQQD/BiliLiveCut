@@ -5,6 +5,7 @@ from __future__ import annotations
 from collections.abc import Iterator
 from pathlib import Path
 
+import httpx
 import pytest
 from loguru import logger
 
@@ -129,17 +130,26 @@ def test_remote_fallback_also_reports_validated_completion(
     pcm_wav: Path,
     captured_logs: tuple[list[LogEntry], list[ProgressEntry]],
 ) -> None:
-    from app.analysis.transcription.remote import OpenAICompatibleBackend, RemoteTranscriptionError
+    requests: list[httpx.Request] = []
+    client = httpx.Client
 
-    def unavailable(*args: object) -> ASRTranscriptResult:
-        raise RemoteTranscriptionError("HTTP 503")
+    def unavailable(request: httpx.Request) -> httpx.Response:
+        requests.append(request)
+        assert request.url.path == "/v1/audio/transcriptions"
+        return httpx.Response(503, request=request)
+
+    def factory(**kwargs: object) -> httpx.Client:
+        return client(transport=httpx.MockTransport(unavailable), **kwargs)
 
     monkeypatch.setattr(settings, "asr_primary", "openai_compatible")
     monkeypatch.setattr(settings, "asr_fallback_whisper", True)
-    monkeypatch.setattr(OpenAICompatibleBackend, "transcribe", unavailable)
+    monkeypatch.setattr(settings, "asr_remote_base_url", "https://asr.example.test/v1")
+    monkeypatch.setattr(settings, "asr_remote_model", "fixture-asr")
+    monkeypatch.setattr(httpx, "Client", factory)
     result = ASRPipeline(whisper_backend=WhisperFallback()).transcribe(str(pcm_wav))  # type: ignore[arg-type]
     records, events = captured_logs
     assert result.primary_error_type == "RemoteTranscriptionError"
+    assert len(requests) == 1
     assert not any(level == "ERROR" for level, _, _ in records)
     completed = [details for stage, details in events if stage == "fallback_completed"]
     assert len(completed) == 1 and completed[0]["primary_backend"] == "openai_compatible"

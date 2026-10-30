@@ -309,10 +309,13 @@ def test_failed_cleanup_keeps_candidate_retryable(
 
 @pytest.mark.asyncio
 async def test_disk_guard_stops_active_ffmpeg_and_releases_watchers(
-    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    temp_db: None, tmp_path: Path, monkeypatch: pytest.MonkeyPatch, request: pytest.FixtureRequest
 ) -> None:
+    from app.db.entities import LiveRoom
+    from app.db.session import get_session
     from app.pipeline import storage_lifecycle
     from app.recording import recorder as module
+    from app.recording.writer_ownership import SessionWriter
 
     finished = asyncio.Event()
     poll_waiting = asyncio.Event()
@@ -355,10 +358,19 @@ async def test_disk_guard_stops_active_ffmpeg_and_releases_watchers(
 
     monkeypatch.setattr(storage_lifecycle, "should_stop_recording", disk_critical)
     install_process_boundary(monkeypatch, create_process)
+    with get_session() as db:
+        room = LiveRoom(input_url="https://live.bilibili.com/1", room_id=1, authorized=True)
+        db.add(room)
+        db.flush()
+        room_id = room.id
     recorder = module.Recorder(
         source_room=SourceRoom(platform="bilibili", source_id="1", canonical_url="https://live.bilibili.com/1"),
-        db_room_id=1,
+        db_room_id=room_id,
     )
+    writer = SessionWriter.create(tmp_path / "writers")
+    request.addfinalizer(writer.close)
+    recorder._writer = writer
+    recorder._session_id = recorder._create_session()
     monkeypatch.setattr(recorder, "_sleep_or_stop", wait_for_next_poll)
     tasks_before = asyncio.all_tasks()
     operation = asyncio.create_task(
