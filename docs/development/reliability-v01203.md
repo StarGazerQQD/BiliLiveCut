@@ -252,4 +252,11 @@ S5 为 `IN_PROGRESS`，基线为 S4 完成提交 `89e6839570204f920cc7d7f4f0314c
 
 实际冻结启动进一步发现：新增 urllib 就绪探测会先构造默认 HTTPS 处理器，触发构建环境 Python 的额外 TLS 数据文件依赖，在启动服务前退出。检查目标固定为回环 HTTP，现使用标准库 `HTTPConnection` 直接检查，保留 1 秒超时、HTTP 200 判定、连接关闭和既有恢复预算。真实 HTTP 状态、连接拒绝、TLS 初始化不可用及环境代理边界回归与监督组合为 73 passed；该修正需要重新完成最终回归和冻结验收。
 
-S5 仍为 `IN_PROGRESS`，等待最终完整回归、质量、冻结制品及远端阶段验收。没有新增实际模型服务调用、依赖升级、版本发布或运行目录修改。
+最终本地验收已通过：
+
+1. 完整应用与 Portable 命令保持 `python -m pytest tests packaging/portable/tests --timeout=600 --fail-on-skip --cov=app --cov-report=term --cov-report=xml --cov-fail-under=50 --durations=15 -o addopts=--tb=short -q`，结果为 4176 passed、覆盖率 85.54%，包含真实 sdist/wheel；保留一条 setuptools 安装接口弃用 warning。
+2. `python -m pre_commit run --all-files --show-diff-on-failure` 全部 12 项通过；前端类型、lint、格式、85 项测试与生产构建、OpenAPI 检查通过。最终文档检查为 22 passed，构建完成 57 页及全部生成链接检查；完整发布审计为 63 PASS、0 WARN、0 FAIL。
+3. 冻结启动器修正保存为 `3c3fe51`，使用正式 `python packaging/portable/build_exe.py --without-engine-pack` 重建。Payload 保持已验证业务来源 `241b204`；构建清单中的 `builder_commit` 沿用 Payload 构建来源，实际启动器构建提交单独记录为 `3c3fe51`。新 EXE 为 67151305 字节，SHA-256 `1f20f1829f69c887ca1d81ce194645265f2265f1124c27352aca07b2c5d2aeed`，CRC32 `CA1D09BD`；1951 个冻结模块及其嵌套代码对象不含绝对源码路径。
+4. 全新隔离目录的离线安装、依赖检查、Runtime 校验和四引擎 fixture 准备证据保留。更新后的真实 EXE 分别经历后端、前端、主控制进程异常终止，均恢复唯一新服务代次并清除旧树，HTTP 与设置检查通过。最后终止实际冻结宿主，所属服务及端口全部回收，无关哨兵进程保持运行。
+
+S5 仍为 `IN_PROGRESS`，等待最新提交的全部适用远端阶段验收；S6 至 S8 保持 `PENDING`。没有新增实际模型服务调用、依赖升级、版本发布或运行目录修改。
