@@ -11,6 +11,7 @@ from datetime import UTC, datetime
 from sqlalchemy.exc import SQLAlchemyError
 from sqlmodel import select
 
+from app.core.media_usage import media_reference_scope
 from app.db.entities import ClipStatus, FinalClip, UploadAttempt, UploadStatus, UploadTask
 from app.db.session import get_session
 from app.publishing.journal import mark_replayed, read_pending_entries
@@ -18,6 +19,7 @@ from app.publishing.journal import mark_replayed, read_pending_entries
 _logger = logging.getLogger(__name__)
 
 
+@media_reference_scope()
 def recover_publish_results() -> int:
     """从 Durable Journal 恢复远程成功结果到数据库。
 

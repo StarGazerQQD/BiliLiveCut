@@ -26,6 +26,7 @@ from sqlmodel import select
 
 from app.core import settings_store
 from app.core.config import settings
+from app.core.media_usage import media_reference_scope
 from app.core.runtime_settings import configured_task
 from app.core.sanitize import safe_exception_summary, sanitize_diagnostic
 from app.db.entities import (
@@ -328,6 +329,7 @@ def get_uploader() -> Uploader:
 # --------------------------------------------------------------------------- #
 # 队列
 # --------------------------------------------------------------------------- #
+@media_reference_scope()
 def enqueue_upload(clip_id: int) -> UploadTask:
     """对一个成品切片做前置校验并创建上传任务 (V0.1.12.7: IntegrityError 幂等)。
 

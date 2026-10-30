@@ -7,6 +7,7 @@ import json
 import time
 from dataclasses import dataclass
 from datetime import UTC, datetime, timedelta
+from functools import partial
 from typing import Any
 from uuid import uuid4
 
@@ -15,6 +16,7 @@ from sqlmodel import select
 
 from app.core import settings_store
 from app.core.config import settings
+from app.core.execution import run_sync
 from app.core.osutil import open_path
 from app.core.paths import clips_dir, ready_to_upload_dir
 from app.core.sanitize import safe_exception_summary
@@ -49,10 +51,7 @@ async def _on_session_end(session_id: int) -> None:
     _finalize_manual_markers(session_id)
     from app.analysis.reanalysis import request_session_reanalysis
 
-    reanalysis_requested = request_session_reanalysis(
-        session_id,
-        reason="session_finalized",
-    )
+    reanalysis_requested = await run_sync(partial(request_session_reanalysis, session_id, reason="session_finalized"))
     # request_session_reanalysis 会同时使整场总结失效并登记新的持久请求；
     # 没有自动分析任务的场次仍需生成明确的空时间线总结。
     summary_requested = reanalysis_requested

@@ -12,14 +12,18 @@ V0.1.12.8: approve_event_and_task 接受可选 db session 参数，
 from __future__ import annotations
 
 import json
+from collections.abc import Iterator
+from contextlib import contextmanager, nullcontext
 from datetime import UTC, datetime
+from functools import partial
 
 from loguru import logger
 from sqlmodel import Session
 
 from app.analysis.editorial_contracts import EditorialReviewInputV1
 from app.analysis.editorial_review import editorial_auto_approvable
-from app.analysis.editorial_review_sources import media_bounds_accessible
+from app.analysis.editorial_review_sources import media_bounds_accessible, media_validation_scope
+from app.core.media_usage import media_reference_scope
 from app.db.entities import (
     CandidateStatus,
     HighlightCandidate,
@@ -28,8 +32,27 @@ from app.db.entities import (
     SegmentTask,
     TaskStatus,
 )
+from app.db.notifications import log_after_commit
 from app.db.session import get_session
 from app.pipeline.stage_result import enqueue_next
+
+
+@contextmanager
+def _approval_session(db: Session | None, event_id: int, *, validate_media: bool) -> Iterator[Session]:
+    if db is not None:
+        # 外部事务由调用方在创建会话前取得媒体门，此处不倒置锁顺序。
+        yield db
+    else:
+        with media_reference_scope():
+            ids: list[int] = []
+            if validate_media:
+                with get_session(operation="approve_event_source") as source_db:
+                    event = source_db.get(HighlightEvent, event_id)
+                    if event is not None:
+                        ids.append(event.session_id)
+            validation = media_validation_scope(session_ids=ids) if validate_media else nullcontext()
+            with validation, get_session(operation="approve_event") as owned:
+                yield owned
 
 
 def approve_event_and_task(
@@ -56,12 +79,7 @@ def approve_event_and_task(
     :param db: 可选的外部 session (V0.1.12.8)。
     :returns: True 表示成功; False 表示 event 不存在或已被拒绝。
     """
-    _owns_session = db is None
-
-    if db is None:
-        db = get_session().__enter__()
-
-    try:
+    with _approval_session(db, event_id, validate_media=source == "auto") as db:
         event = db.get(HighlightEvent, event_id)
         if event is None:
             logger.warning("approve_event_and_task: event {} 不存在, 拒绝批准 task={}", event_id, task_id)
@@ -151,33 +169,31 @@ def approve_event_and_task(
                 task.stage if task else "None",
             )
 
-        if _owns_session:
-            db.commit()
-
-        logger.info(
-            "approve_event_and_task: task={} event={} by={} source={} → approved",
-            task_id,
-            event_id,
-            approved_by,
-            source,
+        log_after_commit(
+            db,
+            partial(
+                logger.info,
+                "approve_event_and_task: task={} event={} by={} source={} → approved",
+                task_id,
+                event_id,
+                approved_by,
+                source,
+            ),
         )
         return True
-    finally:
-        if _owns_session:
-            db.close()
 
 
-def assert_event_approved(event_id: int) -> bool:
+def assert_event_approved(event_id: int, db: Session | None = None) -> bool:
     """校验 Event 是否已批准 (用于渲染/发布前置条件)。
 
     :param event_id: HighlightEvent.id。
     :returns: True 表示已批准。
     """
-    with get_session() as db:
-        event = db.get(HighlightEvent, event_id)
-        if event is None:
-            return False
-        return event.review_status in ReviewStatus.POSITIVE
+    if db is None:
+        with get_session() as connection:
+            return assert_event_approved(event_id, connection)
+    event = db.get(HighlightEvent, event_id)
+    return event is not None and event.review_status in ReviewStatus.POSITIVE
 
 
 def check_pipeline_consistency(

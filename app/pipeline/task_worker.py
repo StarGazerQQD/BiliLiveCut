@@ -26,6 +26,7 @@ from sqlmodel import select
 
 from app.core.config import settings
 from app.core.execution import run_sync as _thread_io
+from app.core.media_usage import media_reference_scope
 from app.core.sanitize import safe_exception_summary
 from app.db.entities import (
     RawSegment,
@@ -77,6 +78,7 @@ if TYPE_CHECKING:
 # ═══════════════════════════════════════════════════
 
 
+@media_reference_scope()
 def create_task(segment_id: int, session_id: int) -> SegmentTask | None:
     """为已完成录制的片段创建任务 (幂等)。
 
@@ -121,6 +123,7 @@ def create_task(segment_id: int, session_id: int) -> SegmentTask | None:
             return None
 
 
+@media_reference_scope()
 def retry_task(task_id: int) -> bool:
     """手动重试失败任务。
 

@@ -16,6 +16,7 @@ from pydantic import JsonValue
 from sqlalchemy.engine import Engine
 from sqlmodel import Session, select
 
+from app.core.media_usage import media_reference_scope
 from app.core.sanitize import sanitize_diagnostic
 from app.db.entities import AppSetting
 from app.db.session import get_session
@@ -135,6 +136,7 @@ def list_jobs(limit: int = 100, *, owner: str | None = None) -> list[JobData]:
             rows.close()
 
 
+@media_reference_scope()
 def register(job: JobData) -> JobData:
     """在同一事务内登记并去重，用户和操作类型隔离幂等键。"""
     validate_job(job)
@@ -243,6 +245,7 @@ def cancel(job_id: str, actor: str, *, is_admin: bool = False) -> JobData:
     return job
 
 
+@media_reference_scope()
 def retry(job_id: str, actor: str, *, is_admin: bool = False) -> JobData:
     """开启新代次，保留作业标识和原权限主体。"""
     with get_session() as db:
@@ -265,6 +268,7 @@ def retry(job_id: str, actor: str, *, is_admin: bool = False) -> JobData:
     return job
 
 
+@media_reference_scope()
 def recover(attempt: JobAttempt) -> JobData:
     """启动时清算旧执行；安全操作以新代次恢复，外部效果保持待核对。"""
     with get_session() as db:

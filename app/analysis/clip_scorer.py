@@ -8,7 +8,6 @@ import math
 from collections.abc import Mapping, Sequence
 from dataclasses import asdict, dataclass, field
 from datetime import datetime, timedelta
-from pathlib import Path
 from typing import TYPE_CHECKING, Any
 
 from loguru import logger
@@ -20,7 +19,12 @@ from app.analysis.editorial_review import (
     editorial_candidate,
     review_policy_identity,
 )
-from app.analysis.editorial_review_sources import event_review_is_current, media_bounds_accessible
+from app.analysis.editorial_review_sources import (
+    event_review_is_current,
+    media_bounds_accessible,
+    media_file_identity,
+    media_snapshot_is_current,
+)
 from app.analysis.event_enricher import (
     EventEnrichmentDraft,
     EventEvidenceChangedError,
@@ -412,6 +416,8 @@ def validate_event_clip_draft(
         return None
     metadata = _json_mapping(draft.features_json).get("editorial_review")
     if review is not None and isinstance(metadata, Mapping):
+        if not media_snapshot_is_current(db, draft.session_id):
+            return None
         if metadata.get("media_accessible") != media_bounds_accessible(db, review.source, draft.start_ts, draft.end_ts):
             return None
     return event
@@ -549,17 +555,7 @@ def _load_event_context(
     for item in segments:
         if item.start_ts is None or item.end_ts is None or item.end_ts <= media_start or item.start_ts >= media_end:
             continue
-        try:
-            file_stat = Path(item.file_path).stat()
-            identity = [
-                file_stat.st_dev,
-                file_stat.st_ino,
-                file_stat.st_size,
-                file_stat.st_mtime_ns,
-                file_stat.st_ctime_ns,
-            ]
-        except OSError:
-            identity = None
+        identity = media_file_identity(item)
         # 来源身份只用于本地成片校验，不加入发送给模型的证据。
         media_identity.append({"id": item.id, "path": item.file_path, "file": identity})
     fingerprint_payload = {

@@ -15,6 +15,7 @@ from sqlalchemy import func
 from sqlmodel import Session, select
 
 from app.analysis.transcription.content import refined_transcript_text, transcript_text
+from app.core.media_usage import media_reference_scope
 from app.core.runtime_settings import configured_task
 from app.core.sanitize import safe_exception_summary, sanitize_diagnostic
 from app.db.entities import (
@@ -552,6 +553,7 @@ def list_transcripts(
     return result
 
 
+@media_reference_scope()
 def retranscribe_transcript(transcript_id: int) -> dict[str, int]:
     """安全删除污染转写并把原始片段重新放入转写队列。
 

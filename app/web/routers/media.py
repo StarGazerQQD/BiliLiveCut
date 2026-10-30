@@ -5,16 +5,16 @@ from __future__ import annotations
 from pathlib import Path
 
 from fastapi import APIRouter, HTTPException
-from fastapi.responses import FileResponse
 
 from app.db.entities import FinalClip
 from app.db.session import get_session
+from app.web.media_response import MediaFileResponse
 
 router = APIRouter()
 
 
 @router.get("/clips/{clip_id}/video")
-def clip_video(clip_id: int) -> FileResponse:
+def clip_video(clip_id: int) -> MediaFileResponse:
     """返回成品 MP4 以便页面内预览。"""
     from app.core.paths import clips_dir as _clips_dir
 
@@ -26,11 +26,11 @@ def clip_video(clip_id: int) -> FileResponse:
     clips_root = _clips_dir().resolve()
     if not file_path.is_relative_to(clips_root):
         raise HTTPException(status_code=403, detail="禁止访问")
-    return FileResponse(str(file_path), media_type="video/mp4")
+    return MediaFileResponse(str(file_path), media_type="video/mp4")
 
 
 @router.get("/clips/{clip_id}/cover")
-def clip_cover(clip_id: int) -> FileResponse:
+def clip_cover(clip_id: int) -> MediaFileResponse:
     """返回成品封面图。"""
     from app.core.paths import clips_dir as _clips_dir
 
@@ -42,7 +42,7 @@ def clip_cover(clip_id: int) -> FileResponse:
     clips_root = _clips_dir().resolve()
     if not file_path.is_relative_to(clips_root):
         raise HTTPException(status_code=403, detail="禁止访问")
-    return FileResponse(str(file_path), media_type="image/jpeg")
+    return MediaFileResponse(str(file_path), media_type="image/jpeg")
 
 
 def _get_clip(clip_id: int) -> FinalClip | None:

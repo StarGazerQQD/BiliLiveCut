@@ -14,12 +14,14 @@ from collections.abc import Mapping
 from dataclasses import dataclass, replace
 from datetime import datetime, timedelta
 from enum import StrEnum
+from functools import partial
 from typing import Any
 
 from sqlalchemy.exc import IntegrityError as _IntegrityError
 from sqlmodel import Session, select
 
 from app.analysis import audio as audio_mod
+from app.analysis.editorial_review_sources import media_validation_scope
 from app.analysis.keywords import match_keywords
 from app.analysis.model_execution import ModelCallBudget
 from app.analysis.room_config import room_highlight_keywords
@@ -27,6 +29,7 @@ from app.analysis.source_policy import session_danmaku_lag_s
 from app.analysis.transcript_windows import TranscriptWindowCache
 from app.analysis.transcription.content import refined_transcript_text
 from app.core.config import settings
+from app.core.media_usage import media_reference_scope
 from app.core.runtime_settings import configured_task
 from app.core.sanitize import safe_exception_summary, sanitize_diagnostic
 from app.db.entities import (
@@ -46,6 +49,7 @@ from app.db.entities import (
     TaskStatus,
     Transcript,
 )
+from app.db.notifications import log_after_commit
 from app.db.session import get_session
 from app.pipeline.highlight_plugins import build_highlight_scoring_request
 from app.pipeline.lease import LeaseLostError, TaskLease, still_owns_lease
@@ -275,7 +279,29 @@ def analyze_compute(task_id: int) -> dict[str, Any]:
     return draft
 
 
+@media_reference_scope()
 def commit_highlight(lease: TaskLease, compute_result: dict[str, Any], ms: int) -> None:
+    """在写事务前核对文件，再以租约和来源快照提交分析结果。"""
+    started = time.monotonic()
+    with media_validation_scope(task_id=lease.task_id):
+        session_id = _commit_highlight(lease, compute_result, ms)
+    if session_id is not None:
+        # 来源预检只覆盖对应事务；模型计算必须读取提交后的实时证据。
+        budgets: dict[int, ModelCallBudget] = {}
+        try:
+            results = _score_pending_hotspot_events(
+                session_id,
+                audio_features=compute_result.get("event_audio_features"),
+                audio_segment_id=compute_result.get("segment_id", 0),
+                budgets=budgets,
+                lease=lease,
+            )
+            _commit_event_analysis(lease, results, ms + int((time.monotonic() - started) * 1000), budgets)
+        except LeaseLostError:
+            _logger.warning("stale_result_discarded: highlight task=%s 已失去租约", lease.task_id)
+
+
+def _commit_highlight(lease: TaskLease, compute_result: dict[str, Any], ms: int) -> int | None:
     """租约内提交热点事实，在事务外计算编辑结果，再原子提交候选及任务。
 
     决策分支:
@@ -290,7 +316,6 @@ def commit_highlight(lease: TaskLease, compute_result: dict[str, Any], ms: int) 
     """
     segment_id = compute_result.get("segment_id", 0)
     decision = compute_result.get("decision", HighlightDecision.SKIPPED)
-    started = time.monotonic()
 
     try:
         with get_session() as db:
@@ -365,16 +390,7 @@ def commit_highlight(lease: TaskLease, compute_result: dict[str, Any], ms: int) 
             if decision == HighlightDecision.EVENT_PASS:
                 # 首次模型判断必须读取本轮已提交的事实，避免新增 ASR 使自己的草稿失效。
                 db.commit()
-                budgets: dict[int, ModelCallBudget] = {}
-                results = _score_pending_hotspot_events(
-                    task.session_id,
-                    audio_features=compute_result.get("event_audio_features"),
-                    audio_segment_id=segment_id,
-                    budgets=budgets,
-                    lease=lease,
-                )
-                _commit_event_analysis(lease, results, ms + int((time.monotonic() - started) * 1000), budgets)
-                return
+                return task.session_id
             _record_plugin_dispatch(db, compute_result)
 
             # ── BELOW_THRESHOLD ──────────────────────────
@@ -485,7 +501,16 @@ def commit_highlight(lease: TaskLease, compute_result: dict[str, Any], ms: int) 
                 return
 
             cid, event_id = created[0]
-            _logger.info("analyze_candidates_committed: segment=%s count=%s primary=%s", segment_id, len(created), cid)
+            log_after_commit(
+                db,
+                partial(
+                    _logger.info,
+                    "analyze_candidates_committed: segment=%s count=%s primary=%s",
+                    segment_id,
+                    len(created),
+                    cid,
+                ),
+            )
 
             mark_completed(task, ms)
             enqueue_next(task, TaskStatus.CANDIDATE_CREATED, candidate_id=cid, event_id=event_id)
@@ -551,7 +576,10 @@ def _commit_event_analysis(
             if type(event_id) is int and isinstance(budget, ModelCallBudget)
         )
     for attempt in range(2):
-        with get_session() as db:
+        with (
+            media_validation_scope(task_id=lease.task_id),
+            get_session(operation="event_analysis_commit", task_id=lease.task_id) as db,
+        ):
             connection = db.connection()
             if connection.dialect.name == "sqlite":
                 # legacy SQLite SELECT 不开启事务；必须先 BEGIN，避免首个 SAVEPOINT
@@ -921,7 +949,7 @@ def score_hotspot_event(event_id: int) -> HighlightCandidate | None:
     clip_draft = result["clip_draft"]
     if not isinstance(clip_draft, EventClipDraft):
         raise TypeError("事件评分结果缺少 EventClipDraft")
-    with get_session() as db:
+    with media_validation_scope(session_ids=[clip_draft.session_id]), get_session(operation="event_score_commit") as db:
         connection = db.connection()
         if connection.dialect.name == "sqlite":
             connection.exec_driver_sql("BEGIN IMMEDIATE")
@@ -998,7 +1026,7 @@ def score_segment_direct(segment_id: int) -> HighlightCandidate | None:
         drafts.extend(item for item in additional if isinstance(item, dict))
 
     primary: HighlightCandidate | None = None
-    with get_session() as db:
+    with media_validation_scope(session_ids=[session_id]), get_session(operation="segment_score_commit") as db:
         from app.analysis.scoring_config import get_scoring_config
 
         if db.get_bind().dialect.name == "sqlite":
@@ -1290,11 +1318,15 @@ def _get_or_create_candidate(
             db.add(candidate)
             db.flush()
         db.refresh(candidate)
-        _logger.info(
-            "candidate_created: cid=%s dedup_hash=%s score=%.3f",
-            candidate.id,
-            dedup_hash[:16],
-            highlight_score,
+        log_after_commit(
+            db,
+            partial(
+                _logger.info,
+                "candidate_created: cid=%s dedup_hash=%s score=%.3f",
+                candidate.id,
+                dedup_hash[:16],
+                highlight_score,
+            ),
         )
         return candidate
     except _IntegrityError:
@@ -1369,7 +1401,7 @@ def _get_or_create_event(
             db.add(event)
             db.flush()
         db.refresh(event)
-        _logger.info("auto_event: eid=%s cid=%s", event.id, candidate_id)
+        log_after_commit(db, partial(_logger.info, "auto_event: eid=%s cid=%s", event.id, candidate_id))
         return event.id
     except _IntegrityError:
         # 并发冲突 — 回滚 savepoint, 查询对方创建的记录

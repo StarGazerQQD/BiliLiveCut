@@ -9,6 +9,7 @@ from loguru import logger
 from sqlmodel import or_, select
 
 from app.core.config import settings
+from app.core.media_usage import media_reference_scope
 from app.db.entities import (
     ClipVariant,
     RawSegment,
@@ -180,6 +181,7 @@ def recover_stale() -> None:
         db.commit()
 
 
+@media_reference_scope()
 def recover_orphans() -> None:
     """恢复孤立任务: stale 恢复 + 孤立片段任务创建。"""
     from app.pipeline.stage_result import make_pipeline_key, make_stage_key
@@ -337,6 +339,7 @@ def recover_stale_upload_attempts() -> int:
     return recovered
 
 
+@media_reference_scope()
 def sync_segment_task_from_attempt() -> int:
     """使用最新尝试或已确认成功的证据，同步上传、成片及全部相关发布任务。"""
     from app.db.entities import ClipStatus, FinalClip, UploadTask

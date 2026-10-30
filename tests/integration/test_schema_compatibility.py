@@ -4,13 +4,9 @@ import sqlite3
 from collections.abc import Iterator
 from contextlib import closing
 from pathlib import Path
-from typing import TYPE_CHECKING
 
 import pytest
 from loguru import logger
-
-if TYPE_CHECKING:
-    from loguru import Message
 
 
 @pytest.fixture
@@ -121,31 +117,25 @@ def test_database_logs_resume_after_successful_revalidation(database_log_sink: N
 
 @pytest.mark.parametrize("replace_engine", [False, True])
 def test_queued_database_log_cannot_cross_initialization_or_engine(
-    temp_db: None, monkeypatch: pytest.MonkeyPatch, replace_engine: bool
+    database_log_sink: None, monkeypatch: pytest.MonkeyPatch, replace_engine: bool
 ) -> None:
     from sqlmodel import create_engine
 
-    from app.core.logging import _db_sink, _filter_db_sink
     from app.db import session
     from app.db.schema import _db_path
 
-    messages: list[Message] = []
-    handler = logger.add(messages.append, filter=_filter_db_sink, level="WARNING")
-    try:
-        logger.warning("旧数据库代次的排队日志")
-    finally:
-        logger.remove(handler)
     logger.complete()
-    assert len(messages) == 1
     before = _dump(_db_path())
     replacement = create_engine(session.engine.url) if replace_engine else None
     try:
-        if replacement is not None:
-            monkeypatch.setattr(session, "engine", replacement)
-            assert session.database_log_generation() is None
-        else:
-            session.init_db()
-        _db_sink(messages[0])
+        with session._database_log_lock:
+            logger.warning("旧数据库代次的排队日志")
+            if replacement is not None:
+                monkeypatch.setattr(session, "engine", replacement)
+                assert session.database_log_generation() is None
+            else:
+                session.init_db()
+        logger.complete()
         assert _dump(_db_path()) == before
     finally:
         if replacement is not None:

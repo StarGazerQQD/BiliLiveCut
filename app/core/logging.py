@@ -17,13 +17,18 @@ import re
 import sys
 import time
 import traceback
+from collections import deque
+from dataclasses import dataclass
+from datetime import UTC, datetime
 from functools import partial
 from pathlib import Path
+from threading import Lock
 from typing import TYPE_CHECKING
 from uuid import uuid4
 
 import psutil
 from loguru import logger
+from sqlalchemy.exc import SQLAlchemyError
 
 from app.core.config import settings
 from app.core.paths import logs_dir
@@ -33,6 +38,31 @@ if TYPE_CHECKING:
     from loguru import Message, Record
 
 _CONFIGURED = False
+_DB_CAPACITY = 512
+_DB_BATCH_SIZE = 100
+_db_lock = Lock()
+_db_pending = 0
+_db_scheduled = False
+_db_dropped = 0
+_db_reported_drops = 0
+_db_retention_failures = 0
+_db_reported_retention_failures = 0
+_db_last_drop_report: float | None = None
+_db_failure_sample: str | None = None
+
+
+@dataclass(frozen=True, slots=True)
+class _DatabaseLog:
+    generation: str
+    level: str
+    module: str | None
+    event: str | None
+    message: str
+    created_at: datetime
+    context_json: str | None
+
+
+_db_records: deque[_DatabaseLog] = deque()
 _FILE_LOG_NAME = re.compile(
     r"blc-(?P<pid>[1-9][0-9]*)-[0-9a-f]{32}"
     r"(?:\.[0-9]{4}-[0-9]{2}-[0-9]{2}_[0-9]{2}-[0-9]{2}-[0-9]{2}_[0-9]{6}(?:\.[0-9]+)?)?"
@@ -167,47 +197,141 @@ def setup_logging() -> None:
         diagnose=False,  # 开发环境也不记录局部变量中的凭据。
     )
 
-    # 数据库 sink:把 WARNING 及以上写入 system_logs,供 Web 后台查看。
-    # enqueue=True 让写库发生在独立线程,不阻塞业务;内部已吞掉自身异常,避免递归。
-    logger.add(_db_sink, level="WARNING", enqueue=True, filter=_filter_db_sink)
+    # filter 限制等待及在途条目，只向现有 Loguru worker 投递排空触发。
+    logger.add(_DatabaseLogSink(), level="WARNING", enqueue=True, filter=_filter_db_sink)
 
     _CONFIGURED = True
     logger.debug("日志系统已初始化(env={}, level={})", settings.app_env, settings.log_level)
 
 
 def _filter_db_sink(record: Record) -> bool:
-    """入队时记录校验代次，未初始化或初始化失败的诊断只写文件和控制台。"""
+    """有界接收安全诊断，仅为空闲队列安排一次后台批写。"""
+    global _db_pending, _db_scheduled, _db_dropped
+    if record["extra"].get("_skip_db"):
+        return False
     from app.db.session import database_log_generation
 
     generation = database_log_generation()
     record["extra"]["_database_generation"] = generation
-    return generation is not None
+    if generation is None:
+        return False
+    from app.db.runtime_logs import RUNTIME_LOG_CONTEXT
+
+    item = _DatabaseLog(
+        generation,
+        record["level"].name,
+        record["name"],
+        record["function"],
+        record["message"],
+        record["time"].astimezone(UTC).replace(tzinfo=None),
+        RUNTIME_LOG_CONTEXT if record["level"].name == "WARNING" else None,
+    )
+    with _db_lock:
+        if _db_pending >= _DB_CAPACITY:
+            _db_dropped += 1
+            return False
+        _db_records.append(item)
+        _db_pending += 1
+        if _db_scheduled:
+            return False
+        _db_scheduled = True
+        return True
 
 
 def _db_sink(message: Message) -> None:
-    """loguru sink:把一条日志记录写入 ``system_logs`` 表。
+    """在原有 Loguru worker 排空有限快照，保留 logger.complete 的屏障。"""
+    global _db_pending, _db_scheduled
+    from app.db.entities import SystemLog
+    from app.db.runtime_logs import prune_runtime_logs
+    from app.db.session import get_database_log_session
 
-    写库异常通过 stderr 报告安全摘要，避免递归调用日志系统。
-
-    :param message: loguru 传入的消息对象(含 ``.record``)。
-    """
+    with _db_lock:
+        snapshot = list(_db_records)
+        _db_records.clear()
+        _db_scheduled = False
     try:
-        record = message.record.copy()
-        _safe_record(record)
-        # 延迟导入,规避循环依赖(db -> logging)。
-        from app.db.entities import SystemLog
-        from app.db.session import get_database_log_session
+        for offset in range(0, len(snapshot), _DB_BATCH_SIZE):
+            batch = snapshot[offset : offset + _DB_BATCH_SIZE]
+            for generation in dict.fromkeys(item.generation for item in batch):
+                records = [item for item in batch if item.generation == generation]
+                try:
+                    with get_database_log_session(generation) as db:
+                        if db is None:
+                            continue
+                        db.add_all(
+                            [
+                                SystemLog(
+                                    level=item.level,
+                                    module=item.module,
+                                    event=item.event,
+                                    message=item.message,
+                                    created_at=item.created_at,
+                                    context_json=item.context_json,
+                                )
+                                for item in records
+                            ]
+                        )
+                except (SQLAlchemyError, OSError, RuntimeError, ValueError) as exc:
+                    _record_database_log_failure(exc, dropped=len(records))
+                    continue
+                if any(item.context_json is not None for item in records):
+                    try:
+                        prune_runtime_logs(limit=len(records), generation=generation)
+                    except (SQLAlchemyError, OSError, RuntimeError, ValueError) as exc:
+                        _record_database_log_failure(exc, retention=True)
+    finally:
+        with _db_lock:
+            _db_pending -= len(snapshot)
+        _report_database_log_drops()
 
-        with get_database_log_session(record["extra"].get("_database_generation")) as db:
-            if db is None:
-                return
-            db.add(
-                SystemLog(
-                    level=record["level"].name,
-                    module=record["name"],
-                    event=record["function"],
-                    message=record["message"],
-                )
-            )
-    except Exception as exc:  # noqa: BLE001 — 日志 sink 绝不能抛出
-        print(f"数据库日志写入失败 (system_logs sink): {safe_exception_summary(exc)}", file=sys.stderr)
+
+def _record_database_log_failure(error: BaseException, *, dropped: int = 0, retention: bool = False) -> None:
+    global _db_dropped, _db_retention_failures, _db_failure_sample
+    detail = safe_exception_summary(error)
+    with _db_lock:
+        _db_dropped += dropped
+        _db_retention_failures += int(retention)
+        _db_failure_sample = detail
+
+
+class _DatabaseLogSink:
+    def write(self, message: Message) -> None:
+        _db_sink(message)
+
+    def stop(self) -> None:
+        _report_database_log_drops(force=True)
+
+
+def _report_database_log_drops(*, force: bool = False) -> None:
+    global _db_last_drop_report, _db_reported_drops, _db_reported_retention_failures, _db_failure_sample
+    with _db_lock:
+        now = time.monotonic()
+        if (_db_dropped == _db_reported_drops and _db_retention_failures == _db_reported_retention_failures) or (
+            not force and _db_last_drop_report is not None and now - _db_last_drop_report < 60
+        ):
+            return
+        count = _db_dropped - _db_reported_drops
+        retention_failures = _db_retention_failures - _db_reported_retention_failures
+        detail = _db_failure_sample
+        _db_reported_drops = _db_dropped
+        _db_reported_retention_failures = _db_retention_failures
+        _db_failure_sample = None
+        _db_last_drop_report = now
+    print(
+        f"数据库诊断本轮未保留 {count} 条副本、保留清理失败 {retention_failures} 次，"
+        f"完整文件日志仍保留。{detail or ''}",
+        file=sys.stderr,
+    )
+
+
+def database_log_queue_snapshot() -> dict[str, int]:
+    """读取诊断副本容量和丢弃计数，不向日志系统递归投递。"""
+    with _db_lock:
+        return {
+            "capacity": _DB_CAPACITY,
+            "pending": _db_pending,
+            "queued": len(_db_records),
+            "in_flight": _db_pending - len(_db_records),
+            "dropped": _db_dropped,
+            "retention_failures": _db_retention_failures,
+        }

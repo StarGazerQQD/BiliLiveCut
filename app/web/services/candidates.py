@@ -10,6 +10,7 @@ from typing import TYPE_CHECKING, Any
 from loguru import logger
 from sqlmodel import select
 
+from app.core.media_usage import media_reference_scope
 from app.db.entities import (
     CandidateStatus,
     HighlightCandidate,
@@ -22,6 +23,7 @@ if TYPE_CHECKING:
     from app.jobs.context import JobContext
 
 
+@media_reference_scope()
 def set_candidate_status(candidate_id: int, status: str, *, reviewed_by: str = "web_admin") -> None:
     """设置候选状态(审核:批准/拒绝),并记录阈值自学习反馈。
 
@@ -71,6 +73,7 @@ def set_candidate_status(candidate_id: int, status: str, *, reviewed_by: str = "
         )
 
 
+@media_reference_scope()
 def approve_candidate_sync(
     candidate_id: int,
     *,

@@ -4,10 +4,13 @@ from __future__ import annotations
 import hashlib
 import json
 import stat
-from collections.abc import Mapping
+from collections.abc import Iterable, Iterator, Mapping
+from contextlib import contextmanager
+from contextvars import ContextVar
 from dataclasses import dataclass
 from datetime import datetime
 from pathlib import Path
+from threading import get_ident
 
 from sqlmodel import Session, select
 
@@ -24,8 +27,114 @@ from app.analysis.editorial_review import EditorialReviewDraft, judge_editorial,
 from app.analysis.event_enricher import EventTargetUnavailableError, build_event_evidence_bundle
 from app.analysis.model_execution import ModelCallBudget
 from app.analysis.timeline import datetime_epoch
-from app.db.entities import AppSetting, HotspotEvent, RawSegment
+from app.core.media_usage import media_reference_scope
+from app.db import session as database
+from app.db.entities import AppSetting, HotspotEvent, RawSegment, SegmentTask
 from app.db.session import get_session
+
+
+@dataclass(frozen=True, slots=True)
+class _MediaRow:
+    id: int
+    session_id: int
+    path: str
+    start: datetime | None
+    end: datetime | None
+
+    @classmethod
+    def from_segment(cls, segment: RawSegment) -> _MediaRow:
+        if segment.id is None:
+            raise ValueError("媒体快照要求已持久化的分段")
+        return cls(segment.id, segment.session_id, segment.file_path, segment.start_ts, segment.end_ts)
+
+
+@dataclass(frozen=True, slots=True)
+class _MediaState:
+    identity: list[int] | None
+    readable: bool
+
+
+@dataclass(frozen=True, slots=True)
+class _MediaSnapshot:
+    rows: tuple[_MediaRow, ...]
+    states: Mapping[int, _MediaState]
+    engine: object
+    thread: int
+
+    def matches(self, rows: list[RawSegment], session_id: int) -> bool:
+        return tuple(_MediaRow.from_segment(row) for row in rows) == tuple(
+            row for row in self.rows if row.session_id == session_id
+        )
+
+
+_media_snapshot: ContextVar[_MediaSnapshot | None] = ContextVar("editorial_media_snapshot", default=None)
+
+
+def _current_media_snapshot() -> _MediaSnapshot | None:
+    snapshot = _media_snapshot.get()
+    if snapshot is not None and snapshot.engine is database.engine and snapshot.thread == get_ident():
+        return snapshot
+    return None
+
+
+def _probe_media(path: str) -> _MediaState:
+    identity: list[int] | None = None
+    readable = False
+    try:
+        file = Path(path)
+        metadata = file.stat()
+        identity = [metadata.st_dev, metadata.st_ino, metadata.st_size, metadata.st_mtime_ns, metadata.st_ctime_ns]
+        if stat.S_ISREG(metadata.st_mode):
+            with file.open("rb") as media:
+                readable = bool(media.read(1))
+    except OSError:
+        pass
+    return _MediaState(identity, readable)
+
+
+@contextmanager
+def media_validation_scope(*, session_ids: Iterable[int] = (), task_id: int | None = None) -> Iterator[None]:
+    """先关闭来源读取会话，再探测媒体；提交事务只核对数据库引用快照。"""
+    with media_reference_scope():
+        ids = set(session_ids)
+        with get_session(operation="media_validation_snapshot", task_id=task_id) as db:
+            if task_id is not None:
+                task = db.get(SegmentTask, task_id)
+                if task is not None:
+                    ids.add(task.session_id)
+            segments = (
+                db.exec(select(RawSegment).where(RawSegment.session_id.in_(ids)).order_by(RawSegment.id)).all()
+                if ids
+                else []
+            )
+            rows = tuple(_MediaRow.from_segment(segment) for segment in segments)
+        by_path = {path: _probe_media(path) for path in {row.path for row in rows}}
+        snapshot = _MediaSnapshot(rows, {row.id: by_path[row.path] for row in rows}, database.engine, get_ident())
+        token = _media_snapshot.set(snapshot)
+        try:
+            yield
+        finally:
+            _media_snapshot.reset(token)
+
+
+def media_snapshot_is_current(db: Session, session_id: int) -> bool:
+    """事务内拒绝新增、替换或改界后的媒体引用，不访问文件系统。"""
+    snapshot = _current_media_snapshot()
+    if snapshot is None:
+        return True
+    rows = db.exec(select(RawSegment).where(RawSegment.session_id == session_id).order_by(RawSegment.id)).all()
+    return snapshot.matches(rows, session_id)
+
+
+def media_file_identity(segment: RawSegment) -> list[int] | None:
+    """复用预检文件身份，数据库中的路径或边界变化时拒绝旧快照。"""
+    snapshot = _current_media_snapshot()
+    if snapshot is None:
+        return _probe_media(segment.file_path).identity
+    row = _MediaRow.from_segment(segment)
+    if row not in snapshot.rows:
+        raise ValueError("媒体引用在提交前已发生变化")
+    return snapshot.states[row.id].identity
 
 
 def event_review_source(
@@ -80,13 +189,13 @@ def segment_review_revision(db: Session, segment_id: int) -> str:
         raise ValueError(f"编辑判断分段不存在: segment_id={segment_id}")
     rows = db.exec(select(RawSegment).where(RawSegment.session_id == segment.session_id).order_by(RawSegment.id)).all()
     revision = db.get(AppSetting, "configuration_revision")
+    snapshot = _current_media_snapshot()
+    if snapshot is not None and not snapshot.matches(rows, segment.session_id):
+        raise ValueError("媒体引用在提交前已发生变化")
     files: list[dict[str, object]] = []
     for item in rows:
-        try:
-            stat = Path(item.file_path).stat()
-            identity = [stat.st_size, stat.st_mtime_ns]
-        except OSError:
-            identity = None
+        full_identity = media_file_identity(item)
+        identity = full_identity[2:4] if full_identity is not None else None
         files.append(
             {
                 "id": item.id,
@@ -155,9 +264,15 @@ class SegmentReviewSnapshot:
         if self.review.execution.status == "cancelled":
             return False
         segment = db.get(RawSegment, self.segment_id)
-        if segment is None or segment_review_revision(db, self.segment_id) != self.review.revision:
+        if segment is None:
             return False
-        current_danmaku = representative_danmaku(segment.session_id, self.start_ts, self.end_ts)
+        try:
+            revision = segment_review_revision(db, self.segment_id)
+        except ValueError:
+            return False
+        if revision != self.review.revision:
+            return False
+        current_danmaku = representative_danmaku(segment.session_id, self.start_ts, self.end_ts, db=db)
         if current_danmaku != self.danmaku:
             return False
 
@@ -213,7 +328,12 @@ def media_bounds_accessible(db: Session, source: EditorialReviewInputV1 | None, 
     """实际打开媒体并核对连续覆盖；缺失文件不能支持自动批准或模型边界。"""
     if source is None or end <= start:
         return False
-    segments = db.exec(select(RawSegment).where(RawSegment.session_id == source.target.session_id)).all()
+    segments = db.exec(
+        select(RawSegment).where(RawSegment.session_id == source.target.session_id).order_by(RawSegment.id)
+    ).all()
+    snapshot = _current_media_snapshot()
+    if snapshot is not None and not snapshot.matches(segments, source.target.session_id):
+        return False
     covered: list[tuple[float, float]] = []
     lower, upper = datetime_epoch(start), datetime_epoch(end)
     for segment in segments:
@@ -222,14 +342,8 @@ def media_bounds_accessible(db: Session, source: EditorialReviewInputV1 | None, 
         left, right = datetime_epoch(segment.start_ts), datetime_epoch(segment.end_ts)
         if left >= upper or right <= lower:
             continue
-        try:
-            path = Path(segment.file_path)
-            if not stat.S_ISREG(path.stat().st_mode):
-                continue
-            with path.open("rb") as media:
-                if not media.read(1):
-                    continue
-        except OSError:
+        state = snapshot.states[segment.id] if snapshot is not None else _probe_media(segment.file_path)
+        if not state.readable:
             continue
         covered.append((left, right))
     cursor = lower

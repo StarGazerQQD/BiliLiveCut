@@ -6,6 +6,7 @@ from typing import Any
 
 from fastapi import APIRouter, HTTPException, Query
 
+from app.core.media_usage import media_reference_scope
 from app.web.services import clips as clips_service
 
 _MAX_QUERY_LIMIT = 500
@@ -53,6 +54,7 @@ def publish_clip(clip_id: int) -> dict[str, Any]:
 
 
 @router.post("/clips/{clip_id}/confirm-manual-upload")
+@media_reference_scope()
 def confirm_manual_upload(
     clip_id: int,
     platform: str | None = None,

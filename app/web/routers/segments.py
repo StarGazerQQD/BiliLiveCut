@@ -6,11 +6,12 @@ from collections.abc import Iterator
 from typing import Any, Literal
 
 from fastapi import APIRouter, HTTPException, Query, Request
-from fastapi.responses import FileResponse, StreamingResponse
+from fastapi.responses import StreamingResponse
 from pydantic import BaseModel, ConfigDict, Field
 from starlette.background import BackgroundTask
 
 from app.web.editorial_contracts import EditorialTimelineResponse
+from app.web.media_response import MediaFileResponse
 from app.web.services import dashboard as dashboard_service
 from app.web.services import rooms as rooms_service
 from app.web.services import transcripts as transcripts_service
@@ -195,7 +196,7 @@ def get_transcripts(
 
 
 @router.get("/transcripts/{transcript_id}/source-mp4")
-def export_transcript_source_mp4(transcript_id: int) -> FileResponse:
+def export_transcript_source_mp4(transcript_id: int) -> MediaFileResponse:
     """无损导出转写对应的源 TS，并确保 MP4 从首个真实视频帧开始。"""
     from app.web.services.transcripts import remux_transcript_source
 
@@ -205,7 +206,7 @@ def export_transcript_source_mp4(transcript_id: int) -> FileResponse:
         raise HTTPException(status_code=404, detail=str(exc)) from exc
     except TranscriptMediaError as exc:
         raise HTTPException(status_code=422, detail=str(exc)) from exc
-    return FileResponse(
+    return MediaFileResponse(
         str(output),
         media_type="video/mp4",
         filename=output.name,

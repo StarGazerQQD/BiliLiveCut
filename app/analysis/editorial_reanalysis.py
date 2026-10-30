@@ -13,7 +13,12 @@ from sqlmodel import Session, select
 from app.analysis import llm
 from app.analysis.clip_scorer import EventClipDraft, mark_event_clip_evaluated, validate_event_clip_draft
 from app.analysis.editorial_review import EditorialReviewDraft
-from app.analysis.editorial_review_sources import SegmentReviewSnapshot, event_review_is_current
+from app.analysis.editorial_review_sources import (
+    SegmentReviewSnapshot,
+    event_review_is_current,
+    media_snapshot_is_current,
+    media_validation_scope,
+)
 from app.analysis.event_enricher import EventEnrichmentDraft, commit_event_enrichment
 from app.analysis.reanalysis_targets import (
     ReanalysisTarget,
@@ -53,6 +58,8 @@ def _current(db: Session, target: ReanalysisTarget, own_task_id: int | None) -> 
     reason = target_protection(db, target, own_task_id)
     if reason:
         return reason
+    if not media_snapshot_is_current(db, target.session_id):
+        return "state_changed"
     if target_fingerprint(db, target, own_task_id) != target.fingerprint:
         return "state_changed"
     return None
@@ -359,7 +366,7 @@ def run_editorial_reanalysis(context: JobContext, payload: dict[str, JsonValue])
     context.report(5, "正在核验重分析对象")
     drafts = compute_reanalysis(targets, cancelled=context.cancelled)
     context.check_cancelled()
-    with context.result_transaction() as db:
+    with media_validation_scope(session_ids=[item.session_id for item in targets]), context.result_transaction() as db:
         result = commit_reanalysis(db, drafts)
         context.check_cancelled()
         context.complete(db, result)

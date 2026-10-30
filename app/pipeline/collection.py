@@ -29,6 +29,7 @@ from sqlmodel import select
 
 from app.clipping.drafts import input_fingerprint, publication
 from app.core.config import settings
+from app.core.media_usage import media_reference_scope
 from app.core.paths import session_clips_dir
 from app.core.process_control import ProcessCancelledError, run_cancellable
 from app.core.sanitize import safe_exception_summary
@@ -139,6 +140,7 @@ def detect_overlap(events: Sequence[dict], threshold_s: float = 2.0) -> list[dic
     return overlaps
 
 
+@media_reference_scope()
 def render_collection(
     topic_id: int,
     event_ids: list[int],

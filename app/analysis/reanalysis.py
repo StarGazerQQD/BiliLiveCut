@@ -13,6 +13,7 @@ from sqlmodel import Session, select
 from app.analysis.reanalysis_policy import segment_protection_reason, task_is_active
 from app.analysis.source_policy import is_local_session
 from app.analysis.timeline import TIMELINE_ANALYSIS_VERSION
+from app.core.media_usage import media_reference_scope
 from app.core.sanitize import safe_exception_summary
 from app.db.entities import (
     AppSetting,
@@ -56,6 +57,7 @@ class ReanalysisResult:
         return asdict(self)
 
 
+@media_reference_scope()
 def queue_session_reanalysis(
     session_id: int,
     *,
@@ -117,6 +119,7 @@ def queue_session_reanalysis(
     return result
 
 
+@media_reference_scope()
 def request_session_reanalysis(
     session_id: int,
     *,
