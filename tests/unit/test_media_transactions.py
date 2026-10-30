@@ -172,15 +172,18 @@ def test_other_process_read_lock_prevents_cleanup_and_releases(temp_db: None) ->
 
 @pytest.mark.asyncio
 @pytest.mark.parametrize("cancelled", [False, True])
+@pytest.mark.parametrize("spec_version", ["2.0", "2.4"])
 async def test_media_response_protects_actual_transfer_and_releases_after_cancel(
-    temp_db: None, cancelled: bool
+    temp_db: None, cancelled: bool, spec_version: str
 ) -> None:
     _, _, path = seed_media()
     sending, release = asyncio.Event(), asyncio.Event()
     response = MediaFileResponse(path)
+    incoming: asyncio.Queue[Message] = asyncio.Queue()
+    incoming.put_nowait({"type": "http.request", "body": b"", "more_body": False})
 
     async def receive() -> Message:
-        return {"type": "http.request", "body": b""}
+        return await incoming.get()
 
     async def send(message: Message) -> None:
         if message["type"] == "http.response.body":
@@ -188,7 +191,17 @@ async def test_media_response_protects_actual_transfer_and_releases_after_cancel
             await release.wait()
 
     task = asyncio.create_task(
-        response({"type": "http", "method": "GET", "headers": [], "extensions": {}}, receive, send)
+        response(
+            {
+                "type": "http",
+                "method": "GET",
+                "headers": [],
+                "extensions": {},
+                "asgi": {"version": "3.0", "spec_version": spec_version},
+            },
+            receive,
+            send,
+        )
     )
     try:
         await asyncio.wait_for(sending.wait(), timeout=5)

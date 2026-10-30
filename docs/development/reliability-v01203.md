@@ -134,10 +134,12 @@ S2 当前为 `IN_PROGRESS`，覆盖 M07 至 M10，S3 至 S8 保持 `PENDING`。
 实际本地验收：
 
 1. 数据库、媒体、调度和录制目标集：381 passed；诊断接入修复组合：46 passed；最终诊断目标：25 passed。
-2. `python -m pytest tests packaging/portable/tests --cov=app --cov-report=xml --cov-fail-under=50 --timeout=600 --fail-on-skip --durations=15`：4009 passed，覆盖率 85.44%，包含真实 wheel、媒体、独立前端启动和全部 Portable 测试。
+2. `python -m pytest tests packaging/portable/tests --cov=app --cov-report=xml --cov-fail-under=50 --timeout=600 --fail-on-skip --durations=15`：4011 passed，覆盖率 85.44%，包含真实 wheel、媒体、独立前端启动和全部 Portable 测试。
 3. `python -m pre_commit run --all-files --show-diff-on-failure` 全部通过。`npm --prefix frontend run check` 通过类型、lint、格式、76 项测试和生产构建；`python scripts/export_openapi.py --check` 通过。Python 沿用现有 Ruff，未配置独立类型检查器。
 4. `python packaging/portable/build_engine_pack.py --fixture` 完成真实 ZIP 校验；`python packaging/portable/build_payload.py` 保留固定源码和默认两次可重复构建。Payload 包含 308 个文件，SHA-256 为 `b87f434cbb647c3898014fbef0b344e6f529fc59c07338191fe29106a90bfa6a`，大小 1487337 字节，CRC32 为 `F56BC59C`。Engine Pack 为本地 fixture，未作为真实模型包发布。
 5. `python scripts/release_audit.py`：63 PASS、0 WARN、0 FAIL。制品与来源信息、ZIP 成员 CRC、非分发内容检查通过；本地生成清单记录了两个 ZIP 的版本、大小、SHA-256 和 CRC32。
 6. `npm --prefix docs run check`：22 passed；`npm --prefix docs run build`：57 页及全部生成链接检查通过。实际 diff 仅包含本阶段源码、目标测试、来源信息和本记录，没有运行配置、密钥、大型制品或其他工作树的修改。
 
-本地验收已经通过；远端矩阵、容器和适用工作流仍须对本次提交完成验收。S2 保持 `IN_PROGRESS`，S3 至 S8 保持 `PENDING`。
+远端首次应用矩阵使用 Starlette 1.10.0，暴露了新增传输测试的接收边界错误：`receive()` 会即时、重复返回空请求，新版断开监听因此忙循环。已依照 [ASGI 请求与断开协议](https://asgi.readthedocs.io/en/latest/specs/www.html)改为一次完整请求，后续阻塞等待输入；原有实际发送、取消及媒体门断言完整保留，并分别覆盖 ASGI 2.0、2.4。书面告知后，在专用验证目录安装[官方 Starlette 1.10.0](https://pypi.org/project/starlette/1.10.0/)复现旧测试的超时；修复后该版本与项目锁定的 1.7.0 各通过 40 项媒体及审核回归。项目依赖锁、超时设置、生产代码和既有 Payload 的来源保持有效。
+
+本地最终验收已经通过；远端矩阵和适用工作流仍须对修正后的提交完成验收。S2 保持 `IN_PROGRESS`，S3 至 S8 保持 `PENDING`。
