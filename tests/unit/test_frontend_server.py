@@ -5,8 +5,10 @@ from __future__ import annotations
 import http.client
 import socket
 import threading
+from collections.abc import Iterator
 from functools import partial
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
+from ipaddress import ip_network
 from pathlib import Path
 
 import pytest
@@ -15,11 +17,11 @@ from app.web.frontend_server import FrontendHandler, FrontendHTTPServer
 
 
 @pytest.fixture
-def gateway(tmp_path: Path):
+def gateway(tmp_path: Path, request: pytest.FixtureRequest) -> Iterator[tuple[int, list[dict[str, object]]]]:
     (tmp_path / "index.html").write_text("<main>react app</main>")
     (tmp_path / "assets").mkdir()
     (tmp_path / "assets" / "main.js").write_text("console.log('ok')")
-    observed: list[dict] = []
+    observed: list[dict[str, object]] = []
 
     class Backend(BaseHTTPRequestHandler):
         def do_GET(self):
@@ -58,7 +60,12 @@ def gateway(tmp_path: Path):
     backend = ThreadingHTTPServer(("127.0.0.1", 0), Backend)
     frontend = FrontendHTTPServer(
         ("127.0.0.1", 0),
-        partial(FrontendHandler, directory=tmp_path, backend=f"http://127.0.0.1:{backend.server_port}"),
+        partial(
+            FrontendHandler,
+            directory=tmp_path,
+            backend=f"http://127.0.0.1:{backend.server_port}",
+            trusted_proxies=tuple(ip_network(value) for value in getattr(request, "param", ())),
+        ),
     )
     for server in (backend, frontend):
         threading.Thread(target=server.serve_forever, daemon=True).start()
@@ -242,3 +249,68 @@ def test_import_upload_streams_without_losing_request_body(gateway, chunked):
     assert observed[-1]["body"] == body
     assert observed[-1]["headers"]["Origin"] == "http://localhost:8080"
     assert observed[-1]["headers"]["X-BLC-CSRF"] == "csrf-token"
+
+
+def test_static_responses_include_the_production_csp(gateway: tuple[int, list[dict[str, object]]]) -> None:
+    from app.web.security_headers import SECURITY_HEADERS
+
+    port, _ = gateway
+    for path in ("/", "/assets/main.js"):
+        status, headers, _ = request(port, path)
+        assert status == 200
+        assert all(headers.get(key) == value for key, value in SECURITY_HEADERS.items())
+    assert "immutable" not in request(port, "/assets/missing.js")[1].get("Cache-Control", "")
+
+
+def test_untrusted_peer_cannot_supply_forwarded_identity(gateway: tuple[int, list[dict[str, object]]]) -> None:
+    port, observed = gateway
+    status, _, _ = request(
+        port,
+        "/api/check",
+        headers={"X-Forwarded-For": "192.0.2.10", "X-Forwarded-Proto": "https", "X-Real-IP": "198.51.100.1"},
+    )
+    assert status == 200
+    headers = observed[-1]["headers"]
+    assert isinstance(headers, http.client.HTTPMessage)
+    assert headers["X-Forwarded-For"] == "127.0.0.1"
+    assert headers["X-Forwarded-Proto"] == "http"
+    assert headers.get("X-Real-IP") is None
+
+
+@pytest.mark.parametrize("gateway", [("127.0.0.1/32",)], indirect=True)
+def test_trusted_https_proxy_preserves_public_origin(gateway: tuple[int, list[dict[str, object]]]) -> None:
+    port, observed = gateway
+    status, _, _ = request(
+        port,
+        "/api/check",
+        headers={
+            "Host": "console.example",
+            "Origin": "https://console.example",
+            "X-Forwarded-For": "192.0.2.10",
+            "X-Forwarded-Proto": "https",
+        },
+    )
+    assert status == 200
+    headers = observed[-1]["headers"]
+    assert isinstance(headers, http.client.HTTPMessage)
+    assert headers["Host"] == "console.example" and headers["Origin"] == "https://console.example"
+    assert headers["X-Forwarded-For"] == "192.0.2.10" and headers["X-Forwarded-Proto"] == "https"
+
+
+@pytest.mark.parametrize("gateway", [("127.0.0.1/32",)], indirect=True)
+def test_trusted_proxy_without_client_identity_is_rejected(gateway: tuple[int, list[dict[str, object]]]) -> None:
+    port, observed = gateway
+    assert request(port, "/api/check", headers={"X-Forwarded-Proto": "https"})[0] == 400
+    assert observed == []
+
+
+@pytest.mark.parametrize("chunked", [False, True])
+def test_frontend_rejects_oversized_management_upload(
+    gateway: tuple[int, list[dict[str, object]]], monkeypatch: pytest.MonkeyPatch, chunked: bool
+) -> None:
+    from app.core import http_limits
+
+    monkeypatch.setattr(http_limits, "MAX_MANAGEMENT_BYTES", 32)
+    port, _ = gateway
+    body = iter([b"a" * 20, b"b" * 20]) if chunked else b"a" * 40
+    assert request(port, "/api/settings", "PUT", body, encode_chunked=chunked)[0] == 413

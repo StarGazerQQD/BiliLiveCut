@@ -115,6 +115,34 @@ API 客户端继续支持 Basic Auth（admin 或审核员账号）；浏览器�
 
 对外访问应使用 HTTPS 反向代理并正确传递 Host 与协议。只信任实际代理的地址，不要随意信任任意
 X-Forwarded-* 来源；代理与服务看到的 Origin 必须一致，否则修改请求会被拒绝。
+
+### 外层 HTTPS 代理
+
+默认前端按直接 HTTP 入口配置，主动覆盖来访的转发头。外层 TLS 代理通过 HTTP 连接前端时，需要为该部署单独配置可信来源，否则后端会看到 HTTP，导致 HTTPS Origin 校验失败。
+
+复制当前 `frontend/nginx.conf` 为部署专用配置，在现有 `server` 块之前加入下面的 `http` 级指令。将示例地址 `192.0.2.10/32` 替换为前端实际看到的 TLS 代理来源地址，两个位置须一致，不能填写所有客户端网段。
+
+```nginx
+set_real_ip_from 192.0.2.10/32;
+real_ip_header X-Forwarded-For;
+real_ip_recursive on;
+geo $realip_remote_addr $blc_trusted_tls_proxy {
+    default 0;
+    192.0.2.10/32 1;
+}
+map "$blc_trusted_tls_proxy:$http_x_forwarded_proto" $blc_request_scheme {
+    default $scheme;
+    "1:https" https;
+    "1:http" http;
+}
+```
+
+在该副本的所有 API `location` 中，将 `proxy_set_header X-Forwarded-Proto $scheme;` 改为 `proxy_set_header X-Forwarded-Proto $blc_request_scheme;`。保留 `Host $http_host`、`X-Forwarded-For $remote_addr` 和清空 `X-Real-IP` 的规则。外层代理必须覆盖来访的 X-Forwarded-For 与 X-Forwarded-Proto，传入实际来源、单个 `https` 值和原始 Host；不要转发用户自行声明的协议。
+
+把该完整副本只读挂载到前端容器 `/etc/nginx/conf.d/default.conf`，部署前执行 `nginx -t`。重建后通过真实 HTTPS 入口验证 `/auth/status`、登录和修改请求，确认 Cookie 带 Secure、同源修改成功、跨源修改被拒绝。此配置不使用 `FRONTEND_TRUSTED_PROXY_IPS`，该环境变量只作用于 Python 前端。
+
+指令语义见 Nginx 官方 [realip](https://nginx.org/en/docs/http/ngx_http_realip_module.html)、[geo](https://nginx.org/en/docs/http/ngx_http_geo_module.html) 与 [map](https://nginx.org/en/docs/http/ngx_http_map_module.html) 文档。
+
 跨站嵌入或跨域网页登录不受支持。DOCKER_AUTH_ENABLED 由镜像及入口强制开启，
 源码/Portable 默认仍沿用原有认证方式。
 

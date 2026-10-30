@@ -5,19 +5,23 @@ from __future__ import annotations
 from collections.abc import Callable
 from concurrent.futures import Future, ThreadPoolExecutor
 from functools import partial
+from html import escape
 from threading import RLock
+from typing import Literal
 from uuid import uuid4
 
 from loguru import logger
 
 from app.core.execution import run_sync
-from app.core.runtime_settings import process_settings
+from app.core.runtime_settings import process_settings, settings_scope
 from app.notify.email_verification import send_verified_email
 
 _executor: ThreadPoolExecutor | None = None
 _lock = RLock()
 _pending: set[str] = set()
 _accepting = True
+NotificationRule = Literal["notify_on_clip", "notify_on_disk_alert", "notify_on_error", "notify_on_upload"]
+NotificationChannel = Literal["dingtalk", "wecom", "lark", "email"]
 _REASONS = {
     "cookie_expired": ("Bilibili 登录态已失效", "平台明确拒绝当前 Cookie。请到设置中心的账号登录页重新扫码登录。"),
     "login_rejected": ("Bilibili 弹幕登录失败", "登录访问失败，采集器正在按策略回退或重试。请检查账号登录状态。"),
@@ -32,6 +36,47 @@ def publish_email(subject: str, body: str, *, html: bool = False, alert_key: str
         return False
     key = alert_key or uuid4().hex
     return _enqueue(key, partial(send_verified_email, subject, body, html=html, alert_key=alert_key))
+
+
+def publish_notification(title: str, body: str, *, rule: NotificationRule | None = None) -> bool:
+    """把业务通知投递给现有有界队列，消息不持有旧配置或凭据。"""
+    config = process_settings()
+    if not config.notify_enabled or (rule is not None and not getattr(config, rule)):
+        return False
+    channels: list[NotificationChannel] = []
+    if config.dingtalk_webhook:
+        channels.append("dingtalk")
+    if config.wecom_webhook:
+        channels.append("wecom")
+    if config.lark_app_id and config.lark_app_secret and config.lark_receive_id:
+        channels.append("lark")
+    if config.smtp_host and config.smtp_to:
+        channels.append("email")
+    accepted = False
+    identity = uuid4().hex
+    for channel in channels:
+        accepted = (
+            _enqueue(f"notification:{identity}:{channel}", partial(_deliver_notification, channel, title, body, rule))
+            or accepted
+        )
+    return accepted
+
+
+def _deliver_notification(channel: NotificationChannel, title: str, body: str, rule: NotificationRule | None) -> bool:
+    from app.notify import webhook
+    from app.notify.lark import send_lark
+
+    with settings_scope(fresh=True):
+        config = process_settings()
+        if not config.notify_enabled or (rule is not None and not getattr(config, rule)):
+            return False
+        if channel == "dingtalk":
+            return webhook.send_dingtalk(title, body)
+        if channel == "wecom":
+            return webhook.send_wecom(title, body)
+        if channel == "lark":
+            return send_lark(title, body)
+        return send_verified_email(title, f"<h2>{escape(title)}</h2><pre>{escape(body)}</pre>", html=True)
 
 
 def _enqueue(key: str, deliver: Callable[[], bool]) -> bool:

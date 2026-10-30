@@ -1322,6 +1322,82 @@
         "title": "ImportRequest",
         "type": "object"
       },
+      "IntroTemplateUpdate": {
+        "additionalProperties": false,
+        "description": "片头片尾参数的严格部分更新，允许原有文字变量与换行。",
+        "properties": {
+          "intro_bg_color": {
+            "title": "Intro Bg Color",
+            "type": "string"
+          },
+          "intro_duration_s": {
+            "exclusiveMinimum": 0.0,
+            "title": "Intro Duration S",
+            "type": "number"
+          },
+          "intro_enabled": {
+            "title": "Intro Enabled",
+            "type": "boolean"
+          },
+          "intro_font_color": {
+            "title": "Intro Font Color",
+            "type": "string"
+          },
+          "intro_font_name": {
+            "title": "Intro Font Name",
+            "type": "string"
+          },
+          "intro_font_size": {
+            "exclusiveMinimum": 0.0,
+            "title": "Intro Font Size",
+            "type": "integer"
+          },
+          "intro_text": {
+            "title": "Intro Text",
+            "type": "string"
+          },
+          "is_default": {
+            "title": "Is Default",
+            "type": "boolean"
+          },
+          "name": {
+            "title": "Name",
+            "type": "string"
+          },
+          "outro_bg_color": {
+            "title": "Outro Bg Color",
+            "type": "string"
+          },
+          "outro_duration_s": {
+            "exclusiveMinimum": 0.0,
+            "title": "Outro Duration S",
+            "type": "number"
+          },
+          "outro_enabled": {
+            "title": "Outro Enabled",
+            "type": "boolean"
+          },
+          "outro_font_color": {
+            "title": "Outro Font Color",
+            "type": "string"
+          },
+          "outro_font_name": {
+            "title": "Outro Font Name",
+            "type": "string"
+          },
+          "outro_font_size": {
+            "exclusiveMinimum": 0.0,
+            "title": "Outro Font Size",
+            "type": "integer"
+          },
+          "outro_text": {
+            "title": "Outro Text",
+            "type": "string"
+          }
+        },
+        "title": "IntroTemplateUpdate",
+        "type": "object"
+      },
       "JsonValue": {},
       "LLMProviderIn": {
         "additionalProperties": false,
@@ -2523,6 +2599,162 @@
           }
         },
         "title": "StopRequest",
+        "type": "object"
+      },
+      "SubtitleTemplateUpdate": {
+        "additionalProperties": false,
+        "description": "字幕样式的部分更新；ASS 字形标志保持整数语义。",
+        "properties": {
+          "alignment": {
+            "maximum": 9.0,
+            "minimum": 1.0,
+            "title": "Alignment",
+            "type": "integer"
+          },
+          "angle": {
+            "title": "Angle",
+            "type": "number"
+          },
+          "back_color": {
+            "title": "Back Color",
+            "type": "string"
+          },
+          "bold": {
+            "title": "Bold",
+            "type": "integer"
+          },
+          "border_style": {
+            "title": "Border Style",
+            "type": "integer"
+          },
+          "description": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Description"
+          },
+          "encoding": {
+            "minimum": 0.0,
+            "title": "Encoding",
+            "type": "integer"
+          },
+          "font_name": {
+            "title": "Font Name",
+            "type": "string"
+          },
+          "font_size": {
+            "exclusiveMinimum": 0.0,
+            "title": "Font Size",
+            "type": "integer"
+          },
+          "is_default": {
+            "title": "Is Default",
+            "type": "boolean"
+          },
+          "italic": {
+            "title": "Italic",
+            "type": "integer"
+          },
+          "line_gap_ms": {
+            "minimum": 0.0,
+            "title": "Line Gap Ms",
+            "type": "integer"
+          },
+          "margin_l": {
+            "minimum": 0.0,
+            "title": "Margin L",
+            "type": "integer"
+          },
+          "margin_r": {
+            "minimum": 0.0,
+            "title": "Margin R",
+            "type": "integer"
+          },
+          "margin_v": {
+            "minimum": 0.0,
+            "title": "Margin V",
+            "type": "integer"
+          },
+          "max_chars_per_line": {
+            "exclusiveMinimum": 0.0,
+            "title": "Max Chars Per Line",
+            "type": "integer"
+          },
+          "max_display_ms": {
+            "exclusiveMinimum": 0.0,
+            "title": "Max Display Ms",
+            "type": "integer"
+          },
+          "min_display_ms": {
+            "exclusiveMinimum": 0.0,
+            "title": "Min Display Ms",
+            "type": "integer"
+          },
+          "name": {
+            "title": "Name",
+            "type": "string"
+          },
+          "outline": {
+            "minimum": 0.0,
+            "title": "Outline",
+            "type": "number"
+          },
+          "outline_color": {
+            "title": "Outline Color",
+            "type": "string"
+          },
+          "play_res_x": {
+            "minimum": 0.0,
+            "title": "Play Res X",
+            "type": "integer"
+          },
+          "play_res_y": {
+            "minimum": 0.0,
+            "title": "Play Res Y",
+            "type": "integer"
+          },
+          "primary_color": {
+            "title": "Primary Color",
+            "type": "string"
+          },
+          "scale_x": {
+            "minimum": 0.0,
+            "title": "Scale X",
+            "type": "integer"
+          },
+          "scale_y": {
+            "minimum": 0.0,
+            "title": "Scale Y",
+            "type": "integer"
+          },
+          "secondary_color": {
+            "title": "Secondary Color",
+            "type": "string"
+          },
+          "shadow": {
+            "minimum": 0.0,
+            "title": "Shadow",
+            "type": "number"
+          },
+          "spacing": {
+            "title": "Spacing",
+            "type": "integer"
+          },
+          "strikeout": {
+            "title": "Strikeout",
+            "type": "integer"
+          },
+          "underline": {
+            "title": "Underline",
+            "type": "integer"
+          }
+        },
+        "title": "SubtitleTemplateUpdate",
         "type": "object"
       },
       "SuggestedBounds": {
@@ -3968,6 +4200,16 @@
             }
           }
         ],
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/IntroTemplateUpdate"
+              }
+            }
+          },
+          "required": true
+        },
         "responses": {
           "200": {
             "content": {
@@ -7204,7 +7446,7 @@
         ]
       },
       "put": {
-        "description": "更新模板配置。\n\n:param template_id: 模板 ID。\n:param request: FastAPI 请求对象(JSON body)。\n:returns: 状态确认。",
+        "description": "更新模板配置。\n\n:param template_id: 模板 ID。\n:param body: 已校验的部分更新参数。\n:returns: 状态确认。",
         "operationId": "update_template_api_templates__template_id__put",
         "parameters": [
           {
@@ -7217,6 +7459,16 @@
             }
           }
         ],
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/SubtitleTemplateUpdate"
+              }
+            }
+          },
+          "required": true
+        },
         "responses": {
           "200": {
             "content": {

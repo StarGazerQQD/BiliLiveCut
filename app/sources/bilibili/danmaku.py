@@ -69,6 +69,9 @@ _HEADER_LEN = 16
 _HEARTBEAT_INTERVAL_S = 30
 _AUTH_TIMEOUT_S = 10
 _MAX_DECODE_DEPTH = 8
+_MAX_FRAME_BYTES = 8 * 1024 * 1024
+_MAX_DECODE_BYTES = 16 * 1024 * 1024
+_MAX_DECODE_PACKETS = 10_000
 _DEFAULT_HOST = "broadcastlv.chat.bilibili.com"
 _DEFAULT_WSS_PORT = 2245
 _LIVE_ORIGIN = "https://live.bilibili.com"
@@ -141,6 +144,37 @@ def _iter_raw(data: bytes) -> Iterator[tuple[int, int, bytes]]:
         offset += plen
 
 
+@dataclass(slots=True)
+class _DecodeBudget:
+    remaining_bytes: int
+    packets: int = 0
+
+
+def _expand_packet(body: bytes, version: int, limit: int) -> bytes:
+    if version == 2:
+        decoder = zlib.decompressobj()
+        result = decoder.decompress(body, limit + 1)
+        if len(result) > limit or decoder.unconsumed_tail:
+            raise DanmakuProtocolError("弹幕解压数据超过累计大小限制")
+        if not decoder.eof:
+            raise zlib.error("incomplete compressed packet")
+        return result
+    decoder = brotli.Decompressor()
+    chunks: list[bytes] = []
+    size = 0
+    chunk = decoder.process(body, output_buffer_limit=limit + 1)
+    while True:
+        size += len(chunk)
+        if size > limit:
+            raise DanmakuProtocolError("弹幕解压数据超过累计大小限制")
+        chunks.append(chunk)
+        if decoder.is_finished():
+            return b"".join(chunks)
+        if decoder.can_accept_more_data():
+            raise brotli.error("incomplete compressed packet")
+        chunk = decoder.process(b"", output_buffer_limit=limit - size + 1)
+
+
 def decode(data: bytes, *, _depth: int = 0) -> list[tuple[int, object]]:
     """解码一个(可能压缩、可能聚合)的弹幕数据帧。
 
@@ -154,10 +188,22 @@ def decode(data: bytes, *, _depth: int = 0) -> list[tuple[int, object]]:
     :param data: 收到的二进制帧。
     :returns: ``(operation, parsed)`` 列表。
     """
-    if _depth > _MAX_DECODE_DEPTH:
-        return []
+    if len(data) > _MAX_FRAME_BYTES:
+        raise DanmakuProtocolError("弹幕帧超过大小限制")
+    return _decode(data, _depth, _DecodeBudget(_MAX_DECODE_BYTES))
+
+
+def _decode(data: bytes, depth: int, budget: _DecodeBudget) -> list[tuple[int, object]]:
+    if depth > _MAX_DECODE_DEPTH:
+        raise DanmakuProtocolError("弹幕压缩嵌套超过深度限制")
+    if len(data) > budget.remaining_bytes:
+        raise DanmakuProtocolError("弹幕解码数据超过累计大小限制")
+    budget.remaining_bytes -= len(data)
     results: list[tuple[int, object]] = []
     for ver, op, body in _iter_raw(data):
+        budget.packets += 1
+        if budget.packets > _MAX_DECODE_PACKETS:
+            raise DanmakuProtocolError("弹幕帧包含过多协议消息")
         if op == OP_HEARTBEAT_REPLY:
             popularity = int.from_bytes(body[:4], "big") if len(body) >= 4 else 0
             results.append((op, popularity))
@@ -169,11 +215,13 @@ def decode(data: bytes, *, _depth: int = 0) -> list[tuple[int, object]]:
             results.append((op, auth_reply if isinstance(auth_reply, dict) else None))
         elif op == OP_MESSAGE:
             if ver in {2, 3}:
+                if depth >= _MAX_DECODE_DEPTH:
+                    raise DanmakuProtocolError("弹幕压缩嵌套超过深度限制")
                 try:
-                    expanded = zlib.decompress(body) if ver == 2 else brotli.decompress(body)
+                    expanded = _expand_packet(body, ver, budget.remaining_bytes)
                 except (zlib.error, brotli.error):
                     continue
-                results.extend(decode(expanded, _depth=_depth + 1))
+                results.extend(_decode(expanded, depth + 1, budget))
             else:
                 try:
                     parsed = json.loads(body.decode("utf-8"))
@@ -557,7 +605,7 @@ class DanmakuConnection:
             uri,
             origin=_LIVE_ORIGIN,
             user_agent_header=_USER_AGENT,
-            max_size=None,
+            max_size=_MAX_FRAME_BYTES,
             open_timeout=_AUTH_TIMEOUT_S,
             close_timeout=5,
             ping_interval=None,

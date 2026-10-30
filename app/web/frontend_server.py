@@ -9,13 +9,16 @@ import re
 from functools import partial
 from http import HTTPStatus
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
+from ipaddress import IPv4Network, IPv6Network, ip_address, ip_network
 from pathlib import Path
 from socketserver import TCPServer
 from urllib.parse import unquote, urlsplit
 
 from loguru import logger
 
+from app.core.http_limits import request_body_limit
 from app.core.sanitize import sanitize_diagnostic
+from app.web.security_headers import SECURITY_HEADERS
 
 _API_PREFIXES = ("/api", "/auth", "/review/api", "/collection/api")
 _STATIC_MIME = {
@@ -72,9 +75,17 @@ class FrontendHandler(BaseHTTPRequestHandler):
 
     protocol_version = "HTTP/1.1"
 
-    def __init__(self, *args, directory: Path, backend: str, **kwargs):
+    def __init__(
+        self,
+        *args,
+        directory: Path,
+        backend: str,
+        trusted_proxies: tuple[IPv4Network | IPv6Network, ...] = (),
+        **kwargs,
+    ):
         self.directory = directory.resolve()
         self.backend = urlsplit(backend)
+        self.trusted_proxies = trusted_proxies
         super().__init__(*args, **kwargs)
 
     def do_GET(self) -> None:
@@ -141,9 +152,8 @@ class FrontendHandler(BaseHTTPRequestHandler):
                     "Cache-Control",
                     "public, max-age=31536000, immutable" if target.parent.name == "assets" else "no-store",
                 )
-                self.send_header("X-Content-Type-Options", "nosniff")
-                self.send_header("Referrer-Policy", "same-origin")
-                self.send_header("X-Frame-Options", "DENY")
+                for name, value in SECURITY_HEADERS.items():
+                    self.send_header(name, value)
                 if target.name == "media-auth.js":
                     self.send_header("Service-Worker-Allowed", "/")
                 self.end_headers()
@@ -174,6 +184,34 @@ class FrontendHandler(BaseHTTPRequestHandler):
             self.send_error(400, "Invalid Content-Length")
             self.close_connection = True
             return
+        limit = request_body_limit(unquote(urlsplit(target).path), self.command)
+        if length > limit:
+            self.send_error(413, "Request body too large")
+            self.close_connection = True
+            return
+        peer = ip_address(self.client_address[0])
+        trusted = any(peer in network for network in self.trusted_proxies)
+        forwarded_for = self.client_address[0]
+        forwarded_proto = "http"
+        if trusted:
+            forwarded = self.headers.get("X-Forwarded-For", "")
+            proto = self.headers.get("X-Forwarded-Proto", "http")
+            try:
+                if not forwarded or len(self.headers.get_all("X-Forwarded-Proto", [])) > 1:
+                    raise ValueError("missing or ambiguous trusted forwarding")
+                chain = [ip_address(item.strip()) for item in forwarded.split(",")]
+                if proto not in {"http", "https"}:
+                    raise ValueError("invalid forwarded protocol")
+            except ValueError:
+                self.send_error(400, "Invalid trusted proxy headers")
+                self.close_connection = True
+                return
+            # 从最靠近本机的节点向外查找第一个非可信来源。
+            for address in reversed(chain):
+                forwarded_for = str(address)
+                if not any(address in network for network in self.trusted_proxies):
+                    break
+            forwarded_proto = proto
         connection = http.client.HTTPConnection(self.backend.hostname, self.backend.port or 80, timeout=600)
         started = False
         try:
@@ -183,12 +221,12 @@ class FrontendHandler(BaseHTTPRequestHandler):
             ignored = (
                 _HOP_HEADERS
                 | connection_fields
-                | {"forwarded", "x-forwarded-for", "x-forwarded-host", "x-forwarded-proto"}
+                | {"forwarded", "x-forwarded-for", "x-forwarded-host", "x-forwarded-proto", "x-real-ip"}
             )
             headers = {key: value for key, value in self.headers.items() if key.lower() not in ignored}
             headers["Connection"] = "close"
-            headers["X-Forwarded-For"] = self.client_address[0]
-            headers["X-Forwarded-Proto"] = "http"
+            headers["X-Forwarded-For"] = forwarded_for
+            headers["X-Forwarded-Proto"] = forwarded_proto
             connection.putrequest(self.command, target, skip_host=True, skip_accept_encoding=True)
             if transfer:
                 headers["Transfer-Encoding"] = "chunked"
@@ -196,7 +234,7 @@ class FrontendHandler(BaseHTTPRequestHandler):
                 connection.putheader(key, value)
             connection.endheaders()
             if transfer:
-                self._forward_chunks(connection)
+                self._forward_chunks(connection, limit)
             else:
                 remaining = length
                 while remaining:
@@ -223,6 +261,9 @@ class FrontendHandler(BaseHTTPRequestHandler):
                 while chunk := response.read1(65536):
                     self.wfile.write(chunk)
                     self.wfile.flush()
+        except OverflowError:
+            if not started:
+                self.send_error(413, "Request body too large")
         except (OSError, http.client.HTTPException, ValueError):
             if not started:
                 self.send_error(502, "Backend unavailable")
@@ -230,7 +271,8 @@ class FrontendHandler(BaseHTTPRequestHandler):
             self.close_connection = True
             connection.close()
 
-    def _forward_chunks(self, connection: http.client.HTTPConnection) -> None:
+    def _forward_chunks(self, connection: http.client.HTTPConnection, limit: int) -> None:
+        total = 0
         while True:
             line = self.rfile.readline(128)
             if len(line) >= 128 or not line.endswith(b"\r\n"):
@@ -238,6 +280,9 @@ class FrontendHandler(BaseHTTPRequestHandler):
             size = int(line.split(b";", 1)[0], 16)
             if size < 0:
                 raise ValueError("invalid chunk size")
+            total += size
+            if total > limit:
+                raise OverflowError("request body too large")
             connection.send(f"{size:x}\r\n".encode())
             if size == 0:
                 # 这里只接受空 trailer，不把未经校验的尾部请求头传给后端。
@@ -279,7 +324,13 @@ def serve_frontend(directory: Path, backend: str, host: str = "127.0.0.1", port:
     validate_backend(backend)
     if not (directory / "index.html").is_file():
         raise FileNotFoundError(f"未找到前端构建产物: {directory}，请先执行 npm ci && npm run build")
-    server = FrontendHTTPServer((host, port), partial(FrontendHandler, directory=directory, backend=backend))
+    from app.core.config import get_settings
+
+    proxy_setting = get_settings().frontend_trusted_proxy_ips
+    proxies = tuple(ip_network(item, strict=False) for item in proxy_setting.split(",") if item)
+    server = FrontendHTTPServer(
+        (host, port), partial(FrontendHandler, directory=directory, backend=backend, trusted_proxies=proxies)
+    )
     server.daemon_threads = True
     logger.info("前端服务 -> http://{}:{}，API -> {}", host, port, backend)
     try:

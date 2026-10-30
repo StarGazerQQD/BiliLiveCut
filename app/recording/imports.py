@@ -16,6 +16,7 @@ from pydantic import BaseModel, ConfigDict, Field
 from sqlmodel import Session, select
 
 from app.core.config import settings
+from app.core.http_limits import MAX_VIDEO_BYTES as MAX_VIDEO_BYTES
 from app.core.paths import raw_dir
 from app.core.process_control import run_cancellable
 from app.db.entities import AppSetting, Danmaku, LiveRoom, RawSegment, RecordingSession, SegmentTask, SessionStatus
@@ -24,7 +25,6 @@ from app.jobs.context import JobContext
 from app.pipeline.stage_result import make_pipeline_key, make_stage_key
 from app.recording.import_comments import COMMENT_SUFFIXES, CommentReport, preprocess_comments
 
-MAX_VIDEO_BYTES = 50 * 1024**3
 VIDEO_SUFFIXES = {".mp4", ".mkv", ".flv", ".ts", ".mov", ".webm", ".m4v"}
 _INPUT_FORMATS = "mov,matroska,webm,flv,mpegts"
 _PREFIX = "recording_import:"

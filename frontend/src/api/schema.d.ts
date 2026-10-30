@@ -1862,7 +1862,7 @@ export interface paths {
          * @description 更新模板配置。
          *
          *     :param template_id: 模板 ID。
-         *     :param request: FastAPI 请求对象(JSON body)。
+         *     :param body: 已校验的部分更新参数。
          *     :returns: 状态确认。
          */
         put: operations["update_template_api_templates__template_id__put"];
@@ -3005,6 +3005,44 @@ export interface components {
             /** Video Name */
             video_name: string;
         };
+        /**
+         * IntroTemplateUpdate
+         * @description 片头片尾参数的严格部分更新，允许原有文字变量与换行。
+         */
+        IntroTemplateUpdate: {
+            /** Intro Bg Color */
+            intro_bg_color?: string;
+            /** Intro Duration S */
+            intro_duration_s?: number;
+            /** Intro Enabled */
+            intro_enabled?: boolean;
+            /** Intro Font Color */
+            intro_font_color?: string;
+            /** Intro Font Name */
+            intro_font_name?: string;
+            /** Intro Font Size */
+            intro_font_size?: number;
+            /** Intro Text */
+            intro_text?: string;
+            /** Is Default */
+            is_default?: boolean;
+            /** Name */
+            name?: string;
+            /** Outro Bg Color */
+            outro_bg_color?: string;
+            /** Outro Duration S */
+            outro_duration_s?: number;
+            /** Outro Enabled */
+            outro_enabled?: boolean;
+            /** Outro Font Color */
+            outro_font_color?: string;
+            /** Outro Font Name */
+            outro_font_name?: string;
+            /** Outro Font Size */
+            outro_font_size?: number;
+            /** Outro Text */
+            outro_text?: string;
+        };
         JsonValue: unknown;
         /**
          * LLMProviderIn
@@ -3521,6 +3559,74 @@ export interface components {
              * @enum {string}
              */
             mode: "graceful" | "force";
+        };
+        /**
+         * SubtitleTemplateUpdate
+         * @description 字幕样式的部分更新；ASS 字形标志保持整数语义。
+         */
+        SubtitleTemplateUpdate: {
+            /** Alignment */
+            alignment?: number;
+            /** Angle */
+            angle?: number;
+            /** Back Color */
+            back_color?: string;
+            /** Bold */
+            bold?: number;
+            /** Border Style */
+            border_style?: number;
+            /** Description */
+            description?: string | null;
+            /** Encoding */
+            encoding?: number;
+            /** Font Name */
+            font_name?: string;
+            /** Font Size */
+            font_size?: number;
+            /** Is Default */
+            is_default?: boolean;
+            /** Italic */
+            italic?: number;
+            /** Line Gap Ms */
+            line_gap_ms?: number;
+            /** Margin L */
+            margin_l?: number;
+            /** Margin R */
+            margin_r?: number;
+            /** Margin V */
+            margin_v?: number;
+            /** Max Chars Per Line */
+            max_chars_per_line?: number;
+            /** Max Display Ms */
+            max_display_ms?: number;
+            /** Min Display Ms */
+            min_display_ms?: number;
+            /** Name */
+            name?: string;
+            /** Outline */
+            outline?: number;
+            /** Outline Color */
+            outline_color?: string;
+            /** Play Res X */
+            play_res_x?: number;
+            /** Play Res Y */
+            play_res_y?: number;
+            /** Primary Color */
+            primary_color?: string;
+            /** Scale X */
+            scale_x?: number;
+            /** Scale Y */
+            scale_y?: number;
+            /** Secondary Color */
+            secondary_color?: string;
+            /** Shadow */
+            shadow?: number;
+            /** Spacing */
+            spacing?: number;
+            /** Strikeout */
+            strikeout?: number;
+            /** Underline */
+            underline?: number;
         };
         /**
          * SuggestedBounds
@@ -4313,7 +4419,11 @@ export interface operations {
             };
             cookie?: never;
         };
-        requestBody?: never;
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["IntroTemplateUpdate"];
+            };
+        };
         responses: {
             /** @description Successful Response */
             200: {
@@ -6738,7 +6848,11 @@ export interface operations {
             };
             cookie?: never;
         };
-        requestBody?: never;
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["SubtitleTemplateUpdate"];
+            };
+        };
         responses: {
             /** @description Successful Response */
             200: {

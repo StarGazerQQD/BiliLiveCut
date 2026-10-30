@@ -26,10 +26,24 @@ def check_browser(
         )
         try:
             context = browser.new_context()
+            csp_violations: list[str] = []
+
+            def record_violation(_source: dict[str, object], directive: str) -> None:
+                csp_violations.append(directive)
+
+            context.expose_binding("__recordCspViolation", record_violation)
+            context.add_init_script(
+                "document.addEventListener('securitypolicyviolation', event => "
+                "void globalThis.__recordCspViolation(event.effectiveDirective))"
+            )
             page = context.new_page()
             errors: list[str] = []
             page.on("pageerror", lambda error: errors.append(str(error)))
-            page.goto(url + "/")
+            response = page.goto(url + "/")
+            assert response is not None and "script-src 'self'" in response.headers.get("content-security-policy", "")
+            missing_asset = context.request.get(url + "/assets/missing-csp-regression.js")
+            assert missing_asset.status == 404
+            assert "immutable" not in missing_asset.headers.get("cache-control", "")
             expect(page.get_by_role("heading", name="设置你的工作台")).to_be_visible()
             if artifacts is not None:
                 page.screenshot(path=str(artifacts / "docker-setup.png"), full_page=True)
@@ -127,6 +141,11 @@ def check_browser(
             expect(relogin).not_to_be_visible()
             page.reload()
             expect(page.get_by_role("heading", name="设置中心", exact=True)).to_be_visible()
+            assert page.evaluate(
+                "async () => { await navigator.serviceWorker.register('/media-auth.js'); "
+                "await navigator.serviceWorker.ready; return true }"
+            )
+            assert not csp_violations, csp_violations
             assert not errors, errors
             return changed
         finally:

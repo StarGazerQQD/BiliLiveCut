@@ -12,6 +12,7 @@
 from __future__ import annotations
 
 from functools import lru_cache
+from ipaddress import ip_network
 from typing import Literal, cast
 from urllib.parse import urlsplit
 
@@ -58,6 +59,7 @@ class Settings(BaseSettings):
     )
     review_claim_ttl_s: int = Field(default=900, ge=60, le=86400)
     review_blind_mode: bool = True
+    frontend_trusted_proxy_ips: str = Field(default="", description="前端信任的外层代理 IP 或 CIDR，逗号分隔，重启生效")
 
     # ---------- 存储 ----------
     storage_root: str = "./storage"
@@ -357,6 +359,17 @@ class Settings(BaseSettings):
     notify_on_disk_alert: bool = True  # 磁盘不足时通知
     notify_on_error: bool = True  # 任务永久失败时通知
     disk_alert_threshold_gb: int = 10  # 磁盘告警阈值(GB)
+
+    @field_validator("frontend_trusted_proxy_ips")
+    @classmethod
+    def validate_frontend_trusted_proxy_ips(cls, value: str) -> str:
+        """显式登记可信网络；空值保持不信任任何外层转发头。"""
+        if not value.strip():
+            return ""
+        try:
+            return ",".join(str(ip_network(item.strip(), strict=False)) for item in value.split(","))
+        except ValueError as exc:
+            raise ValueError("frontend_trusted_proxy_ips 必须为 IP 或 CIDR 列表") from exc
 
     @field_validator("smtp_from", "smtp_to")
     @classmethod

@@ -10,6 +10,7 @@ from sqlmodel import select as _sql_select
 
 from app.db.entities import IntroTemplate
 from app.db.session import get_session
+from app.web.template_contracts import IntroTemplateUpdate
 
 router = APIRouter(prefix="/api/intro-templates", tags=["intro_templates"])
 
@@ -84,22 +85,23 @@ def get_template(template_id: int, request: Request) -> dict[str, object]:
 
 
 @router.put("/{template_id}")
-async def update_template(template_id: int, request: Request) -> dict[str, str]:
+async def update_template(template_id: int, body: IntroTemplateUpdate) -> dict[str, str]:
     """更新模板配置。"""
-    body = await request.json()
+    changes = body.model_dump(exclude_unset=True)
     with get_session() as db:
+        if db.get_bind().dialect.name == "sqlite":
+            db.connection().exec_driver_sql("BEGIN IMMEDIATE")
         t = db.get(IntroTemplate, template_id)
         if not t:
             raise HTTPException(status_code=404, detail="模板不存在")
-        if body.get("is_default"):
+        if changes.get("is_default") is True:
             for dt in db.exec(
                 _sql_select(IntroTemplate).where(IntroTemplate.is_default == True)  # noqa: E712
             ).all():
                 dt.is_default = False
                 db.add(dt)
-        for key, value in body.items():
-            if key in ALLOWED_KEYS and hasattr(t, key):
-                setattr(t, key, value)
+        for key, value in changes.items():
+            setattr(t, key, value)
         db.add(t)
         db.commit()
     return {"status": "updated"}
