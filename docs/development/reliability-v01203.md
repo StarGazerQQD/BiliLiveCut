@@ -12,7 +12,7 @@
 | S1 安全与外部输入 | COMPLETED | M01 至 M06 | 认证、CSRF、合法上传、恶意输入和慢通知回归通过 |
 | S2 数据库并发与事务 | COMPLETED | M07 至 M10 | 并发和锁竞争测试通过，租约、证据和清理互斥保持有效 |
 | S3 生命周期与资源所有权 | COMPLETED | M11 至 M12 | 正常关闭、超时取消、异常终止均回收所属资源，不影响其他实例 |
-| S4 录制断流恢复 | IN_PROGRESS | M13 至 M15 | 短暂断流、连续短片、无进度、正常下播和人工暂停按状态处理 |
+| S4 录制断流恢复 | COMPLETED | M13 至 M15 | 短暂断流、连续短片、无进度、正常下播和人工暂停按状态处理 |
 | S5 崩溃与持久断点恢复 | PENDING | M16 至 M22 | 关键提交点终止后可恢复，不丢失已确认结果，不重复外部副作用 |
 | S6 LLM 与证据正确性 | PENDING | M23 至 M28 | 保留大容量和真实性校验，各类故障分别可诊断、可恢复 |
 | S7 路径与业务正确性 | PENDING | M29 至 M32 | 搬迁副本、审核到渲染、统计和端点恢复验证通过 |
@@ -213,3 +213,7 @@ S4 冻结源码为 `d1a5460ff53ba1ce3705f084d81d005f6b3c146f`，五处来源常�
 4. `python scripts/release_audit.py`：63 PASS、0 WARN、0 FAIL。文档 `npm --prefix docs run check` 为 22 passed，`npm --prefix docs run build` 为 57 页并通过全部生成链接检查。
 
 本地验收通过，S4 保持 `IN_PROGRESS`，等待最新提交的全部适用远端 CI。没有新增依赖版本、模型 API 请求或发布操作。S5 至 S8 保持 `PENDING`。
+
+最终远端验收覆盖 `6fc775dc00798c447dbe010dc3d1d87d0f9aa050`：CI `41068679914`、Docker `41068679979`、Frontend `41068679915`、Documentation `41068679935`、CodeQL `41068679911` 均在 attempt 1 成功结束。CI 的全部 15 个 job 成功，包含七个应用矩阵、三个 uv 验证、Portable、审计、coverage summary 和 CI status。23 项 commit checks 中 22 项成功，仅 Pages 按 PR 条件跳过，无 legacy statuses。Ubuntu / Python 3.13 为 3611 passed、覆盖率 85.22%，新增媒体停写和取消清理回归已在 POSIX 执行；该环境输出的 SQLite ResourceWarning 等告警保留在原日志中。
+
+S4 本地及远端验收通过，状态为 `COMPLETED`。本次完成记录仅修改文档，执行适用的文档、共享质量、构建和实际 diff 检查；业务源码和制品的有效验收结果保持不变。S5 至 S8 保持 `PENDING`，随后按顺序进入 S5。
