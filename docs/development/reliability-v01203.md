@@ -270,3 +270,7 @@ S5 仍为 `IN_PROGRESS`，等待最新提交的全部适用远端阶段验收；
 绑定失败修复已固定为业务来源 `e0eadee`，五处来源引用及正式 fixture 元数据同步后，默认 Payload 双次构建一致。上述完整应用与 Portable 命令重新通过 **4187 项测试，覆盖率 85.60%**，包含真实 wheel；全部 pre-commit、OpenAPI、文档 22 项测试与 57 页构建通过，完整发布审计为 **63 PASS / 0 WARN / 0 FAIL**。正式新 EXE 为 67151532 字节，SHA-256 `0ded1fce18ce6c76ba8a92a9885e2a49e9e09dadbea5527e014c9a746d5aeeb2`，CRC32 `6AC9EB41`；内嵌 Payload、LICENSE、来源及 1951 个冻结模块的路径检查通过。
 
 新冻结 EXE 在隔离 Portable 副本中离线更新，真实后端、前端和 console 分别异常终止后均恢复唯一完整新代，旧树和旧 API 端口回收，宿主退出不影响无关进程。另在 Launcher 通过端口预检、console 已启动后实际抢占前端端口，确认只启动一代 API、无恢复重试、公开退出码 `1`，全部已登记所属进程和 API 端口关闭。完整本地门禁已通过；S5 继续等待该修复的全部适用远端 CI，S6 至 S8 尚未开始。
+
+提交 `0122ebe` 的 macOS 进程专项为 64 passed、1 failed：切换服务代次时，psutil 的 `sysctl(KERN_PROCARGS2)` 返回 `EINVAL` 并映射为 `AccessDenied`。新增受控读取故障用例在原轮询中实际复现失败。快照辅助函数继续拒绝返回部分结果，仅在既有 40 秒恢复轮询边界允许下一轮重新读取；持续权限错误仍在原期限内失败并保留诊断。成功仍要求完整快照、HTTP 200、两类服务各唯一、旧新身份不相交，旧树及 POSIX guardian 的回收断言保持有效。
+
+本次仅调整测试及验收记录。进程目标命令 `python -m pytest tests/unit/test_process_tree.py tests/unit/test_process_control.py tests/unit/test_service_shutdown.py tests/integration/test_frontend_console.py --timeout=120 --fail-on-skip --durations=10 -o addopts=--tb=short -q` 为 **67 passed**；格式固定后两项新增回归再次通过。完整应用与 Portable 命令为 **4189 passed、覆盖率 85.60%**，保留一条 setuptools 安装接口弃用 warning。业务来源 `e0eadee` 及已验证制品未变化，继续使用原冻结验收证据；S5 远端验收仍在进行，S6 至 S8 保持 `PENDING`。

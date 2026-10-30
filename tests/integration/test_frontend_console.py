@@ -10,11 +10,15 @@ import subprocess
 import sys
 import time
 from pathlib import Path
+from typing import TYPE_CHECKING
 from urllib.error import URLError
 from urllib.request import ProxyHandler, build_opener
 
 import psutil
 import pytest
+
+if TYPE_CHECKING:
+    from pytest import MonkeyPatch
 
 
 def _service_snapshot(parent: psutil.Process) -> dict[tuple[int, float], tuple[psutil.Process, str, int]]:
@@ -28,6 +32,31 @@ def _service_snapshot(parent: psutil.Process) -> dict[tuple[int, float], tuple[p
             # 旧代正在退出，仍由保留的原进程对象和 wait_procs 验证最终回收。
             continue
     return result
+
+
+def test_service_snapshot_rejects_partial_result_when_cmdline_is_denied(monkeypatch: MonkeyPatch) -> None:
+    process = psutil.Process()
+    other = process.parent()
+    assert other is not None
+    denied = psutil.AccessDenied(pid=other.pid)
+    inspected: list[int] = []
+
+    def children(parent: psutil.Process, recursive: bool = False) -> list[psutil.Process]:
+        assert parent == process and recursive
+        return [process, other]
+
+    def cmdline(child: psutil.Process) -> list[str]:
+        inspected.append(child.pid)
+        if child == other:
+            raise denied
+        return [sys.executable, "-m", "app.cli", "backend"]
+
+    monkeypatch.setattr(psutil.Process, "children", children)
+    monkeypatch.setattr(psutil.Process, "cmdline", cmdline)
+    with pytest.raises(psutil.AccessDenied) as failure:
+        _service_snapshot(process)
+    assert failure.value is denied
+    assert inspected == [process.pid, other.pid]
 
 
 def _service_leaves(
@@ -145,15 +174,21 @@ def test_supervised_backend_drains_lifespan_when_parent_pipe_closes(
 
 
 @pytest.mark.parametrize(
-    "command,crash,host",
-    [(command, crash, "127.0.0.1") for command in ("start", "console") for crash in (None, "backend", "frontend")]
-    + [("start", None, "127.0.0.2")],
+    "command,crash,host,snapshot_denied",
+    [
+        (command, crash, "127.0.0.1", False)
+        for command in ("start", "console")
+        for crash in (None, "backend", "frontend")
+    ]
+    + [("start", None, "127.0.0.2", False), ("start", "backend", "127.0.0.1", True)],
 )
 def test_console_starts_independent_frontend_and_api_and_cleans_up(
     tmp_path: Path,
+    monkeypatch: MonkeyPatch,
     command: str,
     crash: str | None,
     host: str,
+    snapshot_denied: bool,
 ) -> None:
     root = Path(__file__).resolve().parents[2]
     dist = tmp_path / "frontend"
@@ -240,12 +275,25 @@ def test_console_starts_independent_frontend_and_api_and_cleans_up(
                 # 保存服务完整后代，包括退出时会重新归属的 POSIX guardian。
                 children = _service_tree(old_snapshot)
                 leaves[crash][0].kill()
+                denied_reads = 0
+                if snapshot_denied:
+                    original_cmdline = psutil.Process.cmdline
+
+                    def interrupted_cmdline(child: psutil.Process) -> list[str]:
+                        nonlocal denied_reads
+                        if denied_reads == 0:
+                            denied_reads += 1
+                            raise psutil.AccessDenied(pid=child.pid)
+                        return original_cmdline(child)
+
+                    monkeypatch.setattr(psutil.Process, "cmdline", interrupted_cmdline)
                 deadline = time.monotonic() + 40
+                snapshot_error: psutil.AccessDenied | None = None
                 while True:
                     assert process.poll() is None, "单个服务异常退出后监管进程不应退出"
-                    new_snapshot = _service_snapshot(psutil.Process(process.pid))
-                    leaves = _service_leaves(new_snapshot)
                     try:
+                        new_snapshot = _service_snapshot(psutil.Process(process.pid))
+                        leaves = _service_leaves(new_snapshot)
                         with opener.open(f"http://127.0.0.1:{port}/auth/status", timeout=1) as response:
                             if (
                                 response.status == 200
@@ -253,12 +301,16 @@ def test_console_starts_independent_frontend_and_api_and_cleans_up(
                                 and old_snapshot.keys().isdisjoint(new_snapshot)
                             ):
                                 break
+                    except psutil.AccessDenied as exc:
+                        # 切代次时可能暂时无法读取命令行，当前轮的部分快照不能用于判定恢复。
+                        snapshot_error = exc
                     except (OSError, URLError):
                         pass
                     if time.monotonic() >= deadline:
                         log.seek(0)
-                        pytest.fail(log.read())
+                        pytest.fail(f"最后一次进程快照读取异常：{snapshot_error!r}\n{log.read()}")
                     time.sleep(0.1)
+                assert denied_reads == int(snapshot_denied)
                 _, alive = psutil.wait_procs(children, timeout=5)
                 assert not alive, "恢复新一代前必须回收旧所属树"
                 children = psutil.Process(process.pid).children(recursive=True)
