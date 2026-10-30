@@ -204,3 +204,12 @@ S4 为 `IN_PROGRESS`，实施 M13 至 M15，S5 至 S8 保持 `PENDING`。基线�
 修改前目标基线 226 passed。最终录制、来源、事件监控、控制和真实子进程目标集 263 passed；页面状态回归 9 passed；OpenAPI 一致性通过。新增外部进程测试保留正式所属进程监管，覆盖无媒体推进、仅时间变化、其他尝试输出、健康长分片、首轮期限、强故障分类、稳定登记、退出后的尾片和重复取消。测试暴露的提前显示录制状态已修复，重连必须达到稳定媒体条件后才报告恢复。
 
 下一步以新增本地提交固定正式 Payload 的源码输入，再同步来源元数据并准备完整回归所需制品。S4 保持 `IN_PROGRESS`，完整回归、质量、相关构建及最新提交的远端验收均须完成后，才能进入 S5。
+
+S4 冻结源码为 `d1a5460ff53ba1ce3705f084d81d005f6b3c146f`，五处来源常量与正式生成的 Engine Pack 元数据已同步。版本仍为 `0.1.20.2-alpha`，模型 revision、依赖锁和既有运行目录不变。最终本地验收：
+
+1. `python -m pytest tests packaging/portable/tests --timeout=600 --fail-on-skip --cov=app --cov-report=term --cov-report=xml --cov-fail-under=50 --durations=15 -o addopts=--tb=short -q`：4082 passed，覆盖率 85.32%，包含真实 sdist/wheel、原生组件和 Portable 回归；保留一条 setuptools 安装接口弃用 warning。
+2. `python -m pre_commit run --all-files --show-diff-on-failure` 全部通过；`npm --prefix frontend run check` 通过类型、lint、格式、85 项测试及生产构建；`python scripts/export_openapi.py --check` 通过。Python 沿用项目 Ruff，未配置独立类型检查器。
+3. `python packaging/portable/build_engine_pack.py --fixture` 自校验通过；`python packaging/portable/build_payload.py` 保留源码冻结及默认两次可重复构建。最终 Payload 为 1505708 字节，SHA-256 `db8598942eab009609786f68d8076527b9ec81d1e61951b4d5b9e0c66cfd7ea7`，CRC32 `081A995F`。逐文件内容、来源、ZIP CRC 和非分发内容检查通过；Engine Pack 明确为测试 fixture。
+4. `python scripts/release_audit.py`：63 PASS、0 WARN、0 FAIL。文档 `npm --prefix docs run check` 为 22 passed，`npm --prefix docs run build` 为 57 页并通过全部生成链接检查。
+
+本地验收通过，S4 保持 `IN_PROGRESS`，等待最新提交的全部适用远端 CI。没有新增依赖版本、模型 API 请求或发布操作。S5 至 S8 保持 `PENDING`。
