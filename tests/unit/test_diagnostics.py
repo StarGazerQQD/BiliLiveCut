@@ -7,19 +7,16 @@ import logging
 import subprocess
 import sys
 from pathlib import Path
-from typing import TYPE_CHECKING
 
 import pytest
 from loguru import logger
 from sqlalchemy.exc import OperationalError
 from sqlmodel import select
 
-from app.core.logging import _ApplicationLogHandler, _db_sink, _filter_db_sink, _safe_record
+from app.core import logging as app_logging
+from app.core.logging import _ApplicationLogHandler, _safe_record
 from app.core.process_control import run_cancellable
 from app.core.sanitize import safe_exception_summary, sanitize_diagnostic
-
-if TYPE_CHECKING:
-    from loguru import Message
 
 
 def _nested_error() -> RuntimeError:
@@ -66,27 +63,36 @@ def test_process_error_summary_omits_argv_preserves_stderr_tail() -> None:
     assert "private-argv" not in summary and "secret-value" not in summary
 
 
-def test_loguru_file_and_database_keep_one_context_and_safe_trace(temp_db: None, tmp_path: Path) -> None:
+@pytest.mark.parametrize("configure", [False, True])
+def test_loguru_file_and_database_keep_one_context_and_safe_trace(
+    temp_db: None, tmp_path: Path, configure: bool
+) -> None:
     from app.db.entities import SystemLog
     from app.db.session import get_session
 
+    logger.complete()
+    if configure:
+        app_logging.setup_logging()
+    database = None
+    if not app_logging._CONFIGURED:
+        database = logger.add(
+            app_logging._DatabaseLogSink(), level="WARNING", enqueue=True, filter=app_logging._filter_db_sink
+        )
     messages: list[str] = []
-
-    def sink(message: Message) -> None:
-        messages.append(str(message))
-        _db_sink(message)
-
-    handler = logger.add(sink, format="{message}", level="WARNING", diagnose=False, filter=_filter_db_sink)
+    handler = logger.add(messages.append, format="{message}", level="WARNING", diagnose=False)
     file_handler = logger.add(tmp_path / "diagnostic.log", format="{message}", level="WARNING", diagnose=False)
     try:
         logger.patch(_safe_record).bind(task_id=765, session_id=123).opt(exception=_nested_error()).warning(
             "load failed"
         )
     finally:
+        logger.complete()
         logger.remove(handler)
         logger.remove(file_handler)
+        if database is not None:
+            logger.remove(database)
     with get_session() as db:
-        row = db.exec(select(SystemLog).where(SystemLog.message.contains("task_id=765"))).all()[-1]
+        row = db.exec(select(SystemLog).where(SystemLog.message.contains("task_id=765"))).one()
     for text in (messages[-1], row.message, (tmp_path / "diagnostic.log").read_text(encoding="utf-8")):
         assert text.count("task_id=765") == 1
         assert "TimeoutError" in text and "test_diagnostics.py:" in text

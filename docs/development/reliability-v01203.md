@@ -129,4 +129,15 @@ S2 当前为 `IN_PROGRESS`，覆盖 M07 至 M10，S3 至 S8 保持 `PENDING`。
 - 数据库诊断副本最多容纳 512 条（含在途记录），每批最多 100 条。慢数据库或容量耗尽时保留文件日志并汇总未保留副本数，停止时补充最后一次汇总。仅新标记的普通 WARNING 按 14 天或 20000 条保留；旧行、业务审计与 ERROR 不按该策略清除。三个普通索引在完整 Schema 校验后幂等创建，没有更改数据表或 Schema 指纹。
 - 候选、事件、批准及调度状态的成功日志在外层事务提交后输出，回滚和 SAVEPOINT 回滚丢弃相应日志。
 
-已通过局部目标组合 381 项；完整回归、最终质量、来源冻结构建及实际 diff 仍须继续验收，不能据此将 S2 标记为完成。
+本地源码冻结提交为 `ac65279d6f85164c51da8b55c587e8b6c53ef706`，Portable 来源信息已同步；版本、模型 revision 和第三方依赖锁保持原值。原有诊断测试已改为复用正式数据库 sink，同时覆盖日志初始化前后两种状态，保留全部脱敏和异常链断言，并核对恰好保存一条记录。
+
+实际本地验收：
+
+1. 数据库、媒体、调度和录制目标集：381 passed；诊断接入修复组合：46 passed；最终诊断目标：25 passed。
+2. `python -m pytest tests packaging/portable/tests --cov=app --cov-report=xml --cov-fail-under=50 --timeout=600 --fail-on-skip --durations=15`：4009 passed，覆盖率 85.44%，包含真实 wheel、媒体、独立前端启动和全部 Portable 测试。
+3. `python -m pre_commit run --all-files --show-diff-on-failure` 全部通过。`npm --prefix frontend run check` 通过类型、lint、格式、76 项测试和生产构建；`python scripts/export_openapi.py --check` 通过。Python 沿用现有 Ruff，未配置独立类型检查器。
+4. `python packaging/portable/build_engine_pack.py --fixture` 完成真实 ZIP 校验；`python packaging/portable/build_payload.py` 保留固定源码和默认两次可重复构建。Payload 包含 308 个文件，SHA-256 为 `b87f434cbb647c3898014fbef0b344e6f529fc59c07338191fe29106a90bfa6a`，大小 1487337 字节，CRC32 为 `F56BC59C`。Engine Pack 为本地 fixture，未作为真实模型包发布。
+5. `python scripts/release_audit.py`：63 PASS、0 WARN、0 FAIL。制品与来源信息、ZIP 成员 CRC、非分发内容检查通过；本地生成清单记录了两个 ZIP 的版本、大小、SHA-256 和 CRC32。
+6. `npm --prefix docs run check`：22 passed；`npm --prefix docs run build`：57 页及全部生成链接检查通过。实际 diff 仅包含本阶段源码、目标测试、来源信息和本记录，没有运行配置、密钥、大型制品或其他工作树的修改。
+
+本地验收已经通过；远端矩阵、容器和适用工作流仍须对本次提交完成验收。S2 保持 `IN_PROGRESS`，S3 至 S8 保持 `PENDING`。
