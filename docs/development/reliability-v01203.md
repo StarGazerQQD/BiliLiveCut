@@ -161,3 +161,16 @@ S3 为 `IN_PROGRESS`，仅实施 M11、M12；S4 至 S8 保持 `PENDING`。依赖
 已实施共享取消、同步 SDK 可取消网络传输、关闭总期限、服务实例锁、Launcher/API/前端及录制所属进程树。正式结果提交前复核关闭与执行身份；取消后的草稿清理失败保留原取消异常及清理原因。POSIX 父死亡监管保留真实命令返回码，Windows 使用创建时的 Job 所有权；外部模型安装器随包携带共享锁模块。当前仍在验收，尚未声明阶段完成。
 
 366 项初次目标回归通过后，完整集发现 13 项录制测试失败：外部进程替身缺少新增监管协议，导致必需辅助任务、竞争录制及永久错误分类提前退出。已补齐 OS 创建、管道回收与 Job/进程组边界，保留全部业务断言。随后 181 项目标集仅剩一项 Windows 满管道测试输入不充分，改为小块写入后，7 项真实进程测试全部通过，覆盖 stderr 关闭、写满、父进程异常终止与无关进程保留。完整回归和构建门禁继续执行。
+
+修正后的目标集为 182 passed，完整应用与 Portable 集为 4057 passed，覆盖率 85.29%；全部 pre-commit 检查通过。随后修正未使用循环变量并补充测试辅助文件白名单，CLI 与真实关闭复验 59 passed。业务源码保存为 `564f2bf7ca52faea2c659d39287b077802d60c51`；五处 Portable 来源信息已同步，依赖版本和模型 revision 不变。
+
+默认 Payload 两次构建一致，5 个 bootstrap wheel 均通过官方来源及锁定哈希校验。使用 PyInstaller 6.22.3、hooks-contrib 2026.9、altgraph 0.17.5、pefile 2024.8.26 构建真实 Lite EXE，采用正式不内嵌模型包模式。全新隔离目录通过冻结 EXE 离线安装、`pip check`、Runtime 校验、四引擎 fixture 模型准备、Web 与设置 HTTP 检查；重复启动在安装前退出。强制结束实际冻结宿主后，所属服务全部退出，独立哨兵进程仍运行。fixture 仅用于本地验证，未发布模型或程序。
+
+来源元数据更新后的最终本地验收已通过：
+
+1. `python -m pytest tests packaging/portable/tests --timeout=600 --fail-on-skip --cov=app --cov-report=term --cov-report=xml --cov-fail-under=50 --durations=15`：4057 passed，覆盖率 85.29%，包含真实 wheel 与 Portable；唯一运行期 warning 为 setuptools 的旧安装接口弃用提示。
+2. `python -m pre_commit run --all-files --show-diff-on-failure` 全部通过；`npm --prefix frontend run check` 包含类型、lint、格式、76 项测试与生产构建，全部通过；`python scripts/export_openapi.py --check` 通过。
+3. `python scripts/release_audit.py`：63 PASS、0 WARN、0 FAIL；`npm --prefix docs run check` 为 22 passed，文档构建完成 57 页并通过全部生成链接检查。
+4. Payload、fixture ZIP 和实际 Lite EXE 的来源、大小、SHA-256、CRC32、许可证及内容校验通过。EXE 内嵌 Payload 和共享锁源文件与输入完全一致，1950 个冻结 Python 模块及其嵌套代码对象未包含绝对源码路径。未提交本地运行配置、下载缓存或大型制品。
+
+本地验收记录与来源元数据将追加到同一 PR。S3 仍为 `IN_PROGRESS`，等待远端全部适用 CI；Windows 本地结果不代替 POSIX 真实进程验收。S4 至 S8 保持 `PENDING`。
