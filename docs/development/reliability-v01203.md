@@ -9,7 +9,7 @@
 | 阶段 | 状态 | 工作项 | 验收条件 |
 | --- | --- | --- | --- |
 | S0 基线与恢复契约 | COMPLETED | 建立 PR、复现基线，明确状态、租约、取消和新增持久状态的兼容规则 | 问题证据及基线可复查，已有资产得到保留 |
-| S1 安全与外部输入 | IN_PROGRESS | M01 至 M06 | 认证、CSRF、合法上传、恶意输入和慢通知回归通过 |
+| S1 安全与外部输入 | COMPLETED | M01 至 M06 | 认证、CSRF、合法上传、恶意输入和慢通知回归通过 |
 | S2 数据库并发与事务 | PENDING | M07 至 M10 | 并发和锁竞争测试通过，租约、证据和清理互斥保持有效 |
 | S3 生命周期与资源所有权 | PENDING | M11 至 M12 | 正常关闭、超时取消、异常终止均回收所属资源，不影响其他实例 |
 | S4 录制断流恢复 | PENDING | M13 至 M15 | 短暂断流、连续短片、无进度、正常下播和人工暂停按状态处理 |
@@ -97,7 +97,7 @@
 
 后续涉及 Payload 内容的阶段，在源码提交后更新来源元数据，再执行正式构建；不得沿用旧 source pin 构建，或绕过工作区源码冻结检查。
 
-### S1 本地验收通过，远端验收进行中
+### S1 安全与外部输入验收完成
 
 M01 至 M06 已实施：默认审核员为空并拒绝占位凭据；认证和限流使用可信来源；独立前端支持显式可信代理；静态资源发送 CSP 和安全头；请求体按实际路由限制；模板使用严格部分更新和原子导入；弹幕共用解压、消息和深度预算；通知复用有界后台队列并保留邮件验证与 HTML 转义。
 
@@ -113,4 +113,6 @@ M01 至 M06 已实施：默认审核员为空并拒绝占位凭据；认证和�
 4. `python packaging/portable/build_engine_pack.py --fixture` 自校验通过；`python packaging/portable/build_payload.py` 保留固定源码和默认两次可重复构建，摘要一致。`python scripts/release_audit.py`：63 PASS、0 WARN、0 FAIL。
 5. `npm --prefix docs audit --include=dev --audit-level=low` 无漏洞；文档检查 22 passed；构建 57 页并通过全部生成链接检查。
 
-本机没有 Docker。新增生产 CSP、Service Worker、缓存与登录行为的真实浏览器检查由 PR 的 Docker 工作流验收；同步审计脚本后的最终完整状态也须通过远端 CI。S1 保持 `IN_PROGRESS`，在取得实际结果之前不开始 S2。
+远端验收覆盖提交 `91c16f4a6761a855de192b8be3b899b86da7ef31`，五项工作流均在 attempt 1 成功结束：CI `40997622259`、Docker `40997622301`、Frontend `40997622271`、Documentation `40997622233`、CodeQL `40997622221`。CI 的全部 15 个 job（含完整矩阵、Portable、coverage summary、CI status）通过；23 项 commit checks 中 22 项成功，Pages 部署按 PR 条件跳过，无 legacy statuses。
+
+本机没有 Docker，已通过远端 Docker 的真实容器和 Chromium 验收，新增生产 CSP、Service Worker、静态资源缓存及登录流程断言全部执行成功。Frontend 真实桌面与手机浏览器、Documentation 的 Windows 和 Ubuntu 构建也通过。实际 diff 未包含运行配置、密钥、大型制品或其他工作树的修改。S1 为 `COMPLETED`，后续按顺序进入 S2。
