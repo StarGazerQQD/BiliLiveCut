@@ -17,6 +17,7 @@ from app.db.entities import AppSetting, LiveRoom, RawSegment, RecordingSchedule,
 from app.db.session import get_session
 from app.recording import intents
 from app.recording.recovery import recover_pending_recordings
+from app.recording.segments import register_segment
 from app.recording.writer_ownership import SessionWriter
 from app.sources.rooms import register_room, room_source
 from app.web.services import rooms
@@ -79,6 +80,62 @@ async def test_settlement_requires_last_writer_exit_and_preserves_only_adopted_m
         assert {row.key: row.value for row in db.exec(select(AppSetting)).all()} == requests
         assert len(db.exec(select(RawSegment)).all()) == 2
     assert damaged.is_file()
+
+
+async def test_settlement_probes_only_unregistered_tail(
+    runtime: RuntimeSource,
+    video: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    _, session_id, _, writer = await seed_execution()
+    directory = session_raw_dir(session_id)
+    prefix = "part000_0123456789ab_"
+    good, tail = [directory / f"{prefix}{index:05d}.ts" for index in range(2)]
+    try:
+        for path in (good, tail):
+            path.write_bytes(video.read_bytes())
+        listing = directory / f"{prefix}segments.csv"
+        with listing.open("w", encoding="utf-8", newline="") as handle:
+            csv.writer(handle).writerow([good.name, 0, 1])
+        with get_session() as db:
+            intents.adopt_attempt(db, session_id, directory, prefix, listing)
+            segment, created = register_segment(
+                db,
+                session_id,
+                good,
+                duration=1,
+                ended_at=datetime.now(UTC),
+                size=good.stat().st_size,
+            )
+            assert created
+            registered_id = segment.id
+        with get_session() as db:
+            original = db.get(RawSegment, registered_id).model_dump()
+    finally:
+        writer.close()
+
+    calls: list[Path] = []
+    run = subprocess.run
+
+    def traced_probe(
+        command: list[str], *, capture_output: bool, check: bool, timeout: float
+    ) -> subprocess.CompletedProcess[bytes]:
+        calls.append(Path(command[-1]).resolve())
+        return run(command, capture_output=capture_output, check=check, timeout=timeout)
+
+    monkeypatch.setattr("app.clipping.core.subprocess.run", traced_probe)
+    assert recover_pending_recordings(rooms.finalize_recording_requests) == [session_id]
+    assert calls == [tail.resolve()]
+    with get_session() as db:
+        assert db.get(RawSegment, registered_id).model_dump() == original
+        segments = db.exec(select(RawSegment).where(RawSegment.session_id == session_id)).all()
+        assert sorted((segment.seq, segment.file_path) for segment in segments) == [
+            (0, str(good.resolve())),
+            (1, str(tail.resolve())),
+        ]
+        assert all(segment.duration_s > 0 and segment.size_bytes > 0 for segment in segments)
+    assert recover_pending_recordings(rooms.finalize_recording_requests) == []
+    assert calls == [tail.resolve()]
 
 
 async def test_recovery_budget_survives_restarts_and_explicit_start_resets_it(runtime: RuntimeSource) -> None:

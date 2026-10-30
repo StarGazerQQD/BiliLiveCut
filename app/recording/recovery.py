@@ -10,12 +10,12 @@ from datetime import UTC, datetime
 from pathlib import Path
 
 from loguru import logger
-from sqlmodel import Session
+from sqlmodel import Session, select
 
 from app.clipping.core import probe_media
 from app.core.media_usage import media_operation
 from app.core.paths import session_raw_dir
-from app.db.entities import LiveRoom, RecordingSession, SessionStatus, utcnow
+from app.db.entities import LiveRoom, RawSegment, RecordingSession, SessionStatus, utcnow
 from app.db.session import get_session
 from app.recording import intents
 from app.recording.segments import register_segment
@@ -57,6 +57,10 @@ def recover_pending_recordings(finalize: Callable[[Session, int], object]) -> li
         # 原证明不存在、被替换或仍由实际 writer 占用时，启动必须失败，不能报告就绪。
         with SessionWriter.recover(record.writer):
             directory = session_raw_dir(record.session_id).resolve()
+            with get_session() as db:
+                registered = set(
+                    db.exec(select(RawSegment.file_path).where(RawSegment.session_id == record.session_id)).all()
+                )
             errors: list[str] = []
             for attempt in record.attempts:
                 paths, failures = _attempt_files(attempt, directory)
@@ -64,6 +68,9 @@ def recover_pending_recordings(finalize: Callable[[Session, int], object]) -> li
                 for path in paths:
                     if path.is_symlink() or not path.is_file() or path.resolve().parent != directory:
                         errors.append(f"尾片缺失或路径已改变：{path.name}")
+                        continue
+                    canonical = str(path.resolve())
+                    if canonical in registered:
                         continue
                     before = path.stat()
                     if before.st_size == 0:
@@ -89,6 +96,7 @@ def recover_pending_recordings(finalize: Callable[[Session, int], object]) -> li
                             ended_at=datetime.fromtimestamp(before.st_mtime, UTC),
                             size=before.st_size,
                         )
+                    registered.add(canonical)
             with get_session() as db:
                 if db.get_bind().dialect.name == "sqlite":
                     db.connection().exec_driver_sql("BEGIN IMMEDIATE")
