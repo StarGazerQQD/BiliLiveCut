@@ -64,5 +64,16 @@ def test_nested_compression_stops_at_depth_limit(version: int) -> None:
         packet = danmaku.encode_packet(danmaku.OP_MESSAGE, compress(packet), version)
     assert danmaku.decode(packet) == [(danmaku.OP_MESSAGE, message)]
     too_deep = danmaku.encode_packet(danmaku.OP_MESSAGE, compress(packet * 2), version)
-    with pytest.raises(danmaku.DanmakuProtocolError, match="深度"):
-        danmaku.decode(too_deep)
+    neighbor = danmaku.encode_packet(danmaku.OP_MESSAGE, json.dumps(message).encode())
+    assert danmaku.decode(too_deep + neighbor) == [(danmaku.OP_MESSAGE, message)]
+
+
+@pytest.mark.parametrize("version", [2, 3])
+def test_deep_compressed_siblings_are_skipped_before_expansion(version: int, monkeypatch: MonkeyPatch) -> None:
+    compress = zlib.compress if version == 2 else brotli.compress
+    bomb = danmaku.encode_packet(danmaku.OP_MESSAGE, compress(b"a" * 1_000_000), version)
+    neighbor = danmaku.encode_packet(danmaku.OP_MESSAGE, b'{"text":"valid"}')
+    monkeypatch.setattr(danmaku, "_MAX_DECODE_BYTES", len(bomb) * 2 + len(neighbor))
+    assert danmaku.decode(bomb * 2 + neighbor, _depth=danmaku._MAX_DECODE_DEPTH) == [
+        (danmaku.OP_MESSAGE, {"text": "valid"})
+    ]

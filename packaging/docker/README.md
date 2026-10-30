@@ -139,7 +139,7 @@ map "$blc_trusted_tls_proxy:$http_x_forwarded_proto" $blc_request_scheme {
 
 在该副本的所有 API `location` 中，将 `proxy_set_header X-Forwarded-Proto $scheme;` 改为 `proxy_set_header X-Forwarded-Proto $blc_request_scheme;`。保留 `Host $http_host`、`X-Forwarded-For $remote_addr` 和清空 `X-Real-IP` 的规则。外层代理必须覆盖来访的 X-Forwarded-For 与 X-Forwarded-Proto，传入实际来源、单个 `https` 值和原始 Host；不要转发用户自行声明的协议。
 
-把该完整副本只读挂载到前端容器 `/etc/nginx/conf.d/default.conf`，部署前执行 `nginx -t`。重建后通过真实 HTTPS 入口验证 `/auth/status`、登录和修改请求，确认 Cookie 带 Secure、同源修改成功、跨源修改被拒绝。此配置不使用 `FRONTEND_TRUSTED_PROXY_IPS`，该环境变量只作用于 Python 前端。
+把该完整副本只读挂载到前端容器 `/etc/nginx/conf.d/default.conf`，部署前执行 `nginx -t`。若 Docker Desktop 或 NAT 让代理和普通来访请求呈现同一个原始来源地址，应先将前端入口限制为仅 TLS 代理可访问，不能把共享地址直接当作可信代理。重建后通过真实 HTTPS 入口验证 `/auth/status`、登录和修改请求，确认 Cookie 带 Secure、同源修改成功、跨源修改被拒绝。此配置不使用 `FRONTEND_TRUSTED_PROXY_IPS`，该环境变量只作用于 Python 前端。
 
 指令语义见 Nginx 官方 [realip](https://nginx.org/en/docs/http/ngx_http_realip_module.html)、[geo](https://nginx.org/en/docs/http/ngx_http_geo_module.html) 与 [map](https://nginx.org/en/docs/http/ngx_http_map_module.html) 文档。
 

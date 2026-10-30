@@ -195,7 +195,7 @@ def decode(data: bytes, *, _depth: int = 0) -> list[tuple[int, object]]:
 
 def _decode(data: bytes, depth: int, budget: _DecodeBudget) -> list[tuple[int, object]]:
     if depth > _MAX_DECODE_DEPTH:
-        raise DanmakuProtocolError("弹幕压缩嵌套超过深度限制")
+        return []
     if len(data) > budget.remaining_bytes:
         raise DanmakuProtocolError("弹幕解码数据超过累计大小限制")
     budget.remaining_bytes -= len(data)
@@ -216,7 +216,8 @@ def _decode(data: bytes, depth: int, budget: _DecodeBudget) -> list[tuple[int, o
         elif op == OP_MESSAGE:
             if ver in {2, 3}:
                 if depth >= _MAX_DECODE_DEPTH:
-                    raise DanmakuProtocolError("弹幕压缩嵌套超过深度限制")
+                    # 超深分支在解压前丢弃，保留同帧合法消息且不重复消耗展开预算。
+                    continue
                 try:
                     expanded = _expand_packet(body, ver, budget.remaining_bytes)
                 except (zlib.error, brotli.error):
