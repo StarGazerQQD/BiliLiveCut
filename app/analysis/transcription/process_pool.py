@@ -47,6 +47,10 @@ class ASRShutdownError(RuntimeError):
     """Worker 停止后不再执行新推理，已运行推理在宽限截止后退出。"""
 
 
+class ASRProcessExitError(RuntimeError):
+    """ASR 子进程异常退出，跨重启计入持久恢复预算。"""
+
+
 class RemoteASRError(RuntimeError):
     """保留子进程根异常类型、原始异常链和已脱敏堆栈。"""
 
@@ -116,6 +120,7 @@ def _asr_child(connection: Connection) -> None:
     from app.analysis.model_pool import model_pool, preload_models
     from app.analysis.transcription.pipeline import get_default_pipeline
     from app.analysis.transcription.progress import set_progress_sink
+    from app.analysis.transcription.remote import RemoteCheckpoint, RemoteChunk
     from app.core.config import Settings
     from app.core.runtime_settings import publish_settings, settings_scope
     from app.core.sanitize import sanitize_diagnostic
@@ -165,6 +170,17 @@ def _asr_child(connection: Connection) -> None:
             )
 
         sink_id = logger.add(diagnostic, level="WARNING", diagnose=False, backtrace=False)
+
+        def save_chunk(
+            chunk: RemoteChunk,
+            emit: Callable[..., None] = emit,
+            request_id: str = request["request_id"],
+        ) -> None:
+            emit("checkpoint", payload=chunk.model_dump())
+            permit = _receive(connection)
+            if permit != {"kind": "checkpoint_saved", "request_id": request_id, "index": chunk.index}:
+                raise RuntimeError("ASR checkpoint commit was not acknowledged")
+
         try:
             values = Settings.model_validate(request["settings"]).model_dump()
             if request["device_scope"] != device_failure_scope(values):
@@ -187,8 +203,14 @@ def _asr_child(connection: Connection) -> None:
                     result = None
                 else:
                     progress("audio_validated", request["audio_evidence"])
+                    checkpoint = None
+                    if request.get("checkpoint_enabled") is True:
+                        chunks = [RemoteChunk.model_validate(item) for item in request.get("remote_chunks", [])]
+                        if len({chunk.index for chunk in chunks}) != len(chunks):
+                            raise ValueError("ASR checkpoint contains duplicate chunk indices")
+                        checkpoint = RemoteCheckpoint({chunk.index: chunk for chunk in chunks}, save_chunk)
                     result = get_default_pipeline()._transcribe_normalized(
-                        request["audio_path"], request.get("initial_prompt")
+                        request["audio_path"], request.get("initial_prompt"), checkpoint=checkpoint
                     )
                     result.metadata.setdefault("audio_evidence", request["audio_evidence"])
                 model_pool.cleanup_idle()
@@ -254,6 +276,10 @@ def _next_message(slot: _Slot, timeout: float = 0.2) -> dict[str, Any] | None:
     except queue.Empty:
         return None
     if isinstance(message, Exception):
+        if isinstance(message, (EOFError, BrokenPipeError)):
+            raise ASRProcessExitError(
+                f"ASR child connection closed pid={slot.process.pid} exitcode={slot.process.exitcode}"
+            ) from message
         raise RuntimeError(f"ASR IPC failed pid={slot.process.pid}: {type(message).__name__}") from message
     return message
 
@@ -377,6 +403,7 @@ class ASRProcessPool:
         timeout_s: float,
         check_cancelled: Callable[[], None],
         authorize_remote: Callable[[], None] | None = None,
+        on_checkpoint: Callable[[dict[str, object]], None] | None = None,
     ) -> dict[str, Any]:
         """等待资源、运行并监管一次请求，退出确认完成后才归还槽与角色名额。"""
         from app.core.config import Settings
@@ -469,14 +496,14 @@ class ASRProcessPool:
                         raise RuntimeError("ASR child readiness handshake failed")
                     slot.ready = True
                 elif not slot.process.is_alive():
-                    raise RuntimeError(f"ASR child startup failed exitcode={slot.process.exitcode}")
+                    raise ASRProcessExitError(f"ASR child startup failed exitcode={slot.process.exitcode}")
             slot.outgoing.put(request)
             while True:
                 self._check(deadline, check_cancelled, slot.stage)
                 message = _next_message(slot)
                 if message is None:
                     if not slot.process.is_alive():
-                        raise RuntimeError(
+                        raise ASRProcessExitError(
                             f"ASR child exited pid={slot.process.pid} "
                             f"exitcode={slot.process.exitcode} stage={slot.stage}"
                         )
@@ -493,6 +520,21 @@ class ASRProcessPool:
                         raise RuntimeError("远程 ASR 缺少父进程授权检查")
                     authorize_remote()
                     slot.outgoing.put({"kind": "authorization_granted", "request_id": request["request_id"]})
+                elif message["kind"] == "checkpoint":
+                    if on_checkpoint is None:
+                        raise RuntimeError("ASR checkpoint has no parent writer")
+                    from app.analysis.transcription.remote import RemoteChunk
+
+                    chunk = RemoteChunk.model_validate(message["payload"])
+                    self._check(deadline, check_cancelled, slot.stage)
+                    on_checkpoint(chunk.model_dump())
+                    slot.outgoing.put(
+                        {
+                            "kind": "checkpoint_saved",
+                            "request_id": request["request_id"],
+                            "index": chunk.index,
+                        }
+                    )
                 elif message["kind"] == "metric":
                     from app.analysis.asr_metrics import apply_event
 

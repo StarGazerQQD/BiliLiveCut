@@ -14,6 +14,7 @@ import time
 import uuid
 from collections import deque
 from collections.abc import Callable
+from contextlib import nullcontext
 from dataclasses import dataclass, field
 from datetime import UTC, datetime
 from pathlib import Path
@@ -29,6 +30,7 @@ from app.core.process_spawn import spawn_owned_async, terminate_owned_async, wai
 from app.core.sanitize import sanitize_diagnostic
 from app.plugins.live_source import StreamSpec
 from app.recording.stream_failover import route_key
+from app.recording.writer_ownership import SessionWriter
 
 CommandBuilder = Callable[[StreamSpec, Path, str, Path], list[str]]
 FailureCallback = Callable[[StreamSpec], None]
@@ -332,6 +334,7 @@ class StreamRace:
         timeout_s: float,
         budget_s: float,
         launch_delay_s: float = 0.25,
+        writer: SessionWriter | None = None,
     ) -> None:
         # 精确重复才去重。同主机不同路径或凭据可能对应不同的可用端点。
         seen = set()
@@ -368,6 +371,7 @@ class StreamRace:
         self.timeout_s = timeout_s
         self.budget_s = budget_s
         self.launch_delay_s = max(0.0, launch_delay_s)
+        self.writer = writer
         self.winner: StreamAttempt | None = None
         self.failures: list[StreamAttempt] = []
 
@@ -379,15 +383,19 @@ class StreamRace:
         cmd = self.build_command(attempt.stream, attempt.out_dir, attempt.prefix, attempt.segment_list)
         # 保留默认进度周期，避免可选的 -stats_period 提高 FFmpeg 版本要求。
         cmd[1:1] = ["-progress", "pipe:1"]
-        spawn = asyncio.create_task(
-            spawn_owned_async(
-                cmd,
-                stdin=asyncio.subprocess.PIPE,
-                stdout=asyncio.subprocess.PIPE,
-                stderr=asyncio.subprocess.PIPE,
-                **({"creationflags": 0x00000200} if os.name == "nt" else {}),
-            )
-        )
+
+        async def start_process() -> tuple[asyncio.subprocess.Process, ProcessTree]:
+            with self.writer.spawn_options() if self.writer is not None else nullcontext({}) as ownership:
+                return await spawn_owned_async(
+                    cmd,
+                    stdin=asyncio.subprocess.PIPE,
+                    stdout=asyncio.subprocess.PIPE,
+                    stderr=asyncio.subprocess.PIPE,
+                    **ownership,
+                    **({"creationflags": 0x00000200} if os.name == "nt" else {}),
+                )
+
+        spawn = asyncio.create_task(start_process())
         waits: list[asyncio.Task[object]] = []
         try:
             # 取消也必须拿到已启动的进程句柄，否则取消窗口可能留下孤儿 FFmpeg。

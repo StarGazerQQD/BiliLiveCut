@@ -31,11 +31,13 @@ from app.core.runtime_settings import configured_task
 from app.core.sanitize import safe_exception_summary, sanitize_diagnostic
 from app.db.entities import (
     FinalClip,
+    UploadAttempt,
     UploadStatus,
     UploadTask,
     utcnow,
 )
 from app.db.session import get_session
+from app.jobs.contracts import JobAttempt
 
 
 @dataclass(slots=True)
@@ -427,7 +429,7 @@ def _resume_skipped_upload(task_id: int) -> UploadTask:
 
 
 @configured_task
-def process_upload_task(task_id: int) -> UploadTask:
+def process_upload_task(task_id: int, *, job_attempt: JobAttempt | None = None) -> UploadTask:
     """复用持久化尝试记录；只有确定未发送的错误允许有限重试。"""
     from uuid import uuid4
 
@@ -439,10 +441,23 @@ def process_upload_task(task_id: int) -> UploadTask:
 
     _resume_skipped_upload(task_id)
     with get_session() as db:
+        if job_attempt is not None and db.get_bind().dialect.name == "sqlite":
+            db.connection().exec_driver_sql("BEGIN IMMEDIATE")
         task = db.get(UploadTask, task_id)
         if task is None:
             raise ValueError(f"上传任务不存在: id={task_id}")
         if task.status not in {"queued", "failed", "failed_retryable"}:
+            if job_attempt is not None and task.status == UploadStatus.SUCCESS:
+                from app.publishing.job_recovery import bind_upload_job
+
+                previous = db.exec(
+                    select(UploadAttempt).where(
+                        UploadAttempt.upload_task_id == task_id,
+                        UploadAttempt.publish_generation == task.publish_generation,
+                        UploadAttempt.status == UploadStatus.SUCCESS,
+                    )
+                ).first()
+                bind_upload_job(db, job_attempt, task, previous)
             return task
         clip = db.get(FinalClip, task.clip_id)
         if clip is None:
@@ -461,6 +476,11 @@ def process_upload_task(task_id: int) -> UploadTask:
             assert current is not None
             if claimed is None:
                 return current
+            if job_attempt is not None:
+                from app.publishing.job_recovery import bind_upload_job
+
+                db.refresh(current)
+                bind_upload_job(db, job_attempt, current, None)
             result = ManualUploader().upload(payload)
             current.status = UploadStatus.SUCCESS if result.success else UploadStatus.FAILED
             current.remote_id = result.remote_id
@@ -471,14 +491,14 @@ def process_upload_task(task_id: int) -> UploadTask:
             return current
     worker_id = f"upload-{uuid4().hex}"
     for _ in range(settings.upload_max_retries + 1):
-        prepared = prepare_upload_attempt(task_id, worker_id)
+        prepared = prepare_upload_attempt(task_id, worker_id, job_attempt=job_attempt)
         if not prepared.get("ready"):
             break
         token, generation = prepared["attempt_token"], prepared["publish_generation"]
         result = (
             {"outcome": "success", "remote_id": prepared.get("remote_id")}
             if prepared.get("already_success")
-            else execute_remote_upload(token)
+            else execute_remote_upload(token, job_attempt=job_attempt)
         )
         commit_publish_result(token, generation, result)
         if result.get("outcome") != "failed_retryable" or result.get("request_may_have_been_sent", False):
@@ -536,15 +556,15 @@ def _finish_task(
 
 
 @configured_task
-def enqueue_and_upload(clip_id: int) -> UploadTask:
+def enqueue_and_upload(clip_id: int, *, job_attempt: JobAttempt | None = None) -> UploadTask:
     """入队并立即执行上传(便于自动链路与 CLI 复用)。
 
     :param clip_id: 成品切片 id。
     :returns: 上传任务。
     """
     task = enqueue_upload(clip_id)
-    if task.status == UploadStatus.QUEUED and task.id is not None:
-        return process_upload_task(task.id)
+    if task.id is not None and (task.status == UploadStatus.QUEUED or job_attempt is not None):
+        return process_upload_task(task.id, job_attempt=job_attempt)
     return task
 
 

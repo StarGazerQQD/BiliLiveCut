@@ -163,10 +163,16 @@ class LiveMonitor:
 
     async def _check_all(self, *, wait: bool = True) -> None:
         """同步房间订阅；仅向没有推送能力的兼容来源查询状态。"""
+        from app.web.services.rooms import recorder_manager
+
         if self._stop is None:
             self._stop = asyncio.Event()
         with get_session() as db:
-            rooms = [room for room in registered_rooms(db) if room.auto_record]
+            rooms = [
+                room
+                for room in registered_rooms(db)
+                if room.auto_record or recorder_manager.recovery_requested(room.id)
+            ]
         groups: dict[str, list[LiveRoom]] = {}
         watched: set[int] = set()
         for room in rooms:
@@ -470,7 +476,12 @@ class LiveMonitor:
         db_id = room.id
         with get_session() as db:
             room = db.get(LiveRoom, db_id)
-            if room is None or room_is_removed(db, db_id) or not room.auto_record or room_source(room, db) != identity:
+            if (
+                room is None
+                or room_is_removed(db, db_id)
+                or (not room.auto_record and not recorder_manager.recovery_requested(db_id))
+                or room_source(room, db) != identity
+            ):
                 return
         config = load_room_config(room)
         if config.get("recording_paused") or config.get("recording_auto_restart_suppressed"):

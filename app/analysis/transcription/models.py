@@ -23,6 +23,8 @@ from __future__ import annotations
 from dataclasses import dataclass, field
 from typing import TYPE_CHECKING, Literal, Protocol
 
+from pydantic import TypeAdapter
+
 if TYPE_CHECKING:
     pass
 
@@ -125,6 +127,11 @@ class ASRTranscriptResult:
     model_source: str = ""  # "local" / "online" / "fallback" / "remote"
     model_catalog_id: str = ""  # Engine Pack ID (whisper/paraformer/sensevoice/funasr_nano)
     loaded_from: str = ""  # 实际加载路径、仓库 ID 或远程服务基础地址
+
+
+def transcript_from_payload(value: object) -> ASRTranscriptResult:
+    """将 IPC 和持久断点的同一 dataclass 结构恢复为完整转写结果。"""
+    return TypeAdapter(ASRTranscriptResult).validate_python(value)
 
 
 def _segment_to_confidence(seg: ASRSegmentResult) -> float | None:

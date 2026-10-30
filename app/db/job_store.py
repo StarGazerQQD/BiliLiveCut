@@ -96,6 +96,11 @@ def _authorize(job: JobData, actor: str, is_admin: bool) -> None:
         raise PermissionError("无权操作其他用户的作业")
 
 
+def require_running(db: Session, attempt: JobAttempt) -> JobData:
+    """领域写事务中复验作业代次，绑定外部请求前不得接受终态或取消。"""
+    return _require(db, attempt, frozenset({"running"}))
+
+
 def get_job(job_id: str) -> JobData | None:
     """读取一个已经提交的作业快照。"""
     with get_session() as db:
@@ -269,7 +274,11 @@ def retry(job_id: str, actor: str, *, is_admin: bool = False) -> JobData:
 
 
 @media_reference_scope()
-def recover(attempt: JobAttempt) -> JobData:
+def recover(
+    attempt: JobAttempt,
+    *,
+    resolve: Callable[[Session, JobData], dict[str, JsonValue] | None] | None = None,
+) -> JobData:
     """启动时清算旧执行；安全操作以新代次恢复，外部效果保持待核对。"""
     with get_session() as db:
         _lock(db)
@@ -277,12 +286,25 @@ def recover(attempt: JobAttempt) -> JobData:
         if job["status"] == "cancelling":
             job.update(status="cancelled", message="服务重启后确认取消", finished_at=now_iso(), recovered=True)
         elif job["status"] == "running" and not job["cancellable_while_running"]:
-            job.update(
-                status="failed",
-                message="服务中断，外部结果需要人工核对",
-                error="为防止重复上传，未自动重试；请先核对平台结果",
-                finished_at=now_iso(),
-            )
+            result = resolve(db, job) if resolve is not None else None
+            if result is not None:
+                job.update(
+                    status="succeeded",
+                    progress=100,
+                    message="已恢复已确认的业务结果",
+                    result=result,
+                    error=None,
+                    finished_at=now_iso(),
+                    recovered=True,
+                )
+            else:
+                job.update(
+                    status="failed",
+                    message="服务中断，外部结果需要人工核对",
+                    error="为防止重复上传，未自动重试；请先核对平台结果",
+                    finished_at=now_iso(),
+                    recovered=True,
+                )
         elif job["status"] == "running":
             job.update(
                 status="queued",

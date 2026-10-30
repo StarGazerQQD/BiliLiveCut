@@ -12,7 +12,7 @@ from sqlalchemy import case, func
 from sqlmodel import select
 
 from app.analysis.editorial_review_sources import media_validation_scope
-from app.analysis.transcription.process_pool import ASRShutdownError, RemoteASRError
+from app.analysis.transcription.process_pool import ASRProcessExitError, ASRShutdownError, RemoteASRError
 from app.core.asr_failures import permanent_device_error
 from app.core.cancellation import OperationCancelledError, OperationShutdownError, cancellation_scope
 from app.core.config import settings
@@ -569,8 +569,18 @@ def execute_task(task_id: int, active_stage_val: str, lease_token: str | None = 
                 db.connection().exec_driver_sql("BEGIN IMMEDIATE")
             t = db.get(SegmentTask, task_id)
             if t is not None and lease is not None and still_owns_lease(db, lease):
-                if active_stage_val == TaskStatus.TRANSCRIBING and (
-                    permanent_device_error(exc) or isinstance(exc, RemoteASRError) and not exc.retryable
+                from app.pipeline.recovery_budget import consume_recovery, has_saved_asr
+
+                crash_exhausted = isinstance(exc, ASRProcessExitError) and consume_recovery(
+                    db, t, safe_exception_summary(exc)
+                )
+                if crash_exhausted and has_saved_asr(db, t):
+                    mark_failed(t, "连续崩溃恢复预算耗尽；已保存原始 ASR 断点，等待显式重试", permanent=True)
+                elif active_stage_val == TaskStatus.TRANSCRIBING and (
+                    crash_exhausted
+                    or permanent_device_error(exc)
+                    or isinstance(exc, RemoteASRError)
+                    and not exc.retryable
                 ):
                     _continue_without_asr(t, safe_exception_summary(exc))
                     _logger.warning("任务 %s ASR 设备确定不可用，按 unavailable 证据继续热点分析", task_id)

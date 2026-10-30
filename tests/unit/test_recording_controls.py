@@ -82,6 +82,7 @@ class _FakeRecorder:
         self.failures: list[str] = []
         self.stop_requested = False
         self.recording_error: str | None = None
+        self.intent_generation: str | None = None
         self.source_room = SourceRoom(
             platform="bilibili", source_id="200", canonical_url="https://live.bilibili.com/200"
         )
@@ -396,6 +397,10 @@ async def test_paused_stopping_session_is_not_auto_recovered(
     from app.web.services import rooms
 
     room_id, session_id, _ = _seed_room_session(tmp_path)
+    from app.recording import intents
+    from app.recording.writer_ownership import SessionWriter
+    from app.sources.rooms import room_source
+
     with get_session() as db:
         room = db.get(LiveRoom, room_id)
         room.room_config_json = json.dumps(merge_room_config(room, {"recording_paused": True}), ensure_ascii=False)
@@ -403,11 +408,16 @@ async def test_paused_stopping_session_is_not_auto_recovered(
         session.status = SessionStatus.STOPPING
         db.add(room)
         db.add(session)
+        with SessionWriter.create(tmp_path / "writers") as writer:
+            intent = intents.accept(db, room_id, room_source(room, db), pipeline=False, produce=False, origin="manual")
+            intents.bind_session(db, session_id, room_id, intent.generation, writer.identity)
+            intents.stop_intent(db, room_id, "用户暂停录制")
 
     async def unexpected_start(*args: object, **kwargs: object) -> None:
         raise AssertionError("人工暂停房间不应自动恢复")
 
     monkeypatch.setattr(rooms.recorder_manager, "start", unexpected_start)
+    await rooms.settle_interrupted_recordings()
     recovered = await rooms.auto_recover_interrupted_sessions()
 
     assert recovered == []

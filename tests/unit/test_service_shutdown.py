@@ -147,7 +147,8 @@ async def test_shutdown_notifies_all_recorders_and_cleans_others_after_one_failu
     manager._tasks = {1: None, 2: None}
     cleaned = []
 
-    async def stop(room: int) -> None:
+    async def stop(room: int, *, preserve_intent: bool = False) -> None:
+        assert preserve_intent
         assert stopped == {1, 2}
         cleaned.append(room)
         if room == 1:

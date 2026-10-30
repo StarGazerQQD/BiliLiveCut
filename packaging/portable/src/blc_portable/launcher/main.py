@@ -30,7 +30,7 @@ from blc_portable.console import configure_console_encoding
 from blc_portable.diagnostics import exception_summary, redact_diagnostic
 from config import file_locks as shared_file_locks
 from config.file_locks import FileLock
-from config.launcher_settings import APP_ROOT_ENV, WEB_PORT_ENV, load_launcher_config
+from config.launcher_settings import APP_ROOT_ENV, WEB_PORT_ENV, load_launcher_config, validate_web_port
 
 # -- Constants ──────────────────────────────────────────────────
 APP_NAME = "BiliLiveCut"
@@ -1209,30 +1209,75 @@ Examples:
 
 
 def _run_service(command: list[str], *, env: dict[str, str], cwd: str) -> int:
-    """持有所属服务树，关闭监管管道后等待 API 按实际配置收尾。"""
+    """Portable 独占有限恢复预算；人工退出不重启，上一代清理失败不启动下一代。"""
+    import time
+    from urllib.error import URLError
+    from urllib.request import ProxyHandler, build_opener
+
     from app.core.process_spawn import spawn_owned
+    from config.service_restart import (
+        CLEANUP_UNCONFIRMED_EXIT,
+        OUTER_SHUTDOWN_LIMIT_S,
+        RESTART_OWNER_ENV,
+        RestartBudget,
+    )
 
     options = {"creationflags": subprocess.CREATE_NEW_PROCESS_GROUP} if os.name == "nt" else {}
-    process, tree = spawn_owned(
-        command, env={**env, "_BLC_PARENT_STDIN": "1"}, cwd=cwd, stdin=subprocess.PIPE, **options
-    )
-    try:
+    budget = RestartBudget()
+    opener = build_opener(ProxyHandler({}))
+    web_port = validate_web_port(env[WEB_PORT_ENV]) if WEB_PORT_ENV in env else None
+    while True:
+        process, tree = spawn_owned(
+            command,
+            env={**env, "_BLC_PARENT_STDIN": "1", RESTART_OWNER_ENV: "launcher"},
+            cwd=cwd,
+            stdin=subprocess.PIPE,
+            **options,
+        )
+        manual_stop = False
         try:
-            return process.wait()
-        except KeyboardInterrupt:
-            assert process.stdin is not None
-            process.stdin.close()
+            next_probe = 0.0
             try:
-                return process.wait()
+                while process.poll() is None:
+                    if web_port is not None and time.monotonic() >= next_probe:
+                        ready = False
+                        try:
+                            with opener.open(f"http://127.0.0.1:{web_port}/auth/status", timeout=1) as response:
+                                ready = response.status == 200
+                        except (OSError, URLError):
+                            pass
+                        budget.observe(ready=ready, now=time.monotonic())
+                        next_probe = time.monotonic() + 1
+                    time.sleep(0.25)
             except KeyboardInterrupt:
-                tree.terminate()
-                process.wait(timeout=5)
-                return 130
-    finally:
-        if process.stdin is not None and not process.stdin.closed:
-            process.stdin.close()
-        tree.terminate()
-        process.wait(timeout=5)
+                manual_stop = True
+                assert process.stdin is not None
+                process.stdin.close()
+                try:
+                    process.wait(timeout=OUTER_SHUTDOWN_LIMIT_S)
+                except (KeyboardInterrupt, subprocess.TimeoutExpired):
+                    tree.terminate()
+                    process.wait(timeout=5)
+            code = process.returncode
+            budget.ended(time.monotonic())
+        finally:
+            if process.stdin is not None and not process.stdin.closed:
+                process.stdin.close()
+            tree.terminate()
+            process.wait(timeout=5)
+        if manual_stop:
+            return code if code is not None and code >= 0 else 130
+        if code in {0, CLEANUP_UNCONFIRMED_EXIT}:
+            return code
+        delay = budget.failed(time.monotonic())
+        if delay is None:
+            print("[ERROR] 服务连续异常退出，自动恢复预算已耗尽，请检查日志后重新启动。")
+            return code if code is not None and code > 0 else 1
+        print(f"[WARNING] 服务异常退出，{delay:g} 秒后恢复，第 {budget.failures} 次。")
+        try:
+            time.sleep(delay)
+        except KeyboardInterrupt:
+            return 130
 
 
 def run_launcher(args: argparse.Namespace) -> int:

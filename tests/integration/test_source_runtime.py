@@ -4,6 +4,7 @@ import asyncio
 import errno
 import json
 from collections import deque
+from collections.abc import Iterator
 from datetime import UTC, datetime, timedelta, timezone
 from pathlib import Path
 
@@ -33,9 +34,16 @@ from app.plugins.live_source import (
 )
 from app.recording.danmaku import DanmakuCapture, read_evidence
 from app.recording.recorder import Recorder
+from app.recording.writer_ownership import SessionWriter
 from app.sources.registry import SourceRegistry, source_registry
 from app.sources.rooms import register_room, room_source
 from tests.process_fixtures import ExternalProcess, install_process_boundary
+
+
+@pytest.fixture
+def recording_writer(tmp_path: Path) -> Iterator[SessionWriter]:
+    with SessionWriter.create(tmp_path / "writers") as writer:
+        yield writer
 
 
 @pytest.mark.parametrize("failures", [1, 2])
@@ -557,13 +565,18 @@ async def test_race_registers_only_winner_and_reaps_all_processes(
 
 @pytest.mark.parametrize("handoff", ["stop", "save_error"])
 async def test_unaccepted_winner_is_discarded(
-    runtime: RuntimeSource, monkeypatch: pytest.MonkeyPatch, tmp_path: Path, handoff: str
+    runtime: RuntimeSource,
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+    handoff: str,
+    recording_writer: SessionWriter,
 ) -> None:
     from app.recording.stream_race import StreamAttempt, StreamRace
 
     room = await register_room("123", True, "external")
     recorder = Recorder(room_source(room), room.id, metadata_prepared=True)
     recorder._stream_candidates = [StreamSpec(url="https://cdn.invalid/live", transport="flv", container="flv")]
+    recorder._writer = recording_writer
 
     class Process:
         returncode: int | None = None
@@ -748,7 +761,11 @@ async def test_unsupported_progress_falls_back_once_and_keeps_legacy_recording(
 
 @pytest.mark.parametrize("stop_stage", ["selection", "guard_cleanup"])
 async def test_stop_during_compatibility_fallback_never_starts_media(
-    runtime: RuntimeSource, monkeypatch: pytest.MonkeyPatch, tmp_path: Path, stop_stage: str
+    runtime: RuntimeSource,
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+    stop_stage: str,
+    recording_writer: SessionWriter,
 ) -> None:
     from app.recording.stream_race import StreamRace
 
@@ -758,6 +775,7 @@ async def test_stop_during_compatibility_fallback_never_starts_media(
         StreamSpec(url=f"https://{host}.invalid/live", transport="flv", container="flv") for host in ("a", "b")
     ]
     guard_started = asyncio.Event()
+    recorder._writer = recording_writer
 
     async def unsupported(self: StreamRace) -> None:
         await guard_started.wait()
@@ -785,7 +803,10 @@ async def test_stop_during_compatibility_fallback_never_starts_media(
 
 
 async def test_compatibility_fallback_does_not_mask_other_global_errors(
-    runtime: RuntimeSource, monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+    runtime: RuntimeSource,
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+    recording_writer: SessionWriter,
 ) -> None:
     from app.recording.stream_race import StreamRace
 
@@ -801,6 +822,8 @@ async def test_compatibility_fallback_does_not_mask_other_global_errors(
         ):
             attempt.remember(message)
             self.failures.append(attempt)
+
+    recorder._writer = recording_writer
 
     async def forbidden(*args: object) -> int:
         pytest.fail("其他全局参数错误不应被兼容回退掩盖")
@@ -1624,10 +1647,17 @@ async def test_automatic_entries_keep_external_identity_and_independent_switches
             db.add(RecordingSchedule(room_id=room.id, scheduled_at=datetime.now(UTC) - timedelta(seconds=1)))
         else:
             db.add(RecordingSession(id=1, room_id=room.id, status="recording"))
+            from app.core.paths import storage_root
+            from app.recording import intents
+
+            with SessionWriter.create(storage_root() / "writers") as writer:
+                intent = intents.accept(db, room.id, room_source(room), pipeline=False, produce=False, origin="manual")
+                intents.bind_session(db, 1, room.id, intent.generation, writer.identity)
     try:
         if trigger == "schedule":
             await main._run_due_schedules()
         else:
+            await rooms.settle_interrupted_recordings()
             assert await rooms.auto_recover_interrupted_sessions() == [room.id]
         await asyncio.wait_for(started.wait(), 2)
         with get_session() as db:

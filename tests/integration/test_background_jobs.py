@@ -6,6 +6,7 @@ import asyncio
 import json
 import time
 from datetime import UTC, datetime
+from pathlib import Path
 from threading import Event
 from typing import Any
 
@@ -117,13 +118,35 @@ async def test_background_failure_persists_safe_exception_chain(temp_db: None) -
 
 @pytest.mark.parametrize("status", ["failed", "skipped", "reconciliation_required", "success"])
 async def test_upload_job_reflects_actual_upload_terminal_status(
-    temp_db: None, monkeypatch: pytest.MonkeyPatch, status: str
+    temp_db: None, tmp_path: Path, monkeypatch: pytest.MonkeyPatch, status: str
 ) -> None:
-    from app.db.entities import UploadTask
-    from app.publishing import uploader
+    import subprocess
 
-    task = UploadTask(id=55, clip_id=1, uploader="biliup", status=status, last_error="token=private-error")
-    monkeypatch.setattr(uploader, "enqueue_and_upload", lambda clip_id: task)
+    from app.core import settings_store
+    from app.db.entities import FinalClip, UploadTask
+    from app.db.session import get_session
+    from app.publishing import journal, uploader
+
+    media = tmp_path / "upload.mp4"
+    if status != "skipped":
+        media.write_bytes(b"controlled upload boundary")
+    with get_session() as db:
+        db.add(FinalClip(id=1, candidate_id=1, file_path=str(media), title="标题", description="说明"))
+        db.flush()
+        db.add(UploadTask(id=55, clip_id=1, uploader="biliup", status="queued"))
+    settings_store.set_bool("biliup_enabled", True)
+    monkeypatch.setattr(journal, "_JOURNAL_DIR", tmp_path / "journal")
+    monkeypatch.setattr(uploader.settings, "biliup_upload_cmd", 'biliup upload "{file}"')
+
+    def external_upload(args: list[str], **kwargs: object) -> subprocess.CompletedProcess[bytes]:
+        if status == "failed":
+            raise PermissionError("token=private-error")
+        if status == "reconciliation_required":
+            raise subprocess.TimeoutExpired(args, 1800)
+        assert status == "success"
+        return subprocess.CompletedProcess(args, 0, b"BV12345678901", b"")
+
+    monkeypatch.setattr(uploader.subprocess, "run", external_upload)
     manager = WebJobManager()
     await manager.start()
     job = await manager.enqueue(

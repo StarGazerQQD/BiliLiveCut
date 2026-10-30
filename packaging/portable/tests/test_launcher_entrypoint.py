@@ -148,6 +148,9 @@ def test_launcher_uses_persisted_port_for_command_and_runtime_env(
         def wait(self, timeout: float | None = None) -> int:
             return self.returncode
 
+        def poll(self) -> int:
+            return self.returncode
+
     class ExternalTree:
         def __init__(self, pid: int) -> None:
             assert pid == ExternalProcess.pid
@@ -501,6 +504,7 @@ def test_run_launcher_propagates_doctor_failure(tmp_path: Path, monkeypatch: Mon
     from blc_portable.launcher import main as launcher_module
 
     args = launcher_module.build_parser().parse_args(["--doctor"])
+    monkeypatch.chdir(tmp_path)
     monkeypatch.setattr(launcher_module, "get_app_root", lambda: tmp_path)
     monkeypatch.setattr(launcher_module, "_run_doctor", lambda _root: 1)
 
@@ -571,3 +575,136 @@ def test_frozen_entry_collects_engine_pack_config_dependencies() -> None:
     assert '"provisioner-config"' in content
     assert '("__init__.py", "file_locks.py")' in content
     assert 'str(_project_root / "config" / _name), "provisioner/config"' in content
+
+
+@pytest.mark.parametrize("exit_code,starts", [(0, 1), (7, 4), (75, 1)])
+def test_launcher_owns_one_bounded_restart_budget_for_real_processes(
+    tmp_path: Path,
+    exit_code: int,
+    starts: int,
+) -> None:
+    from blc_portable.launcher.main import _run_service
+
+    counter = tmp_path / "starts.txt"
+    command = [
+        sys.executable,
+        "-c",
+        (
+            "import os,sys;from pathlib import Path;"
+            "assert os.environ['_BLC_RESTART_OWNER']=='launcher';"
+            "assert os.environ['_BLC_PARENT_STDIN']=='1';"
+            "p=Path(sys.argv[1]);p.write_text((p.read_text() if p.exists() else '')+'1');"
+            "sys.exit(int(sys.argv[2]))"
+        ),
+        str(counter),
+        str(exit_code),
+    ]
+    assert _run_service(command, env=dict(os.environ), cwd=str(tmp_path)) == exit_code
+    assert counter.read_text() == "1" * starts
+
+
+def test_launcher_does_not_restart_when_owned_tree_cleanup_is_unconfirmed(
+    tmp_path: Path,
+    monkeypatch: MonkeyPatch,
+) -> None:
+    from blc_portable.launcher.main import _run_service
+
+    from app.analysis.transcription.process_tree import ProcessTree
+
+    counter = tmp_path / "starts.txt"
+    command = [
+        sys.executable,
+        "-c",
+        (
+            "import sys;from pathlib import Path;p=Path(sys.argv[1]);"
+            "p.write_text((p.read_text() if p.exists() else '')+'1');sys.exit(7)"
+        ),
+        str(counter),
+    ]
+    original = ProcessTree.terminate
+
+    def unconfirmed(tree: ProcessTree) -> None:
+        original(tree)
+        raise OSError("controlled ownership confirmation failure")
+
+    monkeypatch.setattr(ProcessTree, "terminate", unconfirmed)
+    with pytest.raises(OSError, match="confirmation failure"):
+        _run_service(command, env=dict(os.environ), cwd=str(tmp_path))
+    assert counter.read_text() == "1"
+
+
+def test_console_cleanup_failure_reaches_launcher_without_restarting(tmp_path: Path) -> None:
+    import socket
+
+    from blc_portable.launcher.main import _run_service
+
+    root = _portable_dir.parents[1]
+    counter = tmp_path / "starts.txt"
+    dist = tmp_path / "frontend"
+    dist.mkdir()
+    (dist / "index.html").write_text("<main>cleanup regression</main>", encoding="utf-8")
+    env = {
+        **os.environ,
+        "PYTHONPATH": str(root),
+        "PYTHONIOENCODING": "utf-8",
+        "BLC_APP_ROOT": str(tmp_path),
+        "STORAGE_ROOT": str(tmp_path / "storage"),
+        "DATABASE_URL": f"sqlite:///{tmp_path / 'test.db'}",
+        "ADMIN_PASSWORD": "",
+        "DOCKER_AUTH_ENABLED": "false",
+        "BILIBILI_COOKIE": "",
+        "ASR_NO_MODEL_DOWNLOAD": "1",
+        "TREND_ENABLED": "false",
+        "TREND_SCHEDULE_ENABLED": "false",
+    }
+    with socket.socket() as occupied:
+        if hasattr(socket, "SO_EXCLUSIVEADDRUSE"):
+            occupied.setsockopt(socket.SOL_SOCKET, socket.SO_EXCLUSIVEADDRUSE, 1)
+        occupied.bind(("127.0.0.1", 0))
+        occupied.listen()
+        port = occupied.getsockname()[1]
+        command = [
+            sys.executable,
+            str(root / "tests/integration/console_cleanup_actor.py"),
+            str(counter),
+            "start",
+            "--port",
+            str(port),
+            "--frontend-dir",
+            str(dist),
+        ]
+        assert _run_service(command, env=env, cwd=str(tmp_path)) == 75
+    assert counter.read_text(encoding="utf-8") == "1"
+
+
+def test_launcher_manual_interrupt_preserves_clean_child_exit(
+    tmp_path: Path,
+    monkeypatch: MonkeyPatch,
+) -> None:
+    import time
+
+    from blc_portable.launcher.main import _run_service
+
+    counter = tmp_path / "starts.txt"
+    command = [
+        sys.executable,
+        "-c",
+        (
+            "import sys;from pathlib import Path;p=Path(sys.argv[1]);"
+            "p.write_text((p.read_text() if p.exists() else '')+'1');sys.stdin.read()"
+        ),
+        str(counter),
+    ]
+    original_sleep = time.sleep
+    interrupted = False
+
+    def interrupt_after_start(delay: float) -> None:
+        nonlocal interrupted
+        if delay == 0.25 and counter.exists() and not interrupted:
+            interrupted = True
+            raise KeyboardInterrupt
+        original_sleep(delay)
+
+    monkeypatch.setattr(time, "sleep", interrupt_after_start)
+    assert _run_service(command, env=dict(os.environ), cwd=str(tmp_path)) == 0
+    assert interrupted and counter.read_text() == "1"

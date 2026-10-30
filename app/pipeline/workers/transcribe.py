@@ -15,7 +15,7 @@ from typing import TYPE_CHECKING, Any
 from sqlmodel import Session, select
 
 from app.analysis.hotspot_lifecycle import resolve_merged_hotspot_event
-from app.analysis.transcription.process_pool import ASRShutdownError
+from app.analysis.transcription.process_pool import ASRProcessExitError, ASRShutdownError
 from app.core.config import settings
 from app.db.entities import (
     HotspotEvent,
@@ -272,7 +272,7 @@ def _transcribe_hotspot_attention(
                     "model_revision": result.model_revision,
                 }
             )
-        except (LeaseLostError, ASRShutdownError):
+        except (LeaseLostError, ASRShutdownError, ASRProcessExitError):
             raise
         except (OSError, RuntimeError, TypeError, ValueError) as exc:
             _logger.warning(

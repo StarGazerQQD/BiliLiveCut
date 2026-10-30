@@ -179,6 +179,7 @@ async def _application_lifespan(_app: FastAPI, ownership: ServiceOwnership) -> A
             Service("metrics", start_metrics, partial(run_sync, stop_metrics_collector)),
             Service("trends", start_trends, trend_scheduler.stop),
             Service("plugins", plugin_manager.start, plugin_manager.stop),
+            Service("recording_settlement", rooms_service.settle_interrupted_recordings),
             Service("worker", task_worker.start, task_worker.stop, task_worker.request_stop),
             Service("web_jobs", web_job_manager.start, web_job_manager.stop, web_job_manager.request_stop),
             Service("recorders", recover_recordings, rooms_service.recorder_manager.stop_all),

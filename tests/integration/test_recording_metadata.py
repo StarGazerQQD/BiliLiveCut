@@ -194,10 +194,12 @@ async def test_daily_schedule_has_one_successor_after_each_outcome(
         )
     calls: list[int] = []
 
-    async def start(room_id: int, *, pipeline: bool, produce: bool) -> None:
+    async def start(room_id: int, *, pipeline: bool, produce: bool, schedule_id: int | None = None) -> bool:
+        assert schedule_id == 1
         calls.append(room_id)
         if fail:
             raise ValueError("未授权")
+        return True
 
     monkeypatch.setattr(rooms.recorder_manager, "is_running", lambda _id: running)
     monkeypatch.setattr(rooms.recorder_manager, "start", start)

@@ -18,13 +18,10 @@ import pytest
 
 
 def _stop_console(process: subprocess.Popen) -> None:
-    if os.name == "nt":
-        # Windows CI 没有可依赖的交互控制台；真实终止一个子进程，验证监督器回收其余服务。
-        children = psutil.Process(process.pid).children()
-        if children:
-            children[-1].kill()
-        else:
-            process.terminate()
+    if process.stdin is not None:
+        process.stdin.close()
+    elif os.name == "nt":
+        process.terminate()
     else:
         process.send_signal(signal.SIGTERM)
 
@@ -108,8 +105,17 @@ def test_supervised_backend_drains_lifespan_when_parent_pipe_closes(
                 process.wait(timeout=5)
 
 
-@pytest.mark.parametrize("command", ["start", "console"])
-def test_console_starts_independent_frontend_and_api_and_cleans_up(tmp_path: Path, command: str) -> None:
+@pytest.mark.parametrize(
+    "command,crash,host",
+    [(command, crash, "127.0.0.1") for command in ("start", "console") for crash in (None, "backend", "frontend")]
+    + [("start", None, "127.0.0.2")],
+)
+def test_console_starts_independent_frontend_and_api_and_cleans_up(
+    tmp_path: Path,
+    command: str,
+    crash: str | None,
+    host: str,
+) -> None:
     root = Path(__file__).resolve().parents[2]
     dist = tmp_path / "frontend"
     dist.mkdir()
@@ -126,11 +132,12 @@ def test_console_starts_independent_frontend_and_api_and_cleans_up(tmp_path: Pat
     env = {
         **os.environ,
         "PYTHONPATH": os.pathsep.join([str(diagnostics), str(root)]),
+        "_BLC_PARENT_STDIN": "1",
         "PYTHONIOENCODING": "utf-8",
         "BLC_APP_ROOT": str(tmp_path),
         "STORAGE_ROOT": str(tmp_path / "storage"),
         "DATABASE_URL": f"sqlite:///{tmp_path / 'test.db'}",
-        "ADMIN_PASSWORD": "",
+        "ADMIN_PASSWORD": "controlled-local-password" if host != "127.0.0.1" else "",
         "DOCKER_AUTH_ENABLED": "false",
         "BILIBILI_COOKIE": "",
         "ASR_NO_MODEL_DOWNLOAD": "1",
@@ -140,9 +147,21 @@ def test_console_starts_independent_frontend_and_api_and_cleans_up(tmp_path: Pat
     opener = build_opener(ProxyHandler({}))
     with (tmp_path / "console.log").open("w+", encoding="utf-8") as log:
         process = subprocess.Popen(
-            [sys.executable, "-m", "app.cli", command, "--port", str(port), "--frontend-dir", str(dist)],
+            [
+                sys.executable,
+                "-m",
+                "app.cli",
+                command,
+                "--host",
+                host,
+                "--port",
+                str(port),
+                "--frontend-dir",
+                str(dist),
+            ],
             cwd=tmp_path,
             env=env,
+            stdin=subprocess.PIPE,
             stdout=log,
             stderr=log,
         )
@@ -150,7 +169,7 @@ def test_console_starts_independent_frontend_and_api_and_cleans_up(tmp_path: Pat
             deadline = time.monotonic() + 30
             while True:
                 try:
-                    with opener.open(f"http://127.0.0.1:{port}/", timeout=1) as response:
+                    with opener.open(f"http://{host}:{port}/", timeout=1) as response:
                         assert response.read() == b"<main>independent frontend</main>"
                         break
                 except (OSError, URLError):
@@ -158,17 +177,63 @@ def test_console_starts_independent_frontend_and_api_and_cleans_up(tmp_path: Pat
                         log.seek(0)
                         pytest.fail(log.read())
                     time.sleep(0.1)
-            with opener.open(f"http://127.0.0.1:{port}/auth/status", timeout=3) as response:
-                assert response.read() == b'{"enabled":false}'
-            with opener.open(f"http://127.0.0.1:{port}/api/dashboard", timeout=3) as response:
+            with opener.open(f"http://{host}:{port}/auth/status", timeout=3) as response:
+                assert json.loads(response.read()) == {"enabled": False}
+            if env["ADMIN_PASSWORD"]:
+                from base64 import b64encode
+
+                credentials = b64encode(f"admin:{env['ADMIN_PASSWORD']}".encode()).decode()
+                opener.addheaders = [("Authorization", f"Basic {credentials}")]
+            with opener.open(f"http://{host}:{port}/api/dashboard", timeout=3) as response:
                 assert b'"rooms":[]' in response.read()
-            with opener.open(f"http://127.0.0.1:{port}/api/settings", timeout=3) as response:
+            with opener.open(f"http://{host}:{port}/api/settings", timeout=3) as response:
                 assert json.loads(response.read())["current_web_port"] == port
+            deadline = time.monotonic() + 5
+            while "前后端已就绪" not in (tmp_path / "console.log").read_text(encoding="utf-8"):
+                assert time.monotonic() < deadline, "监管者没有确认实际绑定地址已就绪"
+                time.sleep(0.1)
             children = psutil.Process(process.pid).children(recursive=True)
+            if crash is not None:
+                # Windows venv 的常驻 Python 转发进程也在 descendants 中，只回收服务代次。
+                services = [
+                    child
+                    for child in children
+                    if "app.cli" in child.cmdline() and any(name in child.cmdline() for name in ("backend", "frontend"))
+                ]
+                assert services
+                children = services
+                old_pids = {child.pid for child in children}
+                target = next(child for child in children if child.cmdline()[1:4] == ["-m", "app.cli", crash])
+                target.kill()
+                deadline = time.monotonic() + 40
+                while True:
+                    assert process.poll() is None, "单个服务异常退出后监管进程不应退出"
+                    new_children = [
+                        child
+                        for child in psutil.Process(process.pid).children(recursive=True)
+                        if "app.cli" in child.cmdline()
+                        and any(name in child.cmdline() for name in ("backend", "frontend"))
+                    ]
+                    try:
+                        with opener.open(f"http://127.0.0.1:{port}/auth/status", timeout=1) as response:
+                            if (
+                                response.status == 200
+                                and new_children
+                                and all(child.pid not in old_pids for child in new_children)
+                            ):
+                                break
+                    except (OSError, URLError):
+                        pass
+                    if time.monotonic() >= deadline:
+                        log.seek(0)
+                        pytest.fail(log.read())
+                    time.sleep(0.1)
+                _, alive = psutil.wait_procs(children, timeout=5)
+                assert not alive, "恢复新一代前必须回收旧所属树"
+                children = psutil.Process(process.pid).children(recursive=True)
             _stop_console(process)
             exit_code = process.wait(timeout=25)
-            # Windows 的 TerminateProcess 退出码由调用方决定；监督器须保留失败语义。
-            assert exit_code != 0 if os.name == "nt" else exit_code == 0
+            assert exit_code == 0
             _, alive = psutil.wait_procs(children, timeout=5)
             assert not alive, "停止后不能遗留前端或后端进程"
             with socket.socket() as probe:
@@ -254,6 +319,7 @@ def test_start_cleans_up_api_when_frontend_port_is_occupied(tmp_path: Path):
     env = {
         **os.environ,
         "PYTHONPATH": str(root),
+        "_BLC_PARENT_STDIN": "1",
         "PYTHONIOENCODING": "utf-8",
         "BLC_APP_ROOT": str(tmp_path),
         "STORAGE_ROOT": str(tmp_path / "storage"),
@@ -276,6 +342,7 @@ def test_start_cleans_up_api_when_frontend_port_is_occupied(tmp_path: Path):
                 [sys.executable, "-m", "app.cli", "start", "--port", str(port), "--frontend-dir", str(dist)],
                 cwd=tmp_path,
                 env=env,
+                stdin=subprocess.PIPE,
                 stdout=log,
                 stderr=log,
             )

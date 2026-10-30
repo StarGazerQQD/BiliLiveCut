@@ -45,14 +45,21 @@ class JobManager:
         self._cancellable_jobs: set[str] = set()
         self._stop_task: asyncio.Task[None] | None = None
         self._handlers: dict[str, JobHandler] = {}
+        self._recoveries: dict[str, Callable[[JobAttempt], JobData]] = {}
         self._started = False
         self._stopping = False
         self._start_lock = asyncio.Lock()
         self._release_ownership: Callable[[], None] | None = None
 
-    def register(self, job_type: str, handler: JobHandler) -> None:
+    def register(
+        self, job_type: str, handler: JobHandler, *, recover: Callable[[JobAttempt], JobData] | None = None
+    ) -> None:
         """在组合入口注册业务处理器。"""
         self._handlers[job_type] = handler
+        if recover is not None:
+            self._recoveries[job_type] = recover
+        else:
+            self._recoveries.pop(job_type, None)
 
     async def start(self) -> None:
         """读取持久任务，清算中断状态并调度可恢复操作。"""
@@ -70,7 +77,8 @@ class JobManager:
             jobs = await run_sync(lambda: list(job_store.iter_active_jobs()))
             recovered = []
             for job in jobs:
-                recovered.append(await run_sync(partial(job_store.recover, JobAttempt(job["id"], job["attempt"]))))
+                recover = self._recoveries.get(job["type"], job_store.recover)
+                recovered.append(await run_sync(partial(recover, JobAttempt(job["id"], job["attempt"]))))
         except BaseException:
             release()
             raise

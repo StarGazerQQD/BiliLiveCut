@@ -139,6 +139,9 @@ def retry_task(task_id: int) -> bool:
             return False
         if task.stage not in (TaskStatus.FAILED, TaskStatus.CANCELLED, TaskStatus.TRANSIENT_FAILED):
             return False
+        from app.pipeline.recovery_budget import reset_recovery
+
+        reset_recovery(db, task, all_stages=True)
         res = resume_stage(task.failed_stage or task.stage)
         task.stage = res
         task.stage_key = make_stage_key(task.segment_id, res)
@@ -286,6 +289,9 @@ class TaskWorker:
 
         await _thread_io(recover_publish_state)
         await _thread_io(recover_orphans)
+        from app.pipeline.stale_recovery import recover_pending_clips
+
+        await _thread_io(recover_pending_clips)
         from app.analysis.session_summary import recover_running_session_summary_requests
 
         await _thread_io(recover_running_session_summary_requests)

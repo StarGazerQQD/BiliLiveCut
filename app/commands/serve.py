@@ -5,6 +5,7 @@ from __future__ import annotations
 import os
 import socket
 from pathlib import Path
+from threading import Event
 from types import ModuleType
 
 import click
@@ -20,6 +21,7 @@ from config.launcher_settings import (
     runtime_app_root,
     validate_web_port,
 )
+from config.service_restart import RestartBudget
 
 console = Console()
 
@@ -328,16 +330,71 @@ def cmd_console(
     :param port: 前端监听端口。
     :param frontend_dir: 已构建的静态资源目录。
     """
+    import threading
+    import time
+
+    from config.service_restart import CLEANUP_UNCONFIRMED_EXIT, RESTART_OWNER_ENV
+
+    parent_stopped = threading.Event()
+    parent_error: OSError | ValueError | None = None
+
+    def watch_parent() -> None:
+        nonlocal parent_error
+        try:
+            _wait_parent_pipe()
+        except (OSError, ValueError) as exc:
+            parent_error = exc
+        parent_stopped.set()
+
+    if os.environ.pop("_BLC_PARENT_STDIN", "") == "1":
+        threading.Thread(target=watch_parent, name="blc-console-parent", daemon=True).start()
+    externally_supervised = os.environ.get(RESTART_OWNER_ENV) == "launcher"
+    budget = RestartBudget()
+    while not parent_stopped.is_set():
+        try:
+            _console_generation(host, port, frontend_dir, parent_stopped, budget)
+            break
+        except ExceptionGroup as exc:
+            logger.opt(exception=exc).error("所属服务清理未确认，禁止自动重启")
+            raise click.exceptions.Exit(CLEANUP_UNCONFIRMED_EXIT) from exc
+        except (click.exceptions.Exit, OSError, RuntimeError) as exc:
+            if isinstance(exc, click.exceptions.Exit) and exc.exit_code == 0:
+                break
+            if parent_stopped.is_set():
+                break
+            if externally_supervised:
+                raise
+            delay = budget.failed(time.monotonic())
+            if delay is None:
+                raise click.ClickException("前后端连续异常退出，自动恢复预算已耗尽，请检查服务日志。") from exc
+            logger.opt(exception=exc).warning("前后端异常退出，{} 秒后恢复，第 {} 次", delay, budget.failures)
+            try:
+                if parent_stopped.wait(delay):
+                    break
+            except KeyboardInterrupt:
+                break
+    if parent_error is not None:
+        raise click.ClickException("Launcher 监管管道异常，所属服务已关闭。") from parent_error
+
+
+def _console_generation(
+    host: str,
+    port: int | None,
+    frontend_dir: str | None,
+    parent_stopped: Event,
+    budget: RestartBudget,
+) -> None:
+    """运行一代前后端；所有所属进程确认退出后才返回给唯一重启监管者。"""
     import signal
     import subprocess
     import sys
-    import threading
     import time
 
     import psutil
 
     from app.analysis.transcription.process_tree import ProcessTree
     from app.core.process_spawn import spawn_owned
+    from config.service_restart import OUTER_SHUTDOWN_LIMIT_S
 
     directory = _frontend_directory(frontend_dir)
     actual_port = validate_web_port(port if port is not None else load_launcher_config(runtime_app_root()).web_port)
@@ -357,19 +414,6 @@ def cmd_console(
     child_env["_BLC_PARENT_STDIN"] = "1"
     processes: list[subprocess.Popen] = []
     owned: list[tuple[subprocess.Popen, ProcessTree]] = []
-    parent_stopped = threading.Event()
-    parent_error: OSError | ValueError | None = None
-
-    def watch_parent() -> None:
-        nonlocal parent_error
-        try:
-            _wait_parent_pipe()
-        except (OSError, ValueError) as exc:
-            parent_error = exc
-        parent_stopped.set()
-
-    if os.environ.pop("_BLC_PARENT_STDIN", "") == "1":
-        threading.Thread(target=watch_parent, name="blc-console-parent", daemon=True).start()
     shutdown_signals = [signal.SIGINT, signal.SIGTERM]
     if hasattr(signal, "SIGBREAK"):
         shutdown_signals.append(signal.SIGBREAK)
@@ -439,7 +483,26 @@ def cmd_console(
         )
         processes.append(owned[-1][0])
         console.print(f"[green]工作台启动中[/green] -> http://{host}:{actual_port}")
+        ready_deadline = time.monotonic() + 60
+        ready_once = False
+        next_probe = 0.0
+        probe_host = {"0.0.0.0": "127.0.0.1", "::": "::1"}.get(host, host)
+        probe_host = f"[{probe_host}]" if ":" in probe_host else probe_host
         while not parent_stopped.is_set() and all(process.poll() is None for process in processes):
+            if time.monotonic() >= next_probe:
+                ready = False
+                try:
+                    with opener.open(f"http://{probe_host}:{actual_port}/auth/status", timeout=1) as response:
+                        ready = response.status == 200
+                except (OSError, URLError):
+                    pass
+                budget.observe(ready=ready, now=time.monotonic())
+                if ready and not ready_once:
+                    logger.info("前后端已就绪，录制恢复清算已完成")
+                ready_once |= ready
+                if not ready_once and time.monotonic() >= ready_deadline:
+                    raise RuntimeError("独立前端未能通过 API 就绪检查")
+                next_probe = time.monotonic() + 1
             time.sleep(0.25)
         code = next(
             (process.returncode for process in processes if process.returncode is not None),
@@ -450,6 +513,7 @@ def cmd_console(
     except KeyboardInterrupt:
         pass
     finally:
+        budget.ended(time.monotonic())
         closing = True
         try:
             console.print("[yellow]正在停止录制并释放后台资源，再次按 Ctrl+C 可强制退出。[/yellow]")
@@ -465,8 +529,9 @@ def cmd_console(
                 except (OSError, RuntimeError, psutil.Error) as exc:
                     cleanup_errors.append(exc)
             # API 按当前已发布配置执行有限关闭；父层只等待所属进程，不另猜业务预算。
+            shutdown_deadline = time.monotonic() + OUTER_SHUTDOWN_LIMIT_S
             while processes and processes[0].poll() is None:
-                if force_exit:
+                if force_exit or time.monotonic() >= shutdown_deadline:
                     console.print("[yellow]强制终止前后端及其子进程。[/yellow]")
                     break
                 time.sleep(0.1)
@@ -486,8 +551,6 @@ def cmd_console(
         finally:
             for number, previous in previous_signals.items():
                 signal.signal(number, previous)
-    if parent_error is not None:
-        raise click.ClickException("Launcher 监管管道异常，所属服务已关闭。") from parent_error
 
 
 SERVE_COMMANDS = [

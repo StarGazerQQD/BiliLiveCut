@@ -16,8 +16,10 @@ from sqlalchemy import or_
 from sqlalchemy.exc import SQLAlchemyError
 from sqlmodel import Session, select
 
+from app.clipping.models import ClipOptions
 from app.clipping.paths import build_final_clip_path, build_generation_clip_path, build_lease_partial_path
 from app.core.cancellation import OperationCancelledError, OperationShutdownError, shutdown_event
+from app.core.media_usage import media_reference_scope
 from app.core.process_control import ProcessCancelledError
 from app.core.sanitize import safe_exception_summary
 from app.db.entities import (
@@ -34,6 +36,14 @@ from app.db.entities import (
 )
 from app.db.session import get_session
 from app.pipeline.lease import LeaseLostError, TaskLease, approved_task_candidate, still_owns_lease
+from app.pipeline.render_checkpoint import (
+    RenderCheckpoint,
+    VerifiedMedia,
+    read_checkpoint,
+    render_input_fingerprint,
+    save_checkpoint,
+    verify_media,
+)
 from app.pipeline.stage_result import enqueue_next, mark_completed, mark_failed
 
 _logger = logging.getLogger(__name__)
@@ -59,25 +69,6 @@ class RenderArtifact:
     stderr_excerpt: str
 
 
-def _compute_render_config_hash(event_id: int, variant_type: str, duration_s: float) -> str:
-    """计算渲染配置指纹 (稳定, 无随机值/时间/worker 信息)。"""
-    import hashlib
-
-    raw = f"{event_id}:{variant_type}:dur={duration_s:.1f}"
-    return hashlib.sha256(raw.encode()).hexdigest()
-
-
-def _compute_content_hash(file_path: str) -> str:
-    """计算文件内容 SHA-256 (用于同大小不同内容的区分)。"""
-    import hashlib
-
-    sha = hashlib.sha256()
-    with open(file_path, "rb") as f:
-        for chunk in iter(lambda: f.read(65536), b""):
-            sha.update(chunk)
-    return sha.hexdigest()
-
-
 def render_compute(lease: TaskLease) -> dict[str, Any]:
     """纯渲染计算 — 仅输出到租约临时文件, 不写 FinalClip/ClipVariant。
 
@@ -89,6 +80,7 @@ def render_compute(lease: TaskLease) -> dict[str, Any]:
     """
     from app.clipping.core import render_clip_to_file
 
+    options = ClipOptions.from_settings()
     with get_session() as db:
         task = db.get(SegmentTask, lease.task_id)
         if task is None or task.candidate_id is None:
@@ -110,12 +102,13 @@ def render_compute(lease: TaskLease) -> dict[str, Any]:
                 "permanent": True,
             }
         session_id = task.session_id
+        render_config_hash = render_input_fingerprint(db, task, options)
 
     temp_path = build_lease_partial_path(lease.task_id, lease.lease_token, session_id=session_id)
     temporary = {"temp_path": temp_path}
 
     try:
-        artifact = render_clip_to_file(cid, temp_path)
+        artifact = render_clip_to_file(cid, temp_path, options)
     except (OperationCancelledError, ProcessCancelledError, LeaseLostError) as exc:
         # 仍经提交边界确认可信临时路径并清理，不把中断包装为渲染业务失败。
         return {**temporary, "interruption": exc}
@@ -135,25 +128,12 @@ def render_compute(lease: TaskLease) -> dict[str, Any]:
         return {**temporary, "error": "cover file missing or outside lease", "permanent": True}
 
     try:
-        size_bytes = artifact.get("size_bytes")
-        if size_bytes is None:
-            size_bytes = Path(fpath).stat().st_size
-    except OSError as exc:
-        return {**temporary, "error": f"OutputReadError: {safe_exception_summary(exc)}", "permanent": False}
-    if size_bytes <= 1024:
-        return {**temporary, "error": f"output too small ({size_bytes} bytes)", "permanent": False}
-
-    duration_s = artifact.get("duration_s", 0)
-    if duration_s < 1.0:
-        return {**temporary, "error": f"output duration too short ({duration_s:.1f}s)", "permanent": False}
-
-    # 计算 content_hash (SHA-256, 用于区分同大小不同内容)
-    try:
-        content_hash = _compute_content_hash(temp_path)
-    except OSError as exc:
+        media = verify_media(temp_path)
+        if cover:
+            verify_media(cover, cover=True)
+    except (OSError, ValueError) as exc:
         return {**temporary, "error": f"OutputReadError: {safe_exception_summary(exc)}", "permanent": False}
     variant_type = ClipVariantType.SINGLE
-    render_config_hash = _compute_render_config_hash(event_id, variant_type, duration_s)
 
     return {
         "task_id": lease.task_id,
@@ -164,11 +144,11 @@ def render_compute(lease: TaskLease) -> dict[str, Any]:
         "event_id": event_id,
         "variant_type": variant_type,
         "render_config_hash": render_config_hash,
-        "content_hash": content_hash,
-        "duration_s": duration_s,
-        "size_bytes": size_bytes,
-        "width": artifact.get("width"),
-        "height": artifact.get("height"),
+        "content_hash": media.facts.sha256,
+        "duration_s": media.facts.duration,
+        "size_bytes": media.facts.size,
+        "width": media.facts.width,
+        "height": media.facts.height,
         "cover_path": artifact.get("cover_path"),
     }
 
@@ -182,10 +162,12 @@ def _render_context(db: Session, lease: TaskLease, result: dict[str, Any]) -> tu
     candidate = approved_task_candidate(db, task)
     if result.get("candidate_id") != candidate.id or result.get("event_id") != task.event_id:
         raise ValueError("渲染结果与任务来源不一致")
+    if result.get("render_config_hash") != render_input_fingerprint(db, task):
+        raise ValueError("渲染输入或选项已改变，拒绝提交旧计算结果")
     return task, candidate
 
 
-def _clip_for_variant(db: Session, variant: ClipVariant, candidate_id: int) -> FinalClip:
+def _clip_for_variant(db: Session, variant: ClipVariant, candidate_id: int, media: VerifiedMedia) -> FinalClip:
     """取得实际成片记录；恢复已就位但尚未登记的产物。"""
     clip = db.exec(
         select(FinalClip).where(
@@ -199,6 +181,8 @@ def _clip_for_variant(db: Session, variant: ClipVariant, candidate_id: int) -> F
             file_path=variant.file_path,
             cover_path=variant.cover_path,
             duration_s=variant.duration_s,
+            width=media.facts.width,
+            height=media.facts.height,
             content_hash=variant.file_hash,
             status=ClipStatus.GENERATED,
         )
@@ -212,6 +196,93 @@ def _clip_for_variant(db: Session, variant: ClipVariant, candidate_id: int) -> F
     return clip
 
 
+def _find_reusable(
+    lease: TaskLease,
+    fingerprint: str,
+    *,
+    include_pending: bool = True,
+) -> tuple[RenderCheckpoint, VerifiedMedia, VerifiedMedia | None] | None:
+    with get_session() as db:
+        if not still_owns_lease(db, lease):
+            raise LeaseLostError()
+        task = db.get(SegmentTask, lease.task_id)
+        assert task is not None
+        candidate = approved_task_candidate(db, task)
+        variant = db.exec(
+            select(ClipVariant).where(
+                ClipVariant.event_id == task.event_id,
+                ClipVariant.variant_type == ClipVariantType.SINGLE,
+                ClipVariant.render_config_hash == fingerprint,
+                ClipVariant.render_status.in_(
+                    [RenderStatus.QUEUED, RenderStatus.DONE] if include_pending else [RenderStatus.DONE]
+                ),
+            )
+        ).first()
+        record = read_checkpoint(db, variant) if variant is not None else None
+        if record is None or record.task_id != lease.task_id or record.candidate_id != candidate.id:
+            return None
+    try:
+        media, cover = record.verify()
+    except (OSError, ValueError) as exc:
+        _logger.warning("render_checkpoint_invalid: task=%s detail=%s", lease.task_id, safe_exception_summary(exc))
+        return None
+    return record, media, cover
+
+
+def _commit_reuse(
+    lease: TaskLease,
+    reusable: tuple[RenderCheckpoint, VerifiedMedia, VerifiedMedia | None],
+    ms: int,
+) -> None:
+    record, media, cover = reusable
+    with get_session() as db:
+        if db.get_bind().dialect.name == "sqlite":
+            db.connection().exec_driver_sql("BEGIN IMMEDIATE")
+        task, candidate = _render_context(
+            db,
+            lease,
+            {
+                "candidate_id": record.candidate_id,
+                "event_id": record.event_id,
+                "render_config_hash": record.input_fingerprint,
+            },
+        )
+        variant = db.get(ClipVariant, record.variant_id)
+        if (
+            variant is None
+            or variant.render_status not in {RenderStatus.QUEUED, RenderStatus.DONE}
+            or read_checkpoint(db, variant) != record
+        ):
+            raise LeaseLostError("恢复时渲染代次已改变")
+        if shutdown_event.is_set():
+            raise OperationShutdownError("服务关闭，停止恢复渲染结果")
+        media.require_unchanged()
+        if cover:
+            cover.require_unchanged()
+        variant.render_status = RenderStatus.DONE
+        db.add(variant)
+        clip = _clip_for_variant(db, variant, candidate.id, media)
+        candidate.status = CandidateStatus.CLIPPED
+        db.add(candidate)
+        _update_rendered_task(db, task, clip, ms)
+
+
+def resume_render(lease: TaskLease) -> bool:
+    """新租约复用同输入的完整正式产物，仍经过审核、来源及代次事务。"""
+    with get_session() as db:
+        if not still_owns_lease(db, lease):
+            raise LeaseLostError()
+        task = db.get(SegmentTask, lease.task_id)
+        assert task is not None
+        fingerprint = render_input_fingerprint(db, task)
+    reusable = _find_reusable(lease, fingerprint)
+    if reusable is None:
+        return False
+    _commit_reuse(lease, reusable, 0)
+    return True
+
+
+@media_reference_scope()
 def commit_render(lease: TaskLease, compute_result: dict[str, Any], ms: int) -> None:
     """以双短事务提交独占产物，两次校验租约、审核和来源。
 
@@ -225,6 +296,31 @@ def commit_render(lease: TaskLease, compute_result: dict[str, Any], ms: int) -> 
     variant_id: int | None = None
     generation = 0
     try:
+        media: VerifiedMedia | None = None
+        cover_proof: VerifiedMedia | None = None
+        with get_session() as db:
+            task = db.get(SegmentTask, lease.task_id)
+            if task is None or not still_owns_lease(db, lease):
+                raise LeaseLostError()
+            temp_path = build_lease_partial_path(lease.task_id, lease.lease_token, session_id=task.session_id)
+            temp_cover = str(Path(temp_path).with_suffix(".jpg"))
+            if compute_result.get("temp_path") not in {None, "", temp_path}:
+                raise ValueError("渲染临时路径不属于本任务租约")
+        if "error" not in compute_result and "interruption" not in compute_result and not shutdown_event.is_set():
+            reusable = _find_reusable(lease, compute_result["render_config_hash"], include_pending=False)
+            if reusable is not None:
+                _commit_reuse(lease, reusable, ms)
+                return
+            media = verify_media(temp_path)
+            if (
+                media.facts.sha256 != compute_result["content_hash"]
+                or media.facts.duration != compute_result["duration_s"]
+            ):
+                raise ValueError("临时渲染产物与计算结果不一致")
+            if compute_result.get("cover_path"):
+                if compute_result["cover_path"] != temp_cover:
+                    raise ValueError("渲染封面路径不属于本任务租约")
+                cover_proof = verify_media(temp_cover, cover=True)
         with get_session() as db:
             if db.get_bind().dialect.name == "sqlite":
                 db.connection().exec_driver_sql("BEGIN IMMEDIATE")
@@ -265,18 +361,10 @@ def commit_render(lease: TaskLease, compute_result: dict[str, Any], ms: int) -> 
                     ClipVariant.render_config_hash == compute_result["render_config_hash"],
                 )
             ).first()
-            if (
-                variant is not None
-                and variant.render_status == RenderStatus.DONE
-                and variant.file_path
-                and Path(variant.file_path).is_file()
-                and (not variant.cover_path or Path(variant.cover_path).is_file())
-            ):
-                clip = _clip_for_variant(db, variant, candidate.id)
-                candidate.status = CandidateStatus.CLIPPED
-                db.add(candidate)
-                _update_rendered_task(db, task, clip, ms)
-                return
+            assert media is not None
+            media.require_unchanged()
+            if cover_proof:
+                cover_proof.require_unchanged()
             if variant is None:
                 variant = ClipVariant(
                     event_id=task.event_id,
@@ -297,11 +385,15 @@ def commit_render(lease: TaskLease, compute_result: dict[str, Any], ms: int) -> 
             variant.file_hash = compute_result["content_hash"]
             variant.duration_s = compute_result["duration_s"]
             variant.render_status = RenderStatus.QUEUED
+            variant.resolution = f"{media.facts.width}x{media.facts.height}"
             db.add(variant)
+            record = save_checkpoint(db, lease, variant, candidate.id, media, cover_proof)
 
         if output_cover:
             Path(temp_cover).replace(output_cover)
         Path(temp_path).replace(output_path)
+
+        moved_media, moved_cover = record.verify()
 
         with get_session() as db:
             if db.get_bind().dialect.name == "sqlite":
@@ -312,9 +404,12 @@ def commit_render(lease: TaskLease, compute_result: dict[str, Any], ms: int) -> 
                 raise LeaseLostError()
             if shutdown_event.is_set():
                 raise OperationShutdownError("服务关闭，停止登记已移动的渲染结果")
+            moved_media.require_unchanged()
+            if moved_cover:
+                moved_cover.require_unchanged()
             variant.render_status = RenderStatus.DONE
             db.add(variant)
-            clip = _clip_for_variant(db, variant, candidate.id)
+            clip = _clip_for_variant(db, variant, candidate.id, moved_media)
             candidate.status = CandidateStatus.CLIPPED
             db.add(candidate)
             _update_rendered_task(db, task, clip, ms)
@@ -426,9 +521,12 @@ def _safe_delete_temp(temp_path: str) -> None:
         _logger.warning("safe_delete_temp_failed: %s", temp_path, exc_info=True)
 
 
+@media_reference_scope()
 def run_render(lease: TaskLease) -> None:
     """渲染阶段入口 — compute → commit。"""
     t0 = time.time()
+    if resume_render(lease):
+        return
     compute_result = render_compute(lease)
     ms_val = int((time.time() - t0) * 1000)
     commit_render(lease, compute_result, ms_val)

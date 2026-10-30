@@ -16,6 +16,7 @@
 from __future__ import annotations
 
 import asyncio
+import csv
 import errno
 import math
 import os
@@ -25,7 +26,7 @@ import time
 import uuid
 from collections.abc import Awaitable, Callable
 from dataclasses import dataclass
-from datetime import UTC, datetime, timedelta
+from datetime import UTC, datetime
 from pathlib import Path
 
 from loguru import logger
@@ -35,14 +36,13 @@ from app.core.async_cleanup import complete_cleanup
 from app.core.config import settings
 from app.core.execution import run_sync
 from app.core.ffmpeg_errors import FfmpegErrorType, classify_ffmpeg_error
-from app.core.paths import session_raw_dir
+from app.core.paths import session_raw_dir, storage_root
 from app.core.process_spawn import spawn_owned_async, terminate_owned_async, wait_process_exit
 from app.core.sanitize import sanitize_diagnostic
 from app.core.supervisor import remaining_shutdown
 from app.db.entities import (
     RawSegment,
     RecordingSession,
-    SegmentStatus,
     SessionStatus,
     utcnow,
 )
@@ -56,9 +56,11 @@ from app.plugins.live_source import (
     StreamPreference,
     StreamSpec,
 )
+from app.recording import intents
 from app.recording.danmaku import DanmakuCapture
 from app.recording.stream_failover import StreamFailover
 from app.recording.stream_race import StreamAttempt, StreamRace
+from app.recording.writer_ownership import SessionWriter
 from app.sources.registry import source_registry
 
 # 下游回调签名:接收刚登记入库的 RawSegment(已含 id)。
@@ -130,6 +132,7 @@ class Recorder:
         on_end: SessionEndCallback | None = None,
         on_state: StateCallback | None = None,
         metadata_prepared: bool = False,
+        intent_generation: str | None = None,
     ) -> None:
         self.source_room = source_room
         self._source: LiveSource | None = None
@@ -142,6 +145,9 @@ class Recorder:
         self.on_end = on_end
         self.on_state = on_state
         self._metadata_prepared = metadata_prepared
+        self.intent_generation = intent_generation
+        self.shutdown_requested = False
+        self._writer: SessionWriter | None = None
         self._stop = asyncio.Event()
         self._session_id: int | None = None
         self._seq = 0  # 跨重连累加的全局片段序号
@@ -197,6 +203,17 @@ class Recorder:
     def fail(self, message: str) -> None:
         """记录无法由主循环自行收尾的录制异常。"""
         self._update_session(status=SessionStatus.ERROR, error_message=message, ended=True)
+        if self._session_id is None and self.intent_generation is not None and self.recording_action_required:
+            with get_session() as db:
+                intent = intents.load_intent(db, self.db_room_id)
+                if (
+                    intent is not None
+                    and intent.generation == self.intent_generation
+                    and intent.state in {"accepted", "running"}
+                ):
+                    intent.state, intent.reason = "blocked", message
+                    intent.resume_requested = False
+                    intents.save(db, intent)
 
     # ------------------------------------------------------------------ #
     # 弹幕采集(与录制并行,贯穿整个会话)
@@ -237,7 +254,20 @@ class Recorder:
             async with source_registry.use(self.source_room.platform, self._drain_source) as source:
                 self._source = source
                 async with async_settings_scope(fresh=True, boundary="recording"):
-                    await self._run_with_settings()
+                    with SessionWriter.create(storage_root() / ".recording_writers") as writer:
+                        self._writer = writer
+                        try:
+                            await self._run_with_settings()
+                        finally:
+                            self._writer = None
+        except Exception as exc:
+            # 来源、writer 和会话初始化属于同一执行边界；尚无场次也必须结算已接受请求。
+            from app.core.sanitize import safe_exception_summary
+
+            self._recording_error = self._recording_error or f"录制失败：{safe_exception_summary(exc)}"
+            self._recording_action_required = True
+            self.fail(self._recording_error)
+            raise
         finally:
             self._source = None
             self._run_task = None
@@ -271,6 +301,8 @@ class Recorder:
             from app.core.sanitize import safe_exception_summary
 
             failed = self._recording_error or f"录制失败：{safe_exception_summary(exc)}"
+            self._recording_error = failed
+            self._recording_action_required = True
             raise
         finally:
 
@@ -466,6 +498,13 @@ class Recorder:
         ):
             return
         self._attempt_stable = True
+        if (
+            self._session_id is not None
+            and self._active_process is not None
+            and self._active_process.returncode is None
+        ):
+            with get_session() as db:
+                intents.stable(db, self._session_id)
         self._reconnect_budget.reset()
         self._stream_failover.reset()
         self._retry_backoff = 1.0
@@ -496,6 +535,13 @@ class Recorder:
                 await self.on_end(self._session_id)
             except Exception as exc:  # noqa: BLE001 — 结束回调异常不应影响停止流程
                 logger.error("会话结束回调失败 session={}: {}", self._session_id, exc)
+                return
+        if self._session_id is not None:
+            with get_session() as db:
+                record = intents.load_execution(db, self._session_id)
+                if record is not None:
+                    record.settled = True
+                    intents.save(db, record)
 
     def _retry_exhausted(self, budget: _ReconnectBudget) -> bool:
         """检查连续取流预算，并在耗尽时记录自动停止原因。"""
@@ -681,9 +727,10 @@ class Recorder:
 
     async def _record_single(self, stream: StreamSpec, out_dir: Path) -> int:
         """沿用上游单进程录制，供串行模式及能力不受支持时回退。"""
-        segment_list = out_dir / _SEGMENT_LIST_NAME
         # 为本次录制使用唯一的文件名前缀,避免重连后覆盖既有片段。
         prefix = f"part{self._seq:03d}_{uuid.uuid4().hex[:12]}_"
+        segment_list = out_dir / f"{prefix}{_SEGMENT_LIST_NAME}"
+        self._adopt_recording_attempt(out_dir, prefix, segment_list)
         cmd = self._build_ffmpeg_cmd(stream, out_dir, prefix, segment_list)
         logger.debug(
             "启动 FFmpeg db_room={} session={} transport={}", self.db_room_id, self._session_id, stream.transport
@@ -691,13 +738,15 @@ class Recorder:
 
         self._diagnostic_secrets = tuple(stream.headers.values())
         try:
-            proc, tree = await spawn_owned_async(
-                cmd,
-                stdin=asyncio.subprocess.PIPE,
-                stdout=asyncio.subprocess.DEVNULL,
-                stderr=asyncio.subprocess.PIPE,
-                **({"creationflags": 0x00000200} if os.name == "nt" else {}),
-            )
+            with self._require_writer().spawn_options() as ownership:
+                proc, tree = await spawn_owned_async(
+                    cmd,
+                    stdin=asyncio.subprocess.PIPE,
+                    stdout=asyncio.subprocess.DEVNULL,
+                    stderr=asyncio.subprocess.PIPE,
+                    **ownership,
+                    **({"creationflags": 0x00000200} if os.name == "nt" else {}),
+                )
         except OSError as exc:
             category = {
                 errno.ENOENT: FfmpegErrorType.MISSING_BINARY,
@@ -719,6 +768,17 @@ class Recorder:
         self._stderr_categories = attempt.categories
         self._upstream_status = attempt.http_status
 
+    def _require_writer(self) -> SessionWriter:
+        if self._writer is None:
+            raise RuntimeError("录制生命周期尚未取得 writer 占用")
+        return self._writer
+
+    def _adopt_recording_attempt(self, out_dir: Path, prefix: str, segment_list: Path) -> None:
+        if self._session_id is None:
+            raise RuntimeError("录制场次尚未建立")
+        with get_session() as db:
+            intents.adopt_attempt(db, self._session_id, out_dir, prefix, segment_list)
+
     async def _record_race(self, out_dir: Path) -> int:
         """竞争期间没有入库回调，胜出后复用原进程及已经写入的视频。"""
         race = StreamRace(
@@ -731,6 +791,7 @@ class Recorder:
             parallel=settings.recording_stream_race_parallel,
             timeout_s=settings.recording_stream_race_timeout_s,
             budget_s=self._race_budget_s,
+            writer=self._require_writer(),
         )
         logger.info(
             "并发录制选线 room={} session={} candidates={} parallel={}",
@@ -792,6 +853,7 @@ class Recorder:
             self._diagnostic_secrets = tuple(attempt.stream.headers.values())
             self._update_session(stream_format=attempt.stream.transport)
             self._save_stream_selection(attempt.stream)
+            self._adopt_recording_attempt(out_dir, attempt.prefix, attempt.segment_list)
             logger.info(
                 "录制线路胜出 room={} session={} endpoint={} transport={} container={} pid={} reuse=True",
                 self.db_room_id,
@@ -1065,8 +1127,9 @@ class Recorder:
                 if segment_list.exists():
                     text = segment_list.read_text(encoding="utf-8", errors="ignore")
                     new_text = text[last_pos:]
-                    last_pos = len(text)
-                    for line in new_text.splitlines():
+                    complete_end = new_text.rfind("\n") + 1
+                    last_pos += complete_end
+                    for line in new_text[:complete_end].splitlines():
                         line = line.strip()
                         if line:
                             await self._register_segment(line, out_dir)
@@ -1100,7 +1163,12 @@ class Recorder:
         :param csv_line: 形如 ``part000_00000.ts,0.000000,60.000000`` 的一行。
         :param out_dir: 片段所在目录。
         """
-        parts = csv_line.split(",")
+        try:
+            parts = next(csv.reader([csv_line], strict=True))
+        except (csv.Error, StopIteration):
+            return
+        if not parts:
+            return
         filename = parts[0]
         file_path = (out_dir / filename).resolve()
         if not file_path.is_relative_to(out_dir.resolve()):
@@ -1125,26 +1193,25 @@ class Recorder:
         if not math.isfinite(duration) or duration <= 0:
             return
         now = end_ts or datetime.fromtimestamp(file_path.stat().st_mtime, UTC)
-        # 用文件完成时刻反推起止时间，避免恢复探测耗时引起时间漂移。
-        seg_start = now - timedelta(seconds=duration)
         size = file_path.stat().st_size
+        from app.recording.segments import register_segment
 
-        segment = RawSegment(
-            session_id=self._session_id or 0,
-            seq=self._seq,
-            file_path=str(file_path),
-            start_ts=seg_start,
-            end_ts=now,
-            duration_s=duration,
-            size_bytes=size,
-            status=SegmentStatus.RECORDED,
-        )
         with get_session() as db:
-            db.add(segment)
-            db.flush()  # 取得自增 id
-            db.refresh(segment)
+            if db.get_bind().dialect.name == "sqlite":
+                db.connection().exec_driver_sql("BEGIN IMMEDIATE")
+            segment, created = register_segment(
+                db,
+                self._session_id or 0,
+                file_path,
+                duration=duration,
+                ended_at=now,
+                size=size,
+            )
+        if not created:
+            self._paths.add(str(file_path))
+            return
 
-        self._seq += 1
+        self._seq = max(self._seq, segment.seq + 1)
         self._attempt_media_seconds += duration
         self._paths.add(str(file_path))  # 更新内存缓存,避免后续反复查表
         self._mark_stable_recording()
@@ -1268,10 +1335,21 @@ class Recorder:
             status=SessionStatus.STARTING,
         )
         with get_session() as db:
+            if self.intent_generation is None:
+                intent = intents.accept(
+                    db,
+                    self.db_room_id,
+                    self.source_room,
+                    pipeline=self.on_segment is not None,
+                    produce=False,
+                    origin="manual",
+                )
+                self.intent_generation = intent.generation
             db.add(session)
             db.flush()
             db.refresh(session)
             sid = session.id
+            intents.bind_session(db, int(sid), self.db_room_id, self.intent_generation, self._require_writer().identity)
         logger.info("创建录制会话 session_id={} room={}", sid, self.db_room_id)
         return int(sid)
 
@@ -1306,6 +1384,17 @@ class Recorder:
                 session.error_message = error_message
             if ended:
                 session.ended_at = utcnow()
+                from app.pipeline.lifecycle import shutdown_event
+
+                intents.finish(
+                    db,
+                    self._session_id,
+                    reason=error_message or status or "录制已结束",
+                    blocked=self.recording_action_required or self.source_action_required,
+                    cooldown=self.retry_budget_exhausted and not self.stop_requested,
+                    shutdown=shutdown_event.is_set() or self.shutdown_requested,
+                    cooldown_seconds=max(settings.reconnect_max_backoff_s, settings.live_poll_interval_s),
+                )
             if reconnected:
                 session.last_reconnected_at = utcnow()
             db.add(session)

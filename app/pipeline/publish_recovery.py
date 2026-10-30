@@ -45,9 +45,22 @@ def recover_publish_results() -> int:
         if not attempt_token or generation is None:
             _logger.warning("journal_entry_invalid: %s", entry)
             continue
+        try:
+            recorded_at = entry.get("journaled_at")
+            if not isinstance(recorded_at, str):
+                raise ValueError("成功回执缺少确认时间")
+            confirmed_at = datetime.fromisoformat(recorded_at)
+            if confirmed_at.tzinfo is None:
+                raise ValueError("成功回执时间缺少 UTC 偏移")
+            confirmed_at = confirmed_at.astimezone(UTC)
+        except ValueError:
+            _logger.error("journal_timestamp_invalid: token=%s gen=%s", attempt_token, generation)
+            continue
 
         try:
             with get_session() as db:
+                if db.get_bind().dialect.name == "sqlite":
+                    db.connection().exec_driver_sql("BEGIN IMMEDIATE")
                 attempt = db.exec(
                     select(UploadAttempt).where(
                         UploadAttempt.attempt_token == attempt_token,
@@ -57,26 +70,43 @@ def recover_publish_results() -> int:
 
                 if attempt is None:
                     _logger.warning("journal_attempt_not_found: token=%s gen=%s", attempt_token, generation)
-                    # 清理孤立 Journal 条目
-                    mark_replayed(attempt_token, generation)
                     continue
 
+                if (
+                    entry.get("upload_task_id") != attempt.upload_task_id
+                    or entry.get("clip_id") != attempt.clip_id
+                    or entry.get("platform") != attempt.platform
+                    or entry.get("outcome") != "success"
+                    or not isinstance(remote_id, str)
+                    or not remote_id
+                ):
+                    _logger.error("journal_identity_mismatch: token=%s gen=%s", attempt_token, generation)
+                    continue
+                if attempt.status == UploadStatus.SUCCESS and (
+                    attempt.remote_id != remote_id
+                    or bool(attempt.remote_url and remote_url and attempt.remote_url != remote_url)
+                ):
+                    _logger.error("journal_receipt_conflict: token=%s gen=%s", attempt_token, generation)
+                    continue
                 newly_recovered = attempt.status != UploadStatus.SUCCESS
 
                 # 回填
                 attempt.status = UploadStatus.SUCCESS
-                attempt.finished_at = datetime.now(UTC)
+                attempt.finished_at = confirmed_at if newly_recovered else attempt.finished_at or confirmed_at
                 attempt.remote_id = remote_id
-                attempt.remote_url = remote_url
+                attempt.remote_url = attempt.remote_url or remote_url
+                attempt.error_type = attempt.error_message = None
                 db.add(attempt)
 
                 # 更新 UploadTask
                 upload_task = db.get(UploadTask, attempt.upload_task_id)
-                if upload_task is not None:
+                if upload_task is not None and upload_task.publish_generation == generation:
+                    if upload_task.status != UploadStatus.SUCCESS or upload_task.remote_id != remote_id:
+                        upload_task.updated_at = attempt.finished_at or datetime.now(UTC)
                     upload_task.status = UploadStatus.SUCCESS
                     upload_task.remote_id = remote_id
+                    upload_task.last_error = None
                     upload_task.claimed_by = None
-                    upload_task.updated_at = datetime.now(UTC)
                     db.add(upload_task)
                 clip = db.get(FinalClip, attempt.clip_id)
                 if clip is not None:
@@ -87,7 +117,7 @@ def recover_publish_results() -> int:
                 recovered += int(newly_recovered)
 
                 # 从 Journal 中删除
-                mark_replayed(attempt_token, generation)
+                mark_replayed(attempt_token, generation, remote_id=remote_id, remote_url=remote_url)
 
                 _logger.info(
                     "journal_recovered: attempt=%s remote=%s gen=%s",

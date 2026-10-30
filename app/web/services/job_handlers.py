@@ -14,11 +14,13 @@ if TYPE_CHECKING:
 
 def register_job_handlers(manager: JobManager) -> None:
     """向作业管理器注册全部内置处理器。"""
+    from app.publishing.job_recovery import recover_upload_job
+
     manager.register("candidate_render", _render_candidate)
     manager.register("review_rerender", _rerender_review)
     manager.register("collection_render", _render_collection)
-    manager.register("clip_upload", _upload_clip)
-    manager.register("upload_retry", _retry_upload)
+    manager.register("clip_upload", _upload_clip, recover=recover_upload_job)
+    manager.register("upload_retry", _retry_upload, recover=recover_upload_job)
     manager.register("local_import", _import_recording)
     from app.analysis.editorial_reanalysis import run_editorial_reanalysis
 
@@ -98,7 +100,7 @@ def _upload_clip(context: JobContext, payload: dict[str, Any]) -> dict[str, Any]
 
     context.report(10, "正在执行上传预检")
     context.check_cancelled()
-    task = enqueue_and_upload(int(payload["clip_id"]))
+    task = enqueue_and_upload(int(payload["clip_id"]), job_attempt=context.token)
     context.check_cancelled()
     if task.status != "success":
         raise RuntimeError(
@@ -113,7 +115,7 @@ def _retry_upload(context: JobContext, payload: dict[str, Any]) -> dict[str, Any
 
     context.report(10, "正在重新执行上传")
     context.check_cancelled()
-    task = process_upload_task(int(payload["upload_task_id"]))
+    task = process_upload_task(int(payload["upload_task_id"]), job_attempt=context.token)
     context.check_cancelled()
     if task.status != "success":
         raise RuntimeError(

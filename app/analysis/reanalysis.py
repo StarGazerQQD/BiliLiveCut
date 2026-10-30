@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import json
+from contextlib import nullcontext
 from dataclasses import asdict, dataclass
 from datetime import UTC, datetime
 
@@ -125,6 +126,7 @@ def request_session_reanalysis(
     *,
     reason: str,
     retranscribe: bool = False,
+    db: Session | None = None,
 ) -> bool:
     """持久化场次重分析请求，等待当前尾段流水线稳定后执行。
 
@@ -137,7 +139,7 @@ def request_session_reanalysis(
     if not reason:
         raise ValueError("重分析原因不能为空")
     key = f"{_PENDING_KEY_PREFIX}{session_id}"
-    with get_session() as db:
+    with nullcontext(db) if db is not None else get_session() as db:
         recording = db.get(RecordingSession, session_id)
         if recording is None:
             raise ValueError(f"录制会话不存在: session_id={session_id}")
@@ -163,14 +165,10 @@ def request_session_reanalysis(
             existing.value = json.dumps(payload, ensure_ascii=False)
             existing.updated_at = datetime.now(UTC)
         db.add(existing)
-    logger.info("场次重分析已登记 session={} reason={} retranscribe={}", session_id, reason, payload["retranscribe"])
-    from app.analysis.session_summary import request_session_timeline_summary
+        from app.analysis.session_summary import request_session_timeline_summary_in_session
 
-    request_session_timeline_summary(
-        session_id,
-        reason=f"reanalysis:{reason}",
-        force=True,
-    )
+        request_session_timeline_summary_in_session(db, session_id, reason=f"reanalysis:{reason}", force=True)
+    logger.info("场次重分析已登记 session={} reason={} retranscribe={}", session_id, reason, payload["retranscribe"])
     return True
 
 

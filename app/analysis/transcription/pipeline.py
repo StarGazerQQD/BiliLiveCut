@@ -63,6 +63,7 @@ from app.db.session import get_session
 
 if TYPE_CHECKING:
     from app.analysis.llm import TranscriptRefinement
+    from app.analysis.transcription.remote import RemoteCheckpoint
 
 # ═══════════════════════════════════════════════════════════
 # ASR 流水线 (FunASR → Paraformer → Whisper，SenseVoice 辅助)
@@ -143,6 +144,8 @@ class ASRPipeline:
         self,
         audio_path: str,
         initial_prompt: str | None = None,
+        *,
+        checkpoint: RemoteCheckpoint | None = None,
     ) -> ASRTranscriptResult:
         """执行模型并为最终结果分类，空文本不得冒充成功。"""
         from app.analysis.transcription.speech_evidence import (
@@ -155,7 +158,7 @@ class ASRPipeline:
         self._backend_errors.clear()
         self._backend_completed = False
         try:
-            result = self._run_backends(audio_path, initial_prompt)
+            result = self._run_backends(audio_path, initial_prompt, checkpoint=checkpoint)
             model_failed = bool(result.primary_error_type and result.primary_error_type != "ASRQualityError")
             if not (result.final_text or result.text).strip():
                 if model_failed and not self._backend_completed and not has_no_speech_evidence(result):
@@ -199,12 +202,14 @@ class ASRPipeline:
         self,
         audio_path: str,
         initial_prompt: str | None = None,
+        *,
+        checkpoint: RemoteCheckpoint | None = None,
     ) -> ASRTranscriptResult:
         """对标准化音频执行多引擎识别与质量回退。"""
         primary_name = settings.asr_primary.strip().lower().replace("-", "_")
 
         if primary_name == "openai_compatible":
-            return self._run_remote(audio_path, initial_prompt)
+            return self._run_remote(audio_path, initial_prompt, checkpoint=checkpoint)
 
         if primary_name == "funasr_nano":
             try:
@@ -372,12 +377,14 @@ class ASRPipeline:
 
         raise ValueError(f"ASR 主引擎配置无效: {settings.asr_primary}")
 
-    def _run_remote(self, audio_path: str, initial_prompt: str | None) -> ASRTranscriptResult:
+    def _run_remote(
+        self, audio_path: str, initial_prompt: str | None, *, checkpoint: RemoteCheckpoint | None = None
+    ) -> ASRTranscriptResult:
         """远程失败复用已配置的 Whisper 回退；没有回退时保留原始异常。"""
         from app.analysis.transcription.remote import OpenAICompatibleBackend, RemoteTranscriptionError
 
         try:
-            result = OpenAICompatibleBackend().transcribe(audio_path, initial_prompt)
+            result = OpenAICompatibleBackend().transcribe(audio_path, initial_prompt, checkpoint=checkpoint)
         except (RemoteTranscriptionError, OSError, ValueError) as exc:
             self._last_backend_error = exc
             if not self._use_fallback:
