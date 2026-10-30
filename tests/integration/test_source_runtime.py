@@ -921,7 +921,7 @@ async def test_auth_failure_ends_without_exhausting_retry_budget(runtime: Runtim
     assert runtime.stream_calls == 1 and not recorder.retry_budget_exhausted
     with get_session() as db:
         session = db.get(RecordingSession, recorder.session_id)
-        assert session.status == "stopped" and "authentication" in session.error_message
+        assert session.status == "error" and "authentication" in session.error_message
         assert "secret" not in session.error_message
 
 

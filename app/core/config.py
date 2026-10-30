@@ -85,11 +85,16 @@ class Settings(BaseSettings):
     room_metadata_refresh_timeout_s: float = Field(default=3.0, ge=0.1, le=30.0)
     # 连续无法恢复录制的最大失败次数；0=单项关闭，两项均0仍以20次保护。
     recording_reconnect_max_attempts: int = Field(default=20, ge=0, le=10000)
-    # 从断流开始计算的最长重试时间（秒）；0=单项关闭。
+    # 从取流尝试开始计算的连续故障预算（秒）；健康媒体持续推进不受此寿命限制，0=单项关闭。
     recording_reconnect_max_elapsed_s: int = Field(default=180, ge=0, le=86400)
     # 多线路真实拉流竞争；1=串行，胜出进程继续录制而不重新建立连接。
     recording_stream_race_parallel: int = Field(default=4, ge=1, le=16)
-    recording_stream_race_timeout_s: float = Field(default=30.0, ge=3.0, le=120.0)
+    recording_stream_race_timeout_s: float = Field(
+        default=30.0,
+        ge=3.0,
+        le=120.0,
+        description="候选首次出流与录制中无媒体推进的最长等待秒数；实际输出增长会刷新无进度计时。",
+    )
     # 自动监控连续离线确认、延迟收尾和单场录制时长保护。
     live_offline_confirm_count: int = Field(
         default=3,

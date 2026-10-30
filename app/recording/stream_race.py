@@ -53,6 +53,7 @@ class StreamAttempt:
     exit_code: int = 1
     global_error: bool = False
     progress_unsupported: bool = False
+    last_progress_at: float | None = None
     resource_errno: int | None = None
     _output_error: bool = field(default=False, repr=False)
     _last_video_probe_at: float = field(default=float("-inf"), repr=False)
@@ -118,6 +119,8 @@ class StreamAttempt:
         times: dict[str, int] = {}
         baseline: tuple[int, int] | None = None
         legacy_baseline: int | None = None
+        progress_high_water: int | None = None
+        frame_high_water: int | None = None
         while raw := await self.process.stdout.readline():
             key, _, value = raw.decode("ascii", errors="replace").strip().partition("=")
             if key in {"frame", "out_time_us", "out_time_ms"}:
@@ -142,6 +145,16 @@ class StreamAttempt:
                 media_us = next(
                     (times[name] for name in ("out_time_us", "out_time_ms", "out_time") if name in times), None
                 )
+                if media_us is not None and media_us >= 0 and (frame is None or frame > 0):
+                    if (
+                        progress_high_water is not None
+                        and media_us > progress_high_water
+                        and (frame is None or frame_high_water is not None and frame > frame_high_water)
+                    ):
+                        self.last_progress_at = time.monotonic()
+                    progress_high_water = max(progress_high_water or 0, media_us)
+                    if frame is not None:
+                        frame_high_water = max(frame_high_water or 0, frame)
                 if frame is not None and frame > 0 and media_us is not None:
                     if baseline is None or frame < baseline[0] or media_us < baseline[1]:
                         baseline = (frame, media_us)

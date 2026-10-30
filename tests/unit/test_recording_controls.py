@@ -80,11 +80,18 @@ class _FakeRecorder:
         self.stop_event = asyncio.Event()
         self.force_called = False
         self.failures: list[str] = []
+        self.stop_requested = False
+        self.recording_error: str | None = None
+        self.source_room = SourceRoom(
+            platform="bilibili", source_id="200", canonical_url="https://live.bilibili.com/200"
+        )
 
     def stop(self) -> None:
+        self.stop_requested = True
         self.stop_event.set()
 
     def force_stop(self) -> None:
+        self.stop_requested = True
         self.force_called = True
         self.stop_event.set()
 
@@ -651,7 +658,7 @@ async def test_recorder_auto_stops_after_consecutive_retry_limit(
     tmp_path: Path,
     monkeypatch: MonkeyPatch,
 ) -> None:
-    """持续无流达到次数上限后应正常收尾，而不是无限轮询。"""
+    """持续无流达到次数上限后按真实失败收尾。"""
     from app.pipeline import storage_lifecycle
     from app.recording import recorder as recorder_module
 
@@ -692,7 +699,7 @@ async def test_recorder_auto_stops_after_consecutive_retry_limit(
 
     assert fetch_calls == 3
     assert any("3/3 次" in str(update.get("error_message", "")) for update in updates)
-    assert [update.get("status") for update in updates[-2:]] == ["finalizing", "stopped"]
+    assert [update.get("status") for update in updates[-2:]] == ["finalizing", "error"]
 
 
 @pytest.mark.asyncio
@@ -705,18 +712,19 @@ async def test_recorder_resets_retry_limit_after_productive_reconnect(
     from app.pipeline import storage_lifecycle
     from app.recording import recorder as recorder_module
 
+    room_id, session_id, _ = _seed_room_session(tmp_path)
     recorder = recorder_module.Recorder(
         source_room=SourceRoom(
             platform="bilibili", source_id="23771139", canonical_url="https://live.bilibili.com/23771139"
         ),
-        db_room_id=1,
+        db_room_id=room_id,
     )
     stream = StreamSpec(url="https://example.invalid/live.m3u8", transport="hls", container="ts", quality_id="10000")
     streams: list[object | None] = [None, stream, None, None]
     updates: list[dict[str, object]] = []
 
     def create_session() -> int:
-        return 92
+        return session_id
 
     def update_session(**kwargs: object) -> None:
         updates.append(kwargs)
@@ -726,8 +734,8 @@ async def test_recorder_resets_retry_limit_after_productive_reconnect(
         return [item] if item else []
 
     async def record_once(_stream: object, _out_dir: Path) -> int:
-        recorder._seq += 1  # noqa: SLF001
-        recorder._attempt_media_seconds = recorder_module.settings.segment_duration_s
+        (_out_dir / "productive.ts").write_bytes(b"segment-registration-fixture")
+        await recorder._register_segment(f"productive.ts,0,{recorder_module.settings.segment_duration_s}", _out_dir)
         return 1
 
     async def no_wait(_seconds: float) -> None:
@@ -792,13 +800,13 @@ async def test_manager_cleans_up_naturally_finished_recorder(
 
 
 @pytest.mark.asyncio
-async def test_retry_exhaustion_waits_for_a_real_offline_transition(
+async def test_legacy_retry_hold_still_waits_for_a_real_offline_transition(
     temp_db: None,
     tmp_path: Path,
     monkeypatch: MonkeyPatch,
     bili_live_feed,
 ) -> None:
-    """取流预算耗尽后不得立即拉起，只有确认离线后才允许下一次开播。"""
+    """新故障进入冷却，已有等待下播标记仍只由真实离线解除。"""
     from types import SimpleNamespace
 
     from app.analysis.room_config import load_room_config, merge_room_config
@@ -821,7 +829,8 @@ async def test_retry_exhaustion_waits_for_a_real_offline_transition(
     with get_session() as db:
         room = db.get(LiveRoom, room_id)
         assert room is not None
-        assert load_room_config(room)["recording_wait_for_next_live"] is True
+        assert load_room_config(room)["recording_wait_for_next_live"] is False
+        assert manager.recovery(room_id) is not None
         room.auto_record = True
         room.enabled = True
         room.room_config_json = json.dumps(
@@ -847,7 +856,7 @@ async def test_retry_exhaustion_waits_for_a_real_offline_transition(
 
     starts: list[int] = []
 
-    async def fake_start(db_id: int, _auto_analyze: bool, _auto_render: bool) -> None:
+    async def fake_start(db_id: int, _auto_analyze: bool, _auto_render: bool, **kwargs: object) -> None:
         starts.append(db_id)
 
     monkeypatch.setattr("app.sources.bilibili.source.BilibiliLiveClient", lambda **_kwargs: FakeClient())

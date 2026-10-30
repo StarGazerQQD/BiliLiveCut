@@ -339,6 +339,39 @@ async def test_winner_process_is_reused_and_only_loser_files_are_removed(
     assert list(tmp_path.glob(f"{race.winner.prefix}*.ts"))
 
 
+async def test_repeated_or_backwards_progress_does_not_refresh_media_watchdog(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    from app.recording import stream_race
+
+    now = [10.0]
+    monkeypatch.setattr(stream_race, "time", SimpleNamespace(monotonic=lambda: now[0]))
+    attempt = StreamAttempt(streams("a")[0], tmp_path, "watchdog_")
+    proc = FakeProcess(1)
+    attempt.process = proc
+    reader = asyncio.create_task(attempt.drain_progress())
+
+    async def sample(frame: int, media_us: int) -> None:
+        now[0] += 1
+        proc.stdout.feed_data(f"frame={frame}\nout_time_us={media_us}\nprogress=continue\n".encode())
+        await asyncio.sleep(0)
+
+    try:
+        await sample(1, 100)
+        assert attempt.last_progress_at is None
+        await sample(2, 500100)
+        accepted = attempt.last_progress_at
+        assert accepted is not None and attempt.ready.is_set()
+        for frame, value in ((2, 500100), (1, 50), (2, 500100), (2, 900000)):
+            await sample(frame, value)
+            assert attempt.last_progress_at == accepted
+        await sample(3, 1000000)
+        assert attempt.last_progress_at > accepted
+    finally:
+        proc.kill()
+        await reader
+
+
 async def test_timeout_and_invalid_progress_refill_slots_with_bounded_concurrency(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:

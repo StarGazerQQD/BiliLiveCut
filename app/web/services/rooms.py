@@ -5,6 +5,7 @@ from __future__ import annotations
 import asyncio
 import json
 import time
+from collections.abc import Callable
 from dataclasses import dataclass
 from datetime import UTC, datetime, timedelta
 from functools import partial
@@ -35,7 +36,7 @@ from app.db.entities import (
     utcnow,
 )
 from app.db.session import get_session
-from app.plugins.live_source import SourceUnavailable
+from app.plugins.live_source import SourceRoom, SourceUnavailable
 from app.recording.metadata import refresh_room_metadata
 from app.recording.recorder import Recorder
 from app.sources.registry import source_registry
@@ -128,6 +129,20 @@ class RecordingRuntime:
         }
 
 
+@dataclass(slots=True)
+class RecordingRecovery:
+    """一次已结束录制的冷却身份，后续复核不能替代新的人工操作。"""
+
+    source: SourceRoom
+    session_id: int | None
+    reason: str
+    ready_at: float
+
+    def remaining(self) -> float:
+        """使用单调时钟返回冷却剩余秒数。"""
+        return max(0.0, self.ready_at - time.monotonic())
+
+
 class RecorderManager:
     """管理多个直播间的并发录制任务(asyncio)。
 
@@ -140,6 +155,7 @@ class RecorderManager:
         self._tasks: dict[int, asyncio.Task[None]] = {}
         self._runtime: dict[int, RecordingRuntime] = {}
         self._controls: dict[int, asyncio.Lock] = {}
+        self._recoveries: dict[int, RecordingRecovery] = {}
 
     def _set_state(
         self,
@@ -171,6 +187,27 @@ class RecorderManager:
         with get_session() as db:
             room = db.get(LiveRoom, db_id)
             return bool(load_room_config(room).get("recording_paused", False))
+
+    def recovery(self, db_id: int) -> RecordingRecovery | None:
+        """返回当前冷却代次，调用方在异步复核后必须比较同一对象。"""
+        return self._recoveries.get(db_id)
+
+    def defer_recovery(self, db_id: int, recovery: RecordingRecovery) -> None:
+        """状态未知或查询失败时限速复核，不延续已被人工操作撤销的代次。"""
+        if self._recoveries.get(db_id) is recovery:
+            recovery.ready_at = time.monotonic() + settings.live_poll_interval_s
+
+    def clear_recovery(self, db_id: int, recovery: RecordingRecovery) -> None:
+        """只清除已经核实离线或失效的同一恢复代次。"""
+        if self._recoveries.get(db_id) is recovery:
+            self._recoveries.pop(db_id)
+
+    def block_recovery(self, db_id: int, recovery: RecordingRecovery, reason: str) -> None:
+        """永久复核错误要求显式恢复，不改写已结束会话的原故障。"""
+        if self._recoveries.get(db_id) is recovery:
+            self._recoveries.pop(db_id)
+            self._set_recording_flags(db_id, suppress_auto_restart=True)
+            self._set_state(db_id, SessionStatus.ERROR, recovery.session_id, reason)
 
     def _set_recording_flags(
         self,
@@ -244,6 +281,7 @@ class RecorderManager:
                 )
                 db.add(room)
             self._set_state(db_id, "waiting_live")
+            self._recoveries.pop(db_id, None)
 
     def running_ids(self) -> list[int]:
         """返回当前正在录制的直播间 db_id 列表。"""
@@ -269,15 +307,25 @@ class RecorderManager:
                     db.delete(schedule)
                 db.add(AppSetting(key=f"{REMOVED_ROOM_PREFIX}{db_id}", value=str(db_id)))
             self._runtime.pop(db_id, None)
+            self._recoveries.pop(db_id, None)
 
     async def start(
-        self, db_id: int, pipeline: bool | None = None, produce: bool = False, *, automatic: bool = False
+        self,
+        db_id: int,
+        pipeline: bool | None = None,
+        produce: bool = False,
+        *,
+        automatic: bool = False,
+        recovery: RecordingRecovery | None = None,
+        still_current: Callable[[], bool] | None = None,
     ) -> None:
         """同房间启动、停录串行执行，等待期间也不能重复创建录制器。"""
         async with self._controls.setdefault(db_id, asyncio.Lock()):
             if automatic:
                 from app.analysis.room_config import load_room_config
 
+                if self._recoveries.get(db_id) is not recovery or (recovery is not None and recovery.remaining() > 0):
+                    return
                 with get_session() as db:
                     room = db.get(LiveRoom, db_id)
                     config = load_room_config(room)
@@ -295,9 +343,20 @@ class RecorderManager:
                         )
                     ):
                         return
-            await self._start_locked(db_id, pipeline, produce, automatic=automatic)
+            await self._start_locked(
+                db_id, pipeline, produce, automatic=automatic, recovery=recovery, still_current=still_current
+            )
 
-    async def _start_locked(self, db_id: int, pipeline: bool | None, produce: bool, *, automatic: bool = False) -> None:
+    async def _start_locked(
+        self,
+        db_id: int,
+        pipeline: bool | None,
+        produce: bool,
+        *,
+        automatic: bool = False,
+        recovery: RecordingRecovery | None = None,
+        still_current: Callable[[], bool] | None = None,
+    ) -> None:
         """启动某直播间的录制(幂等:已在录制则忽略)。
 
         :param db_id: ``live_rooms`` 主键。
@@ -324,6 +383,8 @@ class RecorderManager:
             if settings.require_authorization and not room.authorized:
                 raise ValueError("该直播间未确认授权,拒绝录制。")
             identity = room_source(room, db)
+            if recovery is not None and recovery.source != identity:
+                return
             if not source_registry.available(identity.platform):
                 raise SourceUnavailable("来源不可用，请安装并启用对应直播源插件")
 
@@ -332,6 +393,12 @@ class RecorderManager:
         if shutdown_event.is_set():
             raise RuntimeError("服务正在关闭，不能启动录制")
 
+        if automatic and (
+            self._recoveries.get(db_id) is not recovery
+            or (recovery is not None and recovery.remaining() > 0)
+            or (still_current is not None and not still_current())
+        ):
+            return
         with get_session() as db:
             if db.get_bind().dialect.name == "sqlite":
                 db.connection().exec_driver_sql("BEGIN IMMEDIATE")
@@ -374,6 +441,7 @@ class RecorderManager:
             suppress_auto_restart=False,
             wait_for_next_live=False,
         )
+        self._recoveries.pop(db_id, None)
         self._set_state(db_id, SessionStatus.STARTING, pipeline_enabled=pipeline_enabled)
 
         on_segment = None
@@ -412,20 +480,33 @@ class RecorderManager:
             self._set_state(db_id, SessionStatus.ERROR, recorder.session_id, message)
             logger.opt(exception=exc).error("录制任务异常 db_id={} error={}", db_id, safe_exception_summary(exc))
         finally:
-            if bool(getattr(recorder, "recording_action_required", False)):
-                self._set_recording_flags(db_id, suppress_auto_restart=True)
-                self._set_state(db_id, SessionStatus.ERROR, recorder.session_id, recorder.recording_error)
-            elif bool(getattr(recorder, "source_action_required", False)):
-                self._set_recording_flags(db_id, suppress_auto_restart=True)
-                self._set_state(
-                    db_id,
-                    SessionStatus.ERROR,
-                    recorder.session_id,
-                    "直播源需要处理，请检查平台设置后手动启动或重新开启自动录制",
-                )
-            elif bool(getattr(recorder, "retry_budget_exhausted", False)):
-                self._set_recording_flags(db_id, wait_for_next_live=True)
-            self._cleanup_finished_recorder(db_id, recorder)
+            self._finish_recorder(db_id, recorder)
+
+    def _finish_recorder(self, db_id: int, recorder: Recorder) -> None:
+        """旧执行只能更新自己的终态与冷却，不覆盖后续实例。"""
+        if self._recorders.get(db_id) is not recorder:
+            return
+        if bool(getattr(recorder, "recording_action_required", False)):
+            self._set_recording_flags(db_id, suppress_auto_restart=True)
+            self._set_state(db_id, SessionStatus.ERROR, recorder.session_id, recorder.recording_error)
+        elif bool(getattr(recorder, "source_action_required", False)):
+            self._set_recording_flags(db_id, suppress_auto_restart=True)
+            self._set_state(
+                db_id,
+                SessionStatus.ERROR,
+                recorder.session_id,
+                "直播源需要处理，请检查平台设置后手动启动或重新开启自动录制",
+            )
+        elif bool(getattr(recorder, "retry_budget_exhausted", False)) and not recorder.stop_requested:
+            reason = recorder.recording_error or "连续取流失败，等待冷却后复核"
+            self._recoveries[db_id] = RecordingRecovery(
+                source=recorder.source_room,
+                session_id=recorder.session_id,
+                reason=reason,
+                ready_at=time.monotonic() + max(settings.reconnect_max_backoff_s, settings.live_poll_interval_s),
+            )
+            self._set_state(db_id, SessionStatus.ERROR, recorder.session_id, reason)
+        self._cleanup_finished_recorder(db_id, recorder)
 
     def _cleanup_finished_recorder(self, db_id: int, recorder: Recorder) -> None:
         """清理自然结束或异常退出的录制任务及房间运行标记。"""
@@ -470,12 +551,14 @@ class RecorderManager:
         """返回当前任务的进程内身份，供下播确认避免停止后续新场次。"""
         return self._tasks.get(db_id)
 
-    async def stop_if_current(self, db_id: int, token: object) -> bool:
+    async def stop_if_current(self, db_id: int, token: object, *, wait_for_next_live: bool = False) -> bool:
         """在同一控制锁内核对实例后停止，关闭先比较再等待锁的竞态窗口。"""
         async with self._controls.setdefault(db_id, asyncio.Lock()):
             if self._tasks.get(db_id) is not token:
                 return False
             await self._stop_locked(db_id)
+            if wait_for_next_live:
+                self._set_recording_flags(db_id, wait_for_next_live=True)
             return True
 
     async def _stop_locked(
@@ -498,6 +581,7 @@ class RecorderManager:
         """
         if mode not in {"graceful", "force"}:
             raise ValueError("停止模式必须是 graceful 或 force")
+        self._recoveries.pop(db_id, None)
         self._set_recording_flags(
             db_id,
             paused=mark_paused,
@@ -545,7 +629,7 @@ class RecorderManager:
             final_state = "force_stopped"
         else:
             final_state = SessionStatus.PAUSED if mark_paused else SessionStatus.STOPPED
-        if not forced and session_id is not None:
+        if not forced and session_id is not None and (recorder is not None or task is not None):
             _set_session_status(int(session_id), final_state)
         self._set_state(db_id, final_state, session_id)
         # 若已无任何录制在跑,恢复网感定时采集。
@@ -563,6 +647,7 @@ class RecorderManager:
 
     def request_stop_all(self) -> None:
         """先通知所有房间停止，再等待任何一个房间收尾。"""
+        self._recoveries.clear()
         for db_id, recorder in list(self._recorders.items()):
             try:
                 recorder.stop()

@@ -3,8 +3,10 @@
 from __future__ import annotations
 
 import asyncio
+from collections.abc import Callable
 from dataclasses import dataclass, field
 from datetime import UTC, datetime
+from typing import TYPE_CHECKING
 
 from loguru import logger
 from sqlmodel import select
@@ -25,6 +27,9 @@ from app.plugins.live_source import (
 )
 from app.sources.registry import source_registry
 from app.sources.rooms import registered_rooms, room_is_removed, room_source
+
+if TYPE_CHECKING:
+    from app.web.services.rooms import RecordingRecovery
 
 
 @dataclass
@@ -108,15 +113,22 @@ class LiveMonitor:
 
     def room_status(self, room: LiveRoom, *, running: bool, runtime_state: str) -> dict[str, object]:
         """房间级守候状态与最近成功检测时间，失败不伪装成正常待机。"""
+        from app.web.services.rooms import recorder_manager
+
         config = load_room_config(room)
+        recovery = recorder_manager.recovery(room.id) if room.id is not None else None
         if running:
-            state = "starting" if runtime_state == "starting" else "recording"
-        elif config.get("recording_paused") or config.get("recording_auto_restart_suppressed"):
+            state = runtime_state
+        elif config.get("recording_paused"):
             state = "manual_paused"
+        elif config.get("recording_auto_restart_suppressed"):
+            state = "action_required" if runtime_state == "error" else runtime_state
         elif not room.auto_record:
             state = "disabled"
         elif config.get("recording_wait_for_next_live"):
             state = "waiting_next_live"
+        elif recovery is not None:
+            state = "cooldown"
         elif room.id in self._errors:
             state = "error"
         elif room.id in self._starting:
@@ -129,6 +141,8 @@ class LiveMonitor:
             "state": state,
             "last_checked_at": datetime.fromtimestamp(checked, UTC).isoformat() if checked else None,
             "error": self._errors.get(room.id),
+            "message": recovery.reason if recovery is not None else None,
+            "retry_in_s": recovery.remaining() if recovery is not None else None,
             "service_running": self._task is not None and not self._task.done(),
             "detection_mode": "events" if source_registry.supports_live_events(room.platform) else "polling",
             "connection_state": subscription.state if subscription else None,
@@ -317,7 +331,14 @@ class LiveMonitor:
         with get_session() as db:
             room = db.get(LiveRoom, db_id)
         if room is not None:
-            await self._apply_snapshot(room, entry.identity, snapshot, event_driven=True)
+            revision = entry.revision
+            await self._apply_snapshot(
+                room,
+                entry.identity,
+                snapshot,
+                event_driven=True,
+                still_current=lambda: self._subscriptions.get(db_id) is entry and entry.revision == revision,
+            )
         entry.recording_token = recorder_manager.recording_token(db_id)
         entry.retry_start = (
             snapshot.status == LiveStatus.LIVE and entry.recording_token is None and db_id in self._errors
@@ -328,9 +349,15 @@ class LiveMonitor:
         from app.web.services.rooms import recorder_manager
 
         token = recorder_manager.recording_token(db_id)
+        recovery = recorder_manager.recovery(db_id)
         previous = entry.recording_token
         entry.recording_token = token
-        if token is not None or entry.state != DanmakuStatus.AVAILABLE or (previous is None and not entry.retry_start):
+        if (
+            token is not None
+            or entry.state != DanmakuStatus.AVAILABLE
+            or (previous is None and not entry.retry_start and recovery is None)
+            or (recovery is not None and recovery.remaining() > 0)
+        ):
             return
         if entry.reconcile_task is not None and not entry.reconcile_task.done():
             return
@@ -342,9 +369,33 @@ class LiveMonitor:
                     self._subscriptions.get(db_id) is entry
                     and entry.revision == revision
                     and entry.last_snapshot is not None
-                    and entry.last_snapshot.status == LiveStatus.LIVE
+                    and (entry.last_snapshot.status == LiveStatus.LIVE or recovery is not None)
                 ):
-                    await self._apply_event(db_id, entry, entry.last_snapshot)
+                    snapshot = entry.last_snapshot
+                    if recovery is not None:
+                        try:
+                            snapshot = await source_registry.get_room_info(entry.identity)
+                        except SourceError as exc:
+                            if (
+                                self._subscriptions.get(db_id) is entry
+                                and entry.revision == revision
+                                and recorder_manager.recovery(db_id) is recovery
+                            ):
+                                self._errors[db_id] = f"冷却后直播状态复核失败：{exc.code}"
+                                if isinstance(exc, SourceTemporaryError):
+                                    recorder_manager.defer_recovery(db_id, recovery)
+                                else:
+                                    recorder_manager.block_recovery(db_id, recovery, self._errors[db_id])
+                            return
+                        if (
+                            self._subscriptions.get(db_id) is not entry
+                            or entry.revision != revision
+                            or recorder_manager.recovery(db_id) is not recovery
+                        ):
+                            return
+                    await self._apply_event(db_id, entry, snapshot)
+                    if recovery is not None:
+                        recorder_manager.defer_recovery(db_id, recovery)
 
         entry.reconcile_task = asyncio.create_task(apply())
         entry.reconcile_task.add_done_callback(lambda task: self._observe_snapshot(db_id, entry, task))
@@ -362,13 +413,14 @@ class LiveMonitor:
                 self._started_at.pop(db_id, None)
                 self._duration_tokens.pop(db_id, None)
             elif asyncio.get_running_loop().time() - started_at > settings.recording_max_duration_s:
-                if token is not None and await recorder_manager.stop_if_current(db_id, token):
-                    recorder_manager._set_recording_flags(db_id, wait_for_next_live=True)
+                if token is not None and await recorder_manager.stop_if_current(db_id, token, wait_for_next_live=True):
                     self._started_at.pop(db_id, None)
                     self._duration_tokens.pop(db_id, None)
 
     async def _check_room(self, room: LiveRoom) -> None:
         """只把明确下播作为停止证据；未知和查询失败均保留当前录制。"""
+        from app.web.services.rooms import recorder_manager
+
         db_id = room.id
         if db_id is None:
             return
@@ -378,19 +430,39 @@ class LiveMonitor:
         if settings.require_authorization and not room.authorized:
             self._errors[db_id] = "直播间尚未确认授权"
             return
+        recovery = recorder_manager.recovery(db_id)
+        if recovery is not None and recovery.remaining() > 0:
+            return
         try:
             identity = room_source(room)
             latest = await source_registry.get_room_info(identity)
         except SourceError as exc:
+            if recovery is not None:
+                if recorder_manager.recovery(db_id) is not recovery:
+                    return
+                if isinstance(exc, SourceTemporaryError):
+                    recorder_manager.defer_recovery(db_id, recovery)
+                else:
+                    recorder_manager.block_recovery(db_id, recovery, f"冷却后直播状态复核失败：{exc.code}")
             self._errors[db_id] = f"开播检测失败：{exc.code}"
             self._cancel_pending_stop(db_id)
             self._offline_counts.pop(db_id, None)
             logger.warning("开播检测失败 db_id={} code={}", db_id, exc.code)
             return
+        if recovery is not None and recorder_manager.recovery(db_id) is not recovery:
+            return
         await self._apply_snapshot(room, identity, latest)
+        if recovery is not None:
+            recorder_manager.defer_recovery(db_id, recovery)
 
     async def _apply_snapshot(
-        self, room: LiveRoom, identity: SourceRoom, latest: RoomSnapshot, *, event_driven: bool = False
+        self,
+        room: LiveRoom,
+        identity: SourceRoom,
+        latest: RoomSnapshot,
+        *,
+        event_driven: bool = False,
+        still_current: Callable[[], bool] | None = None,
     ) -> None:
         """推送与兼容查询共用录制闸门，状态通知本身不绕过授权或人工暂停。"""
         from app.web.services.rooms import recorder_manager
@@ -398,7 +470,7 @@ class LiveMonitor:
         db_id = room.id
         with get_session() as db:
             room = db.get(LiveRoom, db_id)
-            if room is None or room_is_removed(db, db_id) or not room.auto_record:
+            if room is None or room_is_removed(db, db_id) or not room.auto_record or room_source(room, db) != identity:
                 return
         config = load_room_config(room)
         if config.get("recording_paused") or config.get("recording_auto_restart_suppressed"):
@@ -415,6 +487,10 @@ class LiveMonitor:
         self._errors.pop(db_id, None)
         is_live = latest.status == LiveStatus.LIVE
         is_recording = recorder_manager.is_running(db_id)
+        recovery = recorder_manager.recovery(db_id)
+        if recovery is not None and (not is_live or recovery.source != identity):
+            recorder_manager.clear_recovery(db_id, recovery)
+            recovery = None
         if config.get("recording_wait_for_next_live"):
             if is_live:
                 return
@@ -424,7 +500,10 @@ class LiveMonitor:
             self._cancel_pending_stop(db_id)
             self._offline_counts[db_id] = 0
             if not is_recording and db_id not in self._starting:
-                await self._start_recording(db_id, room.auto_analyze, room.auto_render)
+                if recovery is None or recovery.remaining() == 0:
+                    await self._start_recording(
+                        db_id, room.auto_analyze, room.auto_render, recovery=recovery, still_current=still_current
+                    )
         elif is_recording:
             count = self._offline_counts.get(db_id, 0) + 1
             self._offline_counts[db_id] = count
@@ -487,7 +566,15 @@ class LiveMonitor:
             if recorder_manager.recording_token(db_id) is not token:
                 return
 
-    async def _start_recording(self, db_id: int, auto_analyze: bool, auto_render: bool) -> None:
+    async def _start_recording(
+        self,
+        db_id: int,
+        auto_analyze: bool,
+        auto_render: bool,
+        *,
+        recovery: RecordingRecovery | None = None,
+        still_current: Callable[[], bool] | None = None,
+    ) -> None:
         """启动录制。
 
         :param db_id: 直播间数据库 ID。
@@ -504,6 +591,8 @@ class LiveMonitor:
                 pipeline=auto_analyze,
                 produce=auto_render,
                 automatic=True,
+                recovery=recovery,
+                still_current=still_current,
             )
             if not recorder_manager.is_running(db_id):
                 return
