@@ -96,3 +96,21 @@
 7. `python scripts/release_audit.py`：63 PASS、0 WARN、0 FAIL；实际 diff 与空白检查通过，只有本实施文档变化。
 
 后续涉及 Payload 内容的阶段，在源码提交后更新来源元数据，再执行正式构建；不得沿用旧 source pin 构建，或绕过工作区源码冻结检查。
+
+### S1 本地验收通过，远端验收进行中
+
+M01 至 M06 已实施：默认审核员为空并拒绝占位凭据；认证和限流使用可信来源；独立前端支持显式可信代理；静态资源发送 CSP 和安全头；请求体按实际路由限制；模板使用严格部分更新和原子导入；弹幕共用解压、消息和深度预算；通知复用有界后台队列并保留邮件验证与 HTML 转义。
+
+合法视频与弹幕上传分别保留 50 GiB、32 MiB。转写和房间编辑保留 4 MiB、模型目录保存及测试保留 8 MiB，容纳已有字段容量和 Unicode JSON 转义；其他管理请求为 2 MiB。Docker 外层 TLS 代理的专用可信配置见部署说明，默认镜像继续按直接 HTTP 入口处理。
+
+本地冻结源码为 `894fc6410c9e2ad43ef972a969ecc23dcc191d00`，版本保持 `0.1.20.2-alpha`，在 S8 统一升级。Portable 来源常量同步至该提交，模型 revision 与第三方依赖锁不变；Engine Pack 资源元数据由正式 fixture 构建生成，fixture 不作为发布模型包。
+
+实际验收：
+
+1. 安全、代理、模板、通知及配置目标集：382 passed；补齐弹幕既有邻居消息行为后，协议回归 63 passed，身份与审计回归 27 passed。
+2. `python -m pytest tests packaging/portable/tests --cov=app --cov-report=xml --cov-fail-under=50 --timeout=600 --fail-on-skip --durations=15`：3970 passed，覆盖率 85.21%，包含真实 sdist、wheel、双端启动与全部 Portable 用例。
+3. `python -m pre_commit run --all-files --show-diff-on-failure` 全部通过；`npm --prefix frontend run check` 全部通过，含 76 项单元测试和生产构建；`python scripts/export_openapi.py --check` 通过。Python 未配置独立类型检查器，TypeScript 检查按项目配置执行。
+4. `python packaging/portable/build_engine_pack.py --fixture` 自校验通过；`python packaging/portable/build_payload.py` 保留固定源码和默认两次可重复构建，摘要一致。`python scripts/release_audit.py`：63 PASS、0 WARN、0 FAIL。
+5. `npm --prefix docs audit --include=dev --audit-level=low` 无漏洞；文档检查 22 passed；构建 57 页并通过全部生成链接检查。
+
+本机没有 Docker。新增生产 CSP、Service Worker、缓存与登录行为的真实浏览器检查由 PR 的 Docker 工作流验收；同步审计脚本后的最终完整状态也须通过远端 CI。S1 保持 `IN_PROGRESS`，在取得实际结果之前不开始 S2。
