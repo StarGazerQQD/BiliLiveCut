@@ -27,6 +27,7 @@ from app.analysis.reanalysis_targets import (
     target_protection,
 )
 from app.analysis.timeline import datetime_epoch
+from app.core.cancellation import check_shutdown
 from app.core.runtime_settings import configured_task
 from app.db.entities import (
     AppSetting,
@@ -304,6 +305,7 @@ def commit_reanalysis(
     checked = [
         (draft, reason or (None if _validate_computed(db, draft) else "evidence_changed")) for draft, reason in checked
     ]
+    check_shutdown()
     results: list[JsonValue] = []
     for draft, reason in checked:
         target, payload = draft.target, draft.payload

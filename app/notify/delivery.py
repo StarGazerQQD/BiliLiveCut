@@ -137,6 +137,13 @@ async def start_email_delivery() -> None:
         _accepting = True
 
 
+def request_stop_delivery() -> None:
+    """立即拒绝新增提醒，正在发送的通知由清理执行等待。"""
+    global _accepting
+    with _lock:
+        _accepting = False
+
+
 async def stop_email_delivery() -> None:
     """不再接收提醒，取消未开始的邮件，等待正在发送的邮件完成。"""
     global _executor, _accepting

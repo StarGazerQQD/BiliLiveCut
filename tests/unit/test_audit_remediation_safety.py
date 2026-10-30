@@ -14,6 +14,7 @@ import pytest
 from sqlmodel import select
 
 from app.plugins.live_source import SourceRoom, StreamSpec
+from tests.process_fixtures import ExternalProcess, install_process_boundary
 
 
 def test_journal_replay_preserves_success_written_during_replay(
@@ -330,28 +331,30 @@ async def test_disk_guard_stops_active_ffmpeg_and_releases_watchers(
         poll_waiting.set()
         await release_poll.wait()
 
-    class MediaProcess:
+    class MediaProcess(ExternalProcess):
         returncode: int | None = None
         stderr = None
         stdin = None
 
         async def wait(self) -> int:
             await finished.wait()
-            self.returncode = 0
-            return 0
+            assert self.returncode is not None
+            return self.returncode
 
         def terminate(self) -> None:
             terminated.append(True)
+            self.returncode = 0
             finished.set()
 
         def kill(self) -> None:
+            self.returncode = -9
             finished.set()
 
     async def create_process(*args: str, **kwargs: object) -> MediaProcess:
         return MediaProcess()
 
     monkeypatch.setattr(storage_lifecycle, "should_stop_recording", disk_critical)
-    monkeypatch.setattr(module.asyncio, "create_subprocess_exec", create_process)
+    install_process_boundary(monkeypatch, create_process)
     recorder = module.Recorder(
         source_room=SourceRoom(platform="bilibili", source_id="1", canonical_url="https://live.bilibili.com/1"),
         db_room_id=1,

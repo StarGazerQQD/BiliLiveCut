@@ -30,11 +30,14 @@ from pathlib import Path
 
 from loguru import logger
 
+from app.analysis.transcription.process_tree import ProcessTree
 from app.core.async_cleanup import complete_cleanup
 from app.core.config import settings
 from app.core.ffmpeg_errors import FfmpegErrorType, classify_ffmpeg_error
 from app.core.paths import session_raw_dir
+from app.core.process_spawn import spawn_owned_async, terminate_owned_async, wait_process_exit
 from app.core.sanitize import sanitize_diagnostic
+from app.core.supervisor import remaining_shutdown
 from app.db.entities import (
     RawSegment,
     RecordingSession,
@@ -661,16 +664,12 @@ class Recorder:
 
         self._diagnostic_secrets = tuple(stream.headers.values())
         try:
-            proc = await asyncio.create_subprocess_exec(
-                *cmd,
+            proc, tree = await spawn_owned_async(
+                cmd,
                 stdin=asyncio.subprocess.PIPE,
                 stdout=asyncio.subprocess.DEVNULL,
                 stderr=asyncio.subprocess.PIPE,
-                **(
-                    {"creationflags": 0x00000200}  # CREATE_NEW_PROCESS_GROUP
-                    if os.name == "nt"
-                    else {"start_new_session": True}
-                ),
+                **({"creationflags": 0x00000200} if os.name == "nt" else {}),
             )
         except OSError as exc:
             category = {
@@ -685,7 +684,7 @@ class Recorder:
             return 1
 
         stderr_task = asyncio.create_task(self._drain_stderr(proc))
-        return await self._supervise_process(proc, out_dir, prefix, segment_list, stderr_task)
+        return await self._supervise_process(proc, out_dir, prefix, segment_list, stderr_task, tree=tree)
 
     def _adopt_attempt_diagnostics(self, attempt: StreamAttempt) -> None:
         """共享胜出者的有界诊断缓冲，后续读取仍能补充错误分类。"""
@@ -786,6 +785,7 @@ class Recorder:
                 attempt.stderr_task,
                 extra_tasks=(attempt.progress_task,),
                 race_attempt=attempt,
+                tree=attempt.tree,
             )
         finally:
 
@@ -816,6 +816,7 @@ class Recorder:
         *,
         extra_tasks: tuple[asyncio.Task[None], ...] = (),
         race_attempt: StreamAttempt | None = None,
+        tree: ProcessTree | None = None,
     ) -> int:
         """复用已启动的进程，统一监控分片、管道、磁盘与停止信号。"""
         self._active_process = proc
@@ -824,7 +825,7 @@ class Recorder:
         # 监听停止信号,主动终止 ffmpeg。
         stopper = asyncio.create_task(self._terminate_on_stop(proc))
         disk_guard = asyncio.create_task(self._monitor_disk())
-        waiter = asyncio.create_task(proc.wait())
+        waiter = asyncio.create_task(wait_process_exit(proc))
 
         try:
             supervisors = {watcher: "segments", stderr_task: "stderr", stopper: "stop", disk_guard: "disk"}
@@ -857,12 +858,7 @@ class Recorder:
 
             async def cleanup() -> None:
                 try:
-                    if proc.returncode is None:
-                        try:
-                            proc.kill()
-                        except ProcessLookupError:
-                            pass  # 检查 returncode 后进程自行退出；继续回收。
-                        await proc.wait()
+                    await terminate_owned_async(proc, tree)
                     # 进程已退出后排空管道，避免取消读取导致最后一条根异常丢失。
                     await stderr_task
                 finally:
@@ -1156,7 +1152,7 @@ class Recorder:
                 else:
                     proc.terminate()
                 try:
-                    await asyncio.wait_for(proc.wait(), timeout=10.0)
+                    await asyncio.wait_for(proc.wait(), timeout=remaining_shutdown(10.0))
                 except TimeoutError:
                     if proc.returncode is None:
                         proc.kill()

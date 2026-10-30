@@ -5,7 +5,7 @@ from __future__ import annotations
 from types import SimpleNamespace
 from typing import TYPE_CHECKING
 
-import httpx2 as httpx
+import httpx
 import pytest
 
 from app.analysis import llm as llm_mod
@@ -139,7 +139,7 @@ def test_call_text_failover(temp_db: None, monkeypatch: MonkeyPatch) -> None:
     provs.save_providers([p1, p2])
     calls: list[str] = []
 
-    def transport(_transport: httpx.HTTPTransport, request: httpx.Request) -> httpx.Response:
+    async def transport(_transport: httpx.AsyncHTTPTransport, request: httpx.Request) -> httpx.Response:
         calls.append(request.url.host)
         if request.url.host == "p1.example":
             return httpx.Response(503, json={"error": {"message": "服务暂不可用"}}, request=request)
@@ -157,7 +157,7 @@ def test_call_text_failover(temp_db: None, monkeypatch: MonkeyPatch) -> None:
             request=request,
         )
 
-    monkeypatch.setattr(httpx.HTTPTransport, "handle_request", transport)
+    monkeypatch.setattr(httpx.AsyncHTTPTransport, "handle_async_request", transport)
     assert llm_mod.call_text("hi") == "from-P2"
     assert calls == ["p1.example", "p2.example"]
 
@@ -171,11 +171,11 @@ def test_call_text_all_fail_returns_none(temp_db: None, monkeypatch: MonkeyPatch
     provs.save_providers([p1])
     calls: list[str] = []
 
-    def transport(_transport: httpx.HTTPTransport, request: httpx.Request) -> httpx.Response:
+    async def transport(_transport: httpx.AsyncHTTPTransport, request: httpx.Request) -> httpx.Response:
         calls.append(request.url.host)
         return httpx.Response(503, json={"error": {"message": "服务暂不可用"}}, request=request)
 
-    monkeypatch.setattr(httpx.HTTPTransport, "handle_request", transport)
+    monkeypatch.setattr(httpx.AsyncHTTPTransport, "handle_async_request", transport)
     assert llm_mod.call_text("hi") is None
     assert calls == ["x"]
 

@@ -54,7 +54,9 @@ from app.analysis.editorial_contracts import (
     parse_model_object,
 )
 from app.analysis.model_execution import ModelCallBudget, StructuredCallResult
+from app.core.cancellation import OperationCancelledError, check_cancellation, shutdown_event
 from app.core.config import settings
+from app.core.http_transport import CancellableHTTPTransport
 from app.core.paths import storage_root
 from app.core.sanitize import safe_exception_summary, sanitize_diagnostic
 from app.models.capacity import DEFAULT_OUTPUT_TOKENS, ModelCapacityError, output_arguments, output_budget
@@ -229,13 +231,23 @@ def _create_or_reuse_client(provider: provs.LLMProvider) -> OpenAI:
     if cached is not None and hmac.compare_digest(cached.api_key.encode("utf-8"), api_key.encode("utf-8")):
         return cached
     try:
-        from openai import OpenAI
+        from openai import DEFAULT_CONNECTION_LIMITS, OpenAI
     except ImportError as exc:  # pragma: no cover
         raise RuntimeError(
             '未安装 openai SDK。源码安装请执行: pip install -e ".[llm]";'
             "Portable 请重新运行 Launcher 完成依赖修复,或升级到最新完整包。"
         ) from exc
-    client = OpenAI(api_key=api_key, base_url=provider.base_url or None, max_retries=0)
+    limits = httpx.Limits(
+        max_connections=DEFAULT_CONNECTION_LIMITS.max_connections,
+        max_keepalive_connections=DEFAULT_CONNECTION_LIMITS.max_keepalive_connections,
+        keepalive_expiry=DEFAULT_CONNECTION_LIMITS.keepalive_expiry,
+    )
+    transport = httpx.Client(transport=CancellableHTTPTransport(limits=limits), follow_redirects=True)
+    try:
+        client = OpenAI(api_key=api_key, base_url=provider.base_url or None, max_retries=0, http_client=transport)
+    except BaseException:
+        transport.close()
+        raise
     for key in list(_client_cache):
         if key[0] == connection_id:
             old = _client_cache.pop(key)
@@ -252,6 +264,23 @@ def _close_client(client: object) -> None:
     close = getattr(client, "close", None)
     if callable(close):
         close()
+
+
+def close_clients() -> None:
+    """退休所有缓存连接；在途请求实际结束后才关闭其网络线程。"""
+    idle: list[object] = []
+    with _client_cache_lock:
+        for client in _client_cache.values():
+            if _client_active.get(id(client), 0):
+                _retired_clients[id(client)] = client
+            else:
+                idle.append(client)
+        _client_cache.clear()
+    for client in idle:
+        _close_client(client)
+    with _client_cache_lock:
+        if _client_active:
+            raise RuntimeError("模型请求尚未物理退出，保留客户端资源占用")
 
 
 def _account_usage(provider: provs.LLMProvider, resp: object) -> None:
@@ -378,15 +407,20 @@ def _create_completion(
     extra_body: dict[str, object] | None,
 ) -> object:
     """发起一次 OpenAI Chat Completions 请求。"""
+    check_cancellation()
     if provider.authorize is not None:
         provider.authorize()
-    return client.chat.completions.create(  # type: ignore[attr-defined,no-any-return]
-        model=provider.model,
-        **output_arguments(provider, max_tokens),
-        messages=[{"role": "user", "content": prompt}],
-        timeout=settings.llm_request_timeout_s,
-        **({"extra_body": extra_body} if extra_body else {}),
-    )
+    try:
+        return client.chat.completions.create(  # type: ignore[attr-defined,no-any-return]
+            model=provider.model,
+            **output_arguments(provider, max_tokens),
+            messages=[{"role": "user", "content": prompt}],
+            timeout=settings.llm_request_timeout_s,
+            **({"extra_body": extra_body} if extra_body else {}),
+        )
+    finally:
+        # SDK 可能将传输取消包装成连接异常；关闭意图不能进入 provider 降级。
+        check_cancellation()
 
 
 def _complete(
@@ -403,6 +437,7 @@ def _complete(
     :param extra_body: 额外请求体(如联网搜索开关)。
     :returns: 模型输出文本。
     """
+    check_cancellation()
     with _client_cache_lock:
         client = _get_client(provider)
         _client_active[id(client)] = _client_active.get(id(client), 0) + 1
@@ -576,7 +611,7 @@ async def _fetch_structured_response(
 
 async def _async_budget_interruption(budget: ModelCallBudget) -> FailureCode | None:
     # 取消回调可能读取租约数据库，不能阻塞负责接收响应的事件循环。
-    check = asyncio.create_task(asyncio.to_thread(budget.interruption, before_request=False))
+    check = asyncio.create_task(asyncio.to_thread(budget.interruption, before_request=False, force_identity=False))
     try:
         return await asyncio.shield(check)
     except asyncio.CancelledError:
@@ -599,23 +634,36 @@ async def _bounded_structured_response(
     request = asyncio.create_task(
         _fetch_structured_response(provider, messages, response_format, max_tokens, timeout, extra_body)
     )
+    check: asyncio.Task[FailureCode | None] | None = None
+    next_check = 0.0
     try:
         async with asyncio.timeout(timeout):
             while not request.done():
-                interruption = await _async_budget_interruption(budget)
-                if interruption is not None:
-                    raise _StructuredFailure(interruption)
+                if shutdown_event.is_set():
+                    raise _StructuredFailure("cancelled")
+                if check is not None and check.done():
+                    interruption = check.result()
+                    check = None
+                    next_check = time.monotonic() + 0.1
+                    if interruption is not None:
+                        raise _StructuredFailure(interruption)
+                if check is None and time.monotonic() >= next_check:
+                    check = asyncio.create_task(_async_budget_interruption(budget))
                 await asyncio.wait({request}, timeout=0.05)
             return request.result()
     except TimeoutError as exc:
         # Windows 事件循环定时器允许提前一个时钟粒度唤醒；分类依据实际设置的边界。
         raise _StructuredFailure("deadline" if deadline_limited else "timeout") from exc
     finally:
-        if not request.done():
-            request.cancel()
-        # 等待连接物理关闭后才退出，不遗留仍计费的本地后台请求。
-        with suppress(asyncio.CancelledError):
-            await request
+        try:
+            if not request.done():
+                request.cancel()
+            # 先关闭网络，再等待已发出的身份读取归还数据库连接。
+            with suppress(asyncio.CancelledError):
+                await request
+        finally:
+            if check is not None:
+                await check
 
 
 def _reported_usage(provider: provs.LLMProvider, response: object) -> TokenUsage:
@@ -1139,7 +1187,7 @@ def call_text(
             if text:
                 return text
             logger.warning("模型 {} 返回空结果,尝试下一个。", provider.name)
-        except BudgetAccountingError:
+        except (BudgetAccountingError, OperationCancelledError):
             raise
         except Exception as exc:  # noqa: BLE001 — 逐个降级
             logger.opt(exception=exc).warning(
@@ -1177,7 +1225,7 @@ def call_web_search(
                 text = _complete(provider, prompt, max_tokens, {search_param: True})
                 if text:
                     return text
-            except BudgetAccountingError:
+            except (BudgetAccountingError, OperationCancelledError):
                 raise
             except Exception as exc:  # noqa: BLE001 — 不支持该参数则退化为普通调用
                 logger.opt(exception=exc).warning(
@@ -1192,7 +1240,7 @@ def call_web_search(
             text = _complete(provider, prompt, max_tokens)
             if text:
                 return text
-        except BudgetAccountingError:
+        except (BudgetAccountingError, OperationCancelledError):
             raise
         except Exception as exc:  # noqa: BLE001 — 降级到下一个 provider
             logger.opt(exception=exc).warning(

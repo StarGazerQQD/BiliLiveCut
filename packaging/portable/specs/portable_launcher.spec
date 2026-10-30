@@ -58,6 +58,8 @@ _provisioner_root = _here / "src"
 for _source in sorted((_provisioner_root / "blc_portable").rglob("*.py")):
     _relative_parent = _source.relative_to(_provisioner_root).parent
     _provisioner_sources.append((str(_source), str(Path("provisioner") / _relative_parent)))
+for _name in ("__init__.py", "file_locks.py"):
+    _provisioner_sources.append((str(_project_root / "config" / _name), "provisioner/config"))
 
 _provisioner_config = []
 for _source in sorted(_config_dir.glob("*.py")):

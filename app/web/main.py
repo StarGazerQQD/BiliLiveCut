@@ -26,6 +26,7 @@ from app import __version__, __version_label__
 from app.core.execution import run_sync
 from app.core.logging import setup_logging
 from app.core.supervisor import Service, Supervisor
+from app.db.service_ownership import ServiceOwnership
 from app.db.session import init_db
 from app.recording.schedule_runner import ScheduleRunner
 from app.web.routers.api import router as api_router
@@ -90,6 +91,19 @@ def _non_loopback_interface_addresses() -> list[str]:
 
 @asynccontextmanager
 async def lifespan(_app: FastAPI) -> AsyncIterator[None]:
+    """先取得实例所有权，再初始化数据库并恢复后台工作。"""
+    from app.db.session import engine
+
+    ownership = await run_sync(partial(ServiceOwnership, runtime_app_root(), engine), lambda owner: owner.release())
+    try:
+        async with _application_lifespan(_app, ownership):
+            yield
+    finally:
+        ownership.release()
+
+
+@asynccontextmanager
+async def _application_lifespan(_app: FastAPI, ownership: ServiceOwnership) -> AsyncIterator[None]:
     """应用生命周期:启动初始化、启动 TaskWorker、自动恢复、预约调度、关闭时优雅停止。"""
     setup_logging()
     await run_sync(init_db)
@@ -128,7 +142,8 @@ async def lifespan(_app: FastAPI) -> AsyncIterator[None]:
     _setup_proxy_env()
 
     # V0.1.6:启动持久化任务队列 Worker。
-    from app.notify.delivery import start_email_delivery, stop_email_delivery
+    from app.analysis.llm import close_clients
+    from app.notify.delivery import request_stop_delivery, start_email_delivery, stop_email_delivery
     from app.pipeline.lifecycle import shutdown_event
     from app.pipeline.task_worker import get_worker
     from app.plugins.manager import plugin_manager
@@ -159,18 +174,21 @@ async def lifespan(_app: FastAPI) -> AsyncIterator[None]:
     supervisor = Supervisor(
         [
             Service("qr_login", stop=qr_logins.stop),
-            Service("email_delivery", start_email_delivery, stop_email_delivery),
+            Service("model_connections", stop=partial(run_sync, close_clients)),
+            Service("email_delivery", start_email_delivery, stop_email_delivery, request_stop_delivery),
             Service("metrics", start_metrics, partial(run_sync, stop_metrics_collector)),
             Service("trends", start_trends, trend_scheduler.stop),
             Service("plugins", plugin_manager.start, plugin_manager.stop),
-            Service("worker", task_worker.start, task_worker.stop),
-            Service("web_jobs", web_job_manager.start, web_job_manager.stop),
+            Service("worker", task_worker.start, task_worker.stop, task_worker.request_stop),
+            Service("web_jobs", web_job_manager.start, web_job_manager.stop, web_job_manager.request_stop),
             Service("recorders", recover_recordings, rooms_service.recorder_manager.stop_all),
             Service("schedules", schedules.start, schedules.stop),
             Service("live_monitor", live_monitor.start, live_monitor.stop),
         ],
         request_stop,
+        shutdown_timeout_s=lambda: _cfg_startup.worker_shutdown_timeout_seconds,
     )
+    ownership.supervisor = supervisor
     async with supervisor.running():
         logger.info("Web 后台已启动。")
         yield

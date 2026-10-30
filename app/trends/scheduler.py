@@ -26,6 +26,7 @@ from loguru import logger
 from app.core import settings_store
 from app.core.config import settings
 from app.core.execution import run_sync
+from app.core.supervisor import remaining_shutdown
 
 # 调度循环的检查间隔(秒)。较小的值让"进入窗口/暂停"响应更及时。
 _CHECK_INTERVAL_S = 30
@@ -108,7 +109,9 @@ class TrendScheduler:
         if self._task is not None:
             self._stopping = True
             self._task.cancel()
-            _, pending = await asyncio.wait({self._task}, timeout=settings.worker_shutdown_timeout_seconds)
+            _, pending = await asyncio.wait(
+                {self._task}, timeout=remaining_shutdown(settings.worker_shutdown_timeout_seconds)
+            )
             if pending:
                 raise RuntimeError("网感采集线程尚未物理退出，关闭未完成")
             try:

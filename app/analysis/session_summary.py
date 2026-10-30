@@ -15,6 +15,7 @@ from sqlmodel import Session, select
 
 from app.analysis.session_coverage import session_asr_coverage
 from app.analysis.transcription.content import transcript_text
+from app.core.cancellation import OperationShutdownError, check_cancellation, check_shutdown
 from app.core.config import settings
 from app.core.runtime_settings import configured_entry
 from app.core.sanitize import safe_exception_summary, sanitize_diagnostic
@@ -288,8 +289,13 @@ def claim_pending_session_summary() -> SessionSummaryClaim | None:
 def execute_session_summary_claim(claim: SessionSummaryClaim) -> bool:
     """执行一个已领取请求，并以请求版本保护最终提交。"""
     try:
+        check_cancellation()
         result = build_session_timeline_summary(claim.session_id)
+        check_cancellation()
         committed = _commit_summary_result(claim, result)
+    except OperationShutdownError:
+        interrupt_summary_execution(claim)
+        return False
     except SessionSummaryNotReady:
         _return_claim_to_queue(claim, error="场次重分析尚未稳定", count_attempt=False)
         return False
@@ -476,6 +482,7 @@ def _commit_summary_result(claim: SessionSummaryClaim, result: dict[str, Any]) -
             or result["coverage"] != session_asr_coverage(db, claim.session_id)
         ):
             raise SessionSummaryNotReady("总结生成期间输入或任务状态发生变化")
+        check_shutdown()
         key = _result_key(claim.session_id)
         row = db.get(AppSetting, key)
         value = _encode(result)

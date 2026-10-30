@@ -62,6 +62,47 @@ def test_failure_releases_all_lease_fields(temp_db: None, permanent: bool) -> No
         assert task.last_error == "model failed"
 
 
+@pytest.mark.parametrize("event_commit", [False, True])
+@pytest.mark.parametrize("after_write_lock", [False, True])
+def test_analysis_shutdown_does_not_commit_empty_result_as_failure(
+    temp_db: None, event_commit: bool, after_write_lock: bool
+) -> None:
+    from sqlalchemy import event
+
+    from app.core.cancellation import OperationShutdownError, shutdown_event
+    from app.pipeline.workers import analyze
+
+    task_id, _, _ = seed(TaskStatus.ANALYZING)
+    lease = TaskLease(task_id, "worker", "old", TaskStatus.ANALYZING)
+    with get_session() as db:
+        engine = db.get_bind()
+
+    def shutdown_after_begin(
+        connection: object, cursor: object, statement: str, parameters: object, context: object, many: bool
+    ) -> None:
+        if statement == "BEGIN IMMEDIATE":
+            shutdown_event.set()
+
+    if after_write_lock:
+        event.listen(engine, "after_cursor_execute", shutdown_after_begin)
+    else:
+        shutdown_event.set()
+    try:
+        with pytest.raises(OperationShutdownError):
+            if event_commit:
+                analyze._commit_event_analysis(lease, [], 1)
+            else:
+                analyze.commit_highlight(lease, {}, 1)
+    finally:
+        if after_write_lock:
+            event.remove(engine, "after_cursor_execute", shutdown_after_begin)
+        shutdown_event.clear()
+    with get_session() as db:
+        task = db.get(SegmentTask, task_id)
+        assert task.stage == TaskStatus.ANALYZING
+        assert task.last_error is None and task.attempts == 0 and task.lease_token == "old"
+
+
 def test_final_transcription_failure_remains_error(
     temp_db: None, monkeypatch: pytest.MonkeyPatch, caplog: pytest.LogCaptureFixture
 ) -> None:
@@ -313,6 +354,51 @@ def test_cancel_during_copywriting_rejects_late_metadata(temp_db: None, monkeypa
     monkeypatch.setattr(copywriter, "_llm_copy", late_llm)
     with pytest.raises(LeaseLostError):
         copywriter.generate_copy(clip_id, task_lease=TaskLease(task_id, "worker", "old", TaskStatus.RENDERING))
+    with get_session() as db:
+        clip = db.get(FinalClip, clip_id)
+        assert clip.title == "kept title" and clip.status == "generated"
+
+
+@pytest.mark.parametrize("with_lease", [False, True])
+def test_shutdown_after_copywriting_transaction_does_not_publish_metadata(temp_db: None, with_lease: bool) -> None:
+    from sqlalchemy import event
+
+    from app.core.cancellation import OperationShutdownError, shutdown_event
+    from app.db.entities import FinalClip, HighlightCandidate, HighlightEvent
+    from app.publishing.copywriter import generate_copy
+
+    task_id, segment_id, session_id = seed(TaskStatus.RENDERING)
+    now = datetime.now(UTC)
+    with get_session() as db:
+        candidate = HighlightCandidate(
+            session_id=session_id,
+            peak_ts=now,
+            start_ts=now,
+            end_ts=now + timedelta(seconds=8),
+            dedup_hash="shutdown-copy",
+        )
+        db.add(candidate)
+        db.flush()
+        db.add(HighlightEvent(candidate_id=candidate.id, session_id=session_id, segment_id=segment_id))
+        clip = FinalClip(candidate_id=candidate.id, file_path="owned.mp4", title="kept title", status="generated")
+        db.add(clip)
+        db.flush()
+        clip_id, engine = clip.id, db.get_bind()
+
+    def shutdown_after_begin(
+        connection: object, cursor: object, statement: str, parameters: object, context: object, many: bool
+    ) -> None:
+        if statement == "BEGIN IMMEDIATE":
+            shutdown_event.set()
+
+    event.listen(engine, "after_cursor_execute", shutdown_after_begin)
+    try:
+        lease = TaskLease(task_id, "worker", "old", TaskStatus.RENDERING) if with_lease else None
+        with pytest.raises(OperationShutdownError):
+            generate_copy(clip_id, task_lease=lease)
+    finally:
+        event.remove(engine, "after_cursor_execute", shutdown_after_begin)
+        shutdown_event.clear()
     with get_session() as db:
         clip = db.get(FinalClip, clip_id)
         assert clip.title == "kept title" and clip.status == "generated"

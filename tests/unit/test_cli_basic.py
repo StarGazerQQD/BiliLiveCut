@@ -426,14 +426,21 @@ def test_console_isolates_terminal_signals_and_waits_for_backend_cleanup(
             pytest.fail("正常关闭不能由启动器提前强杀后端")
 
         def wait(self, timeout=None):
-            assert timeout is None, "服务必须有机会完成各自配置的关闭宽限"
+            assert timeout == 5, "已经确认结束的服务仍须有限确认启动进程退出"
             assert self.returncode == 0
             return 0
 
     def spawn(*args, **kwargs):
         process = Process()
+        if os.name != "nt":
+            os.write(kwargs["pass_fds"][-1], b'{"kind":"ready","guardian":987654321}\n')
         if kwargs.get("stdin") == subprocess.PIPE:
-            process.stdin = SimpleNamespace(close=lambda: setattr(process, "stopping", True))
+
+            def close() -> None:
+                process.stopping = True
+                process.stdin.closed = True
+
+            process.stdin = SimpleNamespace(close=close, closed=False)
         processes.append(process)
         options.append(kwargs)
         return process
@@ -447,13 +454,24 @@ def test_console_isolates_terminal_signals_and_waits_for_backend_cleanup(
         def __init__(self, pid: int) -> None:
             assert pid == processes[-1].pid
             ownership.append("attach")
+            self.parent_pipe = None
+
+        def own_parent_pipe(self, descriptor: int) -> None:
+            self.parent_pipe = descriptor
 
         def resume_suspended(self) -> None:
-            assert options[-1]["creationflags"] & 0x00000004
-            ownership.append("resume")
+            if os.name == "nt":
+                assert options[-1]["creationflags"] & 0x00000004
+                ownership.append("resume")
 
         def terminate(self) -> None:
             ownership.append("terminate")
+            if self.parent_pipe is not None:
+                os.close(self.parent_pipe)
+                self.parent_pipe = None
+            for process in processes:
+                if process.stdin is None:
+                    process.returncode = 0
 
     monkeypatch.setattr(process_tree, "ProcessTree", SystemOwnership)
     monkeypatch.setattr(subprocess, "Popen", spawn)
@@ -465,7 +483,11 @@ def test_console_isolates_terminal_signals_and_waits_for_backend_cleanup(
     )
     cmd_console(frontend_dir=str(tmp_path), port=8080)
     assert len(processes) == 2
-    assert ownership == (["attach", "resume", "terminate"] if os.name == "nt" else [])
+    assert ownership == (
+        ["attach", "resume", "attach", "resume", "terminate", "terminate", "terminate"]
+        if os.name == "nt"
+        else ["attach", "attach", "terminate", "terminate", "terminate"]
+    )
     for kwargs in options:
         if os.name == "nt":
             assert kwargs["creationflags"] & subprocess.CREATE_NEW_PROCESS_GROUP

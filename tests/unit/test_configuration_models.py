@@ -196,6 +196,9 @@ def test_pipeline_refreshes_global_and_thread_cache_next_task(temp_db: None, con
 def test_llm_same_prefix_rotation_does_not_close_active_client(monkeypatch: MonkeyPatch) -> None:
     import sys
 
+    import httpx
+    from openai import DEFAULT_CONNECTION_LIMITS
+
     from app.analysis import llm
     from app.analysis.llm_providers import LLMProvider
 
@@ -204,17 +207,20 @@ def test_llm_same_prefix_rotation_does_not_close_active_client(monkeypatch: Monk
     release = Event()
 
     class FakeClient:
-        def __init__(self, *, api_key: str, base_url: str | None, max_retries: int) -> None:
+        def __init__(self, *, api_key: str, base_url: str | None, max_retries: int, http_client: httpx.Client) -> None:
             assert max_retries == 0
             self.api_key = api_key
             self.closed = False
+            self.http_client = http_client
             clients.append(self)
 
         def close(self) -> None:
             self.closed = True
+            self.http_client.close()
 
     module = ModuleType("openai")
     module.OpenAI = FakeClient
+    module.DEFAULT_CONNECTION_LIMITS = DEFAULT_CONNECTION_LIMITS
     monkeypatch.setitem(sys.modules, "openai", module)
     monkeypatch.setattr(llm, "_client_cache", {})
     first = LLMProvider("rotation", "first", "https://example.invalid", "samehead-old", "test")

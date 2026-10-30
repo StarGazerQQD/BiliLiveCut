@@ -22,11 +22,14 @@ import subprocess
 import sys
 import traceback
 from collections.abc import Sequence
+from contextlib import ExitStack
 from pathlib import Path
 from typing import Any
 
 from blc_portable.console import configure_console_encoding
 from blc_portable.diagnostics import exception_summary, redact_diagnostic
+from config import file_locks as shared_file_locks
+from config.file_locks import FileLock
 from config.launcher_settings import APP_ROOT_ENV, WEB_PORT_ENV, load_launcher_config
 
 # -- Constants ──────────────────────────────────────────────────
@@ -849,7 +852,10 @@ def prepare_models(
         command.append("--repair")
 
     env = _python_environment()
-    env["PYTHONPATH"] = str(source_root.resolve())
+    import_roots = [str(source_root.resolve())]
+    if not getattr(sys, "frozen", False):
+        import_roots.append(str(Path(shared_file_locks.__file__).resolve().parent.parent))
+    env["PYTHONPATH"] = os.pathsep.join(import_roots)
     env["BLC_MODEL_CONFIG_DIR"] = str(config_root.resolve())
     env["PYTHONIOENCODING"] = "utf-8"
     env["PYTHONUTF8"] = "1"
@@ -1202,7 +1208,46 @@ Examples:
     return parser
 
 
+def _run_service(command: list[str], *, env: dict[str, str], cwd: str) -> int:
+    """持有所属服务树，关闭监管管道后等待 API 按实际配置收尾。"""
+    from app.core.process_spawn import spawn_owned
+
+    options = {"creationflags": subprocess.CREATE_NEW_PROCESS_GROUP} if os.name == "nt" else {}
+    process, tree = spawn_owned(
+        command, env={**env, "_BLC_PARENT_STDIN": "1"}, cwd=cwd, stdin=subprocess.PIPE, **options
+    )
+    try:
+        try:
+            return process.wait()
+        except KeyboardInterrupt:
+            assert process.stdin is not None
+            process.stdin.close()
+            try:
+                return process.wait()
+            except KeyboardInterrupt:
+                tree.terminate()
+                process.wait(timeout=5)
+                return 130
+    finally:
+        if process.stdin is not None and not process.stdin.closed:
+            process.stdin.close()
+        tree.terminate()
+        process.wait(timeout=5)
+
+
 def run_launcher(args: argparse.Namespace) -> int:
+    """普通启动独占应用目录，诊断和校验模式继续保持只读入口。"""
+    if args.doctor or args.verify_runtime or args.verify_models:
+        return _run_launcher(args)
+    try:
+        with FileLock(get_app_root().resolve() / ".launcher.lock").acquire(timeout=0):
+            return _run_launcher(args)
+    except TimeoutError as exc:
+        print(f"[ERROR] 当前目录已有 Launcher 正在运行：{exception_summary(exc)}")
+        return 1
+
+
+def _run_launcher(args: argparse.Namespace) -> int:
     """Execute launch flow。
 
     :param args: 解析后的命令行参数。
@@ -1221,6 +1266,7 @@ def run_launcher(args: argparse.Namespace) -> int:
     print("  GitHub requests: 0 (source from built-in Payload)")
     print()
 
+    installation = ExitStack()
     try:
         # --engine-pack and --fallback-online validation
         if args.fallback_online and not args.engine_pack:
@@ -1259,6 +1305,11 @@ def run_launcher(args: argparse.Namespace) -> int:
             _verify_installed_models(app_root)
             return 0
 
+        installation.enter_context(FileLock(app_root.resolve() / ".service.lock").acquire(timeout=0))
+        launcher_config = load_launcher_config(app_root, warn=lambda message: print(f"  [WARNING] {message}"))
+        web_port = launcher_config.web_port
+        _ensure_web_port_available(web_port)
+
         # --offline 模式: blocking network requests
         if args.offline:
             os.environ["BLC_OFFLINE"] = "1"
@@ -1272,8 +1323,6 @@ def run_launcher(args: argparse.Namespace) -> int:
 
         # 1. ensure persistent data dirs
         ensure_data_dirs(app_root)
-        launcher_config = load_launcher_config(app_root, warn=lambda message: print(f"  [WARNING] {message}"))
-        web_port = launcher_config.web_port
 
         # 2. check/install Runtime
         source_dir = get_current_release_dir()
@@ -1351,10 +1400,12 @@ def run_launcher(args: argparse.Namespace) -> int:
         if models_dir.exists():
             env["BLC_MODELS_DIR"] = str(models_dir)
 
-        result = subprocess.run(_build_service_command(venv_python, web_port), env=env, cwd=str(app_root))
-        if result.returncode != 0:
-            print(f"[ERROR] Web 服务在 127.0.0.1:{web_port} 启动或运行失败（exit={result.returncode}）。")
-        return result.returncode
+        # 安装锁交给 API；Launcher 自身的锁继续覆盖整个服务运行期。
+        installation.close()
+        returncode = _run_service(_build_service_command(venv_python, web_port), env=env, cwd=str(app_root))
+        if returncode != 0:
+            print(f"[ERROR] Web 服务在 127.0.0.1:{web_port} 启动或运行失败（exit={returncode}）。")
+        return returncode
 
     except KeyboardInterrupt:
         print("\nService stopped")
@@ -1377,6 +1428,8 @@ def run_launcher(args: argparse.Namespace) -> int:
         print()
         _pause_before_exit()
         return 1
+    finally:
+        installation.close()
 
 
 def main(argv: Sequence[str] | None = None) -> int:

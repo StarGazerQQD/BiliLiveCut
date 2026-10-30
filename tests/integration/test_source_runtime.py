@@ -35,6 +35,7 @@ from app.recording.danmaku import DanmakuCapture, read_evidence
 from app.recording.recorder import Recorder
 from app.sources.registry import SourceRegistry, source_registry
 from app.sources.rooms import register_room, room_source
+from tests.process_fixtures import ExternalProcess, install_process_boundary
 
 
 @pytest.mark.parametrize("failures", [1, 2])
@@ -132,7 +133,7 @@ async def test_recording_supervises_required_helpers(
     room = await register_room("123", True, "external")
     recorder = Recorder(room_source(room), room.id, metadata_prepared=True)
 
-    class Process:
+    class Process(ExternalProcess):
         stdin = None
         returncode: int | None = None
 
@@ -158,7 +159,7 @@ async def test_recording_supervises_required_helpers(
     async def broken(*args: object) -> None:
         raise PermissionError("helper cannot write token=private-helper")
 
-    monkeypatch.setattr(asyncio, "create_subprocess_exec", spawn)
+    install_process_boundary(monkeypatch, spawn)
     monkeypatch.setattr(recorder, method, broken)
     before = asyncio.all_tasks()
     with pytest.raises(PermissionError):
@@ -374,7 +375,7 @@ async def test_serial_reconnect_rotates_same_host_endpoints_with_refreshed_crede
             for name in ("first", "backup")
         ]
 
-    class FailedProcess:
+    class FailedProcess(ExternalProcess):
         stdin = None
         returncode = 1
 
@@ -398,7 +399,7 @@ async def test_serial_reconnect_rotates_same_host_endpoints_with_refreshed_crede
         return FailedProcess(b"[https @ 1] Connection timed out\n")
 
     monkeypatch.setattr(runtime, "get_streams", streams)
-    monkeypatch.setattr(asyncio, "create_subprocess_exec", spawn)
+    install_process_boundary(monkeypatch, spawn)
     monkeypatch.setattr(settings, "recording_stream_race_parallel", 2 if unsupported_progress else 1)
     monkeypatch.setattr(settings, "recording_reconnect_max_attempts", 3)
     monkeypatch.setattr(settings, "recording_reconnect_max_elapsed_s", 30)
@@ -472,12 +473,11 @@ async def test_race_registers_only_winner_and_reaps_all_processes(
     pipeline = make_pipeline_callback(room_id=room.id)
     recorder = None
 
-    class Process:
+    class Process(ExternalProcess):
         stdin = None
         returncode = None
 
         def __init__(self) -> None:
-            self.pid = len(processes) + 1
             self.stdout, self.stderr = asyncio.StreamReader(), asyncio.StreamReader()
             self.exited = asyncio.Event()
 
@@ -522,7 +522,7 @@ async def test_race_registers_only_winner_and_reaps_all_processes(
 
     monkeypatch.setattr(settings, "recording_stream_race_parallel", 2)
     monkeypatch.setattr(runtime, "get_streams", source_streams)
-    monkeypatch.setattr(asyncio, "create_subprocess_exec", spawn)
+    install_process_boundary(monkeypatch, spawn)
     recorder = Recorder(room_source(room), room.id, on_segment=on_segment, metadata_prepared=True)
     original_scan = recorder._scan_orphan_segments
 
@@ -1045,7 +1045,7 @@ async def test_ffmpeg_permanent_failure_persists_error_and_blocks_automatic_rest
     monkeypatch.setattr(rooms, "recorder_manager", manager)
     spawn_count = 0
 
-    class Process:
+    class Process(ExternalProcess):
         returncode = 1
         stdin = None
 
@@ -1068,7 +1068,7 @@ async def test_ffmpeg_permanent_failure_persists_error_and_blocks_automatic_rest
     async def ended(session_id: int) -> None:
         return None
 
-    monkeypatch.setattr(asyncio, "create_subprocess_exec", spawn)
+    install_process_boundary(monkeypatch, spawn)
     monkeypatch.setattr(rooms, "_on_session_end", ended)
     monitor = LiveMonitor()
     monitor._stop = asyncio.Event()
@@ -1224,7 +1224,7 @@ async def test_stderr_read_failure_terminates_process_and_finishes_session(
     room = await register_room("123", True, "external")
     recorder = Recorder(room_source(room), room.id, metadata_prepared=True)
 
-    class Process:
+    class Process(ExternalProcess):
         stdin = None
         returncode: int | None = None
 
@@ -1249,7 +1249,7 @@ async def test_stderr_read_failure_terminates_process_and_finishes_session(
     async def spawn(*args: object, **kwargs: object) -> Process:
         return process
 
-    monkeypatch.setattr(asyncio, "create_subprocess_exec", spawn)
+    install_process_boundary(monkeypatch, spawn)
     tasks_before = asyncio.all_tasks()
     with pytest.raises(OSError, match="broken stderr pipe"):
         await asyncio.wait_for(recorder.run(), 2)

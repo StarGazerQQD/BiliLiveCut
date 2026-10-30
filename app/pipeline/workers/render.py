@@ -17,6 +17,8 @@ from sqlalchemy.exc import SQLAlchemyError
 from sqlmodel import Session, select
 
 from app.clipping.paths import build_final_clip_path, build_generation_clip_path, build_lease_partial_path
+from app.core.cancellation import OperationCancelledError, OperationShutdownError, shutdown_event
+from app.core.process_control import ProcessCancelledError
 from app.core.sanitize import safe_exception_summary
 from app.db.entities import (
     CandidateStatus,
@@ -114,6 +116,9 @@ def render_compute(lease: TaskLease) -> dict[str, Any]:
 
     try:
         artifact = render_clip_to_file(cid, temp_path)
+    except (OperationCancelledError, ProcessCancelledError, LeaseLostError) as exc:
+        # 仍经提交边界确认可信临时路径并清理，不把中断包装为渲染业务失败。
+        return {**temporary, "interruption": exc}
     except Exception as exc:
         permanent = _is_render_error_permanent(exc)
         logging.getLogger(__name__).exception("渲染计算失败 task=%s", lease.task_id)
@@ -232,10 +237,15 @@ def commit_render(lease: TaskLease, compute_result: dict[str, Any], ms: int) -> 
                 raise ValueError("渲染临时路径不属于本任务租约")
             if not still_owns_lease(db, lease):
                 raise LeaseLostError()
+            interruption = compute_result.get("interruption")
+            if isinstance(interruption, (OperationCancelledError, ProcessCancelledError, LeaseLostError)):
+                raise interruption
             if "error" in compute_result:
                 mark_failed(task, compute_result["error"], permanent=compute_result.get("permanent", False))
                 db.add(task)
                 return
+            if shutdown_event.is_set():
+                raise OperationShutdownError("服务关闭，停止提交本次渲染结果")
             task, candidate = _render_context(db, lease, compute_result)
             formal_path = build_final_clip_path(
                 task.event_id,
@@ -300,6 +310,8 @@ def commit_render(lease: TaskLease, compute_result: dict[str, Any], ms: int) -> 
             variant = db.get(ClipVariant, variant_id)
             if variant is None or variant.generation != generation or variant.file_path != output_path:
                 raise LeaseLostError()
+            if shutdown_event.is_set():
+                raise OperationShutdownError("服务关闭，停止登记已移动的渲染结果")
             variant.render_status = RenderStatus.DONE
             db.add(variant)
             clip = _clip_for_variant(db, variant, candidate.id)

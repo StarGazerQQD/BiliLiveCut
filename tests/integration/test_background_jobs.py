@@ -73,12 +73,18 @@ async def test_shutdown_timeout_keeps_handler_and_blocks_new_work(temp_db: None,
         assert await asyncio.to_thread(entered.wait, 2)
         with pytest.raises(RuntimeError, match="未确认退出"):
             await manager.stop(timeout_s=0.01)
+        assert manager._stop_task is not None and not manager._stop_task.done()
+        if cancellable:
+            assert manager._cancel_events[job["id"]].is_set()
+            await _wait_for_status(job["id"], {"cancelling"})
         state = get_job(job["id"])
         assert state is not None
         assert state["status"] == ("cancelling" if cancellable else "running")
         assert job["id"] in manager._tasks
         assert not manager._tasks[job["id"]].cancelled()
         assert job["id"] in manager._cancel_events
+        with pytest.raises(RuntimeError, match="不能重新启动"):
+            await manager.start()
         with pytest.raises(RuntimeError, match="正在关闭"):
             await manager.enqueue("shutdown_test", {}, label="late", owner="tester")
         with pytest.raises(RuntimeError, match="正在关闭"):

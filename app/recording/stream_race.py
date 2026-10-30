@@ -20,10 +20,12 @@ from pathlib import Path
 
 from loguru import logger
 
+from app.analysis.transcription.process_tree import ProcessTree
 from app.core.async_cleanup import complete_cleanup
 from app.core.config import settings
 from app.core.ffmpeg_errors import FfmpegErrorType, classify_ffmpeg_error
 from app.core.process_control import ProcessCancelledError, run_cancellable
+from app.core.process_spawn import spawn_owned_async, terminate_owned_async, wait_process_exit
 from app.core.sanitize import sanitize_diagnostic
 from app.plugins.live_source import StreamSpec
 from app.recording.stream_failover import route_key
@@ -41,6 +43,7 @@ class StreamAttempt:
     out_dir: Path
     prefix: str
     process: asyncio.subprocess.Process | None = field(default=None, repr=False)
+    tree: ProcessTree | None = field(default=None, repr=False)
     stderr_task: asyncio.Task[None] | None = field(default=None, repr=False)
     progress_task: asyncio.Task[None] | None = field(default=None, repr=False)
     ready: asyncio.Event = field(default_factory=asyncio.Event, repr=False)
@@ -242,12 +245,7 @@ class StreamAttempt:
                     self.stderr_task = asyncio.create_task(self.drain_stderr())
                 if self.progress_task is None:
                     self.progress_task = asyncio.create_task(self.drain_progress())
-                if proc.returncode is None:
-                    try:
-                        proc.kill()
-                    except ProcessLookupError:
-                        pass
-                await asyncio.wait_for(proc.wait(), 5)
+                await terminate_owned_async(proc, self.tree)
         finally:
             readers = [task for task in (self.stderr_task, self.progress_task) if task is not None]
             if readers:
@@ -369,28 +367,24 @@ class StreamRace:
         # 保留默认进度周期，避免可选的 -stats_period 提高 FFmpeg 版本要求。
         cmd[1:1] = ["-progress", "pipe:1"]
         spawn = asyncio.create_task(
-            asyncio.create_subprocess_exec(
-                *cmd,
+            spawn_owned_async(
+                cmd,
                 stdin=asyncio.subprocess.PIPE,
                 stdout=asyncio.subprocess.PIPE,
                 stderr=asyncio.subprocess.PIPE,
-                **(
-                    {"creationflags": 0x00000200}  # CREATE_NEW_PROCESS_GROUP
-                    if os.name == "nt"
-                    else {"start_new_session": True}
-                ),
+                **({"creationflags": 0x00000200} if os.name == "nt" else {}),
             )
         )
         waits: list[asyncio.Task[object]] = []
         try:
             # 取消也必须拿到已启动的进程句柄，否则取消窗口可能留下孤儿 FFmpeg。
             try:
-                attempt.process = await asyncio.shield(spawn)
+                attempt.process, attempt.tree = await asyncio.shield(spawn)
             except asyncio.CancelledError:
 
                 async def finish_spawn() -> None:
                     try:
-                        attempt.process = await spawn
+                        attempt.process, attempt.tree = await spawn
                     except OSError:
                         pass
 
@@ -399,7 +393,7 @@ class StreamRace:
             attempt.stderr_task = asyncio.create_task(attempt.drain_stderr())
             attempt.progress_task = asyncio.create_task(attempt.drain_progress())
             ready = asyncio.create_task(attempt.ready.wait())
-            exited = asyncio.create_task(attempt.process.wait())
+            exited = asyncio.create_task(wait_process_exit(attempt.process))
             waits = [ready, exited]
             done, _ = await asyncio.wait(
                 [ready, exited, attempt.stderr_task, attempt.progress_task],

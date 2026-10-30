@@ -28,6 +28,7 @@ from app.analysis.room_config import room_highlight_keywords
 from app.analysis.source_policy import session_danmaku_lag_s
 from app.analysis.transcript_windows import TranscriptWindowCache
 from app.analysis.transcription.content import refined_transcript_text
+from app.core.cancellation import check_cancellation, check_shutdown
 from app.core.config import settings
 from app.core.media_usage import media_reference_scope
 from app.core.runtime_settings import configured_task
@@ -282,6 +283,7 @@ def analyze_compute(task_id: int) -> dict[str, Any]:
 @media_reference_scope()
 def commit_highlight(lease: TaskLease, compute_result: dict[str, Any], ms: int) -> None:
     """在写事务前核对文件，再以租约和来源快照提交分析结果。"""
+    check_cancellation()
     started = time.monotonic()
     with media_validation_scope(task_id=lease.task_id):
         session_id = _commit_highlight(lease, compute_result, ms)
@@ -324,6 +326,7 @@ def _commit_highlight(lease: TaskLease, compute_result: dict[str, Any], ms: int)
             if not still_owns_lease(db, lease):
                 raise LeaseLostError()
 
+            check_shutdown()
             task = db.get(SegmentTask, lease.task_id)
             if task is None:
                 return
@@ -576,6 +579,7 @@ def _commit_event_analysis(
             if type(event_id) is int and isinstance(budget, ModelCallBudget)
         )
     for attempt in range(2):
+        check_cancellation()
         with (
             media_validation_scope(task_id=lease.task_id),
             get_session(operation="event_analysis_commit", task_id=lease.task_id) as db,
@@ -587,6 +591,7 @@ def _commit_event_analysis(
                 connection.exec_driver_sql("BEGIN IMMEDIATE")
             if not still_owns_lease(db, lease):
                 raise LeaseLostError()
+            check_shutdown()
             task = db.get(SegmentTask, lease.task_id)
             if task is None:
                 raise LeaseLostError()
@@ -611,6 +616,7 @@ def _commit_event_analysis(
                     connection.exec_driver_sql("BEGIN IMMEDIATE")
                 if not still_owns_lease(db, lease):
                     raise LeaseLostError()
+                check_shutdown()
                 task = db.get(SegmentTask, lease.task_id)
                 if task is None:
                     raise LeaseLostError()
@@ -956,6 +962,7 @@ def score_hotspot_event(event_id: int) -> HighlightCandidate | None:
         event = db.get(HotspotEvent, event_id)
         if event is None:
             raise ValueError(f"HotspotEvent 不存在: event_id={event_id}")
+        check_shutdown()
         synthetic_task = SegmentTask(
             segment_id=clip_draft.segment_id,
             session_id=clip_draft.session_id,
@@ -1031,6 +1038,7 @@ def score_segment_direct(segment_id: int) -> HighlightCandidate | None:
 
         if db.get_bind().dialect.name == "sqlite":
             db.connection().exec_driver_sql("BEGIN IMMEDIATE")
+        check_shutdown()
         if not _store_segment_editorial(db, segment_id, compute_result):
             raise ValueError("编辑判断输入已变化，不能提交旧分段结果")
         segment = db.get(RawSegment, segment_id)
@@ -1415,12 +1423,13 @@ def _get_or_create_event(
         raise AssertionError(f"IntegrityError on candidate_id={candidate_id} but existing Event not found") from None
 
 
-def _mark_scored_in_db(db, segment_id: int) -> None:
+def _mark_scored_in_db(db: Session, segment_id: int) -> None:
     """在已有 DB session 中标记片段为已评分 (仅 commit 阶段使用)。
 
     :param db: SQLModel session。
     :param segment_id: RawSegment ID。
     """
+    check_shutdown()
     seg = db.get(RawSegment, segment_id)
     if seg is not None and seg.status != SegmentStatus.SCORED:
         seg.status = SegmentStatus.SCORED

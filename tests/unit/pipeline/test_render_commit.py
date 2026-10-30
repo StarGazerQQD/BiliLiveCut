@@ -100,11 +100,38 @@ def test_render_and_reuse_reference_actual_final_clip(temp_db: None, tmp_path: P
     assert not Path(result["temp_path"]).exists() and not Path(result["cover_path"]).exists()
 
 
-@pytest.mark.parametrize("reject", [False, True])
-@pytest.mark.parametrize("during_cover", [False, True])
-def test_cancel_or_reject_during_move_cannot_be_overwritten(
-    temp_db: None, tmp_path: Path, monkeypatch: pytest.MonkeyPatch, reject: bool, during_cover: bool
+@pytest.mark.parametrize("interrupted", [False, True])
+def test_shutdown_preserves_render_state_and_removes_only_lease_files(
+    temp_db: None, tmp_path: Path, interrupted: bool
 ) -> None:
+    from app.core.cancellation import OperationShutdownError, shutdown_event
+    from app.core.process_control import ProcessShutdownError
+
+    lease, result = seed_render(tmp_path)
+    if interrupted:
+        result["interruption"] = ProcessShutdownError("shutdown at media boundary")
+    shutdown_event.set()
+    try:
+        with pytest.raises((OperationShutdownError, ProcessShutdownError)):
+            render.commit_render(lease, result, 1)
+    finally:
+        shutdown_event.clear()
+    assert not Path(result["temp_path"]).exists() and not Path(result["cover_path"]).exists()
+    with get_session() as db:
+        task = db.get(SegmentTask, lease.task_id)
+        assert task.stage == TaskStatus.RENDERING and task.lease_token == lease.lease_token
+        assert task.last_error is None
+        assert len(db.exec(select(FinalClip)).all()) == 1
+        assert not db.exec(select(ClipVariant)).all()
+
+
+@pytest.mark.parametrize("interruption", ["cancel", "reject", "shutdown"])
+@pytest.mark.parametrize("during_cover", [False, True])
+def test_interruption_during_move_cannot_be_overwritten(
+    temp_db: None, tmp_path: Path, monkeypatch: pytest.MonkeyPatch, interruption: str, during_cover: bool
+) -> None:
+    from app.core.cancellation import OperationShutdownError, shutdown_event
+
     lease, result = seed_render(tmp_path)
     replace = Path.replace
 
@@ -112,7 +139,9 @@ def test_cancel_or_reject_during_move_cannot_be_overwritten(
         moved = replace(path, target)
         if str(path) != result["cover_path" if during_cover else "temp_path"]:
             return moved
-        if reject:
+        if interruption == "shutdown":
+            shutdown_event.set()
+        elif interruption == "reject":
             from app.pipeline.rejection import reject_candidate_and_outputs
 
             with get_session() as db:
@@ -124,11 +153,23 @@ def test_cancel_or_reject_during_move_cannot_be_overwritten(
         return moved
 
     monkeypatch.setattr(Path, "replace", cancel_after_move)
-    render.commit_render(lease, result, 1)
+    try:
+        if interruption == "shutdown":
+            with pytest.raises(OperationShutdownError):
+                render.commit_render(lease, result, 1)
+        else:
+            render.commit_render(lease, result, 1)
+    finally:
+        shutdown_event.clear()
     with get_session() as db:
-        assert db.get(SegmentTask, lease.task_id).stage == TaskStatus.CANCELLING
+        task = db.get(SegmentTask, lease.task_id)
+        if interruption == "shutdown":
+            assert task.stage == TaskStatus.RENDERING and task.lease_token == lease.lease_token
+            assert task.attempts == 0 and task.last_error is None
+        else:
+            assert task.stage == TaskStatus.CANCELLING
         assert db.exec(select(FinalClip).where(FinalClip.candidate_id == result["candidate_id"])).first() is None
-        if reject:
+        if interruption == "reject":
             assert db.get(HighlightCandidate, result["candidate_id"]).status == "rejected"
     assert not list(Path(result["formal_path"]).parent.glob("*.mp4"))
     assert not list(Path(result["formal_path"]).parent.glob("*.jpg"))

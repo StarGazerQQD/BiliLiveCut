@@ -3,8 +3,10 @@ from __future__ import annotations
 import asyncio
 import errno
 import json
+import os
 import subprocess
 import threading
+from collections.abc import Awaitable, Callable, Iterator
 from datetime import UTC, datetime, timedelta
 from pathlib import Path
 from types import SimpleNamespace
@@ -88,8 +90,12 @@ async def test_local_video_probe_is_reaped_before_cancellation_finishes(
 
 
 class FakeProcess:
+    registry: dict[int, FakeProcess] = {}
+
     def __init__(self, pid: int) -> None:
         self.pid = pid
+        self.registry[pid] = self
+        self.loop = asyncio.get_running_loop()
         self.stdin = None
         self.stdout = asyncio.StreamReader()
         self.stderr = asyncio.StreamReader()
@@ -100,6 +106,11 @@ class FakeProcess:
         await self.exited.wait()
         assert self.returncode is not None
         return self.returncode
+
+    async def communicate(self) -> tuple[bytes, bytes]:
+        output, error = await asyncio.gather(self.stdout.read(), self.stderr.read())
+        await self.wait()
+        return output, error
 
     def kill(self) -> None:
         if self.returncode is None:
@@ -116,6 +127,44 @@ class FakeProcess:
             f"frame={frames}\nout_time_us=0\nprogress=continue\n"
             f"frame={frames + 1 if frames else 0}\nout_time_us={media_us}\nprogress=continue\n".encode()
         )
+
+
+@pytest.fixture(autouse=True)
+def external_process_ownership(monkeypatch: pytest.MonkeyPatch) -> Iterator[None]:
+    from app.analysis.transcription import process_tree
+
+    class ExternalTree:
+        def __init__(self, pid: int) -> None:
+            self.process = FakeProcess.registry[pid]
+            self.parent_pipe: int | None = None
+
+        def own_parent_pipe(self, descriptor: int) -> None:
+            self.parent_pipe = descriptor
+
+        def resume_suspended(self) -> None:
+            pass
+
+        def terminate(self) -> None:
+            self.process.loop.call_soon_threadsafe(self.process.kill)
+            if self.parent_pipe is not None:
+                os.close(self.parent_pipe)
+                self.parent_pipe = None
+
+    FakeProcess.registry.clear()
+    monkeypatch.setattr(process_tree, "ProcessTree", ExternalTree)
+    yield
+    FakeProcess.registry.clear()
+
+
+def install_process_boundary(monkeypatch: pytest.MonkeyPatch, spawn: Callable[..., Awaitable[FakeProcess]]) -> None:
+    async def external_spawn(*args: str, **kwargs: object) -> FakeProcess:
+        if os.name != "nt":
+            process = await spawn(*args[8:], **kwargs)
+            os.write(kwargs["pass_fds"][-1], b'{"kind":"ready","guardian":987654321}\n')
+            return process
+        return await spawn(*args, **kwargs)
+
+    monkeypatch.setattr(asyncio, "create_subprocess_exec", external_spawn)
 
 
 def streams(*names: str) -> list[StreamSpec]:
@@ -269,7 +318,7 @@ async def test_winner_process_is_reused_and_only_loser_files_are_removed(
             proc.progress()
         return proc
 
-    monkeypatch.setattr(asyncio, "create_subprocess_exec", spawn)
+    install_process_boundary(monkeypatch, spawn)
     before = asyncio.all_tasks()
     race = race_for(tmp_path, streams("slow", "good", "unused"))
     existing = tmp_path / "part_old.ts"
@@ -305,7 +354,7 @@ async def test_timeout_and_invalid_progress_refill_slots_with_bounded_concurrenc
         proc.progress(frames=0 if host == "audio.invalid" else 1, media_us=0 if host == "empty.invalid" else 1_000_000)
         return proc
 
-    monkeypatch.setattr(asyncio, "create_subprocess_exec", spawn)
+    install_process_boundary(monkeypatch, spawn)
     race = race_for(tmp_path, streams("audio", "empty", "good"))
     try:
         winner = await race.run()
@@ -331,7 +380,7 @@ async def test_stop_or_cancel_during_process_creation_reaps_late_spawn(
         processes.append(proc)
         return proc
 
-    monkeypatch.setattr(asyncio, "create_subprocess_exec", spawn)
+    install_process_boundary(monkeypatch, spawn)
     before = asyncio.all_tasks()
     race = race_for(tmp_path, streams("slow", "slow2"))
     task = asyncio.create_task(race.run())
@@ -369,7 +418,7 @@ async def test_failure_paths_reap_all_processes(tmp_path: Path, monkeypatch: pyt
             proc.stderr.set_exception(OSError(errno.EIO, "private"))
         return proc
 
-    monkeypatch.setattr(asyncio, "create_subprocess_exec", spawn)
+    install_process_boundary(monkeypatch, spawn)
     before = asyncio.all_tasks()
     race = race_for(tmp_path, streams("a", "b", "c"))
     if failure == "budget":
@@ -420,7 +469,7 @@ async def test_quality_tiers_and_expired_queued_urls(
         proc.progress()
         return proc
 
-    monkeypatch.setattr(asyncio, "create_subprocess_exec", spawn)
+    install_process_boundary(monkeypatch, spawn)
     race = race_for(tmp_path, candidates)
     try:
         winner = await race.run()
@@ -495,7 +544,7 @@ async def test_same_host_different_paths_are_tried_and_input_failure_is_not_glob
             proc.progress()
         return proc
 
-    monkeypatch.setattr(asyncio, "create_subprocess_exec", spawn)
+    install_process_boundary(monkeypatch, spawn)
     race = race_for(tmp_path, [first, first, second])
     try:
         winner = await race.run()
@@ -517,7 +566,7 @@ async def test_real_output_fault_is_global(tmp_path: Path, monkeypatch: pytest.M
         proc.kill()
         return proc
 
-    monkeypatch.setattr(asyncio, "create_subprocess_exec", spawn)
+    install_process_boundary(monkeypatch, spawn)
     race = race_for(tmp_path, streams("a", "b"))
     try:
         assert await race.run() is None
@@ -550,7 +599,7 @@ async def test_staggered_race_avoids_extra_process_for_fast_primary_but_hedges_s
             asyncio.get_running_loop().call_soon(advance_to_hedge)
         return proc
 
-    monkeypatch.setattr(asyncio, "create_subprocess_exec", spawn)
+    install_process_boundary(monkeypatch, spawn)
     # 仅控制被测调度器的时钟；事件循环仍正常运行，不要求 CI 主机在 10ms 内完成调度。
     monkeypatch.setattr("app.recording.stream_race.time", SimpleNamespace(monotonic=lambda: clock_s))
     race = race_for(tmp_path, streams("a", "b", "c"))
@@ -587,7 +636,7 @@ async def test_winner_that_fails_during_loser_cleanup_is_not_handed_off(
                 race.winner.process.kill()
         await original_close(attempt, discard=discard)
 
-    monkeypatch.setattr(asyncio, "create_subprocess_exec", spawn)
+    install_process_boundary(monkeypatch, spawn)
     monkeypatch.setattr(StreamAttempt, "close", close)
     try:
         assert await race.run() is None
@@ -643,7 +692,7 @@ async def test_legacy_ffmpeg_works_without_new_optional_arguments(
         )
         return process
 
-    monkeypatch.setattr(asyncio, "create_subprocess_exec", spawn)
+    install_process_boundary(monkeypatch, spawn)
     race = race_for(tmp_path, streams("a", "b"))
     try:
         winner = await race.run()
@@ -678,7 +727,7 @@ async def test_local_resource_errors_stop_competition(
         calls += 1
         raise OSError(resource_errno, "private details")
 
-    monkeypatch.setattr(asyncio, "create_subprocess_exec", spawn)
+    install_process_boundary(monkeypatch, spawn)
     race = race_for(tmp_path, streams("a", "b"))
     try:
         assert await race.run() is None

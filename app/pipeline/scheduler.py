@@ -14,6 +14,7 @@ from sqlmodel import select
 from app.analysis.editorial_review_sources import media_validation_scope
 from app.analysis.transcription.process_pool import ASRShutdownError, RemoteASRError
 from app.core.asr_failures import permanent_device_error
+from app.core.cancellation import OperationCancelledError, OperationShutdownError, cancellation_scope
 from app.core.config import settings
 from app.core.execution import resource_scope
 from app.core.media_usage import media_reference_scope
@@ -511,7 +512,11 @@ def execute_task(task_id: int, active_stage_val: str, lease_token: str | None = 
         )
         register_execution(lease.task_id, lease.lease_token)
 
-        with resource_scope():
+        def cancelled() -> bool:
+            with get_session() as db:
+                return not still_owns_lease(db, lease)
+
+        with resource_scope(), cancellation_scope(cancelled, poll_interval_s=0.5):
             if active_stage_val == TaskStatus.TRANSCRIBING:
                 run_transcribe(lease)
             elif active_stage_val == TaskStatus.ANALYZING:
@@ -520,7 +525,7 @@ def execute_task(task_id: int, active_stage_val: str, lease_token: str | None = 
                 run_render(lease)
             elif active_stage_val == TaskStatus.PUBLISHING:
                 run_publish(lease)
-    except (ASRShutdownError, ProcessShutdownError):
+    except (ASRShutdownError, ProcessShutdownError, OperationShutdownError):
         with get_session() as db:
             if db.get_bind().dialect.name == "sqlite":
                 db.connection().exec_driver_sql("BEGIN IMMEDIATE")
@@ -538,7 +543,7 @@ def execute_task(task_id: int, active_stage_val: str, lease_token: str | None = 
             _WORKER_ID,
             lease_token,
         )
-    except LeaseLostError:
+    except (LeaseLostError, OperationCancelledError):
         with get_session() as db:
             task = db.get(SegmentTask, task_id)
             cancelling = (

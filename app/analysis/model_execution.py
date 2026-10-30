@@ -11,6 +11,7 @@ from typing import Generic, TypeVar
 from uuid import uuid4
 
 from app.analysis.editorial_contracts import FailureCode, ModelAttempt, ModelProtocol
+from app.core.cancellation import CancellationProbe, cancellation_requested
 
 T = TypeVar("T")
 
@@ -46,7 +47,7 @@ class ModelCallBudget:
         self._operation_id = uuid4().hex
         self._started = time.monotonic()
         self._deadline = self._started + max_elapsed_s
-        self._cancelled = cancelled
+        self._cancelled = CancellationProbe(cancelled) if cancelled is not None else None
         self._attempts: list[ModelAttempt] = []
         self._repair_used = False
         self._context_used = False
@@ -74,9 +75,11 @@ class ModelCallBudget:
         """返回不可增删的实际请求记录视图。"""
         return tuple(self._attempts)
 
-    def interruption(self, *, before_request: bool = True) -> FailureCode | None:
+    def interruption(self, *, before_request: bool = True, force_identity: bool = True) -> FailureCode | None:
         """发送前与等待期间分别检查取消、截止时间及实际请求数量。"""
-        if self._cancelled is not None and self._cancelled():
+        if cancellation_requested(force=force_identity) or (
+            self._cancelled is not None and self._cancelled.poll(force=force_identity)
+        ):
             return "cancelled"
         if self.remaining_s <= 0:
             return "deadline"

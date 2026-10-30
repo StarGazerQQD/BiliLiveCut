@@ -16,7 +16,7 @@ from app.db import job_store
 from app.db.entities import FinalClip, HighlightCandidate
 from app.db.session import get_session
 from app.jobs.context import JobContext
-from app.jobs.contracts import JobAttempt, JobData, JobSuperseded, now_iso
+from app.jobs.contracts import JobAttempt, JobCancelled, JobData, JobSuperseded, now_iso
 from app.jobs.manager import JobManager
 
 
@@ -199,6 +199,37 @@ def test_failed_publication_only_cleans_unreferenced_owned_files(
             raise OSError("发布失败")
     assert output.exists() == referenced
     assert original.read_bytes() == b"previous artifact"
+
+
+@pytest.mark.parametrize("interruption", ["cancel", "shutdown", "job_cancel", "job_superseded"])
+def test_draft_cleanup_failure_preserves_cancellation_and_original_error(
+    temp_db: None, tmp_path: Path, monkeypatch: pytest.MonkeyPatch, interruption: str
+) -> None:
+    from app.core.cancellation import OperationCancelledError, OperationShutdownError
+
+    output = tmp_path / "pending.mp4"
+    output.write_bytes(b"unpublished")
+    original = Path.unlink
+    error = {
+        "cancel": OperationCancelledError("user cancelled"),
+        "shutdown": OperationShutdownError("service stopping"),
+        "job_cancel": JobCancelled("job cancelled"),
+        "job_superseded": JobSuperseded("job replaced"),
+    }[interruption]
+
+    def locked_file(path: Path, missing_ok: bool = False) -> None:
+        if path == output:
+            raise PermissionError("fixture locked draft")
+        original(path, missing_ok=missing_ok)
+
+    monkeypatch.setattr(Path, "unlink", locked_file)
+    with pytest.raises(type(error)) as caught:
+        with publication((output,)):
+            raise error
+    assert caught.value is error
+    assert isinstance(caught.value.__cause__, PermissionError)
+    assert "fixture locked draft" in str(caught.value.__cause__)
+    assert output.read_bytes() == b"unpublished"
 
 
 @pytest.mark.parametrize("repeat", range(8))

@@ -6,6 +6,7 @@ import argparse
 import ast
 import io
 import json
+import os
 import runpy
 import sys
 from pathlib import Path
@@ -67,6 +68,41 @@ def test_launcher_rejects_occupied_web_port_without_changing_config(tmp_path: Pa
     assert launcher_config_path(tmp_path).read_bytes() == before
 
 
+@pytest.mark.parametrize("occupied", ["port", "launcher", "service"])
+def test_launcher_rejects_live_instance_before_repair_or_install(
+    tmp_path: Path, monkeypatch: MonkeyPatch, occupied: str
+) -> None:
+    import socket
+    from contextlib import ExitStack
+
+    from blc_portable.launcher import main as launcher_module
+
+    from config.file_locks import FileLock
+    from config.launcher_settings import launcher_config_path, save_launcher_config
+
+    preserved = tmp_path / "runtime" / "releases" / "preserved.txt"
+    preserved.parent.mkdir(parents=True)
+    preserved.write_text("existing runtime", encoding="utf-8")
+    monkeypatch.chdir(tmp_path)
+    monkeypatch.setattr(launcher_module, "get_app_root", lambda: tmp_path)
+    monkeypatch.setattr(launcher_module, "_pause_before_exit", lambda: None)
+    with ExitStack() as resources:
+        port = resources.enter_context(socket.socket())
+        port.bind(("127.0.0.1", 0))
+        save_launcher_config(tmp_path, web_port=port.getsockname()[1])
+        if occupied == "port":
+            port.listen()
+        else:
+            port.close()
+            resources.enter_context(FileLock(tmp_path / f".{occupied}.lock").acquire(timeout=0))
+        before = launcher_config_path(tmp_path).read_bytes()
+        assert launcher_module.run_launcher(launcher_module.build_parser().parse_args(["--offline", "--repair"])) == 1
+    assert preserved.read_text(encoding="utf-8") == "existing runtime"
+    assert launcher_config_path(tmp_path).read_bytes() == before
+    assert not (tmp_path / ".venv").exists()
+    assert not (tmp_path / "models").exists()
+
+
 def test_launcher_uses_persisted_port_for_command_and_runtime_env(
     tmp_path: Path,
     monkeypatch: MonkeyPatch,
@@ -74,6 +110,7 @@ def test_launcher_uses_persisted_port_for_command_and_runtime_env(
     """重启 Launcher 后，持久化端口必须同时进入 CLI 与实际端口环境变量。"""
     from blc_portable.launcher import main as launcher_module
 
+    from app.analysis.transcription import process_tree
     from config.launcher_settings import save_launcher_config
 
     source_dir = tmp_path / "runtime" / "releases" / "current"
@@ -97,13 +134,40 @@ def test_launcher_uses_persisted_port_for_command_and_runtime_env(
     )
     monkeypatch.setattr(launcher_module, "_ensure_web_port_available", lambda _port: None)
 
-    def fake_run(command: list[str], **kwargs: object):
-        captured["command"] = command
-        captured["env"] = kwargs["env"]
-        captured["cwd"] = kwargs["cwd"]
-        return launcher_module.subprocess.CompletedProcess(command, 0)
+    class ExternalProcess:
+        pid = 321
+        returncode = 0
 
-    monkeypatch.setattr(launcher_module.subprocess, "run", fake_run)
+        def __init__(self, command: list[str], **kwargs: object) -> None:
+            captured.update(command=command, **kwargs)
+            self.stdin = io.BytesIO()
+            if os.name != "nt":
+                captured["command"] = command[8:]
+                os.write(kwargs["pass_fds"][-1], b'{"kind":"ready","guardian":987654321}\n')
+
+        def wait(self, timeout: float | None = None) -> int:
+            return self.returncode
+
+    class ExternalTree:
+        def __init__(self, pid: int) -> None:
+            assert pid == ExternalProcess.pid
+            captured["owned"] = True
+            self.parent_pipe = None
+
+        def own_parent_pipe(self, descriptor: int) -> None:
+            self.parent_pipe = descriptor
+
+        def resume_suspended(self) -> None:
+            captured["resumed"] = True
+
+        def terminate(self) -> None:
+            captured["terminated"] = True
+            if self.parent_pipe is not None:
+                os.close(self.parent_pipe)
+                self.parent_pipe = None
+
+    monkeypatch.setattr(launcher_module.subprocess, "Popen", ExternalProcess)
+    monkeypatch.setattr(process_tree, "ProcessTree", ExternalTree)
 
     assert launcher_module.run_launcher(launcher_module.build_parser().parse_args([])) == 0
     assert captured["command"] == launcher_module._build_service_command(venv_python, 8080)
@@ -112,7 +176,9 @@ def test_launcher_uses_persisted_port_for_command_and_runtime_env(
     assert env["BLC_WEB_PORT"] == "8080"
     assert env["BLC_APP_ROOT"] == str(tmp_path)
     assert env["BLC_SOURCE_DIR"] == str(source_dir)
+    assert env["_BLC_PARENT_STDIN"] == "1"
     assert captured["cwd"] == str(tmp_path)
+    assert captured["owned"] and captured["resumed"] and captured["terminated"]
 
 
 def test_runtime_repair_preserves_launcher_port(tmp_path: Path) -> None:
@@ -503,3 +569,5 @@ def test_frozen_entry_collects_engine_pack_config_dependencies() -> None:
     assert '(_model_sources_lock, ".")' in content
     assert 'Path("provisioner")' in content
     assert '"provisioner-config"' in content
+    assert '("__init__.py", "file_locks.py")' in content
+    assert 'str(_project_root / "config" / _name), "provisioner/config"' in content

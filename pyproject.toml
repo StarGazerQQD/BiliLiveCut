@@ -11,6 +11,7 @@ requires-python = ">=3.11"
 # AI 相关重型依赖(faster-whisper / anthropic 等)放到可选 extras,
 # 避免在仅需录制时被迫安装,也规避新版本 Python 的 wheel 兼容问题。
 dependencies = [
+    "anyio>=4.0",             # 同步模型 SDK 通过可取消的异步 HTTP 连接执行请求
     "httpx>=0.27",            # 异步 HTTP 客户端:调用 B 站公开接口
     "pydantic>=2.7",          # 数据校验
     "pydantic-settings>=2.3", # 从 .env / 环境变量读取配置

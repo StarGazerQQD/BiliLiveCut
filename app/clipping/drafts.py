@@ -3,16 +3,22 @@ from __future__ import annotations
 
 import hashlib
 import json
+import sys
 from collections.abc import Iterator
 from contextlib import contextmanager
 from dataclasses import dataclass
 from datetime import UTC, datetime
 from pathlib import Path
 
+from loguru import logger
 from pydantic import JsonValue
+from sqlalchemy.exc import SQLAlchemyError
 from sqlmodel import Session, SQLModel, select
 
+from app.core.cancellation import OperationCancelledError
+from app.core.process_control import ProcessCancelledError
 from app.db.entities import CandidateStatus, ClipVariant, FinalClip, HighlightCandidate, HighlightEvent
+from app.jobs.contracts import JobCancelled
 
 
 @dataclass(slots=True)
@@ -36,13 +42,20 @@ def publication(artifacts: tuple[Path, ...]) -> Iterator[None]:
         completed = True
     finally:
         if not completed and artifacts:
-            with get_session() as db:
-                paths = [str(path) for path in artifacts]
-                referenced = db.exec(select(FinalClip.id).where(FinalClip.file_path.in_(paths))).first()
-                variant = db.exec(select(ClipVariant.id).where(ClipVariant.file_path.in_(paths))).first()
-            if referenced is None and variant is None:
-                for path in artifacts:
-                    path.unlink(missing_ok=True)
+            interruption = sys.exception()
+            try:
+                with get_session() as db:
+                    paths = [str(path) for path in artifacts]
+                    referenced = db.exec(select(FinalClip.id).where(FinalClip.file_path.in_(paths))).first()
+                    variant = db.exec(select(ClipVariant.id).where(ClipVariant.file_path.in_(paths))).first()
+                if referenced is None and variant is None:
+                    for path in artifacts:
+                        path.unlink(missing_ok=True)
+            except (OSError, SQLAlchemyError) as cleanup_error:
+                if isinstance(interruption, (OperationCancelledError, ProcessCancelledError, JobCancelled)):
+                    logger.opt(exception=cleanup_error).error("出片取消后草稿清理失败，保留文件待清理")
+                    raise interruption from cleanup_error
+                raise
 
 
 def _snapshot(model: SQLModel) -> dict[str, JsonValue]:
