@@ -15,7 +15,7 @@
 | S4 录制断流恢复 | COMPLETED | M13 至 M15 | 短暂断流、连续短片、无进度、正常下播和人工暂停按状态处理 |
 | S5 崩溃与持久断点恢复 | COMPLETED | M16 至 M22 | 关键提交点终止后可恢复，不丢失已确认结果，不重复外部副作用 |
 | S6 LLM 与证据正确性 | COMPLETED | M23 至 M28 | 保留大容量和真实性校验，各类故障分别可诊断、可恢复 |
-| S7 路径与业务正确性 | IN_PROGRESS | M29 至 M32 | 搬迁副本、审核到渲染、统计和端点恢复验证通过 |
+| S7 路径与业务正确性 | COMPLETED | M29 至 M32 | 搬迁副本、审核到渲染、统计和端点恢复验证通过 |
 | S8 版本与最终验收 | PENDING | 同步版本、内容和来源信息，完成最终工程及制品验收 | 最终源码状态的全部必需门禁通过 |
 
 各代码阶段按目标测试、必需完整回归、Ruff 及其他质量检查、相关构建、内容一致性和实际 diff 的顺序验收。当前阶段验收通过前，不开始后续阶段的修改、测试或构建。阶段记录引用实际命令和结果；等待、失败和未执行均不能记录为通过。
@@ -387,3 +387,9 @@ S7 首次完整应用与 Portable 回归为 **4371 passed、29 failed、覆盖�
 交付提交 `c2b0181` 的 CI `41171637848` attempt 1 在 Ubuntu Python 3.11、3.12 和 3.13 中各出现 **3940 passed / 2 failed**，macOS 为 **3941 passed / 2 failed**。两项失败均为上传参数测试在 POSIX 使用硬编码 `D:\视频 文件\录播.mp4`，该输入被正式存储路径解析器判定为无效相对引用。三个 Windows 应用矩阵、Portable、依赖审计、uv 安装矩阵及 coverage summary 成功，CI status 随四个 POSIX 矩阵失败。Docker、Frontend、Documentation 和 CodeQL 成功；Pages 按 PR 条件跳过。原始失败结果保留，不重跑或跳过失败用例。
 
 测试改用当前系统临时目录中的真实 Unicode、空格媒体文件，同时覆盖绝对和相对存储引用。两个命令模板逐字保留，包括 Windows 可执行文件路径；原特殊字符、引号、换行及 `shell=False` 断言保留，并增加完整 argv 和一次调用断言。产品路径解析器和 POSIX 非法 drive 拒绝规则不变。关联目标集 **106 passed**，补全完整参数断言后的该文件 **11 passed**；同一最终完整命令为 **4426 passed、覆盖率 86.14%**，包含真实 sdist/wheel，保留一条 setuptools warning。全部 12 项 pre-commit、OpenAPI 和完整发布审计再次通过。业务来源 `a2eefe8`、Payload、Lite EXE 及冻结验收未变化，原结果继续有效。S7 仍为 `IN_PROGRESS`，等待本次修正的适用远端 CI。
+
+### S7 远端验收完成
+
+提交 `3674a498d8a81854825b8e86f6215cce341a2bff` 的五项工作流均在 attempt 1 成功结束：CI `41174207720`、Docker `41174207885`、Frontend `41174207893`、Documentation `41174207719`、CodeQL `41174207730`。CI 全部 15 个 job 通过，包含七个应用矩阵、三个 uv 安装矩阵、Portable、审计、coverage summary 和 CI status。23 项 commit checks 中 22 项成功，Pages 部署按 PR 条件跳过，无 legacy statuses。四个 POSIX 矩阵的上传参数回归全部通过，未重跑旧失败工作流。
+
+本地最终完整回归、质量、正式来源制品及冻结验收与上述远端门禁全部通过；独立只读复核确认日志、实际摘要和阶段记录一致。S7 为 `COMPLETED`，S8 保持 `PENDING`。本次完成记录仅改文档，应用测试与二进制重建为 N/A（业务、测试、来源和制品均未变化），继续执行适用文档检查、质量、构建和实际 diff 检查后追加提交及评论，再开始 S8。
