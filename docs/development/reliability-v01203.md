@@ -381,3 +381,9 @@ S7 首次完整应用与 Portable 回归为 **4371 passed、29 failed、覆盖�
 | `BiliLiveCut-EnginePack-0.1.20.2-alpha.zip`（fixture） | 16258 | `eb2c1912944771c4a5b2c05fc88d19de1f2fcded09c9a0d82dc331c4eeac35b9` | `FB5DF364` |
 
 隔离 Portable 副本保留旧启动器后完成离线更新、依赖及 Runtime 检查、四引擎 fixture 准备。实际终止后端、前端和 console 后，各自恢复唯一完整新代，旧进程与端口全部回收；冻结宿主异常退出后回收所属进程并保留无关哨兵。启动期间真实抢占前端端口时仅启动一代 API，退出码为 `1`，所属进程与 API 端口均回收。源码基线及实际 diff 检查完成后提交本阶段记录，S7 保持 `IN_PROGRESS` 等待远端验收，S8 为 `PENDING`。
+
+### S7 跨平台上传参数验收修正
+
+交付提交 `c2b0181` 的 CI `41171637848` attempt 1 在 Ubuntu Python 3.11、3.12 和 3.13 中各出现 **3940 passed / 2 failed**，macOS 为 **3941 passed / 2 failed**。两项失败均为上传参数测试在 POSIX 使用硬编码 `D:\视频 文件\录播.mp4`，该输入被正式存储路径解析器判定为无效相对引用。三个 Windows 应用矩阵、Portable、依赖审计、uv 安装矩阵及 coverage summary 成功，CI status 随四个 POSIX 矩阵失败。Docker、Frontend、Documentation 和 CodeQL 成功；Pages 按 PR 条件跳过。原始失败结果保留，不重跑或跳过失败用例。
+
+测试改用当前系统临时目录中的真实 Unicode、空格媒体文件，同时覆盖绝对和相对存储引用。两个命令模板逐字保留，包括 Windows 可执行文件路径；原特殊字符、引号、换行及 `shell=False` 断言保留，并增加完整 argv 和一次调用断言。产品路径解析器和 POSIX 非法 drive 拒绝规则不变。关联目标集 **106 passed**，补全完整参数断言后的该文件 **11 passed**；同一最终完整命令为 **4426 passed、覆盖率 86.14%**，包含真实 sdist/wheel，保留一条 setuptools warning。全部 12 项 pre-commit、OpenAPI 和完整发布审计再次通过。业务来源 `a2eefe8`、Payload、Lite EXE 及冻结验收未变化，原结果继续有效。S7 仍为 `IN_PROGRESS`，等待本次修正的适用远端 CI。
