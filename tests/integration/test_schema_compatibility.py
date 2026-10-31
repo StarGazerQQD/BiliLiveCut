@@ -32,7 +32,9 @@ def _dump(path: Path) -> tuple[str, ...]:
         return tuple(connection.iterdump())
 
 
-@pytest.mark.parametrize("version", ["0.1.20.0-alpha", "0.1.20.1-alpha", "0.1.20.2-alpha", "9.0.0-alpha"])
+@pytest.mark.parametrize(
+    "version", ["0.1.20.0-alpha", "0.1.20.1-alpha", "0.1.20.2-alpha", "0.1.20.3-alpha", "9.0.0-alpha"]
+)
 def test_application_upgrade_opens_same_format_without_rewriting_data(
     temp_db: None, monkeypatch: pytest.MonkeyPatch, version: str
 ) -> None:

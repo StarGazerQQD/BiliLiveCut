@@ -1,6 +1,6 @@
 # Portable 安装与构建
 
-**版本：V0.1.20.2 Alpha** (`0.1.20.2-alpha`)
+**版本：V0.1.20.3 Alpha** (`0.1.20.3-alpha`)
 
 本文介绍 Windows Portable 的发行结构、模型准备、运行依赖和构建方法。第一次使用请按下方用户指南完成安装；升级前停止服务并备份运行目录，数据库完整格式校验通过时可复用，不兼容格式会保留并拒绝启动。常见问题见[故障排查](../../docs/features/troubleshooting.md)。
 
@@ -119,7 +119,7 @@ python build_engine_pack.py --from-cache  # 从已验证缓存构建
 
 输出:
 
-- dist/engine-pack/BiliLiveCut-EnginePack-0.1.20.2-alpha.zip
+- dist/engine-pack/BiliLiveCut-EnginePack-0.1.20.3-alpha.zip
 - dist/engine-pack/engine-pack-manifest.json
 - dist/engine-pack/CRC32SUMS.txt
 - dist/engine-pack/SHA256SUMS.txt
@@ -230,7 +230,7 @@ packaging/portable/                     # ★ 即插即用分发版根目录 (�
 ├── runtime/                  # ★ Runtime 版本管理
 │   ├── current.json          #   当前激活的 Release 信息
 │   └── releases/
-│       └── 0.1.20.2-alpha+<source-sha>+<payload-hash>/  # 内容寻址的固定版本源码
+│       └── 0.1.20.3-alpha+<source-sha>+<payload-hash>/  # 内容寻址的固定版本源码
 │
 ├── .venv/                    # Python 虚拟环境（launcher.exe 自动创建）
 ├── models/                   # 四引擎 ASR 模型 (由 Engine Pack 或在线下载安装)
@@ -328,8 +328,8 @@ PREFERRED_STREAM_PROTOCOL=hls    # 取流协议：hls（稳定）或 flv
 STREAM_QUALITY=10000             # 清晰度：10000=原画，400=蓝光，250=超清
 RECONNECT_MAX_BACKOFF_S=30       # 断流后最大重试等待秒数
 LIVE_POLL_INTERVAL_S=15          # 检查直播间开播/下播的间隔（秒）
-RECORDING_RECONNECT_MAX_ATTEMPTS=20  # 连续无法恢复的次数上限；成功产出片段后归零，0=禁用次数限制
-RECORDING_RECONNECT_MAX_ELAPSED_S=300 # 连续断流最长秒数；成功产出片段后归零，0=禁用时间限制
+RECORDING_RECONNECT_MAX_ATTEMPTS=20  # 连续故障次数上限；同连接登记媒体累计达到目标分段时长后归零
+RECORDING_RECONNECT_MAX_ELAPSED_S=180 # 连续故障秒数；单项0关闭对应限制，双0仍保留20次安全上限
 COLLECT_DANMAKU=true             # 录制时采集公开弹幕（登录优先、匿名兜底）
 DANMAKU_LOGIN_RETRY_MAX_ATTEMPTS=5  # 单场登录失败上限（首次计入）；0=始终匿名
 DANMAKU_LOGIN_RETRY_INTERVAL_S=60   # 匿名采集期间重试登录链路的间隔（秒）
@@ -378,11 +378,11 @@ WHISPER_COMPUTE_TYPE=int8                # CPU 推荐 int8
 ```ini
 LLM_DAILY_BUDGET=0                   # 每日预算上限（0=不限）
 TRANSCRIPT_LLM_REFINE_ENABLED=true   # 每个切片 ASR 后整理正文并生成概括；失败保留原始文本
-TRANSCRIPT_LLM_REFINE_MAX_TOKENS=65536  # 五分钟转写整理的最大输出预算
-HIGHLIGHT_LLM_MAX_TOKENS=65536        # 高光复核的最大输出预算（含推理 token）
+TRANSCRIPT_LLM_REFINE_MAX_TOKENS=1048576 # 转写整理业务输出预算，按路由与型号容量收缩
+HIGHLIGHT_LLM_MAX_TOKENS=1048576      # 高光复核业务输出预算（含推理 token）
 ```
 
-**多模型配置**：服务商、base_url、模型、联网参数、价格和 API Key 只在 Web 控制台「模型」Tab 管理。可同时添加 DeepSeek / 通义千问 / Kimi / 智谱 GLM 等服务商并设置优先级，某个不可用时自动切换到下一个。“测试连通”直接测试当前表单且不会保存 API Key；页面会显示每个服务商的响应或错误详情，确认无误后再点击“保存全部”。旧的 `.env` 服务商字段（如 `LLM_API_KEY`、`LLM_BASE_URL`、`LLM_MODEL`）已废弃；`LLM_REQUEST_TIMEOUT_S` 等运行参数仍有效。转写梳理可在「配置 → 功能开关」独立关闭，关闭后仍保留本地 ASR 原文。两类五分钟切片请求默认各预留 `65536` 个最大输出 token，实际消耗仍以服务商返回为准。
+**多模型配置**：服务商、base_url、模型、联网参数、价格和 API Key 只在 Web 控制台「模型」Tab 管理。可同时添加 DeepSeek / 通义千问 / Kimi / 智谱 GLM 等服务商并设置优先级，某个不可用时自动切换到下一个。“测试连通”直接测试当前表单且不会保存 API Key；页面会显示每个服务商的响应或错误详情，确认无误后再点击“保存全部”。旧的 `.env` 服务商字段（如 `LLM_API_KEY`、`LLM_BASE_URL`、`LLM_MODEL`）已废弃；`LLM_REQUEST_TIMEOUT_S` 等运行参数仍有效。转写梳理可在「配置 → 功能开关」独立关闭，关闭后仍保留原始 ASR。两类请求默认业务预算均为 `1048576` 个输出 token，实际请求取业务预算、路由限制、型号上限与剩余上下文的较小值；未知输出能力的路由默认沿用 `65536`，已有设置不自动覆盖，实际消耗以服务商返回为准。
 
 ### 网感资料库（可选，用于热点采集）
 
@@ -474,8 +474,8 @@ BILIUP_UPLOAD_CMD=                          # 自定义上传命令模板
 | 下载模型卡住不动 | 关闭窗口重新双击；已完成引擎和带完成标记的指纹 staging 会直接复用，未完成引擎由 SDK 续传 |
 | ASR 报 `funasr` / `modelscope` 未安装 | Full 应重新校验并解压完整 ZIP；Lite 需重新完成依赖安装 |
 | ASR 主引擎无法加载 | 检查 `models/` 是否完整；无 Engine Pack 时首次需联网下载模型 |
-| 主播下播后仍显示重连 | 默认会在连续失败 20 次或 300 秒后自动收尾；检查 `RECORDING_RECONNECT_MAX_ATTEMPTS` 与 `RECORDING_RECONNECT_MAX_ELAPSED_S` 是否被设为 `0` |
-| 时间线摘要与预览内容不一致 | 确认本场全部 ASR 已完成，再执行“按新阈值重分析”或“按新词典/模型重新转写”；整场总结会把全部最终 ASR 组成一次上下文后重新分析 |
+| 主播下播后仍显示重连 | 明确下播按延迟复核收尾；连续断流每轮默认限制为 20 次或 180 秒，耗尽后错误收尾，自动录制房间冷却后复核。人工暂停、停止及永久错误需要人工处理 |
+| 时间线摘要与预览内容不一致 | 确认本场全部 ASR 已完成，再执行“按新阈值重分析”或“按新词典/模型重新转写”；整场总结按输入容量选择一次综合或分层处理，保留成功节点恢复 |
 | 拒绝候选仍出现在成品列表 | 当前版拒绝操作会同步未发布关联成片；若仍出现请携带候选/成片 ID 和日志反馈 |
 | 弹幕采集提示 `code=-352` | 匿名 token 请求被平台风控拒绝；稍后重试，不要反复登录。录制与实时转写不受影响 |
 | LLM 调用报错 / 空结果 | 在 Web「配置 → 大模型」检查服务商、base_url、模型和 API Key，并使用“测试连通”核验 |

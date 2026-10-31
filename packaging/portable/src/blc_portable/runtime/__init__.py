@@ -11,8 +11,8 @@ from pathlib import Path
 
 # ── 常量 ──────────────────────────────────────────────────
 APP_NAME = "BiliLiveCut"
-VERSION = "V0.1.20.2 Alpha"
-RELEASE_VERSION = "0.1.20.2-alpha"
+VERSION = "V0.1.20.3 Alpha"
+RELEASE_VERSION = "0.1.20.3-alpha"
 SOURCE_COMMIT_SHORT = "a2eefe8"
 
 
