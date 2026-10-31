@@ -71,39 +71,28 @@ def test_journal_failed_delete_preserves_unreplayed_success(tmp_path: Path, monk
 def test_pipeline_after_manual_export_records_remote_result(
     temp_db: None,
     tmp_path: Path,
+    pcm_wav: Path,
     monkeypatch: pytest.MonkeyPatch,
     timeout: bool,
 ) -> None:
     from app.core import settings_store
-    from app.db.entities import HighlightCandidate, HighlightEvent, RawSegment, SegmentTask, UploadAttempt, UploadTask
+    from app.db.entities import SegmentTask, TaskStatus, UploadAttempt, UploadTask
     from app.db.session import get_session
     from app.pipeline.lease import TaskLease
     from app.pipeline.workers.publish import run_publish
     from app.publishing import uploader
     from app.web.routers.clips import confirm_manual_upload
+    from tests.approval_fixtures import seed_automatic_task
 
-    now = datetime.now(UTC)
-    with get_session() as db:
-        db.add(HighlightCandidate(id=1, session_id=1, start_ts=now, peak_ts=now, end_ts=now, dedup_hash="remote"))
+    task_id = seed_automatic_task(pcm_wav, monkeypatch, stage=TaskStatus.APPROVED)
     clip_id = seed_clip(tmp_path)
     with get_session() as db:
-        db.add(RawSegment(id=1, session_id=1, seq=0, file_path=str(tmp_path / "raw.ts")))
-        db.add(HighlightEvent(id=1, candidate_id=1, session_id=1, review_status="approved_solo"))
-        db.add(
-            SegmentTask(
-                id=1,
-                segment_id=1,
-                session_id=1,
-                event_id=1,
-                candidate_id=1,
-                clip_id=clip_id,
-                stage="publishing",
-                claimed_by="audit",
-                lease_token="token",
-            )
-        )
+        task = db.get(SegmentTask, task_id)
+        task.clip_id, task.stage, task.claimed_by, task.lease_token = clip_id, "publishing", "audit", "token"
+        db.add(task)
         db.add(UploadTask(clip_id=clip_id, uploader="manual", status="success"))
     settings_store.set_bool("biliup_enabled", True)
+    settings_store.set_bool("auto_upload", True)
     monkeypatch.setattr(uploader.settings, "biliup_upload_cmd", "biliup upload {file}")
     calls: list[list[str]] = []
 
@@ -114,9 +103,9 @@ def test_pipeline_after_manual_export_records_remote_result(
         return subprocess.CompletedProcess(command, 0, b"BV12345678901", b"")
 
     monkeypatch.setattr(uploader.subprocess, "run", execute)
-    run_publish(TaskLease(1, "audit", "token", "publishing"))
+    run_publish(TaskLease(task_id, "audit", "token", "publishing"))
     with get_session() as db:
-        task = db.get(SegmentTask, 1)
+        task = db.get(SegmentTask, task_id)
         assert task.stage == ("awaiting_publish_confirmation" if timeout else "completed")
         assert task.lease_token is None
         assert db.exec(select(UploadAttempt)).one().status == ("reconciliation_required" if timeout else "success")
@@ -124,7 +113,7 @@ def test_pipeline_after_manual_export_records_remote_result(
         confirm_manual_upload(clip_id, submission_id="BV12345678901")
         with get_session() as db:
             assert db.exec(select(UploadAttempt)).one().status == "success"
-            assert db.get(SegmentTask, 1).stage == "completed"
+            assert db.get(SegmentTask, task_id).stage == "completed"
     assert len(calls) == 1
 
 

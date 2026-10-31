@@ -7,6 +7,8 @@ from typing import TYPE_CHECKING
 import pytest
 from sqlmodel import select
 
+from app.core.paths import resolve_storage_path
+
 if TYPE_CHECKING:
     from _pytest.monkeypatch import MonkeyPatch
 
@@ -55,7 +57,7 @@ def test_transcribe_compute_does_not_read_undefined_settings(temp_db: None, monk
         """返回最小合法主引擎结果的测试管线。"""
 
         def transcribe(self, audio_path: str, initial_prompt: str | None = None) -> ASRTranscriptResult:
-            assert audio_path == "test.ts"
+            assert audio_path == str(resolve_storage_path("test.ts"))
             assert initial_prompt is None
             return ASRTranscriptResult(
                 text="测试转写",

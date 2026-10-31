@@ -17,6 +17,7 @@ from sqlalchemy.exc import SQLAlchemyError
 from sqlmodel import select
 
 from app.clipping.paths import build_final_clip_path, build_lease_partial_path
+from app.core.paths import resolve_storage_path
 from app.db.entities import (
     ClipVariant,
     FinalClip,
@@ -86,7 +87,7 @@ def write_media_pair(path: Path, color: str = "blue") -> None:
 
 
 def content_hash(path: str | Path) -> str:
-    return hashlib.sha256(Path(path).read_bytes()).hexdigest()
+    return hashlib.sha256(resolve_storage_path(path).read_bytes()).hexdigest()
 
 
 def seed_render(tmp_path: Path) -> tuple[TaskLease, dict[str, Any]]:
@@ -105,7 +106,11 @@ def seed_render(tmp_path: Path) -> tuple[TaskLease, dict[str, Any]]:
         db.add(candidate)
         db.flush()
         event = HighlightEvent(
-            candidate_id=candidate.id, session_id=1, segment_id=segment.id, review_status=ReviewStatus.APPROVED_SOLO
+            candidate_id=candidate.id,
+            session_id=1,
+            segment_id=segment.id,
+            review_status=ReviewStatus.APPROVED_SOLO,
+            review_by="manual",
         )
         db.add(event)
         db.flush()
@@ -151,7 +156,7 @@ def test_render_and_reuse_reference_actual_final_clip(temp_db: None, tmp_path: P
         assert clip.id != variant.id and clip.candidate_id == task.candidate_id
         assert content_hash(clip.file_path) == result["content_hash"]
         assert (clip.width, clip.height) == (96, 64)
-        assert clip.cover_path == variant.cover_path == str(Path(clip.file_path).with_suffix(".jpg"))
+        assert clip.cover_path == variant.cover_path == Path(clip.file_path).with_suffix(".jpg").as_posix()
         assert content_hash(clip.cover_path) == result["cover_hash"]
         task.stage = TaskStatus.RENDERING
         task.claimed_by = lease.worker_id
@@ -384,10 +389,13 @@ def test_uncertain_database_commit_checks_actual_pair_references(
         variant = db.exec(select(ClipVariant)).one()
         if committed:
             assert clip is not None and variant.render_status == RenderStatus.DONE
-            assert Path(clip.file_path).is_file() and Path(clip.cover_path).is_file()
+            assert resolve_storage_path(clip.file_path).is_file() and resolve_storage_path(clip.cover_path).is_file()
         else:
             assert clip is None and variant.render_status == RenderStatus.FAILED
-            assert not Path(variant.file_path).exists() and not Path(variant.cover_path).exists()
+            assert (
+                not resolve_storage_path(variant.file_path).exists()
+                and not resolve_storage_path(variant.cover_path).exists()
+            )
 
 
 @pytest.mark.parametrize("cover_exists", [False, True])
@@ -512,14 +520,14 @@ def test_resume_rejects_changed_media_or_inputs(
     with get_session() as db:
         task = db.get(SegmentTask, lease.task_id)
         clip = db.get(FinalClip, task.clip_id)
-        video_path, cover_path = Path(clip.file_path), Path(clip.cover_path)
+        video_path, cover_path = resolve_storage_path(clip.file_path), resolve_storage_path(clip.cover_path)
         if change == "candidate":
             candidate = db.get(HighlightCandidate, task.candidate_id)
             candidate.end_ts += timedelta(seconds=1)
             db.add(candidate)
         if change == "source":
             segment = db.get(RawSegment, task.segment_id)
-            Path(segment.file_path).write_bytes(b"changed original input")
+            resolve_storage_path(segment.file_path).write_bytes(b"changed original input")
         task.stage, task.claimed_by, task.lease_token = TaskStatus.RENDERING, "next-worker", "next-lease"
         db.add(task)
     if change == "truncate":

@@ -22,6 +22,7 @@ from app.clipping.core import (
 )
 from app.clipping.models import ClipOptions
 from app.core.config import settings
+from app.core.paths import resolve_storage_path
 from app.db.entities import (
     ClipVariant,
     ClipVariantType,
@@ -297,29 +298,31 @@ def test_clean_main_and_subtitled_counterpart_share_covering_segments(
         candidate_id = candidate.id
     assert candidate_id is not None
     clip = produce_clip(candidate_id, ClipOptions(loudnorm=False, subtitle=False, preset="ultrafast"))
-    subtitle_file = Path(clip.file_path).with_suffix(".srt")
+    clip_path = resolve_storage_path(clip.file_path)
+    subtitle_file = clip_path.with_suffix(".srt")
     if transcript_mode != "words":
         assert not subtitle_file.exists()
         with get_session() as db:
             variants = db.exec(select(ClipVariant)).all()
             assert variants and all(not item.has_subtitles for item in variants)
             assert not any(item.variant_type == ClipVariantType.SUBTITLED for item in variants)
-        assert not Path(clip.file_path).with_stem(f"{Path(clip.file_path).stem}_subtitled").exists()
+        assert not clip_path.with_stem(f"{clip_path.stem}_subtitled").exists()
         return
     assert "CORRECT" in subtitle_file.read_text(encoding="utf-8")
     assert "wrong" not in subtitle_file.read_text(encoding="utf-8")
     at_s = 1.4 if with_intro else 0.4
-    assert _bright_pixels(Path(clip.file_path), at_s) == 0
+    assert _bright_pixels(clip_path, at_s) == 0
     with get_session() as db:
         counterpart = db.exec(select(ClipVariant).where(ClipVariant.variant_type == ClipVariantType.SUBTITLED)).one()
         assert counterpart.has_subtitles is True
-        assert Path(counterpart.file_path).is_file()
-        assert _bright_pixels(Path(counterpart.file_path), at_s) > 20
+        counterpart_path = resolve_storage_path(counterpart.file_path)
+        assert counterpart_path.is_file()
+        assert _bright_pixels(counterpart_path, at_s) > 20
         if with_intro:
             assert counterpart.duration_s == pytest.approx(3, abs=0.15)
     if with_intro:
         assert clip.duration_s == pytest.approx(3, abs=0.15)
-        assert _bright_pixels(Path(clip.file_path), 0.4) > 20
+        assert _bright_pixels(clip_path, 0.4) > 20
         output = tmp_path / "compute.mp4"
         result = render_clip_to_file(
             candidate_id, output, ClipOptions(loudnorm=False, subtitle=True, preset="ultrafast")
@@ -399,7 +402,7 @@ def test_danmaku_and_asr_share_cross_segment_timeline_in_all_render_paths(
     dimensions = (1080, 1920) if vertical else (320, 240)
     assert (clip.width, clip.height) == dimensions
     assert clip.duration_s == pytest.approx(3 + offset, abs=0.15)
-    ass = Path(clip.file_path).with_suffix(".ass")
+    ass = resolve_storage_path(clip.file_path).with_suffix(".ass")
     assert "0:00:00.20,0:00:02.20" in ass.read_text(encoding="utf-8")
     with get_session() as db:
         variants = db.exec(select(ClipVariant).where(ClipVariant.file_path != None)).all()  # noqa: E711
@@ -413,7 +416,7 @@ def test_danmaku_and_asr_share_cross_segment_timeline_in_all_render_paths(
     assert len({item.file_path for item in variants}) == 4
     for item in variants:
         assert item.render_status == "done"
-        video = Path(item.file_path)
+        video = resolve_storage_path(item.file_path)
         assert _bright_pixels(video, 0.7 + offset, dimensions) > 30
         assert _bright_pixels(video, 2.7 + offset, dimensions) == 0
         if item.variant_type == ClipVariantType.NO_SUBTITLES:

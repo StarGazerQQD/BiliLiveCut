@@ -14,7 +14,7 @@ from sqlmodel import Session, select
 
 from app.clipping.core import probe_media
 from app.core.media_usage import media_operation
-from app.core.paths import session_raw_dir
+from app.core.paths import resolve_storage_path, session_raw_dir
 from app.db.entities import LiveRoom, RawSegment, RecordingSession, SessionStatus, utcnow
 from app.db.session import get_session
 from app.recording import intents
@@ -23,12 +23,15 @@ from app.recording.writer_ownership import SessionWriter
 
 
 def _attempt_files(attempt: intents.RecordingAttempt, directory: Path) -> tuple[list[Path], list[str]]:
-    if Path(attempt.directory).resolve() != directory or Path(attempt.segment_list).resolve().parent != directory:
+    if (
+        resolve_storage_path(attempt.directory) != directory
+        or resolve_storage_path(attempt.segment_list).parent != directory
+    ):
         raise ValueError("持久录制线路与当前场次目录不一致")
     pattern = re.compile(rf"{re.escape(attempt.prefix)}[0-9]{{5,}}\.ts")
     files: set[Path] = set()
     errors = []
-    listing = Path(attempt.segment_list)
+    listing = resolve_storage_path(attempt.segment_list)
     if listing.exists():
         with listing.open(encoding="utf-8", newline="") as handle:
             try:
@@ -58,9 +61,12 @@ def recover_pending_recordings(finalize: Callable[[Session, int], object]) -> li
         with SessionWriter.recover(record.writer):
             directory = session_raw_dir(record.session_id).resolve()
             with get_session() as db:
-                registered = set(
-                    db.exec(select(RawSegment.file_path).where(RawSegment.session_id == record.session_id)).all()
-                )
+                registered = {
+                    str(resolve_storage_path(value))
+                    for value in db.exec(
+                        select(RawSegment.file_path).where(RawSegment.session_id == record.session_id)
+                    ).all()
+                }
             errors: list[str] = []
             for attempt in record.attempts:
                 paths, failures = _attempt_files(attempt, directory)

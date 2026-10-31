@@ -3,7 +3,9 @@
 from __future__ import annotations
 
 import asyncio
-from datetime import UTC, datetime
+import hashlib
+import json
+from datetime import UTC, datetime, timedelta
 from typing import Literal, TypeVar
 from weakref import WeakKeyDictionary
 
@@ -15,7 +17,7 @@ from app.core.config import settings
 from app.core.sanitize import safe_exception_summary
 from app.db.entities import AppSetting, LiveRoom, RecordingSession, SessionStatus
 from app.db.session import get_session
-from app.plugins.live_source import SourceError
+from app.plugins.live_source import SourceError, SourceRoom
 from app.sources.registry import source_registry
 from app.sources.rooms import room_source
 
@@ -28,6 +30,11 @@ class RoomMetadata(BaseModel):
     attempted_at: AwareDatetime | None = None
     observed_at: AwareDatetime | None = None
     error: str | None = None
+    source: SourceRoom | None = None
+    source_revision: str | None = None
+    consecutive_failures: int = Field(default=0, ge=0)
+    next_retry_at: AwareDatetime | None = None
+    failure_kind: str | None = None
 
 
 class SessionMetadata(BaseModel):
@@ -145,6 +152,23 @@ def session_title_at(db: Session, session_id: int, observed_at: datetime | None 
     return title
 
 
+def _source_revision(db: Session, room: LiveRoom) -> str:
+    binding = db.get(AppSetting, f"source_room:{room.id}")
+    data = [room.platform, room.room_id, room.input_url, binding.value if binding else None]
+    return hashlib.sha256(json.dumps(data, ensure_ascii=False).encode()).hexdigest()
+
+
+def _source_unchanged(db: Session, room: LiveRoom | None, revision: str, identity: SourceRoom | None) -> bool:
+    if room is None or _source_revision(db, room) != revision:
+        return False
+    if identity is None:
+        return True
+    try:
+        return room_source(room, db) == identity
+    except SourceError:
+        return False
+
+
 async def refresh_room_metadata(db_id: int) -> None:
     """串行化同房间请求，有界等待，只有房号匹配的非空详情才算成功。"""
     locks = _locks.setdefault(asyncio.get_running_loop(), {})
@@ -154,31 +178,77 @@ async def refresh_room_metadata(db_id: int) -> None:
             if room is None or room.platform == "local":
                 return
             metadata = read_metadata(db, f"room_metadata:{db_id}", RoomMetadata) or RoomMetadata()
-        metadata.attempted_at = datetime.now(UTC)
+            revision = _source_revision(db, room)
+            identity: SourceRoom | None = None
+            identity_error: SourceError | None = None
+            try:
+                identity = room_source(room, db)
+            except SourceError as exc:
+                identity_error = exc
+        now = datetime.now(UTC)
+        if metadata.source_revision not in {None, revision}:
+            metadata = RoomMetadata()
+        if metadata.next_retry_at is not None and now < metadata.next_retry_at:
+            return
+        previous_failure = metadata.failure_kind
+        metadata.attempted_at = now
+        metadata.source_revision, metadata.source = revision, identity
         budget = settings.room_metadata_refresh_timeout_s
         stage = "room_identity"
+        detail_failure = None
         try:
-            identity = room_source(room)
+            if identity_error is not None:
+                raise identity_error
+            assert identity is not None
             stage = "source_room_info"
             async with asyncio.timeout(budget):
                 info = await source_registry.get_room_info(identity)
+            detail_failure = info.metadata_failure
+            if detail_failure is not None:
+                stage = "source_metadata"
+                raise SourceError(detail_failure.message, retry_after=detail_failure.retry_after)
             stage = "validate_title"
             if not info.title or not info.title.strip():
                 raise ValueError("房间详情暂未提供有效标题")
         except (TimeoutError, SourceError, ValueError) as exc:
             diagnostic = f"stage={stage} budget_s={budget:g} {safe_exception_summary(exc)}"
             metadata.error = f"标题刷新失败：{diagnostic}"
-            with get_session() as db:
-                if db.get(LiveRoom, db_id) is not None:
-                    _save(db, f"room_metadata:{db_id}", metadata)
-            logger.warning("标题刷新失败 room={} platform={} {}", db_id, room.platform, diagnostic)
+            code = (
+                detail_failure.code
+                if detail_failure is not None
+                else exc.code
+                if isinstance(exc, SourceError)
+                else type(exc).__name__
+            )
+            metadata.failure_kind = f"{stage}:{code}"
+            metadata.consecutive_failures += 1
+            interval = settings.room_metadata_refresh_interval_s
+            delay = min(interval * 2 ** min(metadata.consecutive_failures - 1, 10), max(interval, 600))
+            if isinstance(exc, SourceError) and exc.retry_after is not None:
+                delay = max(delay, exc.retry_after)
+            retry_now = datetime.now(UTC)
+            latest = datetime.max.replace(tzinfo=UTC)
+            metadata.next_retry_at = (
+                latest if delay >= (latest - retry_now).total_seconds() else retry_now + timedelta(seconds=delay)
+            )
+            with get_session(operation="room_metadata_failure") as db:
+                db.connection().exec_driver_sql("BEGIN IMMEDIATE")
+                if not _source_unchanged(db, db.get(LiveRoom, db_id), revision, identity):
+                    return
+                _save(db, f"room_metadata:{db_id}", metadata)
+            if previous_failure != metadata.failure_kind:
+                logger.warning(
+                    "标题刷新失败 room={} platform={} retry_s={} {}", db_id, room.platform, delay, diagnostic
+                )
             return
 
         now = datetime.now(UTC)
-        with get_session() as db:
+        with get_session(operation="room_metadata_success") as db:
+            db.connection().exec_driver_sql("BEGIN IMMEDIATE")
             room = db.get(LiveRoom, db_id)
-            if room is None or room_source(room, db) != identity:
+            if not _source_unchanged(db, room, revision, identity):
                 return
+            assert room is not None
             room.title = info.title.strip()
             if info.uploader_name:
                 room.uploader_name = info.uploader_name.strip()
@@ -186,6 +256,10 @@ async def refresh_room_metadata(db_id: int) -> None:
             db.add(room)
             metadata.observed_at = info.observed_at
             metadata.error = None
+            failures = metadata.consecutive_failures
+            metadata.consecutive_failures = 0
+            metadata.next_retry_at = None
+            metadata.failure_kind = None
             _save(db, f"room_metadata:{db_id}", metadata)
             sessions = db.exec(
                 select(RecordingSession).where(
@@ -218,3 +292,5 @@ async def refresh_room_metadata(db_id: int) -> None:
                 snapshot.last_title = room.title
                 snapshot.observed_at = info.observed_at
                 _save(db, key, snapshot)
+        if failures:
+            logger.info("标题刷新恢复 room={} prior_failures={}", db_id, failures)

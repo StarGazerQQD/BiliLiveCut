@@ -186,7 +186,7 @@ def remux_transcript_source(transcript_id: int) -> Path:
     :raises TranscriptNotFoundError: 转写或片段不存在。
     :raises TranscriptMediaError: 源文件越界、缺失、探测或 FFmpeg 失败。
     """
-    from app.core.paths import raw_dir, session_clips_dir
+    from app.core.paths import raw_dir, resolve_storage_path, session_clips_dir
 
     with get_session() as db:
         transcript = db.get(Transcript, transcript_id)
@@ -195,8 +195,12 @@ def remux_transcript_source(transcript_id: int) -> Path:
         segment = db.get(RawSegment, transcript.segment_id)
         if segment is None:
             raise TranscriptNotFoundError("转写对应的原始片段不存在")
-        source = Path(segment.file_path).resolve()
+        reference = segment.file_path
 
+    try:
+        source = resolve_storage_path(reference)
+    except ValueError as exc:
+        raise TranscriptMediaError("原始片段路径无效") from exc
     raw_root = raw_dir().resolve()
     if not source.is_relative_to(raw_root):
         raise TranscriptMediaError("原始片段不在受控录像目录内")

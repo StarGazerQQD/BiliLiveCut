@@ -893,7 +893,7 @@ def _submit_review_sync(
     from datetime import UTC
     from datetime import datetime as _dt
 
-    from app.db.entities import CandidateStatus, HighlightCandidate, ReviewStatus, TaskStatus
+    from app.db.entities import HighlightCandidate, ReviewStatus, TaskStatus
     from app.db.session import get_session
     from app.web.services.review_workflow import (
         add_audit,
@@ -951,17 +951,19 @@ def _submit_review_sync(
             # V0.1.12.8: 正向决断统一走 approve_event_and_task, 传入外层 db
             from app.pipeline.approval import approve_event_and_task
 
+            approved = approve_event_and_task(
+                task_id=task.id if task is not None else None,
+                event_id=event.id,
+                approved_by=actor,
+                reason=reason,
+                source="human",
+                review_decision=decision,
+                db=db,
+            )
+            if not approved:
+                raise HTTPException(409, "审核来源关联无效，未提交本次批准")
             if task is not None:
-                approved = approve_event_and_task(
-                    task_id=task.id,
-                    event_id=event.id,
-                    approved_by=actor,
-                    reason=reason,
-                    source="human",
-                    review_decision=decision,
-                    db=db,
-                )
-                if approved and decision == ReviewStatus.APPROVED_SOLO:
+                if decision == ReviewStatus.APPROVED_SOLO:
                     from app.pipeline.stage_result import enqueue_next
 
                     if task.stage == TaskStatus.APPROVED:
@@ -970,20 +972,7 @@ def _submit_review_sync(
                     elif task.stage == TaskStatus.APPROVED_WAITING_RENDER:
                         enqueue_next(task, TaskStatus.QUEUED_FOR_RENDER)
                         db.add(task)
-                event.review_status = decision
-                event.review_reason = reason
-                event.review_by = actor
-                event.updated_at = _dt.now(UTC)
-                db.add(event)
             else:
-                # 无关联 task 时仅更新 Event + Candidate
-                event.review_status = decision
-                event.review_reason = reason
-                event.review_by = actor
-                event.updated_at = _dt.now(UTC)
-                db.add(event)
-                c.status = CandidateStatus.APPROVED
-                db.add(c)
                 enqueue_unlinked_render = decision == ReviewStatus.APPROVED_SOLO
         elif decision in (ReviewStatus.REJECTED, ReviewStatus.NOT_EXCITING):
             from app.pipeline.rejection import reject_candidate_and_outputs

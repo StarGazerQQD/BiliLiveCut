@@ -16,6 +16,7 @@ from sqlalchemy.exc import SQLAlchemyError
 from sqlmodel import Session, SQLModel, select
 
 from app.core.cancellation import OperationCancelledError
+from app.core.paths import storage_path_aliases
 from app.core.process_control import ProcessCancelledError
 from app.db.entities import CandidateStatus, ClipVariant, FinalClip, HighlightCandidate, HighlightEvent
 from app.jobs.contracts import JobCancelled
@@ -45,9 +46,15 @@ def publication(artifacts: tuple[Path, ...]) -> Iterator[None]:
             interruption = sys.exception()
             try:
                 with get_session() as db:
-                    paths = [str(path) for path in artifacts]
-                    referenced = db.exec(select(FinalClip.id).where(FinalClip.file_path.in_(paths))).first()
-                    variant = db.exec(select(ClipVariant.id).where(ClipVariant.file_path.in_(paths))).first()
+                    paths = [alias for path in artifacts for alias in storage_path_aliases(path)]
+                    referenced = db.exec(
+                        select(FinalClip.id).where(FinalClip.file_path.in_(paths) | FinalClip.cover_path.in_(paths))
+                    ).first()
+                    variant = db.exec(
+                        select(ClipVariant.id).where(
+                            ClipVariant.file_path.in_(paths) | ClipVariant.cover_path.in_(paths)
+                        )
+                    ).first()
                 if referenced is None and variant is None:
                     for path in artifacts:
                         path.unlink(missing_ok=True)

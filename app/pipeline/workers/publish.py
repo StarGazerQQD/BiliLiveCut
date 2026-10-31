@@ -9,17 +9,22 @@ from __future__ import annotations
 
 import logging
 import uuid
+from contextlib import nullcontext
 from datetime import UTC, datetime
 from typing import Any
 
 from sqlalchemy.exc import SQLAlchemyError
 from sqlmodel import Session, select
 
+from app.analysis.editorial_review_sources import media_validation_scope
 from app.core.media_usage import media_reference_scope
 from app.core.sanitize import sanitize_diagnostic
+from app.core.settings_store import current_bool
 from app.db.entities import (
     ClipStatus,
     FinalClip,
+    HighlightCandidate,
+    HighlightEvent,
     SegmentTask,
     TaskStatus,
     UploadAttempt,
@@ -100,6 +105,67 @@ def _atomic_claim_upload_task(db: Session, upload_task_id: int, worker_id: str) 
     return int(row[0]) if row[0] is not None else None
 
 
+def _receipt_matches_task(db: Session, task: SegmentTask, clip_id: int) -> bool:
+    clip = db.get(FinalClip, clip_id)
+    candidate = db.get(HighlightCandidate, task.candidate_id) if task.candidate_id is not None else None
+    event = db.get(HighlightEvent, task.event_id) if task.event_id is not None else None
+    return (
+        clip is not None
+        and candidate is not None
+        and event is not None
+        and task.clip_id == clip.id
+        and clip.candidate_id == candidate.id
+        and candidate.session_id == task.session_id
+        and event.candidate_id == candidate.id
+        and event.session_id == task.session_id
+    )
+
+
+def _completed_upload(
+    db: Session,
+    clip_id: int,
+    *,
+    task_lease: TaskLease | None = None,
+    job_attempt: JobAttempt | None = None,
+) -> dict[str, object] | None:
+    """恢复实际成功回执，仅核对归属及租约，不重新要求发送资格。"""
+    success = db.exec(
+        select(UploadAttempt)
+        .join(UploadTask, UploadTask.id == UploadAttempt.upload_task_id)
+        .where(
+            UploadAttempt.clip_id == clip_id,
+            UploadTask.clip_id == clip_id,
+            UploadAttempt.status == UploadStatus.SUCCESS,
+            UploadAttempt.remote_id != None,  # noqa: E711
+            UploadAttempt.remote_id != "",
+        )
+    ).first()
+    if success is None:
+        return None
+    if task_lease is not None:
+        if not still_owns_lease(db, task_lease):
+            return {"error": "lease lost before receipt recovery", "permanent": False}
+        task = db.get(SegmentTask, task_lease.task_id)
+        assert task is not None
+        if not _receipt_matches_task(db, task, clip_id):
+            return {"error": "成功回执与发布任务来源不一致", "permanent": True}
+    if job_attempt is not None:
+        from app.publishing.job_recovery import bind_upload_job
+
+        upload_task = db.get(UploadTask, success.upload_task_id)
+        assert upload_task is not None
+        bind_upload_job(db, job_attempt, upload_task, success)
+    return {
+        "attempt_id": success.id,
+        "attempt_token": success.attempt_token,
+        "publish_generation": success.publish_generation,
+        "clip_id": clip_id,
+        "ready": True,
+        "already_success": True,
+        "remote_id": success.remote_id,
+    }
+
+
 @media_reference_scope()
 def prepare_upload_attempt(
     upload_task_id: int,
@@ -114,38 +180,29 @@ def prepare_upload_attempt(
 
     with get_session() as db:
         snapshot = db.get(UploadTask, upload_task_id)
+        if snapshot is not None:
+            completed = _completed_upload(db, snapshot.clip_id, task_lease=task_lease, job_attempt=job_attempt)
+            if completed is not None:
+                return completed
         clip_snapshot = db.get(FinalClip, snapshot.clip_id) if snapshot else None
     precheck = precheck_clip(clip_snapshot.id) if clip_snapshot is not None else None
     file_proof = UploadFile.inspect(clip_snapshot.file_path) if precheck is not None and precheck.ok else None
     prepared_fingerprint = file_proof.fingerprint(clip_snapshot) if file_proof is not None else None
-    with get_session() as db:
+    validation = media_validation_scope(task_id=task_lease.task_id) if task_lease else nullcontext()
+    with validation, get_session() as db:
         if db.get_bind().dialect.name == "sqlite":
             db.connection().exec_driver_sql("BEGIN IMMEDIATE")
         upload_task = db.get(UploadTask, upload_task_id)
         if upload_task is None:
             return {"error": "上传任务不存在", "permanent": True}
         clip_id = upload_task.clip_id
+        completed = _completed_upload(db, clip_id, task_lease=task_lease, job_attempt=job_attempt)
+        if completed is not None:
+            return completed
         if task_lease is not None:
             error = _publish_source_error(db, task_lease, clip_id)
             if error:
                 return {"error": error, "permanent": True}
-        success = db.exec(
-            select(UploadAttempt).where(UploadAttempt.clip_id == clip_id, UploadAttempt.status == UploadStatus.SUCCESS)
-        ).first()
-        if success is not None:
-            if job_attempt is not None:
-                from app.publishing.job_recovery import bind_upload_job
-
-                bind_upload_job(db, job_attempt, upload_task, success)
-            return {
-                "attempt_id": success.id,
-                "attempt_token": success.attempt_token,
-                "publish_generation": success.publish_generation,
-                "clip_id": clip_id,
-                "ready": True,
-                "already_success": True,
-                "remote_id": success.remote_id,
-            }
         blocked = db.exec(
             select(UploadAttempt).where(
                 UploadAttempt.clip_id == clip_id,
@@ -221,7 +278,9 @@ def _publish_source_error(db: Session, lease: TaskLease, clip_id: int) -> str | 
         return "成片与发布任务来源不一致"
     if clip.status == ClipStatus.REJECTED:
         return "成片已被拒绝"
-    return None
+    from app.pipeline.approval import automatic_publish_error
+
+    return automatic_publish_error(db, task)
 
 
 def prepare_publish_attempt(lease: TaskLease) -> dict[str, Any]:
@@ -229,11 +288,22 @@ def prepare_publish_attempt(lease: TaskLease) -> dict[str, Any]:
     from app.publishing.uploader import enqueue_upload, get_uploader
 
     with get_session() as db:
+        task = db.get(SegmentTask, lease.task_id)
+        if task is not None and task.clip_id is not None:
+            completed = _completed_upload(db, task.clip_id, task_lease=lease)
+            if completed is not None:
+                return completed
+    with media_validation_scope(task_id=lease.task_id), get_session() as db:
+        if db.get_bind().dialect.name == "sqlite":
+            db.connection().exec_driver_sql("BEGIN IMMEDIATE")
         if not still_owns_lease(db, lease):
             return {"error": "lease lost before prepare", "permanent": False}
         task = db.get(SegmentTask, lease.task_id)
         if task is None or task.clip_id is None:
             return {"error": "任务不存在或缺少 clip_id", "permanent": True}
+        completed = _completed_upload(db, task.clip_id, task_lease=lease)
+        if completed is not None:
+            return completed
         error = _publish_source_error(db, lease, task.clip_id)
         if error:
             return {"error": error, "permanent": True}
@@ -273,7 +343,8 @@ def execute_remote_upload(
             from app.core.sanitize import safe_exception_summary
 
             preflight_error = safe_exception_summary(exc)
-    with get_session() as db:
+    validation = media_validation_scope(task_id=task_lease.task_id) if task_lease else nullcontext()
+    with validation, get_session() as db:
         if db.get_bind().dialect.name == "sqlite":
             db.connection().exec_driver_sql("BEGIN IMMEDIATE")
         attempt = db.exec(select(UploadAttempt).where(UploadAttempt.attempt_token == attempt_token)).first()
@@ -296,7 +367,9 @@ def execute_remote_upload(
             binding = read_execution(db, attempt)
             if upload_task is None or not binding.matches(attempt, upload_task):
                 error = "上传占用身份或发布代次已改变"
-            elif uploader.name != binding.uploader or uploader.name == "manual":
+            elif (
+                not current_bool(db, "biliup_enabled") or uploader.name != binding.uploader or uploader.name == "manual"
+            ):
                 error = "自动上传设置已改变，当前尝试不能发送"
             elif clip is None or clip.status == ClipStatus.REJECTED:
                 error = "成片不存在或已被拒绝"
@@ -475,6 +548,8 @@ def commit_publish_and_advance(
 ) -> None:
     """仅根据已持久化的尝试结果推进仍由本租约拥有的任务。"""
     with get_session() as db:
+        if db.get_bind().dialect.name == "sqlite":
+            db.connection().exec_driver_sql("BEGIN IMMEDIATE")
         if not still_owns_lease(db, lease):
             return
         task = db.get(SegmentTask, lease.task_id)
@@ -484,7 +559,7 @@ def commit_publish_and_advance(
                 UploadAttempt.publish_generation == publish_generation,
             )
         ).first()
-        if task is None or attempt is None:
+        if task is None or attempt is None or not _receipt_matches_task(db, task, attempt.clip_id):
             return
         if attempt.status == "success":
             mark_completed(task, 0)

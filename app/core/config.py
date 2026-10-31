@@ -82,7 +82,7 @@ class Settings(BaseSettings):
         description="本地守候配置刷新间隔，同时用于没有推送能力的来源状态查询；Bilibili 开播由事件驱动。",
     )
     room_metadata_refresh_interval_s: int = Field(default=30, ge=5, le=3600)
-    room_metadata_refresh_timeout_s: float = Field(default=3.0, ge=0.1, le=30.0)
+    room_metadata_refresh_timeout_s: float = Field(default=8.0, ge=0.1, le=30.0)
     # 连续无法恢复录制的最大失败次数；0=单项关闭，两项均0仍以20次保护。
     recording_reconnect_max_attempts: int = Field(default=20, ge=0, le=10000)
     # 从取流尝试开始计算的连续故障预算（秒）；健康媒体持续推进不受此寿命限制，0=单项关闭。

@@ -13,13 +13,7 @@ export interface paths {
         };
         /**
          * Get Analytics
-         * @description 返回 Dashboard 统计分析数据。
-         *
-         *     包含:
-         *     - 录制趋势(近 30 天每日录制会话数/时长)
-         *     - 切片统计(总数/已发布/总时长)
-         *     - 候选分布(分数区间分布/状态分布)
-         *     - 直播间排行(按切片数)
+         * @description 按包含今天的 UTC 日历范围汇总录制、产物、候选和房间排行。
          */
         get: operations["get_analytics_api_analytics_get"];
         put?: never;
@@ -3849,7 +3843,9 @@ export type $defs = Record<string, never>;
 export interface operations {
     get_analytics_api_analytics_get: {
         parameters: {
-            query?: never;
+            query?: {
+                days?: number;
+            };
             header?: never;
             path?: never;
             cookie?: never;
@@ -3865,6 +3861,15 @@ export interface operations {
                     "application/json": {
                         [key: string]: unknown;
                     };
+                };
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
                 };
             };
         };

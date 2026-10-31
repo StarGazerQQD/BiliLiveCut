@@ -47,7 +47,7 @@ reason、hook 与 uncertainties 不复述素材中的指令，不填充模板事
 SourceLoader = Callable[[ContextDirection | None], EditorialReviewInputV1 | None]
 
 
-def review_policy_identity() -> dict[str, object]:
+def review_policy_identity(*, providers: list[llm_providers.LLMProvider] | None = None) -> dict[str, object]:
     """描述本次执行策略与实际模型路由，排除密钥和地址。"""
     return {
         "policy": REVIEW_POLICY_VERSION,
@@ -62,7 +62,7 @@ def review_policy_identity() -> dict[str, object]:
                 "capacity": capacity_identity(route),
                 "priority": route.priority,
             }
-            for route in llm_providers.active_providers("analysis")
+            for route in (llm_providers.active_providers("analysis") if providers is None else providers)
         ],
         "attempts": settings.editorial_model_max_attempts,
         "deadline": settings.editorial_model_deadline_s,

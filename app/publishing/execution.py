@@ -4,11 +4,11 @@ from __future__ import annotations
 import hashlib
 import json
 from dataclasses import dataclass
-from pathlib import Path
 
 from pydantic import BaseModel, ConfigDict, Field
 from sqlmodel import Session
 
+from app.core.paths import resolve_storage_path
 from app.db import job_store
 from app.db.entities import AppSetting, FinalClip, UploadAttempt, UploadTask
 from app.jobs.contracts import JobAttempt, JobSuperseded
@@ -16,7 +16,7 @@ from app.pipeline.lease import TaskLease
 
 
 def _stamp(path: str) -> tuple[int, int, int, int, int]:
-    stat = Path(path).stat()
+    stat = resolve_storage_path(path).stat()
     return stat.st_dev, stat.st_ino, stat.st_size, stat.st_mtime_ns, stat.st_ctime_ns
 
 
@@ -33,7 +33,7 @@ class UploadFile:
         """捕获实际发送文件的内容身份，不依赖旧成片摘要或仅文件大小。"""
         stamp = _stamp(path)
         digest = hashlib.sha256()
-        with Path(path).open("rb") as handle:
+        with resolve_storage_path(path).open("rb") as handle:
             for block in iter(lambda: handle.read(1024 * 1024), b""):
                 digest.update(block)
         result = cls(path, digest.hexdigest(), stamp)

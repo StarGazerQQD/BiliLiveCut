@@ -6,7 +6,6 @@ import json
 import math
 from dataclasses import asdict, dataclass
 from datetime import UTC, date, datetime
-from pathlib import Path
 
 from pydantic import BaseModel, ConfigDict, Field
 from sqlmodel import Session, select
@@ -15,6 +14,7 @@ from app.clipping.core import probe_media
 from app.clipping.danmaku import render_danmaku_rows
 from app.clipping.drafts import _snapshot
 from app.clipping.models import ClipOptions
+from app.core.paths import resolve_storage_path
 from app.db.entities import (
     AppSetting,
     ClipVariant,
@@ -45,7 +45,7 @@ class MediaFacts(BaseModel):
 
 def file_stamp(path: str) -> tuple[int, int, int, int, int]:
     """用于短事务复验预检后的文件仍为同一对象。"""
-    stat = Path(path).stat()
+    stat = resolve_storage_path(path).stat()
     return stat.st_dev, stat.st_ino, stat.st_size, stat.st_mtime_ns, stat.st_ctime_ns
 
 
@@ -67,10 +67,10 @@ def verify_media(path: str, expected: MediaFacts | None = None, *, cover: bool =
     """读取完整摘要并探测真实视频或封面，任何缺失和不匹配均失败。"""
     stamp = file_stamp(path)
     digest = hashlib.sha256()
-    with Path(path).open("rb") as handle:
+    with resolve_storage_path(path).open("rb") as handle:
         for chunk in iter(lambda: handle.read(1024 * 1024), b""):
             digest.update(chunk)
-    duration, width, height = probe_media(path)
+    duration, width, height = probe_media(str(resolve_storage_path(path)))
     if not math.isfinite(duration) or width <= 0 or height <= 0:
         raise ValueError("渲染产物缺少有效的视频尺寸或媒体属性")
     if not cover and (duration < 1.0 or stamp[2] <= 1024):

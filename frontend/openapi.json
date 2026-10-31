@@ -3423,8 +3423,22 @@
   "paths": {
     "/api/analytics": {
       "get": {
-        "description": "返回 Dashboard 统计分析数据。\n\n包含:\n- 录制趋势(近 30 天每日录制会话数/时长)\n- 切片统计(总数/已发布/总时长)\n- 候选分布(分数区间分布/状态分布)\n- 直播间排行(按切片数)",
+        "description": "按包含今天的 UTC 日历范围汇总录制、产物、候选和房间排行。",
         "operationId": "get_analytics_api_analytics_get",
+        "parameters": [
+          {
+            "in": "query",
+            "name": "days",
+            "required": false,
+            "schema": {
+              "default": 30,
+              "maximum": 365,
+              "minimum": 1,
+              "title": "Days",
+              "type": "integer"
+            }
+          }
+        ],
         "responses": {
           "200": {
             "content": {
@@ -3437,6 +3451,16 @@
               }
             },
             "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
           }
         },
         "summary": "Get Analytics"

@@ -9,6 +9,7 @@ from uuid import uuid4
 from pydantic import BaseModel, ConfigDict, Field
 from sqlmodel import Session, select
 
+from app.core.paths import to_storage_relative
 from app.db.entities import AppSetting
 from app.plugins.live_source import SourceRoom
 from app.recording.writer_ownership import WriterIdentity
@@ -167,7 +168,9 @@ def adopt_attempt(db: Session, session_id: int, directory: Path, prefix: str, se
     directory = directory.resolve()
     if segment_list.resolve().parent != directory:
         raise ValueError("录制清单超出场次目录")
-    attempt = RecordingAttempt(prefix=prefix, directory=str(directory), segment_list=str(segment_list.resolve()))
+    attempt = RecordingAttempt(
+        prefix=prefix, directory=to_storage_relative(directory), segment_list=to_storage_relative(segment_list)
+    )
     if attempt not in record.attempts:
         record.attempts.append(attempt)
         save(db, record)

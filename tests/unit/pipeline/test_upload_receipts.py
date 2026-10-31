@@ -14,9 +14,7 @@ from app.core import settings_store
 from app.db.entities import (
     AppSetting,
     FinalClip,
-    HighlightCandidate,
     HighlightEvent,
-    RawSegment,
     ReviewStatus,
     SegmentTask,
     TaskStatus,
@@ -34,47 +32,29 @@ from app.publishing.execution import read_execution
 from app.publishing.heartbeat import UploadHeartbeat, heartbeat_key
 
 
-def prepare(tmp_path: Path, *, pipeline: bool = False) -> tuple[int, str, int]:
+def prepare(tmp_path: Path, *, pipeline_task: int | None = None) -> tuple[int, str, int]:
     path = tmp_path / "upload.mp4"
     path.write_bytes(b"controlled external upload input")
     lease = None
     with get_session() as db:
-        clip = FinalClip(candidate_id=1, file_path=str(path), title="标题", description="说明")
+        stage_task = db.get(SegmentTask, pipeline_task) if pipeline_task is not None else None
+        clip = FinalClip(
+            candidate_id=stage_task.candidate_id if stage_task else 1,
+            file_path=str(path),
+            title="标题",
+            description="说明",
+        )
         db.add(clip)
         db.flush()
         task = UploadTask(clip_id=clip.id, status="queued", uploader="biliup")
         db.add(task)
         db.flush()
         task_id = task.id
-        if pipeline:
-            now = datetime.now(UTC)
-            candidate = HighlightCandidate(
-                id=1,
-                session_id=1,
-                start_ts=now,
-                end_ts=now + timedelta(seconds=2),
-                peak_ts=now,
-                dedup_hash="upload-source",
-            )
-            segment = RawSegment(session_id=1, seq=1, file_path=str(path))
-            db.add(candidate)
-            db.add(segment)
-            db.flush()
-            event = HighlightEvent(
-                candidate_id=1, session_id=1, segment_id=segment.id, review_status=ReviewStatus.APPROVED_SOLO
-            )
-            db.add(event)
-            db.flush()
-            stage_task = SegmentTask(
-                segment_id=segment.id,
-                session_id=1,
-                candidate_id=1,
-                event_id=event.id,
-                clip_id=clip.id,
-                stage=TaskStatus.PUBLISHING,
-                claimed_by="test-worker",
-                lease_token="original-lease",
-            )
+        if stage_task is not None:
+            stage_task.clip_id = clip.id
+            stage_task.stage = TaskStatus.PUBLISHING
+            stage_task.claimed_by = "test-worker"
+            stage_task.lease_token = "original-lease"
             db.add(stage_task)
             db.flush()
             lease = TaskLease(stage_task.id, "test-worker", "original-lease", TaskStatus.PUBLISHING)
@@ -230,10 +210,15 @@ def test_pipeline_upload_rechecks_source_and_full_lease(
     temp_db: None,
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
+    pcm_wav: Path,
     change: str,
 ) -> None:
     settings_store.set_bool("biliup_enabled", True)
-    task_id, token, _ = prepare(tmp_path, pipeline=True)
+    settings_store.set_bool("auto_upload", True)
+    from tests.approval_fixtures import seed_automatic_task
+
+    pipeline_task = seed_automatic_task(pcm_wav, monkeypatch, stage=TaskStatus.PUBLISHING)
+    task_id, token, _ = prepare(tmp_path, pipeline_task=pipeline_task)
     with get_session() as db:
         task = db.exec(select(SegmentTask)).one()
         lease = TaskLease(task.id, task.claimed_by, task.lease_token, task.stage)

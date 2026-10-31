@@ -107,6 +107,14 @@ class LiveStatus(StrEnum):
     UNKNOWN = "unknown"
 
 
+class MetadataFailure(_Contract):
+    """辅助资料查询失败；基础开播状态仍有效，诊断不得包含凭据。"""
+
+    code: str = Field(min_length=1, max_length=160)
+    message: str = Field(min_length=1, max_length=2000)
+    retry_after: float | None = Field(default=None, ge=0, allow_inf_nan=False)
+
+
 class RoomSnapshot(_Contract):
     """一次状态观察；缺失标题或主播信息保留为 None。"""
 
@@ -114,6 +122,7 @@ class RoomSnapshot(_Contract):
     title: str | None = Field(default=None, min_length=1, max_length=1000)
     uploader_name: str | None = Field(default=None, min_length=1, max_length=200)
     observed_at: datetime = Field(default_factory=lambda: datetime.now(UTC))
+    metadata_failure: MetadataFailure | None = None
 
     _validate_time = field_validator("observed_at")(utc_datetime)
 

@@ -35,7 +35,8 @@ async def aclose(self) -> None: ...
 | --- | --- |
 | `SourceDescriptor` | `platform`：小写稳定平台标识，`local` 保留；`name`：显示名；`domains`：精确小写主机名元组，包含短链接域名，不接受通配符、端口、路径 |
 | `SourceRoom` | `platform`、严格字符串 `source_id`、HTTP(S) `canonical_url`；ID 不是宿主房间主键，也不能是随开播变化的场次 ID；规范地址不得含凭据、查询串或 fragment |
-| `RoomSnapshot` | `status` 为 `LiveStatus.LIVE/OFFLINE/UNKNOWN`；`title`、`uploader_name` 缺失时为 `None`；`observed_at` 默认 UTC 当前时间，显式传入必须带时区 |
+| `RoomSnapshot` | `status` 为 `LiveStatus.LIVE/OFFLINE/UNKNOWN`；`title`、`uploader_name` 缺失时为 `None`；`observed_at` 默认 UTC 当前时间，显式传入必须带时区；可选 `metadata_failure` 保存辅助资料失败，基础开播状态仍有效 |
+| `MetadataFailure` | 辅助资料错误的 `code`、不含凭据的 `message`，以及可选的非负有限秒数 `retry_after`；标题刷新据此退避，旧插件省略该字段即可 |
 | `StreamPreference` | `intent`：`best/balanced/data_saver`，默认 best；`preferred_transport`：`hls/flv`，默认 hls；平台负责解释和排序，宿主不比较平台清晰度数字 |
 | `StreamSpec` | `url` 临时 HTTP(S) 地址；`transport`：hls/flv；`container`：ts/fmp4/flv；`headers` 字典；可选 `quality_id`、`quality_label`、`codec`、带时区的 `expires_at` |
 

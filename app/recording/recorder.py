@@ -36,7 +36,7 @@ from app.core.async_cleanup import complete_cleanup
 from app.core.config import settings
 from app.core.execution import run_sync
 from app.core.ffmpeg_errors import FfmpegErrorType, classify_ffmpeg_error
-from app.core.paths import session_raw_dir, storage_root
+from app.core.paths import resolve_storage_path, session_raw_dir, storage_root
 from app.core.process_spawn import spawn_owned_async, terminate_owned_async, wait_process_exit
 from app.core.sanitize import sanitize_diagnostic
 from app.core.supervisor import remaining_shutdown
@@ -1241,7 +1241,7 @@ class Recorder:
         with get_session() as db:
             rows = db.exec(select(RawSegment).where(RawSegment.session_id == self._session_id)).all()
         self._seq = max(self._seq, max((row.seq + 1 for row in rows), default=0))
-        self._paths = {row.file_path for row in rows}
+        self._paths = {str(resolve_storage_path(row.file_path)) for row in rows}
         return self._paths
 
     # ------------------------------------------------------------------ #

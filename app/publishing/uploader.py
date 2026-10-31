@@ -18,7 +18,6 @@ import subprocess
 from abc import ABC, abstractmethod
 from dataclasses import dataclass, field
 from datetime import timedelta
-from pathlib import Path
 from typing import Any
 
 from loguru import logger
@@ -27,6 +26,7 @@ from sqlmodel import select
 from app.core import settings_store
 from app.core.config import settings
 from app.core.media_usage import media_reference_scope
+from app.core.paths import resolve_storage_path
 from app.core.runtime_settings import configured_task
 from app.core.sanitize import safe_exception_summary, sanitize_diagnostic
 from app.db.entities import (
@@ -111,9 +111,12 @@ def precheck_clip(clip_id: int) -> PrecheckResult:
         content_hash = clip.content_hash
 
     # 1) 文件完整性
-    p = Path(file_path)
-    if not p.exists() or p.stat().st_size == 0:
-        reasons.append("成品文件缺失或为空")
+    try:
+        p = resolve_storage_path(file_path)
+        if not p.is_file() or p.stat().st_size == 0:
+            reasons.append("成品文件缺失或为空")
+    except (ValueError, OSError) as exc:
+        reasons.append(f"成品文件不可访问：{safe_exception_summary(exc)}")
 
     # 2) 标题/简介合规
     if not title.strip():
@@ -259,7 +262,7 @@ class BiliupUploader(Uploader):
             lexer.commenters = ""
             lexer.escape = ""  # 保留 Windows 路径中的反斜杠。
             values = {
-                "file": str(clip["file_path"]),
+                "file": str(resolve_storage_path(str(clip["file_path"]))),
                 "title": clip.get("title") or "",
                 "desc": clip.get("description") or "",
                 "config": settings.biliup_config,

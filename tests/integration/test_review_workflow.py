@@ -313,13 +313,14 @@ def test_review_submission_advances_linked_task_state(
     expected_stage: str,
 ) -> None:
     """人工反馈必须离开 awaiting_review，独立成片还要立即进入渲染队列。"""
-    from app.db.entities import HighlightCandidate, SegmentTask, TaskStatus
+    from app.db.entities import HighlightCandidate, RawSegment, SegmentTask, TaskStatus
     from app.db.session import get_session
 
     candidate_id = _seed_candidate()
     with get_session() as db:
         candidate = db.get(HighlightCandidate, candidate_id)
         assert candidate is not None
+        db.add(RawSegment(id=9100 + candidate_id, session_id=candidate.session_id, seq=0, file_path="source.mp4"))
         task = SegmentTask(
             segment_id=9100 + candidate_id,
             session_id=candidate.session_id,
@@ -346,6 +347,36 @@ def test_review_submission_advances_linked_task_state(
         task = db.get(SegmentTask, task_id)
         assert task is not None
         assert task.stage == expected_stage
+
+
+def test_invalid_review_relationship_returns_conflict_without_partial_audit(review_client: TestClient) -> None:
+    from app.db.entities import HighlightCandidate, HighlightEvent, RawSegment, SegmentTask
+    from app.db.session import get_session
+
+    candidate_id = _seed_candidate()
+    with get_session() as db:
+        candidate = db.get(HighlightCandidate, candidate_id)
+        segment = RawSegment(session_id=candidate.session_id, seq=0, file_path="source.mp4")
+        db.add(segment)
+        db.flush()
+        task = SegmentTask(segment_id=segment.id, session_id=99999, candidate_id=candidate_id, stage="awaiting_review")
+        db.add(task)
+        db.flush()
+        task_id = task.id
+    auth = ("alice", "alice-pass")
+    with review_client as client:
+        assert client.post(f"/review/api/{candidate_id}/claim", json={"force": False}, auth=auth).status_code == 200
+        with get_session() as db:
+            event = db.exec(select(HighlightEvent).where(HighlightEvent.candidate_id == candidate_id)).one()
+            before = event.model_dump()
+        result = client.post(
+            f"/review/api/{candidate_id}/review", json={"decision": "approved_solo", "reason": "批准"}, auth=auth
+        )
+    assert result.status_code == 409
+    with get_session() as db:
+        assert db.get(HighlightEvent, before["id"]).model_dump() == before
+        assert db.get(HighlightCandidate, candidate_id).status == "pending"
+        assert db.get(SegmentTask, task_id).stage == "awaiting_review"
 
 
 def test_unlinked_approved_candidate_enqueues_background_render(
@@ -384,7 +415,7 @@ def test_background_candidate_render_keeps_task_lease_until_clip_is_recorded(
     """网页后台渲染必须持有心跳租约，且成功后把任务推进到成品阶段。"""
     import threading
 
-    from app.db.entities import FinalClip, HighlightCandidate, HighlightEvent, SegmentTask, TaskStatus
+    from app.db.entities import FinalClip, HighlightCandidate, HighlightEvent, RawSegment, SegmentTask, TaskStatus
     from app.db.session import get_session
     from app.pipeline import heartbeat, orchestrator
     from app.pipeline.stale_recovery import recover_orphans
@@ -395,6 +426,7 @@ def test_background_candidate_render_keeps_task_lease_until_clip_is_recorded(
         candidate = db.get(HighlightCandidate, candidate_id)
         assert candidate is not None
         event = db.exec(select(HighlightEvent).where(HighlightEvent.candidate_id == candidate_id)).one()
+        db.add(RawSegment(id=9101, session_id=candidate.session_id, seq=0, file_path="source.mp4"))
         task = SegmentTask(
             segment_id=9101,
             session_id=candidate.session_id,

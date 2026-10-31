@@ -15,6 +15,7 @@ import httpx
 import pytest
 
 from app.core.config import settings
+from app.core.paths import resolve_storage_path
 from app.plugins.live_source import SourceRoom, StreamSpec
 from app.recording.recorder import Recorder
 from app.recording.stream_race import StreamAttempt, StreamRace
@@ -239,7 +240,7 @@ async def test_recorder_recovers_from_hls_init_failure_through_real_source_chain
                 "stream=codec_name",
                 "-of",
                 "default=noprint_wrappers=1:nokey=1",
-                complete[0].file_path,
+                str(resolve_storage_path(complete[0].file_path)),
             ],
             capture_output=True,
             text=True,
@@ -540,11 +541,18 @@ async def test_shutdown_flushes_final_segment_without_reconnecting(
             segments = db.exec(select(RawSegment).where(RawSegment.session_id == recorder.session_id)).all()
         assert len(segments) == 1
         assert 0 < segments[0].duration_s < 60 and segments[0].size_bytes > 0
-        assert Path(segments[0].file_path).is_file()
+        assert resolve_storage_path(segments[0].file_path).is_file()
         assert fetches == [1] and not recorder._last_exit_abnormal
         assert all(process.returncode is not None for process in processes)
         probe = subprocess.run(
-            ["ffprobe", "-v", "error", "-show_entries", "stream=codec_type", segments[0].file_path],
+            [
+                "ffprobe",
+                "-v",
+                "error",
+                "-show_entries",
+                "stream=codec_type",
+                str(resolve_storage_path(segments[0].file_path)),
+            ],
             capture_output=True,
             text=True,
             timeout=5,

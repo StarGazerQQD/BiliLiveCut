@@ -6,6 +6,7 @@ from pathlib import Path
 
 from sqlmodel import Session, select
 
+from app.core.paths import storage_path_aliases, to_storage_relative
 from app.db.entities import RawSegment, SegmentStatus
 
 
@@ -19,11 +20,11 @@ def register_segment(
     size: int,
 ) -> tuple[RawSegment, bool]:
     """在短写事务内按场次与规范路径幂等登记，序号继续当前场次。"""
-    canonical = str(path.resolve())
+    canonical = to_storage_relative(path)
     existing = db.exec(
         select(RawSegment).where(
             RawSegment.session_id == session_id,
-            RawSegment.file_path == canonical,
+            RawSegment.file_path.in_(storage_path_aliases(path)),
         )
     ).first()
     if existing is not None:

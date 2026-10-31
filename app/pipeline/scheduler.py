@@ -354,27 +354,30 @@ def advance_awaiting_review() -> None:
     _log_waiting_counts(TaskStatus.AWAITING_REVIEW, waiting, tuple(missing_events))
 
 
+@media_reference_scope()
 def advance_approved() -> None:
     """APPROVED → QUEUED_FOR_RENDER 或 APPROVED_WAITING_RENDER。"""
     import logging
 
     _logger = logging.getLogger(__name__)
-    from app.pipeline.approval import assert_event_approved
+    from app.pipeline.approval import render_approval_error
 
     with get_session() as db:
+        ids = db.exec(select(SegmentTask.session_id).where(SegmentTask.stage == TaskStatus.APPROVED)).all()
+    with media_validation_scope(session_ids=ids), get_session() as db:
         tasks = db.exec(select(SegmentTask).where(SegmentTask.stage == TaskStatus.APPROVED)).all()
         for task in tasks:
             cfg = room_cfg_from_task(task, db)
             auto_render = bool(cfg.get("auto_render", False))
 
             if auto_render:
-                if task.event_id and not assert_event_approved(task.event_id, db):
-                    _logger.error(
-                        "consistency_error: task=%s event=%s review_status 非 APPROVED, 阻止进入渲染队列。",
-                        task.id,
-                        task.event_id,
-                    )
-                    task.last_error = f"data_consistency_error: event {task.event_id} not approved, cannot render"
+                error = render_approval_error(db, task)
+                if error is not None:
+                    if task.last_error != error:
+                        _logger.error(
+                            "render_approval_invalid: task=%s event=%s reason=%s", task.id, task.event_id, error
+                        )
+                    task.last_error = error
                     db.add(task)
                     continue
                 enqueue_next(task, TaskStatus.QUEUED_FOR_RENDER)
@@ -395,24 +398,20 @@ def advance_approved() -> None:
             db.add(task)
 
 
+@media_reference_scope()
 def advance_rendered() -> None:
     """推进 RENDERED 阶段任务到 QUEUED_FOR_PUBLISH 或 AWAITING_PUBLISH_CONFIRMATION。"""
     import logging
 
-    from app.core.settings_store import auto_upload_enabled, biliup_enabled
+    from app.pipeline.approval import automatic_publish_error
 
     _logger = logging.getLogger(__name__)
     with get_session() as db:
+        ids = db.exec(select(SegmentTask.session_id).where(SegmentTask.stage == TaskStatus.RENDERED)).all()
+    with media_validation_scope(session_ids=ids), get_session() as db:
         tasks = db.exec(select(SegmentTask).where(SegmentTask.stage == TaskStatus.RENDERED)).all()
         for task in tasks:
-            cfg = room_cfg_from_task(task, db)
-            auto_upload = auto_upload_enabled() and biliup_enabled() and bool(cfg.get("auto_upload", False))
-            candidate = db.get(HighlightCandidate, task.candidate_id) if task.candidate_id else None
-            meets_threshold = candidate is not None and candidate.highlight_score >= float(
-                cfg.get("auto_publish_threshold", settings.auto_publish_threshold)
-            )
-
-            if auto_upload and meets_threshold:
+            if automatic_publish_error(db, task) is None:
                 enqueue_next(task, TaskStatus.QUEUED_FOR_PUBLISH)
                 log_after_commit(
                     db,

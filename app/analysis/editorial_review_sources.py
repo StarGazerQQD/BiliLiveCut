@@ -3,33 +3,44 @@ from __future__ import annotations
 
 import hashlib
 import json
+import math
 import stat
 from collections.abc import Iterable, Iterator, Mapping
 from contextlib import contextmanager
 from contextvars import ContextVar
 from dataclasses import dataclass, replace
 from datetime import UTC, datetime
-from pathlib import Path
 from threading import get_ident
+from typing import cast
 
 from sqlmodel import Session, select
 
+from app.analysis import llm_providers
 from app.analysis.editorial_contracts import (
     CONTEXT_SECONDS,
     EVIDENCE_MAX_CHARS,
     EXCERPT_MAX_CHARS,
     EXPANDED_CONTEXT_SECONDS,
     ContextDirection,
+    EditorialExecutionV1,
     EditorialReviewInputV1,
 )
 from app.analysis.editorial_evidence import EvidenceContextUnavailable, build_event_input, build_segment_input
-from app.analysis.editorial_review import EditorialReviewDraft, judge_editorial, review_fingerprint
+from app.analysis.editorial_provenance import ReviewProvenance, frozen_review_fingerprint
+from app.analysis.editorial_review import (
+    EditorialReviewDraft,
+    editorial_auto_approvable,
+    judge_editorial,
+    review_fingerprint,
+    review_policy_identity,
+)
 from app.analysis.event_enricher import EventTargetUnavailableError, build_event_evidence_bundle
 from app.analysis.model_execution import ModelCallBudget
 from app.analysis.timeline import datetime_epoch
 from app.core.media_usage import media_reference_scope
+from app.core.paths import resolve_storage_path
 from app.db import session as database
-from app.db.entities import AppSetting, HotspotEvent, RawSegment, SegmentTask
+from app.db.entities import AppSetting, HighlightCandidate, HighlightEvent, HotspotEvent, RawSegment, SegmentTask
 from app.db.session import get_session
 
 
@@ -92,13 +103,13 @@ def _probe_media(path: str) -> _MediaState:
     identity: list[int] | None = None
     readable = False
     try:
-        file = Path(path)
+        file = resolve_storage_path(path)
         metadata = file.stat()
         identity = [metadata.st_dev, metadata.st_ino, metadata.st_size, metadata.st_mtime_ns, metadata.st_ctime_ns]
         if stat.S_ISREG(metadata.st_mode):
             with file.open("rb") as media:
                 readable = bool(media.read(1))
-    except OSError:
+    except (OSError, ValueError):
         pass
     return _MediaState(identity, readable)
 
@@ -183,16 +194,23 @@ def compute_event_review(event_id: int, budget: ModelCallBudget) -> EditorialRev
     return judge_editorial(load, revision=bundle.fingerprint, budget=budget)
 
 
-def event_review_is_current(db: Session, event_id: int, draft: EditorialReviewDraft) -> bool:
+def event_review_is_current(
+    db: Session,
+    event_id: int,
+    draft: EditorialReviewDraft,
+    *,
+    policy: dict[str, object] | None = None,
+    providers: list[llm_providers.LLMProvider] | None = None,
+) -> bool:
     """提交前拒绝取消、事件替换、内容和配置变化后的旧判断。"""
     if draft.execution.status == "cancelled":
         return False
-    bundle = build_event_evidence_bundle(db, event_id)
+    bundle = build_event_evidence_bundle(db, event_id, providers=providers)
     if bundle.event_id != event_id or bundle.fingerprint != draft.revision:
         return False
     initial = event_review_source(db, event_id, None)
     source = event_review_source(db, event_id, draft.expanded_context)
-    return draft.execution.input_fingerprint == review_fingerprint(initial, source, bundle.fingerprint)
+    return draft.execution.input_fingerprint == review_fingerprint(initial, source, bundle.fingerprint, policy=policy)
 
 
 def segment_review_revision(
@@ -316,7 +334,7 @@ class SegmentReviewSnapshot:
     metrics: Mapping[str, float]
     danmaku: list[dict[str, object]]
 
-    def is_current(self, db: Session) -> bool:
+    def is_current(self, db: Session, *, policy: dict[str, object] | None = None) -> bool:
         """验证输入身份、配置、文件和取消状态，迟到结果不能写入。"""
         from app.analysis.timeline import representative_danmaku
 
@@ -356,7 +374,7 @@ class SegmentReviewSnapshot:
         except ValueError:
             return False
         return revision == self.review.revision and self.review.execution.input_fingerprint == review_fingerprint(
-            initial, source, revision
+            initial, source, revision, policy=policy
         )
 
 
@@ -416,3 +434,116 @@ def media_bounds_accessible(db: Session, source: EditorialReviewInputV1 | None, 
         if cursor >= upper:
             return True
     return False
+
+
+def _current_review_providers(db: Session) -> list[llm_providers.LLMProvider]:
+    from app.models.configuration import MODEL_CONFIGURATION_KEY
+    from app.models.contracts import ModelConfiguration
+
+    row = db.get(AppSetting, MODEL_CONFIGURATION_KEY)
+    if row is not None and row.value:
+        config = ModelConfiguration.model_validate_json(row.value)
+        connections = {item.id: item for item in config.connections}
+        providers = [
+            llm_providers.from_route(route, connections[route.connection_id])
+            for route in config.routes
+            if route.capability == "analysis"
+        ]
+    else:
+        providers = [llm_providers._coerce(value) for value in llm_providers._read_raw(db)]
+    return sorted(
+        [
+            provider
+            for provider in providers
+            if provider.enabled and (provider.api_key or provider.connection_id) and provider.base_url
+        ],
+        key=lambda provider: (provider.priority, provider.name),
+    )
+
+
+def automatic_review_is_current(db: Session, event: HighlightEvent, candidate: HighlightCandidate) -> bool:
+    """自动操作重新核验冻结来源、当前证据和实际成片边界，不重新请求模型。"""
+    try:
+        features = json.loads(event.features_json or "{}")
+        if not isinstance(features, dict):
+            return False
+        metadata = features.get("editorial_review")
+        if not editorial_auto_approvable(metadata):
+            return False
+        execution = EditorialExecutionV1.model_validate(metadata.get("execution"))
+        source = EditorialReviewInputV1.model_validate(metadata.get("input"))
+        provenance = ReviewProvenance.model_validate(metadata.get("provenance"))
+        initial = provenance.initial_input
+        revision, direction = metadata.get("revision"), metadata.get("expanded_context")
+        if (
+            initial is None
+            or initial.target != source.target
+            or initial.time_origin_epoch_s != source.time_origin_epoch_s
+            or source.time_origin_epoch_s is None
+            or source.target.session_id != event.session_id
+            or event.session_id != candidate.session_id
+            or event.candidate_id != candidate.id
+            or not isinstance(revision, str)
+            or direction not in (None, "before", "after", "both")
+            or execution.policy_version != provenance.policy["policy"]
+            or frozen_review_fingerprint(initial, source, revision, policy=provenance.policy)
+            != execution.input_fingerprint
+        ):
+            return False
+        draft = EditorialReviewDraft(execution, source, cast(ContextDirection | None, direction), revision, provenance)
+        providers = _current_review_providers(db)
+        policy = review_policy_identity(providers=providers)
+        target = source.target
+        origin = source.time_origin_epoch_s
+        if target.kind == "hotspot":
+            hotspot = db.get(HotspotEvent, target.target_id)
+            if (
+                hotspot is None
+                or hotspot.candidate_id != candidate.id
+                or hotspot.session_id != event.session_id
+                or not event_review_is_current(db, hotspot.id, draft, policy=policy, providers=providers)
+            ):
+                return False
+        else:
+            metrics, timeline = features.get("features"), features.get("timeline")
+            if (
+                event.segment_id != target.target_id
+                or not isinstance(metrics, dict)
+                or any(
+                    not isinstance(key, str) or type(value) not in (int, float) or not math.isfinite(value)
+                    for key, value in metrics.items()
+                )
+                or not isinstance(timeline, dict)
+            ):
+                return False
+            danmaku = timeline.get("representative_danmaku")
+            if not isinstance(danmaku, list) or any(not isinstance(item, dict) for item in danmaku):
+                return False
+            snapshot = SegmentReviewSnapshot(
+                draft,
+                target.target_id,
+                datetime.fromtimestamp(origin + target.bounds.start_s, UTC),
+                datetime.fromtimestamp(origin + target.bounds.end_s, UTC),
+                datetime.fromtimestamp(origin + target.peak_s, UTC),
+                metrics,
+                danmaku,
+            )
+            if not snapshot.is_current(db, policy=policy):
+                return False
+        start, end = datetime_epoch(candidate.start_ts) - origin, datetime_epoch(candidate.end_ts) - origin
+        if abs(datetime_epoch(candidate.peak_ts) - origin - target.peak_s) > 1e-6:
+            return False
+        result = execution.result
+        assert result is not None
+        suggestion = result.suggested_bounds
+        if suggestion is not None:
+            if abs(start - suggestion.start_s) > 1e-6 or abs(end - suggestion.end_s) > 1e-6:
+                return False
+        elif not (
+            source.window.start_s <= start <= target.bounds.start_s
+            and target.bounds.end_s <= end <= source.window.end_s
+        ):
+            return False
+        return media_bounds_accessible(db, source, candidate.start_ts, candidate.end_ts)
+    except ValueError:
+        return False

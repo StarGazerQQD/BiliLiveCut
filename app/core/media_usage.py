@@ -8,7 +8,6 @@ from collections.abc import Iterator
 from contextlib import contextmanager
 from contextvars import ContextVar
 from dataclasses import dataclass
-from pathlib import Path
 from threading import get_ident
 from typing import BinaryIO
 
@@ -16,7 +15,7 @@ from filelock import ReadWriteLock, Timeout
 from loguru import logger
 from sqlmodel import select
 
-from app.core.paths import storage_root
+from app.core.paths import resolve_storage_path, storage_root, to_storage_relative
 from app.db import session as database
 from app.db.entities import AppSetting
 from app.db.session import get_session
@@ -113,7 +112,7 @@ def _registered_operation() -> Iterator[None]:
         handle.flush()
         _lock(handle)
         with get_session() as db:
-            db.add(AppSetting(key=key, value=str(path)))
+            db.add(AppSetting(key=key, value=to_storage_relative(path)))
         yield
     finally:
         _held.reset(token)
@@ -132,7 +131,11 @@ def media_in_use() -> bool:
         rows = db.exec(select(AppSetting.key, AppSetting.value).where(AppSetting.key.startswith(_PREFIX))).all()
     stale: list[tuple[str, str]] = []
     for key, value in rows:
-        path = Path(value).resolve()
+        try:
+            path = resolve_storage_path(value)
+        except ValueError:
+            logger.warning("原片清理暂停：媒体使用登记路径不合法。")
+            return True
         if not path.is_relative_to(root):
             logger.warning("原片清理暂停：媒体使用登记路径不合法。")
             return True

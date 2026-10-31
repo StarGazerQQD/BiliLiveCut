@@ -17,7 +17,7 @@ from sqlmodel import Session, select
 
 from app.core.config import settings
 from app.core.http_limits import MAX_VIDEO_BYTES as MAX_VIDEO_BYTES
-from app.core.paths import raw_dir
+from app.core.paths import raw_dir, to_storage_relative
 from app.core.process_control import run_cancellable
 from app.db.entities import AppSetting, Danmaku, LiveRoom, RawSegment, RecordingSession, SegmentTask, SessionStatus
 from app.db.session import get_session
@@ -342,7 +342,7 @@ def _publish_import(
         segment = RawSegment(
             session_id=session.id,
             seq=seq,
-            file_path=str(path),
+            file_path=to_storage_relative(path),
             start_ts=origin + timedelta(seconds=start),
             end_ts=origin + timedelta(seconds=end),
             duration_s=end - start,

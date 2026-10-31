@@ -14,6 +14,7 @@ from typing import TYPE_CHECKING
 import pytest
 from fastapi.testclient import TestClient
 from sqlalchemy.exc import OperationalError
+from sqlmodel import select
 
 from app.core.config import Settings, get_settings, settings
 from app.core.configuration import (
@@ -322,46 +323,33 @@ def test_llm_explicit_clear_duplicate_ids_and_nonfinite_prices(temp_db: None) ->
     [(False, True, True), (True, False, True), (True, True, False), (True, True, True)],
 )
 def test_auto_upload_requires_all_three_switches(
-    temp_db: None, global_enabled: bool, biliup: bool, room_enabled: bool, score: float | None
+    temp_db: None,
+    global_enabled: bool,
+    biliup: bool,
+    room_enabled: bool,
+    score: float | None,
+    pcm_wav: Path,
+    monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    from app.db.entities import HighlightCandidate, LiveRoom, RawSegment, RecordingSession, SegmentTask
+    from app.db.entities import HighlightCandidate, LiveRoom, SegmentTask, TaskStatus
     from app.db.session import get_session
-    from app.pipeline.lifecycle import now_utc
     from app.pipeline.scheduler import advance_rendered
+    from tests.approval_fixtures import seed_automatic_task
 
     save_configuration(ConfigurationChange(values={"auto_upload": global_enabled, "biliup_enabled": biliup}))
+    task_id = seed_automatic_task(pcm_wav, monkeypatch, stage=TaskStatus.RENDERED)
     with get_session() as db:
-        room = LiveRoom(input_url="auto-upload", room_id=19, auto_upload=room_enabled, auto_publish_threshold=0.8)
+        task = db.get(SegmentTask, task_id)
+        room = db.exec(select(LiveRoom)).one()
+        room.auto_upload, room.auto_publish_threshold = room_enabled, 0.8
         db.add(room)
-        db.flush()
-        recording = RecordingSession(room_id=room.id)
-        db.add(recording)
-        db.flush()
-        segment = RawSegment(session_id=recording.id, seq=0, file_path="source.ts")
-        db.add(segment)
-        db.flush()
-        candidate = None
-        if score is not None:
-            candidate = HighlightCandidate(
-                session_id=recording.id,
-                peak_ts=now_utc(),
-                start_ts=now_utc(),
-                end_ts=now_utc(),
-                highlight_score=score,
-                dedup_hash="auto-publish-threshold",
-            )
+        candidate = db.get(HighlightCandidate, task.candidate_id)
+        if score is None:
+            task.candidate_id = None
+        else:
+            candidate.highlight_score = score
             db.add(candidate)
-            db.flush()
-        task = SegmentTask(
-            segment_id=segment.id,
-            session_id=recording.id,
-            stage="rendered",
-            pipeline_key="upload-switches",
-            candidate_id=candidate.id if candidate else None,
-        )
         db.add(task)
-        db.flush()
-        task_id = task.id
     advance_rendered()
     with get_session() as db:
         task = db.get(SegmentTask, task_id)

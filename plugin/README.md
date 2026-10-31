@@ -118,6 +118,8 @@ class Plugin(BasePlugin):
 
 `HighlightScoringRequest` 只包含无 ORM 的只读数据：片段/会话/房间标识、时间边界、转写、词时间戳、弹幕窗口、聚合音频特征、辅助 ASR 特征、规则分和房间级模式覆盖。插件不得自行读取主程序数据库。
 
+其中 `file_path` 已由宿主解析为绝对物理路径，插件可直接读取，无需拼接存储根。
+
 `HighlightScoringResult` 支持 `off`、`shadow` 和 `champion`：
 
 - `off`：不执行模型；

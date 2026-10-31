@@ -14,6 +14,7 @@ from sqlmodel import select
 
 from app.analysis.source_policy import session_danmaku_lag_s, session_has_danmaku
 from app.core.config import settings
+from app.core.paths import resolve_storage_path
 from app.db.entities import AppSetting, Danmaku, LiveRoom, RawSegment, RecordingSession, SegmentTask
 from app.db.session import get_session
 from app.plugins.live_source import (
@@ -558,8 +559,9 @@ async def test_race_registers_only_winner_and_reaps_all_processes(
         assert session.status == ("error" if finalization_error else "stopped") and session.ended_at is not None
         if not stop_in_race:
             assert recorder._selected_stream.url.startswith("https://good.invalid/")
-            folder = Path(segments[0].file_path).parent
-            assert list(folder.glob("*.ts")) == [Path(segments[0].file_path)]
+            media = resolve_storage_path(segments[0].file_path)
+            folder = media.parent
+            assert list(folder.glob("*.ts")) == [media]
             assert len(list(folder.glob("*.csv"))) == (1 if finalization_error else 0)
 
 

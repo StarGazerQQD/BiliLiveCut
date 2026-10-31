@@ -33,6 +33,7 @@ from app.analysis.transcription.content import refined_transcript_text
 from app.core.cancellation import check_cancellation, check_shutdown
 from app.core.config import settings
 from app.core.media_usage import media_reference_scope
+from app.core.paths import resolve_storage_path
 from app.core.runtime_settings import configured_task
 from app.core.sanitize import safe_exception_summary, sanitize_diagnostic
 from app.db.entities import (
@@ -338,6 +339,7 @@ def analyze_compute(task_id: int) -> dict[str, Any]:
     if checkpoint is not None:
         return {"decision": HighlightDecision.EVENT_PASS, "segment_id": segment_id, "session_id": session_id}
 
+    file_path = str(resolve_storage_path(file_path))
     audio_features: audio_mod.AudioFeatures | None = None
     try:
         audio_features = audio_mod.analyze_audio(file_path)
@@ -1179,6 +1181,7 @@ def score_segment_direct(segment_id: int) -> HighlightCandidate | None:
         file_path = segment.file_path
         session_id = segment.session_id
 
+    file_path = str(resolve_storage_path(file_path))
     audio_features: audio_mod.AudioFeatures | None = None
     try:
         audio_features = audio_mod.analyze_audio(file_path)
@@ -1654,6 +1657,7 @@ def _score_segment_drafts(
             raise ValueError(f"片段不存在: id={segment_id}")
         file_path = segment.file_path
 
+    file_path = str(resolve_storage_path(file_path))
     features = audio_features or audio_mod.analyze_audio(file_path)
     peak_offsets = features.peak_offsets(
         limit=settings.highlight_max_candidates_per_segment,
@@ -1801,6 +1805,7 @@ def _score_segment_draft(
         }
         available_start, available_end = contiguous_recording_range(session_segments, segment)
 
+    file_path = str(resolve_storage_path(file_path))
     transcript_quality = assess_transcript_quality(text) if has_transcript else None
     asr_evidence_state = (
         "unavailable" if transcript_quality is None else ("available" if transcript_quality.usable else "degraded")

@@ -167,7 +167,11 @@ def _detector_confidence(event: HotspotEvent) -> float:
 
 
 def build_event_evidence_bundle(
-    db: Session, event_id: int, *, config: EventEnricherConfig | None = None
+    db: Session,
+    event_id: int,
+    *,
+    config: EventEnricherConfig | None = None,
+    providers: list[llm_providers.LLMProvider] | None = None,
 ) -> EventEvidenceBundle:
     """读取主事件、连续录制上下文与当前策略，生成不含凭据的缓存身份。"""
     cfg = config or EventEnricherConfig()
@@ -214,7 +218,7 @@ def build_event_evidence_bundle(
             "endpoint_sha256": hashlib.sha256(item.base_url.encode()).hexdigest(),
             "priority": item.priority,
         }
-        for item in llm_providers.active_providers("analysis")
+        for item in (llm_providers.active_providers("analysis") if providers is None else providers)
     ]
     snapshot = {
         "version": EVENT_ENRICHER_VERSION,

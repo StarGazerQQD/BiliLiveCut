@@ -29,50 +29,28 @@ def _now() -> datetime:
 class TestApprovalConsistency:
     """测试统一审批在同一事务中更新 Task + Event + Candidate."""
 
-    def test_auto_approve_updates_task_event_candidate(self, temp_db) -> None:
+    def test_auto_approve_updates_task_event_candidate(
+        self, temp_db: None, pcm_wav: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
         """自动批准同时更新 Task.stage + Event.review_status + Candidate.status."""
         from app.db.entities import (
             CandidateStatus,
             HighlightCandidate,
             HighlightEvent,
-            LiveRoom,
-            RecordingSession,
             ReviewStatus,
             SegmentTask,
             TaskStatus,
         )
         from app.db.session import get_session
         from app.pipeline.approval import approve_event_and_task
+        from tests.approval_fixtures import seed_automatic_task
 
+        task_id = seed_automatic_task(pcm_wav, monkeypatch)
         with get_session() as db:
-            room = LiveRoom(id=9901, input_url="test", auto_approve=True, auto_approve_threshold=0.80)
-            sess = RecordingSession(id=8801, room_id=9901)
-            cand = HighlightCandidate(
-                id=6601,
-                session_id=8801,
-                peak_ts=_now(),
-                start_ts=_now(),
-                end_ts=_now(),
-                highlight_score=0.90,
-                status=CandidateStatus.PENDING,
-                dedup_hash="approval-auto-6601",
-            )
-            event = HighlightEvent(
-                id=7701,
-                candidate_id=6601,
-                session_id=8801,
-                raw_start_ts=_now(),
-                raw_end_ts=_now(),
-                review_status=ReviewStatus.PENDING,
-            )
-            task = SegmentTask(
-                segment_id=5501,
-                session_id=8801,
-                stage=TaskStatus.AWAITING_REVIEW,
-                candidate_id=6601,
-                event_id=7701,
-            )
-            db.add_all([room, sess, cand, event, task])
+            task = db.get(SegmentTask, task_id)
+            event = db.get(HighlightEvent, task.event_id)
+            assert db.get(HighlightCandidate, task.candidate_id).status == CandidateStatus.PENDING
+            assert event.review_status == ReviewStatus.PENDING
 
         ok = approve_event_and_task(
             task_id=task.id,
@@ -85,7 +63,7 @@ class TestApprovalConsistency:
         with get_session() as db:
             t = db.get(SegmentTask, task.id)
             e = db.get(HighlightEvent, event.id)
-            c = db.get(HighlightCandidate, 6601)
+            c = db.get(HighlightCandidate, task.candidate_id)
 
         assert t.stage == TaskStatus.APPROVED
         assert e.review_status == ReviewStatus.APPROVED_SOLO
@@ -142,39 +120,26 @@ class TestApprovalConsistency:
         ok = approve_event_and_task(task_id=task.id, event_id=7703, source="auto")
         assert not ok
 
-    def test_approve_idempotent_on_already_approved(self, temp_db) -> None:
+    def test_approve_idempotent_on_already_approved(
+        self, temp_db: None, pcm_wav: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
         """已批准 Event 重复批准幂等跳过。"""
-        from app.db.entities import HighlightCandidate, HighlightEvent, ReviewStatus, SegmentTask, TaskStatus
+        from app.db.entities import HighlightEvent, SegmentTask, TaskStatus
         from app.db.session import get_session
         from app.pipeline.approval import approve_event_and_task
+        from tests.approval_fixtures import seed_automatic_task
 
+        task_id = seed_automatic_task(pcm_wav, monkeypatch, stage=TaskStatus.APPROVED)
         with get_session() as db:
-            candidate = HighlightCandidate(
-                id=6604,
-                session_id=1,
-                peak_ts=_now(),
-                start_ts=_now(),
-                end_ts=_now(),
-                dedup_hash="approval-idempotent-6604",
-            )
-            event = HighlightEvent(
-                id=7704,
-                candidate_id=candidate.id,
-                session_id=1,
-                raw_start_ts=_now(),
-                raw_end_ts=_now(),
-                review_status=ReviewStatus.APPROVED_SOLO,
-            )
-            task = SegmentTask(
-                segment_id=5504,
-                session_id=1,
-                stage=TaskStatus.APPROVED,
-                event_id=7704,
-            )
-            db.add_all([candidate, event, task])
-
-        ok = approve_event_and_task(task_id=task.id, event_id=7704, source="auto")
+            task = db.get(SegmentTask, task_id)
+            event = db.get(HighlightEvent, task.event_id)
+            before = (task.stage_key, task.attempts, task.lease_token, event.updated_at, event.features_json)
+        ok = approve_event_and_task(task_id=task.id, event_id=event.id, source="auto")
         assert ok  # 幂等成功
+        with get_session() as db:
+            task = db.get(SegmentTask, task_id)
+            event = db.get(HighlightEvent, event.id)
+            assert (task.stage_key, task.attempts, task.lease_token, event.updated_at, event.features_json) == before
 
     def test_approve_secondary_candidate_without_task_updates_event_and_candidate(self, temp_db) -> None:
         """同分段第二候选没有独立任务时仍应完整批准，不能留下 pending 事件。"""

@@ -68,6 +68,7 @@ _HEADER = struct.Struct(">IHHII")  # 包长(4) 头长(2) 协议版本(2) 操作�
 _HEADER_LEN = 16
 _HEARTBEAT_INTERVAL_S = 30
 _AUTH_TIMEOUT_S = 10
+_ENDPOINT_COOLDOWN_S = 60
 _MAX_DECODE_DEPTH = 8
 _MAX_FRAME_BYTES = 8 * 1024 * 1024
 _MAX_DECODE_BYTES = 16 * 1024 * 1024
@@ -86,6 +87,47 @@ class DanmakuProtocolError(BilibiliError):
 
 class DanmakuAuthenticationError(DanmakuProtocolError):
     """服务端明确返回非零鉴权结果，允许计入登录失败次数。"""
+
+
+def _local_resource_error(error: BaseException) -> bool:
+    seen: set[int] = set()
+    while id(error) not in seen:
+        seen.add(id(error))
+        if isinstance(error, OSError) and error.errno in {
+            errno.EACCES,
+            errno.EPERM,
+            errno.ENOSPC,
+            errno.EROFS,
+            errno.EMFILE,
+            errno.ENFILE,
+            errno.ENOMEM,
+            errno.ENOBUFS,
+        }:
+            return True
+        cause = error.__cause__ or error.__context__
+        if cause is None:
+            return False
+        error = cause
+    return False
+
+
+def _failure_kind(error: BaseException) -> str:
+    kinds: list[str] = []
+    seen: set[int] = set()
+    while id(error) not in seen:
+        seen.add(id(error))
+        kinds.append(f"{type(error).__name__}:{getattr(error, 'error_type', '')}:{getattr(error, 'errno', '')}")
+        cause = error.__cause__ or error.__context__
+        if cause is None:
+            break
+        error = cause
+    return "/".join(kinds)
+
+
+@dataclass(frozen=True, slots=True)
+class _EndpointFailure:
+    retry_at: float
+    kind: str
 
 
 class _WebSocketConnection(Protocol):
@@ -314,6 +356,10 @@ class DanmakuConnection:
         self._login_blocked_reason: str | None = None
         self._connection_failures = 0
         self._next_login_retry_at = 0.0
+        self._endpoint_failures: dict[tuple[str, int], _EndpointFailure] = {}
+        self._connection_failure_kind: str | None = None
+        self._login_failure_kind: str | None = None
+        self._login_alerts: set[str] = set()
 
     def stop(self) -> None:
         """请求停止采集。"""
@@ -343,12 +389,7 @@ class DanmakuConnection:
                     access = None
                     continue
                 access = None
-                logger.warning(
-                    "匿名弹幕鉴权异常 room={}: {},{}s 后重连。",
-                    self.room_id,
-                    safe_exception_summary(exc),
-                    self._login_retry_interval_s,
-                )
+                self._log_connection_failure(exc, self._login_retry_interval_s)
                 await self._sleep_or_stop(self._login_retry_interval_s)
                 continue
             except BilibiliRateLimitError as exc:
@@ -356,19 +397,11 @@ class DanmakuConnection:
                 access = None
                 server_delay = exc.retry_after_seconds
                 if exc.error_type in {HttpErrorType.COOKIE_EXPIRED, HttpErrorType.RISK_CONTROL}:
-                    logger.warning(
-                        "匿名弹幕接口返回 {} room={}: {}；{}s 后重试，录制与实时转写不受影响。",
-                        exc.error_type.value,
-                        self.room_id,
-                        safe_exception_summary(exc),
-                        self._login_retry_interval_s,
-                    )
+                    self._log_connection_failure(exc, max(self._login_retry_interval_s, server_delay))
                     await self._sleep_or_stop(max(self._login_retry_interval_s, server_delay))
                     continue
                 backoff = max(backoff, server_delay)
-                logger.warning(
-                    "弹幕连接异常 room={}: {},{}s 后重连。", self.room_id, safe_exception_summary(exc), backoff
-                )
+                self._log_connection_failure(exc, backoff)
             except (BilibiliError, OSError, TimeoutError, WebSocketException) as exc:
                 if isinstance(exc, BilibiliAuthenticationError) or (
                     isinstance(exc, BilibiliTransportError) and not exc.retryable
@@ -381,7 +414,7 @@ class DanmakuConnection:
                     )
                     await self._report_state(DanmakuStatus.FAILED)
                     return
-                if isinstance(exc, OSError) and exc.errno in {errno.EACCES, errno.EPERM, errno.ENOSPC, errno.EROFS}:
+                if _local_resource_error(exc):
                     logger.opt(exception=exc).error(
                         "弹幕本地资源故障，停止采集 room={} session={}", self.room_id, self.session_id
                     )
@@ -391,9 +424,7 @@ class DanmakuConnection:
                 if access is not None and access.uses_cookie:
                     self._schedule_login_recovery(exc)
                 access = None
-                logger.warning(
-                    "弹幕连接异常 room={}: {},{}s 后重连。", self.room_id, safe_exception_summary(exc), backoff
-                )
+                self._log_connection_failure(exc, backoff)
             except Exception as exc:  # noqa: BLE001 — 本地持久化/实现错误不能无限重连
                 logger.opt(exception=exc).error("弹幕采集停止 room={} session={}", self.room_id, self.session_id)
                 await self._report_state(DanmakuStatus.FAILED)
@@ -403,6 +434,20 @@ class DanmakuConnection:
             await self._sleep_or_stop(backoff)
             backoff = min(backoff * 2, settings.reconnect_max_backoff_s)
         logger.info("弹幕采集已停止 room={} session={}", self.room_id, self.session_id)
+
+    def _log_connection_failure(self, exc: Exception, delay: float) -> None:
+        kind = _failure_kind(exc)
+        level = "WARNING" if kind != self._connection_failure_kind else "DEBUG"
+        self._connection_failure_kind = kind
+        logger.log(
+            level,
+            "弹幕连接异常 room={} session={} failures={} retry_s={}: {}",
+            self.room_id,
+            self.session_id,
+            self._connection_failures,
+            delay,
+            safe_exception_summary(exc),
+        )
 
     @property
     def login_disabled(self) -> bool:
@@ -427,6 +472,8 @@ class DanmakuConnection:
         try:
             server = await self._fetch_server(self._cookie)
         except BilibiliError as exc:
+            if _local_resource_error(exc):
+                raise
             if isinstance(exc, BilibiliAuthenticationError):
                 if exc.cookie_login_request:
                     self._record_login_failure(exc)
@@ -443,7 +490,7 @@ class DanmakuConnection:
                 self._schedule_login_recovery(exc)
             return None
         self._next_login_retry_at = 0.0
-        logger.info(
+        logger.debug(
             "登录 Cookie 弹幕访问成功 room={} uid={} prior_failures={}",
             self.room_id,
             self._login_uid,
@@ -471,7 +518,11 @@ class DanmakuConnection:
         if isinstance(exc, (BilibiliRateLimitError, BilibiliTransportError)):
             delay = max(delay, exc.retry_after_seconds)
         self._next_login_retry_at = time.monotonic() + delay
-        logger.warning(
+        kind = _failure_kind(exc)
+        level = "WARNING" if kind != self._login_failure_kind else "DEBUG"
+        self._login_failure_kind = kind
+        logger.log(
+            level,
             "弹幕登录链路暂不可用 room={} retry_s={}；保留 Cookie 失败次数并尝试匿名: {}",
             self.room_id,
             delay,
@@ -494,8 +545,13 @@ class DanmakuConnection:
         from app.notify.delivery import publish_connection_alert
 
         expired = isinstance(exc, BilibiliRateLimitError) and exc.error_type == HttpErrorType.COOKIE_EXPIRED
-        if expired or self._login_failures >= 3:
-            publish_connection_alert(self.room_id, "cookie_expired" if expired else "login_rejected")
+        reason = "cookie_expired" if expired else "login_rejected"
+        if (expired or self._login_failures >= 3) and reason not in self._login_alerts:
+            publish_connection_alert(self.room_id, reason)
+            self._login_alerts.add(reason)
+        kind = _failure_kind(exc)
+        level = "WARNING" if kind != self._login_failure_kind else "DEBUG"
+        self._login_failure_kind = kind
         if self.login_disabled:
             logger.warning(
                 "登录 Cookie 弹幕访问失败 room={} attempt={}/{}；已达到单场上限，后续固定匿名访问: {}",
@@ -506,7 +562,8 @@ class DanmakuConnection:
             )
             return
         self._next_login_retry_at = time.monotonic() + self._login_retry_interval_s
-        logger.warning(
+        logger.log(
+            level,
             "登录 Cookie 弹幕访问失败 room={} attempt={}/{}；已立即回退匿名，{}s 后重试: {}",
             self.room_id,
             self._login_failures,
@@ -547,7 +604,7 @@ class DanmakuConnection:
                     return None
                 logged = await self._try_logged_access()
                 if logged is not None:
-                    logger.info("登录 Cookie 弹幕访问已恢复 room={}，准备切回登录连接。", self.room_id)
+                    logger.debug("已取得登录弹幕凭据 room={}，准备验证登录连接。", self.room_id)
                     return logged
             return None
         finally:
@@ -567,6 +624,14 @@ class DanmakuConnection:
         """
         last_error: Exception | None = None
         endpoints = server_endpoints(access.server.hosts)
+        self._endpoint_failures = {key: value for key, value in self._endpoint_failures.items() if key in endpoints}
+        now = time.monotonic()
+        # 冷却节点后置但仍参与本轮；到期后恢复服务端顺序，不永久排除。
+        endpoints.sort(
+            key=lambda endpoint: bool(
+                endpoint in self._endpoint_failures and self._endpoint_failures[endpoint].retry_at > now
+            )
+        )
         for index, (host, port) in enumerate(endpoints, start=1):
             if self._stop.is_set():
                 return
@@ -578,10 +643,13 @@ class DanmakuConnection:
             except DanmakuProtocolError:
                 raise
             except (BilibiliTransportError, OSError, TimeoutError, WebSocketException) as exc:
-                if isinstance(exc, OSError) and exc.errno in {errno.EACCES, errno.EPERM, errno.ENOSPC, errno.EROFS}:
+                if _local_resource_error(exc) or isinstance(exc, BilibiliTransportError) and not exc.retryable:
                     raise
                 last_error = exc
-                logger.info(
+                self._endpoint_failures[(host, port)] = _EndpointFailure(
+                    time.monotonic() + _ENDPOINT_COOLDOWN_S, type(exc).__name__
+                )
+                logger.debug(
                     "弹幕节点不可用 room={} host={} port={} ({}/{}): {}",
                     self.room_id,
                     host,
@@ -612,6 +680,12 @@ class DanmakuConnection:
             ping_interval=None,
         ) as ws:
             first_frame = await self._authenticate(ws, access.server.token, uid=access.uid)
+            self._endpoint_failures.pop((host, port), None)
+            if access.uses_cookie:
+                if self._login_failure_kind is not None:
+                    logger.info("弹幕登录链路恢复 room={} prior_rejections={}", self.room_id, self._login_failures)
+                self._login_failure_kind = None
+                self._login_alerts.clear()
             mode = "登录" if access.uses_cookie else "匿名"
             logger.info("{}弹幕已连接 room={} host={} uid={}", mode, self.room_id, host, access.uid)
 
@@ -701,10 +775,13 @@ class DanmakuConnection:
 
     async def _report_state(self, state: DanmakuStatus) -> None:
         if state == DanmakuStatus.AVAILABLE:
+            if self._connection_failures:
+                logger.info("弹幕连接恢复 room={} prior_failures={}", self.room_id, self._connection_failures)
             self._connection_failures = 0
+            self._connection_failure_kind = None
         elif state == DanmakuStatus.FAILED:
             self._connection_failures += 1
-            if self._connection_failures >= 3:
+            if self._connection_failures == 3:
                 from app.notify.delivery import publish_connection_alert
 
                 publish_connection_alert(self.room_id, "ws_failed")

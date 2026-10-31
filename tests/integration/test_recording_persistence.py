@@ -12,7 +12,7 @@ from pathlib import Path
 import pytest
 from sqlmodel import select
 
-from app.core.paths import session_raw_dir
+from app.core.paths import resolve_storage_path, session_raw_dir
 from app.db.entities import AppSetting, LiveRoom, RawSegment, RecordingSchedule, RecordingSession
 from app.db.session import get_session
 from app.recording import intents
@@ -67,7 +67,7 @@ async def test_settlement_requires_last_writer_exit_and_preserves_only_adopted_m
     assert recover_pending_recordings(rooms.finalize_recording_requests) == [session_id]
     with get_session() as db:
         segments = db.exec(select(RawSegment).order_by(RawSegment.seq)).all()
-        assert [segment.file_path for segment in segments] == [str(good), str(tail)]
+        assert [resolve_storage_path(segment.file_path) for segment in segments] == [good, tail]
         assert [segment.seq for segment in segments] == [0, 1]
         assert all(segment.duration_s > 0 for segment in segments)
         assert db.get(RecordingSession, session_id).status == "interrupted"
@@ -129,9 +129,9 @@ async def test_settlement_probes_only_unregistered_tail(
     with get_session() as db:
         assert db.get(RawSegment, registered_id).model_dump() == original
         segments = db.exec(select(RawSegment).where(RawSegment.session_id == session_id)).all()
-        assert sorted((segment.seq, segment.file_path) for segment in segments) == [
-            (0, str(good.resolve())),
-            (1, str(tail.resolve())),
+        assert sorted((segment.seq, resolve_storage_path(segment.file_path)) for segment in segments) == [
+            (0, good.resolve()),
+            (1, tail.resolve()),
         ]
         assert all(segment.duration_s > 0 and segment.size_bytes > 0 for segment in segments)
     assert recover_pending_recordings(rooms.finalize_recording_requests) == []

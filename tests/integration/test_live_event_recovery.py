@@ -77,7 +77,7 @@ class RecoverySource:
             self.unknown -= 1
             self.failed.set()
             return RoomSnapshot(status=LiveStatus.UNKNOWN)
-        return RoomSnapshot(status=self.status)
+        return RoomSnapshot(status=self.status, title="恢复测试直播")
 
     async def get_streams(self, room: SourceRoom, preference: StreamPreference) -> list[StreamSpec]:
         # 平台暂未提供媒体，真实录制器继续等待，仍可验收停止和实例身份。

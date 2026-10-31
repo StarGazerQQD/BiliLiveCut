@@ -11,6 +11,8 @@ from uuid import uuid4
 
 from pydantic import BaseModel, ConfigDict
 
+from app.core.paths import resolve_storage_path, to_storage_relative
+
 
 class WriterIdentity(BaseModel):
     """持久登记锁文件身份；路径被移除或替换后不能再证明旧 writer 退出。"""
@@ -85,7 +87,9 @@ class SessionWriter:
         descriptor = _open(path, create=True)
         try:
             stat = os.fstat(descriptor)
-            return cls(descriptor, WriterIdentity(path=str(path), device=stat.st_dev, inode=stat.st_ino))
+            return cls(
+                descriptor, WriterIdentity(path=to_storage_relative(path), device=stat.st_dev, inode=stat.st_ino)
+            )
         except BaseException:
             os.close(descriptor)
             raise
@@ -93,7 +97,7 @@ class SessionWriter:
     @classmethod
     def recover(cls, identity: WriterIdentity) -> SessionWriter:
         """只打开原有证明文件，独占成功且身份相同才确认所有旧 writer 已退出。"""
-        descriptor = _open(Path(identity.path), create=False)
+        descriptor = _open(resolve_storage_path(identity.path), create=False)
         try:
             stat = os.fstat(descriptor)
             if (stat.st_dev, stat.st_ino) != (identity.device, identity.inode):

@@ -106,7 +106,7 @@ Web 中保存的业务设置优先于环境或项目默认值。保存前会校�
 | `reconnect_max_backoff_s` | 重连最长退避 | 录制 / 全局 | 30 | 整数；1～不限 | 下次录制 |
 | `live_poll_interval_s` | 守候刷新与兼容轮询间隔 | 录制 / 全局 | 15 | 整数；5～不限 | 下次调度检查 |
 | `room_metadata_refresh_interval_s` | 直播标题刷新间隔 | 录制 / 全局 | 30 | 整数；5～3600 | 下次录制 |
-| `room_metadata_refresh_timeout_s` | 标题查询超时 | 录制 / 全局 | 3.0 | 数值；0.1～30.0 | 下次录制 |
+| `room_metadata_refresh_timeout_s` | 标题查询超时 | 录制 / 全局 | 8.0 | 数值；0.1～30.0 | 下次录制 |
 | `recording_reconnect_max_attempts` | 断流最大重试次数（0 不限制） | 录制 / 全局 | 20 | 整数；0～10000 | 下次录制 |
 | `recording_reconnect_max_elapsed_s` | 断流重试最长时间（0 不限制） | 录制 / 全局 | 180 | 整数；0～86400 | 下次录制 |
 | `live_offline_confirm_count` | 下播连续确认次数（查询型来源） | 录制 / 全局 | 3 | 整数；1～100 | 下次调度检查 |
@@ -281,6 +281,8 @@ Web 中保存的业务设置优先于环境或项目默认值。保存前会校�
 
 database_url 必须先于数据库打开确定；storage_root/plugin_dir 涉及路径及已有数据，不在运行中搬迁。日志级别、运行环境和管理员/审核员身份在启动时初始化，保留环境配置入口与重启说明。
 
+新录制和新成片的受管媒体引用相对 `storage_root` 保存，读取时按当前根目录解析。跨工作目录启动时，应配置同一绝对存储根目录；默认的 `./storage` 仍相对启动工作目录。停机后完整搬迁存储目录及数据库，并正确设置新根目录后，这些新引用可以继续使用。旧绝对引用保持原位置，不自动改写或猜测旧根；显式导出到根外的文件仍使用绝对位置。存储子目录和场次目录不能通过符号链接或 Windows junction 指向根外。
+
 BLC_APP_ROOT、BLC_SOURCE_DIR、BLC_PORTABLE、BLC_MODELS_DIR、BLC_MODEL_CONFIG_DIR、BLC_OFFLINE、BLC_JOURNAL_DIR、代理及安装器下载配置属于部署/安装诊断；不保存到被它们定位的数据库。PIP_* 仅作为安装命令的环境变量。ASR 任务并发只接受 ASR_TASK_MAX_CONCURRENCY，不再接受旧环境变量别名。
 
 固定模型 ID/revision 来自后端目录；复核阈值使用 asr_review_risk_threshold，上传方式使用 Web 开关 biliup_enabled。历史配置项已删除，不会迁移。业务配置统一经 `/api/settings/configuration` 保存；启动端口使用独立 `/api/settings/port`，旧联合写入接口已移除。关键词词库、topic_cluster 的内部聚类常量和 danmaku_sampling 的算法常量保留代码/资料文件管理，不将所有内部常量当作可随意调节的用户配置。
@@ -288,6 +290,8 @@ BLC_APP_ROOT、BLC_SOURCE_DIR、BLC_PORTABLE、BLC_MODELS_DIR、BLC_MODEL_CONFIG
 磁盘参数满足 critical <= min_free <= low 且告警阈值 >= min_free；告警直接使用自己的阈值。自动清理默认关闭，开启后每小时检查；手动磁盘维护可以直接执行清理。原片只按登记的单个文件删除，保留活动录制/任务/媒体操作、审核草稿、重分析、共享路径及未知文件；成片后的提前清理要求可用成片完整覆盖该分段。
 
 biliup_config 通过上传命令模板中的 {config} 占位符使用；不猜测第三方工具的参数形式。自动入队投稿同时要求全局 auto_upload、biliup_enabled 与房间 auto_upload 开启，且候选分数达到房间 auto_publish_threshold；缺少候选或未达阈值转人工确认。
+
+自动批准及其后续渲染、自动投稿会重新核对编辑判断的完整证据、当前模型策略和媒体范围；证据缺失、来源变化或原片不可读时转人工处理。人工批准保留独立审核语义，其后续渲染不要求自动编辑证据通过。自动上传在实际发送前再次读取全局和房间授权，关闭开关会阻止尚未发送的旧任务。显式人工上传允许关闭自动上传开关，但仍须开启当前 `biliup_enabled`。
 
 ## API
 

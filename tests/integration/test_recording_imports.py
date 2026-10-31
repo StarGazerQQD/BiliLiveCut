@@ -15,6 +15,7 @@ from fastapi.testclient import TestClient
 from pytest import MonkeyPatch
 from sqlmodel import select
 
+from app.core.paths import resolve_storage_path
 from app.db.entities import AppSetting, Danmaku, LiveRoom, RawSegment, RecordingSession, SegmentTask
 from app.db.session import get_session
 from app.jobs.context import JobContext
@@ -149,7 +150,8 @@ def test_real_media_import_is_atomic_idempotent_and_aligned(temp_db: None, monke
         assert segments[0].duration_s == pytest.approx(6, abs=0.01)
         assert segments[-1].duration_s == pytest.approx(2, abs=0.01)
         assert comments[0].ts - sessions[0].started_at == timedelta(seconds=1.25)
-        assert all(Path(segment.file_path).is_file() for segment in segments)
+        assert all(resolve_storage_path(segment.file_path).is_file() for segment in segments)
+        assert all(not Path(segment.file_path).is_absolute() for segment in segments)
         first_id = segments[0].id
         session_id = sessions[0].id
         start = sessions[0].started_at

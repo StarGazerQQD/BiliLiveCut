@@ -25,6 +25,7 @@ from app.analysis.transcription.refinement import (
 )
 from app.core.cancellation import check_cancellation, check_shutdown
 from app.core.config import settings
+from app.core.paths import resolve_storage_path
 from app.db.entities import (
     HotspotEvent,
     RawSegment,
@@ -61,7 +62,11 @@ def _load_segment_ctx(segment_id: int) -> dict[str, Any]:
         file_path = segment.file_path
         initial_prompt = _build_whisper_prompt(db, segment)
         session_id = segment.session_id
-    return {"file_path": file_path, "initial_prompt": initial_prompt, "session_id": session_id}
+    return {
+        "file_path": str(resolve_storage_path(file_path)),
+        "initial_prompt": initial_prompt,
+        "session_id": session_id,
+    }
 
 
 def transcribe_compute(task_id: int, pipeline: ASRExecutor | None = None) -> dict[str, Any]:

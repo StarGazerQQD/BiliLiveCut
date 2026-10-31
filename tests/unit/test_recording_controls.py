@@ -14,6 +14,7 @@ from typing import TYPE_CHECKING
 import pytest
 
 from app.plugins.live_source import SourceRoom, StreamSpec
+from app.sources.bilibili.client import RoomInfo
 from tests.source_fixtures import bind_bilibili_room
 
 if TYPE_CHECKING:
@@ -131,12 +132,12 @@ async def test_start_uses_pipeline_default_and_enables_room_analysis(
         async def __aexit__(self, *_args: object) -> None:
             return None
 
-        async def get_room_info(self, room_ref: str, *, include_detail: bool) -> object:
-            from types import SimpleNamespace
-
+        async def get_room_info(self, room_ref: str, *, include_detail: bool) -> RoomInfo:
             metadata_requests.append((room_ref, include_detail))
-            return SimpleNamespace(
+            return RoomInfo(
                 room_id=202,
+                short_id=0,
+                uid=0,
                 title="开录前最新标题",
                 live_status=1,
                 uploader_name="最新主播名",
@@ -817,8 +818,6 @@ async def test_legacy_retry_hold_still_waits_for_a_real_offline_transition(
     bili_live_feed,
 ) -> None:
     """新故障进入冷却，已有等待下播标记仍只由真实离线解除。"""
-    from types import SimpleNamespace
-
     from app.analysis.room_config import load_room_config, merge_room_config
     from app.db.entities import LiveRoom
     from app.db.session import get_session
@@ -858,10 +857,15 @@ async def test_legacy_retry_hold_still_waits_for_a_real_offline_transition(
         async def __aexit__(self, *_args: object) -> None:
             return None
 
-        async def get_room_info(self, _room_id: str, *, include_detail: bool) -> SimpleNamespace:
+        async def get_room_info(self, _room_id: str, *, include_detail: bool) -> RoomInfo:
             assert isinstance(include_detail, bool)
-            return SimpleNamespace(
-                room_id=200, live_status=live_state["value"], title="测试直播", uploader_name="测试主播"
+            return RoomInfo(
+                room_id=200,
+                short_id=0,
+                uid=0,
+                live_status=live_state["value"],
+                title="测试直播",
+                uploader_name="测试主播",
             )
 
     starts: list[int] = []

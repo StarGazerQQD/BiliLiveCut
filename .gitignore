@@ -39,6 +39,7 @@ htmlcov/
 !/tests/test_model_catalog.py
 !/tests/source_fixtures.py
 !/tests/editorial_fixtures.py
+!/tests/approval_fixtures.py
 !/tests/process_fixtures.py
 !/tests/unit/
 !/tests/unit/test_asr_architecture.py

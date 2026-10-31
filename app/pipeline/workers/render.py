@@ -16,10 +16,12 @@ from sqlalchemy import or_
 from sqlalchemy.exc import SQLAlchemyError
 from sqlmodel import Session, select
 
+from app.analysis.editorial_review_sources import media_validation_scope
 from app.clipping.models import ClipOptions
 from app.clipping.paths import build_final_clip_path, build_generation_clip_path, build_lease_partial_path
 from app.core.cancellation import OperationCancelledError, OperationShutdownError, shutdown_event
 from app.core.media_usage import media_reference_scope
+from app.core.paths import resolve_storage_path, storage_path_aliases, to_storage_relative
 from app.core.process_control import ProcessCancelledError
 from app.core.sanitize import safe_exception_summary
 from app.db.entities import (
@@ -35,6 +37,7 @@ from app.db.entities import (
     TaskStatus,
 )
 from app.db.session import get_session
+from app.pipeline.approval import render_approval_error
 from app.pipeline.lease import LeaseLostError, TaskLease, approved_task_candidate, still_owns_lease
 from app.pipeline.render_checkpoint import (
     RenderCheckpoint,
@@ -81,10 +84,13 @@ def render_compute(lease: TaskLease) -> dict[str, Any]:
     from app.clipping.core import render_clip_to_file
 
     options = ClipOptions.from_settings()
-    with get_session() as db:
+    with media_validation_scope(task_id=lease.task_id), get_session() as db:
         task = db.get(SegmentTask, lease.task_id)
         if task is None or task.candidate_id is None:
             return {"error": "task or candidate_id missing", "permanent": True}
+        approval_error = render_approval_error(db, task)
+        if approval_error is not None:
+            return {"error": approval_error, "permanent": True}
         cid = task.candidate_id
         event_id = task.event_id or 0
         candidate = db.get(HighlightCandidate, cid)
@@ -160,6 +166,9 @@ def _render_context(db: Session, lease: TaskLease, result: dict[str, Any]) -> tu
     task = db.get(SegmentTask, lease.task_id)
     assert task is not None
     candidate = approved_task_candidate(db, task)
+    approval_error = render_approval_error(db, task)
+    if approval_error is not None:
+        raise ValueError(approval_error)
     if result.get("candidate_id") != candidate.id or result.get("event_id") != task.event_id:
         raise ValueError("渲染结果与任务来源不一致")
     if result.get("render_config_hash") != render_input_fingerprint(db, task):
@@ -169,10 +178,12 @@ def _render_context(db: Session, lease: TaskLease, result: dict[str, Any]) -> tu
 
 def _clip_for_variant(db: Session, variant: ClipVariant, candidate_id: int, media: VerifiedMedia) -> FinalClip:
     """取得实际成片记录；恢复已就位但尚未登记的产物。"""
+    if not variant.file_path:
+        raise ValueError("渲染变体缺少已确认的媒体路径")
     clip = db.exec(
         select(FinalClip).where(
             FinalClip.candidate_id == candidate_id,
-            FinalClip.file_path == variant.file_path,
+            FinalClip.file_path.in_(storage_path_aliases(variant.file_path)),
         )
     ).first()
     if clip is None:
@@ -190,7 +201,7 @@ def _clip_for_variant(db: Session, variant: ClipVariant, candidate_id: int, medi
         db.flush()
     if clip.status == ClipStatus.REJECTED:
         raise ValueError("成片已被拒绝")
-    if clip.cover_path is None and variant.cover_path and Path(variant.cover_path).is_file():
+    if clip.cover_path is None and variant.cover_path and resolve_storage_path(variant.cover_path).is_file():
         clip.cover_path = variant.cover_path
         db.add(clip)
     return clip
@@ -235,7 +246,7 @@ def _commit_reuse(
     ms: int,
 ) -> None:
     record, media, cover = reusable
-    with get_session() as db:
+    with media_validation_scope(task_id=lease.task_id), get_session() as db:
         if db.get_bind().dialect.name == "sqlite":
             db.connection().exec_driver_sql("BEGIN IMMEDIATE")
         task, candidate = _render_context(
@@ -321,7 +332,7 @@ def commit_render(lease: TaskLease, compute_result: dict[str, Any], ms: int) -> 
                 if compute_result["cover_path"] != temp_cover:
                     raise ValueError("渲染封面路径不属于本任务租约")
                 cover_proof = verify_media(temp_cover, cover=True)
-        with get_session() as db:
+        with media_validation_scope(task_id=lease.task_id), get_session() as db:
             if db.get_bind().dialect.name == "sqlite":
                 db.connection().exec_driver_sql("BEGIN IMMEDIATE")
             task = db.get(SegmentTask, lease.task_id)
@@ -380,8 +391,8 @@ def commit_render(lease: TaskLease, compute_result: dict[str, Any], ms: int) -> 
             generation = variant.generation
             output_path = build_generation_clip_path(formal_path, variant_id, generation, lease.lease_token)
             output_cover = str(Path(output_path).with_suffix(".jpg")) if cover else ""
-            variant.file_path = output_path
-            variant.cover_path = output_cover or None
+            variant.file_path = to_storage_relative(output_path)
+            variant.cover_path = to_storage_relative(output_cover) if output_cover else None
             variant.file_hash = compute_result["content_hash"]
             variant.duration_s = compute_result["duration_s"]
             variant.render_status = RenderStatus.QUEUED
@@ -395,12 +406,16 @@ def commit_render(lease: TaskLease, compute_result: dict[str, Any], ms: int) -> 
 
         moved_media, moved_cover = record.verify()
 
-        with get_session() as db:
+        with media_validation_scope(task_id=lease.task_id), get_session() as db:
             if db.get_bind().dialect.name == "sqlite":
                 db.connection().exec_driver_sql("BEGIN IMMEDIATE")
             task, candidate = _render_context(db, lease, compute_result)
             variant = db.get(ClipVariant, variant_id)
-            if variant is None or variant.generation != generation or variant.file_path != output_path:
+            if (
+                variant is None
+                or variant.generation != generation
+                or variant.file_path != to_storage_relative(output_path)
+            ):
                 raise LeaseLostError()
             if shutdown_event.is_set():
                 raise OperationShutdownError("服务关闭，停止登记已移动的渲染结果")
@@ -451,7 +466,7 @@ def commit_render(lease: TaskLease, compute_result: dict[str, Any], ms: int) -> 
                         output_path
                         and variant is not None
                         and variant.generation == generation
-                        and variant.file_path == output_path
+                        and variant.file_path == to_storage_relative(output_path)
                         and variant.render_status == RenderStatus.QUEUED
                     ):
                         variant.render_status = RenderStatus.FAILED
@@ -461,14 +476,17 @@ def commit_render(lease: TaskLease, compute_result: dict[str, Any], ms: int) -> 
 
 
 def _render_file_referenced(db: Session, path: str) -> bool:
-    clip = db.exec(select(FinalClip.id).where(or_(FinalClip.file_path == path, FinalClip.cover_path == path))).first()
+    aliases = storage_path_aliases(path)
+    clip = db.exec(
+        select(FinalClip.id).where(or_(FinalClip.file_path.in_(aliases), FinalClip.cover_path.in_(aliases)))
+    ).first()
     if clip is not None:
         return True
     return (
         db.exec(
             select(ClipVariant.id).where(
                 ClipVariant.render_status == RenderStatus.DONE,
-                or_(ClipVariant.file_path == path, ClipVariant.cover_path == path),
+                or_(ClipVariant.file_path.in_(aliases), ClipVariant.cover_path.in_(aliases)),
             )
         ).first()
         is not None

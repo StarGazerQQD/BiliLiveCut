@@ -56,6 +56,7 @@ from app.analysis.transcription.quality import (
 )
 from app.core.asr_failures import ASRUnavailableError, permanent_device_error
 from app.core.config import settings
+from app.core.paths import resolve_storage_path
 from app.core.runtime_settings import configured_task
 from app.core.sanitize import safe_exception_summary
 from app.db.entities import RawSegment, SegmentStatus, Transcript
@@ -641,6 +642,7 @@ def transcribe_segment(
         file_path = segment.file_path
         initial_prompt = _build_whisper_prompt(db, segment)
 
+    file_path = str(resolve_storage_path(file_path))
     logger.info("开始转写 segment={} -> {}", segment_id, file_path)
 
     if backend is not None:

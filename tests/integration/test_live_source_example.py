@@ -19,6 +19,7 @@ from loguru import logger
 from sqlmodel import select
 
 from app.core.config import settings
+from app.core.paths import resolve_storage_path
 from app.db.entities import AppSetting, LiveRoom, RawSegment, RecordingSession, SegmentTask
 from app.db.session import get_session
 from app.pipeline.orchestrator import make_pipeline_callback
@@ -329,7 +330,9 @@ async def test_loaded_plugin_real_ffmpeg_reconnect_and_durable_pipeline(
             assert recording.ended_at is not None
             assert len(segments) >= 2 and len(tasks) == len(segments)
             assert len({item.file_path for item in segments}) == len(segments)
-            assert all(Path(item.file_path).stat().st_size > 1024 and item.duration_s > 1 for item in segments)
+            assert all(
+                resolve_storage_path(item.file_path).stat().st_size > 1024 and item.duration_s > 1 for item in segments
+            )
             evidence = read_evidence(db, recording.id)
             assert evidence.status == "unsupported" and not evidence.intervals
             assert not db.get(LiveRoom, room.id).auto_approve and not db.get(LiveRoom, room.id).auto_upload
@@ -531,9 +534,9 @@ def _advance_real_pipeline(room_id: int, session_id: int, monkeypatch: pytest.Mo
         assert clips, [(t.stage, t.last_error) for t in tasks]
         assert any(task.stage == TaskStatus.RENDERED for task in tasks)
         for clip in clips:
-            duration, width, height = probe_media(clip.file_path)
+            duration, width, height = probe_media(str(resolve_storage_path(clip.file_path)))
             assert duration >= 1 and width > 0 and height > 0
-            assert Path(clip.file_path).stat().st_size > 1024
+            assert resolve_storage_path(clip.file_path).stat().st_size > 1024
     for clip in clips:
         assert generate_copy(clip.id).title
     scheduler.advance_rendered()

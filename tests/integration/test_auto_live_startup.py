@@ -13,6 +13,7 @@ import pytest
 from sqlmodel import select
 
 from app.core.config import settings
+from app.core.paths import resolve_storage_path
 from app.plugins.live_source import LiveStatus
 from tests.integration.test_bilibili_client import _WBI_RESPONSE, _play_data
 from tests.integration.test_recording_progress import _ACTOR
@@ -141,7 +142,7 @@ async def test_live_detection_starts_recording_and_respects_analysis_switch(
             assert tasks[0].session_id == sessions[0].id
             assert tasks[0].segment_id == segments[0].id
         assert all(session.error_message is None for session in sessions)
-        assert all(segment.duration_s > 0 and Path(segment.file_path).is_file() for segment in segments)
+        assert all(segment.duration_s > 0 and resolve_storage_path(segment.file_path).is_file() for segment in segments)
         print(
             f"already_live={already_live} auto_record={auto_record} auto_analyze={auto_analyze}: "
             f"sessions={len(sessions)}, segments={len(segments)}, analysis_tasks={len(tasks)}; "

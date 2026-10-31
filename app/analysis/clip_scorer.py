@@ -36,6 +36,7 @@ from app.analysis.scoring_config import get_scoring_config
 from app.analysis.timeline import datetime_epoch
 from app.analysis.transcription.quality import assess_transcript_quality, transcript_quality_payload
 from app.core.config import settings
+from app.core.paths import resolve_storage_path
 from app.db.entities import (
     CandidateStatus,
     HotspotEvent,
@@ -268,7 +269,7 @@ def compute_hotspot_clip_draft(
         try:
             from app.analysis.audio import analyze_audio
 
-            silences = list(analyze_audio(context.segment.file_path).silences)
+            silences = list(analyze_audio(str(resolve_storage_path(context.segment.file_path))).silences)
         except (OSError, RuntimeError, ValueError) as exc:
             logger.info(
                 "event_clip_silence_snap_unavailable: event_id={} segment_id={} error={}",

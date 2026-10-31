@@ -18,7 +18,7 @@ from loguru import logger
 
 from app.core.config import settings
 from app.core.media_usage import media_cleanup_scope, media_in_use
-from app.core.paths import clips_dir, raw_dir
+from app.core.paths import clips_dir, raw_dir, resolve_storage_path, storage_path_aliases
 
 if TYPE_CHECKING:
     from sqlmodel import Session
@@ -37,7 +37,7 @@ def _safe_unlink(disk_path: str, allowed_root: Path) -> bool:
     :returns: 是否成功删除。
     """
     try:
-        resolved = Path(disk_path).resolve()
+        resolved = resolve_storage_path(disk_path)
         resolved_root = allowed_root.resolve()
         # resolved 必须在 allowed_root 子树内
         resolved.relative_to(resolved_root)
@@ -267,14 +267,14 @@ def _cleanup_old_raw_files(retention_days: int | None) -> int:
                         ]
                 if expired or rendered_paths:
                     targets.append((segment.file_path, recording.id, expired, rendered_paths))
-    protected_paths = {str(Path(value).resolve()) for value in protected_values}
+    protected_paths = {str(resolve_storage_path(value)) for value in protected_values}
     shared_sources: dict[str, set[int]] = {}
     for raw_path, session_id in sources:
-        shared_sources.setdefault(str(Path(raw_path).resolve()), set()).add(session_id)
+        shared_sources.setdefault(str(resolve_storage_path(raw_path)), set()).add(session_id)
     for raw_path, session_id, expired, rendered_paths in targets:
-        if not expired and not any(Path(path).is_file() for path in rendered_paths):
+        if not expired and not any(resolve_storage_path(path).is_file() for path in rendered_paths):
             continue
-        file = Path(raw_path)
+        file = resolve_storage_path(raw_path)
         resolved = str(file.resolve())
         if not file.is_file() or resolved in protected_paths or shared_sources.get(resolved, set()) - {session_id}:
             continue
@@ -303,8 +303,11 @@ def _clip_is_protected(db: Session, clip: FinalClip) -> bool:
     tasks = db.exec(select(SegmentTask).where(SegmentTask.clip_id == clip.id)).all()
     if any(task.stage not in {TaskStatus.FAILED, TaskStatus.CANCELLED, TaskStatus.COMPLETED} for task in tasks):
         return True
-    paths = [path for path in (clip.file_path, clip.cover_path) if path]
-    if db.exec(select(ClipVariant).where(ClipVariant.file_path.in_(paths))).first() is not None:
+    paths = [alias for path in (clip.file_path, clip.cover_path) if path for alias in storage_path_aliases(path)]
+    if (
+        db.exec(select(ClipVariant).where(ClipVariant.file_path.in_(paths) | ClipVariant.cover_path.in_(paths))).first()
+        is not None
+    ):
         return True
     return (
         db.exec(

@@ -4,7 +4,6 @@ from __future__ import annotations
 
 import asyncio
 from pathlib import Path
-from types import SimpleNamespace
 
 import pytest
 
@@ -187,6 +186,7 @@ class TestLiveMonitor:
     ) -> None:
         """延迟窗口结束时必须复核：恢复直播不停止，仍离线才停止。"""
         from app.pipeline import live_monitor as live_monitor_module
+        from app.sources.bilibili.client import RoomInfo
         from app.web.services import rooms as rooms_service
 
         live_state = {"value": 1}
@@ -198,9 +198,9 @@ class TestLiveMonitor:
             async def __aexit__(self, *_args: object) -> None:
                 return None
 
-            async def get_room_info(self, _room_id: str, *, include_detail: bool) -> SimpleNamespace:
+            async def get_room_info(self, _room_id: str, *, include_detail: bool) -> RoomInfo:
                 assert include_detail is True
-                return SimpleNamespace(room_id=99, live_status=live_state["value"], title=None, uploader_name=None)
+                return RoomInfo(room_id=99, short_id=0, uid=0, live_status=live_state["value"])
 
         class FakeManager:
             def __init__(self) -> None:

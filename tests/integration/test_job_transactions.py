@@ -12,6 +12,7 @@ import pytest
 from sqlmodel import select
 
 from app.clipping.drafts import ClipDraft, input_fingerprint, publication, publish_draft
+from app.core.paths import resolve_storage_path
 from app.db import job_store
 from app.db.entities import FinalClip, HighlightCandidate
 from app.db.session import get_session
@@ -151,13 +152,14 @@ def test_changed_domain_input_rolls_back_job_and_result(temp_db: None) -> None:
     assert job_store.get_job(context.job_id)["status"] == "running"
 
 
-def test_cancelled_web_render_settles_pipeline_cancellation(temp_db: None) -> None:
-    from app.db.entities import HighlightEvent, SegmentTask
+def test_cancelled_web_render_settles_pipeline_cancellation(temp_db: None, pcm_wav: Path) -> None:
+    from app.db.entities import HighlightEvent, RawSegment, SegmentTask
     from app.web.services.candidates import approve_candidate_sync
 
     context, draft = _context(), _draft()
     candidate_id = draft.clip.candidate_id
     with get_session() as db:
+        db.add(RawSegment(id=1, session_id=1, seq=0, file_path=str(pcm_wav)))
         event = HighlightEvent(candidate_id=candidate_id, session_id=1, segment_id=1)
         db.add(event)
         db.flush()
@@ -414,13 +416,13 @@ async def test_web_render_publishes_real_media_copy_and_task_together(
             clip = db.exec(select(FinalClip)).one()
             assert state["result"]["clip_id"] == clip.id
             assert clip.title and clip.tags_json and clip.status == "reviewing"
-            assert Path(clip.file_path).stat().st_size > 0
+            assert resolve_storage_path(clip.file_path).stat().st_size > 0
             assert clip.duration_s == pytest.approx(3, abs=0.2)
             if operation == "candidate_render":
                 assert db.get(SegmentTask, pipeline_id).stage == "rendered"
                 variants = db.exec(select(ClipVariant)).all()
                 assert len(variants) >= 4
-                assert all(Path(variant.file_path).is_file() for variant in variants)
+                assert all(resolve_storage_path(variant.file_path).is_file() for variant in variants)
     finally:
         await manager.stop()
 
@@ -513,7 +515,7 @@ def test_collection_real_media_publication_checks_cancellation_and_inputs(
 
     if publication_state == "current":
         result = render()
-        assert result is not None and Path(result.file_path).stat().st_size > 0
+        assert result is not None and resolve_storage_path(result.file_path).stat().st_size > 0
         assert result.duration_s == pytest.approx(4, abs=0.3)
     else:
         with pytest.raises(JobSuperseded if publication_state == "cancelled" else ValueError):
