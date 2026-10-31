@@ -320,3 +320,9 @@ S6 本地及冻结制品验收已通过，保持 `IN_PROGRESS`，等待最新提
 提交 `78b1151` 的首轮 CI 在 Ubuntu Python 3.13 和 Windows Python 3.11 各有一个失败，均为滴流响应截止测试；其他五个应用矩阵、Portable、审计、uv、Docker、Frontend、Documentation 和 CodeQL 均成功。Ubuntu 日志确认测试服务器的 `select.select()` 遇到高编号文件描述符后异常退出；现使用标准库 `DefaultSelector`，并增加 POSIX 真实 socket 高编号变体。Windows 本地诊断进一步确认客户端冷初始化可能耗尽 0.4 秒预算，请求尚未到达测试服务器。现在先以一次真实本地请求完成预热，再创建被测预算；保留原 0.4 秒预算、2 秒结束、实际连接关闭、单次尝试和 `deadline` 分类断言。
 
 修正后的请求、取消、结构化与持久请求目标集为 **137 passed**；完整应用与 Portable 为 **4312 passed、覆盖率 85.87%**，包含真实 wheel。本次完整命令保留两条 warning：既有 setuptools 安装接口弃用，以及显式 `PYTHONIOENCODING=utf-8` 导致子进程输出与默认 GBK 管道解码不一致。恢复原命令环境后，相关配置持久化用例以 `-W error::pytest.PytestUnhandledThreadExceptionWarning` 复验通过，没有修改产品或屏蔽警告。本次仅修改测试与验收记录，业务来源 `d1bf5b5` 及已验证制品不变；S6 继续等待修正提交的全部适用远端检查。
+
+随后提交 `a7e2332` 的六个应用矩阵通过，Windows Python 3.12 仍有一次滴流连接关闭断言失败，结果为 **3825 passed、1 failed**；其余工作流、Portable、审计、uv 和 coverage summary 均成功。新增真实回环 HTTP 回归在原生产代码上稳定复现两种关闭竞态：响应已进入清理时，外层原生 `Task.cancel()` 再次打断 AnyIO shield 保护的关闭；HTTPX 已设置关闭标志，后续关闭调用无法补偿。现为每个网络请求建立独立取消作用域，通过该作用域取消并等待实际清理完成，保留共享连接池与其他请求。
+
+回归继续覆盖取消、服务关闭及真实 0.4 秒截止与清理交错的情况；在调用返回前要求清理完成、没有被再次取消、远端实际断连，保留 2 秒外层期限。首次补测另发现清理中的原始网络异常会覆盖截止分类，现保留最初中断原因，并将清理期间观察到的真实异常保存在原因链中。原滴流用例将响应头发送纳入同一断开观测范围，没有放宽期限、调用次数或关闭断言。
+
+最终相关目标为 **140 passed**；完整应用与 Portable 为 **4315 passed、覆盖率 85.89%**，包含真实 wheel，保留一条 setuptools 安装接口弃用 warning。生产传输代码已变化，接下来固定新来源并重新验收 Payload、冻结启动器与远端 CI，S6 保持 `IN_PROGRESS`。

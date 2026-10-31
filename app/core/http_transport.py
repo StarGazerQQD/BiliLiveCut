@@ -5,7 +5,7 @@ import asyncio
 import time
 import zlib
 from collections.abc import Callable, Iterator
-from contextlib import ExitStack, contextmanager, suppress
+from contextlib import ExitStack, contextmanager
 from contextvars import ContextVar
 from dataclasses import dataclass
 from functools import partial
@@ -150,7 +150,14 @@ class CancellableHTTPTransport(httpx.BaseTransport):
 
         async def send(*, task_status: TaskStatus[None] = TASK_STATUS_IGNORED) -> httpx.Response:
             task_status.started()
-            network = asyncio.create_task(receive())
+            network_scope = CancelScope()
+
+            async def scoped_receive() -> httpx.Response:
+                with network_scope:
+                    return await receive()
+                raise asyncio.CancelledError
+
+            network = asyncio.create_task(scoped_receive())
             try:
                 while not network.done():
                     # 租约读取可能在调用线程等待数据库；全局停止仍能独立关闭网络。
@@ -160,14 +167,16 @@ class CancellableHTTPTransport(httpx.BaseTransport):
                         raise HTTPRequestDeadline("模型请求超过绝对时间预算")
                     await asyncio.wait({network}, timeout=0.05)
                 return network.result()
+            except (OperationShutdownError, HTTPRequestDeadline, asyncio.CancelledError) as interruption:
+                # 通过作用域取消，避免原生 Task.cancel 打断已受保护的连接关闭。
+                network_scope.cancel()
+                with CancelScope(shield=True):
+                    result = (await asyncio.gather(network, return_exceptions=True))[0]
+                if isinstance(result, Exception) and result is not interruption:
+                    raise interruption from result
+                raise
             finally:
-                try:
-                    if not network.done():
-                        network.cancel()
-                    with CancelScope(shield=True), suppress(asyncio.CancelledError):
-                        await network
-                finally:
-                    finished.set()
+                finished.set()
 
         future, _ = portal.start_task(send)
         try:

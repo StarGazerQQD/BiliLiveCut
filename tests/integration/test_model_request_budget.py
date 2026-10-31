@@ -195,10 +195,10 @@ def test_text_trickled_network_response_cannot_extend_deadline(
                 self.wfile.write(body)
                 self.wfile.flush()
                 return
-            self.send_response(200)
-            self.send_header("Content-Length", "100000")
-            self.end_headers()
             try:
+                self.send_response(200)
+                self.send_header("Content-Length", "100000")
+                self.end_headers()
                 with ExitStack() as stack:
                     connection = self.connection
                     if minimum_descriptor:
