@@ -362,3 +362,22 @@ S7 首次完整应用与 Portable 回归为 **4371 passed、29 failed、覆盖�
 另以真实子进程持锁、异常终止、SQLite 备份及整目录搬迁，复现媒体占用登记使用绝对路径后持续阻止清理的问题。新登记使用统一相对引用，解析后保留原根目录及操作系统锁校验；既有绝对值不改写，非法登记仍阻止清理。发布清单和插件输入的路径基准说明同步更新。
 
 修正后的媒体目标集为 **180 passed**，最后回执、审批、事务及清理目标集为 **231 passed**。完整应用与 Portable 回归为 **4424 passed、覆盖率 86.13%**，包含真实 wheel 构建，保留一条 setuptools 安装接口弃用 warning。随后完成上传回执类型标注与导入整理，受影响目标集 **169 passed**；Ruff 检查通过，前端完整类型、静态、格式、单元测试和生产构建通过。来源固定后的完整组合回归、最终质量、制品及远端门禁继续执行，S7 保持 `IN_PROGRESS`。
+
+### S7 本地最终验收
+
+业务源码固定为 `a2eefe8921e0d616ce569cd3735dd6ef5539fd18`，五处 Portable 来源信息同步，Engine Pack 元数据由正式 fixture 流程生成，模型 revision 和第三方依赖未变化。默认 `build_payload.py` 双次构建一致，Payload 共 330 个文件；版本保持 `0.1.20.2-alpha`，由 S8 统一升级。
+
+- `python -m pytest packaging/portable/tests tests/test_version_consistency.py --timeout=180 --fail-on-skip -o addopts=--tb=short -q`：**489 passed**。
+- `python -m pytest tests packaging/portable/tests --timeout=600 --fail-on-skip --cov=app --cov-report=term --cov-report=xml --cov-fail-under=50 --durations=15 -o addopts=--tb=short -q`：**4424 passed、覆盖率 86.15%**，包含真实 sdist/wheel；保留一条 setuptools 安装接口弃用 warning。
+- `python -m pre_commit run --all-files`：全部 12 项通过；前端 `npm run check` 的类型、lint、格式、85 项单元测试及生产构建通过，OpenAPI `--check` 通过。
+- 文档 `npm run check`：22 项通过；`npm run build`：57 页及全部生成链接通过。`python scripts/release_audit.py`：**63 PASS / 0 WARN / 0 FAIL**。
+
+正式 `build_exe.py --without-engine-pack` 生成新 Lite EXE，核验内嵌 Payload、LICENSE、来源、版本、清单及 1951 个冻结模块路径。最终文件清单如下；fixture 仅用于隔离验收，不作为真实发布模型包：
+
+| 文件 | 大小（字节） | SHA-256 | CRC32 |
+| --- | ---: | --- | --- |
+| `source_payload.zip` | 1567012 | `ccd6b688289e0d3ec1df1974f03f91be45445bd7a36a9376aa3f7cb006900741` | `5C8D0590` |
+| `BiliLiveCut-Portable-Lite-v0.1.20.2-alpha-x64.exe` | 67180590 | `a637c86eaf917f4ecb0cf10556ce042341822d7f5ddd532c849ed3605614d378` | `E5B2CD10` |
+| `BiliLiveCut-EnginePack-0.1.20.2-alpha.zip`（fixture） | 16258 | `eb2c1912944771c4a5b2c05fc88d19de1f2fcded09c9a0d82dc331c4eeac35b9` | `FB5DF364` |
+
+隔离 Portable 副本保留旧启动器后完成离线更新、依赖及 Runtime 检查、四引擎 fixture 准备。实际终止后端、前端和 console 后，各自恢复唯一完整新代，旧进程与端口全部回收；冻结宿主异常退出后回收所属进程并保留无关哨兵。启动期间真实抢占前端端口时仅启动一代 API，退出码为 `1`，所属进程与 API 端口均回收。源码基线及实际 diff 检查完成后提交本阶段记录，S7 保持 `IN_PROGRESS` 等待远端验收，S8 为 `PENDING`。
