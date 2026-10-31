@@ -3,9 +3,11 @@ from __future__ import annotations
 import gzip
 import json
 import os
-import select
+import selectors
+import socket
 import time
 from collections.abc import AsyncIterator
+from contextlib import ExitStack
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from threading import Event, Thread, Timer
 from types import SimpleNamespace
@@ -171,7 +173,10 @@ def test_text_success_and_error_bodies_are_bounded_and_closed(
         llm.close_clients()
 
 
-def test_text_trickled_network_response_cannot_extend_deadline(temp_db: None, monkeypatch: MonkeyPatch) -> None:
+@pytest.mark.parametrize("minimum_descriptor", [0] if os.name == "nt" else [0, 1100])
+def test_text_trickled_network_response_cannot_extend_deadline(
+    temp_db: None, monkeypatch: MonkeyPatch, minimum_descriptor: int
+) -> None:
     closed = Event()
     requests: list[str] = []
 
@@ -181,17 +186,40 @@ def test_text_trickled_network_response_cannot_extend_deadline(temp_db: None, mo
         def do_POST(self) -> None:
             self.rfile.read(int(self.headers["Content-Length"]))
             requests.append(self.path)
+            if len(requests) == 1:
+                body = json.dumps(response("连接就绪")).encode()
+                self.send_response(200)
+                self.send_header("Content-Type", "application/json")
+                self.send_header("Content-Length", str(len(body)))
+                self.end_headers()
+                self.wfile.write(body)
+                self.wfile.flush()
+                return
             self.send_response(200)
             self.send_header("Content-Length", "100000")
             self.end_headers()
             try:
-                for _ in range(100):
-                    self.wfile.write(b" ")
-                    self.wfile.flush()
-                    readable, _, _ = select.select([self.connection], [], [], 0.03)
-                    if readable and self.connection.recv(1) == b"":
-                        closed.set()
-                        break
+                with ExitStack() as stack:
+                    connection = self.connection
+                    if minimum_descriptor:
+                        import fcntl
+                        import resource
+
+                        soft, hard = resource.getrlimit(resource.RLIMIT_NOFILE)
+                        if soft < minimum_descriptor + 128:
+                            resource.setrlimit(resource.RLIMIT_NOFILE, (minimum_descriptor + 128, hard))
+                            stack.callback(resource.setrlimit, resource.RLIMIT_NOFILE, (soft, hard))
+                        descriptor = fcntl.fcntl(connection.fileno(), fcntl.F_DUPFD_CLOEXEC, minimum_descriptor)
+                        connection = stack.enter_context(socket.socket(fileno=descriptor))
+                        assert connection.fileno() >= minimum_descriptor
+                    readable = stack.enter_context(selectors.DefaultSelector())
+                    readable.register(connection, selectors.EVENT_READ)
+                    for _ in range(100):
+                        self.wfile.write(b" ")
+                        self.wfile.flush()
+                        if readable.select(0.03) and connection.recv(1) == b"":
+                            closed.set()
+                            break
             except OSError:
                 closed.set()
             finally:
@@ -205,12 +233,17 @@ def test_text_trickled_network_response_cannot_extend_deadline(temp_db: None, mo
     worker.start()
     save_model_configuration(catalog(base_url=f"http://127.0.0.1:{server.server_port}/v1"))
     monkeypatch.setattr(settings, "llm_request_timeout_s", 60)
-    budget = ModelCallBudget(max_attempts=8, max_elapsed_s=0.4)
-    started = time.monotonic()
     try:
+        # 用真实请求完成客户端冷初始化，原有短预算只测已进入网络的滴流响应。
+        assert llm.call_text("预热连接", budget=ModelCallBudget(max_attempts=1, max_elapsed_s=10)) == "连接就绪"
+        assert len(requests) == 1
+        budget = ModelCallBudget(max_attempts=8, max_elapsed_s=0.4)
+        started = time.monotonic()
         assert llm.call_text("绝对截止", budget=budget) is None
         assert time.monotonic() - started < 2
-        assert closed.wait(2) and len(requests) == 1
+        assert len(requests) == 2, requests
+        assert closed.wait(2)
+        assert len(budget.attempts) == 1
         assert budget.attempts[0].error == "deadline"
     finally:
         llm.close_clients()

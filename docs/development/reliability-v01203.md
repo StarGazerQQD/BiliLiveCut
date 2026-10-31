@@ -316,3 +316,7 @@ M23 至 M28 已进入完整本地验收。统一预算覆盖文本、结构化�
 任务隔离 Portable 副本完成真实离线更新、`pip check`、Runtime 校验与四引擎 fixture 准备。实际后端、前端、console 分别异常终止后恢复唯一新服务代次，旧树和端口回收；冻结宿主异常退出清除所属进程，无关哨兵继续运行。预检后的真实端口竞争只启动一代 API，返回失败码 `1` 并清理所属进程。旧 S5 制品和日志保留，没有改动 E 盘运行目录、升级依赖或追加外部模型请求。
 
 S6 本地及冻结制品验收已通过，保持 `IN_PROGRESS`，等待最新提交的全部适用远端 CI。S7、S8 保持 `PENDING`。
+
+提交 `78b1151` 的首轮 CI 在 Ubuntu Python 3.13 和 Windows Python 3.11 各有一个失败，均为滴流响应截止测试；其他五个应用矩阵、Portable、审计、uv、Docker、Frontend、Documentation 和 CodeQL 均成功。Ubuntu 日志确认测试服务器的 `select.select()` 遇到高编号文件描述符后异常退出；现使用标准库 `DefaultSelector`，并增加 POSIX 真实 socket 高编号变体。Windows 本地诊断进一步确认客户端冷初始化可能耗尽 0.4 秒预算，请求尚未到达测试服务器。现在先以一次真实本地请求完成预热，再创建被测预算；保留原 0.4 秒预算、2 秒结束、实际连接关闭、单次尝试和 `deadline` 分类断言。
+
+修正后的请求、取消、结构化与持久请求目标集为 **137 passed**；完整应用与 Portable 为 **4312 passed、覆盖率 85.87%**，包含真实 wheel。本次完整命令保留两条 warning：既有 setuptools 安装接口弃用，以及显式 `PYTHONIOENCODING=utf-8` 导致子进程输出与默认 GBK 管道解码不一致。恢复原命令环境后，相关配置持久化用例以 `-W error::pytest.PytestUnhandledThreadExceptionWarning` 复验通过，没有修改产品或屏蔽警告。本次仅修改测试与验收记录，业务来源 `d1bf5b5` 及已验证制品不变；S6 继续等待修正提交的全部适用远端检查。
