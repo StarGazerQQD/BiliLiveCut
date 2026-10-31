@@ -22,18 +22,21 @@ import subprocess
 import sys
 import traceback
 from collections.abc import Sequence
+from contextlib import ExitStack
 from pathlib import Path
 from typing import Any
 
 from blc_portable.console import configure_console_encoding
 from blc_portable.diagnostics import exception_summary, redact_diagnostic
-from config.launcher_settings import APP_ROOT_ENV, WEB_PORT_ENV, load_launcher_config
+from config import file_locks as shared_file_locks
+from config.file_locks import FileLock
+from config.launcher_settings import APP_ROOT_ENV, WEB_PORT_ENV, load_launcher_config, validate_web_port
 
 # -- Constants ──────────────────────────────────────────────────
 APP_NAME = "BiliLiveCut"
 VERSION = "V0.1.20.2 Alpha"
 RELEASE_VERSION = "0.1.20.2-alpha"
-SOURCE_COMMIT_SHORT = "0b54f9b"
+SOURCE_COMMIT_SHORT = "a2eefe8"
 # NOTE: RELEASE_ID 将在获得 Payload SHA-256 后动态生成 (内容寻址)
 SUPPORTED_PYTHON_VERSIONS = frozenset({(3, 11), (3, 12)})
 
@@ -849,7 +852,10 @@ def prepare_models(
         command.append("--repair")
 
     env = _python_environment()
-    env["PYTHONPATH"] = str(source_root.resolve())
+    import_roots = [str(source_root.resolve())]
+    if not getattr(sys, "frozen", False):
+        import_roots.append(str(Path(shared_file_locks.__file__).resolve().parent.parent))
+    env["PYTHONPATH"] = os.pathsep.join(import_roots)
     env["BLC_MODEL_CONFIG_DIR"] = str(config_root.resolve())
     env["PYTHONIOENCODING"] = "utf-8"
     env["PYTHONUTF8"] = "1"
@@ -1202,7 +1208,102 @@ Examples:
     return parser
 
 
+def _service_http_ready(web_port: int) -> bool:
+    """直接检查固定回环 HTTP，不为本地就绪检查加载代理或 TLS 环境。"""
+    from http.client import HTTPConnection, HTTPException
+
+    connection = HTTPConnection("127.0.0.1", web_port, timeout=1)
+    try:
+        connection.request("GET", "/auth/status")
+        with connection.getresponse() as response:
+            return response.status == 200
+    except (OSError, HTTPException):
+        return False
+    finally:
+        connection.close()
+
+
+def _run_service(command: list[str], *, env: dict[str, str], cwd: str) -> int:
+    """Portable 独占有限恢复预算；人工退出不重启，上一代清理失败不启动下一代。"""
+    import time
+
+    from app.core.process_spawn import spawn_owned
+    from config.service_restart import (
+        CLEANUP_UNCONFIRMED_EXIT,
+        OUTER_SHUTDOWN_LIMIT_S,
+        RESTART_OWNER_ENV,
+        SERVICE_BIND_FAILED_EXIT,
+        RestartBudget,
+    )
+
+    options = {"creationflags": subprocess.CREATE_NEW_PROCESS_GROUP} if os.name == "nt" else {}
+    budget = RestartBudget()
+    web_port = validate_web_port(env[WEB_PORT_ENV]) if WEB_PORT_ENV in env else None
+    while True:
+        process, tree = spawn_owned(
+            command,
+            env={**env, "_BLC_PARENT_STDIN": "1", RESTART_OWNER_ENV: "launcher"},
+            cwd=cwd,
+            stdin=subprocess.PIPE,
+            **options,
+        )
+        manual_stop = False
+        try:
+            next_probe = 0.0
+            try:
+                while process.poll() is None:
+                    if web_port is not None and time.monotonic() >= next_probe:
+                        ready = _service_http_ready(web_port)
+                        budget.observe(ready=ready, now=time.monotonic())
+                        next_probe = time.monotonic() + 1
+                    time.sleep(0.25)
+            except KeyboardInterrupt:
+                manual_stop = True
+                assert process.stdin is not None
+                process.stdin.close()
+                try:
+                    process.wait(timeout=OUTER_SHUTDOWN_LIMIT_S)
+                except (KeyboardInterrupt, subprocess.TimeoutExpired):
+                    tree.terminate()
+                    process.wait(timeout=5)
+            code = process.returncode
+            budget.ended(time.monotonic())
+        finally:
+            if process.stdin is not None and not process.stdin.closed:
+                process.stdin.close()
+            tree.terminate()
+            process.wait(timeout=5)
+        if manual_stop:
+            return code if code is not None and code >= 0 else 130
+        if code in {0, CLEANUP_UNCONFIRMED_EXIT}:
+            return code
+        if code == SERVICE_BIND_FAILED_EXIT:
+            print("[ERROR] 前端监听绑定失败，所属服务已关闭，请检查地址、端口占用及权限。")
+            return 1
+        delay = budget.failed(time.monotonic())
+        if delay is None:
+            print("[ERROR] 服务连续异常退出，自动恢复预算已耗尽，请检查日志后重新启动。")
+            return code if code is not None and code > 0 else 1
+        print(f"[WARNING] 服务异常退出，{delay:g} 秒后恢复，第 {budget.failures} 次。")
+        try:
+            time.sleep(delay)
+        except KeyboardInterrupt:
+            return 130
+
+
 def run_launcher(args: argparse.Namespace) -> int:
+    """普通启动独占应用目录，诊断和校验模式继续保持只读入口。"""
+    if args.doctor or args.verify_runtime or args.verify_models:
+        return _run_launcher(args)
+    try:
+        with FileLock(get_app_root().resolve() / ".launcher.lock").acquire(timeout=0):
+            return _run_launcher(args)
+    except TimeoutError as exc:
+        print(f"[ERROR] 当前目录已有 Launcher 正在运行：{exception_summary(exc)}")
+        return 1
+
+
+def _run_launcher(args: argparse.Namespace) -> int:
     """Execute launch flow。
 
     :param args: 解析后的命令行参数。
@@ -1221,6 +1322,7 @@ def run_launcher(args: argparse.Namespace) -> int:
     print("  GitHub requests: 0 (source from built-in Payload)")
     print()
 
+    installation = ExitStack()
     try:
         # --engine-pack and --fallback-online validation
         if args.fallback_online and not args.engine_pack:
@@ -1259,6 +1361,11 @@ def run_launcher(args: argparse.Namespace) -> int:
             _verify_installed_models(app_root)
             return 0
 
+        installation.enter_context(FileLock(app_root.resolve() / ".service.lock").acquire(timeout=0))
+        launcher_config = load_launcher_config(app_root, warn=lambda message: print(f"  [WARNING] {message}"))
+        web_port = launcher_config.web_port
+        _ensure_web_port_available(web_port)
+
         # --offline 模式: blocking network requests
         if args.offline:
             os.environ["BLC_OFFLINE"] = "1"
@@ -1272,8 +1379,6 @@ def run_launcher(args: argparse.Namespace) -> int:
 
         # 1. ensure persistent data dirs
         ensure_data_dirs(app_root)
-        launcher_config = load_launcher_config(app_root, warn=lambda message: print(f"  [WARNING] {message}"))
-        web_port = launcher_config.web_port
 
         # 2. check/install Runtime
         source_dir = get_current_release_dir()
@@ -1343,18 +1448,18 @@ def run_launcher(args: argparse.Namespace) -> int:
         env["BLC_SOURCE_DIR"] = str(source_dir)
         env["PYTHONPATH"] = str(source_dir)
 
-        # 清除代理环境变量：Portable 模式仅需服务 localhost，httpx 不需要 SOCKS
-        for proxy_var in ("ALL_PROXY", "HTTP_PROXY", "HTTPS_PROXY", "all_proxy", "http_proxy", "https_proxy"):
-            env.pop(proxy_var, None)
+        # 保留外部模型、平台和下载使用的代理；API 启动时合并本地 NO_PROXY。
 
         models_dir = app_root / "models"
         if models_dir.exists():
             env["BLC_MODELS_DIR"] = str(models_dir)
 
-        result = subprocess.run(_build_service_command(venv_python, web_port), env=env, cwd=str(app_root))
-        if result.returncode != 0:
-            print(f"[ERROR] Web 服务在 127.0.0.1:{web_port} 启动或运行失败（exit={result.returncode}）。")
-        return result.returncode
+        # 安装锁交给 API；Launcher 自身的锁继续覆盖整个服务运行期。
+        installation.close()
+        returncode = _run_service(_build_service_command(venv_python, web_port), env=env, cwd=str(app_root))
+        if returncode != 0:
+            print(f"[ERROR] Web 服务在 127.0.0.1:{web_port} 启动或运行失败（exit={returncode}）。")
+        return returncode
 
     except KeyboardInterrupt:
         print("\nService stopped")
@@ -1377,6 +1482,8 @@ def run_launcher(args: argparse.Namespace) -> int:
         print()
         _pause_before_exit()
         return 1
+    finally:
+        installation.close()
 
 
 def main(argv: Sequence[str] | None = None) -> int:

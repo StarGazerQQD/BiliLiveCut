@@ -116,6 +116,7 @@ name = "bili-live-cut"
 version = "0.1.20.2a0"
 source = { editable = "." }
 dependencies = [
+    { name = "anyio" },
     { name = "brotli" },
     { name = "click" },
     { name = "filelock" },
@@ -202,6 +203,7 @@ dev = [
 
 [package.metadata]
 requires-dist = [
+    { name = "anyio", specifier = ">=4.0" },
     { name = "av", marker = "extra == 'asr-whisper'", specifier = ">=11,<19" },
     { name = "bili-live-cut", extras = ["asr-whisper"], marker = "extra == 'asr-funasr'" },
     { name = "bili-live-cut", extras = ["asr-whisper"], marker = "extra == 'dev'" },

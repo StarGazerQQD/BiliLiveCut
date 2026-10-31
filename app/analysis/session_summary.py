@@ -14,8 +14,9 @@ from loguru import logger
 from sqlmodel import Session, select
 
 from app.analysis.session_coverage import session_asr_coverage
+from app.analysis.session_summary_tree import SessionSummaryTree, SummaryCacheNode, summary_hash, summary_policy
 from app.analysis.transcription.content import transcript_text
-from app.core.config import settings
+from app.core.cancellation import OperationCancelledError, OperationShutdownError, check_cancellation, check_shutdown
 from app.core.runtime_settings import configured_entry
 from app.core.sanitize import safe_exception_summary, sanitize_diagnostic
 from app.db.entities import (
@@ -188,7 +189,7 @@ def ensure_session_timeline_summary_requested(session_id: int) -> bool:
         coverage = session_asr_coverage(db, session_id)
         if (
             result_payload.get("version") == _SUMMARY_VERSION
-            and result_payload.get("transcript_signature") == session_transcript_signature(blocks)
+            and result_payload.get("transcript_signature") == _summary_input_signature(db, session_id, blocks)
             and result_payload.get("coverage") == coverage
         ):
             return False
@@ -288,8 +289,13 @@ def claim_pending_session_summary() -> SessionSummaryClaim | None:
 def execute_session_summary_claim(claim: SessionSummaryClaim) -> bool:
     """执行一个已领取请求，并以请求版本保护最终提交。"""
     try:
-        result = build_session_timeline_summary(claim.session_id)
+        check_cancellation()
+        result = build_session_timeline_summary(claim.session_id, claim=claim)
+        check_cancellation()
         committed = _commit_summary_result(claim, result)
+    except OperationShutdownError:
+        interrupt_summary_execution(claim)
+        return False
     except SessionSummaryNotReady:
         _return_claim_to_queue(claim, error="场次重分析尚未稳定", count_attempt=False)
         return False
@@ -308,14 +314,22 @@ def execute_session_summary_claim(claim: SessionSummaryClaim) -> bool:
     return True
 
 
-def build_session_timeline_summary(session_id: int) -> dict[str, Any]:
-    """把整场最终 ASR 一次性交给 LLM，生成全场高光分析。"""
+def build_session_timeline_summary(session_id: int, *, claim: SessionSummaryClaim | None = None) -> dict[str, Any]:
+    """按容量综合整场 ASR，持有当前 claim 时逐节点保存可恢复进度。"""
+    if claim is not None and claim.session_id != session_id:
+        raise ValueError("总结请求与场次不匹配")
     with get_session() as db:
         if not _session_ready(db, session_id):
             raise SessionSummaryNotReady(f"录制会话尚未完成最终分析: session_id={session_id}")
         blocks = _session_transcript_blocks(db, session_id)
         coverage = session_asr_coverage(db, session_id)
         source_label = _session_source_label(db, session_id)
+        policy = summary_policy(_summary_prompt("", []))
+        signature = _summary_input_signature(db, session_id, blocks, policy=policy)
+        generation = None
+        if claim is not None:
+            request = _require_summary_claim(db, claim)
+            generation = str(request["requested_at"])
         previous_row = db.get(AppSetting, _result_key(session_id))
         previous = _decode_result(previous_row.value if previous_row else None)
         recovered = (
@@ -324,25 +338,86 @@ def build_session_timeline_summary(session_id: int) -> dict[str, Any]:
             and (previous["coverage"]["mode"] == "degraded" or previous.get("summary_mode") == "recovered")
         )
 
-    signature = session_transcript_signature(blocks)
     if not blocks:
         generated = "本场没有可供分析的最终 ASR 文本。"
         source = "empty"
     else:
         from app.analysis import llm
 
-        raw = llm.call_text(
-            _summary_prompt(source_label, blocks)
+        def validate(db: Session) -> None:
+            if claim is not None:
+                _require_summary_claim(db, claim)
+            check_shutdown()
+            if (
+                not _session_ready(db, session_id)
+                or _summary_input_signature(db, session_id, _session_transcript_blocks(db, session_id)) != signature
+                or session_asr_coverage(db, session_id) != coverage
+            ):
+                raise SessionSummaryNotReady("总结生成期间输入或语义策略发生变化")
+
+        def guard() -> None:
+            with get_session() as db:
+                validate(db)
+
+        def cancelled() -> bool:
+            if claim is None:
+                return False
+            with get_session() as db:
+                row = db.get(AppSetting, _request_key(session_id))
+                payload = _decode_request(row.value if row else None)
+                return payload.get("request_id") != claim.request_id or payload.get("status") != "running"
+
+        def load(key: str) -> SummaryCacheNode | None:
+            if claim is None:
+                return None
+            with get_session() as db:
+                validate(db)
+                row = db.get(AppSetting, f"summary_cache:v1:{session_id}:{key}")
+                node = SummaryCacheNode.model_validate_json(row.value) if row else None
+                if node is not None and node.key != key:
+                    raise ValueError("总结缓存节点身份不匹配")
+                return node
+
+        def persist(key: str, value: str) -> None:
+            if claim is None:
+                return
+            with get_session() as db:
+                if db.get_bind().dialect.name == "sqlite":
+                    db.connection().exec_driver_sql("BEGIN IMMEDIATE")
+                validate(db)
+                row = db.get(AppSetting, key) or AppSetting(key=key, value=value)
+                row.value = value
+                row.updated_at = datetime.now(UTC)
+                db.add(row)
+
+        def save(node: SummaryCacheNode) -> None:
+            persist(f"summary_cache:v1:{session_id}:{node.key}", node.model_dump_json())
+
+        def plan(keys: list[str]) -> None:
+            persist(
+                f"summary_plan:v1:{session_id}",
+                _encode(
+                    {
+                        "version": 1,
+                        "request_id": claim.request_id if claim else None,
+                        "signature": signature,
+                        "policy": policy,
+                        "nodes": keys,
+                    }
+                ),
+            )
+
+        budget = llm.new_editorial_budget(cancelled=cancelled, target=f"session-summary:{session_id}")
+        tree = SessionSummaryTree(policy=policy, budget=budget, guard=guard, load=load, save=save, plan=plan)
+        generated = tree.build(
+            full_prompt=_summary_prompt(source_label, blocks)
             + "\n覆盖情况（仅根据已有证据分析，不推断缺失时段）："
             + _encode(coverage),
-            max_tokens=settings.highlight_llm_max_tokens,
-            capability="summary",
+            blocks=blocks,
+            source_label=source_label,
+            coverage=coverage,
+            generation=generation,
         )
-        parsed = llm.extract_json(raw) if raw else None
-        candidate = parsed.get("summary") if parsed is not None else None
-        if not isinstance(candidate, str) or not candidate.strip():
-            raise RuntimeError("整场 ASR 分析未返回有效 summary")
-        generated = candidate.strip()
         source = "llm"
 
     return {
@@ -374,7 +449,7 @@ def session_timeline_summary_view(
         request = _decode_request(request_row.value if request_row is not None else None)
         blocks = _session_transcript_blocks(db, session_id)
         coverage = session_asr_coverage(db, session_id)
-    signature = session_transcript_signature(blocks)
+        signature = _summary_input_signature(db, session_id, blocks)
 
     base = {
         "analysis_basis": "full_session_asr",
@@ -436,6 +511,26 @@ def session_transcript_signature(blocks: list[SessionTranscriptBlock]) -> str:
     return hashlib.sha256(canonical.encode("utf-8")).hexdigest()
 
 
+def _summary_input_signature(
+    db: Session, session_id: int, blocks: list[SessionTranscriptBlock], *, policy: str | None = None
+) -> str:
+    return summary_hash(
+        {
+            "transcript": session_transcript_signature(blocks),
+            "source": _session_source_label(db, session_id),
+            "policy": policy if policy is not None else summary_policy(_summary_prompt("", []), db=db),
+        }
+    )
+
+
+def _require_summary_claim(db: Session, claim: SessionSummaryClaim) -> dict[str, Any]:
+    row = db.get(AppSetting, _request_key(claim.session_id))
+    payload = _decode_request(row.value if row else None)
+    if payload.get("request_id") != claim.request_id or payload.get("status") != "running":
+        raise OperationCancelledError("整场总结执行已失去当前请求身份")
+    return payload
+
+
 def _summary_prompt(source_label: str, blocks: list[SessionTranscriptBlock]) -> str:
     full_transcript = "\n".join(
         f"[{_gmt8_clock(block.start_at)}][{block.source_file}] {block.text}" for block in blocks
@@ -466,16 +561,18 @@ def _commit_summary_result(claim: SessionSummaryClaim, result: dict[str, Any]) -
             request is None
             or request_payload.get("version") != _SUMMARY_VERSION
             or request_payload.get("request_id") != claim.request_id
+            or request_payload.get("status") != "running"
         ):
             logger.info("整场总结结果已过期并丢弃 session={}", claim.session_id)
             return False
         if (
             not _session_ready(db, claim.session_id)
             or result["transcript_signature"]
-            != session_transcript_signature(_session_transcript_blocks(db, claim.session_id))
+            != _summary_input_signature(db, claim.session_id, _session_transcript_blocks(db, claim.session_id))
             or result["coverage"] != session_asr_coverage(db, claim.session_id)
         ):
             raise SessionSummaryNotReady("总结生成期间输入或任务状态发生变化")
+        check_shutdown()
         key = _result_key(claim.session_id)
         row = db.get(AppSetting, key)
         value = _encode(result)

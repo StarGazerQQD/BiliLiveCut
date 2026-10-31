@@ -211,7 +211,7 @@ def test_valid_structured_llm_output_is_persisted_and_idempotent(
                 "category": "announcement",
                 "entities": ["周末挑战"],
                 "semantic_confidence": 0.9,
-                "evidence_ids": ["evidence:asr:1"],
+                "evidence_ids": ["E1"],
             },
             ensure_ascii=False,
         )
@@ -262,7 +262,7 @@ def test_llm_hallucinated_claim_falls_back_to_grounded_summary(
                 "category": "reaction",
                 "entities": [],
                 "semantic_confidence": 0.99,
-                "evidence_ids": ["evidence:asr:grounded"],
+                "evidence_ids": ["E1"],
             },
             ensure_ascii=False,
         ),
@@ -293,7 +293,7 @@ def test_danmaku_only_claim_must_remain_attributed(
     )
     with get_session() as db:
         bundle = build_event_evidence_bundle(db, event_id)
-    danmaku_id = next(item.evidence_id for item in bundle.evidence if item.evidence_type == "danmaku")
+    danmaku_id = next(f"E{index}" for index, item in enumerate(bundle.evidence, 1) if item.evidence_type == "danmaku")
     install_editorial_service(
         monkeypatch,
         lambda *_args, **_kwargs: json.dumps(
@@ -366,7 +366,7 @@ def test_degraded_llm_claim_without_uncertainty_is_rejected(
                 "category": "announcement",
                 "entities": ["周末挑战"],
                 "semantic_confidence": 0.8,
-                "evidence_ids": ["evidence:asr:degraded"],
+                "evidence_ids": ["E1"],
             },
             ensure_ascii=False,
         ),
@@ -420,7 +420,7 @@ def test_non_text_signal_cannot_support_specific_llm_fact(temp_db: None, monkeyp
                 "category": "gameplay",
                 "entities": [],
                 "semantic_confidence": 0.9,
-                "evidence_ids": ["signal:audio"],
+                "evidence_ids": ["E1"],
             },
             ensure_ascii=False,
         ),
@@ -444,7 +444,7 @@ def test_llm_output_with_surrounding_text_is_rejected(temp_db: None, monkeypatch
             "category": "announcement",
             "entities": ["挑战规则"],
             "semantic_confidence": 0.7,
-            "evidence_ids": ["evidence:asr:strict"],
+            "evidence_ids": ["E1"],
         },
         ensure_ascii=False,
     )
@@ -487,7 +487,7 @@ def test_stale_bundle_is_rejected_before_commit(temp_db: None, monkeypatch: Monk
                 "category": "announcement",
                 "entities": ["挑战规则"],
                 "semantic_confidence": 0.7,
-                "evidence_ids": ["evidence:asr:initial"],
+                "evidence_ids": ["E1"],
             },
             ensure_ascii=False,
         ),
@@ -524,7 +524,7 @@ def test_number_without_evidence_keeps_conservative_fallback(temp_db: None, monk
                 "category": "discussion",
                 "entities": [],
                 "semantic_confidence": 0.8,
-                "evidence_ids": ["evidence:asr:price"],
+                "evidence_ids": ["E1"],
             },
             ensure_ascii=False,
         ),
@@ -703,14 +703,14 @@ def test_failed_explanation_retries_are_delayed_and_bounded(temp_db: None, monke
     requests = install_editorial_service(monkeypatch, lambda *_args, **_kwargs: None)
     clock = datetime(2026, 10, 26, 4, 0)
     monkeypatch.setattr(event_enricher, "utcnow", lambda: clock)
-    for expected in (1, 2, 3):
+    for expected in (2, 4, 6):
         assert enrich_hotspot_event(event_id).error == "provider_error"
         assert enrich_hotspot_event(event_id) is None
         assert len(requests) == expected
         clock += timedelta(seconds=301)
-    assert enrich_hotspot_event(event_id) is None and len(requests) == 3
+    assert enrich_hotspot_event(event_id) is None and len(requests) == 6
     assert enrich_hotspot_event(event_id, force=True).error == "provider_error"
-    assert len(requests) == 4
+    assert len(requests) == 8
 
 
 def test_fact_check_uses_same_attempt_budget_as_generation(temp_db: None, monkeypatch: MonkeyPatch) -> None:
@@ -723,7 +723,7 @@ def test_fact_check_uses_same_attempt_budget_as_generation(temp_db: None, monkey
         "category": "discussion",
         "entities": [],
         "semantic_confidence": 0.8,
-        "evidence_ids": ["speech"],
+        "evidence_ids": ["E1"],
     }
     requests = install_editorial_service(monkeypatch, lambda *_args, **_kwargs: json.dumps(output), grounded=True)
     result = compute_event_enrichment(event_id, budget=ModelCallBudget(max_attempts=1, max_elapsed_s=20))
@@ -743,7 +743,7 @@ def test_explanation_request_schema_uses_actual_configured_limits(
         "category": "discussion",
         "entities": [],
         "semantic_confidence": 0.8,
-        "evidence_ids": ["speech"],
+        "evidence_ids": ["E1"],
     }
     requests = install_editorial_service(monkeypatch, lambda *_args, **_kwargs: json.dumps(output))
     result = compute_event_enrichment(event_id, config=config)
@@ -771,7 +771,7 @@ def test_semantic_paraphrase_is_accepted_after_grounding_despite_low_lexical_ove
         "category": "announcement",
         "entities": [],
         "semantic_confidence": 0.8,
-        "evidence_ids": ["speech"],
+        "evidence_ids": ["E1"],
     }
     requests = install_editorial_service(monkeypatch, lambda *_args, **_kwargs: json.dumps(output), grounded=True)
     result = enrich_hotspot_event(event_id)
@@ -789,13 +789,13 @@ def test_grounding_service_cannot_forge_or_omit_evidence(temp_db: None, monkeypa
         "category": "discussion",
         "entities": [],
         "semantic_confidence": 0.8,
-        "evidence_ids": ["speech"],
+        "evidence_ids": ["E1"],
     }
 
     def invalid_grounding(_payload: dict[str, object]) -> str:
         quote = {
-            "evidence_id": "unknown" if fault == "unknown_id" else "speech",
-            "quote": "凭空编造的事实" if fault == "invented_quote" else "主播介绍挑战规则",
+            "evidence_id": "E999" if fault == "unknown_id" else "E1",
+            "quote_id": "Q999" if fault == "invented_quote" else "Q1",
         }
         return json.dumps(
             {

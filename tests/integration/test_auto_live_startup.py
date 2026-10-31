@@ -3,6 +3,8 @@
 from __future__ import annotations
 
 import asyncio
+import os
+import sys
 from pathlib import Path
 from typing import TYPE_CHECKING
 
@@ -10,13 +12,16 @@ import httpx
 import pytest
 from sqlmodel import select
 
-from app.plugins.live_source import LiveStatus, SourceRoom
-from tests.source_fixtures import bind_bilibili_room
+from app.core.config import settings
+from app.core.paths import resolve_storage_path
+from app.plugins.live_source import LiveStatus
+from tests.integration.test_bilibili_client import _WBI_RESPONSE, _play_data
+from tests.integration.test_recording_progress import _ACTOR
+from tests.integration.test_recording_progress import video as video
+from tests.source_fixtures import LiveEventFeed, bind_bilibili_room
 
 if TYPE_CHECKING:
     from pytest import MonkeyPatch
-
-    from app.recording.recorder import SegmentCallback, SessionEndCallback, StateCallback
 
 
 @pytest.mark.asyncio
@@ -29,7 +34,8 @@ async def test_live_detection_starts_recording_and_respects_analysis_switch(
     already_live: bool,
     auto_record: bool,
     auto_analyze: bool,
-    bili_live_feed,
+    bili_live_feed: LiveEventFeed,
+    video: Path,
 ) -> None:
     """Exercise real startup and queue advancement with controlled external boundaries."""
     from app.db.entities import LiveRoom, RawSegment, RecordingSession, SegmentTask, TaskStatus
@@ -56,14 +62,26 @@ async def test_live_detection_starts_recording_and_respects_analysis_switch(
         db_id = room.id
     assert db_id is not None
     live_status = 1 if already_live else 0
-    emitted = asyncio.Event()
-    finish = asyncio.Event()
-    recorders: list[BoundaryRecorder] = []
-    failures: list[str] = []
+    processes: list[asyncio.subprocess.Process] = []
+    spawn = asyncio.create_subprocess_exec
+
+    async def capture(*args: str, **options: object) -> asyncio.subprocess.Process:
+        listing = args[args.index("-segment_list") + 1]
+        command = [sys.executable, "-c", _ACTOR, "stable", "2", listing, args[-1], str(video)]
+        if os.name != "nt":
+            # 保留 POSIX writer 继承与父死亡监管，仅替换外部媒体进程。
+            command = [*args[:7], sys.executable, *command]
+        process = await spawn(*command, **options)
+        processes.append(process)
+        return process
 
     def handler(request: httpx.Request) -> httpx.Response:
         if request.url.path == "/room/v1/Room/room_init":
             data = {"room_id": 202, "uid": 123, "live_status": live_status}
+        elif request.url.path == "/xlive/web-room/v2/index/getRoomPlayInfo":
+            data = _play_data(10000)
+        elif request.url.path == "/x/web-interface/nav":
+            return httpx.Response(200, json=_WBI_RESPONSE, request=request)
         else:
             assert request.url.path == "/xlive/web-room/v1/index/getInfoByRoom"
             data = {
@@ -78,51 +96,11 @@ async def test_live_detection_starts_recording_and_respects_analysis_switch(
             self._client = httpx.AsyncClient(transport=httpx.MockTransport(handler))
             return self
 
-    class BoundaryRecorder:
-        """Replace only stream capture; persist a completed segment for real callbacks."""
-
-        def __init__(
-            self,
-            source_room: SourceRoom,
-            db_room_id: int,
-            on_segment: SegmentCallback | None = None,
-            on_end: SessionEndCallback | None = None,
-            on_state: StateCallback | None = None,
-            metadata_prepared: bool = False,
-        ) -> None:
-            assert source_room.source_id == "202" and source_room.platform == "bilibili" and db_room_id == db_id
-            self.on_segment = on_segment
-            self.session_id: int | None = None
-            self.retry_budget_exhausted = False
-            recorders.append(self)
-
-        async def run(self) -> None:
-            """Simulate the media boundary and deliver a duplicated segment event."""
-            path = tmp_path / "segment.ts"
-            path.write_bytes(b"audit-boundary-placeholder")
-            with get_session() as db:
-                session = RecordingSession(room_id=db_id, status="recording")
-                db.add(session)
-                db.flush()
-                self.session_id = session.id
-                assert self.session_id is not None
-                segment = RawSegment(session_id=self.session_id, seq=0, file_path=str(path), duration_s=300)
-                db.add(segment)
-                db.flush()
-                db.refresh(segment)
-            if self.on_segment is not None:
-                await self.on_segment(segment)
-                await self.on_segment(segment)
-            emitted.set()
-            await finish.wait()
-
-        def fail(self, reason: str) -> None:
-            """Expose unexpected failures instead of hiding them in manager logging."""
-            failures.append(reason)
-
     monkeypatch.setattr("app.sources.bilibili.source.BilibiliLiveClient", TransportClient)
     monkeypatch.setattr("app.sources.bilibili.source.get_bilibili_cookie", lambda: "")
-    monkeypatch.setattr(rooms, "Recorder", BoundaryRecorder)
+    monkeypatch.setattr(asyncio, "create_subprocess_exec", capture)
+    monkeypatch.setattr(settings, "collect_danmaku", False)
+    monkeypatch.setattr(rooms, "open_path", lambda path: None)
     manager = rooms.RecorderManager()
     monkeypatch.setattr(rooms_service, "recorder_manager", manager)
     monitor = module.LiveMonitor()
@@ -132,15 +110,26 @@ async def test_live_detection_starts_recording_and_respects_analysis_switch(
         if auto_record:
             await bili_live_feed.ready(monitor, db_id)
         if not already_live:
-            assert not recorders and not manager.is_running(db_id)
+            assert not processes and not manager.is_running(db_id)
         live_status = 1
         if auto_record:
             await bili_live_feed.send(LiveStatus.LIVE)
-            await asyncio.wait_for(emitted.wait(), timeout=3)
+            async with asyncio.timeout(3):
+                while True:
+                    with get_session() as db:
+                        segment = db.exec(select(RawSegment)).first()
+                        queued = db.exec(select(SegmentTask)).first()
+                    if segment is not None and (not auto_analyze or queued is not None):
+                        break
+                    assert manager.is_running(db_id), manager.status(db_id)
+                    await asyncio.sleep(0.05)
             assert manager.is_running(db_id)
+            recorder = manager._recorders[db_id]
+            if recorder.on_segment is not None:
+                await recorder.on_segment(segment)
             await bili_live_feed.send(LiveStatus.LIVE)
         await monitor._check_all()
-        assert len(recorders) == int(auto_record)
+        assert len(manager._recorders) == len(processes) == int(auto_record)
         advance_recorded()
         with get_session() as db:
             sessions = db.exec(select(RecordingSession)).all()
@@ -152,7 +141,8 @@ async def test_live_detection_starts_recording_and_respects_analysis_switch(
             assert tasks[0].stage == TaskStatus.QUEUED_FOR_ANALYSIS
             assert tasks[0].session_id == sessions[0].id
             assert tasks[0].segment_id == segments[0].id
-        assert not failures
+        assert all(session.error_message is None for session in sessions)
+        assert all(segment.duration_s > 0 and resolve_storage_path(segment.file_path).is_file() for segment in segments)
         print(
             f"already_live={already_live} auto_record={auto_record} auto_analyze={auto_analyze}: "
             f"sessions={len(sessions)}, segments={len(segments)}, analysis_tasks={len(tasks)}; "
@@ -160,5 +150,5 @@ async def test_live_detection_starts_recording_and_respects_analysis_switch(
         )
     finally:
         await monitor.stop()
-        finish.set()
-        await asyncio.gather(*list(manager._tasks.values()))
+        await manager.stop_all()
+        assert all(process.returncode is not None for process in processes)

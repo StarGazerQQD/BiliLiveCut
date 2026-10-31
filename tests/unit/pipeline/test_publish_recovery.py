@@ -7,6 +7,7 @@ from datetime import UTC, datetime, timedelta
 from pathlib import Path
 from unittest.mock import patch
 
+import pytest
 from sqlmodel import select
 
 from app.db.entities import FinalClip, SegmentTask, TaskStatus, UploadAttempt, UploadStatus, UploadTask
@@ -72,7 +73,9 @@ class TestPublishRecovery:
             result = recover_publish_results()
             assert result == 0
 
-    def test_recover_updates_attempt_and_task(self, temp_db):
+    def test_recover_updates_attempt_and_task(
+        self, temp_db: None, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
 
         # 创建 FinalClip
         with get_session() as db:
@@ -82,7 +85,9 @@ class TestPublishRecovery:
 
         # 创建 UploadTask
         with get_session() as db:
-            task = UploadTask(id=200, clip_id=100, status=UploadStatus.UPLOADING, uploader="manual")
+            task = UploadTask(
+                id=200, clip_id=100, status=UploadStatus.UPLOADING, uploader="manual", publish_generation=5
+            )
             db.add(task)
             db.commit()
 
@@ -100,19 +105,10 @@ class TestPublishRecovery:
             db.add(attempt)
             db.commit()
 
-        entry = {
-            "attempt_token": "recover-123",
-            "publish_generation": 5,
-            "upload_task_id": 200,
-            "clip_id": 100,
-            "outcome": "success",
-            "remote_id": "BV_recovered",
-        }
-        with patch("app.pipeline.publish_recovery.read_pending_entries") as mock_read:
-            mock_read.return_value = [entry]
-            with patch("app.pipeline.publish_recovery.mark_replayed"):
-                result = recover_publish_results()
-                assert result == 1
+        monkeypatch.setattr("app.publishing.journal._JOURNAL_DIR", tmp_path)
+        assert write_remote_success("recover-123", 5, 200, 100, "BV_recovered")
+        assert recover_publish_results() == 1
+        assert not read_pending_entries()
 
         with get_session() as db:
             attempt = db.exec(select(UploadAttempt).where(UploadAttempt.attempt_token == "recover-123")).first()
@@ -124,7 +120,9 @@ class TestPublishRecovery:
             assert ut is not None
             assert ut.status == UploadStatus.SUCCESS
 
-    def test_skips_already_success(self, temp_db):
+    def test_preserves_conflicting_success_receipt(
+        self, temp_db: None, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
 
         with get_session() as db:
             clip = _make_final_clip(101, candidate_id=101)
@@ -145,13 +143,13 @@ class TestPublishRecovery:
             db.add(attempt)
             db.commit()
 
-        entry = {"attempt_token": "already-ok", "publish_generation": 2, "remote_id": "BV_journal"}
-        with patch("app.pipeline.publish_recovery.read_pending_entries") as mock_read:
-            mock_read.return_value = [entry]
-            with patch("app.pipeline.publish_recovery.mark_replayed") as mock_mark:
-                result = recover_publish_results()
-                assert result == 0
-                mock_mark.assert_called()
+        monkeypatch.setattr("app.publishing.journal._JOURNAL_DIR", tmp_path)
+        assert write_remote_success("already-ok", 2, 201, 101, "BV_journal")
+        assert recover_publish_results() == 0
+        assert len(read_pending_entries()) == 1
+        with get_session() as db:
+            attempt = db.exec(select(UploadAttempt).where(UploadAttempt.attempt_token == "already-ok")).one()
+            assert attempt.status == UploadStatus.SUCCESS and attempt.remote_id == "BV_existing"
 
 
 class TestStaleUploadAttemptRecovery:

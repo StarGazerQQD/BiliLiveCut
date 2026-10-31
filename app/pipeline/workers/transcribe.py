@@ -15,8 +15,17 @@ from typing import TYPE_CHECKING, Any
 from sqlmodel import Session, select
 
 from app.analysis.hotspot_lifecycle import resolve_merged_hotspot_event
-from app.analysis.transcription.process_pool import ASRShutdownError
+from app.analysis.reanalysis_policy import segment_protection_reason
+from app.analysis.transcription.process_pool import ASRProcessExitError, ASRShutdownError
+from app.analysis.transcription.refinement import (
+    RefinementDraft,
+    compute_refinement,
+    store_refinement,
+    transcript_refinement_revision,
+)
+from app.core.cancellation import check_cancellation, check_shutdown
 from app.core.config import settings
+from app.core.paths import resolve_storage_path
 from app.db.entities import (
     HotspotEvent,
     RawSegment,
@@ -53,7 +62,11 @@ def _load_segment_ctx(segment_id: int) -> dict[str, Any]:
         file_path = segment.file_path
         initial_prompt = _build_whisper_prompt(db, segment)
         session_id = segment.session_id
-    return {"file_path": file_path, "initial_prompt": initial_prompt, "session_id": session_id}
+    return {
+        "file_path": str(resolve_storage_path(file_path)),
+        "initial_prompt": initial_prompt,
+        "session_id": session_id,
+    }
 
 
 def transcribe_compute(task_id: int, pipeline: ASRExecutor | None = None) -> dict[str, Any]:
@@ -87,6 +100,11 @@ def transcribe_compute(task_id: int, pipeline: ASRExecutor | None = None) -> dic
         segment_id = task.segment_id
         task_session_id = task.session_id
         task_event_first = event_first_context(task.context_json)
+        reanalysis = json.loads(task.context_json or "{}").get("reanalysis", {})
+        refinement_only = isinstance(reanalysis, dict) and reanalysis.get("refinement_only") is True
+
+    if refinement_only:
+        return _compute_refinement_only(task_id)
 
     # 2) 读取片段元数据
     try:
@@ -139,7 +157,8 @@ def transcribe_compute(task_id: int, pipeline: ASRExecutor | None = None) -> dic
             quality.reason,
             quality.repetition_ratio,
         )
-    refinement = _refine_transcript_for_storage(raw_text) if quality.usable else None
+    refinement_draft = _refine_transcript_for_storage(raw_text, target=f"task:{task_id}:segment:{segment_id}")
+    refinement = refinement_draft.value
     display_text = refinement.clean_text if refinement is not None else raw_text
 
     # 5) words JSON
@@ -167,13 +186,6 @@ def transcribe_compute(task_id: int, pipeline: ASRExecutor | None = None) -> dic
         )
     if result.metadata.get("repetition_repair"):
         auxiliary_payload["repetition_repair"] = result.metadata["repetition_repair"]
-    if refinement is not None:
-        auxiliary_payload["transcript_refinement"] = {
-            "version": 1,
-            "applied": True,
-            "clean_text": refinement.clean_text,
-            "summary": refinement.summary,
-        }
     auxiliary_json = json.dumps(auxiliary_payload, ensure_ascii=False) if auxiliary_payload else None
 
     # 7) review reasons
@@ -217,6 +229,40 @@ def transcribe_compute(task_id: int, pipeline: ASRExecutor | None = None) -> dic
         "review_reasons": review_reasons_json,
         "final_text_source": result.final_text_source or "primary",
         "inference_duration": result.inference_duration,
+        "refinement_draft": refinement_draft,
+    }
+
+
+def _compute_refinement_only(task_id: int) -> dict[str, Any]:
+    with get_session() as db:
+        task = db.get(SegmentTask, task_id)
+        if task is None or not task.claimed_by or not task.lease_token:
+            raise LeaseLostError()
+        lease = TaskLease(task_id, task.claimed_by, task.lease_token, TaskStatus.TRANSCRIBING)
+        if not still_owns_lease(db, lease):
+            raise LeaseLostError()
+        transcript = db.exec(select(Transcript).where(Transcript.segment_id == task.segment_id)).first()
+        if transcript is None or transcript.final_text_source == "manual":
+            return {"error": "整理补做的原文已不存在或已由人工修改"}
+        if segment_protection_reason(db, task.segment_id, own_task_id=task_id) is not None:
+            return {"error": "整理补做目标已有人工或下游结果"}
+        revision = transcript_refinement_revision(transcript)
+
+    def cancelled() -> bool:
+        with get_session() as db:
+            return not still_owns_lease(db, lease)
+
+    draft = compute_refinement(
+        transcript.final_text, target=f"task:{task_id}:segment:{task.segment_id}:refinement", cancelled=cancelled
+    )
+    check_cancellation()
+    return {
+        "refinement_only": True,
+        "segment_id": task.segment_id,
+        "session_id": task.session_id,
+        "transcript_id": transcript.id,
+        "source_revision": revision,
+        "refinement_draft": draft,
     }
 
 
@@ -272,7 +318,7 @@ def _transcribe_hotspot_attention(
                     "model_revision": result.model_revision,
                 }
             )
-        except (LeaseLostError, ASRShutdownError):
+        except (LeaseLostError, ASRShutdownError, ASRProcessExitError):
             raise
         except (OSError, RuntimeError, TypeError, ValueError) as exc:
             _logger.warning(
@@ -380,6 +426,22 @@ def commit_transcript(lease: TaskLease, compute_result: dict[str, Any], ms: int)
             from sqlmodel import select as _sel  # noqa: PLC0415
 
             existing = db.exec(_sel(Transcript).where(Transcript.segment_id == segment_id)).first()
+            if compute_result.get("refinement_only") is True:
+                draft = compute_result.get("refinement_draft")
+                check_shutdown()
+                if (
+                    existing is None
+                    or existing.id != compute_result.get("transcript_id")
+                    or transcript_refinement_revision(existing) != compute_result.get("source_revision")
+                    or segment_protection_reason(db, segment_id, own_task_id=task.id) is not None
+                    or not isinstance(draft, RefinementDraft)
+                    or not store_refinement(db, existing, draft)
+                ):
+                    from app.pipeline.stage_result import mark_failed
+
+                    mark_failed(task, "整理补做来源已变化，保留现有转写", permanent=True)
+                    db.add(task)
+                    return
             if existing is not None:
                 _logger.info("idempotent_skip: segment=%s 已有 Transcript id=%s", segment_id, existing.id)
                 # 修复 RawSegment 状态
@@ -422,6 +484,9 @@ def commit_transcript(lease: TaskLease, compute_result: dict[str, Any], ms: int)
             db.add(transcript)
             db.flush()
             db.refresh(transcript)
+            draft = compute_result.get("refinement_draft")
+            if isinstance(draft, RefinementDraft):
+                store_refinement(db, transcript, draft)
 
             # 更新 RawSegment
             seg = db.get(RawSegment, segment_id)

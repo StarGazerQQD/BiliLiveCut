@@ -9,8 +9,10 @@ installed manifests are the production implementations.
 from __future__ import annotations
 
 import json
+import os
 import shutil
 import sys
+import venv
 from pathlib import Path
 from typing import TYPE_CHECKING, Any
 
@@ -72,13 +74,18 @@ def test_clean_install_runs_real_external_provisioner(
     """A clean app root crosses the child boundary and commits all engines."""
     _enable_tiny_provider(monkeypatch)
 
-    result = _prepare_with_real_child(tmp_path)
+    from blc_portable.launcher.main import prepare_models
+
+    environment = tmp_path / "clean-python"
+    venv.EnvBuilder(with_pip=False).create(environment)
+    interpreter = environment / ("Scripts/python.exe" if os.name == "nt" else "bin/python")
+    result = prepare_models(interpreter, tmp_path)
 
     assert result["source"] == "online_download"
     assert result["provider"] == "release_smoke_tiny"
     assert result["network_requests"] == 4
     assert result["installed_engines"] == ["whisper", "paraformer", "sensevoice", "funasr_nano"]
-    assert Path(result["provisioning_interpreter"]) == Path(sys.executable).resolve()
+    assert Path(result["provisioning_interpreter"]) == interpreter.resolve()
     installed = json.loads((tmp_path / "models" / "engine-pack-installed.json").read_text(encoding="utf-8"))
     assert installed["schema_version"] == 7
     assert set(installed["engines"]) == {"whisper", "paraformer", "sensevoice", "funasr_nano"}
@@ -119,15 +126,23 @@ def test_relocated_frozen_provisioner_uses_explicit_config_root(
         ignore=shutil.ignore_patterns("__pycache__", "*.pyc"),
     )
     shutil.copytree(_PORTABLE_DIR / "config", config_root)
+    shared_config = source_root / "config"
+    shared_config.mkdir()
+    for name in ("__init__.py", "file_locks.py"):
+        shutil.copy2(_PORTABLE_DIR.parents[1] / "config" / name, shared_config / name)
     app_root = tmp_path / "app"
     app_root.mkdir()
-    monkeypatch.setattr(launcher_module, "_provisioner_paths", lambda: (source_root, config_root))
+    environment = tmp_path / "clean-python"
+    venv.EnvBuilder(with_pip=False).create(environment)
+    interpreter = environment / ("Scripts/python.exe" if os.name == "nt" else "bin/python")
+    monkeypatch.setattr(sys, "frozen", True, raising=False)
+    monkeypatch.setattr(sys, "_MEIPASS", str(source_root.parent), raising=False)
 
-    result = launcher_module.prepare_models(Path(sys.executable), app_root)
+    result = launcher_module.prepare_models(interpreter, app_root)
 
     assert result["provider"] == "release_smoke_tiny"
     assert result["network_requests"] == 4
-    assert Path(result["provisioning_interpreter"]) == Path(sys.executable).resolve()
+    assert Path(result["provisioning_interpreter"]) == interpreter.resolve()
 
 
 def test_hub_failure_preserves_runtime_and_completed_engine_for_retry(

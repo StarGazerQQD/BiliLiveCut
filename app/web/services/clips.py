@@ -10,6 +10,7 @@ from sqlalchemy import func, or_
 from sqlmodel import select
 
 from app.core import settings_store
+from app.core.media_usage import media_reference_scope
 from app.core.osutil import open_path
 from app.core.paths import clips_dir, session_clips_dir
 from app.db.entities import (
@@ -21,6 +22,7 @@ from app.db.entities import (
 from app.db.session import get_session
 
 
+@media_reference_scope()
 def publish_clip(clip_id: int) -> dict[str, Any]:
     """人工发布:把成品置为 ready 并导出清单;上传模块开启时入队上传。
 

@@ -1,12 +1,16 @@
 from __future__ import annotations
 
 import asyncio
+import errno
 import json
+import socket
 from collections.abc import AsyncIterator, Awaitable, Callable
 from contextlib import asynccontextmanager
+from types import SimpleNamespace
 
 import httpx
 import pytest
+from loguru import logger
 
 from app.plugins.live_source import (
     DanmakuStatus,
@@ -17,7 +21,14 @@ from app.plugins.live_source import (
     SourceUnavailable,
 )
 from app.sources.bilibili import danmaku, source
-from app.sources.bilibili.client import BilibiliAuthenticationError, BilibiliLiveClient, BilibiliTransportError
+from app.sources.bilibili.client import (
+    BilibiliAuthenticationError,
+    BilibiliLiveClient,
+    BilibiliRateLimitError,
+    BilibiliTransportError,
+    DanmakuServer,
+    HttpErrorType,
+)
 from app.sources.registry import SourceRegistry
 from tests.integration.test_bilibili_client import _WBI_RESPONSE
 
@@ -381,3 +392,192 @@ async def test_cancelling_http_login_probe_closes_anonymous_socket_and_pending_r
     assert task.cancelled() and closed.is_set() and request_cancelled.is_set()
     assert logged_calls == 2 and client._login_failures == 0 and connection_alerts == []
     assert not asyncio.all_tasks() - prior_tasks
+
+
+async def test_endpoint_cooldown_prefers_healthy_then_reprobes_without_losing_candidates(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    from app.sources.bilibili.client import DanmakuServer
+
+    clock = 100.0
+    monkeypatch.setattr(danmaku, "time", SimpleNamespace(monotonic=lambda: clock))
+    client = danmaku.DanmakuClient(123, 4)
+    access = danmaku.DanmakuAccess(
+        DanmakuServer(token="test", hosts=[{"host": host, "wss_port": 443} for host in ("a.invalid", "b.invalid")]),
+        0,
+        False,
+    )
+    attempts: list[str] = []
+    unavailable = {"a.invalid"}
+
+    class Socket:
+        async def send(self, message: bytes) -> None:
+            assert message
+
+        async def recv(self) -> bytes:
+            client.stop()
+            return danmaku.encode_packet(danmaku.OP_AUTH_REPLY, b'{"code":0}')
+
+    @asynccontextmanager
+    async def connect(uri: str, **kwargs: object) -> AsyncIterator[Socket]:
+        host = uri.split("/")[2].split(":")[0]
+        attempts.append(host)
+        if host in unavailable:
+            raise socket.gaierror(11001, "getaddrinfo failed")
+        yield Socket()
+
+    monkeypatch.setattr("websockets.connect", connect)
+    await client._connect_and_consume(access)
+    assert attempts == ["a.invalid", "b.invalid"]
+    client._stop.clear()
+    attempts.clear()
+    await client._connect_and_consume(access)
+    assert attempts == ["b.invalid"]
+    clock += 61
+    unavailable.clear()
+    client._stop.clear()
+    attempts.clear()
+    await client._connect_and_consume(access)
+    assert attempts == ["a.invalid"] and not client._endpoint_failures
+    unavailable.update(("a.invalid", "b.invalid"))
+    client._stop.clear()
+    for _ in range(2):
+        attempts.clear()
+        with pytest.raises(BilibiliTransportError):
+            await client._connect_and_consume(access)
+        assert attempts == ["a.invalid", "b.invalid"]
+
+
+@pytest.mark.parametrize("code", [errno.EMFILE, errno.ENFILE, errno.ENOMEM, errno.ENOBUFS])
+@pytest.mark.parametrize("wrapped", [False, True])
+async def test_endpoint_local_resource_failure_terminates_without_penalizing_nodes(
+    monkeypatch: pytest.MonkeyPatch, code: int, wrapped: bool
+) -> None:
+    calls = 0
+
+    def response(request: httpx.Request) -> httpx.Response:
+        if request.url.path.endswith("/nav"):
+            return httpx.Response(200, json=_WBI_RESPONSE)
+        return httpx.Response(200, json={"code": 0, "data": {"token": "test", "host_list": []}})
+
+    @asynccontextmanager
+    async def connect(*args: object, **kwargs: object) -> AsyncIterator[object]:
+        nonlocal calls
+        calls += 1
+        error = OSError(code, "local resource exhausted")
+        if wrapped:
+            raise BilibiliTransportError("transport wrapper") from error
+        raise error
+        yield  # pragma: no cover
+
+    http_boundary(monkeypatch, response)
+    monkeypatch.setattr("websockets.connect", connect)
+    client = danmaku.DanmakuConnection(123)
+    await asyncio.wait_for(client.run(), 1)
+    assert calls == 1 and not client._endpoint_failures
+
+
+async def test_connection_alert_occurs_once_until_recovery(
+    connection_alerts: list[tuple[int, str]],
+) -> None:
+    client = danmaku.DanmakuConnection(123)
+    for _ in range(6):
+        await client._report_state(DanmakuStatus.FAILED)
+    assert connection_alerts == [(123, "ws_failed")]
+    await client._report_state(DanmakuStatus.AVAILABLE)
+    for _ in range(3):
+        await client._report_state(DanmakuStatus.FAILED)
+    assert connection_alerts == [(123, "ws_failed"), (123, "ws_failed")]
+
+
+async def test_connection_logs_follow_failure_kind_and_recovery(
+    temp_db: None, monkeypatch: pytest.MonkeyPatch, connection_alerts: list[tuple[int, str]]
+) -> None:
+    requests = 0
+
+    def response(request: httpx.Request) -> httpx.Response:
+        nonlocal requests
+        if request.url.path.endswith("/nav"):
+            return httpx.Response(200, json=_WBI_RESPONSE)
+        requests += 1
+        if requests <= 3:
+            raise httpx.ConnectError("DNS unavailable", request=request) from socket.gaierror(11001, "DNS unavailable")
+        if requests <= 5:
+            raise httpx.ReadTimeout("read timeout", request=request)
+        return httpx.Response(200, json={"code": 0, "data": {"token": "test", "host_list": []}})
+
+    async def timer(self: danmaku.DanmakuConnection, delay: float) -> None:
+        await asyncio.sleep(0)
+
+    class Socket:
+        async def send(self, message: bytes) -> None:
+            assert message
+
+        async def recv(self) -> bytes:
+            client.stop()
+            return danmaku.encode_packet(danmaku.OP_AUTH_REPLY, b'{"code":0}')
+
+    @asynccontextmanager
+    async def connect(*args: object, **kwargs: object) -> AsyncIterator[Socket]:
+        yield Socket()
+
+    http_boundary(monkeypatch, response)
+    monkeypatch.setattr("websockets.connect", connect)
+    monkeypatch.setattr(danmaku.DanmakuConnection, "_sleep_or_stop", timer)
+    client = danmaku.DanmakuClient(123, 4)
+    messages: list[str] = []
+    sink = logger.add(messages.append, format="{level}|{message}")
+    try:
+        await asyncio.wait_for(client.run(), 3)
+    finally:
+        logger.remove(sink)
+    assert requests == 6 and connection_alerts == [(123, "ws_failed")]
+    assert sum("WARNING|弹幕连接异常" in text for text in messages) == 2
+    assert sum("INFO|弹幕连接恢复" in text for text in messages) == 1
+
+
+@pytest.mark.parametrize("expired", [False, True])
+async def test_login_notifications_and_logs_repeat_only_after_authenticated_recovery(
+    temp_db: None, monkeypatch: pytest.MonkeyPatch, connection_alerts: list[tuple[int, str]], expired: bool
+) -> None:
+    client = danmaku.DanmakuClient(123, 4, cookie="DedeUserID=456", login_retry_max_attempts=20)
+    failure = (
+        BilibiliRateLimitError(HttpErrorType.COOKIE_EXPIRED, "expired")
+        if expired
+        else danmaku.DanmakuAuthenticationError("rejected")
+    )
+    reason = "cookie_expired" if expired else "login_rejected"
+
+    class Socket:
+        async def send(self, message: bytes) -> None:
+            assert message
+
+        async def recv(self) -> bytes:
+            client.stop()
+            return danmaku.encode_packet(danmaku.OP_AUTH_REPLY, b'{"code":0}')
+
+    @asynccontextmanager
+    async def connect(*args: object, **kwargs: object) -> AsyncIterator[Socket]:
+        yield Socket()
+
+    monkeypatch.setattr("websockets.connect", connect)
+    messages: list[str] = []
+    sink = logger.add(messages.append, format="{level}|{message}")
+    try:
+        for _ in range(6):
+            client._record_login_failure(failure)
+        assert connection_alerts == [(123, reason)]
+        assert sum("WARNING|登录 Cookie 弹幕访问失败" in text for text in messages) == 1
+        access = danmaku.DanmakuAccess(DanmakuServer(token="test", hosts=[]), 456, True)
+        await client._connect_and_consume(access)
+        assert client._login_failures == 6
+        for _ in range(3):
+            client._record_login_failure(failure)
+        assert connection_alerts == [(123, reason), (123, reason)]
+        assert sum("INFO|弹幕登录链路恢复" in text for text in messages) == 1
+        for _ in range(3):
+            client._schedule_login_recovery(BilibiliTransportError("transport failed"))
+        assert sum("WARNING|弹幕登录链路暂不可用" in text for text in messages) == 1
+        assert client._login_failures == 9
+    finally:
+        logger.remove(sink)

@@ -8,7 +8,6 @@ import math
 from collections.abc import Mapping, Sequence
 from dataclasses import asdict, dataclass, field
 from datetime import datetime, timedelta
-from pathlib import Path
 from typing import TYPE_CHECKING, Any
 
 from loguru import logger
@@ -18,9 +17,14 @@ from app.analysis.editorial_review import (
     EditorialReviewDraft,
     editorial_auto_approvable,
     editorial_candidate,
-    review_policy_identity,
+    semantic_review_policy,
 )
-from app.analysis.editorial_review_sources import event_review_is_current, media_bounds_accessible
+from app.analysis.editorial_review_sources import (
+    event_review_is_current,
+    media_bounds_accessible,
+    media_file_identity,
+    media_snapshot_is_current,
+)
 from app.analysis.event_enricher import (
     EventEnrichmentDraft,
     EventEvidenceChangedError,
@@ -32,6 +36,7 @@ from app.analysis.scoring_config import get_scoring_config
 from app.analysis.timeline import datetime_epoch
 from app.analysis.transcription.quality import assess_transcript_quality, transcript_quality_payload
 from app.core.config import settings
+from app.core.paths import resolve_storage_path
 from app.db.entities import (
     CandidateStatus,
     HotspotEvent,
@@ -264,7 +269,7 @@ def compute_hotspot_clip_draft(
         try:
             from app.analysis.audio import analyze_audio
 
-            silences = list(analyze_audio(context.segment.file_path).silences)
+            silences = list(analyze_audio(str(resolve_storage_path(context.segment.file_path))).silences)
         except (OSError, RuntimeError, ValueError) as exc:
             logger.info(
                 "event_clip_silence_snap_unavailable: event_id={} segment_id={} error={}",
@@ -412,6 +417,8 @@ def validate_event_clip_draft(
         return None
     metadata = _json_mapping(draft.features_json).get("editorial_review")
     if review is not None and isinstance(metadata, Mapping):
+        if not media_snapshot_is_current(db, draft.session_id, start=draft.start_ts, end=draft.end_ts):
+            return None
         if metadata.get("media_accessible") != media_bounds_accessible(db, review.source, draft.start_ts, draft.end_ts):
             return None
     return event
@@ -549,22 +556,20 @@ def _load_event_context(
     for item in segments:
         if item.start_ts is None or item.end_ts is None or item.end_ts <= media_start or item.start_ts >= media_end:
             continue
-        try:
-            file_stat = Path(item.file_path).stat()
-            identity = [
-                file_stat.st_dev,
-                file_stat.st_ino,
-                file_stat.st_size,
-                file_stat.st_mtime_ns,
-                file_stat.st_ctime_ns,
-            ]
-        except OSError:
-            identity = None
+        identity = media_file_identity(item)
         # 来源身份只用于本地成片校验，不加入发送给模型的证据。
-        media_identity.append({"id": item.id, "path": item.file_path, "file": identity})
+        media_identity.append(
+            {
+                "id": item.id,
+                "path": item.file_path,
+                "file": identity,
+                "start": str(item.start_ts),
+                "end": str(item.end_ts),
+            }
+        )
     fingerprint_payload = {
         "version": EVENT_CLIP_SCORER_VERSION,
-        "editorial_policy": review_policy_identity(),
+        "editorial_policy": semantic_review_policy(),
         "editorial_fingerprint": (
             review_execution.get("input_fingerprint") if isinstance(review_execution, Mapping) else None
         ),
@@ -588,7 +593,7 @@ def _load_event_context(
         "modality_scores": dict(modality_scores),
         "novelty": novelty,
         "asr_quality_score": speech_completeness,
-        "recording_block": [block_start.isoformat(), block_end.isoformat()],
+        "recording_window": [media_start.isoformat(), media_end.isoformat()],
         "media_identity": media_identity,
         "threshold": threshold,
         "review_threshold": review_threshold,

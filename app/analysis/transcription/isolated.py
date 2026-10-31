@@ -12,7 +12,7 @@ from app.analysis.transcription.audio_normalization import (
     normalized_asr_audio,
     normalized_asr_audio_window,
 )
-from app.analysis.transcription.models import ASRSegmentResult, ASRTranscriptResult, EmotionEvent, Word
+from app.analysis.transcription.models import ASRTranscriptResult, transcript_from_payload
 from app.analysis.transcription.process_pool import ASRProcessPool, get_process_pool
 from app.core.runtime_settings import effective_settings
 from app.models.configuration import asr_call_authorizer, asr_worker_settings
@@ -94,9 +94,13 @@ class IsolatedPipeline:
             self._pool.operation(self._context),
             normalized_asr_audio_window(audio_path, start_s, end_s, check_cancelled=self.check_cancelled) as normalized,
         ):
-            return self._infer(normalized, initial_prompt)
+            return self._infer(normalized, initial_prompt, window=(start_s, end_s))
 
-    def _infer(self, audio_path: str, initial_prompt: str | None) -> ASRTranscriptResult:
+    def _infer(
+        self, audio_path: str, initial_prompt: str | None, *, window: tuple[float, float] | None = None
+    ) -> ASRTranscriptResult:
+        from app.pipeline.asr_checkpoint import ASRCheckpoint
+
         evidence = inspect_pcm_audio(audio_path, check_cancelled=self.check_cancelled)
         config = effective_settings()
         budget = min(
@@ -104,6 +108,14 @@ class IsolatedPipeline:
             config.asr_inference_base_timeout_s + evidence.duration_s * config.asr_inference_timeout_rtf,
         )
         payload = _settings_payload()
+        checkpoint = (
+            ASRCheckpoint(self._lease, audio_path, payload, initial_prompt, window, self.check_cancelled)
+            if self._lease is not None
+            else None
+        )
+        if checkpoint is not None and (saved := checkpoint.raw()) is not None:
+            self.check_cancelled()
+            return saved
         response = self._pool.execute(
             {
                 "audio_path": audio_path,
@@ -111,19 +123,18 @@ class IsolatedPipeline:
                 "settings": payload,
                 "context": self._context,
                 "audio_evidence": asdict(evidence),
+                "remote_chunks": checkpoint.chunks() if checkpoint is not None else [],
+                "checkpoint_enabled": checkpoint is not None,
             },
             timeout_s=budget,
             check_cancelled=self.check_cancelled,
             authorize_remote=asr_call_authorizer(payload) if payload["asr_primary"] == "openai_compatible" else None,
+            on_checkpoint=checkpoint.save_chunk if checkpoint is not None else None,
         )
-        raw = response["result"]
-        # JSON 类型仅位于 IPC 边界，业务层恢复为既有强类型结果。
-        raw["segments"] = [
-            ASRSegmentResult(**{**segment, "words": [Word(**word) for word in segment["words"]]})
-            for segment in raw["segments"]
-        ]
-        raw["emotions"] = [EmotionEvent(**event) for event in raw["emotions"]]
-        return ASRTranscriptResult(**raw)
+        result = transcript_from_payload(response["result"])
+        if checkpoint is not None:
+            checkpoint.save_raw(result)
+        return result
 
 
 def preload_isolated_models() -> None:

@@ -150,13 +150,14 @@ def test_candidate_commit_persists_new_facts_before_model_without_holding_write_
         },
         1,
     )
-    assert len(calls) == 2
+    assert len(calls) == 3
     with get_session() as db:
         task = db.get(SegmentTask, task_id)
         assert task.stage == TaskStatus.CANDIDATE_CREATED and task.processing_time_ms >= 60
         metadata = json.loads(db.get(HotspotEvent, event_id).features_json)["editorial_review"]
     assert metadata["execution"]["error"] == "provider_error"
-    assert len(metadata["execution"]["attempts"]) == len(metadata["provenance"]["prior_attempts"]) == 1
+    assert [item["number"] for item in metadata["provenance"]["prior_attempts"]] == [1, 2]
+    assert [item["number"] for item in metadata["execution"]["attempts"]] == [3]
 
 
 def test_replaced_lease_before_candidate_commit_sends_no_model_requests(

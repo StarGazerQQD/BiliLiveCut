@@ -39,7 +39,7 @@ def _prepare_lifespan(
             if name == fail_stop:
                 raise RuntimeError(f"stop {name} failed")
 
-        return SimpleNamespace(start=start, stop=stop)
+        return SimpleNamespace(start=start, stop=stop, request_stop=lambda: None)
 
     monkeypatch.setattr(main, "setup_logging", lambda: None)
     monkeypatch.setattr(main, "_setup_proxy_env", lambda: None)
@@ -147,7 +147,8 @@ async def test_shutdown_notifies_all_recorders_and_cleans_others_after_one_failu
     manager._tasks = {1: None, 2: None}
     cleaned = []
 
-    async def stop(room: int) -> None:
+    async def stop(room: int, *, preserve_intent: bool = False) -> None:
+        assert preserve_intent
         assert stopped == {1, 2}
         cleaned.append(room)
         if room == 1:
@@ -345,6 +346,33 @@ async def test_worker_shutdown_timeout_keeps_execution_and_rejects_restart(monke
     finally:
         release.set()
         await execution
+        await worker.stop()
+
+
+async def test_worker_main_loop_is_in_shutdown_budget_and_restart_guard(monkeypatch: pytest.MonkeyPatch) -> None:
+    from app.core.config import settings
+    from app.core.execution import run_sync
+    from app.pipeline.task_worker import TaskWorker
+
+    entered, release = Event(), Event()
+
+    def database_operation() -> None:
+        entered.set()
+        assert release.wait(5)
+
+    monkeypatch.setattr(settings, "worker_shutdown_timeout_seconds", 1)
+    worker = TaskWorker()
+    worker._main_task = asyncio.create_task(run_sync(database_operation))
+    try:
+        assert await asyncio.to_thread(entered.wait, 2)
+        with pytest.raises(ExceptionGroup, match="关闭期间发现异常"):
+            await worker.stop()
+        assert not worker._main_task.done()
+        assert worker._stop_task is not None and not worker._stop_task.done()
+        with pytest.raises(RuntimeError, match="不能重新启动"):
+            await worker.start()
+    finally:
+        release.set()
         await worker.stop()
 
 

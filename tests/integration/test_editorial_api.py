@@ -137,6 +137,50 @@ def test_legacy_zero_offset_and_unknown_initial_input_remain_readable(temp_db: N
     assert view.previous_attempts == [] and view.execution.attempt_offset == 0
 
 
+@pytest.mark.parametrize("version", ["editorial-decision-v1", "editorial-decision-v2", "unsupported"])
+def test_frozen_review_policy_uses_its_own_version_without_live_defaults(
+    temp_db: None, pcm_wav: Path, monkeypatch: MonkeyPatch, tmp_path: Path, version: str
+) -> None:
+    from app.analysis.editorial_evaluation_io import export_snapshot
+    from app.analysis.editorial_provenance import canonical_hash
+    from app.core.config import settings
+
+    hotspot_id, _ = _seed(pcm_wav)
+    calls = _service(monkeypatch, "recommend")
+    score_hotspot_event(hotspot_id)
+    with get_session() as db:
+        hotspot = db.get(HotspotEvent, hotspot_id)
+        features = json.loads(hotspot.features_json)
+        metadata = features["editorial_review"]
+        provenance = metadata["provenance"]
+        provenance["policy"]["policy"] = version
+        for route in provenance["policy"]["routes"]:
+            route.pop("endpoint_sha256")
+            route.pop("capacity")
+        metadata["execution"]["policy_version"] = version
+        metadata["execution"]["input_fingerprint"] = canonical_hash(
+            {
+                "initial": provenance["initial_input"],
+                "source": metadata["input"],
+                "revision": metadata["revision"],
+                "policy": provenance["policy"],
+            }
+        )
+        hotspot.features_json = json.dumps(features)
+        session_id = hotspot.session_id
+    monkeypatch.setattr(settings, "editorial_model_max_attempts", 5)
+    view = editorial_presentation(hotspot=hotspot)
+    if version == "unsupported":
+        assert view.editorial_state == "invalid" and view.execution is None
+        with pytest.raises(ValueError, match="策略版本"):
+            export_snapshot(tmp_path / "test.db", dataset_id="frozen-policy", session_ids=[session_id])
+    else:
+        assert view.editorial_state == "succeeded" and view.execution.result.verdict == "recommend"
+        snapshot = export_snapshot(tmp_path / "test.db", dataset_id="frozen-policy", session_ids=[session_id])
+        assert snapshot.records[0].provenance.policy == provenance["policy"]
+    assert len(calls) == 3
+
+
 def test_timeline_and_review_share_persisted_evidence_without_model_calls(
     review_client: TestClient, pcm_wav: Path, monkeypatch: MonkeyPatch
 ) -> None:

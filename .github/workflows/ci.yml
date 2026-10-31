@@ -328,6 +328,13 @@ jobs:
         run: |
           python -c "from app.accelerators import _c_speedups, _cython_speedups, _repeat_speedups; from app.accelerators.dispatcher import get_repeat_backend; assert get_repeat_backend() == 'C++'; assert _repeat_speedups.consecutive_repeat_details('abc' * 100) == (0, 3, 100)"
 
+      - name: Prepare explicit loopback address for frontend tests
+        shell: bash
+        run: |
+          # macOS 需要显式配置第二个回环地址，保留具体监听地址的真实验收。
+          sudo ifconfig lo0 inet 127.0.0.2 netmask 255.255.255.255 alias
+          python -c "import socket; probe = socket.socket(); probe.bind(('127.0.0.2', 0)); probe.close()"
+
       - name: Verify process cleanup, frontend startup and service shutdown
         shell: bash
         env:

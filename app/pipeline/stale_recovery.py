@@ -3,12 +3,12 @@
 from __future__ import annotations
 
 from datetime import UTC, timedelta
-from pathlib import Path
 
 from loguru import logger
 from sqlmodel import or_, select
 
 from app.core.config import settings
+from app.core.media_usage import media_reference_scope
 from app.db.entities import (
     ClipVariant,
     RawSegment,
@@ -21,6 +21,7 @@ from app.db.entities import (
 from app.db.entities import SegmentStatus as OldStatus
 from app.db.session import get_session
 from app.pipeline.lifecycle import now_utc
+from app.pipeline.recovery_budget import consume_recovery, has_saved_asr
 from app.pipeline.stage_result import enqueue_next, make_stage_key, release_lease
 
 
@@ -138,6 +139,31 @@ def recover_stale() -> None:
                     published_skipped += 1
                     continue
 
+            from app.analysis.transcription.process_pool import get_process_pool
+            from app.pipeline.lifecycle import _WORKER_ID, execution_active
+
+            if (
+                task.claimed_by == _WORKER_ID
+                and task.lease_token
+                and (
+                    execution_active(task.id, task.lease_token)
+                    or get_process_pool().has_active_task(task.id, task.lease_token)
+                )
+            ):
+                cleanup_pending += 1
+                continue
+            if consume_recovery(db, task, "活动执行心跳超时，恢复前未发现仍存活的所属执行"):
+                from app.pipeline.scheduler import _continue_without_asr
+                from app.pipeline.stage_result import mark_failed
+
+                reason = f"连续崩溃恢复预算耗尽（{task.max_retries} 次）"
+                if task.stage == TaskStatus.TRANSCRIBING and not has_saved_asr(db, task):
+                    _continue_without_asr(task, reason)
+                else:
+                    mark_failed(task, reason, permanent=True)
+                db.add(task)
+                logger.error("recovery_budget_exhausted task={} session={}", task.id, task.session_id)
+                continue
             res = resume_stage(task.stage)
             task.stage = res
             task.stage_key = make_stage_key(task.segment_id, res)
@@ -180,6 +206,7 @@ def recover_stale() -> None:
         db.commit()
 
 
+@media_reference_scope()
 def recover_orphans() -> None:
     """恢复孤立任务: stale 恢复 + 孤立片段任务创建。"""
     from app.pipeline.stage_result import make_pipeline_key, make_stage_key
@@ -237,50 +264,62 @@ def release_stopped_computations(worker_id: str) -> int:
         return len(tasks)
 
 
+@media_reference_scope()
 def recover_pending_clips() -> int:
-    """恢复 PENDING 状态的 ClipVariant — 扫描文件系统, 标记 READY 或 FAILED。
+    """预检中断产物；有效产物留待新任务租约提交，不仅凭文件存在标记完成。"""
+    from app.pipeline.render_checkpoint import read_checkpoint
 
-    场景:
-    - ClipVariant.render_status == QUEUED (PENDING)
-    - partial 存在 → 未完成, 标记 FAILED 等待重试
-    - formal 存在 → 文件已就位, 标记 DONE (READY)
-    - 无任何文件 → 标记 FAILED
-
-    :returns: 恢复的 ClipVariant 数量。
-    """
     recovered = 0
     with get_session() as db:
-        if db.get_bind().dialect.name == "sqlite":
-            db.connection().exec_driver_sql("BEGIN IMMEDIATE")
         pending_variants = db.exec(select(ClipVariant).where(ClipVariant.render_status == RenderStatus.QUEUED)).all()
+    for snapshot in pending_variants:
+        with get_session() as db:
+            if (
+                db.exec(
+                    select(SegmentTask.id).where(
+                        SegmentTask.event_id == snapshot.event_id,
+                        SegmentTask.stage.in_([TaskStatus.RENDERING, TaskStatus.CANCELLING]),
+                    )
+                ).first()
+                is not None
+            ):
+                continue
+            record = read_checkpoint(db, snapshot)
+        valid = False
+        if record is not None:
+            try:
+                record.verify()
+                valid = True
+            except (OSError, ValueError) as exc:
+                from app.core.sanitize import safe_exception_summary
 
-        for var in pending_variants:
-            file_path = var.file_path
-            formal_exists = (
-                file_path and Path(file_path).is_file() and (not var.cover_path or Path(var.cover_path).is_file())
-            )
-
-            if formal_exists:
-                # 文件已就位 — 标记 READY
-                var.render_status = RenderStatus.DONE
-                db.add(var)
-                recovered += 1
-                logger.info(
-                    "clip_recovery_mark_ready: variant={} event={} path={}",
-                    var.id,
-                    var.event_id,
-                    file_path,
-                )
-            else:
-                # 无文件 — 标记 FAILED
-                var.render_status = RenderStatus.FAILED
-                db.add(var)
-                recovered += 1
-
-        if recovered:
-            db.commit()
-            logger.info("clip_recovery: 恢复 {} 个 PENDING ClipVariant", recovered)
-
+                logger.warning("render_recovery_invalid variant={} detail={}", snapshot.id, safe_exception_summary(exc))
+        with get_session() as db:
+            if db.get_bind().dialect.name == "sqlite":
+                db.connection().exec_driver_sql("BEGIN IMMEDIATE")
+            variant = db.get(ClipVariant, snapshot.id)
+            if (
+                variant is None
+                or variant.generation != snapshot.generation
+                or variant.file_path != snapshot.file_path
+                or variant.render_status != RenderStatus.QUEUED
+            ):
+                continue
+            if (
+                db.exec(
+                    select(SegmentTask.id).where(
+                        SegmentTask.event_id == snapshot.event_id,
+                        SegmentTask.stage.in_([TaskStatus.RENDERING, TaskStatus.CANCELLING]),
+                    )
+                ).first()
+                is not None
+            ):
+                continue
+            if not valid:
+                variant.render_status = RenderStatus.FAILED
+                db.add(variant)
+            recovered += 1
+            logger.info("render_recovery_checked variant={} reusable={}", variant.id, valid)
     return recovered
 
 
@@ -294,18 +333,27 @@ def recover_stale_upload_attempts() -> int:
     """
     from datetime import UTC, datetime
 
+    from app.publishing.heartbeat import last_activity
+
     threshold = datetime.now(UTC) - timedelta(seconds=settings.upload_attempt_stale_s)
 
     with get_session() as db:
+        if db.get_bind().dialect.name == "sqlite":
+            db.connection().exec_driver_sql("BEGIN IMMEDIATE")
         stale_attempts = db.exec(
             select(UploadAttempt).where(
                 UploadAttempt.status.in_(["prepared", "in_progress"]),
-                UploadAttempt.started_at < threshold,
             )
         ).all()
 
         recovered = 0
         for attempt in stale_attempts:
+            activity = last_activity(db, attempt)
+            if (
+                activity is None
+                or (activity.replace(tzinfo=UTC) if activity.tzinfo is None else activity.astimezone(UTC)) >= threshold
+            ):
+                continue
             attempt.status = (
                 "failed_retryable" if attempt.status == "prepared" else UploadStatus.RECONCILIATION_REQUIRED
             )
@@ -337,6 +385,7 @@ def recover_stale_upload_attempts() -> int:
     return recovered
 
 
+@media_reference_scope()
 def sync_segment_task_from_attempt() -> int:
     """使用最新尝试或已确认成功的证据，同步上传、成片及全部相关发布任务。"""
     from app.db.entities import ClipStatus, FinalClip, UploadTask

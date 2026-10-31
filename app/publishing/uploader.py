@@ -18,7 +18,6 @@ import subprocess
 from abc import ABC, abstractmethod
 from dataclasses import dataclass, field
 from datetime import timedelta
-from pathlib import Path
 from typing import Any
 
 from loguru import logger
@@ -26,15 +25,19 @@ from sqlmodel import select
 
 from app.core import settings_store
 from app.core.config import settings
+from app.core.media_usage import media_reference_scope
+from app.core.paths import resolve_storage_path
 from app.core.runtime_settings import configured_task
 from app.core.sanitize import safe_exception_summary, sanitize_diagnostic
 from app.db.entities import (
     FinalClip,
+    UploadAttempt,
     UploadStatus,
     UploadTask,
     utcnow,
 )
 from app.db.session import get_session
+from app.jobs.contracts import JobAttempt
 
 
 @dataclass(slots=True)
@@ -108,9 +111,12 @@ def precheck_clip(clip_id: int) -> PrecheckResult:
         content_hash = clip.content_hash
 
     # 1) 文件完整性
-    p = Path(file_path)
-    if not p.exists() or p.stat().st_size == 0:
-        reasons.append("成品文件缺失或为空")
+    try:
+        p = resolve_storage_path(file_path)
+        if not p.is_file() or p.stat().st_size == 0:
+            reasons.append("成品文件缺失或为空")
+    except (ValueError, OSError) as exc:
+        reasons.append(f"成品文件不可访问：{safe_exception_summary(exc)}")
 
     # 2) 标题/简介合规
     if not title.strip():
@@ -256,7 +262,7 @@ class BiliupUploader(Uploader):
             lexer.commenters = ""
             lexer.escape = ""  # 保留 Windows 路径中的反斜杠。
             values = {
-                "file": str(clip["file_path"]),
+                "file": str(resolve_storage_path(str(clip["file_path"]))),
                 "title": clip.get("title") or "",
                 "desc": clip.get("description") or "",
                 "config": settings.biliup_config,
@@ -328,6 +334,7 @@ def get_uploader() -> Uploader:
 # --------------------------------------------------------------------------- #
 # 队列
 # --------------------------------------------------------------------------- #
+@media_reference_scope()
 def enqueue_upload(clip_id: int) -> UploadTask:
     """对一个成品切片做前置校验并创建上传任务 (V0.1.12.7: IntegrityError 幂等)。
 
@@ -425,7 +432,7 @@ def _resume_skipped_upload(task_id: int) -> UploadTask:
 
 
 @configured_task
-def process_upload_task(task_id: int) -> UploadTask:
+def process_upload_task(task_id: int, *, job_attempt: JobAttempt | None = None) -> UploadTask:
     """复用持久化尝试记录；只有确定未发送的错误允许有限重试。"""
     from uuid import uuid4
 
@@ -437,10 +444,23 @@ def process_upload_task(task_id: int) -> UploadTask:
 
     _resume_skipped_upload(task_id)
     with get_session() as db:
+        if job_attempt is not None and db.get_bind().dialect.name == "sqlite":
+            db.connection().exec_driver_sql("BEGIN IMMEDIATE")
         task = db.get(UploadTask, task_id)
         if task is None:
             raise ValueError(f"上传任务不存在: id={task_id}")
         if task.status not in {"queued", "failed", "failed_retryable"}:
+            if job_attempt is not None and task.status == UploadStatus.SUCCESS:
+                from app.publishing.job_recovery import bind_upload_job
+
+                previous = db.exec(
+                    select(UploadAttempt).where(
+                        UploadAttempt.upload_task_id == task_id,
+                        UploadAttempt.publish_generation == task.publish_generation,
+                        UploadAttempt.status == UploadStatus.SUCCESS,
+                    )
+                ).first()
+                bind_upload_job(db, job_attempt, task, previous)
             return task
         clip = db.get(FinalClip, task.clip_id)
         if clip is None:
@@ -459,6 +479,11 @@ def process_upload_task(task_id: int) -> UploadTask:
             assert current is not None
             if claimed is None:
                 return current
+            if job_attempt is not None:
+                from app.publishing.job_recovery import bind_upload_job
+
+                db.refresh(current)
+                bind_upload_job(db, job_attempt, current, None)
             result = ManualUploader().upload(payload)
             current.status = UploadStatus.SUCCESS if result.success else UploadStatus.FAILED
             current.remote_id = result.remote_id
@@ -469,14 +494,14 @@ def process_upload_task(task_id: int) -> UploadTask:
             return current
     worker_id = f"upload-{uuid4().hex}"
     for _ in range(settings.upload_max_retries + 1):
-        prepared = prepare_upload_attempt(task_id, worker_id)
+        prepared = prepare_upload_attempt(task_id, worker_id, job_attempt=job_attempt)
         if not prepared.get("ready"):
             break
         token, generation = prepared["attempt_token"], prepared["publish_generation"]
         result = (
             {"outcome": "success", "remote_id": prepared.get("remote_id")}
             if prepared.get("already_success")
-            else execute_remote_upload(token)
+            else execute_remote_upload(token, job_attempt=job_attempt)
         )
         commit_publish_result(token, generation, result)
         if result.get("outcome") != "failed_retryable" or result.get("request_may_have_been_sent", False):
@@ -534,15 +559,15 @@ def _finish_task(
 
 
 @configured_task
-def enqueue_and_upload(clip_id: int) -> UploadTask:
+def enqueue_and_upload(clip_id: int, *, job_attempt: JobAttempt | None = None) -> UploadTask:
     """入队并立即执行上传(便于自动链路与 CLI 复用)。
 
     :param clip_id: 成品切片 id。
     :returns: 上传任务。
     """
     task = enqueue_upload(clip_id)
-    if task.status == UploadStatus.QUEUED and task.id is not None:
-        return process_upload_task(task.id)
+    if task.id is not None and (task.status == UploadStatus.QUEUED or job_attempt is not None):
+        return process_upload_task(task.id, job_attempt=job_attempt)
     return task
 
 

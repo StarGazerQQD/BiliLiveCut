@@ -13,15 +13,22 @@ from sqlmodel import Session, select
 from app.analysis import llm
 from app.analysis.clip_scorer import EventClipDraft, mark_event_clip_evaluated, validate_event_clip_draft
 from app.analysis.editorial_review import EditorialReviewDraft
-from app.analysis.editorial_review_sources import SegmentReviewSnapshot, event_review_is_current
+from app.analysis.editorial_review_sources import (
+    SegmentReviewSnapshot,
+    event_review_is_current,
+    media_snapshot_is_current,
+    media_validation_scope,
+)
 from app.analysis.event_enricher import EventEnrichmentDraft, commit_event_enrichment
 from app.analysis.reanalysis_targets import (
     ReanalysisTarget,
     list_reanalysis_targets,
     target_fingerprint,
+    target_media_bounds,
     target_protection,
 )
 from app.analysis.timeline import datetime_epoch
+from app.core.cancellation import check_shutdown
 from app.core.runtime_settings import configured_task
 from app.db.entities import (
     AppSetting,
@@ -53,6 +60,9 @@ def _current(db: Session, target: ReanalysisTarget, own_task_id: int | None) -> 
     reason = target_protection(db, target, own_task_id)
     if reason:
         return reason
+    lower, upper = target_media_bounds(db, target)
+    if not media_snapshot_is_current(db, target.session_id, start=lower, end=upper):
+        return "state_changed"
     if target_fingerprint(db, target, own_task_id) != target.fingerprint:
         return "state_changed"
     return None
@@ -70,7 +80,10 @@ def compute_reanalysis(
 
     if len(targets) > 100 or len({item.key for item in targets}) != len(targets):
         raise ValueError("重分析每次最多选择 100 个不同对象")
-    budget = llm.new_editorial_budget(cancelled=cancelled)
+    budget = llm.new_editorial_budget(
+        cancelled=cancelled,
+        target=f"task:{own_task_id}:reanalysis" if own_task_id is not None else "editorial_reanalysis",
+    )
     results: list[ReanalysisDraft] = []
     for target in targets:
         interruption = budget.interruption()
@@ -297,6 +310,7 @@ def commit_reanalysis(
     checked = [
         (draft, reason or (None if _validate_computed(db, draft) else "evidence_changed")) for draft, reason in checked
     ]
+    check_shutdown()
     results: list[JsonValue] = []
     for draft, reason in checked:
         target, payload = draft.target, draft.payload
@@ -359,7 +373,7 @@ def run_editorial_reanalysis(context: JobContext, payload: dict[str, JsonValue])
     context.report(5, "正在核验重分析对象")
     drafts = compute_reanalysis(targets, cancelled=context.cancelled)
     context.check_cancelled()
-    with context.result_transaction() as db:
+    with media_validation_scope(session_ids=[item.session_id for item in targets]), context.result_transaction() as db:
         result = commit_reanalysis(db, drafts)
         context.check_cancelled()
         context.complete(db, result)

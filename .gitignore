@@ -18,6 +18,9 @@ env/
 !.env.example
 
 # 运行产物
+.launcher.lock
+.service.lock
+*.service.lock
 storage/
 *.db
 *.sqlite3
@@ -36,6 +39,8 @@ htmlcov/
 !/tests/test_model_catalog.py
 !/tests/source_fixtures.py
 !/tests/editorial_fixtures.py
+!/tests/approval_fixtures.py
+!/tests/process_fixtures.py
 !/tests/unit/
 !/tests/unit/test_asr_architecture.py
 !/tests/unit/test_native_parity.py

@@ -3,7 +3,9 @@
 from __future__ import annotations
 
 import re
+import threading
 from types import SimpleNamespace
+from typing import TYPE_CHECKING
 
 import pytest
 from fastapi.testclient import TestClient
@@ -13,6 +15,11 @@ from app.db.entities import AppSetting
 from app.db.session import get_session
 from app.notify import email_verification as mail
 from app.notify.mail import MailError
+
+if TYPE_CHECKING:
+    from pytest import MonkeyPatch
+
+    from app.notify.mail import MailConfig
 
 BASE = "/api/settings/notifications/email"
 
@@ -56,6 +63,30 @@ def verify(client, sent):
     assert response.status_code == 200, response.text
     assert response.json()["verified"] is True
     return challenge, code
+
+
+def test_business_email_escapes_html_after_recipient_verification(
+    email_setup: tuple[TestClient, list[tuple[MailConfig, str, str]], list[float]], monkeypatch: MonkeyPatch
+) -> None:
+    from app.notify import webhook
+
+    client, sent, _clock = email_setup
+    delivered = threading.Event()
+    title, body = "<script>alert(1)</script>", '<img src="private" onerror="alert(1)">'
+
+    def transmit(config: MailConfig, subject: str, content: str, **kwargs: object) -> None:
+        sent.append((config, subject, content))
+        if subject == title:
+            delivered.set()
+
+    monkeypatch.setattr(mail, "transmit", transmit)
+    with client:
+        verify(client, sent)
+        webhook.notify(title, body)
+        assert delivered.wait(3)
+    html = sent[-1][2]
+    assert "<script>" not in html and "<img" not in html
+    assert "&lt;script&gt;" in html and "&lt;img" in html
 
 
 def test_save_and_code_delivery_do_not_authorize_runtime_mail(email_setup):

@@ -1,6 +1,7 @@
 # ruff: noqa: D100
 from __future__ import annotations
 
+from datetime import datetime
 from typing import Annotated, Literal
 from urllib.parse import urlsplit
 
@@ -153,6 +154,7 @@ class ModelConfigurationView(BaseModel):
     active_counts: dict[Capability, int]
     asr_selection: str
     model_capacities: list[ModelCapacity] = Field(default_factory=list)
+    probe_diagnostics: list[ModelProbeDiagnostic] = Field(default_factory=list)
 
 
 class ModelCapacity(BaseModel):
@@ -172,9 +174,33 @@ class ModelCapacity(BaseModel):
     note: str = ""
 
 
+class ModelProbeDiagnostic(BaseModel):
+    """有限样本的实际协议观察，不推断服务最大容量或参数执行效果。"""
+
+    model_config = ConfigDict(extra="forbid", strict=True, frozen=True, hide_input_in_errors=True, allow_inf_nan=False)
+    schema_version: Literal[1] = 1
+    route_id: Identity
+    connection_id: Identity
+    model: Name
+    base_url: str = Field(min_length=1, max_length=2048)
+    observed_at: datetime
+    text: Literal["unknown", "accepted", "rejected"]
+    structured: Literal["unknown", "accepted", "rejected"]
+    structured_protocol: Literal["json_schema", "json_object"]
+    reasoning_parameter: Literal["not_sent", "unknown", "accepted", "rejected"]
+    attempts: int = Field(ge=0, le=2)
+    output_limits: list[int] = Field(default_factory=list, max_length=2)
+    request_ids: list[str] = Field(default_factory=list, max_length=2)
+    elapsed_s: float = Field(ge=0)
+    estimated_cost_usd: float | None = Field(default=None, ge=0)
+    detail: str = Field(min_length=1, max_length=500)
+
+
 class ModelProbeResult(BaseModel):
     """单条文本路由的有限调用结果。"""
 
     id: str
     ok: bool
     detail: str
+    diagnostic: ModelProbeDiagnostic | None = None
+    persisted: bool = False

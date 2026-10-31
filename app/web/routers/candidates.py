@@ -2,11 +2,13 @@
 
 from __future__ import annotations
 
+from functools import partial
 from typing import Any, Literal
 
 from fastapi import APIRouter, HTTPException, Request
 from pydantic import BaseModel, ConfigDict, field_validator
 
+from app.core.execution import run_sync
 from app.db.entities import CandidateStatus
 from app.web.services import candidates as candidates_service
 from app.web.services import clips as clips_service
@@ -132,10 +134,12 @@ async def batch_candidates(request: BatchRequest, http_request: Request) -> dict
                 from app.web.services.review_workflow import review_actor
 
                 actor, _ = review_actor(http_request)
-                candidates_service.set_candidate_status(cid, CandidateStatus.REJECTED, reviewed_by=actor)
+                await run_sync(
+                    partial(candidates_service.set_candidate_status, cid, CandidateStatus.REJECTED, reviewed_by=actor)
+                )
                 results.append({"candidate_id": cid, "status": "rejected"})
             elif request.action == "publish":
-                result = clips_service.publish_clip(cid)
+                result = await run_sync(partial(clips_service.publish_clip, cid))
                 results.append({"candidate_id": cid, "status": "ready", **result})
             elif request.action == "delete":
                 candidates_service.delete_candidate(cid)

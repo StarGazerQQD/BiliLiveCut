@@ -450,7 +450,7 @@ def test_whole_session_summary_analyzes_all_final_asr_once_in_time_order(
 
     prompts: list[str] = []
 
-    def fake_call_text(prompt: str, max_tokens: int, *, capability: str) -> str:
+    def fake_call_text(prompt: str, max_tokens: int, *, capability: str, **_kwargs: object) -> str:
         prompts.append(prompt)
         assert max_tokens == 1048576
         assert capability == "summary"
@@ -519,6 +519,58 @@ def test_whole_session_summary_waits_for_final_analysis_and_retries_empty_llm_re
     assert "未返回有效 summary" in request_payload["last_error"]
 
 
+@pytest.mark.parametrize("after_write_lock", [False, True])
+def test_summary_shutdown_preserves_attempts_and_revokes_claim(temp_db: None, after_write_lock: bool) -> None:
+    from sqlalchemy import event
+
+    from app.core.cancellation import shutdown_event
+
+    session_id = _seed_timeline()
+    with get_session() as db:
+        pending = db.get(AppSetting, f"session_reanalysis:{session_id}")
+        assert pending is not None
+        db.delete(pending)
+        if after_write_lock:
+            for transcript in db.exec(select(Transcript)).all():
+                transcript.base_text = transcript.final_text = ""
+                db.add(transcript)
+    assert request_session_timeline_summary(session_id, reason="shutdown-test", force=True)
+    claim = claim_pending_session_summary()
+    assert claim is not None
+    with get_session() as db:
+        row = db.get(AppSetting, f"session_timeline_summary_request:{session_id}")
+        assert row is not None
+        payload = json.loads(row.value)
+        payload["attempts"] = 2
+        row.value = json.dumps(payload)
+        db.add(row)
+        engine = db.get_bind()
+
+    def shutdown_after_begin(
+        connection: object, cursor: object, statement: str, parameters: object, context: object, many: bool
+    ) -> None:
+        if statement == "BEGIN IMMEDIATE":
+            shutdown_event.set()
+
+    if after_write_lock:
+        event.listen(engine, "after_cursor_execute", shutdown_after_begin)
+    else:
+        shutdown_event.set()
+    try:
+        assert execute_session_summary_claim(claim) is False
+    finally:
+        if after_write_lock:
+            event.remove(engine, "after_cursor_execute", shutdown_after_begin)
+        shutdown_event.clear()
+    with get_session() as db:
+        row = db.get(AppSetting, f"session_timeline_summary_request:{session_id}")
+        assert row is not None
+        payload = json.loads(row.value)
+        assert payload["status"] == "pending" and payload["attempts"] == 2
+        assert payload["request_id"] != claim.request_id
+        assert db.get(AppSetting, f"session_timeline_summary:{session_id}") is None
+
+
 def test_timeline_view_does_not_enqueue_missing_summary_for_finished_session(temp_db: None) -> None:
     """查看历史场次仅报告缺失，不能隐式排队产生计费调用。"""
     session_id = _seed_timeline()
@@ -561,7 +613,7 @@ def test_whole_session_summary_recovers_running_request_and_rejects_stale_claim(
     monkeypatch.setattr(
         session_summary,
         "build_session_timeline_summary",
-        lambda _session_id: {
+        lambda _session_id, **_kwargs: {
             "version": 2,
             "session_id": session_id,
             "analysis_basis": "full_session_asr",
@@ -598,7 +650,7 @@ def test_whole_session_summary_stops_retrying_after_three_failures(
 
     assert request_session_timeline_summary(session_id, reason="retry-test", force=True) is True
 
-    def fail_summary(_session_id: int) -> dict[str, object]:
+    def fail_summary(_session_id: int, **_kwargs: object) -> dict[str, object]:
         raise RuntimeError("模拟总结故障")
 
     monkeypatch.setattr(session_summary, "build_session_timeline_summary", fail_summary)

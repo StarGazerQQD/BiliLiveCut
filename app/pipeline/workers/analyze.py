@@ -14,19 +14,26 @@ from collections.abc import Mapping
 from dataclasses import dataclass, replace
 from datetime import datetime, timedelta
 from enum import StrEnum
-from typing import Any
+from functools import partial
+from typing import Any, Literal
 
+from pydantic import BaseModel, ConfigDict, Field, PositiveInt
 from sqlalchemy.exc import IntegrityError as _IntegrityError
 from sqlmodel import Session, select
 
 from app.analysis import audio as audio_mod
+from app.analysis.editorial_review_sources import media_validation_scope
 from app.analysis.keywords import match_keywords
 from app.analysis.model_execution import ModelCallBudget
+from app.analysis.reanalysis_targets import ReanalysisTarget, target_fingerprint, target_media_bounds, target_protection
 from app.analysis.room_config import room_highlight_keywords
 from app.analysis.source_policy import session_danmaku_lag_s
 from app.analysis.transcript_windows import TranscriptWindowCache
 from app.analysis.transcription.content import refined_transcript_text
+from app.core.cancellation import check_cancellation, check_shutdown
 from app.core.config import settings
+from app.core.media_usage import media_reference_scope
+from app.core.paths import resolve_storage_path
 from app.core.runtime_settings import configured_task
 from app.core.sanitize import safe_exception_summary, sanitize_diagnostic
 from app.db.entities import (
@@ -46,6 +53,7 @@ from app.db.entities import (
     TaskStatus,
     Transcript,
 )
+from app.db.notifications import log_after_commit
 from app.db.session import get_session
 from app.pipeline.highlight_plugins import build_highlight_scoring_request
 from app.pipeline.lease import LeaseLostError, TaskLease, still_owns_lease
@@ -66,6 +74,115 @@ class HighlightDecision(StrEnum):
     SKIPPED = "skipped"
     SIGNAL_PASS = "signal_pass"
     EVENT_PASS = "event_pass"
+
+
+class _EventCandidateCheckpoint(BaseModel):
+    """已提交候选的来源和人工状态快照，恢复时仍须重新核验。"""
+
+    model_config = ConfigDict(extra="forbid", frozen=True, allow_inf_nan=False)
+    target: ReanalysisTarget
+    score: float
+
+
+class _EventBatchCheckpoint(BaseModel):
+    """原任务持有的有限事件重试进度；已提交候选继续由该任务承接。"""
+
+    model_config = ConfigDict(extra="forbid", frozen=True, allow_inf_nan=False)
+    version: Literal[1] = 1
+    remaining_ids: list[PositiveInt]
+    candidates: list[_EventCandidateCheckpoint] = Field(default_factory=list)
+
+
+def _event_batch_checkpoint(task: SegmentTask) -> _EventBatchCheckpoint | None:
+    value = event_first_context(task.context_json).get("event_analysis_v1")
+    return _EventBatchCheckpoint.model_validate(value) if value is not None else None
+
+
+def _canonical_event_ids(db: Session, identities: set[int], session_id: int) -> set[int]:
+    from app.analysis.hotspot_lifecycle import resolve_merged_hotspot_event
+
+    result: set[int] = set()
+    for event_id in identities:
+        event = db.get(HotspotEvent, event_id)
+        if event is None or event.session_id != session_id:
+            continue
+        current = resolve_merged_hotspot_event(db, event)
+        if current.id is not None and current.status == HotspotStatus.CONFIRMED:
+            result.add(current.id)
+    return result
+
+
+def _candidate_checkpoint(
+    db: Session, task: SegmentTask, candidate_id: int, event_id: int, score: float
+) -> _EventCandidateCheckpoint:
+    candidate = db.get(HighlightCandidate, candidate_id)
+    event = db.get(HighlightEvent, event_id)
+    hotspot = db.exec(select(HotspotEvent).where(HotspotEvent.candidate_id == candidate_id)).one()
+    if candidate is None or event is None or event.segment_id is None or hotspot.id is None:
+        raise ValueError("事件候选缺少恢复所需的来源身份")
+    # 使用实际持久化后的时间表示，避免 SQLite 时区序列化造成虚假失效。
+    for row in (candidate, event, hotspot):
+        db.refresh(row)
+    target = ReanalysisTarget(
+        key=f"hotspot:{hotspot.id}",
+        kind="hotspot",
+        source_id=hotspot.id,
+        session_id=task.session_id,
+        segment_id=event.segment_id,
+        peak_ts=hotspot.peak_ts,
+        candidate_id=candidate_id,
+        event_id=event_id,
+    )
+    return _EventCandidateCheckpoint(
+        target=target.model_copy(update={"fingerprint": target_fingerprint(db, target, own_task_id=task.id)}),
+        score=score,
+    )
+
+
+def _resume_event_candidates(
+    db: Session, task: SegmentTask, progress: _EventBatchCheckpoint | None
+) -> list[_EventCandidateCheckpoint]:
+    from app.analysis.editorial_review_sources import media_snapshot_is_current
+
+    if progress is None:
+        return []
+    valid: list[_EventCandidateCheckpoint] = []
+    for saved in progress.candidates:
+        target = saved.target
+        if target.session_id != task.session_id:
+            raise ValueError("事件候选恢复快照与任务场次不一致")
+        if target_protection(db, target, own_task_id=task.id) is not None:
+            continue
+        lower, upper = target_media_bounds(db, target)
+        if (
+            media_snapshot_is_current(db, task.session_id, start=lower, end=upper)
+            and target_fingerprint(db, target, own_task_id=task.id) == target.fingerprint
+        ):
+            valid.append(saved)
+            continue
+        candidate = db.get(HighlightCandidate, target.candidate_id)
+        event = db.get(HighlightEvent, target.event_id)
+        if candidate is not None and event is not None:
+            candidate.status = CandidateStatus.PENDING
+            event.review_status = ReviewStatus.PENDING
+            event.review_reason = "分析恢复时来源已变化，需要重新分析或人工复核"
+            db.add(candidate)
+            db.add(event)
+    return valid
+
+
+def _set_checkpoint_candidate(
+    task: SegmentTask, progress: _EventBatchCheckpoint | None, candidates: list[_EventCandidateCheckpoint]
+) -> _EventCandidateCheckpoint | None:
+    primary = max(candidates, key=lambda item: item.score) if candidates else None
+    if primary is not None:
+        task.candidate_id, task.event_id = primary.target.candidate_id, primary.target.event_id
+    elif progress is not None and any(
+        task.candidate_id == item.target.candidate_id and task.event_id == item.target.event_id
+        for item in progress.candidates
+    ):
+        task.candidate_id, task.event_id = None, None
+    return primary
 
 
 @dataclass(frozen=True)
@@ -193,6 +310,7 @@ def analyze_compute(task_id: int) -> dict[str, Any]:
         session_id = segment.session_id
         file_path = segment.file_path
         reanalysis = _json_object(task.context_json).get("reanalysis")
+        checkpoint = _event_batch_checkpoint(task)
 
     if isinstance(reanalysis, dict) and reanalysis.get("preserve_identity") is True:
         from app.analysis.editorial_reanalysis import compute_reanalysis
@@ -218,6 +336,10 @@ def analyze_compute(task_id: int) -> dict[str, Any]:
                 "reanalysis_results": compute_reanalysis(targets, cancelled=reanalysis_cancelled, own_task_id=task_id),
             }
 
+    if checkpoint is not None:
+        return {"decision": HighlightDecision.EVENT_PASS, "segment_id": segment_id, "session_id": session_id}
+
+    file_path = str(resolve_storage_path(file_path))
     audio_features: audio_mod.AudioFeatures | None = None
     try:
         audio_features = audio_mod.analyze_audio(file_path)
@@ -275,7 +397,30 @@ def analyze_compute(task_id: int) -> dict[str, Any]:
     return draft
 
 
+@media_reference_scope()
 def commit_highlight(lease: TaskLease, compute_result: dict[str, Any], ms: int) -> None:
+    """在写事务前核对文件，再以租约和来源快照提交分析结果。"""
+    check_cancellation()
+    started = time.monotonic()
+    with media_validation_scope(task_id=lease.task_id):
+        session_id = _commit_highlight(lease, compute_result, ms)
+    if session_id is not None:
+        # 来源预检只覆盖对应事务；模型计算必须读取提交后的实时证据。
+        budgets: dict[int, ModelCallBudget] = {}
+        try:
+            results = _score_pending_hotspot_events(
+                session_id,
+                audio_features=compute_result.get("event_audio_features"),
+                audio_segment_id=compute_result.get("segment_id", 0),
+                budgets=budgets,
+                lease=lease,
+            )
+            _commit_event_analysis(lease, results, ms + int((time.monotonic() - started) * 1000), budgets)
+        except LeaseLostError:
+            _logger.warning("stale_result_discarded: highlight task=%s 已失去租约", lease.task_id)
+
+
+def _commit_highlight(lease: TaskLease, compute_result: dict[str, Any], ms: int) -> int | None:
     """租约内提交热点事实，在事务外计算编辑结果，再原子提交候选及任务。
 
     决策分支:
@@ -290,7 +435,6 @@ def commit_highlight(lease: TaskLease, compute_result: dict[str, Any], ms: int) 
     """
     segment_id = compute_result.get("segment_id", 0)
     decision = compute_result.get("decision", HighlightDecision.SKIPPED)
-    started = time.monotonic()
 
     try:
         with get_session() as db:
@@ -299,6 +443,7 @@ def commit_highlight(lease: TaskLease, compute_result: dict[str, Any], ms: int) 
             if not still_owns_lease(db, lease):
                 raise LeaseLostError()
 
+            check_shutdown()
             task = db.get(SegmentTask, lease.task_id)
             if task is None:
                 return
@@ -365,16 +510,7 @@ def commit_highlight(lease: TaskLease, compute_result: dict[str, Any], ms: int) 
             if decision == HighlightDecision.EVENT_PASS:
                 # 首次模型判断必须读取本轮已提交的事实，避免新增 ASR 使自己的草稿失效。
                 db.commit()
-                budgets: dict[int, ModelCallBudget] = {}
-                results = _score_pending_hotspot_events(
-                    task.session_id,
-                    audio_features=compute_result.get("event_audio_features"),
-                    audio_segment_id=segment_id,
-                    budgets=budgets,
-                    lease=lease,
-                )
-                _commit_event_analysis(lease, results, ms + int((time.monotonic() - started) * 1000), budgets)
-                return
+                return task.session_id
             _record_plugin_dispatch(db, compute_result)
 
             # ── BELOW_THRESHOLD ──────────────────────────
@@ -485,7 +621,16 @@ def commit_highlight(lease: TaskLease, compute_result: dict[str, Any], ms: int) 
                 return
 
             cid, event_id = created[0]
-            _logger.info("analyze_candidates_committed: segment=%s count=%s primary=%s", segment_id, len(created), cid)
+            log_after_commit(
+                db,
+                partial(
+                    _logger.info,
+                    "analyze_candidates_committed: segment=%s count=%s primary=%s",
+                    segment_id,
+                    len(created),
+                    cid,
+                ),
+            )
 
             mark_completed(task, ms)
             enqueue_next(task, TaskStatus.CANDIDATE_CREATED, candidate_id=cid, event_id=event_id)
@@ -534,7 +679,7 @@ def _commit_pipeline_reanalysis(db: Session, task: SegmentTask, drafts: object, 
 def _commit_event_analysis(
     lease: TaskLease, raw_results: list[object], ms: int, operation_budgets: object = None
 ) -> None:
-    """在同一租约下重算过期证据，候选与任务承接原子提交。"""
+    """同一租约内有限重算，稳定结果与剩余事件的原任务重试进度原子提交。"""
     from app.analysis.clip_scorer import pending_hotspot_event_ids
 
     started = time.monotonic()
@@ -550,8 +695,22 @@ def _commit_event_analysis(
             for event_id, budget in operation_budgets.items()
             if type(event_id) is int and isinstance(budget, ModelCallBudget)
         )
+    with get_session() as db:
+        if not still_owns_lease(db, lease):
+            raise LeaseLostError()
+        task = db.get(SegmentTask, lease.task_id)
+        if task is None:
+            raise LeaseLostError()
+        progress = _event_batch_checkpoint(task)
+        admitted = set(progress.remaining_ids) if progress is not None else set(budgets)
+        if progress is None and not admitted and operation_budgets is None:
+            admitted = set(_unscored_confirmed_event_ids(db, task.session_id, exclude=set()))
     for attempt in range(2):
-        with get_session() as db:
+        check_cancellation()
+        with (
+            media_validation_scope(task_id=lease.task_id),
+            get_session(operation="event_analysis_commit", task_id=lease.task_id) as db,
+        ):
             connection = db.connection()
             if connection.dialect.name == "sqlite":
                 # legacy SQLite SELECT 不开启事务；必须先 BEGIN，避免首个 SAVEPOINT
@@ -559,48 +718,69 @@ def _commit_event_analysis(
                 connection.exec_driver_sql("BEGIN IMMEDIATE")
             if not still_owns_lease(db, lease):
                 raise LeaseLostError()
+            check_shutdown()
             task = db.get(SegmentTask, lease.task_id)
             if task is None:
                 raise LeaseLostError()
             session_id = task.session_id
+            carried = _resume_event_candidates(db, task, progress)
             created, processed = _commit_event_clip_results(db, task, results)
-            remaining = _unscored_confirmed_event_ids(db, session_id, exclude=processed)
+            current_admitted = _canonical_event_ids(db, admitted, session_id)
+            remaining = _unscored_confirmed_event_ids(db, session_id, exclude=processed, admitted=current_admitted)
+            db.flush()
+            snapshots = [_candidate_checkpoint(db, task, *item) for item in created]
+            combined = list({item.target.candidate_id: item for item in [*carried, *snapshots]}.values())
             if not remaining:
+                task.context_json = update_event_first_context(task.context_json, event_analysis_v1=None)
                 _mark_scored_in_db(db, task.segment_id)
                 mark_completed(task, ms + int((time.monotonic() - started) * 1000))
-                if created:
-                    primary = max(created, key=lambda item: item[2])
-                    enqueue_next(task, TaskStatus.CANDIDATE_CREATED, candidate_id=primary[0], event_id=primary[1])
+                primary = _set_checkpoint_candidate(task, progress, combined)
+                if primary is not None:
+                    enqueue_next(task, TaskStatus.CANDIDATE_CREATED)
                 else:
                     enqueue_next(task, TaskStatus.COMPLETED)
                 db.add(task)
                 return
-            # 包括本轮已经创建的候选一起撤销，不留下无任务承接的中间产物。
-            db.rollback()
             if attempt == 1:
-                connection = db.connection()
-                if connection.dialect.name == "sqlite":
-                    connection.exec_driver_sql("BEGIN IMMEDIATE")
-                if not still_owns_lease(db, lease):
-                    raise LeaseLostError()
-                task = db.get(SegmentTask, lease.task_id)
-                if task is None:
-                    raise LeaseLostError()
+                task.context_json = update_event_first_context(
+                    task.context_json,
+                    event_analysis_v1=_EventBatchCheckpoint(remaining_ids=remaining, candidates=combined).model_dump(
+                        mode="json"
+                    ),
+                )
+                _set_checkpoint_candidate(task, progress, combined)
                 mark_failed(task, "热点证据在提交期间变化，等待重新分析", permanent=False)
                 task.processing_time_ms = ms + int((time.monotonic() - started) * 1000)
                 db.add(task)
                 return
+            # 首次仅重算实际失效的对象；第二次仍变化时持久保留本轮稳定结果。
+            db.rollback()
         # 计算必须在事务之外；最多立即重算一次，持续变化交给原有有界重试。
         previous = {
             item["event_id"]: item
             for item in results
             if isinstance(item, Mapping) and type(item.get("event_id")) is int
         }
+        with get_session() as db:
+            deferred_ids = _canonical_event_ids(
+                db, {event_id for event_id, item in previous.items() if item.get("deferred") is True}, session_id
+            )
         results = []
         for event_id in pending_hotspot_event_ids(session_id):
+            if event_id not in current_admitted:
+                continue
+            if event_id in deferred_ids:
+                results.append(
+                    {
+                        "event_id": event_id,
+                        "model_budget": _event_model_budget(event_id, budgets, lease),
+                        "deferred": True,
+                    }
+                )
+                continue
             result = _reusable_event_result(previous.get(event_id), event_id, lease)
             if result is None:
-                result = _compute_event_clip_result(event_id, budget=_event_model_budget(event_id, budgets, lease))
+                result = _compute_pending_event(event_id, budget=_event_model_budget(event_id, budgets, lease))
             if result is not None:
                 results.append(result)
 
@@ -665,7 +845,7 @@ def _compute_event_clip_result(
         compute_event_enrichment,
     )
 
-    budget = budget or llm.new_editorial_budget()
+    budget = budget or llm.new_editorial_budget(target=f"hotspot:{event_id}")
     for attempt in range(2):
         try:
             enrichment = compute_event_enrichment(event_id, budget=budget, force=force)
@@ -736,10 +916,29 @@ def _event_model_budget(event_id: int, budgets: dict[int, ModelCallBudget], leas
         with get_session() as db:
             return not still_owns_lease(db, lease)
 
-    budget = llm.new_editorial_budget(cancelled=cancelled)
+    budget = llm.new_editorial_budget(
+        cancelled=cancelled, target=f"task:{lease.task_id}:hotspot:{event_id}" if lease else f"hotspot:{event_id}"
+    )
     # 即使目标合并或消失导致没有计算结果，仍保留已经消耗的预算。
     budgets[event_id] = budget
     return budget
+
+
+def _compute_pending_event(
+    event_id: int,
+    *,
+    budget: ModelCallBudget,
+    audio_features: audio_mod.AudioFeatures | None = None,
+    audio_segment_id: int | None = None,
+) -> dict[str, object] | None:
+    from app.analysis.event_enricher import EventEvidenceChangedError
+
+    try:
+        return _compute_event_clip_result(
+            event_id, budget=budget, audio_features=audio_features, audio_segment_id=audio_segment_id
+        )
+    except EventEvidenceChangedError:
+        return {"event_id": event_id, "model_budget": budget, "deferred": True}
 
 
 def _score_pending_hotspot_events(
@@ -754,8 +953,20 @@ def _score_pending_hotspot_events(
     from app.analysis.clip_scorer import pending_hotspot_event_ids
 
     results: list[dict[str, object]] = []
-    for event_id in pending_hotspot_event_ids(session_id):
-        result = _compute_event_clip_result(
+    event_ids = pending_hotspot_event_ids(session_id)
+    if lease is not None:
+        with get_session() as db:
+            if not still_owns_lease(db, lease):
+                raise LeaseLostError()
+            task = db.get(SegmentTask, lease.task_id)
+            if task is None:
+                raise LeaseLostError()
+            progress = _event_batch_checkpoint(task)
+            if progress is not None:
+                admitted = _canonical_event_ids(db, set(progress.remaining_ids), session_id)
+                event_ids = [event_id for event_id in event_ids if event_id in admitted]
+    for event_id in event_ids:
+        result = _compute_pending_event(
             event_id,
             audio_features=audio_features,
             audio_segment_id=audio_segment_id,
@@ -789,6 +1000,8 @@ def _commit_event_clip_results(
     for raw in raw_results:
         if not isinstance(raw, Mapping):
             raise ValueError("event_clip_results 只能包含对象")
+        if raw.get("deferred") is True:
+            continue
         clip_draft = raw.get("clip_draft")
         enrichment = raw.get("enrichment")
         review = raw.get("review")
@@ -882,6 +1095,7 @@ def _unscored_confirmed_event_ids(
     session_id: int,
     *,
     exclude: set[int],
+    admitted: set[int] | None = None,
 ) -> list[int]:
     """找出本次持久化后才进入 confirmed 或证据刚变化的事件。"""
     from app.analysis.clip_scorer import event_clip_score_is_current
@@ -898,7 +1112,10 @@ def _unscored_confirmed_event_ids(
     return [
         event.id
         for event in rows
-        if event.id is not None and event.id not in exclude and not event_clip_score_is_current(db, event)
+        if event.id is not None
+        and event.id not in exclude
+        and (admitted is None or event.id in admitted)
+        and not event_clip_score_is_current(db, event)
     ]
 
 
@@ -921,13 +1138,14 @@ def score_hotspot_event(event_id: int) -> HighlightCandidate | None:
     clip_draft = result["clip_draft"]
     if not isinstance(clip_draft, EventClipDraft):
         raise TypeError("事件评分结果缺少 EventClipDraft")
-    with get_session() as db:
+    with media_validation_scope(session_ids=[clip_draft.session_id]), get_session(operation="event_score_commit") as db:
         connection = db.connection()
         if connection.dialect.name == "sqlite":
             connection.exec_driver_sql("BEGIN IMMEDIATE")
         event = db.get(HotspotEvent, event_id)
         if event is None:
             raise ValueError(f"HotspotEvent 不存在: event_id={event_id}")
+        check_shutdown()
         synthetic_task = SegmentTask(
             segment_id=clip_draft.segment_id,
             session_id=clip_draft.session_id,
@@ -963,6 +1181,7 @@ def score_segment_direct(segment_id: int) -> HighlightCandidate | None:
         file_path = segment.file_path
         session_id = segment.session_id
 
+    file_path = str(resolve_storage_path(file_path))
     audio_features: audio_mod.AudioFeatures | None = None
     try:
         audio_features = audio_mod.analyze_audio(file_path)
@@ -998,11 +1217,12 @@ def score_segment_direct(segment_id: int) -> HighlightCandidate | None:
         drafts.extend(item for item in additional if isinstance(item, dict))
 
     primary: HighlightCandidate | None = None
-    with get_session() as db:
+    with media_validation_scope(session_ids=[session_id]), get_session(operation="segment_score_commit") as db:
         from app.analysis.scoring_config import get_scoring_config
 
         if db.get_bind().dialect.name == "sqlite":
             db.connection().exec_driver_sql("BEGIN IMMEDIATE")
+        check_shutdown()
         if not _store_segment_editorial(db, segment_id, compute_result):
             raise ValueError("编辑判断输入已变化，不能提交旧分段结果")
         segment = db.get(RawSegment, segment_id)
@@ -1290,11 +1510,15 @@ def _get_or_create_candidate(
             db.add(candidate)
             db.flush()
         db.refresh(candidate)
-        _logger.info(
-            "candidate_created: cid=%s dedup_hash=%s score=%.3f",
-            candidate.id,
-            dedup_hash[:16],
-            highlight_score,
+        log_after_commit(
+            db,
+            partial(
+                _logger.info,
+                "candidate_created: cid=%s dedup_hash=%s score=%.3f",
+                candidate.id,
+                dedup_hash[:16],
+                highlight_score,
+            ),
         )
         return candidate
     except _IntegrityError:
@@ -1369,7 +1593,7 @@ def _get_or_create_event(
             db.add(event)
             db.flush()
         db.refresh(event)
-        _logger.info("auto_event: eid=%s cid=%s", event.id, candidate_id)
+        log_after_commit(db, partial(_logger.info, "auto_event: eid=%s cid=%s", event.id, candidate_id))
         return event.id
     except _IntegrityError:
         # 并发冲突 — 回滚 savepoint, 查询对方创建的记录
@@ -1383,12 +1607,13 @@ def _get_or_create_event(
         raise AssertionError(f"IntegrityError on candidate_id={candidate_id} but existing Event not found") from None
 
 
-def _mark_scored_in_db(db, segment_id: int) -> None:
+def _mark_scored_in_db(db: Session, segment_id: int) -> None:
     """在已有 DB session 中标记片段为已评分 (仅 commit 阶段使用)。
 
     :param db: SQLModel session。
     :param segment_id: RawSegment ID。
     """
+    check_shutdown()
     seg = db.get(RawSegment, segment_id)
     if seg is not None and seg.status != SegmentStatus.SCORED:
         seg.status = SegmentStatus.SCORED
@@ -1432,6 +1657,7 @@ def _score_segment_drafts(
             raise ValueError(f"片段不存在: id={segment_id}")
         file_path = segment.file_path
 
+    file_path = str(resolve_storage_path(file_path))
     features = audio_features or audio_mod.analyze_audio(file_path)
     peak_offsets = features.peak_offsets(
         limit=settings.highlight_max_candidates_per_segment,
@@ -1455,7 +1681,9 @@ def _score_segment_drafts(
         with get_session() as db:
             return not still_owns_lease(db, lease)
 
-    budget = llm.new_editorial_budget(cancelled=cancelled)
+    budget = llm.new_editorial_budget(
+        cancelled=cancelled, target=f"task:{lease.task_id}:segment:{segment_id}" if lease else f"segment:{segment_id}"
+    )
     for peak_offset in offsets:
         draft = _score_segment_draft(
             segment_id,
@@ -1577,6 +1805,7 @@ def _score_segment_draft(
         }
         available_start, available_end = contiguous_recording_range(session_segments, segment)
 
+    file_path = str(resolve_storage_path(file_path))
     transcript_quality = assess_transcript_quality(text) if has_transcript else None
     asr_evidence_state = (
         "unavailable" if transcript_quality is None else ("available" if transcript_quality.usable else "degraded")
@@ -1704,7 +1933,7 @@ def _score_segment_draft(
         peak_ts=peak_ts,
         metrics=features,
         danmaku=top_danmaku,
-        budget=budget or llm_mod.new_editorial_budget(),
+        budget=budget or llm_mod.new_editorial_budget(target=f"segment:{segment_id}"),
     )
     result = review.execution.result
     review_metadata = review.metadata()

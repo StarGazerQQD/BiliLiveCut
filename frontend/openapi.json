@@ -1322,6 +1322,82 @@
         "title": "ImportRequest",
         "type": "object"
       },
+      "IntroTemplateUpdate": {
+        "additionalProperties": false,
+        "description": "片头片尾参数的严格部分更新，允许原有文字变量与换行。",
+        "properties": {
+          "intro_bg_color": {
+            "title": "Intro Bg Color",
+            "type": "string"
+          },
+          "intro_duration_s": {
+            "exclusiveMinimum": 0.0,
+            "title": "Intro Duration S",
+            "type": "number"
+          },
+          "intro_enabled": {
+            "title": "Intro Enabled",
+            "type": "boolean"
+          },
+          "intro_font_color": {
+            "title": "Intro Font Color",
+            "type": "string"
+          },
+          "intro_font_name": {
+            "title": "Intro Font Name",
+            "type": "string"
+          },
+          "intro_font_size": {
+            "exclusiveMinimum": 0.0,
+            "title": "Intro Font Size",
+            "type": "integer"
+          },
+          "intro_text": {
+            "title": "Intro Text",
+            "type": "string"
+          },
+          "is_default": {
+            "title": "Is Default",
+            "type": "boolean"
+          },
+          "name": {
+            "title": "Name",
+            "type": "string"
+          },
+          "outro_bg_color": {
+            "title": "Outro Bg Color",
+            "type": "string"
+          },
+          "outro_duration_s": {
+            "exclusiveMinimum": 0.0,
+            "title": "Outro Duration S",
+            "type": "number"
+          },
+          "outro_enabled": {
+            "title": "Outro Enabled",
+            "type": "boolean"
+          },
+          "outro_font_color": {
+            "title": "Outro Font Color",
+            "type": "string"
+          },
+          "outro_font_name": {
+            "title": "Outro Font Name",
+            "type": "string"
+          },
+          "outro_font_size": {
+            "exclusiveMinimum": 0.0,
+            "title": "Outro Font Size",
+            "type": "integer"
+          },
+          "outro_text": {
+            "title": "Outro Text",
+            "type": "string"
+          }
+        },
+        "title": "IntroTemplateUpdate",
+        "type": "object"
+      },
       "JsonValue": {},
       "LLMProviderIn": {
         "additionalProperties": false,
@@ -1518,6 +1594,18 @@
             "title": "Number",
             "type": "integer"
           },
+          "output_tokens_limit": {
+            "anyOf": [
+              {
+                "minimum": 1.0,
+                "type": "integer"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Output Tokens Limit"
+          },
           "protocol": {
             "enum": [
               "json_schema",
@@ -1540,7 +1628,9 @@
               "review",
               "grounding",
               "repair",
-              "context"
+              "context",
+              "text",
+              "probe"
             ],
             "title": "Purpose",
             "type": "string"
@@ -1557,6 +1647,19 @@
               }
             ],
             "title": "Reported Model"
+          },
+          "request_id": {
+            "anyOf": [
+              {
+                "maxLength": 128,
+                "minLength": 1,
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Request Id"
           },
           "status": {
             "enum": [
@@ -1750,6 +1853,13 @@
             "title": "Model Capacities",
             "type": "array"
           },
+          "probe_diagnostics": {
+            "items": {
+              "$ref": "#/components/schemas/ModelProbeDiagnostic"
+            },
+            "title": "Probe Diagnostics",
+            "type": "array"
+          },
           "revision": {
             "title": "Revision",
             "type": "integer"
@@ -1909,6 +2019,147 @@
         "title": "ModelProbe",
         "type": "object"
       },
+      "ModelProbeDiagnostic": {
+        "additionalProperties": false,
+        "description": "有限样本的实际协议观察，不推断服务最大容量或参数执行效果。",
+        "properties": {
+          "attempts": {
+            "maximum": 2.0,
+            "minimum": 0.0,
+            "title": "Attempts",
+            "type": "integer"
+          },
+          "base_url": {
+            "maxLength": 2048,
+            "minLength": 1,
+            "title": "Base Url",
+            "type": "string"
+          },
+          "connection_id": {
+            "maxLength": 128,
+            "minLength": 1,
+            "pattern": "^[^\\x00-\\x20\\x7F]+$",
+            "title": "Connection Id",
+            "type": "string"
+          },
+          "detail": {
+            "maxLength": 500,
+            "minLength": 1,
+            "title": "Detail",
+            "type": "string"
+          },
+          "elapsed_s": {
+            "minimum": 0.0,
+            "title": "Elapsed S",
+            "type": "number"
+          },
+          "estimated_cost_usd": {
+            "anyOf": [
+              {
+                "minimum": 0.0,
+                "type": "number"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Estimated Cost Usd"
+          },
+          "model": {
+            "maxLength": 200,
+            "minLength": 1,
+            "pattern": "^[^\\s\\x00-\\x1F\\x7F](?:[^\\x00-\\x1F\\x7F]*[^\\s\\x00-\\x1F\\x7F])?$",
+            "title": "Model",
+            "type": "string"
+          },
+          "observed_at": {
+            "format": "date-time",
+            "title": "Observed At",
+            "type": "string"
+          },
+          "output_limits": {
+            "items": {
+              "type": "integer"
+            },
+            "maxItems": 2,
+            "title": "Output Limits",
+            "type": "array"
+          },
+          "reasoning_parameter": {
+            "enum": [
+              "not_sent",
+              "unknown",
+              "accepted",
+              "rejected"
+            ],
+            "title": "Reasoning Parameter",
+            "type": "string"
+          },
+          "request_ids": {
+            "items": {
+              "type": "string"
+            },
+            "maxItems": 2,
+            "title": "Request Ids",
+            "type": "array"
+          },
+          "route_id": {
+            "maxLength": 128,
+            "minLength": 1,
+            "pattern": "^[^\\x00-\\x20\\x7F]+$",
+            "title": "Route Id",
+            "type": "string"
+          },
+          "schema_version": {
+            "const": 1,
+            "default": 1,
+            "title": "Schema Version",
+            "type": "integer"
+          },
+          "structured": {
+            "enum": [
+              "unknown",
+              "accepted",
+              "rejected"
+            ],
+            "title": "Structured",
+            "type": "string"
+          },
+          "structured_protocol": {
+            "enum": [
+              "json_schema",
+              "json_object"
+            ],
+            "title": "Structured Protocol",
+            "type": "string"
+          },
+          "text": {
+            "enum": [
+              "unknown",
+              "accepted",
+              "rejected"
+            ],
+            "title": "Text",
+            "type": "string"
+          }
+        },
+        "required": [
+          "route_id",
+          "connection_id",
+          "model",
+          "base_url",
+          "observed_at",
+          "text",
+          "structured",
+          "structured_protocol",
+          "reasoning_parameter",
+          "attempts",
+          "elapsed_s",
+          "detail"
+        ],
+        "title": "ModelProbeDiagnostic",
+        "type": "object"
+      },
       "ModelProbeResult": {
         "description": "单条文本路由的有限调用结果。",
         "properties": {
@@ -1916,12 +2167,27 @@
             "title": "Detail",
             "type": "string"
           },
+          "diagnostic": {
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/ModelProbeDiagnostic"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
           "id": {
             "title": "Id",
             "type": "string"
           },
           "ok": {
             "title": "Ok",
+            "type": "boolean"
+          },
+          "persisted": {
+            "default": false,
+            "title": "Persisted",
             "type": "boolean"
           }
         },
@@ -2525,6 +2791,162 @@
         "title": "StopRequest",
         "type": "object"
       },
+      "SubtitleTemplateUpdate": {
+        "additionalProperties": false,
+        "description": "字幕样式的部分更新；ASS 字形标志保持整数语义。",
+        "properties": {
+          "alignment": {
+            "maximum": 9.0,
+            "minimum": 1.0,
+            "title": "Alignment",
+            "type": "integer"
+          },
+          "angle": {
+            "title": "Angle",
+            "type": "number"
+          },
+          "back_color": {
+            "title": "Back Color",
+            "type": "string"
+          },
+          "bold": {
+            "title": "Bold",
+            "type": "integer"
+          },
+          "border_style": {
+            "title": "Border Style",
+            "type": "integer"
+          },
+          "description": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Description"
+          },
+          "encoding": {
+            "minimum": 0.0,
+            "title": "Encoding",
+            "type": "integer"
+          },
+          "font_name": {
+            "title": "Font Name",
+            "type": "string"
+          },
+          "font_size": {
+            "exclusiveMinimum": 0.0,
+            "title": "Font Size",
+            "type": "integer"
+          },
+          "is_default": {
+            "title": "Is Default",
+            "type": "boolean"
+          },
+          "italic": {
+            "title": "Italic",
+            "type": "integer"
+          },
+          "line_gap_ms": {
+            "minimum": 0.0,
+            "title": "Line Gap Ms",
+            "type": "integer"
+          },
+          "margin_l": {
+            "minimum": 0.0,
+            "title": "Margin L",
+            "type": "integer"
+          },
+          "margin_r": {
+            "minimum": 0.0,
+            "title": "Margin R",
+            "type": "integer"
+          },
+          "margin_v": {
+            "minimum": 0.0,
+            "title": "Margin V",
+            "type": "integer"
+          },
+          "max_chars_per_line": {
+            "exclusiveMinimum": 0.0,
+            "title": "Max Chars Per Line",
+            "type": "integer"
+          },
+          "max_display_ms": {
+            "exclusiveMinimum": 0.0,
+            "title": "Max Display Ms",
+            "type": "integer"
+          },
+          "min_display_ms": {
+            "exclusiveMinimum": 0.0,
+            "title": "Min Display Ms",
+            "type": "integer"
+          },
+          "name": {
+            "title": "Name",
+            "type": "string"
+          },
+          "outline": {
+            "minimum": 0.0,
+            "title": "Outline",
+            "type": "number"
+          },
+          "outline_color": {
+            "title": "Outline Color",
+            "type": "string"
+          },
+          "play_res_x": {
+            "minimum": 0.0,
+            "title": "Play Res X",
+            "type": "integer"
+          },
+          "play_res_y": {
+            "minimum": 0.0,
+            "title": "Play Res Y",
+            "type": "integer"
+          },
+          "primary_color": {
+            "title": "Primary Color",
+            "type": "string"
+          },
+          "scale_x": {
+            "minimum": 0.0,
+            "title": "Scale X",
+            "type": "integer"
+          },
+          "scale_y": {
+            "minimum": 0.0,
+            "title": "Scale Y",
+            "type": "integer"
+          },
+          "secondary_color": {
+            "title": "Secondary Color",
+            "type": "string"
+          },
+          "shadow": {
+            "minimum": 0.0,
+            "title": "Shadow",
+            "type": "number"
+          },
+          "spacing": {
+            "title": "Spacing",
+            "type": "integer"
+          },
+          "strikeout": {
+            "title": "Strikeout",
+            "type": "integer"
+          },
+          "underline": {
+            "title": "Underline",
+            "type": "integer"
+          }
+        },
+        "title": "SubtitleTemplateUpdate",
+        "type": "object"
+      },
       "SuggestedBounds": {
         "additionalProperties": false,
         "description": "由明确时间证据支持的成片范围建议。",
@@ -3001,8 +3423,22 @@
   "paths": {
     "/api/analytics": {
       "get": {
-        "description": "返回 Dashboard 统计分析数据。\n\n包含:\n- 录制趋势(近 30 天每日录制会话数/时长)\n- 切片统计(总数/已发布/总时长)\n- 候选分布(分数区间分布/状态分布)\n- 直播间排行(按切片数)",
+        "description": "按包含今天的 UTC 日历范围汇总录制、产物、候选和房间排行。",
         "operationId": "get_analytics_api_analytics_get",
+        "parameters": [
+          {
+            "in": "query",
+            "name": "days",
+            "required": false,
+            "schema": {
+              "default": 30,
+              "maximum": 365,
+              "minimum": 1,
+              "title": "Days",
+              "type": "integer"
+            }
+          }
+        ],
         "responses": {
           "200": {
             "content": {
@@ -3015,6 +3451,16 @@
               }
             },
             "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
           }
         },
         "summary": "Get Analytics"
@@ -3968,6 +4414,16 @@
             }
           }
         ],
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/IntroTemplateUpdate"
+              }
+            }
+          },
+          "required": true
+        },
         "responses": {
           "200": {
             "content": {
@@ -7204,7 +7660,7 @@
         ]
       },
       "put": {
-        "description": "更新模板配置。\n\n:param template_id: 模板 ID。\n:param request: FastAPI 请求对象(JSON body)。\n:returns: 状态确认。",
+        "description": "更新模板配置。\n\n:param template_id: 模板 ID。\n:param body: 已校验的部分更新参数。\n:returns: 状态确认。",
         "operationId": "update_template_api_templates__template_id__put",
         "parameters": [
           {
@@ -7217,6 +7673,16 @@
             }
           }
         ],
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/SubtitleTemplateUpdate"
+              }
+            }
+          },
+          "required": true
+        },
         "responses": {
           "200": {
             "content": {

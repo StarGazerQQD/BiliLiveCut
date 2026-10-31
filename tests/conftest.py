@@ -84,6 +84,7 @@ def temp_db(tmp_path: Path, monkeypatch: MonkeyPatch) -> Iterator[None]:
     db_file = tmp_path / "test.db"
     monkeypatch.setenv("DATABASE_URL", f"sqlite:///{db_file.as_posix()}")
     monkeypatch.setenv("STORAGE_ROOT", str(tmp_path / "storage"))
+    monkeypatch.setenv("BLC_APP_ROOT", str(tmp_path))
 
     # 清空配置单例缓存,使新环境变量生效。
     from app.core import config as config_module

@@ -10,6 +10,7 @@ import numpy as np
 from sqlmodel import select
 
 from app.analysis.audio import AudioFeatures
+from app.core.paths import resolve_storage_path
 from app.db.entities import (
     HotspotEvent,
     HotspotStatus,
@@ -259,7 +260,7 @@ def test_hotspot_asr_compute_runs_window_without_background(
     result = transcribe_compute(task_id)
 
     assert result["hotspot_asr"] is True
-    assert calls == [("segment.ts", 25.0, 115.0)]
+    assert calls == [(str(resolve_storage_path("segment.ts")), 25.0, 115.0)]
     assert result["attention_results"][0]["quality"]["state"] == "available"
 
 
@@ -416,11 +417,10 @@ def test_background_asr_still_runs_after_hotspot_pass(
             raise AssertionError("后台工作负载不得重复局部 ASR")
 
     monkeypatch.setattr(pipeline_module, "get_task_pipeline", lambda: FakePipeline())
-    monkeypatch.setattr(pipeline_module, "_refine_transcript_for_storage", lambda _text: None)
     result = transcribe_compute(task_id)
 
     assert result["transcribed"] is True
-    assert calls == ["segment.ts"]
+    assert calls == [str(resolve_storage_path("segment.ts"))]
 
 
 def test_asr_retry_exhaustion_continues_to_analysis_as_unavailable(temp_db: None) -> None:

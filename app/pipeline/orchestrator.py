@@ -10,6 +10,7 @@ from __future__ import annotations
 
 from collections.abc import Callable
 from datetime import datetime
+from functools import partial
 from typing import TYPE_CHECKING
 
 from loguru import logger
@@ -18,7 +19,9 @@ from pydantic import JsonValue
 from app.analysis.highlight import score_segment
 from app.analysis.transcription.models import TranscriberBackend
 from app.analysis.transcription.pipeline import transcribe_segment
+from app.core.cancellation import OperationShutdownError, shutdown_event
 from app.core.config import settings
+from app.core.execution import run_sync
 from app.core.runtime_settings import configured_task
 from app.db.entities import FinalClip, HighlightCandidate, RawSegment
 
@@ -144,6 +147,8 @@ def produce_clip(
                 raise LeaseLostError(f"结果提交前租约已失效: task={task_lease.task_id}")
             if cancel_check is not None and cancel_check():
                 raise ProcessCancelledError("用户取消了出片")
+            if shutdown_event.is_set():
+                raise OperationShutdownError("服务关闭，停止发布本次出片结果")
             clip = publish_draft(db, draft)
             if task_lease is not None:
                 task = db.get(SegmentTask, task_lease.task_id)
@@ -214,7 +219,7 @@ def make_pipeline_callback(
         if not cfg["auto_analyze"]:
             logger.debug("auto_analyze=off,跳过片段 {} 的分析登记。", seg_id)
             return
-        task = _create_task(seg_id, segment.session_id)
+        task = await run_sync(partial(_create_task, seg_id, segment.session_id))
         if task is None:
             logger.debug("片段 {} 已有任务记录,幂等跳过。", seg_id)
         else:

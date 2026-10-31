@@ -64,8 +64,9 @@ def test_crashed_process_releases_install_lock(tmp_path: Path) -> None:
     lock_path = tmp_path / "crashed.lock"
     code = "from pathlib import Path; from blc_portable.archive.locks import FileLock; import os,sys\nwith FileLock(Path(sys.argv[1])).acquire(timeout=0): os._exit(9)"
     result = subprocess.run(
-        [sys.executable, "-c", code, str(lock_path)],
-        env={**os.environ, "PYTHONPATH": str(_src_dir)},
+        [sys.executable, "-S", "-c", code, str(lock_path)],
+        cwd=tmp_path,
+        env={**os.environ, "PYTHONPATH": os.pathsep.join((str(_src_dir), str(_portable_dir.parents[1])))},
         timeout=10,
         check=False,
     )

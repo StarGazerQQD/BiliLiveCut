@@ -6,6 +6,7 @@ from functools import lru_cache
 from typing import Literal
 
 BOOTSTRAP = {
+    "frontend_trusted_proxy_ips": "前端外层代理信任来自部署环境，修改后重启独立前端。",
     "database_url": "数据库连接必须在数据库打开前确定；通过部署环境配置。",
     "storage_root": "存储路径在启动时确定；变更需迁移现有数据并重启。",
     "plugin_dir": "插件目录由启动时的插件发现确定；修改部署配置后重启。",

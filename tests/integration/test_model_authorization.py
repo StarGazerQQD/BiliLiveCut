@@ -3,7 +3,7 @@ from __future__ import annotations
 import json
 from types import SimpleNamespace
 
-import httpx2 as httpx
+import httpx
 import pytest
 
 from app.analysis import llm, llm_providers
@@ -82,7 +82,7 @@ def test_empty_response_retry_rechecks_live_authorization(temp_db: None, monkeyp
     save_model_configuration(catalog())
     requests = []
 
-    def transport(_transport: httpx.HTTPTransport, request: httpx.Request) -> httpx.Response:
+    async def transport(_transport: httpx.AsyncHTTPTransport, request: httpx.Request) -> httpx.Response:
         requests.append(request)
         disabled = catalog(1)
         disabled.connections[0].enabled = False
@@ -99,7 +99,7 @@ def test_empty_response_retry_rechecks_live_authorization(temp_db: None, monkeyp
             request=request,
         )
 
-    monkeypatch.setattr(httpx.HTTPTransport, "handle_request", transport)
+    monkeypatch.setattr(httpx.AsyncHTTPTransport, "handle_async_request", transport)
     with settings_scope():
         provider = llm_providers.active_providers()[0]
         with pytest.raises(ModelAuthorizationError):
@@ -127,7 +127,7 @@ def test_unsaved_probe_allows_first_call_but_blocks_retry_after_configuration_ch
 
     calls = []
 
-    def transport(_transport: httpx.HTTPTransport, request: httpx.Request) -> httpx.Response:
+    async def transport(_transport: httpx.AsyncHTTPTransport, request: httpx.Request) -> httpx.Response:
         calls.append(request)
         save_model_configuration(catalog())
         return httpx.Response(
@@ -142,7 +142,7 @@ def test_unsaved_probe_allows_first_call_but_blocks_retry_after_configuration_ch
             request=request,
         )
 
-    monkeypatch.setattr(httpx.HTTPTransport, "handle_request", transport)
+    monkeypatch.setattr(httpx.AsyncHTTPTransport, "handle_async_request", transport)
     result = probe(ModelProbe(**catalog().model_dump(), route_id="analysis"))
     assert not result.ok and "配置已变更" in result.detail
     assert len(calls) == 1

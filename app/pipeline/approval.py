@@ -11,25 +11,48 @@ V0.1.12.8: approve_event_and_task 接受可选 db session 参数，
 
 from __future__ import annotations
 
-import json
+from collections.abc import Iterator
+from contextlib import contextmanager, nullcontext
 from datetime import UTC, datetime
+from functools import partial
 
 from loguru import logger
 from sqlmodel import Session
 
-from app.analysis.editorial_contracts import EditorialReviewInputV1
-from app.analysis.editorial_review import editorial_auto_approvable
-from app.analysis.editorial_review_sources import media_bounds_accessible
+from app.analysis.editorial_review_sources import automatic_review_is_current, media_validation_scope
+from app.core.media_usage import media_reference_scope
 from app.db.entities import (
     CandidateStatus,
     HighlightCandidate,
     HighlightEvent,
+    LiveRoom,
+    RawSegment,
+    RecordingSession,
     ReviewStatus,
     SegmentTask,
     TaskStatus,
 )
+from app.db.notifications import log_after_commit
 from app.db.session import get_session
 from app.pipeline.stage_result import enqueue_next
+
+
+@contextmanager
+def _approval_session(db: Session | None, event_id: int, *, validate_media: bool) -> Iterator[Session]:
+    if db is not None:
+        # 外部事务由调用方在创建会话前取得媒体门，此处不倒置锁顺序。
+        yield db
+    else:
+        with media_reference_scope():
+            ids: list[int] = []
+            if validate_media:
+                with get_session(operation="approve_event_source") as source_db:
+                    event = source_db.get(HighlightEvent, event_id)
+                    if event is not None:
+                        ids.append(event.session_id)
+            validation = media_validation_scope(session_ids=ids) if validate_media else nullcontext()
+            with validation, get_session(operation="approve_event") as owned:
+                yield owned
 
 
 def approve_event_and_task(
@@ -56,12 +79,7 @@ def approve_event_and_task(
     :param db: 可选的外部 session (V0.1.12.8)。
     :returns: True 表示成功; False 表示 event 不存在或已被拒绝。
     """
-    _owns_session = db is None
-
-    if db is None:
-        db = get_session().__enter__()
-
-    try:
+    with _approval_session(db, event_id, validate_media=source == "auto") as db:
         event = db.get(HighlightEvent, event_id)
         if event is None:
             logger.warning("approve_event_and_task: event {} 不存在, 拒绝批准 task={}", event_id, task_id)
@@ -70,7 +88,7 @@ def approve_event_and_task(
         # 当前 Schema 要求每个 Event 必须关联真实 Candidate；无论事件处于
         # 哪个状态，都先验证关系，禁止幂等分支掩盖损坏记录。
         candidate = db.get(HighlightCandidate, event.candidate_id)
-        if candidate is None:
+        if candidate is None or candidate.session_id != event.session_id:
             logger.error(
                 "approve_event_and_task: event {} 关联的 candidate {} 不存在",
                 event_id,
@@ -78,8 +96,32 @@ def approve_event_and_task(
             )
             return False
 
+        task = db.get(SegmentTask, task_id) if task_id is not None else None
+        segment = db.get(RawSegment, task.segment_id) if task is not None else None
+        event_segment = db.get(RawSegment, event.segment_id) if event.segment_id is not None else None
+        if (
+            task_id is not None
+            and (
+                task is None
+                or task.session_id != event.session_id
+                or task.candidate_id not in (None, candidate.id)
+                or task.event_id not in (None, event.id)
+                or task.candidate_id is None
+                and task.event_id is None
+                and task.segment_id != event.segment_id
+                or segment is None
+                or segment.session_id != event.session_id
+            )
+            or event.segment_id is not None
+            and (event_segment is None or event_segment.session_id != event.session_id)
+        ):
+            logger.error("审批来源关联不一致: task={} event={}", task_id, event_id)
+            return False
+
         # 已拒绝 Event 不得被普通自动流程重新批准
-        if event.review_status == ReviewStatus.REJECTED and source == "auto":
+        if source == "auto" and (
+            event.review_status == ReviewStatus.REJECTED or candidate.status == CandidateStatus.REJECTED
+        ):
             logger.warning(
                 "approve_event_and_task: event {} 已被拒绝, 自动流程不得重新批准 task={}",
                 event_id,
@@ -87,49 +129,30 @@ def approve_event_and_task(
             )
             return False
 
-        # 已批准 Event 再次批准不重复创建记录 (幂等)
-        if event.review_status in ReviewStatus.POSITIVE:
-            logger.info(
-                "approve_event_and_task: event {} 已批准 ({}), 幂等跳过 task={}",
-                event_id,
-                event.review_status,
-                task_id,
-            )
-            task = db.get(SegmentTask, task_id) if task_id is not None else None
-            if task and task.stage in (
-                TaskStatus.AWAITING_REVIEW,
-                TaskStatus.CANDIDATE_CREATED,
-                TaskStatus.REVIEWED_WAITING_ACTION,
-            ):
-                enqueue_next(task, TaskStatus.APPROVED, event_id=event_id)
-                db.add(task)
-            return True
+        if source == "auto" and not automatic_review_is_current(db, event, candidate):
+            logger.info("编辑判断或当前来源未满足自动批准条件: event_id={}", event_id)
+            return False
 
-        if source == "auto":
-            features = json.loads(event.features_json or "{}")
-            if not isinstance(features, dict):
-                raise ValueError("复核事件元数据必须为对象")
-            # 历史记录沿用其既有策略；新计算记录必须通过独立的编辑门禁。
-            if "editorial_review" in features and not editorial_auto_approvable(features["editorial_review"]):
-                logger.info("编辑判断未满足自动批准条件: event_id={}", event_id)
-                return False
-            if "editorial_review" in features:
-                evidence = EditorialReviewInputV1.model_validate(features["editorial_review"]["input"])
-                if not media_bounds_accessible(db, evidence, candidate.start_ts, candidate.end_ts):
-                    logger.info("媒体已不可用，保留人工复核: event_id={}", event_id)
-                    return False
+        label = _source_label(source, approved_by)
+        if (
+            event.review_status not in ReviewStatus.POSITIVE
+            or source == "human"
+            and (event.review_by != label or event.review_status != review_decision or event.review_reason != reason)
+        ):
+            event.review_status = review_decision
+            event.review_reason = reason
+            event.review_by = label
+            event.updated_at = datetime.now(UTC)
+            db.add(event)
 
-        event.review_status = review_decision
-        event.review_reason = reason
-        event.review_by = _source_label(source, approved_by)
-        event.updated_at = datetime.now(UTC)
-        db.add(event)
-
-        candidate.status = CandidateStatus.APPROVED
-        db.add(candidate)
+        if candidate.status != CandidateStatus.CLIPPED:
+            candidate.status = CandidateStatus.APPROVED
+            db.add(candidate)
 
         # 同步 Task 状态
-        task = db.get(SegmentTask, task_id) if task_id is not None else None
+        if task is not None:
+            task.candidate_id, task.event_id = candidate.id, event.id
+            db.add(task)
         if task and task.stage in (
             TaskStatus.AWAITING_REVIEW,
             TaskStatus.CANDIDATE_CREATED,
@@ -151,33 +174,70 @@ def approve_event_and_task(
                 task.stage if task else "None",
             )
 
-        if _owns_session:
-            db.commit()
-
-        logger.info(
-            "approve_event_and_task: task={} event={} by={} source={} → approved",
-            task_id,
-            event_id,
-            approved_by,
-            source,
+        log_after_commit(
+            db,
+            partial(
+                logger.info,
+                "approve_event_and_task: task={} event={} by={} source={} → approved",
+                task_id,
+                event_id,
+                approved_by,
+                source,
+            ),
         )
         return True
-    finally:
-        if _owns_session:
-            db.close()
 
 
-def assert_event_approved(event_id: int) -> bool:
+def assert_event_approved(event_id: int, db: Session | None = None) -> bool:
     """校验 Event 是否已批准 (用于渲染/发布前置条件)。
 
     :param event_id: HighlightEvent.id。
     :returns: True 表示已批准。
     """
-    with get_session() as db:
-        event = db.get(HighlightEvent, event_id)
-        if event is None:
-            return False
-        return event.review_status in ReviewStatus.POSITIVE
+    if db is None:
+        with get_session() as connection:
+            return assert_event_approved(event_id, connection)
+    event = db.get(HighlightEvent, event_id)
+    return event is not None and event.review_status in ReviewStatus.POSITIVE
+
+
+def render_approval_error(db: Session, task: SegmentTask) -> str | None:
+    """人工批准可进入渲染；机器批准还须保有当前有效的完整证据。"""
+    from app.pipeline.lease import approved_task_candidate
+
+    try:
+        candidate = approved_task_candidate(db, task)
+    except ValueError as exc:
+        return str(exc)
+    event = db.get(HighlightEvent, task.event_id)
+    assert event is not None
+    if event.review_by == "auto" and not automatic_review_is_current(db, event, candidate):
+        return "自动批准的编辑判断或来源已失效，需要人工复核"
+    return None
+
+
+def automatic_publish_error(db: Session, task: SegmentTask) -> str | None:
+    """自动发布在当前事务复验全局及房间授权、阈值和编辑来源。"""
+    from app.core.settings_store import current_bool
+    from app.pipeline.lease import approved_task_candidate
+
+    try:
+        candidate = approved_task_candidate(db, task)
+    except ValueError as exc:
+        return str(exc)
+    recording = db.get(RecordingSession, task.session_id)
+    room = db.get(LiveRoom, recording.room_id) if recording is not None else None
+    if not current_bool(db, "biliup_enabled") or not current_bool(db, "auto_upload"):
+        return "全局自动上传授权已关闭"
+    if room is None or not room.authorized or not room.auto_upload:
+        return "房间未授权自动上传"
+    if candidate.highlight_score < room.auto_publish_threshold:
+        return "当前候选未达到自动发布阈值"
+    event = db.get(HighlightEvent, task.event_id)
+    assert event is not None
+    if not automatic_review_is_current(db, event, candidate):
+        return "当前编辑判断不满足自动发布条件，请人工确认上传"
+    return None
 
 
 def check_pipeline_consistency(
@@ -250,7 +310,7 @@ def _source_label(source: str, approved_by: str) -> str:
     if source == "auto":
         return "auto"
     if source == "human":
-        return approved_by or "manual"
+        return "human:auto" if approved_by == "auto" else approved_by or "manual"
     return approved_by or source
 
 

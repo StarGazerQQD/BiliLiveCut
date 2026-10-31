@@ -19,7 +19,7 @@ from __future__ import annotations
 import math
 import re
 import time
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from enum import Enum
 
 import httpx
@@ -174,6 +174,7 @@ class RoomInfo:
     title: str | None = None
     uploader_name: str | None = None
     detail_status: str = "not_requested"
+    detail_error: BilibiliError | None = field(default=None, repr=False)
 
     @property
     def is_live(self) -> bool:
@@ -402,6 +403,7 @@ class BilibiliLiveClient:
         uploader_name: str | None = None
         uid = int(data.get("uid", 0))
         detail_status = "not_requested"
+        detail_error: BilibiliError | None = None
         if include_detail:
             try:
                 detail = await self._get_json(_ROOM_DETAIL_URL, {"room_id": room_id})
@@ -419,8 +421,9 @@ class BilibiliLiveClient:
                 detail_status = "fresh" if title else "unavailable"
             except BilibiliError as exc:
                 detail_status = "failed"
+                detail_error = exc
                 # 基础 room_init 已成功时，详情失败不应阻止录制；仅退化为房间号显示。
-                logger.warning("房间 {} 主播资料读取失败,继续使用基础信息: {}", room_id, exc)
+                logger.debug("房间 {} 主播资料读取失败,继续使用基础信息: {}", room_id, exc)
 
         info = RoomInfo(
             room_id=room_id,
@@ -430,6 +433,7 @@ class BilibiliLiveClient:
             title=title,
             uploader_name=uploader_name,
             detail_status=detail_status,
+            detail_error=detail_error,
         )
         logger.info(
             "房间解析成功: input={} -> room_id={} uploader={} live_status={}",

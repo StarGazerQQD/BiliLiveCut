@@ -127,6 +127,40 @@ def test_supervisor_rejects_duplicate_service_identity() -> None:
         Supervisor([Service("worker"), Service("worker")], lambda: None)
 
 
+async def test_supervisor_broadcasts_before_waiting_and_retains_overdue_cleanup() -> None:
+    signals: list[str] = []
+    stopped: list[str] = []
+    release = Event()
+
+    async def slow_stop() -> None:
+        assert signals == ["global", "first", "slow"]
+        await run_sync(lambda: release.wait(5))
+
+    async def first_stop() -> None:
+        stopped.append("first")
+
+    supervisor = Supervisor(
+        [
+            Service("first", stop=first_stop, request_stop=lambda: signals.append("first")),
+            Service("slow", stop=slow_stop, request_stop=lambda: signals.append("slow")),
+        ],
+        lambda: signals.append("global"),
+        shutdown_timeout_s=0.05,
+    )
+    try:
+        with pytest.raises(RuntimeError, match="尚未物理退出"):
+            async with supervisor.running():
+                pass
+        assert stopped == ["first"]
+        assert "slow" in supervisor._stopping and not supervisor._stopping["slow"].done()
+        with pytest.raises(RuntimeError, match="关闭未完成"):
+            async with supervisor.running():
+                pytest.fail("unconfirmed cleanup cannot restart")
+    finally:
+        release.set()
+        await asyncio.gather(*tuple(supervisor._stopping.values()))
+
+
 async def test_notification_shutdown_cancellation_keeps_executor_until_real_delivery_finishes() -> None:
     from app.notify import delivery
 
@@ -155,6 +189,84 @@ async def test_notification_shutdown_cancellation_keeps_executor_until_real_deli
             await asyncio.wait_for(stopping, 3)
         await delivery.stop_email_delivery()
     assert delivery._executor is None
+
+
+async def test_supervisor_broadcast_failure_still_notifies_and_closes_every_service() -> None:
+    actions: list[str] = []
+
+    def failed_signal() -> None:
+        actions.append("failed-signal")
+        raise OSError("control channel failed")
+
+    async def stop() -> None:
+        actions.append("stop")
+
+    supervisor = Supervisor(
+        [
+            Service("first", stop=stop, request_stop=failed_signal),
+            Service("second", stop=stop, request_stop=lambda: actions.append("second")),
+        ],
+        lambda: actions.append("global"),
+    )
+    with pytest.raises(ExceptionGroup, match="停止广播失败"):
+        async with supervisor.running():
+            pass
+    assert actions == ["global", "failed-signal", "second", "stop", "stop"]
+    assert not supervisor.shutdown_confirmed
+
+
+async def test_shutdown_budget_is_frozen_at_stop_and_visible_to_preexisting_tasks() -> None:
+    from app.core.supervisor import process_shutdown_control, remaining_shutdown, standalone_process
+
+    ready, stopping = asyncio.Event(), asyncio.Event()
+    timeout = 30.0
+    observed: list[float] = []
+
+    async def service_lifespan() -> None:
+        async def stop() -> None:
+            observed.append(remaining_shutdown(30))
+
+        supervisor = Supervisor([Service("test", stop=stop)], lambda: None, shutdown_timeout_s=lambda: timeout)
+        async with supervisor.running():
+            ready.set()
+            await stopping.wait()
+        assert supervisor.shutdown_confirmed
+
+    with standalone_process() as control:
+        task = asyncio.create_task(service_lifespan())
+        await ready.wait()
+        timeout = 0.5
+        control.begin(timeout)
+        expires = control.expires_at
+        control.begin(60)
+        assert control.expires_at == expires
+        await asyncio.sleep(0.02)
+        stopping.set()
+        await task
+        assert process_shutdown_control() is control
+        assert 0 < observed[0] < timeout
+    assert process_shutdown_control() is None
+
+
+def test_identity_polling_is_bounded_and_commit_boundary_forces_current_check() -> None:
+    from app.core.cancellation import OperationCancelledError, cancellation_scope, check_cancellation
+
+    calls = 0
+    cancelled = False
+
+    def check() -> bool:
+        nonlocal calls
+        calls += 1
+        return cancelled
+
+    with cancellation_scope(check, poll_interval_s=60):
+        for _ in range(20):
+            check_cancellation(force=False)
+        assert calls == 1
+        cancelled = True
+        with pytest.raises(OperationCancelledError):
+            check_cancellation()
+        assert calls == 2
 
 
 async def test_trend_shutdown_preserves_running_collection_and_blocks_restart(

@@ -10,6 +10,7 @@ from typing import TYPE_CHECKING, Any
 from loguru import logger
 from sqlmodel import select
 
+from app.core.media_usage import media_reference_scope
 from app.db.entities import (
     CandidateStatus,
     HighlightCandidate,
@@ -22,6 +23,7 @@ if TYPE_CHECKING:
     from app.jobs.context import JobContext
 
 
+@media_reference_scope()
 def set_candidate_status(candidate_id: int, status: str, *, reviewed_by: str = "web_admin") -> None:
     """设置候选状态(审核:批准/拒绝),并记录阈值自学习反馈。
 
@@ -71,6 +73,7 @@ def set_candidate_status(candidate_id: int, status: str, *, reviewed_by: str = "
         )
 
 
+@media_reference_scope()
 def approve_candidate_sync(
     candidate_id: int,
     *,
@@ -90,7 +93,13 @@ def approve_candidate_sync(
     :param cancel_check: 可选的取消检查。
     :returns: 生成的 clip_id。
     """
-    from app.core.process_control import ProcessCancelledError
+    from app.core.cancellation import (
+        OperationCancelledError,
+        OperationShutdownError,
+        cancellation_scope,
+        shutdown_event,
+    )
+    from app.core.process_control import ProcessCancelledError, ProcessShutdownError
     from app.db.entities import HighlightEvent, SegmentTask
     from app.db.entities import TaskStatus as _Ts
     from app.jobs.contracts import JobCancelled
@@ -101,6 +110,7 @@ def approve_candidate_sync(
     from app.pipeline.lifecycle import _WORKER_ID, finish_execution, now_utc, register_execution
     from app.pipeline.scheduler import settle_cancellation
     from app.pipeline.stage_result import enqueue_next, mark_completed, mark_failed, request_cancellation
+    from app.pipeline.stale_recovery import resume_stage
 
     claimed_task_id: int | None = None
     claimed_lease_token: str | None = None
@@ -186,24 +196,30 @@ def approve_candidate_sync(
     try:
         if lease is not None:
             heartbeat_stop = start_heartbeat_thread(lease.task_id, lease.lease_token, _Ts.RENDERING)
-        clip = produce_clip(
-            candidate_id,
-            progress_callback=progress_callback,
-            cancel_check=cancelled,
-            task_lease=lease,
-            output_suffix=f"lease_{lease.lease_token}" if lease is not None else None,
-            job_context=job_context,
-        )
+        with cancellation_scope(cancelled, poll_interval_s=0.5):
+            clip = produce_clip(
+                candidate_id,
+                progress_callback=progress_callback,
+                cancel_check=cancelled,
+                task_lease=lease,
+                output_suffix=f"lease_{lease.lease_token}" if lease is not None else None,
+                job_context=job_context,
+            )
     except Exception as exc:
         if claimed_task_id is not None:
             with get_session() as db:
+                if db.get_bind().dialect.name == "sqlite":
+                    db.connection().exec_driver_sql("BEGIN IMMEDIATE")
                 claimed_task = db.get(SegmentTask, claimed_task_id)
-                if (
-                    claimed_task is not None
-                    and claimed_task.stage == _Ts.RENDERING
-                    and claimed_task.lease_token == claimed_lease_token
-                ):
-                    if isinstance(exc, (JobCancelled, ProcessCancelledError, LeaseLostError)):
+                if claimed_task is not None and lease is not None and still_owns_lease(db, lease):
+                    cancelled_error = isinstance(exc, (JobCancelled, ProcessCancelledError, OperationCancelledError))
+                    if isinstance(exc, (OperationShutdownError, ProcessShutdownError)) or (
+                        cancelled_error and shutdown_event.is_set()
+                    ):
+                        attempts = claimed_task.attempts
+                        enqueue_next(claimed_task, resume_stage(_Ts.RENDERING))
+                        claimed_task.attempts = attempts
+                    elif cancelled_error or isinstance(exc, LeaseLostError):
                         request_cancellation(claimed_task)
                     else:
                         mark_failed(claimed_task, f"人工出片失败: {exc}", permanent=False)

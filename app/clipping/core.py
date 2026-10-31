@@ -34,7 +34,7 @@ from app.clipping.drafts import ClipDraft, input_fingerprint, publication, publi
 from app.clipping.models import ClipOptions
 from app.core.config import settings
 from app.core.ffmpeg_errors import classify_ffmpeg_error
-from app.core.paths import session_clips_dir
+from app.core.paths import resolve_storage_path, session_clips_dir, to_storage_relative
 from app.core.process_control import ProcessCancelledError, run_cancellable
 from app.core.runtime_settings import configured_task
 from app.db.entities import (
@@ -273,7 +273,7 @@ def _write_clip_danmaku(
     if options.vertical:
         width, height = _VERT_W, _VERT_H
     else:
-        _, width, height = probe_media(segments[0].file_path)
+        _, width, height = probe_media(str(resolve_storage_path(segments[0].file_path)))
     return write_danmaku_ass(
         segments[0].session_id, start_ts, duration, width, height, options, work_dir / "danmaku.ass"
     )
@@ -290,7 +290,7 @@ def _write_concat_list(segments: list[RawSegment], work_dir: Path) -> Path:
     lines = []
     for seg in segments:
         # concat demuxer 要求 POSIX 风格路径并对特殊字符转义。
-        p = Path(seg.file_path).as_posix()
+        p = resolve_storage_path(seg.file_path).as_posix()
         p = p.replace("\\", "\\\\").replace("'", "'\\''")
         lines.append(f"file '{p}'")
     list_path.write_text("\n".join(lines), encoding="utf-8")
@@ -947,8 +947,8 @@ def _prepare_clip(
 
     clip = FinalClip(
         candidate_id=candidate_id,
-        file_path=str(out_path),
-        cover_path=str(cover_path) if cover_path.exists() else None,
+        file_path=to_storage_relative(out_path),
+        cover_path=to_storage_relative(cover_path) if cover_path.exists() else None,
         duration_s=real_duration,
         width=width or (_VERT_W if options.vertical else None),
         height=height or (_VERT_H if options.vertical else None),
@@ -962,7 +962,7 @@ def _prepare_clip(
         variants = _prepare_clip_variants(clip, subtitle_rendered=options.subtitle and srt_path is not None)
 
         # 在持久化目录中重建 concat 清单和 SRT,供变体渲染使用。
-        _recon_dir = Path(clip.file_path).parent
+        _recon_dir = resolve_storage_path(clip.file_path).parent
         _recon_concat = _recon_dir / f"{output_stem}_concat.txt"
         _recon_concat.write_text(_concat_content, encoding="utf-8")
         _recon_srt: Path | None = None
@@ -1212,7 +1212,7 @@ def _render_variants(
     :param cancel_check: 可选的取消检查。
     :param variants: 接收已经计算完成的派生草稿。
     """
-    variants_dir = Path(clip.file_path).parent
+    variants_dir = resolve_storage_path(clip.file_path).parent
 
     _report_progress(progress_callback, 70, "正在生成高码率版本")
     _raise_if_cancelled(cancel_check)
@@ -1430,7 +1430,7 @@ def _render_single_variant(
     return ClipVariant(
         event_id=event_id,
         variant_type=variant_type,
-        file_path=str(out_path),
+        file_path=to_storage_relative(out_path),
         duration_s=real_dur,
         resolution=f"{width}x{height}",
         has_subtitles=subtitle and srt_path is not None,

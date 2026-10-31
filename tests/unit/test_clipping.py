@@ -18,6 +18,7 @@ from app.clipping.core import (
     _run_ffmpeg_clip,
     _write_concat_list,
 )
+from app.core.paths import resolve_storage_path
 from app.db.entities import ClipStatus, RawSegment
 from app.publishing.copywriter import _decide_status, _fallback_copy, gather_clip_text
 
@@ -457,7 +458,8 @@ def test_produce_clip_end_to_end(
         cand_id = cand.id
 
     clip = produce_clip(cand_id)
-    assert Path(clip.file_path).exists()
+    assert resolve_storage_path(clip.file_path).exists()
+    assert not Path(clip.file_path).is_absolute()
     assert clip.duration_s and clip.duration_s > 1.0
     assert clip.content_hash
 

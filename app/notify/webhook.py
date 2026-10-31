@@ -19,37 +19,40 @@ import hmac
 import time
 import urllib.parse
 from datetime import UTC, datetime
+from pathlib import Path
+from typing import TYPE_CHECKING
 
 from loguru import logger
 
 from app.core.config import settings
 from app.core.sanitize import safe_exception_summary
-from app.notify.lark import configured as lark_configured
+
+if TYPE_CHECKING:
+    from app.notify.delivery import NotificationRule
 
 # 允许的 webhook 域名白名单。
 _ALLOWED_WEBHOOK_DOMAINS = {"oapi.dingtalk.com", "qyapi.weixin.qq.com"}
 
 
 def _validate_webhook(url: str, name: str = "") -> bool:
-    """校验 webhook URL 域名是否在白名单内。"""
-    parsed = urllib.parse.urlparse(url)
-    if parsed.hostname not in _ALLOWED_WEBHOOK_DOMAINS:
-        logger.warning("{}webhook 域名不在白名单: {}", name, parsed.hostname)
+    """仅接受对应平台的 HTTPS 地址、标准端口和无 userinfo 的 URL。"""
+    try:
+        parsed = urllib.parse.urlsplit(url)
+        valid = (
+            parsed.scheme == "https"
+            and parsed.hostname in _ALLOWED_WEBHOOK_DOMAINS
+            and parsed.port in {None, 443}
+            and parsed.username is None
+            and parsed.password is None
+            and not parsed.fragment
+        )
+    except ValueError:
+        valid = False
+    expected = {"钉钉": "oapi.dingtalk.com", "企微": "qyapi.weixin.qq.com"}.get(name)
+    if not valid or (expected is not None and parsed.hostname != expected):
+        logger.warning("{}webhook 地址无效，请使用平台 HTTPS 地址且不要包含用户凭据", name)
         return False
     return True
-
-
-def _enabled() -> bool:
-    """检查是否有任一通知通道已配置。"""
-    return bool(
-        settings.notify_enabled
-        and (
-            settings.dingtalk_webhook
-            or settings.wecom_webhook
-            or (settings.smtp_host and settings.smtp_to)
-            or lark_configured()
-        )
-    )
 
 
 # --------------------------------------------------------------------------- #
@@ -86,6 +89,8 @@ def send_dingtalk(title: str, text: str) -> bool:
     if not settings.dingtalk_webhook:
         return False
     webhook = settings.dingtalk_webhook
+    if not _validate_webhook(webhook, "钉钉"):
+        return False
     if settings.dingtalk_secret:
         ts, sign = _dingtalk_sign(settings.dingtalk_secret)
         parsed = urllib.parse.urlparse(webhook)
@@ -94,9 +99,6 @@ def send_dingtalk(title: str, text: str) -> bool:
         webhook = parsed._replace(query=urllib.parse.urlencode(params, doseq=True)).geturl()
 
     import httpx
-
-    if not _validate_webhook(webhook, "钉钉"):
-        return False
 
     payload = {
         "msgtype": "markdown",
@@ -201,20 +203,15 @@ def send_email(subject: str, body: str) -> bool:
 # --------------------------------------------------------------------------- #
 
 
-def notify(title: str, body: str) -> None:
+def notify(title: str, body: str, *, rule: NotificationRule | None = None) -> None:
     """通过所有已配置通道发送通知。
 
     :param title: 通知标题。
     :param body: 通知正文(纯文本/Markdown)。
     """
-    if not _enabled():
-        return
-    send_dingtalk(title, body)
-    send_wecom(title, body)
-    from app.notify.delivery import publish_lark
+    from app.notify.delivery import publish_notification
 
-    publish_lark(title, body)
-    send_email(title, f"<h2>{title}</h2><pre>{body}</pre>")
+    publish_notification(title, body, rule=rule)
 
 
 def notify_clip_complete(candidate_id: int, clip_path: str, duration_s: float) -> None:
@@ -224,11 +221,10 @@ def notify_clip_complete(candidate_id: int, clip_path: str, duration_s: float) -
     :param clip_path: 成品文件路径。
     :param duration_s: 时长(秒)。
     """
-    if not settings.notify_on_clip:
-        return
     notify(
         f"切片完成 #cand{candidate_id}",
-        f"**候选 #{candidate_id}** 已生成成品切片。\n- 时长: {duration_s:.0f}s\n- 路径: `{clip_path}`",
+        f"**候选 #{candidate_id}** 已生成成品切片。\n- 时长: {duration_s:.0f}s\n- 文件: `{Path(clip_path).name}`",
+        rule="notify_on_clip",
     )
 
 
@@ -240,14 +236,13 @@ def notify_disk_alert(free_gb: float, threshold_gb: int, raw_gb: float, clips_gb
     :param raw_gb: 原始录像占用(GB)。
     :param clips_gb: 成品占用(GB)。
     """
-    if not settings.notify_on_disk_alert:
-        return
     notify(
         f"磁盘空间不足 ({free_gb:.1f}GB)",
         f"**磁盘剩余空间仅 {free_gb:.1f}GB**,低于阈值 {threshold_gb}GB。\n"
         f"- 原始录像: {raw_gb:.1f}GB\n"
         f"- 成品切片: {clips_gb:.1f}GB\n"
         f"- 建议清理旧文件或释放空间。",
+        rule="notify_on_disk_alert",
     )
 
 
@@ -258,11 +253,10 @@ def notify_task_failed(task_id: int, stage: str, error: str) -> None:
     :param stage: 失败阶段。
     :param error: 错误信息。
     """
-    if not settings.notify_on_error:
-        return
     notify(
         f"任务失败 #{task_id}",
         f"**任务 #{task_id}** 在阶段 `{stage}` 永久失败。\n- 错误: {error}",
+        rule="notify_on_error",
     )
 
 
@@ -273,10 +267,9 @@ def notify_upload_complete(clip_id: int, title: str, remote_id: str | None = Non
     :param title: 视频标题。
     :param remote_id: 远程平台 ID(如 BV 号)。
     """
-    if not settings.notify_on_upload:
-        return
     extra = f"\n- 稿件号: {remote_id}" if remote_id else ""
     notify(
         f"投稿完成 #{clip_id}",
         f"**{title or '未命名切片'}** 已成功投稿。{extra}",
+        rule="notify_on_upload",
     )

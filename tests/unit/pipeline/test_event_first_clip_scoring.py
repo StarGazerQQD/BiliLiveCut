@@ -444,7 +444,7 @@ def test_evidence_changed_during_model_call_is_recomputed_before_scoring(
     result = analyze_compute(task_id)
     assert calls == 0
     commit_highlight(_lease(task_id), result, 50)
-    assert calls == 3
+    assert calls == 4
     with get_session() as db:
         event = db.get(HotspotEvent, event_id)
         assert event is not None and event.candidate_id is not None
@@ -454,9 +454,9 @@ def test_evidence_changed_during_model_call_is_recomputed_before_scoring(
         assert metadata["event_clip_score"]["bundle_fingerprint"] == bundle.fingerprint
         assert "尚无可采用的内容摘要" in event.summary
         assert metadata["event_enrichment"]["error"] == "provider_error"
-        assert len(metadata["event_enrichment"]["attempts"]) == 2
-        assert metadata["editorial_review"]["execution"]["attempt_offset"] == 2
-        assert metadata["editorial_review"]["execution"]["attempts"][0]["number"] == 3
+        assert len(metadata["event_enrichment"]["attempts"]) == 3
+        assert metadata["editorial_review"]["execution"]["attempt_offset"] == 3
+        assert metadata["editorial_review"]["execution"]["attempts"][0]["number"] == 4
         assert "新规则" in str(bundle.to_prompt_payload())
         assert db.get(SegmentTask, task_id).candidate_id == event.candidate_id
         assert len(db.exec(select(HighlightCandidate)).all()) == 1
@@ -489,7 +489,7 @@ def test_continuously_changing_evidence_uses_bounded_task_retry(temp_db: None, m
     claim = pop_and_claim(TaskStatus.QUEUED_FOR_ANALYSIS)
     assert claim is not None
     scheduler.execute_task(claim.id, claim.stage, claim.lease_token)
-    assert calls == 2
+    assert calls == 3
     with get_session() as db:
         task = db.get(SegmentTask, task_id)
         assert task is not None and task.stage == TaskStatus.TRANSIENT_FAILED
@@ -508,8 +508,13 @@ def test_target_changed_during_model_call_does_not_score_old_event(
 
     _task_id, event_id, _session_id = _seed_candidate_pass(strong=True)
     _patch_compute_dependencies(monkeypatch)
+    changed = False
 
     def change_target(prompt: str, **kwargs: object) -> None:
+        nonlocal changed
+        if changed:
+            return
+        changed = True
         with get_session() as db:
             event = db.get(HotspotEvent, event_id)
             assert event is not None
@@ -604,13 +609,13 @@ def test_merged_event_is_recomputed_as_canonical_before_task_completion(
     result = analyze_compute(task_id)
     assert calls == 0
     commit_highlight(_lease(task_id), result, 50)
-    assert calls == min(3, attempt_limit) and canonical_id is not None
+    assert calls == min(4, attempt_limit) and canonical_id is not None
     with get_session() as db:
         canonical = db.get(HotspotEvent, canonical_id)
         task = db.get(SegmentTask, task_id)
         assert canonical is not None and canonical.candidate_id is not None
         metadata = json.loads(canonical.features_json)["event_enrichment"]
-        assert len(metadata["attempts"]) == min(2, attempt_limit)
+        assert len(metadata["attempts"]) == min(3, attempt_limit)
         editorial = json.loads(canonical.features_json)["editorial_review"]["execution"]
         assert len(metadata["attempts"]) + len(editorial["attempts"]) == calls
         assert metadata["error"] == ("attempt_budget" if attempt_limit == 1 else "provider_error")

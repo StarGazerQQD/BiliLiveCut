@@ -26,6 +26,7 @@ from sqlalchemy.engine import Engine
 from sqlmodel import Session, create_engine
 
 from app.core.config import settings
+from app.db.telemetry import install_database_telemetry, observe_session_telemetry
 
 # 确保 SQLite 文件所在目录存在(sqlite:///./storage/blc.db)。
 _db_url = settings.database_url
@@ -37,6 +38,7 @@ if _db_url.startswith("sqlite:///"):
 # timeout:遇到锁时等待秒数,缓解多任务(录制+分析+Web)并发写的 "database is locked"。
 _connect_args = {"check_same_thread": False, "timeout": 30} if _db_url.startswith("sqlite") else {}
 engine = create_engine(_db_url, echo=False, connect_args=_connect_args)
+install_database_telemetry(engine)
 _initialization_lock = Lock()
 _database_log_lock = RLock()
 _validated_database: tuple[Engine, str] | None = None
@@ -79,6 +81,9 @@ def init_db() -> None:
         with _database_log_lock:
             _validated_database = None
         assure_schema()
+        from app.db.runtime_logs import ensure_runtime_log_indexes
+
+        ensure_runtime_log_indexes(engine)
         from app.core.configuration import reload_configuration
 
         reload_configuration()
@@ -105,7 +110,7 @@ def get_database_log_session(generation: str | None) -> Iterator[Session | None]
 
 
 @contextmanager
-def get_session() -> Iterator[Session]:
+def get_session(*, operation: str = "database", task_id: int | None = None) -> Iterator[Session]:
     """提供一个自动管理生命周期的数据库会话。
 
     成功则提交,异常则回滚,最终关闭连接。
@@ -119,6 +124,7 @@ def get_session() -> Iterator[Session]:
 
     session = Session(engine, expire_on_commit=False)
     observe_commits(session)
+    observe_session_telemetry(session, operation=operation, task_id=task_id)
     try:
         yield session
         session.commit()

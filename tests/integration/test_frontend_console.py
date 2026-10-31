@@ -10,21 +10,86 @@ import subprocess
 import sys
 import time
 from pathlib import Path
+from typing import TYPE_CHECKING
 from urllib.error import URLError
 from urllib.request import ProxyHandler, build_opener
 
 import psutil
 import pytest
 
+if TYPE_CHECKING:
+    from pytest import MonkeyPatch
+
+
+def _service_snapshot(parent: psutil.Process) -> dict[tuple[int, float], tuple[psutil.Process, str, int]]:
+    result = {}
+    for child in parent.children(recursive=True):
+        try:
+            command = child.cmdline()
+            if command[1:3] == ["-m", "app.cli"] and command[3:4] in (["backend"], ["frontend"]):
+                result[(child.pid, child.create_time())] = (child, command[3], child.ppid())
+        except psutil.NoSuchProcess:
+            # 旧代正在退出，仍由保留的原进程对象和 wait_procs 验证最终回收。
+            continue
+    return result
+
+
+def test_service_snapshot_rejects_partial_result_when_cmdline_is_denied(monkeypatch: MonkeyPatch) -> None:
+    process = psutil.Process()
+    other = process.parent()
+    assert other is not None
+    denied = psutil.AccessDenied(pid=other.pid)
+    inspected: list[int] = []
+
+    def children(parent: psutil.Process, recursive: bool = False) -> list[psutil.Process]:
+        assert parent == process and recursive
+        return [process, other]
+
+    def cmdline(child: psutil.Process) -> list[str]:
+        inspected.append(child.pid)
+        if child == other:
+            raise denied
+        return [sys.executable, "-m", "app.cli", "backend"]
+
+    monkeypatch.setattr(psutil.Process, "children", children)
+    monkeypatch.setattr(psutil.Process, "cmdline", cmdline)
+    with pytest.raises(psutil.AccessDenied) as failure:
+        _service_snapshot(process)
+    assert failure.value is denied
+    assert inspected == [process.pid, other.pid]
+
+
+def _service_leaves(
+    snapshot: dict[tuple[int, float], tuple[psutil.Process, str, int]],
+) -> dict[str, list[psutil.Process]]:
+    result = {}
+    for role in ("backend", "frontend"):
+        members = [(process, parent_pid) for process, kind, parent_pid in snapshot.values() if kind == role]
+        parents = {parent_pid for _, parent_pid in members}
+        result[role] = [process for process, _ in members if process.pid not in parents]
+    return result
+
+
+def _service_tree(snapshot: dict[tuple[int, float], tuple[psutil.Process, str, int]]) -> list[psutil.Process]:
+    owned = {identity: process for identity, (process, _, _) in snapshot.items()}
+    for process, _, _ in snapshot.values():
+        try:
+            descendants = process.children(recursive=True)
+        except psutil.NoSuchProcess:
+            continue
+        for child in descendants:
+            try:
+                owned[(child.pid, child.create_time())] = child
+            except psutil.NoSuchProcess:
+                continue
+    return list(owned.values())
+
 
 def _stop_console(process: subprocess.Popen) -> None:
-    if os.name == "nt":
-        # Windows CI 没有可依赖的交互控制台；真实终止一个子进程，验证监督器回收其余服务。
-        children = psutil.Process(process.pid).children()
-        if children:
-            children[-1].kill()
-        else:
-            process.terminate()
+    if process.stdin is not None:
+        process.stdin.close()
+    elif os.name == "nt":
+        process.terminate()
     else:
         process.send_signal(signal.SIGTERM)
 
@@ -108,8 +173,23 @@ def test_supervised_backend_drains_lifespan_when_parent_pipe_closes(
                 process.wait(timeout=5)
 
 
-@pytest.mark.parametrize("command", ["start", "console"])
-def test_console_starts_independent_frontend_and_api_and_cleans_up(tmp_path: Path, command: str) -> None:
+@pytest.mark.parametrize(
+    "command,crash,host,snapshot_denied",
+    [
+        (command, crash, "127.0.0.1", False)
+        for command in ("start", "console")
+        for crash in (None, "backend", "frontend")
+    ]
+    + [("start", None, "127.0.0.2", False), ("start", "backend", "127.0.0.1", True)],
+)
+def test_console_starts_independent_frontend_and_api_and_cleans_up(
+    tmp_path: Path,
+    monkeypatch: MonkeyPatch,
+    command: str,
+    crash: str | None,
+    host: str,
+    snapshot_denied: bool,
+) -> None:
     root = Path(__file__).resolve().parents[2]
     dist = tmp_path / "frontend"
     dist.mkdir()
@@ -121,16 +201,17 @@ def test_console_starts_independent_frontend_and_api_and_cleans_up(tmp_path: Pat
         "import faulthandler\nfaulthandler.dump_traceback_later(20, repeat=True)\n", encoding="utf-8"
     )
     with socket.socket() as probe:
-        probe.bind(("127.0.0.1", 0))
+        probe.bind((host, 0))
         port = probe.getsockname()[1]
     env = {
         **os.environ,
         "PYTHONPATH": os.pathsep.join([str(diagnostics), str(root)]),
+        "_BLC_PARENT_STDIN": "1",
         "PYTHONIOENCODING": "utf-8",
         "BLC_APP_ROOT": str(tmp_path),
         "STORAGE_ROOT": str(tmp_path / "storage"),
         "DATABASE_URL": f"sqlite:///{tmp_path / 'test.db'}",
-        "ADMIN_PASSWORD": "",
+        "ADMIN_PASSWORD": "controlled-local-password" if host != "127.0.0.1" else "",
         "DOCKER_AUTH_ENABLED": "false",
         "BILIBILI_COOKIE": "",
         "ASR_NO_MODEL_DOWNLOAD": "1",
@@ -140,9 +221,21 @@ def test_console_starts_independent_frontend_and_api_and_cleans_up(tmp_path: Pat
     opener = build_opener(ProxyHandler({}))
     with (tmp_path / "console.log").open("w+", encoding="utf-8") as log:
         process = subprocess.Popen(
-            [sys.executable, "-m", "app.cli", command, "--port", str(port), "--frontend-dir", str(dist)],
+            [
+                sys.executable,
+                "-m",
+                "app.cli",
+                command,
+                "--host",
+                host,
+                "--port",
+                str(port),
+                "--frontend-dir",
+                str(dist),
+            ],
             cwd=tmp_path,
             env=env,
+            stdin=subprocess.PIPE,
             stdout=log,
             stderr=log,
         )
@@ -150,7 +243,7 @@ def test_console_starts_independent_frontend_and_api_and_cleans_up(tmp_path: Pat
             deadline = time.monotonic() + 30
             while True:
                 try:
-                    with opener.open(f"http://127.0.0.1:{port}/", timeout=1) as response:
+                    with opener.open(f"http://{host}:{port}/", timeout=1) as response:
                         assert response.read() == b"<main>independent frontend</main>"
                         break
                 except (OSError, URLError):
@@ -158,21 +251,76 @@ def test_console_starts_independent_frontend_and_api_and_cleans_up(tmp_path: Pat
                         log.seek(0)
                         pytest.fail(log.read())
                     time.sleep(0.1)
-            with opener.open(f"http://127.0.0.1:{port}/auth/status", timeout=3) as response:
-                assert response.read() == b'{"enabled":false}'
-            with opener.open(f"http://127.0.0.1:{port}/api/dashboard", timeout=3) as response:
+            with opener.open(f"http://{host}:{port}/auth/status", timeout=3) as response:
+                assert json.loads(response.read()) == {"enabled": False}
+            if env["ADMIN_PASSWORD"]:
+                from base64 import b64encode
+
+                credentials = b64encode(f"admin:{env['ADMIN_PASSWORD']}".encode()).decode()
+                opener.addheaders = [("Authorization", f"Basic {credentials}")]
+            with opener.open(f"http://{host}:{port}/api/dashboard", timeout=3) as response:
                 assert b'"rooms":[]' in response.read()
-            with opener.open(f"http://127.0.0.1:{port}/api/settings", timeout=3) as response:
+            with opener.open(f"http://{host}:{port}/api/settings", timeout=3) as response:
                 assert json.loads(response.read())["current_web_port"] == port
+            deadline = time.monotonic() + 5
+            while "前后端已就绪" not in (tmp_path / "console.log").read_text(encoding="utf-8"):
+                assert time.monotonic() < deadline, "监管者没有确认实际绑定地址已就绪"
+                time.sleep(0.1)
             children = psutil.Process(process.pid).children(recursive=True)
+            if crash is not None:
+                # Windows venv 的常驻 Python 转发进程也在 descendants 中，只回收服务代次。
+                old_snapshot = _service_snapshot(psutil.Process(process.pid))
+                leaves = _service_leaves(old_snapshot)
+                assert all(len(members) == 1 for members in leaves.values()), leaves
+                # 保存服务完整后代，包括退出时会重新归属的 POSIX guardian。
+                children = _service_tree(old_snapshot)
+                leaves[crash][0].kill()
+                denied_reads = 0
+                if snapshot_denied:
+                    original_cmdline = psutil.Process.cmdline
+
+                    def interrupted_cmdline(child: psutil.Process) -> list[str]:
+                        nonlocal denied_reads
+                        if denied_reads == 0:
+                            denied_reads += 1
+                            raise psutil.AccessDenied(pid=child.pid)
+                        return original_cmdline(child)
+
+                    monkeypatch.setattr(psutil.Process, "cmdline", interrupted_cmdline)
+                deadline = time.monotonic() + 40
+                snapshot_error: psutil.AccessDenied | None = None
+                while True:
+                    assert process.poll() is None, "单个服务异常退出后监管进程不应退出"
+                    try:
+                        new_snapshot = _service_snapshot(psutil.Process(process.pid))
+                        leaves = _service_leaves(new_snapshot)
+                        with opener.open(f"http://127.0.0.1:{port}/auth/status", timeout=1) as response:
+                            if (
+                                response.status == 200
+                                and all(len(members) == 1 for members in leaves.values())
+                                and old_snapshot.keys().isdisjoint(new_snapshot)
+                            ):
+                                break
+                    except psutil.AccessDenied as exc:
+                        # 切代次时可能暂时无法读取命令行，当前轮的部分快照不能用于判定恢复。
+                        snapshot_error = exc
+                    except (OSError, URLError):
+                        pass
+                    if time.monotonic() >= deadline:
+                        log.seek(0)
+                        pytest.fail(f"最后一次进程快照读取异常：{snapshot_error!r}\n{log.read()}")
+                    time.sleep(0.1)
+                assert denied_reads == int(snapshot_denied)
+                _, alive = psutil.wait_procs(children, timeout=5)
+                assert not alive, "恢复新一代前必须回收旧所属树"
+                children = psutil.Process(process.pid).children(recursive=True)
             _stop_console(process)
             exit_code = process.wait(timeout=25)
-            # Windows 的 TerminateProcess 退出码由调用方决定；监督器须保留失败语义。
-            assert exit_code != 0 if os.name == "nt" else exit_code == 0
+            assert exit_code == 0
             _, alive = psutil.wait_procs(children, timeout=5)
             assert not alive, "停止后不能遗留前端或后端进程"
             with socket.socket() as probe:
-                assert probe.connect_ex(("127.0.0.1", port)) != 0
+                assert probe.connect_ex((host, port)) != 0
         finally:
             if process.poll() is None:
                 _stop_console(process)
@@ -244,7 +392,8 @@ def test_frontend_alone_serves_build_without_opening_database(tmp_path: Path):
             process.wait(timeout=20)
 
 
-def test_start_cleans_up_api_when_frontend_port_is_occupied(tmp_path: Path):
+@pytest.mark.parametrize("supervisor,exit_code", [("console", 1), ("delegated", 78), ("launcher", 1)])
+def test_start_cleans_up_api_when_frontend_port_is_occupied(tmp_path: Path, supervisor: str, exit_code: int) -> None:
     import re
 
     root = Path(__file__).resolve().parents[2]
@@ -253,7 +402,8 @@ def test_start_cleans_up_api_when_frontend_port_is_occupied(tmp_path: Path):
     (dist / "index.html").write_text("<main>built frontend</main>")
     env = {
         **os.environ,
-        "PYTHONPATH": str(root),
+        "PYTHONPATH": os.pathsep.join([str(root), str(root / "packaging/portable/src")]),
+        "_BLC_PARENT_STDIN": "1",
         "PYTHONIOENCODING": "utf-8",
         "BLC_APP_ROOT": str(tmp_path),
         "STORAGE_ROOT": str(tmp_path / "storage"),
@@ -265,26 +415,40 @@ def test_start_cleans_up_api_when_frontend_port_is_occupied(tmp_path: Path):
         "TREND_SCHEDULE_ENABLED": "false",
         "ASR_NO_MODEL_DOWNLOAD": "1",
     }
+    if supervisor == "delegated":
+        env["_BLC_RESTART_OWNER"] = "launcher"
     with socket.socket() as occupied:
         if hasattr(socket, "SO_EXCLUSIVEADDRUSE"):
             occupied.setsockopt(socket.SOL_SOCKET, socket.SO_EXCLUSIVEADDRUSE, 1)
         occupied.bind(("127.0.0.1", 0))
         occupied.listen()
         port = occupied.getsockname()[1]
+        command = [sys.executable, "-m", "app.cli", "start", "--port", str(port), "--frontend-dir", str(dist)]
+        if supervisor == "launcher":
+            command = [
+                sys.executable,
+                "-c",
+                "import os, sys; from blc_portable.launcher.main import _run_service; "
+                "sys.exit(_run_service(sys.argv[1:], env=dict(os.environ), cwd=os.getcwd()))",
+                *command,
+            ]
         with (tmp_path / "start.log").open("w+", encoding="utf-8") as log:
             process = subprocess.Popen(
-                [sys.executable, "-m", "app.cli", "start", "--port", str(port), "--frontend-dir", str(dist)],
+                command,
                 cwd=tmp_path,
                 env=env,
+                stdin=subprocess.PIPE,
                 stdout=log,
                 stderr=log,
             )
             try:
-                assert process.wait(timeout=30) == 1
+                assert process.wait(timeout=30) == exit_code
                 log.seek(0)
                 output = log.read()
                 api_ports = {int(value) for value in re.findall(r"http://127\.0\.0\.1:(\d+)", output)} - {port}
                 assert api_ports, output
+                assert output.count("API 启动中") == 1, output
+                assert "秒后恢复" not in output, output
                 for api_port in api_ports:
                     with socket.socket() as probe:
                         assert probe.connect_ex(("127.0.0.1", api_port)) != 0, output

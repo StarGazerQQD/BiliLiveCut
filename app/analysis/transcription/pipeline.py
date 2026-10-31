@@ -56,13 +56,15 @@ from app.analysis.transcription.quality import (
 )
 from app.core.asr_failures import ASRUnavailableError, permanent_device_error
 from app.core.config import settings
+from app.core.paths import resolve_storage_path
 from app.core.runtime_settings import configured_task
 from app.core.sanitize import safe_exception_summary
 from app.db.entities import RawSegment, SegmentStatus, Transcript
 from app.db.session import get_session
 
 if TYPE_CHECKING:
-    from app.analysis.llm import TranscriptRefinement
+    from app.analysis.transcription.refinement import RefinementDraft
+    from app.analysis.transcription.remote import RemoteCheckpoint
 
 # ═══════════════════════════════════════════════════════════
 # ASR 流水线 (FunASR → Paraformer → Whisper，SenseVoice 辅助)
@@ -143,6 +145,8 @@ class ASRPipeline:
         self,
         audio_path: str,
         initial_prompt: str | None = None,
+        *,
+        checkpoint: RemoteCheckpoint | None = None,
     ) -> ASRTranscriptResult:
         """执行模型并为最终结果分类，空文本不得冒充成功。"""
         from app.analysis.transcription.speech_evidence import (
@@ -155,7 +159,7 @@ class ASRPipeline:
         self._backend_errors.clear()
         self._backend_completed = False
         try:
-            result = self._run_backends(audio_path, initial_prompt)
+            result = self._run_backends(audio_path, initial_prompt, checkpoint=checkpoint)
             model_failed = bool(result.primary_error_type and result.primary_error_type != "ASRQualityError")
             if not (result.final_text or result.text).strip():
                 if model_failed and not self._backend_completed and not has_no_speech_evidence(result):
@@ -199,12 +203,14 @@ class ASRPipeline:
         self,
         audio_path: str,
         initial_prompt: str | None = None,
+        *,
+        checkpoint: RemoteCheckpoint | None = None,
     ) -> ASRTranscriptResult:
         """对标准化音频执行多引擎识别与质量回退。"""
         primary_name = settings.asr_primary.strip().lower().replace("-", "_")
 
         if primary_name == "openai_compatible":
-            return self._run_remote(audio_path, initial_prompt)
+            return self._run_remote(audio_path, initial_prompt, checkpoint=checkpoint)
 
         if primary_name == "funasr_nano":
             try:
@@ -372,12 +378,14 @@ class ASRPipeline:
 
         raise ValueError(f"ASR 主引擎配置无效: {settings.asr_primary}")
 
-    def _run_remote(self, audio_path: str, initial_prompt: str | None) -> ASRTranscriptResult:
+    def _run_remote(
+        self, audio_path: str, initial_prompt: str | None, *, checkpoint: RemoteCheckpoint | None = None
+    ) -> ASRTranscriptResult:
         """远程失败复用已配置的 Whisper 回退；没有回退时保留原始异常。"""
         from app.analysis.transcription.remote import OpenAICompatibleBackend, RemoteTranscriptionError
 
         try:
-            result = OpenAICompatibleBackend().transcribe(audio_path, initial_prompt)
+            result = OpenAICompatibleBackend().transcribe(audio_path, initial_prompt, checkpoint=checkpoint)
         except (RemoteTranscriptionError, OSError, ValueError) as exc:
             self._last_backend_error = exc
             if not self._use_fallback:
@@ -634,6 +642,7 @@ def transcribe_segment(
         file_path = segment.file_path
         initial_prompt = _build_whisper_prompt(db, segment)
 
+    file_path = str(resolve_storage_path(file_path))
     logger.info("开始转写 segment={} -> {}", segment_id, file_path)
 
     if backend is not None:
@@ -658,7 +667,8 @@ def transcribe_segment(
             segment_id,
             quality.reason,
         )
-    refinement = _refine_transcript_for_storage(final_text or text) if quality.usable else None
+    refinement_draft = _refine_transcript_for_storage(final_text or text, target=f"segment:{segment_id}")
+    refinement = refinement_draft.value
     display_text = refinement.clean_text if refinement is not None else (final_text or text)
 
     words_json = json.dumps(
@@ -685,13 +695,6 @@ def transcribe_segment(
         )
     if result.metadata.get("repetition_repair"):
         auxiliary_payload["repetition_repair"] = result.metadata["repetition_repair"]
-    if refinement is not None:
-        auxiliary_payload["transcript_refinement"] = {
-            "version": 1,
-            "applied": True,
-            "clean_text": refinement.clean_text,
-            "summary": refinement.summary,
-        }
     auxiliary_json = json.dumps(auxiliary_payload, ensure_ascii=False) if auxiliary_payload else None
 
     # V0.1.12.2: 记录完整 ASR 追踪
@@ -736,6 +739,9 @@ def transcribe_segment(
         db.add(transcript)
         db.flush()
         db.refresh(transcript)
+        from app.analysis.transcription.refinement import store_refinement
+
+        store_refinement(db, transcript, refinement_draft)
         seg = db.get(RawSegment, segment_id)
         if seg is not None:
             seg.status = SegmentStatus.TRANSCRIBED
@@ -797,29 +803,11 @@ def _apply_room_aliases(text: str, segment_id: int) -> str:
     return apply_aliases(text, aliases)
 
 
-def _refine_transcript_for_storage(text: str) -> TranscriptRefinement | None:
-    """按运行时开关整理单切片转写；失败时安全保留原文。
+def _refine_transcript_for_storage(text: str, *, target: str | None = None) -> RefinementDraft:
+    """生成可持久化的整理结果，关闭、失败及正文不可用分别记录。"""
+    from app.analysis.transcription.refinement import compute_refinement
 
-    :param text: 已应用房间别名的 ASR 文本。
-    :returns: LLM 整理结果；关闭、不可用或失败时返回 ``None``。
-    """
-    from app.analysis import llm
-    from app.core import settings_store
-
-    quality = assess_transcript_quality(text)
-    if not quality.usable:
-        logger.warning("跳过不可用 ASR 文本的 LLM 整理: {}", quality.reason)
-        return None
-    if not settings_store.transcript_llm_refine_enabled():
-        return None
-    try:
-        refinement = llm.refine_transcript(text)
-    except Exception as exc:  # noqa: BLE001 - LLM 后处理不得中断转写落库
-        logger.warning("单切片转写 LLM 整理失败，已保留原始 ASR 文本: {}", exc)
-        return None
-    if refinement is None:
-        logger.info("单切片转写未获得可用 LLM 整理结果，已保留原始 ASR 文本。")
-    return refinement
+    return compute_refinement(text, target=target)
 
 
 def _merge_auxiliary(target: ASRTranscriptResult, source: ASRTranscriptResult) -> None:

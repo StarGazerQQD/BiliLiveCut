@@ -2,11 +2,12 @@
 
 from __future__ import annotations
 
+from contextlib import nullcontext
 from datetime import UTC, datetime, timedelta
 from typing import Any
 
 from sqlalchemy import update
-from sqlmodel import select
+from sqlmodel import Session, select
 
 from app.core.config import settings
 from app.core.sanitize import sanitize_diagnostic
@@ -137,9 +138,9 @@ def get_due_schedules() -> list[dict[str, Any]]:
     ]
 
 
-def complete_schedule_occurrence(schedule_id: int, *, error: str | None = None) -> None:
+def complete_schedule_occurrence(schedule_id: int, *, error: str | None = None, db: Session | None = None) -> None:
     """原子结束本次预约并创建唯一后继，保留失败原因供界面查询。"""
-    with get_session() as db:
+    with nullcontext(db) if db is not None else get_session() as db:
         claimed = db.exec(
             update(RecordingSchedule)
             .where(

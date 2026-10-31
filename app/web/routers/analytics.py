@@ -2,178 +2,127 @@
 
 from __future__ import annotations
 
-from typing import Any
+from datetime import UTC, datetime, timedelta
+from typing import Annotated
 
-from fastapi import APIRouter
+from fastapi import APIRouter, Query
+from sqlalchemy import ColumnElement, and_, case
+from sqlmodel import Session, func, select
+
+from app.db.entities import (
+    ClipStatus,
+    FinalClip,
+    HighlightCandidate,
+    LiveRoom,
+    RawSegment,
+    RecordingSession,
+    SegmentTask,
+    TaskStatus,
+)
+from app.db.session import get_session
+from app.sources.rooms import room_source_view
 
 router = APIRouter()
 
 
+def _daily_counts(db: Session, column: ColumnElement[datetime], start: datetime, end: datetime) -> dict[str, int]:
+    day = func.date(column)
+    rows = db.exec(select(day, func.count()).where(column >= start, column < end).group_by(day)).all()
+    return {str(value): count for value, count in rows}
+
+
 @router.get("/analytics")
-def get_analytics() -> dict[str, Any]:
-    """返回 Dashboard 统计分析数据。
-
-    包含:
-    - 录制趋势(近 30 天每日录制会话数/时长)
-    - 切片统计(总数/已发布/总时长)
-    - 候选分布(分数区间分布/状态分布)
-    - 直播间排行(按切片数)
-    """
-    from datetime import UTC, datetime, timedelta
-
-    from sqlmodel import func
-    from sqlmodel import select as _sel
-
-    from app.db.entities import (
-        ClipStatus,
-        FinalClip,
-        HighlightCandidate,
-        LiveRoom,
-        RawSegment,
-        RecordingSession,
-        TaskStatus,
-    )
-    from app.db.session import get_session
-
-    now = datetime.now(UTC)
-    days_30 = now - timedelta(days=30)
+def get_analytics(days: Annotated[int, Query(ge=1, le=365)] = 30) -> dict[str, object]:
+    """按包含今天的 UTC 日历范围汇总录制、产物、候选和房间排行。"""
+    today = datetime.now(UTC).replace(hour=0, minute=0, second=0, microsecond=0)
+    start = today - timedelta(days=days - 1)
+    end = today + timedelta(days=1)
+    clip_range = (FinalClip.created_at >= start, FinalClip.created_at < end)
+    candidate_range = (HighlightCandidate.created_at >= start, HighlightCandidate.created_at < end)
+    session_range = (RecordingSession.started_at >= start, RecordingSession.started_at < end)
 
     with get_session() as db:
-        # --- 切片统计 ---
-        total_clips = db.exec(_sel(func.count()).select_from(FinalClip)).one()
-        published_clips = db.exec(
-            _sel(func.count()).select_from(FinalClip).where(FinalClip.status == ClipStatus.PUBLISHED)
+        total_clips, published_clips, total_duration = db.exec(
+            select(
+                func.count(FinalClip.id),
+                func.count(case((FinalClip.status == ClipStatus.PUBLISHED, 1))),
+                func.coalesce(func.sum(FinalClip.duration_s), 0.0),
+            ).where(*clip_range)
         ).one()
-        total_duration = (
-            db.exec(_sel(func.coalesce(func.sum(FinalClip.duration_s), 0)).select_from(FinalClip)).one() or 0.0
-        )
-
-        # --- 候选统计 ---
-        total_candidates = db.exec(_sel(func.count()).select_from(HighlightCandidate)).one()
-        approved_candidates = db.exec(
-            _sel(func.count()).select_from(HighlightCandidate).where(HighlightCandidate.status == "approved")
+        total_candidates, approved_candidates, avg_score = db.exec(
+            select(
+                func.count(HighlightCandidate.id),
+                func.count(case((HighlightCandidate.status == "approved", 1))),
+                func.coalesce(func.avg(HighlightCandidate.highlight_score), 0.0),
+            ).where(*candidate_range)
         ).one()
-        avg_score = (
-            db.exec(
-                _sel(func.coalesce(func.avg(HighlightCandidate.highlight_score), 0.0)).select_from(HighlightCandidate)
-            ).one()
-            or 0.0
-        )
-
-        # 分数区间分布
         score_buckets = {"0.0-0.3": 0, "0.3-0.5": 0, "0.5-0.7": 0, "0.7-0.85": 0, "0.85-1.0": 0}
-        all_scores = db.exec(_sel(HighlightCandidate.highlight_score).select_from(HighlightCandidate)).all()
-        for s in all_scores:
-            s = s or 0
-            if s < 0.3:
-                score_buckets["0.0-0.3"] += 1
-            elif s < 0.5:
-                score_buckets["0.3-0.5"] += 1
-            elif s < 0.7:
-                score_buckets["0.5-0.7"] += 1
-            elif s < 0.85:
-                score_buckets["0.7-0.85"] += 1
-            else:
-                score_buckets["0.85-1.0"] += 1
-
-        # --- 录制统计 ---
-        total_sessions = db.exec(_sel(func.count()).select_from(RecordingSession)).one()
-        finished_sessions = db.exec(
-            _sel(func.count()).select_from(RecordingSession).where(RecordingSession.ended_at is not None)
+        score = func.coalesce(HighlightCandidate.highlight_score, 0)
+        bucket = case(
+            (score < 0.3, "0.0-0.3"),
+            (score < 0.5, "0.3-0.5"),
+            (score < 0.7, "0.5-0.7"),
+            (score < 0.85, "0.7-0.85"),
+            else_="0.85-1.0",
+        )
+        for name, count in db.exec(select(bucket, func.count()).where(*candidate_range).group_by(bucket)).all():
+            score_buckets[name] = count
+        total_sessions, finished_sessions, total_reconnects = db.exec(
+            select(
+                func.count(RecordingSession.id),
+                func.count(RecordingSession.ended_at),
+                func.coalesce(func.sum(RecordingSession.reconnect_count), 0),
+            ).where(*session_range)
         ).one()
-        total_reconnects = (
-            db.exec(
-                _sel(func.coalesce(func.sum(RecordingSession.reconnect_count), 0)).select_from(RecordingSession)
-            ).one()
-            or 0
-        )
-
-        # 原始数据量
-        total_raw_gb = (
-            db.exec(_sel(func.coalesce(func.sum(RawSegment.size_bytes), 0.0)).select_from(RawSegment)).one() or 0.0
-        )
-        total_raw_gb = round(total_raw_gb / (1024**3), 2)  # size_bytes → GB
-
-        # --- 任务统计 ---
-        from app.db.entities import SegmentTask
-
+        raw_bytes = db.exec(
+            select(func.coalesce(func.sum(RawSegment.size_bytes), 0))
+            .join(RecordingSession, RecordingSession.id == RawSegment.session_id)
+            .where(*session_range)
+        ).one()
         task_failed = db.exec(
-            _sel(func.count()).select_from(SegmentTask).where(SegmentTask.stage == TaskStatus.FAILED)
+            select(func.count(SegmentTask.id)).where(
+                SegmentTask.stage == TaskStatus.FAILED, SegmentTask.created_at >= start, SegmentTask.created_at < end
+            )
         ).one()
 
-        # --- 每日趋势(近 30 天) ---
-        daily_record: list[dict[str, Any]] = []
-        for i in range(30):
-            day = days_30 + timedelta(days=i)
-            day_end = day + timedelta(days=1)
-            sessions_count = db.exec(
-                _sel(func.count())
-                .select_from(RecordingSession)
-                .where(
-                    RecordingSession.started_at >= day,
-                    RecordingSession.started_at < day_end,
-                )
-            ).one()
-            clips_count = db.exec(
-                _sel(func.count())
-                .select_from(FinalClip)
-                .where(
-                    FinalClip.created_at >= day,
-                    FinalClip.created_at < day_end,
-                )
-            ).one()
-            candidates_count = db.exec(
-                _sel(func.count())
-                .select_from(HighlightCandidate)
-                .where(
-                    HighlightCandidate.created_at >= day,
-                    HighlightCandidate.created_at < day_end,
-                )
-            ).one()
+        sessions = _daily_counts(db, RecordingSession.started_at, start, end)
+        clips = _daily_counts(db, FinalClip.created_at, start, end)
+        candidates = _daily_counts(db, HighlightCandidate.created_at, start, end)
+        daily_record = []
+        for offset in range(days):
+            day = (start + timedelta(days=offset)).date().isoformat()
             daily_record.append(
                 {
-                    "date": day.strftime("%m-%d"),
-                    "sessions": sessions_count,
-                    "clips": clips_count,
-                    "candidates": candidates_count,
+                    "date": day,
+                    "sessions": sessions.get(day, 0),
+                    "clips": clips.get(day, 0),
+                    "candidates": candidates.get(day, 0),
                 }
             )
 
-        # --- 直播间排行(按切片数 TOP 10) ---
-        room_ranks: list[dict[str, Any]] = []
+        room_ranks: list[dict[str, object]] = []
         rows = db.exec(
-            _sel(
-                LiveRoom.id,
-                LiveRoom.room_id,
-                LiveRoom.uploader_name,
-                func.count(FinalClip.id).label("cnt"),
-                func.coalesce(func.sum(FinalClip.duration_s), 0.0).label("dur"),
-            )
-            .select_from(LiveRoom)
+            select(LiveRoom, func.count(FinalClip.id), func.coalesce(func.sum(FinalClip.duration_s), 0.0))
             .join(RecordingSession, RecordingSession.room_id == LiveRoom.id, isouter=True)
             .join(HighlightCandidate, HighlightCandidate.session_id == RecordingSession.id, isouter=True)
-            .join(FinalClip, FinalClip.candidate_id == HighlightCandidate.id, isouter=True)
-            .where(LiveRoom.uploader_name is not None)
+            .join(FinalClip, and_(FinalClip.candidate_id == HighlightCandidate.id, *clip_range), isouter=True)
             .group_by(LiveRoom.id)
-            .order_by(func.count(FinalClip.id).desc())
+            .order_by(func.count(FinalClip.id).desc(), LiveRoom.id)
             .limit(10)
         ).all()
-        for r in rows:
-            from app.sources.rooms import room_source_view
-
-            room = db.get(LiveRoom, r.id)
-            source = room_source_view(room, db) if room and room.platform != "local" else None
-            name = r.uploader_name or f"房间{r.room_id}"
+        for room, count, duration in rows:
+            source = room_source_view(room, db) if room.platform != "local" else None
+            name = (room.uploader_name or "").strip() or f"房间{room.room_id or room.id}"
             if source and source["platform"] != "bilibili":
                 name = f"{source['platform']} · {name}"
             room_ranks.append(
                 {
                     "name": name,
-                    "room_db_id": r.id,
-                    "platform": room.platform if room else None,
+                    "room_db_id": room.id,
+                    "platform": room.platform,
                     "source_id": source["source_id"] if source else None,
-                    "clips": r.cnt,
-                    "duration_h": round((r.dur or 0) / 3600, 1),
+                    "clips": count,
+                    "duration_h": round(duration / 3600, 1),
                 }
             )
 
@@ -188,7 +137,7 @@ def get_analytics() -> dict[str, Any]:
             "total_sessions": total_sessions,
             "finished_sessions": finished_sessions,
             "total_reconnects": total_reconnects,
-            "total_raw_gb": round(total_raw_gb, 1),
+            "total_raw_gb": round(raw_bytes / (1024**3), 1),
             "task_failed": task_failed,
         },
         "score_distribution": score_buckets,

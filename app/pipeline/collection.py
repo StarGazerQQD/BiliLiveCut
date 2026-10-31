@@ -29,7 +29,8 @@ from sqlmodel import select
 
 from app.clipping.drafts import input_fingerprint, publication
 from app.core.config import settings
-from app.core.paths import session_clips_dir
+from app.core.media_usage import media_reference_scope
+from app.core.paths import resolve_storage_path, session_clips_dir, to_storage_relative
 from app.core.process_control import ProcessCancelledError, run_cancellable
 from app.core.sanitize import safe_exception_summary
 from app.db.entities import (
@@ -139,6 +140,7 @@ def detect_overlap(events: Sequence[dict], threshold_s: float = 2.0) -> list[dic
     return overlaps
 
 
+@media_reference_scope()
 def render_collection(
     topic_id: int,
     event_ids: list[int],
@@ -241,7 +243,7 @@ def _render_collection(
                 .order_by(FinalClip.created_at.desc())
                 .limit(1)
             ).first()
-            if clips is None or not clips.file_path or not Path(clips.file_path).exists():
+            if clips is None or not clips.file_path or not resolve_storage_path(clips.file_path).exists():
                 logger.warning("事件 {} 没有可用成品文件。", eid)
                 return None
             assert clips.id is not None and cand.id is not None
@@ -249,7 +251,7 @@ def _render_collection(
             clip_snapshots[clips.id] = clips.model_dump(mode="json")
             clip_files.append(
                 {
-                    "path": clips.file_path,
+                    "path": str(resolve_storage_path(clips.file_path)),
                     "candidate_id": cand.id,
                     "duration": clips.duration_s or 0,
                 }
@@ -431,7 +433,7 @@ def _render_collection(
             variant_type=ClipVariantType.COLLECTION_CHAPTER,
             has_subtitles=True,
             resolution="1920x1080",
-            file_path=str(out_file),
+            file_path=to_storage_relative(out_file),
             file_hash=file_hash,
             duration_s=round(duration_s, 2),
             render_status=RenderStatus.DONE,

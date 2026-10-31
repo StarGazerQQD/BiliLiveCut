@@ -26,7 +26,9 @@ from sqlmodel import select
 
 from app.core.config import settings
 from app.core.execution import run_sync as _thread_io
+from app.core.media_usage import media_reference_scope
 from app.core.sanitize import safe_exception_summary
+from app.core.supervisor import remaining_shutdown, shutdown_deadline, shutdown_scope
 from app.db.entities import (
     RawSegment,
     RecordingSession,
@@ -77,6 +79,7 @@ if TYPE_CHECKING:
 # ═══════════════════════════════════════════════════
 
 
+@media_reference_scope()
 def create_task(segment_id: int, session_id: int) -> SegmentTask | None:
     """为已完成录制的片段创建任务 (幂等)。
 
@@ -121,6 +124,7 @@ def create_task(segment_id: int, session_id: int) -> SegmentTask | None:
             return None
 
 
+@media_reference_scope()
 def retry_task(task_id: int) -> bool:
     """手动重试失败任务。
 
@@ -135,6 +139,9 @@ def retry_task(task_id: int) -> bool:
             return False
         if task.stage not in (TaskStatus.FAILED, TaskStatus.CANCELLED, TaskStatus.TRANSIENT_FAILED):
             return False
+        from app.pipeline.recovery_budget import reset_recovery
+
+        reset_recovery(db, task, all_stages=True)
         res = resume_stage(task.failed_stage or task.stage)
         task.stage = res
         task.stage_key = make_stage_key(task.segment_id, res)
@@ -259,6 +266,7 @@ class TaskWorker:
         self._session_summaries: set[asyncio.Task[bool]] = set()
         self._summary_claims: dict[asyncio.Task[bool], SessionSummaryClaim] = {}
         self._main_task: asyncio.Task[None] | None = None
+        self._stop_task: asyncio.Task[None] | None = None
         self._preload_task: asyncio.Task[None] | None = None
         self._running: bool = False
         self._next_summary_scan = 0.0
@@ -281,6 +289,9 @@ class TaskWorker:
 
         await _thread_io(recover_publish_state)
         await _thread_io(recover_orphans)
+        from app.pipeline.stale_recovery import recover_pending_clips
+
+        await _thread_io(recover_pending_clips)
         from app.analysis.session_summary import recover_running_session_summary_requests
 
         await _thread_io(recover_running_session_summary_requests)
@@ -303,11 +314,35 @@ class TaskWorker:
         except (RuntimeError, OSError, ValueError, ImportError) as exc:
             _logger.warning("ASR 预加载失败，任务仍可按配置尝试加载或回退: {}", safe_exception_summary(exc, limit=500))
 
-    async def stop(self) -> None:
-        """优雅关闭 — 停止领取新任务, 等待当前任务完成或取消。"""
+    def request_stop(self) -> None:
+        """只广播停止意图，不在广播期间访问数据库或等待执行。"""
         shutdown_event.set()
         self._running = False
+        if self._main_task is not None:
+            self._main_task.cancel()
+
+    async def stop(self) -> None:
+        """在共同期限内观察真实收尾，超时保留清理执行和业务占位。"""
+        self.request_stop()
+        with shutdown_scope(settings.worker_shutdown_timeout_seconds):
+            if self._stop_task is None or self._stop_task.done():
+                self._stop_task = asyncio.create_task(self._finish_stop(), name="worker-cleanup")
+                self._stop_task.add_done_callback(_observe_execution)
+            task = self._stop_task
+            _, pending = await asyncio.wait(
+                {task}, timeout=remaining_shutdown(settings.worker_shutdown_timeout_seconds)
+            )
+            if pending:
+                raise ExceptionGroup(
+                    "Worker 关闭期间发现异常", [RuntimeError("Worker 执行尚未物理退出，保留资源占用和清理登记")]
+                )
+            task.result()
+
+    async def _finish_stop(self) -> None:
+        """保留真实执行句柄直至数据库、模型与媒体资源完成清理。"""
+        deadline = shutdown_deadline(settings.worker_shutdown_timeout_seconds)
         errors: list[Exception] = []
+        unfinished: set[asyncio.Task[None] | asyncio.Task[bool]] = set()
 
         if self._main_task is not None:
             self._main_task.cancel()
@@ -320,7 +355,6 @@ class TaskWorker:
                 _logger.opt(exception=exc).error("Worker 主循环异常，继续资源清理")
 
         grace_period = settings.worker_shutdown_timeout_seconds
-        deadline = time.monotonic() + grace_period
         from app.analysis.transcription.process_pool import get_process_pool
 
         try:
@@ -341,7 +375,7 @@ class TaskWorker:
         if preload is not None and not preload.done():
             _, pending = await asyncio.wait({preload}, timeout=max(0, deadline - time.monotonic()))
             if pending:
-                errors.append(RuntimeError("ASR 预加载尚未物理退出，关闭未完成"))
+                unfinished.update(pending)
         for coll_name, coll in [
             ("transcribing", self._transcribing),
             ("analyzing", self._analyzing),
@@ -370,8 +404,11 @@ class TaskWorker:
                         if claim is not None:
                             await asyncio.to_thread(interrupt_summary_execution, claim)
                 if still_running:
-                    errors.append(RuntimeError(f"{len(still_running)} 个 {coll_name} 执行尚未物理退出，保留资源占用"))
+                    unfinished.update(still_running)
 
+        if unfinished:
+            # 调用方已在总期限报告未完成；清理句柄继续保留，直到真实执行归还。
+            await asyncio.wait(unfinished)
         await asyncio.to_thread(cleanup_subprocesses)
         if errors:
             raise ExceptionGroup("Worker 关闭期间发现异常", errors)
@@ -385,7 +422,7 @@ class TaskWorker:
             *self._publishing,
             *self._session_summaries,
         )
-        return (*tasks, self._preload_task) if self._preload_task is not None else tasks
+        return (*tasks, *(task for task in (self._main_task, self._preload_task, self._stop_task) if task is not None))
 
     async def _loop(self) -> None:
         """主调度循环 — 每个 tick 执行阶段推进、stale 恢复、任务分发。"""

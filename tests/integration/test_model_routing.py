@@ -7,7 +7,7 @@ from concurrent.futures import ProcessPoolExecutor, ThreadPoolExecutor
 from threading import Barrier
 from typing import TYPE_CHECKING
 
-import httpx2 as httpx
+import httpx
 import pytest
 from click.testing import CliRunner
 from fastapi.testclient import TestClient
@@ -301,7 +301,7 @@ def test_actual_sdk_routes_share_client_and_apply_model_limit_and_accounting(
 ) -> None:
     requests: list[httpx.Request] = []
 
-    def transport(_transport: httpx.HTTPTransport, request: httpx.Request) -> httpx.Response:
+    async def transport(_transport: httpx.AsyncHTTPTransport, request: httpx.Request) -> httpx.Response:
         requests.append(request)
         return httpx.Response(
             200,
@@ -318,7 +318,7 @@ def test_actual_sdk_routes_share_client_and_apply_model_limit_and_accounting(
             request=request,
         )
 
-    monkeypatch.setattr(httpx.HTTPTransport, "handle_request", transport)
+    monkeypatch.setattr(httpx.AsyncHTTPTransport, "handle_async_request", transport)
     config = change()
     for route in config.routes[:-1]:
         route.price_input_per_m = 1
@@ -343,7 +343,7 @@ def test_accounting_write_failure_does_not_trigger_another_paid_provider(
 ) -> None:
     calls: list[str] = []
 
-    def transport(_transport: httpx.HTTPTransport, request: httpx.Request) -> httpx.Response:
+    async def transport(_transport: httpx.AsyncHTTPTransport, request: httpx.Request) -> httpx.Response:
         calls.append(request.url.host)
         return httpx.Response(
             200,
@@ -365,7 +365,7 @@ def test_accounting_write_failure_does_not_trigger_another_paid_provider(
     candidate.routes[0].price_input_per_m = 1
     candidate.routes.append(candidate.routes[0].model_copy(update={"id": "second", "priority": 200}))
     save_model_configuration(candidate)
-    monkeypatch.setattr(httpx.HTTPTransport, "handle_request", transport)
+    monkeypatch.setattr(httpx.AsyncHTTPTransport, "handle_async_request", transport)
     monkeypatch.setattr(os, "replace", denied)
     with pytest.raises(llm.BudgetAccountingError, match="预算记录写入失败"):
         llm.call_text("记账失败后停止")
