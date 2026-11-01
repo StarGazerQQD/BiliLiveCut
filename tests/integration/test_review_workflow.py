@@ -535,7 +535,7 @@ def test_review_queue_api_exposes_filter_counts_and_claims(review_client: TestCl
 
 
 def test_review_data_buckets_scalar_danmaku_timestamps(review_client: TestClient) -> None:
-    """审片详情应兼容 SQLModel 单列查询返回的时间戳标量。"""
+    """ORM 无时区时间按 UTC 返回桶坐标，并保留单列查询的标量分桶。"""
     from app.db.entities import Danmaku, HighlightCandidate
     from app.db.session import get_session
 
@@ -543,6 +543,10 @@ def test_review_data_buckets_scalar_danmaku_timestamps(review_client: TestClient
     with get_session() as db:
         candidate = db.get(HighlightCandidate, candidate_id)
         assert candidate is not None
+        assert candidate.start_ts is not None
+        window_start = candidate.start_ts - timedelta(seconds=30)
+        expected_start_epoch = int(window_start.replace(tzinfo=UTC).timestamp())
+        expected_peak_bucket = int((candidate.peak_ts - window_start).total_seconds()) // 5
         db.add(
             Danmaku(
                 session_id=candidate.session_id,
@@ -557,7 +561,10 @@ def test_review_data_buckets_scalar_danmaku_timestamps(review_client: TestClient
         response = client.get(f"/review/api/{candidate_id}", auth=("admin", "admin-pass"))
 
     assert response.status_code == 200
-    assert sum(bucket["count"] for bucket in response.json()["danmaku_buckets"]) == 1
+    buckets = response.json()["danmaku_buckets"]
+    assert sum(bucket["count"] for bucket in buckets) == 1
+    assert [bucket["t"] for bucket in buckets] == [expected_start_epoch + index * 5 for index in range(len(buckets))]
+    assert buckets[expected_peak_bucket]["count"] == 1
 
 
 def test_multi_room_queues_keep_source_identity_and_candidate_transcript(
