@@ -186,13 +186,14 @@ class CancellableHTTPTransport(httpx.BaseTransport):
                     scope.check()
             try:
                 return future.result()
-            finally:
-                # 清理可能先于轮询完成；采纳成功或错误前强制复核，保留原异常链。
+            except (httpx.HTTPError, HTTPResponseInvalid, HTTPRequestDeadline):
+                # 完成的失败仍须复核取消；完整响应先交给上层登记用量，再阻止业务采纳。
                 check_cancellation()
                 if scope is not None:
                     scope.check()
                     if time.monotonic() >= scope.deadline:
                         raise HTTPRequestDeadline("模型请求超过绝对时间预算")
+                raise
         finally:
             if not finished.is_set():
                 future.cancel()
