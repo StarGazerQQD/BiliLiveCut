@@ -21,7 +21,8 @@ from app.core.paths import resolve_storage_path, session_raw_dir
 from app.db.entities import AppSetting, Danmaku, LiveRoom, RawSegment, RecordingSession
 from app.db.session import get_session
 from app.plugins.live_source import SourceUnavailable
-from app.recording import intents, settlement as settlement_module
+from app.recording import intents
+from app.recording import settlement as settlement_module
 from app.recording.danmaku import CaptureInterval, DanmakuEvidence, read_evidence
 from app.recording.danmaku_journal import DanmakuJournal
 from app.recording.recorder import Recorder

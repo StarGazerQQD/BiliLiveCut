@@ -32,9 +32,11 @@ async def test_live_control_channel_ignores_synthetic_live_and_never_saves_messa
     def forbidden(*args: object, **kwargs: object) -> None:
         raise AssertionError("开下播守候不能调用数据库、采样器或弹幕归档")
 
-    monkeypatch.setattr("app.sources.bilibili.danmaku.get_session", forbidden)
+    monkeypatch.setattr("app.recording.danmaku_journal.get_session", forbidden)
     monkeypatch.setattr("app.analysis.danmaku_sampling.get_sampler", forbidden)
     monkeypatch.setattr("app.recording.danmaku_archive.DanmakuArchive.append", forbidden)
+    monkeypatch.setattr("app.recording.danmaku_journal.DanmakuJournal.append_messages", forbidden)
+    monkeypatch.setattr("app.recording.danmaku_journal.DanmakuJournal.append_observation", forbidden)
     client = BilibiliLiveEvents(100, "", emit, state)
     await client._process_frame(
         b"".join(

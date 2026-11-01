@@ -59,10 +59,12 @@ class Socket:
         self.connections = 0
 
     async def __aenter__(self) -> Socket:
+        """记录外部连接建立，消费使用真实协议帧。"""
         self.connections += 1
         return self
 
     async def __aexit__(self, *args: object) -> None:
+        """记录外部连接已经释放。"""
         self.closed = True
 
     async def send(self, payload: bytes) -> None:

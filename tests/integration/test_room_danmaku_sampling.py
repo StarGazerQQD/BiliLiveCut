@@ -105,8 +105,8 @@ def test_active_collectors_refresh_only_their_room_and_archive_every_message(
     temp_db: None,
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    from app.sources.bilibili import danmaku
     from app.recording.danmaku_journal import drain_journal
+    from app.sources.bilibili import danmaku
     from app.web.main import app
     from app.web.services.rooms import recorder_manager
 
