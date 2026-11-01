@@ -24,13 +24,16 @@ import traceback
 from collections.abc import Sequence
 from contextlib import ExitStack
 from pathlib import Path
-from typing import Any
+from typing import TYPE_CHECKING, Any
 
 from blc_portable.console import configure_console_encoding
 from blc_portable.diagnostics import exception_summary, redact_diagnostic
 from config import file_locks as shared_file_locks
 from config.file_locks import FileLock
 from config.launcher_settings import APP_ROOT_ENV, WEB_PORT_ENV, load_launcher_config, validate_web_port
+
+if TYPE_CHECKING:
+    import psutil
 
 # -- Constants ──────────────────────────────────────────────────
 APP_NAME = "BiliLiveCut"
@@ -1223,6 +1226,22 @@ def _service_http_ready(web_port: int) -> bool:
         connection.close()
 
 
+def _wait_for_service_members(members: list[psutil.Process], *, timeout: float) -> None:
+    """确认登记成员已停止执行，外部父进程持有的僵尸回收权不阻止恢复。"""
+    import psutil
+
+    _, pending = psutil.wait_procs(members, timeout=timeout)
+    active: list[int] = []
+    for member in pending:
+        try:
+            if member.status() not in (psutil.STATUS_ZOMBIE, psutil.STATUS_DEAD):
+                active.append(member.pid)
+        except psutil.NoSuchProcess:
+            pass  # 成员在等待结束和状态读取之间退出。
+    if active:
+        raise RuntimeError(f"健康故障清理未确认，所属子进程仍在执行：{active}")
+
+
 def _run_service(command: list[str], *, env: dict[str, str], cwd: str) -> int:
     """Portable 独占有限恢复预算；人工退出不重启，上一代清理失败不启动下一代。"""
     import time
@@ -1312,11 +1331,7 @@ def _run_service(command: list[str], *, env: dict[str, str], cwd: str) -> int:
                         process.wait(timeout=remaining_shutdown(5))
                         if health_members:
                             # POSIX 子服务各有独立进程组，需等其父死亡监管完成，不能只确认 console PID。
-                            _, alive = psutil.wait_procs(health_members, timeout=remaining_shutdown(5))
-                            if alive:
-                                raise RuntimeError(
-                                    f"健康故障清理未确认，所属子进程仍存活：{[member.pid for member in alive]}"
-                                )
+                            _wait_for_service_members(health_members, timeout=remaining_shutdown(5))
                         break
                     except KeyboardInterrupt:
                         manual_stop = True

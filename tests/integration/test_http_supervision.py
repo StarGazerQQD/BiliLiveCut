@@ -15,6 +15,19 @@ import pytest
 from tests.integration.test_frontend_console import _service_leaves, _service_snapshot, _service_tree, _stop_console
 
 
+def _active_members(members: list[psutil.Process]) -> list[tuple[int, str]]:
+    active: list[tuple[int, str]] = []
+    for member in members:
+        try:
+            if member.is_running():
+                status = member.status()
+                if status not in (psutil.STATUS_ZOMBIE, psutil.STATUS_DEAD):
+                    active.append((member.pid, status))
+        except psutil.NoSuchProcess:
+            pass  # 外部父进程可能在检查状态期间完成回收。
+    return active
+
+
 @pytest.mark.parametrize(
     "supervisor,stalled,action",
     [
@@ -139,11 +152,7 @@ def test_alive_service_http_outage_recovers_without_overlapping_generations(
                     after = _service_snapshot(parent)
                     new_members = set(after) - set(before)
                     if new_members:
-                        assert not [
-                            member.pid
-                            for member in owned
-                            if member.is_running() and member.status() not in (psutil.STATUS_ZOMBIE, psutil.STATUS_DEAD)
-                        ], "新一代出现时旧所属树仍在执行"
+                        assert not _active_members(owned), "新一代出现时旧所属树仍在执行"
                     new_leaves = _service_leaves(after)
                     try:
                         with opener.open(f"http://127.0.0.1:{port}/auth/status", timeout=0.5) as response:
@@ -174,5 +183,6 @@ def test_alive_service_http_outage_recovers_without_overlapping_generations(
             _, alive = psutil.wait_procs(owned, timeout=5)
             sentinel.terminate()
             sentinel.wait(timeout=5)
-            assert not alive, [(member.pid, member.status()) for member in alive]
+            active = _active_members(alive)
+            assert not active, active
             assert sentinel.returncode is not None
