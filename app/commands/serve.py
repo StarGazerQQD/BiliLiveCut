@@ -6,7 +6,7 @@ import os
 import socket
 from pathlib import Path
 from threading import Event
-from types import ModuleType
+from types import FrameType, ModuleType
 
 import click
 from loguru import logger
@@ -337,7 +337,6 @@ def cmd_console(
     :param frontend_dir: 已构建的静态资源目录。
     """
     import threading
-    import time
 
     from config.service_restart import CLEANUP_UNCONFIRMED_EXIT
 
@@ -372,7 +371,7 @@ def cmd_console(
                 raise
             if isinstance(exc, click.exceptions.Exit) and exc.exit_code == SERVICE_BIND_FAILED_EXIT:
                 raise click.ClickException("前端监听绑定失败，所属服务已关闭，请检查地址、端口占用及权限。") from exc
-            delay = budget.failed(time.monotonic())
+            delay = budget.failed()
             if delay is None:
                 raise click.ClickException("前后端连续异常退出，自动恢复预算已耗尽，请检查服务日志。") from exc
             logger.opt(exception=exc).warning("前后端异常退出，{} 秒后恢复，第 {} 次", delay, budget.failures)
@@ -402,7 +401,13 @@ def _console_generation(
 
     from app.analysis.transcription.process_tree import ProcessTree
     from app.core.process_spawn import spawn_owned
-    from config.service_restart import OUTER_SHUTDOWN_LIMIT_S
+    from app.core.supervisor import remaining_shutdown, shutdown_scope
+    from config.service_restart import (
+        OUTER_SHUTDOWN_LIMIT_S,
+        STARTUP_READY_LIMIT_S,
+        UNRESPONSIVE_SHUTDOWN_LIMIT_S,
+        ServiceReadiness,
+    )
 
     directory = _frontend_directory(frontend_dir)
     actual_port = validate_web_port(port if port is not None else load_launcher_config(runtime_app_root()).web_port)
@@ -428,10 +433,12 @@ def _console_generation(
     previous_signals = {number: signal.getsignal(number) for number in shutdown_signals}
     closing = False
     force_exit = False
+    health_failed = False
     process_options = {"creationflags": subprocess.CREATE_NEW_PROCESS_GROUP} if os.name == "nt" else {}
 
-    def terminate(_number, _frame):
+    def terminate(_number: int, _frame: FrameType | None) -> None:
         nonlocal force_exit
+        parent_stopped.set()
         if closing:
             force_exit = True
             return
@@ -455,7 +462,7 @@ def _console_generation(
         from urllib.request import ProxyHandler, build_opener
 
         opener = build_opener(ProxyHandler({}))
-        deadline = time.monotonic() + 60
+        deadline = time.monotonic() + STARTUP_READY_LIMIT_S
         while True:
             if parent_stopped.is_set():
                 raise KeyboardInterrupt
@@ -468,6 +475,7 @@ def _console_generation(
             except (OSError, URLError):
                 pass
             if time.monotonic() >= deadline:
+                health_failed = True
                 raise RuntimeError("等待 API 启动超时，请检查数据库与后端配置。")
             time.sleep(0.1)
         owned.append(
@@ -492,8 +500,7 @@ def _console_generation(
         )
         processes.append(owned[-1][0])
         console.print(f"[green]工作台启动中[/green] -> http://{host}:{actual_port}")
-        ready_deadline = time.monotonic() + 60
-        ready_once = False
+        readiness = ServiceReadiness(time.monotonic())
         next_probe = 0.0
         probe_host = {"0.0.0.0": "127.0.0.1", "::": "::1"}.get(host, host)
         probe_host = f"[{probe_host}]" if ":" in probe_host else probe_host
@@ -505,12 +512,14 @@ def _console_generation(
                         ready = response.status == 200
                 except (OSError, URLError):
                     pass
-                budget.observe(ready=ready, now=time.monotonic())
-                if ready and not ready_once:
+                observed_at = time.monotonic()
+                budget.observe(ready=ready, now=observed_at)
+                if ready and not readiness.ready_once:
                     logger.info("前后端已就绪，录制恢复清算已完成")
-                ready_once |= ready
-                if not ready_once and time.monotonic() >= ready_deadline:
-                    raise RuntimeError("独立前端未能通过 API 就绪检查")
+                if failure := readiness.observe(ready=ready, now=observed_at):
+                    health_failed = True
+                    logger.error("{}，开始有界回收所属服务进程", failure)
+                    raise RuntimeError(failure)
                 next_probe = time.monotonic() + 1
             time.sleep(0.25)
         codes = [process.poll() for process in processes]
@@ -525,41 +534,43 @@ def _console_generation(
         if code:
             raise click.exceptions.Exit(code=code if code > 0 else 1)
     except KeyboardInterrupt:
-        pass
+        parent_stopped.set()
     finally:
-        budget.ended(time.monotonic())
+        budget.ended()
         closing = True
         try:
             console.print("[yellow]正在停止录制并释放后台资源，再次按 Ctrl+C 可强制退出。[/yellow]")
             cleanup_errors: list[Exception] = []
-            try:
-                _request_console_stop(processes, windows=os.name == "nt")
-            except (OSError, ValueError) as exc:
-                cleanup_errors.append(exc)
-                force_exit = True
-            for _process, tree in owned[1:]:
+            cleanup_limit = UNRESPONSIVE_SHUTDOWN_LIMIT_S if health_failed else OUTER_SHUTDOWN_LIMIT_S
+            with shutdown_scope(cleanup_limit) as shutdown_deadline:
                 try:
-                    tree.terminate()
-                except (OSError, RuntimeError, psutil.Error) as exc:
+                    _request_console_stop(processes, windows=os.name == "nt")
+                except (OSError, ValueError) as exc:
                     cleanup_errors.append(exc)
-            # API 按当前已发布配置执行有限关闭；父层只等待所属进程，不另猜业务预算。
-            shutdown_deadline = time.monotonic() + OUTER_SHUTDOWN_LIMIT_S
-            while processes and processes[0].poll() is None:
-                if force_exit or time.monotonic() >= shutdown_deadline:
-                    console.print("[yellow]强制终止前后端及其子进程。[/yellow]")
-                    break
-                time.sleep(0.1)
-            for process, tree in owned:
-                try:
-                    tree.terminate()
-                except (OSError, RuntimeError, psutil.Error) as exc:
-                    cleanup_errors.append(exc)
-                try:
-                    process.wait(timeout=5)
-                    if process.stdin is not None and not process.stdin.closed:
-                        process.stdin.close()
-                except (OSError, subprocess.TimeoutExpired) as exc:
-                    cleanup_errors.append(exc)
+                    force_exit = True
+                for _process, tree in owned[1:]:
+                    try:
+                        tree.terminate()
+                    except (OSError, RuntimeError, psutil.Error) as exc:
+                        cleanup_errors.append(exc)
+                # 共同期限包含强制回收与退出确认，不能给每个步骤重新授予预算。
+                graceful_deadline = shutdown_deadline - min(5.0, cleanup_limit / 2)
+                while processes and processes[0].poll() is None:
+                    if force_exit or time.monotonic() >= graceful_deadline:
+                        console.print("[yellow]强制终止前后端及其子进程。[/yellow]")
+                        break
+                    time.sleep(0.1)
+                for process, tree in owned:
+                    try:
+                        tree.terminate()
+                    except (OSError, RuntimeError, psutil.Error) as exc:
+                        cleanup_errors.append(exc)
+                    try:
+                        process.wait(timeout=remaining_shutdown(5))
+                        if process.stdin is not None and not process.stdin.closed:
+                            process.stdin.close()
+                    except (OSError, subprocess.TimeoutExpired) as exc:
+                        cleanup_errors.append(exc)
             if cleanup_errors:
                 raise ExceptionGroup("前后端进程清理未全部确认", cleanup_errors)
         finally:

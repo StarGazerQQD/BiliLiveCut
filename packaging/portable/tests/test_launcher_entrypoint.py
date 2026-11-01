@@ -766,3 +766,46 @@ def test_launcher_manual_interrupt_preserves_clean_child_exit(
     monkeypatch.setattr(time, "sleep", interrupt_after_start)
     assert _run_service(command, env=dict(os.environ), cwd=str(tmp_path)) == 0
     assert interrupted and counter.read_text() == "1"
+
+
+@pytest.mark.parametrize("stop_in_backoff", [False, True])
+def test_http_fault_retries_even_after_graceful_zero_exit_and_respects_backoff_stop(
+    tmp_path: Path, monkeypatch: MonkeyPatch, capsys: CaptureFixture[str], stop_in_backoff: bool
+) -> None:
+    import socket
+    import time
+
+    from blc_portable.launcher.main import _run_service
+
+    from config import service_restart
+    from config.launcher_settings import WEB_PORT_ENV
+
+    monkeypatch.setattr(service_restart, "HTTP_UNAVAILABLE_LIMIT_S", 0.1)
+    monkeypatch.setattr(service_restart, "UNRESPONSIVE_SHUTDOWN_LIMIT_S", 6.0)
+    original_sleep = time.sleep
+
+    def interrupt_backoff(delay: float) -> None:
+        if stop_in_backoff and delay == 1.0:
+            raise KeyboardInterrupt
+        original_sleep(delay)
+
+    monkeypatch.setattr(time, "sleep", interrupt_backoff)
+    with socket.socket() as probe:
+        probe.bind(("127.0.0.1", 0))
+        port = probe.getsockname()[1]
+    counter = tmp_path / "generations.jsonl"
+    root = _portable_dir.parents[1]
+    command = [sys.executable, str(root / "tests/integration/http_service_actor.py"), str(port), str(counter)]
+    result = _run_service(command, env={**os.environ, WEB_PORT_ENV: str(port)}, cwd=str(tmp_path))
+    assert result == (130 if stop_in_backoff else 1)
+    events = [json.loads(line) for line in counter.read_text(encoding="utf-8").splitlines()]
+    starts = [event for event in events if "started_at" in event]
+    stops = [event for event in events if "stopped_at" in event]
+    assert len(starts) == len(stops) == (1 if stop_in_backoff else 4)
+    assert [event["pid"] for event in starts] == [event["pid"] for event in stops]
+    assert all(event["exit_code"] == 0 for event in stops)
+    for index in range(1, len(starts)):
+        assert starts[index]["started_at"] - stops[index - 1]["stopped_at"] >= 2 ** (index - 1)
+    output = capsys.readouterr().out
+    assert output.count("开始有界回收") == len(starts)
+    assert ("自动恢复预算已耗尽" in output) is not stop_in_backoff

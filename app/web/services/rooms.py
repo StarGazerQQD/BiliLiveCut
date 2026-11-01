@@ -472,7 +472,6 @@ class RecorderManager:
             if recovery is not None and recovery.generation is not None:
                 if previous is None or previous.generation != recovery.generation or previous.state != "cooldown":
                     return False
-                pipeline_enabled, produce = previous.pipeline, previous.produce
             room.enabled = True
             # Pipeline 回调及后续调度器都会读取房间级 auto_analyze。
             # 与 CLI 保持一致：有效开关为真时同步开启，否则回调即使已安装也会跳过任务登记。

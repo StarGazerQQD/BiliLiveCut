@@ -1227,13 +1227,18 @@ def _run_service(command: list[str], *, env: dict[str, str], cwd: str) -> int:
     """Portable 独占有限恢复预算；人工退出不重启，上一代清理失败不启动下一代。"""
     import time
 
+    import psutil
+
     from app.core.process_spawn import spawn_owned
+    from app.core.supervisor import remaining_shutdown, shutdown_scope
     from config.service_restart import (
         CLEANUP_UNCONFIRMED_EXIT,
         OUTER_SHUTDOWN_LIMIT_S,
         RESTART_OWNER_ENV,
         SERVICE_BIND_FAILED_EXIT,
+        UNRESPONSIVE_SHUTDOWN_LIMIT_S,
         RestartBudget,
+        ServiceReadiness,
     )
 
     options = {"creationflags": subprocess.CREATE_NEW_PROCESS_GROUP} if os.name == "nt" else {}
@@ -1248,39 +1253,84 @@ def _run_service(command: list[str], *, env: dict[str, str], cwd: str) -> int:
             **options,
         )
         manual_stop = False
+        health_failed = False
+        health_deadline: float | None = None
+        health_members: list[psutil.Process] = []
         try:
             next_probe = 0.0
+            readiness = ServiceReadiness(time.monotonic())
             try:
                 while process.poll() is None:
                     if web_port is not None and time.monotonic() >= next_probe:
                         ready = _service_http_ready(web_port)
-                        budget.observe(ready=ready, now=time.monotonic())
+                        observed_at = time.monotonic()
+                        budget.observe(ready=ready, now=observed_at)
+                        if failure := readiness.observe(ready=ready, now=observed_at):
+                            health_failed = True
+                            health_deadline = observed_at + UNRESPONSIVE_SHUTDOWN_LIMIT_S
+                            try:
+                                health_members = psutil.Process(process.pid).children(recursive=True)
+                            except psutil.NoSuchProcess:
+                                pass
+                            print(f"[ERROR] {failure}，开始有界回收所属服务进程。", flush=True)
+                            assert process.stdin is not None
+                            process.stdin.close()
+                            try:
+                                process.wait(
+                                    timeout=max(
+                                        0.0,
+                                        health_deadline
+                                        - time.monotonic()
+                                        - min(5.0, UNRESPONSIVE_SHUTDOWN_LIMIT_S / 2),
+                                    )
+                                )
+                            except subprocess.TimeoutExpired:
+                                pass
+                            break
                         next_probe = time.monotonic() + 1
                     time.sleep(0.25)
             except KeyboardInterrupt:
                 manual_stop = True
-                assert process.stdin is not None
-                process.stdin.close()
-                try:
-                    process.wait(timeout=OUTER_SHUTDOWN_LIMIT_S)
-                except (KeyboardInterrupt, subprocess.TimeoutExpired):
-                    tree.terminate()
-                    process.wait(timeout=5)
-            code = process.returncode
-            budget.ended(time.monotonic())
+                # 健康故障回收期间人工停止不能重新开始长时间业务等待。
+                if not health_failed:
+                    assert process.stdin is not None
+                    process.stdin.close()
+                    try:
+                        process.wait(timeout=OUTER_SHUTDOWN_LIMIT_S)
+                    except (KeyboardInterrupt, subprocess.TimeoutExpired):
+                        tree.terminate()
+                        process.wait(timeout=5)
+            budget.ended()
         finally:
             if process.stdin is not None and not process.stdin.closed:
                 process.stdin.close()
-            tree.terminate()
-            process.wait(timeout=5)
+            cleanup_remaining = max(0.0, health_deadline - time.monotonic()) if health_deadline is not None else 10.0
+            with shutdown_scope(cleanup_remaining):
+                while True:
+                    try:
+                        tree.terminate()
+                        process.wait(timeout=remaining_shutdown(5))
+                        if health_members:
+                            # POSIX 子服务各有独立进程组，需等其父死亡监管完成，不能只确认 console PID。
+                            _, alive = psutil.wait_procs(health_members, timeout=remaining_shutdown(5))
+                            if alive:
+                                raise RuntimeError(
+                                    f"健康故障清理未确认，所属子进程仍存活：{[member.pid for member in alive]}"
+                                )
+                        break
+                    except KeyboardInterrupt:
+                        manual_stop = True
+        code = process.returncode
         if manual_stop:
             return code if code is not None and code >= 0 else 130
+        if health_failed and code == 0:
+            code = 1
         if code in {0, CLEANUP_UNCONFIRMED_EXIT}:
             return code
         if code == SERVICE_BIND_FAILED_EXIT:
             print("[ERROR] 前端监听绑定失败，所属服务已关闭，请检查地址、端口占用及权限。")
             return 1
-        delay = budget.failed(time.monotonic())
+        delay = budget.failed()
         if delay is None:
             print("[ERROR] 服务连续异常退出，自动恢复预算已耗尽，请检查日志后重新启动。")
             return code if code is not None and code > 0 else 1
