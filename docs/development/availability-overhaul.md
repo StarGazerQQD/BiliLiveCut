@@ -52,3 +52,32 @@
 复用 PR #99 已完成且干净的隔离工作树，从最新 main 建立 `codex/availability-overhaul`。旧分支、旧验证证据及主目录资料保留。远端没有同范围未合并 PR。
 
 初始提交仅包含本实施清单，用于先建立草稿 PR。业务代码尚未修改，R0 复现和完整基线仍待执行，R1–R5 保持 `PENDING`。
+
+### R0 修改前复现与环境基线
+
+草稿 PR #100 在业务修改前建立，初始提交为 `82bd2cb5b5902d601d3adb5e07b27de41a4a50e8`。复现器使用隔离 SQLite、受控平台输入、本机 HTTP 服务和测试自己创建的子进程，没有调用真实模型 API，也没有修改现场 Portable。下列结果证明缺陷存在，不代表恢复验收通过。
+
+| 项目 | 实际观察 | 证据边界 |
+| --- | --- | --- |
+| F01 | 正式关闭分析和渲染后，真实冷却恢复把房间和新 intent 的两个开关又写成开启 | 未运行 FFmpeg；验证恢复入口及配置持久化 |
+| F02 | 挂起真实所属后端后，8.75 秒内发生 10 次 HTTP 失败，console 存活且进程代次不变 | 有界观察；随后恢复后端并关闭全部所属进程，不能宣称实测无限期无恢复 |
+| F03 | 公共采集链遇一次 SQLite busy 或池超时后退出；独立 SQL 已能写入，后续消息仍不采集。Bilibili 真协议链遇一次 busy 后关闭连接，后续 raw archive 不再增长 | 公共链的故障批后来已补写；Bilibili 故障帧已经归档。缺失的是后续消息；池超时为执行边界注入 |
+| F04 | 真实结束事务失败后，场次已停止、execution 未 settled、最终重分析请求缺失；数据库恢复后三轮正常轮询没有补做，显式启动清算入口可重新登记 | 未进行真实进程重启或出片；分段只为隔离数据库输入 |
+| F05 | 每轮固定最多两次请求，三轮累计保存 2、4、6 个成功节点，失败次数仍增加到三次，任务成为 failed，最终总结缺失 | 受控小预算和合成转写；六次 HTTP 均成功，不证明默认配置下所有总结都会失败 |
+| F06 | 同连接正式更正 Key 后，普通重试命中旧 unauthorized 缓存且没有 HTTP；强制对照执行真实解释和 grounding 后成功 | 本地协议验证，不能作为模型内容质量验收 |
+
+模型基线两项与运行恢复基线六项均通过复现断言，独立只读复核确认未替换恢复、预算、证据校验或持久化核心逻辑。原始输入、日志和复现器保存在本任务私有证据目录；正式回归将在对应修复阶段采用恢复成功的断言。
+
+当前硬件只读查询为 NVIDIA GeForce RTX 5090、驱动 616.92、显存 32607 MiB。既有素材包含约 239.53 秒录播、对应弹幕及约 10.96 秒语音样本，正式模型缓存存在。此前九份部分样本 CUDA 推理成功报告予以保留；本次尚未重新验证新制品 GPU、连续负载或内容质量。现有素材没有独立人工标注，原有模型请求额度仍为已用尽。
+
+修改前完整命令：
+
+```text
+python -m pytest tests packaging/portable/tests --timeout=600 --fail-on-skip --cov=app --cov-report=term --cov-report=xml --cov-fail-under=50 --durations=15 -o addopts=--tb=short -q
+```
+
+结果为 **4427 passed、覆盖率 86.13%、842.95 秒**，包含真实 sdist/wheel。保留 setuptools 既有弃用 warning。另一条 stderr 解码 warning 来自本次只设置子进程输出为 UTF-8、父进程管道仍使用 GBK；统一父子 Python UTF-8 模式，并将 `PytestUnhandledThreadExceptionWarning` 提升为错误后，受影响的配置跨进程测试 **1 passed**。没有修改产品编码或屏蔽告警。启动时的 pytest-asyncio fixture-loop 弃用提示如实保留。
+
+`python -m pre_commit run --all-files` 的 12 项检查全部通过，包含 Ruff、React 类型、lint 和测试。`python scripts/export_openapi.py --check`、`uv lock --check --offline`、`cargo metadata --no-deps --locked --offline --manifest-path tools/native/rust/Cargo.toml` 通过。`npm --prefix docs run check` 的 22 项通过，`npm --prefix docs run build` 生成 57 页且全部链接通过；`python scripts/release_audit.py` 为 **63 PASS / 0 WARN / 0 FAIL**。
+
+当前业务、依赖及打包输入相对基线没有变化；现有 Payload、Lite EXE 和测试 Engine Pack 的 SHA-256 与 PR #99 制品清单一致，R0 不重复生成未变化的二进制。实际 diff 仅为本清单。远端适用 CI 仍待完成，R0 保持 `IN_PROGRESS`，通过后再进入 R1。
