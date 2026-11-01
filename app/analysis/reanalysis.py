@@ -30,6 +30,7 @@ from app.db.entities import (
 from app.db.session import get_session
 from app.pipeline.stage_result import make_pipeline_key, make_stage_key
 from app.pipeline.task_context import event_first_context, update_event_first_context
+from app.recording.intents import terminal_settlement_pending
 
 _PENDING_KEY_PREFIX = "session_reanalysis:"
 _REQUEST_VERSION = 1
@@ -79,6 +80,9 @@ def queue_session_reanalysis(
     with get_session() as db:
         if db.get_bind().dialect.name == "sqlite":
             db.connection().exec_driver_sql("BEGIN IMMEDIATE")
+        if terminal_settlement_pending(db, session_id):
+            result.skipped_active = 1
+            return result
         segments = db.exec(
             select(RawSegment).where(RawSegment.session_id == session_id).order_by(RawSegment.seq.asc())
         ).all()
@@ -299,6 +303,8 @@ def _reset_task(task: SegmentTask, *, reason: str, rerun_asr: bool, refinement_o
 def _session_analysis_unsettled(session_id: int) -> bool:
     """检查场次是否仍有正在提交转写或分析结果的任务。"""
     with get_session() as db:
+        if terminal_settlement_pending(db, session_id):
+            return True
         tasks = db.exec(select(SegmentTask).where(SegmentTask.session_id == session_id)).all()
     for task in tasks:
         if task.claimed_by is not None or task.lease_token is not None:

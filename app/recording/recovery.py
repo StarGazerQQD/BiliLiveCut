@@ -2,6 +2,7 @@
 from __future__ import annotations
 
 import csv
+import json
 import math
 import os
 import re
@@ -18,6 +19,7 @@ from app.core.paths import resolve_storage_path, session_raw_dir
 from app.db.entities import LiveRoom, RawSegment, RecordingSession, SessionStatus, utcnow
 from app.db.session import get_session
 from app.recording import intents
+from app.recording.danmaku_journal import drain_journal
 from app.recording.segments import register_segment
 from app.recording.writer_ownership import SessionWriter
 
@@ -59,91 +61,134 @@ def recover_pending_recordings(finalize: Callable[[Session, int], object]) -> li
     for record in sorted(records, key=lambda item: item.session_id):
         # 原证明不存在、被替换或仍由实际 writer 占用时，启动必须失败，不能报告就绪。
         with SessionWriter.recover(record.writer):
-            directory = session_raw_dir(record.session_id).resolve()
-            with get_session() as db:
-                registered = {
-                    str(resolve_storage_path(value))
-                    for value in db.exec(
-                        select(RawSegment.file_path).where(RawSegment.session_id == record.session_id)
-                    ).all()
-                }
-            errors: list[str] = []
-            for attempt in record.attempts:
-                paths, failures = _attempt_files(attempt, directory)
-                errors.extend(failures)
-                for path in paths:
-                    if path.is_symlink() or not path.is_file() or path.resolve().parent != directory:
-                        errors.append(f"尾片缺失或路径已改变：{path.name}")
-                        continue
-                    canonical = str(path.resolve())
-                    if canonical in registered:
-                        continue
-                    before = path.stat()
-                    if before.st_size == 0:
-                        errors.append(f"空尾片已保留：{path.name}")
-                        continue
-                    duration, width, height = probe_media(str(path))
-                    after = path.stat()
-                    if _identity(before) != _identity(after):
-                        raise RuntimeError(f"清算期间媒体被修改：{path.name}")
-                    if not math.isfinite(duration) or duration <= 0 or width <= 0 or height <= 0:
-                        errors.append(f"尾片不可播放，原文件已保留：{path.name}")
-                        continue
-                    with get_session() as db:
-                        if db.get_bind().dialect.name == "sqlite":
-                            db.connection().exec_driver_sql("BEGIN IMMEDIATE")
-                        if _identity(path.stat()) != _identity(before):
-                            raise RuntimeError(f"尾片登记前文件被修改：{path.name}")
-                        register_segment(
-                            db,
-                            record.session_id,
-                            path,
-                            duration=duration,
-                            ended_at=datetime.fromtimestamp(before.st_mtime, UTC),
-                            size=before.st_size,
-                        )
-                    registered.add(canonical)
+            while not recover_owned_recording(record, finalize, startup=True):
+                with get_session() as db:
+                    record = intents.load_execution(db, record.session_id)
+            settled.append(record.session_id)
+    return settled
+
+
+def recover_owned_recording(
+    record: intents.RecordingExecution,
+    finalize: Callable[[Session, int], object],
+    *,
+    startup: bool = False,
+) -> bool:
+    """调用者持续持有原 writer 独占证明，一轮补一批弹幕并核验至多二十个尾片。"""
+    if not drain_journal(record.session_id, close=True):
+        return False
+    directory = session_raw_dir(record.session_id).resolve()
+    with get_session() as db:
+        registered = {
+            str(resolve_storage_path(value))
+            for value in db.exec(select(RawSegment.file_path).where(RawSegment.session_id == record.session_id)).all()
+        }
+    errors = list(record.recovery_errors)
+    after = record.recovery_after
+    processed = 0
+    pending = False
+    for index, attempt in enumerate(record.attempts):
+        paths, failures = _attempt_files(attempt, directory)
+        errors.extend(failure for failure in failures if failure not in errors)
+        for path in paths:
+            key = f"{index:06d}:{path.name}"
+            if key <= record.recovery_after:
+                continue
+            if processed >= 20:
+                pending = True
+                break
+            processed += 1
+            after = key
+            if path.is_symlink() or not path.is_file() or path.resolve().parent != directory:
+                errors.append(f"尾片缺失或路径已改变：{path.name}")
+                continue
+            canonical = str(path.resolve())
+            if canonical in registered:
+                continue
+            before = path.stat()
+            if before.st_size == 0:
+                errors.append(f"空尾片已保留：{path.name}")
+                continue
+            duration, width, height = probe_media(str(path))
+            if _identity(before) != _identity(path.stat()):
+                raise ValueError(f"清算期间媒体被修改：{path.name}")
+            if not math.isfinite(duration) or duration <= 0 or width <= 0 or height <= 0:
+                errors.append(f"尾片不可播放，原文件已保留：{path.name}")
+                continue
             with get_session() as db:
                 if db.get_bind().dialect.name == "sqlite":
                     db.connection().exec_driver_sql("BEGIN IMMEDIATE")
-                current = intents.load_execution(db, record.session_id)
-                if current is None or current.writer != record.writer or current.attempts != record.attempts:
-                    raise RuntimeError("清算期间录制执行身份已改变")
-                if current.settled:
-                    continue
-                session = db.get(RecordingSession, record.session_id)
-                if session is None:
-                    raise ValueError("录制执行缺少所属场次")
-                if not current.finalized:
-                    from app.analysis.room_config import load_room_config
+                if _identity(path.stat()) != _identity(before):
+                    raise ValueError(f"尾片登记前文件被修改：{path.name}")
+                register_segment(
+                    db,
+                    record.session_id,
+                    path,
+                    duration=duration,
+                    ended_at=datetime.fromtimestamp(before.st_mtime, UTC),
+                    size=before.st_size,
+                )
+            registered.add(canonical)
+        if pending:
+            break
+    with get_session(operation="recording_settlement") as db:
+        if db.get_bind().dialect.name == "sqlite":
+            db.connection().exec_driver_sql("BEGIN IMMEDIATE")
+        current = intents.load_execution(db, record.session_id)
+        if current is None or current.writer != record.writer or current.attempts != record.attempts:
+            raise ValueError("清算期间录制执行身份已改变")
+        if current.settled:
+            return True
+        current.recovery_errors = errors
+        current.recovery_after = after if pending else ""
+        if pending:
+            intents.save(db, current)
+            return False
+        session = db.get(RecordingSession, record.session_id)
+        if session is None or session.room_id != current.room_id:
+            raise ValueError("录制执行缺少一致的所属场次")
+        intent = intents.load_intent(db, record.room_id)
+        same_intent = (
+            intent is not None and intent.generation == record.generation and intent.session_id == record.session_id
+        )
+        if not current.finalized:
+            from app.analysis.room_config import load_room_config
 
-                    intent = intents.load_intent(db, record.room_id)
-                    stopped = (
-                        intent is not None and intent.generation == record.generation and intent.state == "stopped"
-                    )
-                    paused = load_room_config(db.get(LiveRoom, record.room_id)).get("recording_paused", False)
-                    session.status = (
-                        (SessionStatus.PAUSED if paused else SessionStatus.STOPPED)
-                        if stopped
-                        else SessionStatus.INTERRUPTED
-                    )
-                    session.ended_at = utcnow()
-                    session.error_message = "服务异常中断；旧 writer 已退出，已清算可用尾片"
-                if errors:
-                    session.error_message = (session.error_message or "") + "；部分尾片需人工检查"
-                db.add(session)
-                room = db.get(LiveRoom, record.room_id)
-                if room is not None:
-                    room.enabled = False
-                    db.add(room)
-                current.recovery_errors = errors
-                current.finalized = True
-                intents.save(db, current)
-                finalize(db, record.session_id)
-            settled.append(record.session_id)
-            for error in errors:
-                logger.warning("录制清算 session={} detail={}", record.session_id, error)
-    return settled
+            stopped = same_intent and intent.state == "stopped"
+            paused = load_room_config(db.get(LiveRoom, record.room_id)).get("recording_paused", False)
+            session.status = (
+                (SessionStatus.PAUSED if paused else SessionStatus.STOPPED) if stopped else SessionStatus.INTERRUPTED
+            )
+            session.ended_at = utcnow()
+            session.error_message = (session.error_message or "") + "；录制执行中断，旧 writer 已退出，已清算可用尾片"
+        if errors:
+            session.error_message = (session.error_message or "") + "；部分尾片需人工检查"
+        db.add(session)
+        if startup:
+            room = db.get(LiveRoom, record.room_id)
+            if room is not None and same_intent:
+                room.enabled = False
+                db.add(room)
+        elif same_intent and intent.state in {"accepted", "running"}:
+            from app.analysis.room_config import merge_room_config
+
+            intent.state = "blocked"
+            intent.resume_requested = False
+            intent.reason = "录制终态登记失败后已补做收尾，请检查原错误后显式启动"
+            intents.save(db, intent)
+            room = db.get(LiveRoom, record.room_id)
+            if room is not None:
+                room.room_config_json = json.dumps(
+                    merge_room_config(room, {"recording_auto_restart_suppressed": True}),
+                    ensure_ascii=False,
+                )
+                db.add(room)
+        current.finalized = True
+        intents.save(db, current)
+        finalize(db, record.session_id)
+    for error in errors:
+        logger.warning("录制清算 session={} detail={}", record.session_id, error)
+    return True
 
 
 def _identity(stat: os.stat_result) -> tuple[int, int, int, int, int]:

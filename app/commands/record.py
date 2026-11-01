@@ -179,14 +179,6 @@ def cmd_record(
                 identity = room_source(room, db)
                 if not source_registry.available(identity.platform):
                     raise SourceUnavailable("来源不可用，请安装并启用对应直播源插件")
-                room.enabled = True
-                # 五阶段调度器以房间级开关为唯一真源。CLI 的有效 Pipeline 值需要同步到
-                # 房间配置，否则 Recorder 虽安装了回调，scheduler 仍会把任务留在 RECORDED。
-                if pipeline_enabled:
-                    room.auto_analyze = True
-                if produce:
-                    room.auto_render = True
-                db.add(room)
 
             on_segment = None
             if pipeline_enabled:
@@ -200,19 +192,9 @@ def cmd_record(
 
             async def _on_end(session_id: int) -> None:
                 """会话结束:上传模块关闭时弹出切片目录。"""
-                if pipeline_enabled:
-                    from app.analysis.reanalysis import request_session_reanalysis
-                    from app.analysis.session_summary import request_session_timeline_summary
+                from app.web.services.rooms import queue_recording_end
 
-                    reanalysis_requested = await run_sync(
-                        partial(request_session_reanalysis, session_id, reason="session_finalized")
-                    )
-                    if not reanalysis_requested:
-                        request_session_timeline_summary(
-                            session_id,
-                            reason="session_finalized_without_reanalysis",
-                            force=True,
-                        )
+                await run_sync(partial(queue_recording_end, session_id))
                 from app.core import settings_store
                 from app.core.osutil import open_path
                 from app.core.paths import clips_dir
@@ -220,24 +202,62 @@ def cmd_record(
                 if settings_store.upload_active():
                     return
                 path = str(clips_dir())
-                console.print(f"[green]本场直播已结束。上传模块未开启,切片已保存到:[/green] {path}")
+                console.print(f"[green]本场录制已结束。切片处理结果可在此目录查看:[/green] {path}")
                 open_path(path)
 
-            recorder = Recorder(source_room=identity, db_room_id=db_id, on_segment=on_segment, on_end=_on_end)
+            recorder = Recorder(
+                source_room=identity,
+                db_room_id=db_id,
+                on_segment=on_segment,
+                on_end=_on_end,
+                final_analysis=pipeline_enabled,
+            )
             loop = asyncio.get_running_loop()
             try:
                 loop.add_signal_handler(signal.SIGINT, recorder.stop)
             except NotImplementedError:
                 pass  # Windows 下 asyncio.run 的取消进入 Recorder finally 完成收尾。
             console.print(f"开始录制 {identity.platform}:{identity.source_id}（按 Ctrl+C 停止）", markup=False)
+            from app.recording import intents
+            from app.recording.settlement import RecordingSettlement, settle_exited_recording
+            from app.web.services.rooms import finalize_recording_requests
+
+            settlement = RecordingSettlement(finalize_recording_requests)
+            activated = False
             try:
-                await recorder.run()
-            finally:
+                await settlement.start()
                 with get_session() as db:
                     room = db.get(LiveRoom, db_id)
-                    if room is not None:
-                        room.enabled = False
-                        db.add(room)
+                    if room is None or room_is_removed(db, db_id):
+                        raise SourceUnavailable("直播间已移除，未开始新的录制")
+                    if settings.require_authorization and not room.authorized:
+                        raise SourceUnavailable("直播间授权已撤回，未开始新的录制")
+                    if room_source(room, db) != identity:
+                        raise SourceUnavailable("直播来源已改变，未开始新的录制")
+                    room.enabled = True
+                    # 旧场次收尾完成后才启用新请求，流水线继续读取房间级开关。
+                    if pipeline_enabled:
+                        room.auto_analyze = True
+                    if produce:
+                        room.auto_render = True
+                    db.add(room)
+                activated = True
+                await recorder.run()
+            finally:
+                try:
+                    await settlement.stop()
+                    if recorder.session_id is not None:
+                        with get_session() as db:
+                            execution = intents.load_execution(db, recorder.session_id)
+                        if execution is not None and not execution.settled:
+                            await run_sync(partial(settle_exited_recording, execution, finalize_recording_requests))
+                finally:
+                    if activated:
+                        with get_session() as db:
+                            room = db.get(LiveRoom, db_id)
+                            if room is not None:
+                                room.enabled = False
+                                db.add(room)
 
     try:
         asyncio.run(execute())

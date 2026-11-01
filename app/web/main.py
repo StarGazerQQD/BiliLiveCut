@@ -103,10 +103,6 @@ async def _application_lifespan(_app: FastAPI, ownership: ServiceOwnership) -> A
     """应用生命周期:启动初始化、启动 TaskWorker、自动恢复、预约调度、关闭时优雅停止。"""
     setup_logging()
     await run_sync(init_db)
-    from app.recording.danmaku import freeze_interrupted_captures
-
-    await run_sync(freeze_interrupted_captures)
-
     # V0.1.13: Web 安全兜底 — 启动时检查 host+password 配置
     from app.core.config import settings as _cfg_startup
 
@@ -167,6 +163,9 @@ async def _application_lifespan(_app: FastAPI, ownership: ServiceOwnership) -> A
         rooms_service.recorder_manager.request_stop_all()
 
     schedules = _schedule_runner()
+    from app.recording.settlement import RecordingSettlement
+
+    settlement = RecordingSettlement(rooms_service.finalize_recording_requests)
     supervisor = Supervisor(
         [
             Service("qr_login", stop=qr_logins.stop),
@@ -175,7 +174,7 @@ async def _application_lifespan(_app: FastAPI, ownership: ServiceOwnership) -> A
             Service("metrics", start_metrics, partial(run_sync, stop_metrics_collector)),
             Service("trends", start_trends, trend_scheduler.stop),
             Service("plugins", plugin_manager.start, plugin_manager.stop),
-            Service("recording_settlement", rooms_service.settle_interrupted_recordings),
+            Service("recording_settlement", settlement.start, settlement.stop, settlement.request_stop),
             Service("worker", task_worker.start, task_worker.stop, task_worker.request_stop),
             Service("web_jobs", web_job_manager.start, web_job_manager.stop, web_job_manager.request_stop),
             Service("recorders", recover_recordings, rooms_service.recorder_manager.stop_all),

@@ -29,6 +29,7 @@ from app.db.entities import (
     Transcript,
 )
 from app.db.session import get_session
+from app.recording.intents import terminal_settlement_pending
 
 _RESULT_PREFIX = "session_timeline_summary:"
 _REQUEST_PREFIX = "session_timeline_summary_request:"
@@ -631,6 +632,8 @@ def interrupt_summary_execution(claim: SessionSummaryClaim) -> None:
 def _session_ready(db: Session, session_id: int) -> bool:
     recording = db.get(RecordingSession, session_id)
     if recording is None or recording.ended_at is None:
+        return False
+    if terminal_settlement_pending(db, session_id):
         return False
     if db.get(AppSetting, f"{_REANALYSIS_PREFIX}{session_id}") is not None:
         return False

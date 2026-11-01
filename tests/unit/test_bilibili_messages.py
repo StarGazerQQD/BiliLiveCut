@@ -100,6 +100,7 @@ def test_control_and_guard_models_do_not_extend_database_retention() -> None:
 
 def test_bad_message_does_not_lose_later_messages_or_change_archive_order(temp_db: None) -> None:
     from app.analysis.danmaku_sampling import DanmakuSampler
+    from app.recording.danmaku_journal import drain_journal
 
     raw = [
         {"cmd": "SEND_GIFT", "data": {"total_coin": "bad"}},
@@ -116,6 +117,7 @@ def test_bad_message_does_not_lose_later_messages_or_change_archive_order(temp_d
     client = DanmakuClient(100, 200, archive=Archive())
     client._sampler = DanmakuSampler()
     client._handle_frame(b"".join(encode_packet(OP_MESSAGE, json.dumps(item).encode()) for item in raw))
+    assert drain_journal(200)
     assert archived == raw
     assert client._sampler._seq == 1
     with get_session() as db:

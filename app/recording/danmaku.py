@@ -5,17 +5,17 @@ from __future__ import annotations
 import asyncio
 from collections.abc import Callable
 from datetime import UTC, datetime
-from typing import Literal
+from functools import partial
 
 from loguru import logger
-from pydantic import AwareDatetime, BaseModel, ConfigDict, Field
-from sqlmodel import Session, select
+from sqlalchemy.exc import SQLAlchemyError
 
 from app.core.async_cleanup import complete_cleanup
 from app.core.config import settings
+from app.core.execution import run_sync
 from app.core.sanitize import safe_exception_summary
-from app.db.entities import AppSetting, Danmaku, DanmakuType
-from app.db.session import get_session
+from app.db.entities import Danmaku, DanmakuType
+from app.db.errors import temporary_database_error
 from app.plugins.live_source import (
     DanmakuEvent,
     DanmakuSource,
@@ -25,58 +25,17 @@ from app.plugins.live_source import (
     SourceTemporaryError,
 )
 from app.recording.danmaku_archive import DanmakuArchive
-from app.recording.metadata import read_metadata
+from app.recording.danmaku_evidence import (
+    CaptureInterval,
+    DanmakuEvidence,
+    freeze_interrupted_captures as freeze_interrupted_captures,
+    read_evidence as read_evidence,
+)
+from app.recording.danmaku_journal import DanmakuJournal, drain_journal
 
 _DB_BATCH_SIZE = 100
 _BATCH_POLL_S = 1.0
 _COVERAGE_POLL_S = 5.0
-
-
-class CaptureInterval(BaseModel):
-    """已确认连通的 UTC 区间，断连和正常停止均关闭区间。"""
-
-    model_config = ConfigDict(extra="forbid")
-    start: AwareDatetime
-    end: AwareDatetime | None = None
-
-
-class DanmakuEvidence(BaseModel):
-    """状态与历史覆盖分开，避免断连抹掉历史或缺失被当作零事件。"""
-
-    model_config = ConfigDict(extra="forbid")
-    version: Literal[1] = 1
-    status: DanmakuStatus
-    lag_s: float = 0.0
-    intervals: list[CaptureInterval] = Field(default_factory=list)
-    ended_at: AwareDatetime | None = None
-    confirmed_until: AwareDatetime | None = None
-    interrupted: bool = False
-    archive_error: str | None = None
-
-
-def read_evidence(db: Session, session_id: int) -> DanmakuEvidence | None:
-    """读取场次证据；缺失记录不推断为成功采集。"""
-    return read_metadata(db, f"session_danmaku:{session_id}", DanmakuEvidence)
-
-
-def freeze_interrupted_captures() -> None:
-    """启动任务之前冻结遗留连接，仅认可崩溃前最后一次持久观测。"""
-    with get_session() as db:
-        rows = db.exec(select(AppSetting).where(AppSetting.key.startswith("session_danmaku:"))).all()
-        for row in rows:
-            evidence = read_metadata(db, row.key, DanmakuEvidence)
-            if evidence is None or evidence.ended_at is not None:
-                continue
-            for interval in evidence.intervals:
-                if interval.end is None:
-                    interval.end = max(interval.start, evidence.confirmed_until or interval.start)
-            evidence.ended_at = evidence.confirmed_until or datetime.now(UTC)
-            evidence.interrupted = True
-            if evidence.status in {DanmakuStatus.AVAILABLE, DanmakuStatus.CONNECTING}:
-                evidence.status = DanmakuStatus.FAILED
-            row.value = evidence.model_dump_json()
-            row.updated_at = datetime.now(UTC)
-            db.add(row)
 
 
 class DanmakuCapture:
@@ -89,9 +48,11 @@ class DanmakuCapture:
         self.db_room_id = db_room_id
         self.session_id = session_id
         self.archive = DanmakuArchive(session_id, room)
+        self.journal = DanmakuJournal(session_id)
+        self._state_lock = asyncio.Lock()
         # 内置适配保留原有礼物、SC、进场及采样单位；不向外部契约暴露数据库。
         self.collector: DanmakuSource | None = (
-            source.danmaku_for_session(session_id, archive=self.archive)
+            source.danmaku_for_session(session_id, archive=self.archive, journal=self.journal, gate=self._state_lock)
             if isinstance(source, BilibiliSource)
             else source
             if isinstance(source, DanmakuSource)
@@ -105,62 +66,50 @@ class DanmakuCapture:
             lag_s=settings.danmaku_event_lag_s if isinstance(source, BilibiliSource) else 0.0,
         )
         self._task: asyncio.Task[None] | None = None
-        self._state_lock = asyncio.Lock()
         self._heartbeat_task: asyncio.Task[None] | None = None
+        self._replay_task: asyncio.Task[None] | None = None
         self._failure_task: asyncio.Task[None] | None = None
         self._stopping = False
-        self._pending: list[DanmakuEvent] = []
+        self._wake_replay = asyncio.Event()
+        self._terminal_written = False
+        self._database_failure = False
+        self._queued = 0
 
     def _save_sync(self, payload: str) -> None:
-        with get_session(operation="danmaku_checkpoint") as db:
-            key = f"session_danmaku:{self.session_id}"
-            row = db.get(AppSetting, key) or AppSetting(key=key)
-            row.value = payload
-            row.updated_at = datetime.now(UTC)
-            db.add(row)
+        self.journal.append_observation(DanmakuEvidence.model_validate_json(payload))
 
     async def _write(self, operation: Callable[[], None]) -> None:
         # SQLite 锁等待隔离到工作线程；取消不能越过已经开始的写入。
         await complete_cleanup(asyncio.to_thread(operation))
 
     async def _flush_pending(self) -> None:
-        if not self._pending:
-            return
-        batch = tuple(self._pending)
-
-        def persist() -> None:
-            with get_session(operation="danmaku_batch") as db:
-                db.add_all(
-                    [
-                        Danmaku(
-                            session_id=self.session_id,
-                            room_id=self.db_room_id,
-                            ts=event.occurred_at,
-                            msg_type=DanmakuType.DANMAKU,
-                            content=event.content,
-                            user=event.user_name,
-                            value=1.0,
-                        )
-                        for event in batch
-                    ]
-                )
-            # 提交与移除属于同一不可取消操作，取消返回后不得重放已提交批次。
-            del self._pending[: len(batch)]
-
-        await self._write(persist)
+        await self._write(lambda: drain_journal(self.session_id, limit=_DB_BATCH_SIZE))
 
     async def _save(self, *, confirmed_until: datetime | None = None) -> None:
-        await self._flush_pending()
+        if self._terminal_written:
+            return
         confirmed = (
             confirmed_until
             if confirmed_until is not None
             else (self.evidence.confirmed_until if self.evidence.ended_at is not None else datetime.now(UTC))
         )
-        self.evidence.archive_error = self.archive.error
+        self.evidence.archive_error = self.archive.error or self.evidence.archive_error
         payload = self.evidence.model_copy(update={"confirmed_until": confirmed}).model_dump_json()
-        await self._write(lambda: self._save_sync(payload))
-        # 只有已提交快照才能推进覆盖；等待写入时发生故障也不能越过冻结点。
-        self.evidence.confirmed_until = confirmed
+
+        def persist() -> None:
+            snapshot = DanmakuEvidence.model_validate_json(payload)
+            self._save_sync(payload)
+            # 文件提交和本地记号一起完成，取消不能造成终态重复追加。
+            self._terminal_written = snapshot.ended_at is not None
+            if self.evidence.ended_at is None or snapshot.ended_at is not None:
+                self.evidence.confirmed_until = snapshot.confirmed_until
+
+        try:
+            await self._write(persist)
+        except (OSError, ValueError, RuntimeError):
+            self._freeze_failure()
+            raise
+        self._wake_replay.set()
 
     async def _state(self, value: DanmakuStatus) -> None:
         async with self._state_lock:
@@ -183,44 +132,74 @@ class DanmakuCapture:
         if type(event) is not DanmakuEvent:
             raise ValueError("弹幕必须为公共 DanmakuEvent")
         event = DanmakuEvent.model_validate(event.model_dump())
-        await self._state(DanmakuStatus.AVAILABLE)
-
         async with self._state_lock:
             if self._stopping or self.evidence.ended_at is not None:
                 return
 
             def accept() -> None:
                 self.archive.append([event.model_dump(mode="json")], event_format="normalized")
-                self._pending.append(event)
+                self.journal.append_messages(
+                    [
+                        Danmaku(
+                            session_id=self.session_id,
+                            room_id=self.db_room_id,
+                            ts=event.occurred_at,
+                            msg_type=DanmakuType.DANMAKU,
+                            content=event.content,
+                            user=event.user_name,
+                            value=1.0,
+                        )
+                    ]
+                )
 
-            await self._write(accept)
-            if len(self._pending) >= _DB_BATCH_SIZE:
-                await self._flush_pending()
+            try:
+                await self._write(accept)
+            except (OSError, ValueError, RuntimeError):
+                self._freeze_failure()
+                raise
+            if self.evidence.status != DanmakuStatus.AVAILABLE:
+                now = datetime.now(UTC)
+                self.evidence.status = DanmakuStatus.AVAILABLE
+                self.evidence.intervals.append(CaptureInterval(start=now))
+                await self._save()
+            self._queued += 1
+            if self._queued >= _DB_BATCH_SIZE:
+                self._queued = 0
+                self._wake_replay.set()
 
     async def start(self) -> None:
         """先落证据状态，再启动可选采集任务。"""
         if self.evidence.status == DanmakuStatus.CONNECTING:
             await self._write(self.archive.start)
         await self._save()
+        await self._try_replay()
         if self.evidence.status == DanmakuStatus.CONNECTING:
             self._task = asyncio.create_task(self._run())
             self._heartbeat_task = asyncio.create_task(self._checkpoint_coverage())
+            self._replay_task = asyncio.create_task(self._replay())
             self._task.add_done_callback(self._observe_task)
             self._heartbeat_task.add_done_callback(self._observe_task)
+            self._replay_task.add_done_callback(self._observe_task)
+
+    def _freeze_failure(self) -> None:
+        confirmed = self.evidence.confirmed_until
+        self.evidence.status = DanmakuStatus.FAILED
+        self.evidence.ended_at = confirmed or datetime.now(UTC)
+        self.evidence.interrupted = True
+        self.evidence.intervals = [
+            CaptureInterval(start=interval.start, end=min(interval.end or confirmed, confirmed))
+            for interval in self.evidence.intervals
+            if confirmed is not None and interval.start <= confirmed
+        ]
 
     def _observe_task(self, task: asyncio.Task[None]) -> None:
         if task.cancelled():
             return
         error = task.exception()
         if error is not None:
-            now = self.evidence.confirmed_until or datetime.now(UTC)
-            self.evidence.status = DanmakuStatus.FAILED
-            self.evidence.ended_at = now
-            for interval in self.evidence.intervals:
-                if interval.end is None:
-                    interval.end = max(interval.start, now)
+            self._freeze_failure()
             logger.opt(exception=error).error("弹幕后台任务失败 session={}", self.session_id)
-            for peer in (self._task, self._heartbeat_task):
+            for peer in (self._task, self._heartbeat_task, self._replay_task):
                 if peer is not None and peer is not task:
                     peer.cancel()
             if self._failure_task is None:
@@ -228,12 +207,13 @@ class DanmakuCapture:
 
     async def _save_failure(self) -> None:
         """单次保存故障终态；数据库不可写时保留内存证据及文件日志。"""
-        peers = [task for task in (self._task, self._heartbeat_task) if task is not None]
+        peers = [task for task in (self._task, self._heartbeat_task, self._replay_task) if task is not None]
         if peers:
             await asyncio.gather(*peers, return_exceptions=True)
         try:
             async with self._state_lock:
                 await self._save()
+            await self._try_replay()
         except Exception as exc:  # noqa: BLE001 — 失败记录的持久化边界
             logger.opt(exception=exc).error("弹幕失败状态无法保存 session={}", self.session_id)
 
@@ -245,10 +225,52 @@ class DanmakuCapture:
             async with self._state_lock:
                 if self._stopping:
                     return
-                await self._flush_pending()
                 if self.evidence.status == DanmakuStatus.AVAILABLE and loop.time() >= next_coverage:
                     await self._save()
                     next_coverage = loop.time() + _COVERAGE_POLL_S
+
+    async def _try_replay(self) -> bool | None:
+        """一次有界写库，暂态失败返回等待；永久错误交由生命周期暴露。"""
+        try:
+            finished = await run_sync(partial(drain_journal, self.session_id, limit=_DB_BATCH_SIZE))
+        except SQLAlchemyError as exc:
+            if not temporary_database_error(exc):
+                raise
+            if not self._database_failure:
+                logger.warning(
+                    "弹幕数据库暂时不可写，保留补做记录 session={} error={}",
+                    self.session_id,
+                    safe_exception_summary(exc),
+                )
+            self._database_failure = True
+            return None
+        if self._database_failure:
+            logger.info("弹幕数据库恢复，继续消费补做记录 session={}", self.session_id)
+        self._database_failure = False
+        return finished
+
+    async def _replay(self) -> None:
+        """数据库等待与接收分离；失败期间仅磁盘积压，后续轮次继续恢复。"""
+        delay = _BATCH_POLL_S
+        while not self._stopping:
+            try:
+                async with asyncio.timeout(delay):
+                    await self._wake_replay.wait()
+            except TimeoutError:
+                pass
+            self._wake_replay.clear()
+            if self._stopping:
+                return
+            result = await self._try_replay()
+            if result is None:
+                delay = min(max(delay * 2, _BATCH_POLL_S), 30.0)
+                # 新消息不能缩短数据库退避并造成连续请求。
+                await asyncio.sleep(delay)
+                self._wake_replay.set()
+            else:
+                delay = _BATCH_POLL_S
+                if not result:
+                    self._wake_replay.set()
 
     async def _run(self) -> None:
         assert self.collector is not None
@@ -280,6 +302,10 @@ class DanmakuCapture:
     async def stop(self) -> None:
         """等待采集取消和连接释放后冻结覆盖，保留最后状态及已观测区间。"""
         self._stopping = True
+        if self._replay_task is not None:
+            self._replay_task.cancel()
+            await asyncio.gather(self._replay_task, return_exceptions=True)
+            self._replay_task = None
         if self._heartbeat_task is not None:
             self._heartbeat_task.cancel()
             await asyncio.gather(self._heartbeat_task, return_exceptions=True)
@@ -299,3 +325,5 @@ class DanmakuCapture:
                     self.evidence.intervals[-1].end = now
             # 停止时有界保存一次，覆盖旧的延迟写入并允许暂时坏库恢复后的终态落盘。
             await self._save(confirmed_until=self.evidence.ended_at)
+        # 停止只尝试一批，不等待数据库恢复；剩余记录由场次收尾服务继续处理。
+        await self._try_replay()

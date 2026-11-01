@@ -27,14 +27,17 @@ from typing import TYPE_CHECKING, Protocol
 
 import brotli
 from loguru import logger
+from sqlalchemy.exc import SQLAlchemyError
 from websockets.exceptions import WebSocketException
 
 from app.core.async_cleanup import complete_cleanup
 from app.core.config import settings
+from app.core.execution import run_sync
 from app.core.sanitize import safe_exception_summary
 from app.db.entities import Danmaku, DanmakuType
-from app.db.session import get_session
+from app.db.errors import temporary_database_error
 from app.plugins.live_source import DanmakuStateSink, DanmakuStatus
+from app.recording.danmaku_journal import DanmakuJournal, JournalWriteError
 from app.sources.bilibili.client import (
     BilibiliAuthenticationError,
     BilibiliError,
@@ -93,6 +96,8 @@ def _local_resource_error(error: BaseException) -> bool:
     seen: set[int] = set()
     while id(error) not in seen:
         seen.add(id(error))
+        if isinstance(error, JournalWriteError):
+            return True
         if isinstance(error, OSError) and error.errno in {
             errno.EACCES,
             errno.EPERM,
@@ -810,6 +815,8 @@ class DanmakuClient(DanmakuConnection):
         *,
         on_state: DanmakuStateSink | None = None,
         archive: DanmakuArchive | None = None,
+        journal: DanmakuJournal | None = None,
+        frame_gate: asyncio.Lock | None = None,
         sampling_policy: Callable[[], DanmakuSamplingPolicy] | None = None,
         login_retry_max_attempts: int | None = None,
         login_retry_interval_s: float | None = None,
@@ -823,13 +830,76 @@ class DanmakuClient(DanmakuConnection):
         )
         self.session_id = session_id
         self._archive = archive
+        self._journal = journal if journal is not None else DanmakuJournal(session_id)
+        self._frame_gate = frame_gate if frame_gate is not None else asyncio.Lock()
         self._sampler = None
         self._sampling_policy = sampling_policy
         self._sampling_policy_updated_at = float("-inf")
+        self._policy_loop_active = False
+        self._policy_failed = False
+
+    def _load_policy(self) -> DanmakuSamplingPolicy | None:
+        return self._sampling_policy() if self._sampling_policy is not None else None
+
+    async def _refresh_policy(self) -> bool:
+        try:
+            policy = await run_sync(self._load_policy)
+        except SQLAlchemyError as exc:
+            if not temporary_database_error(exc):
+                raise
+            if not self._policy_failed:
+                logger.warning(
+                    "弹幕采样配置暂时不可读，等待恢复 session={} error={}", self.session_id, safe_exception_summary(exc)
+                )
+            self._policy_failed = True
+            return False
+        from app.analysis.danmaku_sampling import get_sampler
+
+        async with self._frame_gate:
+            if self._sampler is None:
+                self._sampler = get_sampler(self.room_id)
+            if policy is not None:
+                self._sampler.policy = policy
+            self._sampling_policy_updated_at = time.monotonic()
+        if self._policy_failed:
+            logger.info("弹幕采样配置读取恢复 session={}", self.session_id)
+        self._policy_failed = False
+        return True
+
+    async def _poll_policy(self) -> None:
+        while not self._stop.is_set():
+            try:
+                async with asyncio.timeout(5):
+                    await self._stop.wait()
+            except TimeoutError:
+                await self._refresh_policy()
+
+    async def run(self) -> None:
+        """先取得明确采样策略；后续刷新在接收临界区外查询数据库。"""
+        delay = 1.0
+        while not self._stop.is_set() and not await self._refresh_policy():
+            try:
+                async with asyncio.timeout(delay):
+                    await self._stop.wait()
+            except TimeoutError:
+                delay = min(delay * 2, 30)
+        if self._stop.is_set():
+            return
+        self._policy_loop_active = True
+        try:
+            async with asyncio.TaskGroup() as group:
+                refresh = group.create_task(self._poll_policy())
+                try:
+                    await super().run()
+                finally:
+                    refresh.cancel()
+        finally:
+            self._policy_loop_active = False
 
     async def _process_frame(self, frame: bytes) -> None:
         """工作线程不能被取消，收尾仍需等待当前批次完成持久化。"""
-        await complete_cleanup(asyncio.to_thread(self._handle_frame, frame))
+        async with self._frame_gate:
+            await complete_cleanup(asyncio.to_thread(self._handle_frame, frame))
 
     def _handle_frame(self, frame: bytes) -> None:
         """解码一帧并把其中的弹幕消息批量入库。
@@ -842,6 +912,13 @@ class DanmakuClient(DanmakuConnection):
 
             self._sampler = get_sampler(self.room_id)
 
+        if (
+            not self._policy_loop_active
+            and self._sampling_policy is not None
+            and time.monotonic() - self._sampling_policy_updated_at >= 5
+        ):
+            self._sampler.policy = self._sampling_policy()
+            self._sampling_policy_updated_at = time.monotonic()
         decoded = decode(frame)
         if self._archive is not None:
             self._archive.append(
@@ -849,9 +926,6 @@ class DanmakuClient(DanmakuConnection):
                 event_format="raw",
             )
         rows: list[Danmaku] = []
-        if self._sampling_policy is not None and time.monotonic() - self._sampling_policy_updated_at >= 5:
-            self._sampler.policy = self._sampling_policy()
-            self._sampling_policy_updated_at = time.monotonic()
         for op, parsed in decoded:
             if op == OP_HEARTBEAT_REPLY and isinstance(parsed, int):
                 self.popularity = parsed
@@ -877,5 +951,4 @@ class DanmakuClient(DanmakuConnection):
                     )
                 )
         if rows:
-            with get_session() as db:
-                db.add_all(rows)
+            self._journal.append_messages(rows)

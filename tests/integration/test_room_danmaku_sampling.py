@@ -106,6 +106,7 @@ def test_active_collectors_refresh_only_their_room_and_archive_every_message(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     from app.sources.bilibili import danmaku
+    from app.recording.danmaku_journal import drain_journal
     from app.web.main import app
     from app.web.services.rooms import recorder_manager
 
@@ -145,6 +146,7 @@ def test_active_collectors_refresh_only_their_room_and_archive_every_message(
     ]
     collector._handle_frame(_frame(messages))
     other_collector._handle_frame(_frame([messages[0]]))
+    assert drain_journal(other_session_id)
     with get_session() as db:
         assert [row.session_id for row in db.exec(select(Danmaku)).all()] == [other_session_id]
     assert _patch(client, room_id, {key: 1 for key in stop_policy if key.endswith("_rate")}).status_code == 200
@@ -161,6 +163,7 @@ def test_active_collectors_refresh_only_their_room_and_archive_every_message(
         {"cmd": "UNKNOWN_EVENT", "data": {"text": "原始消息"}},
     ]
     collector._handle_frame(_frame(messages + control))
+    assert drain_journal(session_id)
     with get_session() as db:
         rows = db.exec(select(Danmaku).where(Danmaku.session_id == session_id)).all()
         assert [row.msg_type for row in rows] == ["danmaku", "gift", "superchat", "interact"]

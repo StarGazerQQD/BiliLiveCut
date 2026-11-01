@@ -185,6 +185,7 @@ def _cleanup_old_raw_files(retention_days: int | None) -> int:
         TaskStatus,
     )
     from app.db.session import get_session
+    from app.recording.intents import terminal_settlement_pending
 
     now = datetime.now(UTC).replace(tzinfo=None)
     days = retention_days if retention_days is not None else settings.raw_retention_days
@@ -211,6 +212,8 @@ def _cleanup_old_raw_files(retention_days: int | None) -> int:
         recordings = db.exec(select(RecordingSession).where(RecordingSession.ended_at.is_not(None))).all()
         for recording in recordings:
             if recording.status not in {"stopped", "paused", "error"}:
+                continue
+            if terminal_settlement_pending(db, recording.id):
                 continue
             if db.get(AppSetting, f"session_reanalysis:{recording.id}") is not None:
                 continue

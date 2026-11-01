@@ -27,6 +27,7 @@ import uuid
 from collections.abc import Awaitable, Callable
 from dataclasses import dataclass
 from datetime import UTC, datetime
+from functools import partial
 from pathlib import Path
 
 from loguru import logger
@@ -133,6 +134,7 @@ class Recorder:
         on_state: StateCallback | None = None,
         metadata_prepared: bool = False,
         intent_generation: str | None = None,
+        final_analysis: bool | None = None,
     ) -> None:
         self.source_room = source_room
         self._source: LiveSource | None = None
@@ -146,12 +148,14 @@ class Recorder:
         self.on_state = on_state
         self._metadata_prepared = metadata_prepared
         self.intent_generation = intent_generation
+        self.final_analysis = on_end is not None if final_analysis is None else final_analysis
         self.shutdown_requested = False
         self._writer: SessionWriter | None = None
         self._stop = asyncio.Event()
         self._session_id: int | None = None
         self._seq = 0  # 跨重连累加的全局片段序号
         self._paths: set[str] = set()  # 已登记片段路径缓存(避免每次查全表)
+        self._tail_registration_pending = False
         self._danmaku: DanmakuCapture | None = None
         self._active_process: asyncio.subprocess.Process | None = None
         self._recording_error: str | None = None
@@ -530,6 +534,10 @@ class Recorder:
         )
         logger.info("录制已停止 room={} session={}", self.db_room_id, self._session_id)
 
+        if self._tail_registration_pending:
+            logger.warning("录制尾片登记尚未完成，保留周期清算请求 session={}", self._session_id)
+            return
+
         if self.on_end is not None and self._session_id is not None:
             try:
                 await self.on_end(self._session_id)
@@ -537,11 +545,9 @@ class Recorder:
                 logger.error("会话结束回调失败 session={}: {}", self._session_id, exc)
                 return
         if self._session_id is not None:
-            with get_session() as db:
-                record = intents.load_execution(db, self._session_id)
-                if record is not None:
-                    record.settled = True
-                    intents.save(db, record)
+            from app.web.services.rooms import queue_recording_end
+
+            await run_sync(partial(queue_recording_end, self._session_id))
 
     def _retry_exhausted(self, budget: _ReconnectBudget) -> bool:
         """检查连续取流预算，并在耗尽时记录自动停止原因。"""
@@ -974,7 +980,9 @@ class Recorder:
                     )
                     try:
                         # 兜底:登记可能尚未从清单读到的最后片段。
+                        self._tail_registration_pending = True
                         await self._scan_orphan_segments(segment_list, out_dir, prefix=prefix)
+                        self._tail_registration_pending = False
                         if race_attempt is not None:
                             # watcher 和进程均已退出，末片登记成功后才删除清单。
                             # 登记异常时保留 CSV 与录像，避免破坏恢复依据。
@@ -1349,7 +1357,14 @@ class Recorder:
             db.flush()
             db.refresh(session)
             sid = session.id
-            intents.bind_session(db, int(sid), self.db_room_id, self.intent_generation, self._require_writer().identity)
+            intents.bind_session(
+                db,
+                int(sid),
+                self.db_room_id,
+                self.intent_generation,
+                self._require_writer().identity,
+                final_analysis=self.final_analysis,
+            )
         logger.info("创建录制会话 session_id={} room={}", sid, self.db_room_id)
         return int(sid)
 

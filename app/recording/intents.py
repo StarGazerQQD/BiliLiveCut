@@ -61,7 +61,9 @@ class RecordingExecution(BaseModel):
     attempts: list[RecordingAttempt] = Field(default_factory=list)
     finalized: bool = False
     settled: bool = False
+    final_analysis: bool = True
     recovery_errors: list[str] = Field(default_factory=list)
+    recovery_after: str = ""
 
 
 def save(db: Session, value: RecordingIntent | RecordingExecution) -> None:
@@ -149,7 +151,15 @@ def stop_intent(db: Session, room_id: int, reason: str) -> None:
         save(db, intent)
 
 
-def bind_session(db: Session, session_id: int, room_id: int, generation: str | None, writer: WriterIdentity) -> None:
+def bind_session(
+    db: Session,
+    session_id: int,
+    room_id: int,
+    generation: str | None,
+    writer: WriterIdentity,
+    *,
+    final_analysis: bool = True,
+) -> None:
     """创建场次与绑定意图、writer 证明共用同一事务。"""
     if generation is not None:
         intent = load_intent(db, room_id)
@@ -157,7 +167,27 @@ def bind_session(db: Session, session_id: int, room_id: int, generation: str | N
             raise ValueError("录制请求已撤销，拒绝创建场次")
         intent.session_id, intent.state = session_id, "running"
         save(db, intent)
-    save(db, RecordingExecution(session_id=session_id, room_id=room_id, generation=generation, writer=writer))
+    save(
+        db,
+        RecordingExecution(
+            session_id=session_id,
+            room_id=room_id,
+            generation=generation,
+            writer=writer,
+            final_analysis=final_analysis,
+        ),
+    )
+
+
+def terminal_settlement_pending(db: Session, session_id: int) -> bool:
+    """只阻止已结束但未结算的正式场次；活动重分析和旧导入保持原语义。"""
+    from app.db.entities import RecordingSession
+
+    record = load_execution(db, session_id)
+    if record is None or record.settled:
+        return False
+    session = db.get(RecordingSession, session_id)
+    return record.finalized or (session is not None and session.ended_at is not None)
 
 
 def adopt_attempt(db: Session, session_id: int, directory: Path, prefix: str, segment_list: Path) -> None:

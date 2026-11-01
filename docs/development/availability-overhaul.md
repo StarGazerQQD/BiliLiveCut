@@ -8,8 +8,8 @@
 
 | Phase | 状态 | 工作项 | 依赖与完成条件 |
 | --- | --- | --- | --- |
-| R0 可用性基线 | IN_PROGRESS | 建立 PR，固定正常与故障输入，复现 F01–F06，记录真实素材与运行环境 | 修改前行为可重复核查，基线回归、质量及必要制品有效；后续阶段不提前实施 |
-| R1 数据库故障后的业务恢复 | PENDING | F03、F04 | 数据库恢复后弹幕和结束收尾在同进程继续推进，水位与幂等性正确 |
+| R0 可用性基线 | COMPLETED | 建立 PR，固定正常与故障输入，复现 F01–F06，记录真实素材与运行环境 | 修改前行为可重复核查，基线回归、质量及必要制品有效；后续阶段不提前实施 |
+| R1 数据库故障后的业务恢复 | IN_PROGRESS | F03、F04 | 数据库恢复后弹幕和结束收尾在同进程继续推进，水位与幂等性正确 |
 | R2 运行控制与监督 | PENDING | F01、F02 | 恢复不覆盖最新设置，持续无响应可有限恢复，新旧执行不重叠 |
 | R3 模型工作流恢复 | PENDING | F05、F06 | 正常续做、真实失败和总预算分别处理，修正凭据后能恢复授权调用 |
 | R4 长场次资源边界 | PENDING | K01–K03 | 先测量再修改，媒体预检、清理占用及页面查询成本有界，原业务语义有效 |
@@ -81,3 +81,19 @@ python -m pytest tests packaging/portable/tests --timeout=600 --fail-on-skip --c
 `python -m pre_commit run --all-files` 的 12 项检查全部通过，包含 Ruff、React 类型、lint 和测试。`python scripts/export_openapi.py --check`、`uv lock --check --offline`、`cargo metadata --no-deps --locked --offline --manifest-path tools/native/rust/Cargo.toml` 通过。`npm --prefix docs run check` 的 22 项通过，`npm --prefix docs run build` 生成 57 页且全部链接通过；`python scripts/release_audit.py` 为 **63 PASS / 0 WARN / 0 FAIL**。
 
 当前业务、依赖及打包输入相对基线没有变化；现有 Payload、Lite EXE 和测试 Engine Pack 的 SHA-256 与 PR #99 制品清单一致，R0 不重复生成未变化的二进制。实际 diff 仅为本清单。远端适用 CI 仍待完成，R0 保持 `IN_PROGRESS`，通过后再进入 R1。
+
+### R0 远端验收与 R1 开始
+
+2026-11-01 核查提交 `6cab01c1ff365936b15cb3e540dba2fef50b7168`：CI `41277067269` 的 15 个 job、Docker `41277067396`、Documentation `41277067323` 均在 attempt 1 成功。19 项 checks 为 18 success、1 PR Pages 条件跳过，legacy statuses 为零。CodeQL、Frontend 未命中本阶段文档路径，Release 不由 PR 触发，均不适用。R0 完成。
+
+R1 仅处理 F03、F04。弹幕以场次内持久补做记录保留首次采样后的行及有序覆盖标记，通过同事务消费游标恢复，数据库等待不占接收临界区。收尾服务补做尚未 settled 的场次，严格核查原 writer 已退出，覆盖终态登记本身失败的情况，保留原故障状态及后来录制的房间配置。弹幕积压和尾片登记完成后才登记最终分析；启动恢复保留原 writer 和尾片核验。
+
+本阶段验收适用目标故障恢复测试、完整应用与 Portable 回归、全部质量检查、来源同步与相关正式制品构建、实际 diff 及远端 CI；未完成前保持 `IN_PROGRESS`。不增加第三方依赖、用户配置或独立通用任务系统。
+
+### R1 实现与目标回归
+
+已实现公共及 Bilibili 弹幕持久补做、独立数据库消费、Web/CLI 同进程收尾和最终分析等待。周期补做通过原 writer 独占证明识别实际退出，最多每批核验 20 个尾片；原终态写入失败时仍能补做。CLI 先恢复旧场次再启用新录制；同代终态登记异常后的自动恢复限制与现有房间控制保持一致，不影响新代次。
+
+目标回归覆盖 SQLite 真实写锁、连接池超时、后续消息继续接收、停止积压、相同内容消息、真实进程异常退出、未消费及已提交恢复、文件半写、失效 writer、终态事务与尾片登记失败、CLI 新旧场次顺序及重复补做。文件写失败后禁止继续追加，并冻结最后可信覆盖，避免把本地故障作为网络重连或将缺失窗口标成零弹幕。
+
+最近一组目标回归为 109 passed。完整回归、质量、来源同步、正式构建和远端 CI 尚未完成，R1 保持 `IN_PROGRESS`。
