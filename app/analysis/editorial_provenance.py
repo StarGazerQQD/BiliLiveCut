@@ -72,6 +72,7 @@ def editorial_code_identity() -> str:
         "analysis/editorial_review.py",
         "analysis/editorial_provenance.py",
         "analysis/editorial_review_sources.py",
+        "analysis/media_validation_windows.py",
         "analysis/editorial_evidence.py",
         "analysis/editorial_explanation.py",
         "analysis/event_enricher.py",

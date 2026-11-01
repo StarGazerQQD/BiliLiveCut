@@ -12,6 +12,7 @@ from sqlalchemy import case, func
 from sqlmodel import select
 
 from app.analysis.editorial_review_sources import media_validation_scope
+from app.analysis.media_validation_windows import task_media_windows
 from app.analysis.transcription.process_pool import ASRProcessExitError, ASRShutdownError, RemoteASRError
 from app.core.asr_failures import permanent_device_error
 from app.core.cancellation import OperationCancelledError, OperationShutdownError, cancellation_scope
@@ -218,8 +219,9 @@ def advance_candidate() -> None:
     from app.pipeline.approval import approve_event_and_task
 
     with get_session() as db:
-        sessions = db.exec(
-            select(SegmentTask.session_id)
+        selected_ids = db.exec(select(SegmentTask.id).where(SegmentTask.stage == TaskStatus.CANDIDATE_CREATED)).all()
+        eligible_ids = db.exec(
+            select(SegmentTask.id)
             .join(RecordingSession, RecordingSession.id == SegmentTask.session_id)
             .join(LiveRoom, LiveRoom.id == RecordingSession.room_id)
             .outerjoin(HighlightCandidate, HighlightCandidate.id == SegmentTask.candidate_id)
@@ -231,8 +233,15 @@ def advance_candidate() -> None:
             )
             .distinct()
         ).all()
-    with media_validation_scope(session_ids=sessions), get_session(operation="advance_candidate") as db:
-        tasks = db.exec(select(SegmentTask).where(SegmentTask.stage == TaskStatus.CANDIDATE_CREATED)).all()
+    with (
+        media_validation_scope(load_windows=lambda db: task_media_windows(db, task_ids=eligible_ids)),
+        get_session(operation="advance_candidate") as db,
+    ):
+        tasks = db.exec(
+            select(SegmentTask).where(
+                SegmentTask.stage == TaskStatus.CANDIDATE_CREATED, SegmentTask.id.in_(selected_ids)
+            )
+        ).all()
         for task in tasks:
             cfg = room_cfg_from_task(task, db)
             auto_approve = bool(cfg.get("auto_approve", False))
@@ -329,7 +338,9 @@ def advance_awaiting_review() -> None:
             ).all()
     if ready:
         with (
-            media_validation_scope(session_ids=[row.session_id for row in ready]),
+            media_validation_scope(
+                load_windows=lambda db: task_media_windows(db, task_ids=[row.task_id for row in ready])
+            ),
             get_session(operation="advance_review") as db,
         ):
             if db.get_bind().dialect.name == "sqlite":
@@ -363,9 +374,11 @@ def advance_approved() -> None:
     from app.pipeline.approval import render_approval_error
 
     with get_session() as db:
-        ids = db.exec(select(SegmentTask.session_id).where(SegmentTask.stage == TaskStatus.APPROVED)).all()
-    with media_validation_scope(session_ids=ids), get_session() as db:
-        tasks = db.exec(select(SegmentTask).where(SegmentTask.stage == TaskStatus.APPROVED)).all()
+        ids = db.exec(select(SegmentTask.id).where(SegmentTask.stage == TaskStatus.APPROVED)).all()
+    with media_validation_scope(load_windows=lambda db: task_media_windows(db, task_ids=ids)), get_session() as db:
+        tasks = db.exec(
+            select(SegmentTask).where(SegmentTask.stage == TaskStatus.APPROVED, SegmentTask.id.in_(ids))
+        ).all()
         for task in tasks:
             cfg = room_cfg_from_task(task, db)
             auto_render = bool(cfg.get("auto_render", False))
@@ -407,9 +420,11 @@ def advance_rendered() -> None:
 
     _logger = logging.getLogger(__name__)
     with get_session() as db:
-        ids = db.exec(select(SegmentTask.session_id).where(SegmentTask.stage == TaskStatus.RENDERED)).all()
-    with media_validation_scope(session_ids=ids), get_session() as db:
-        tasks = db.exec(select(SegmentTask).where(SegmentTask.stage == TaskStatus.RENDERED)).all()
+        ids = db.exec(select(SegmentTask.id).where(SegmentTask.stage == TaskStatus.RENDERED)).all()
+    with media_validation_scope(load_windows=lambda db: task_media_windows(db, task_ids=ids)), get_session() as db:
+        tasks = db.exec(
+            select(SegmentTask).where(SegmentTask.stage == TaskStatus.RENDERED, SegmentTask.id.in_(ids))
+        ).all()
         for task in tasks:
             if automatic_publish_error(db, task) is None:
                 enqueue_next(task, TaskStatus.QUEUED_FOR_PUBLISH)

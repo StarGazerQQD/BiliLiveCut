@@ -2,7 +2,9 @@ from __future__ import annotations
 
 import asyncio
 import multiprocessing
+from collections.abc import Callable, Iterable, Iterator
 from concurrent.futures import ThreadPoolExecutor
+from contextlib import contextmanager
 from datetime import UTC, datetime, timedelta
 from multiprocessing.connection import Connection as ProcessConnection
 from os import stat_result
@@ -11,7 +13,7 @@ from threading import Event
 
 import pytest
 from filelock import ReadWriteLock
-from sqlmodel import select
+from sqlmodel import Session, select
 from starlette.types import Message
 
 from app.analysis import editorial_review_sources as sources
@@ -269,6 +271,7 @@ def test_event_pass_releases_preflight_before_model_calculation(
 ) -> None:
     from app.db.entities import HighlightCandidate, Transcript
     from app.pipeline.lease import TaskLease
+    from app.pipeline.workers import analyze
     from app.pipeline.workers.analyze import commit_highlight
     from tests.unit.test_editorial_review import START, _seed, _service
 
@@ -289,12 +292,20 @@ def test_event_pass_releases_preflight_before_model_calculation(
         db.flush()
         task_id = task.id
     assert task_id is not None
-    probe = sources._probe_media
+    validation = analyze.media_validation_scope
     appended = False
 
-    def append_after_preflight(name: str) -> sources._MediaState:
+    @contextmanager
+    def append_after_preflight(
+        *,
+        session_ids: Iterable[int] = (),
+        task_id: int | None = None,
+        load_windows: Callable[[Session], Iterable[sources.MediaWindow]] | None = None,
+    ) -> Iterator[None]:
         nonlocal appended
-        state = probe(name)
+        with validation(session_ids=session_ids, task_id=task_id, load_windows=load_windows):
+            yield
+        assert sources._current_media_snapshot() is None
         if not appended:
             appended = True
             with get_session() as db:
@@ -308,9 +319,8 @@ def test_event_pass_releases_preflight_before_model_calculation(
                 db.add(late)
                 db.flush()
                 db.add(Transcript(segment_id=late.id, final_text="", words_json="[]"))
-        return state
 
-    monkeypatch.setattr(sources, "_probe_media", append_after_preflight)
+    monkeypatch.setattr(analyze, "media_validation_scope", append_after_preflight)
     commit_highlight(
         TaskLease(task_id, "test-worker", "live-source", TaskStatus.ANALYZING),
         {"decision": "event_pass", "segment_id": segment_id, "session_id": session_id},

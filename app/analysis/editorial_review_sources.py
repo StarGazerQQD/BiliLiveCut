@@ -5,7 +5,7 @@ import hashlib
 import json
 import math
 import stat
-from collections.abc import Iterable, Iterator, Mapping
+from collections.abc import Callable, Iterable, Iterator, Mapping
 from contextlib import contextmanager
 from contextvars import ContextVar
 from dataclasses import dataclass, replace
@@ -13,6 +13,8 @@ from datetime import UTC, datetime
 from threading import get_ident
 from typing import cast
 
+from sqlalchemy import and_, false, or_
+from sqlalchemy.sql.elements import ColumnElement
 from sqlmodel import Session, select
 
 from app.analysis import llm_providers
@@ -40,8 +42,37 @@ from app.analysis.timeline import datetime_epoch
 from app.core.media_usage import media_reference_scope
 from app.core.paths import resolve_storage_path
 from app.db import session as database
-from app.db.entities import AppSetting, HighlightCandidate, HighlightEvent, HotspotEvent, RawSegment, SegmentTask
+from app.db.entities import AppSetting, HighlightCandidate, HighlightEvent, HotspotEvent, RawSegment
 from app.db.session import get_session
+
+
+@dataclass(frozen=True, slots=True)
+class MediaWindow:
+    """本次媒体消费者实际需要的单个连续时间范围。"""
+
+    session_id: int
+    start: datetime
+    end: datetime
+
+
+def _overlap(session_id: int, start: datetime | None, end: datetime | None) -> ColumnElement[bool]:
+    condition = RawSegment.session_id == session_id
+    if start is not None and end is not None:
+        start = datetime.fromtimestamp(datetime_epoch(start), UTC).replace(tzinfo=None)
+        end = datetime.fromtimestamp(datetime_epoch(end), UTC).replace(tzinfo=None)
+        condition = and_(
+            condition,
+            or_(
+                RawSegment.start_ts.is_(None),
+                RawSegment.end_ts.is_(None),
+                (RawSegment.start_ts < end) & (RawSegment.end_ts > start),
+            ),
+        )
+    return condition
+
+
+def _media_rows(db: Session, session_id: int, start: datetime | None, end: datetime | None) -> list[RawSegment]:
+    return list(db.exec(select(RawSegment).where(_overlap(session_id, start, end)).order_by(RawSegment.id)).all())
 
 
 @dataclass(frozen=True, slots=True)
@@ -71,10 +102,34 @@ class _MediaSnapshot:
     states: Mapping[int, _MediaState]
     engine: object
     thread: int
+    windows: tuple[MediaWindow, ...]
+    full_sessions: frozenset[int]
+
+    def covers(self, session_id: int, start: datetime | None, end: datetime | None) -> bool:
+        if session_id in self.full_sessions:
+            return True
+        if start is None or end is None:
+            return False
+        cursor, upper = datetime_epoch(start), datetime_epoch(end)
+        for window in sorted(
+            (item for item in self.windows if item.session_id == session_id),
+            key=lambda item: datetime_epoch(item.start),
+        ):
+            left, right = datetime_epoch(window.start), datetime_epoch(window.end)
+            if left > cursor:
+                break
+            if right > cursor:
+                cursor = right
+            if cursor >= upper:
+                return True
+        return False
 
     def matches(
         self, rows: list[RawSegment], session_id: int, start: datetime | None = None, end: datetime | None = None
     ) -> bool:
+        if not self.covers(session_id, start, end):
+            return False
+
         def selected(row: _MediaRow) -> bool:
             return row.session_id == session_id and (
                 start is None
@@ -115,23 +170,38 @@ def _probe_media(path: str) -> _MediaState:
 
 
 @contextmanager
-def media_validation_scope(*, session_ids: Iterable[int] = (), task_id: int | None = None) -> Iterator[None]:
+def media_validation_scope(
+    *,
+    session_ids: Iterable[int] = (),
+    task_id: int | None = None,
+    load_windows: Callable[[Session], Iterable[MediaWindow]] | None = None,
+) -> Iterator[None]:
     """先关闭来源读取会话，再探测媒体；提交事务只核对数据库引用快照。"""
     with media_reference_scope():
         ids = set(session_ids)
         with get_session(operation="media_validation_snapshot", task_id=task_id) as db:
-            if task_id is not None:
-                task = db.get(SegmentTask, task_id)
-                if task is not None:
-                    ids.add(task.session_id)
-            segments = (
-                db.exec(select(RawSegment).where(RawSegment.session_id.in_(ids)).order_by(RawSegment.id)).all()
-                if ids
-                else []
-            )
-            rows = tuple(_MediaRow.from_segment(segment) for segment in segments)
+            if load_windows is not None:
+                windows = tuple(dict.fromkeys(load_windows(db)))
+            elif task_id is not None:
+                from app.analysis.media_validation_windows import task_media_windows
+
+                windows = tuple(dict.fromkeys(task_media_windows(db, task_ids=[task_id])))
+            else:
+                windows = ()
+            conditions = [RawSegment.session_id.in_(ids)] if ids else []
+            conditions.extend(_overlap(item.session_id, item.start, item.end) for item in windows)
+            selected: dict[int, _MediaRow] = {}
+            # 多个远隔目标保留窗口并集，同时限制每条 SQL 的表达式深度。
+            for offset in range(0, len(conditions), 100):
+                segments = db.exec(select(RawSegment).where(or_(false(), *conditions[offset : offset + 100]))).all()
+                for segment in segments:
+                    row = _MediaRow.from_segment(segment)
+                    selected[row.id] = row
+            rows = tuple(selected[key] for key in sorted(selected))
         by_path = {path: _probe_media(path) for path in {row.path for row in rows}}
-        snapshot = _MediaSnapshot(rows, {row.id: by_path[row.path] for row in rows}, database.engine, get_ident())
+        snapshot = _MediaSnapshot(
+            rows, {row.id: by_path[row.path] for row in rows}, database.engine, get_ident(), windows, frozenset(ids)
+        )
         token = _media_snapshot.set(snapshot)
         try:
             yield
@@ -146,7 +216,7 @@ def media_snapshot_is_current(
     snapshot = _current_media_snapshot()
     if snapshot is None:
         return True
-    rows = db.exec(select(RawSegment).where(RawSegment.session_id == session_id).order_by(RawSegment.id)).all()
+    rows = _media_rows(db, session_id, start, end)
     return snapshot.matches(rows, session_id, start, end)
 
 
@@ -224,9 +294,9 @@ def segment_review_revision(
     segment = db.get(RawSegment, segment_id)
     if segment is None:
         raise ValueError(f"编辑判断分段不存在: segment_id={segment_id}")
-    rows = db.exec(select(RawSegment).where(RawSegment.session_id == segment.session_id).order_by(RawSegment.id)).all()
     start = start_ts or segment.start_ts
     end = end_ts or segment.end_ts
+    rows = _media_rows(db, segment.session_id, start, end)
     snapshot = _current_media_snapshot()
     if snapshot is not None and not snapshot.matches(rows, segment.session_id, start, end):
         raise ValueError("媒体引用在提交前已发生变化")
@@ -408,9 +478,7 @@ def media_bounds_accessible(db: Session, source: EditorialReviewInputV1 | None, 
     """实际打开媒体并核对连续覆盖；缺失文件不能支持自动批准或模型边界。"""
     if source is None or end <= start:
         return False
-    segments = db.exec(
-        select(RawSegment).where(RawSegment.session_id == source.target.session_id).order_by(RawSegment.id)
-    ).all()
+    segments = _media_rows(db, source.target.session_id, start, end)
     snapshot = _current_media_snapshot()
     if snapshot is not None and not snapshot.matches(segments, source.target.session_id, start, end):
         return False

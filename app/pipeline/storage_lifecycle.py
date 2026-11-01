@@ -292,7 +292,7 @@ def _cleanup_old_raw_files(retention_days: int | None) -> int:
     return cleaned
 
 
-def _clip_is_protected(db: Session, clip: FinalClip) -> bool:
+def _clip_is_protected(db: Session, clip: FinalClip, *, aliases: tuple[str, ...] | None = None) -> bool:
     """保留发布、审核、任务、上传及其它成片正在引用的资源。"""
     from sqlmodel import select
 
@@ -300,25 +300,51 @@ def _clip_is_protected(db: Session, clip: FinalClip) -> bool:
 
     if clip.status in {ClipStatus.PUBLISHED, ClipStatus.READY, ClipStatus.REVIEWING}:
         return True
-    uploads = db.exec(select(UploadTask).where(UploadTask.clip_id == clip.id)).all()
-    if any(task.status not in {"failed", "failed_permanent", "skipped", "cancelled"} for task in uploads):
-        return True
-    tasks = db.exec(select(SegmentTask).where(SegmentTask.clip_id == clip.id)).all()
-    if any(task.stage not in {TaskStatus.FAILED, TaskStatus.CANCELLED, TaskStatus.COMPLETED} for task in tasks):
-        return True
-    paths = [alias for path in (clip.file_path, clip.cover_path) if path for alias in storage_path_aliases(path)]
     if (
-        db.exec(select(ClipVariant).where(ClipVariant.file_path.in_(paths) | ClipVariant.cover_path.in_(paths))).first()
+        db.exec(
+            select(UploadTask.id)
+            .where(
+                UploadTask.clip_id == clip.id,
+                UploadTask.status.not_in(["failed", "failed_permanent", "skipped", "cancelled"]),
+            )
+            .limit(1)
+        ).first()
+        is not None
+    ):
+        return True
+    if (
+        db.exec(
+            select(SegmentTask.id)
+            .where(
+                SegmentTask.clip_id == clip.id,
+                SegmentTask.stage.not_in([TaskStatus.FAILED, TaskStatus.CANCELLED, TaskStatus.COMPLETED]),
+            )
+            .limit(1)
+        ).first()
+        is not None
+    ):
+        return True
+    paths = (
+        aliases
+        if aliases is not None
+        else tuple(alias for path in (clip.file_path, clip.cover_path) if path for alias in storage_path_aliases(path))
+    )
+    if (
+        db.exec(
+            select(ClipVariant.id).where(ClipVariant.file_path.in_(paths) | ClipVariant.cover_path.in_(paths)).limit(1)
+        ).first()
         is not None
     ):
         return True
     return (
         db.exec(
-            select(FinalClip).where(
+            select(FinalClip.id)
+            .where(
                 FinalClip.id != clip.id,
                 (FinalClip.file_path.in_(paths)) | (FinalClip.cover_path.in_(paths)),
                 FinalClip.status != ClipStatus.REJECTED,
             )
+            .limit(1)
         ).first()
         is not None
     )
@@ -333,56 +359,10 @@ def cleanup_rejected_candidates() -> int:
 
 
 def _cleanup_rejected_candidates() -> int:
-    """清理被拒绝候选的切片文件。
+    """每次只处理一批，释放媒体门后由下一轮维护续做。"""
+    from app.pipeline.rejected_cleanup import cleanup_batch
 
-    :returns: 清理的切片数。
-    """
-    from sqlalchemy import update
-    from sqlmodel import select
-
-    from app.db.entities import CandidateStatus, FinalClip, HighlightCandidate
-    from app.db.session import get_session
-
-    cleaned = 0
-    allowed_root = clips_dir()
-    targets: list[tuple[int, list[FinalClip], bool]] = []
-    with get_session(operation="rejected_cleanup_snapshot") as db:
-        rejected = db.exec(
-            select(HighlightCandidate).where(
-                HighlightCandidate.status == CandidateStatus.REJECTED,
-            )
-        ).all()
-
-        for cand in rejected:
-            clips = db.exec(
-                select(FinalClip).where(
-                    FinalClip.candidate_id == cand.id,
-                )
-            ).all()
-            deletable = [clip for clip in clips if not _clip_is_protected(db, clip)]
-            targets.append((cand.id, deletable, len(deletable) == len(clips)))
-    completed: list[int] = []
-    for candidate_id, clips, fully_cleaned in targets:
-        for clip in clips:
-            removed = not clip.file_path or _safe_unlink(clip.file_path, allowed_root)
-            if clip.file_path and removed:
-                cleaned += 1
-            cover_removed = not clip.cover_path or _safe_unlink(clip.cover_path, allowed_root)
-            fully_cleaned = fully_cleaned and removed and cover_removed
-        if fully_cleaned:
-            completed.append(candidate_id)
-    if completed:
-        with get_session(operation="rejected_cleanup_result") as db:
-            for candidate_id in completed:
-                db.execute(
-                    update(HighlightCandidate)
-                    .where(HighlightCandidate.id == candidate_id, HighlightCandidate.status == CandidateStatus.REJECTED)
-                    .values(status=CandidateStatus.CLEANED)
-                )
-
-    if cleaned:
-        logger.info("已清理 {} 个被拒绝候选的切片文件。", cleaned)
-    return cleaned
+    return cleanup_batch(clips_dir())
 
 
 def run_disk_maintenance(*, cleanup: bool = True) -> dict:

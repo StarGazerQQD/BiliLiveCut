@@ -265,10 +265,13 @@ def test_danmaku_overview_preserves_order_float_sum_and_missing_sources(
     assert {row["session_id"]: (row["count"], row["intensity"]) for row in result["sessions"]} == {
         sid: (count, round(value, 2)) for sid, (count, value) in totals.items()
     }
-    ordered = [query for query in queries if "FROM danmaku" in query and "ORDER BY" in query]
+    ordered = [query for query in queries if "FROM danmaku" in query and "ORDER BY danmaku.ts DESC" in query]
     assert len(ordered) == 1
     if limit >= 0:
         assert "LIMIT" in ordered[0]
+    aggregates = [query for query in queries if "blc_ordered_weight_sum" in query]
+    assert len(aggregates) == 1
+    assert "ORDER BY danmaku.id" in aggregates[0]
 
 
 def _job(index: int) -> JobData:

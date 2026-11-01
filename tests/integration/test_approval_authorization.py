@@ -488,6 +488,39 @@ def test_segment_approval_rebuilds_complete_source_and_detects_edits(
         assert len(db.exec(select(HighlightEvent)).all()) == 1
 
 
+def test_invalid_initial_time_origin_does_not_abort_other_review_preflights(
+    temp_db: None, pcm_wav: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    from app.analysis.editorial_review_sources import automatic_review_is_current, media_validation_scope
+    from app.analysis.media_validation_windows import task_media_windows
+    from app.pipeline.workers.analyze import score_segment_direct
+    from tests.unit.test_editorial_review import _seed, _service
+
+    _, segment_id = _seed(pcm_wav)
+    _service(monkeypatch, "recommend")
+    candidate = score_segment_direct(segment_id)
+    assert candidate is not None
+    with get_session() as db:
+        good = db.exec(select(HighlightEvent).where(HighlightEvent.candidate_id == candidate.id)).one()
+        copied = HighlightCandidate(**candidate.model_dump(exclude={"id"}))
+        copied.dedup_hash = "broken-origin"
+        db.add(copied)
+        db.flush()
+        bad = HighlightEvent(**good.model_dump(exclude={"id"}))
+        bad.candidate_id = copied.id
+        metadata = json.loads(bad.features_json)
+        metadata["editorial_review"]["provenance"]["initial_input"]["time_origin_epoch_s"] = None
+        bad.features_json = json.dumps(metadata, ensure_ascii=False)
+        db.add(bad)
+        db.flush()
+        bad_id, good_id = bad.id, good.id
+    with media_validation_scope(load_windows=lambda db: task_media_windows(db, event_ids=[bad_id, good_id])):
+        with get_session() as db:
+            bad, good = db.get(HighlightEvent, bad_id), db.get(HighlightEvent, good_id)
+            assert not automatic_review_is_current(db, bad, db.get(HighlightCandidate, bad.candidate_id))
+            assert automatic_review_is_current(db, good, db.get(HighlightCandidate, good.candidate_id))
+
+
 def test_manual_upload_obeys_biliup_revocation_inside_old_snapshot(
     temp_db: None, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:

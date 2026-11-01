@@ -20,6 +20,7 @@ from loguru import logger
 from sqlmodel import Session
 
 from app.analysis.editorial_review_sources import automatic_review_is_current, media_validation_scope
+from app.analysis.media_validation_windows import task_media_windows
 from app.core.media_usage import media_reference_scope
 from app.db.entities import (
     CandidateStatus,
@@ -44,13 +45,13 @@ def _approval_session(db: Session | None, event_id: int, *, validate_media: bool
         yield db
     else:
         with media_reference_scope():
-            ids: list[int] = []
-            if validate_media:
-                with get_session(operation="approve_event_source") as source_db:
-                    event = source_db.get(HighlightEvent, event_id)
-                    if event is not None:
-                        ids.append(event.session_id)
-            validation = media_validation_scope(session_ids=ids) if validate_media else nullcontext()
+            validation = (
+                media_validation_scope(
+                    load_windows=lambda source_db: task_media_windows(source_db, event_ids=[event_id]),
+                )
+                if validate_media
+                else nullcontext()
+            )
             with validation, get_session(operation="approve_event") as owned:
                 yield owned
 

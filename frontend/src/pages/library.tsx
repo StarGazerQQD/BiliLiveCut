@@ -765,11 +765,25 @@ export function TranscriptsPage() {
 }
 
 export function DanmakuPage() {
-  const [session, setSession] = useState("");
-  const query = useApi(
-    `/api/danmaku?limit=200${session ? `&session_id=${session}` : ""}`,
-  );
+  const [params, setParams] = useSearchParams();
+  const session = params.get("session") || "";
+  const rawOffset = Number(params.get("offset") || "0");
+  const offset =
+    Number.isSafeInteger(rawOffset) && rawOffset >= 0 ? rawOffset : 0;
+  const filters = new URLSearchParams({
+    limit: "200",
+    session_limit: String(SESSION_PAGE_SIZE),
+    session_offset: String(session ? 0 : offset),
+  });
+  if (session) filters.set("session_id", session);
+  const query = useApi(`/api/danmaku?${filters}`);
   const data = obj(query.data);
+  function update(key: string, value: string) {
+    const next = new URLSearchParams(params);
+    if (value) next.set(key, value);
+    else next.delete(key);
+    setParams(next);
+  }
   return (
     <Page
       eyebrow="ANALYZE / AUDIENCE"
@@ -777,8 +791,16 @@ export function DanmakuPage() {
       description="把观众的实时反应放回内容上下文。无法采集与真实的零事件会分别显示。"
       actions={<Refresh refresh={query.refetch} />}
     >
-      <SessionPicker value={session} onChange={setSession} />
+      {session && (
+        <Button variant="ghost" onClick={() => update("session", "")}>
+          ← 返回全部场次
+        </Button>
+      )}
       <QueryState query={query}>
+        <p className="text-sm text-muted-foreground">
+          {session ? `场次 #${session}` : "全部场次"} · {text(data.total, "0")}{" "}
+          条事件
+        </p>
         <div className="grid gap-4 md:grid-cols-3">
           {rows(data.sessions).map((entry) => (
             <Card
@@ -790,8 +812,12 @@ export function DanmakuPage() {
                   <h2 className="text-sm font-semibold">
                     场次 #{text(entry.session_id)}
                   </h2>
-                  <Status value={obj(entry.evidence).status || "unavailable"} />
+                  <Status value={obj(entry.evidence).state || "unavailable"} />
                 </div>
+                <p className="text-sm text-muted-foreground">
+                  {text(entry.source_label, "未知来源")}
+                  {entry.session_title ? ` · ${text(entry.session_title)}` : ""}
+                </p>
                 <DetailList
                   values={[
                     {
@@ -808,6 +834,15 @@ export function DanmakuPage() {
                     },
                   ]}
                 />
+                {!session && (
+                  <Button
+                    variant="outline"
+                    size="sm"
+                    onClick={() => update("session", text(entry.session_id))}
+                  >
+                    查看本场弹幕
+                  </Button>
+                )}
                 <Button
                   variant="outline"
                   size="sm"
@@ -825,6 +860,16 @@ export function DanmakuPage() {
             </Card>
           ))}
         </div>
+        {!session && (
+          <LibraryPagination
+            offset={offset}
+            count={
+              obj(data.session_pagination).has_more ? SESSION_PAGE_SIZE + 1 : 0
+            }
+            size={SESSION_PAGE_SIZE}
+            onPage={(value) => update("offset", String(value))}
+          />
+        )}
         {rows(data.recent).length ? (
           <Card className="gap-0 py-0 shadow-none">
             <CardContent className="divide-y px-5">
