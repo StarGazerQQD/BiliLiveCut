@@ -325,3 +325,15 @@ R5 在新独立目录验证当前正式冻结制品，使用实际显卡、正�
 修正后的目标回归 **93 passed / 5.79 秒**；完整应用与 Portable 回归 **4600 passed、覆盖率 86.51%、1151.85 秒**，包含真实 sdist/wheel。全部 12 项 pre-commit、新增文件检查、OpenAPI、Python/Rust 离线锁、文档 22 项及 57 页构建/链接通过；release audit 为 **63 PASS / 0 WARN / 0 FAIL**。实际 RTX 5090 的 UUID 资源查询成功，后续仍需在新正式制品验证该行为与真实模型推理。
 
 阶段入口提交 `b3ca786` 的五个适用工作流在 attempt 1 全部成功，23 项 checks 为 22 success、1 Pages 条件跳过，legacy statuses 为零；该结果不替代本轮新增修复提交的远端验收。正式构建来源同步、制品核验、完整流程和持续运行仍在 R5 内继续。
+
+### R5 资源修复的正式制品验收
+
+修复源码提交为 `7166b8b2053b630f45a36a6ed59f15780ec0c4ce`。正式来源同步后，Portable **492 passed / 98.27 秒**，全部 pre-commit 和 release audit **63 PASS / 0 WARN / 0 FAIL** 再次通过。默认可重复 Payload、fixture 元数据、Lite EXE 及三份制品摘要、来源、内嵌文件和 1951 个冻结模块核验通过。fixture 仅用于打包契约验证；实际 R5 应用保留四组正式模型。
+
+| 制品 | 字节数 | SHA-256 | CRC32 |
+| --- | ---: | --- | --- |
+| source_payload.zip | 1591405 | `3e5a095eb61a82fa3e83d78cebd366b78cd96355f754016f02a6e8356f379150` | `73A9932A` |
+| BiliLiveCut-EnginePack-0.1.20.3-alpha.zip（fixture） | 16261 | `823f8564e0c0b5b0ad115cb75310b16776ecb94ecc2eb6439a62d764eeacfa04` | `F3223438` |
+| BiliLiveCut-Portable-Lite-v0.1.20.3-alpha-x64.exe | 67210446 | `7ad4953392848345be04b785f6934326e2a3d04bcc4fde58948373a6b0e0ae02` | `DB58D5B7` |
+
+隔离应用通过新冻结 EXE 的 `--offline --torch-runtime cu130` 激活新 Payload，已有依赖版本匹配并保留，旧启动器及旧运行时保留。新运行时、四正式模型完整 SHA-256、RTX 5090 实际 CUDA 内核和新包 UUID 资源查询通过。新包的受控低显存回归确认 `cuda` 与 `cuda:0` 均拒绝不足资源，本地模型需求明确未知；这不代表实际耗尽显存测试或模型推理验收。真实语音推理、完整业务流程、24 小时持续运行、内容质量和新交付 HEAD 的 CI 尚待完成，R5 保持 `IN_PROGRESS`。
