@@ -894,9 +894,7 @@ def _load_whisper_model(model_size: str, device: str, compute_type: str) -> Whis
     policy = getattr(settings, "asr_resource_policy", "warn")
     if not ok:
         if policy == "strict":
-            raise RuntimeError(
-                f"ASR 模型加载被阻止: {msg} (asr_resource_policy={policy}). 请增大系统资源或降低模型预设。"
-            )
+            raise RuntimeError(f"ASR 模型加载被阻止: {msg} (asr_resource_policy={policy})")
         logger.warning("ASR 资源告警: {} (policy={})", msg, policy)
 
     try:

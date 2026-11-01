@@ -10,6 +10,7 @@ import pytest
 
 from app.analysis.transcription import backends
 from app.core import asr_detection
+from tests.unit.test_asr_resources import ResourceBoundary
 from tests.unit.test_cuda_libraries import install_boundary
 
 
@@ -100,3 +101,54 @@ def test_auto_device_resolves_before_model_constructor(monkeypatch: pytest.Monke
         if gpu_count
         else {"device": "cpu", "compute_type": "float32"}
     ]
+
+
+@pytest.mark.parametrize("policy", ["strict", "warn"])
+@pytest.mark.parametrize("device", ["cpu", "cuda:0"])
+def test_local_model_uses_unknown_budget_policy(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, policy: str, device: str
+) -> None:
+    models = tmp_path / "models"
+    local = models / "whisper"
+    local.mkdir(parents=True)
+    monkeypatch.setenv("BLC_MODELS_DIR", str(models))
+    monkeypatch.setattr(backends.settings, "asr_resource_policy", policy)
+    calls: list[str] = []
+    loaded = object()
+
+    def create(model: str, **kwargs: object) -> object:
+        calls.append(model)
+        return loaded
+
+    monkeypatch.setitem(sys.modules, "faster_whisper", SimpleNamespace(WhisperModel=create))
+    backend = backends.FasterWhisperBackend(model_size="small", device=device)
+    assert backend.model_size == str(local)
+    messages: list[str] = []
+    sink = backends.logger.add(messages.append, format="{message}")
+    try:
+        if policy == "strict":
+            with pytest.raises(RuntimeError, match="资源需求未知"):
+                backend._load_model()
+            assert calls == []
+        else:
+            assert backend._load_model() is loaded
+            assert calls == [str(local)]
+            assert any("资源需求未知" in message and "policy=warn" in message for message in messages)
+    finally:
+        backends.logger.remove(sink)
+
+
+@pytest.mark.parametrize("device", ["cuda", "cuda:0", "auto"])
+def test_strict_selected_gpu_low_memory_blocks_sdk(monkeypatch: pytest.MonkeyPatch, device: str) -> None:
+    boundary = ResourceBoundary(monkeypatch)
+    monkeypatch.setattr(backends.settings, "asr_resource_policy", "strict")
+    calls: list[str] = []
+
+    def create(model: str, **kwargs: object) -> object:
+        calls.append(model)
+        return object()
+
+    monkeypatch.setitem(sys.modules, "faster_whisper", SimpleNamespace(WhisperModel=create))
+    with pytest.raises(RuntimeError, match="显存不足"):
+        backends._load_whisper_model("large-v3", device, "float32")
+    assert calls == [] and boundary.ordinals == [0]
