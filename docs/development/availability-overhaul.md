@@ -279,3 +279,19 @@ R4 仅处理 K01–K03，先记录不同历史规模下的文件访问数、独�
 | 120 个拒绝候选清理 | 单次删除 120 件、读门等待 0.818562 秒 | 单批删除 32 件、读门等待 0.280841 秒；余项按持久游标续做 |
 
 最终目标回归 **352 passed / 81.22 秒**，新增规模复测六项通过，前端分页交互一项通过。三种真实编辑扩展及坏记录隔离专项 **72 passed**；原错误断言和修改前日志分别保留，不把缺陷复现标为恢复验收。修复过程中只读复核发现的缺失时间原点异常和清理重复前缀扫描均已处理。OpenAPI 与 TypeScript 类型已由正式工具生成。当前完整应用/Portable、完整质量、构建、冻结包验收和远端 CI 仍待完成，R4 保持 `IN_PROGRESS`。
+
+### R4 本地完整验收
+
+业务源码 `714718fca3ab8e1806e4caa1619e14e451859ea5` 的完整应用与 Portable 回归为 **4568 passed、覆盖率 86.43%、1124.63 秒**，包含真实 sdist/wheel。全部 12 项 pre-commit、OpenAPI、Python/Rust 离线锁一致性通过；文档 22 项检查、57 页构建及全部链接通过；完整 release audit 为 **63 PASS / 0 WARN / 0 FAIL**。保留既有 setuptools warning 与 pytest-asyncio 启动弃用提示。
+
+默认可重复 Payload、fixture Engine Pack 与 Lite EXE 已正式重新构建。逐文件清单、来源、内嵌 Payload/LICENSE、ZIP 结构及 1951 个冻结模块路径通过核验；独立只读复核重新计算三份制品摘要，并确认六处来源元数据一致。
+
+| 制品 | 字节数 | SHA-256 | CRC32 |
+| --- | ---: | --- | --- |
+| source_payload.zip | 1590628 | `5a101373ef8b9dd17419236dcc9cf7435f21f936a57be9f94866bff2f78f0bbc` | `8CCF6011` |
+| BiliLiveCut-EnginePack-0.1.20.3-alpha.zip（fixture） | 16260 | `7ab289335c326aa304c980d30becbfc4806028ef1e68b883f514bf92bcd40974` | `074A5A9F` |
+| BiliLiveCut-Portable-Lite-v0.1.20.3-alpha-x64.exe | 67210502 | `6876c3abbd26dae30c401fa555a2d8bd3b3ead60c7a15f43c782d13094c9805b` | `3702F371` |
+
+独立目录的冻结 EXE 全新离线 CPU 安装、`pip check`、运行时与四引擎 fixture 校验、HTTP/设置、三类进程故障恢复和端口冲突清理全部通过。正式 60 秒失联和 30 秒清理期限下，后端挂起为 **62.281 秒判定、25.032 秒清理、91.438 秒恢复**；控制台与后端同时挂起为 **62.547 秒判定、25.015 秒清理、92.984 秒恢复**。保留 20 毫秒独立观察器及 250 毫秒测量误差，旧所属树退出后才启动新代次，最终清理并保留无关哨兵。
+
+版本与依赖未升级，未追加真实模型请求，现场 Portable 保留。CPU/fixture 工程验收不代替 R5 的实际 GPU、持续运行及内容质量验收。R4 仍为 `IN_PROGRESS`，等待本阶段交付提交的全部适用远端 CI；R5 保持 `PENDING`。
