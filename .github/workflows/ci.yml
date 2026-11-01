@@ -160,6 +160,12 @@ jobs:
         run: python -m pytest tests/integration/test_state_events.py --timeout=60 --fail-on-skip --tb=long -vv --durations=10
         timeout-minutes: 5
 
+      - name: Verify service member exit (Linux)
+        if: runner.os == 'Linux'
+        shell: bash
+        run: python -m pytest packaging/portable/tests/test_service_member_exit.py --timeout=60 --fail-on-skip --tb=long -vv
+        timeout-minutes: 3
+
       # 实际日志显示发行包用例占用约 285 秒；独立验收保留全部检查和各步时限。
       - name: Run real sdist and wheel integration
         shell: bash
@@ -339,7 +345,7 @@ jobs:
         shell: bash
         env:
           ASR_NO_MODEL_DOWNLOAD: "1"
-        run: python -m pytest tests/unit/test_process_tree.py tests/unit/test_process_control.py tests/unit/test_service_shutdown.py tests/integration/test_frontend_console.py --timeout=120 --fail-on-skip
+        run: python -m pytest tests/unit/test_process_tree.py tests/unit/test_process_control.py tests/unit/test_service_shutdown.py tests/integration/test_frontend_console.py packaging/portable/tests/test_service_member_exit.py --timeout=120 --fail-on-skip
         timeout-minutes: 10
 
       - name: Run pytest with coverage (>=50%)
