@@ -155,7 +155,10 @@ async def test_collection_continues_through_database_outage_without_resampling(
         await until(lambda: archive_path(1).read_text(encoding="utf-8").count("same-message") == 2)
         await until(lambda: capture._database_failure)
         assert capture._task is not None and not capture._task.done()
-        assert journal_path(1).read_text(encoding="utf-8").count("same-message") == 2
+        # 原始档案先于补做文件写入；等接收线程返回后核查完整持久记录。
+        async with asyncio.timeout(5):
+            async with capture._state_lock:
+                assert journal_path(1).read_text(encoding="utf-8").count("same-message") == 2
         if failure == "sqlite_busy":
             with get_session() as db:
                 assert read_evidence(db, 1).confirmed_until == baseline.confirmed_until
