@@ -11,7 +11,8 @@ import xml.etree.ElementTree as ET
 from dataclasses import dataclass
 from pathlib import Path
 
-MAX_COMMENT_BYTES = 32 * 1024 * 1024
+from app.core.http_limits import MAX_COMMENT_BYTES
+
 MAX_EVENTS = 300_000
 COMMENT_SUFFIXES = {".xml", ".json", ".srt", ".ass"}
 

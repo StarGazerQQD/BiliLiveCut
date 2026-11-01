@@ -10,7 +10,7 @@ from pathlib import Path
 
 from loguru import logger
 from sqlalchemy import func
-from sqlmodel import select
+from sqlmodel import Session, select
 
 from app.analysis.source_policy import session_danmaku_lag_s
 from app.clipping.models import ClipOptions
@@ -58,6 +58,36 @@ def _validate(options: ClipOptions, duration: float, width: int, height: int) ->
         raise ValueError("弹幕显示时长必须在 2~20 秒之间")
 
 
+def render_danmaku_rows(
+    db: Session,
+    session_id: int,
+    start_ts: datetime,
+    duration: float,
+    lifetime: float,
+) -> tuple[float, list[tuple[datetime, str | None]]]:
+    """渲染和恢复指纹共用有界输入，保持同一延迟、窗口及文本截断。"""
+    lag = session_danmaku_lag_s(session_id, db)
+    if not math.isfinite(lag):
+        raise ValueError("场次弹幕延迟必须是有限秒数")
+    start = start_ts if start_ts.tzinfo is None else start_ts.astimezone(UTC).replace(tzinfo=None)
+    left = start + timedelta(seconds=lag - lifetime)
+    right = start + timedelta(seconds=lag + duration)
+    rows = db.exec(
+        select(Danmaku.ts, func.substr(Danmaku.content, 1, 512))
+        .where(
+            Danmaku.session_id == session_id,
+            Danmaku.msg_type == DanmakuType.DANMAKU,
+            Danmaku.ts > left,
+            Danmaku.ts < right,
+        )
+        .order_by(Danmaku.ts, Danmaku.id)
+        .limit(_MAX_EVENTS + 1)
+    ).all()
+    if len(rows) > _MAX_EVENTS:
+        logger.warning("弹幕烧录 session={} 窗口超过 {} 条，仅处理最早的普通弹幕", session_id, _MAX_EVENTS)
+    return lag, [(timestamp, content) for timestamp, content in rows[:_MAX_EVENTS]]
+
+
 def write_danmaku_ass(
     session_id: int,
     start_ts: datetime,
@@ -77,28 +107,10 @@ def write_danmaku_ass(
     _validate(options, duration, width, height)
     if options.danmaku_opacity == 0:
         return None
-    lag = session_danmaku_lag_s(session_id)
-    if not math.isfinite(lag):
-        raise ValueError("场次弹幕延迟必须是有限秒数")
     start = start_ts if start_ts.tzinfo is None else start_ts.astimezone(UTC).replace(tzinfo=None)
     lifetime = options.danmaku_duration_s
-    left = start + timedelta(seconds=lag - lifetime)
-    right = start + timedelta(seconds=lag + duration)
     with get_session() as db:
-        rows = db.exec(
-            select(Danmaku.ts, func.substr(Danmaku.content, 1, 512))
-            .where(
-                Danmaku.session_id == session_id,
-                Danmaku.msg_type == DanmakuType.DANMAKU,
-                Danmaku.ts > left,
-                Danmaku.ts < right,
-            )
-            .order_by(Danmaku.ts, Danmaku.id)
-            .limit(_MAX_EVENTS + 1)
-        ).all()
-    if len(rows) > _MAX_EVENTS:
-        logger.warning("弹幕烧录 session={} 窗口超过 {} 条，仅处理最早的普通弹幕", session_id, _MAX_EVENTS)
-        rows = rows[:_MAX_EVENTS]
+        lag, rows = render_danmaku_rows(db, session_id, start_ts, duration, lifetime)
 
     # 以 1080 高画面为字号基准，竖屏和其他分辨率同比缩放。
     font_size = options.danmaku_font_size * height / 1080

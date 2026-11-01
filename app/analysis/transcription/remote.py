@@ -2,12 +2,13 @@
 
 from __future__ import annotations
 
+import hashlib
 import io
 import time
 import wave
 from bisect import bisect_left
-from collections.abc import Iterator
-from dataclasses import asdict
+from collections.abc import Callable, Iterator
+from dataclasses import asdict, dataclass
 
 import httpx
 from pydantic import BaseModel, ConfigDict, Field, ValidationError
@@ -40,6 +41,27 @@ class _Response(BaseModel):
     language: str | None = Field(default=None, max_length=100)
     segments: list[_TimedText] = Field(default_factory=list, max_length=20000)
     words: list[_TimedText] = Field(default_factory=list, max_length=20000)
+
+
+class RemoteChunk(BaseModel):
+    """通过协议和音频校验的单块结果，尚不代表完整转写。"""
+
+    model_config = ConfigDict(extra="forbid", allow_inf_nan=False, hide_input_in_errors=True)
+
+    index: int = Field(ge=1)
+    offset: float = Field(ge=0)
+    duration: float = Field(gt=0)
+    audio_digest: str = Field(pattern=r"^[a-f0-9]{64}$")
+    response_size: int = Field(gt=0, le=_MAX_RESPONSE_BYTES)
+    response: _Response
+
+
+@dataclass
+class RemoteCheckpoint:
+    """单次请求的已确认块和提交回调，不驻留在缓存模型实例中。"""
+
+    chunks: dict[int, RemoteChunk]
+    save: Callable[[RemoteChunk], None]
 
 
 def _audio_chunks(path: str, chunk_s: int) -> Iterator[tuple[bytes, float, float]]:
@@ -146,7 +168,13 @@ def _segments(response: _Response, offset: float, duration: float) -> list[ASRSe
 class OpenAICompatibleBackend:
     """远程主引擎；不隐式重试、不跟随重定向，也不预加载任何本地 ASR 模型。"""
 
-    def transcribe(self, audio_path: str, initial_prompt: str | None = None) -> ASRTranscriptResult:
+    def transcribe(
+        self,
+        audio_path: str,
+        initial_prompt: str | None = None,
+        *,
+        checkpoint: RemoteCheckpoint | None = None,
+    ) -> ASRTranscriptResult:
         """上传标准化音频并合并分块；任一块失败即整体失败，不提交不完整转写。"""
         if not settings.asr_remote_base_url or not settings.asr_remote_model:
             raise ValueError("远程 ASR 需要配置服务基础地址和模型 ID")
@@ -165,10 +193,21 @@ class OpenAICompatibleBackend:
             with httpx.Client(timeout=timeout, headers=headers, follow_redirects=False) as client:
                 for audio, offset, duration in _audio_chunks(audio_path, settings.asr_remote_chunk_s):
                     count += 1
-                    report_progress(
-                        "remote_request", backend="openai_compatible", chunk=count, offset_s=offset, duration_s=duration
-                    )
-                    response, size = _request_chunk(client, audio, initial_prompt)
+                    digest = hashlib.sha256(audio).hexdigest()
+                    saved = checkpoint.chunks.get(count) if checkpoint else None
+                    if saved is not None:
+                        if (saved.audio_digest, saved.offset, saved.duration) != (digest, offset, duration):
+                            raise RemoteTranscriptionError("远程 ASR 断点与实际音频块不一致")
+                        response, size = saved.response, saved.response_size
+                    else:
+                        report_progress(
+                            "remote_request",
+                            backend="openai_compatible",
+                            chunk=count,
+                            offset_s=offset,
+                            duration_s=duration,
+                        )
+                        response, size = _request_chunk(client, audio, initial_prompt)
                     response_bytes += size
                     if response_bytes > _MAX_TOTAL_RESPONSE_BYTES:
                         raise RemoteTranscriptionError("远程 ASR 本次任务累计响应超过 8 MiB 上限")
@@ -178,11 +217,25 @@ class OpenAICompatibleBackend:
                         raise RemoteTranscriptionError("远程 ASR 正文与时间戳文本不一致")
                     if not response.text.strip() and _chunk_has_speech(audio):
                         raise RemoteTranscriptionError("远程 ASR 对含语音的音频块返回空文本")
-                    segments.extend(_segments(response, offset, duration))
+                    chunk_segments = _segments(response, offset, duration)
+                    if checkpoint is not None and saved is None:
+                        checkpoint.save(
+                            RemoteChunk(
+                                index=count,
+                                offset=offset,
+                                duration=duration,
+                                audio_digest=digest,
+                                response_size=size,
+                                response=response,
+                            )
+                        )
+                    segments.extend(chunk_segments)
                     if response.text.strip():
                         texts.append(response.text.strip())
                     if response.language:
                         languages.add(response.language)
+                if checkpoint is not None and any(index > count for index in checkpoint.chunks):
+                    raise RemoteTranscriptionError("远程 ASR 断点包含当前音频范围外的块")
         except (RemoteTranscriptionError, OSError, ValueError, wave.Error):
             asr_metrics.record_backend_call("openai_compatible", time.monotonic() - started, success=False)
             raise

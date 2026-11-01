@@ -5,18 +5,21 @@ from __future__ import annotations
 import hashlib
 import threading
 from datetime import UTC, datetime
+from functools import partial
 from pathlib import Path
 from typing import TYPE_CHECKING, Annotated, Literal
 from uuid import uuid4
 
 from fastapi import APIRouter, HTTPException, Query, Request
-from fastapi.responses import FileResponse
 from loguru import logger
 from pydantic import BaseModel, ConfigDict, Field
 from sqlmodel import select as _sql_select
 
 from app.analysis.transcript_windows import extract_transcript_window
+from app.core.execution import run_sync
+from app.core.media_usage import media_reference_scope
 from app.core.sanitize import safe_exception_summary
+from app.web.media_response import MediaFileResponse
 
 if TYPE_CHECKING:
     from sqlmodel import Session
@@ -226,6 +229,7 @@ def _review_preview_path(candidate_id: int, start_ts: datetime, end_ts: datetime
     return output_path
 
 
+@media_reference_scope()
 def _ensure_review_preview(candidate_id: int, start_ts: datetime, end_ts: datetime) -> Path:
     """按需渲染候选预览，并以原子替换方式写入专用缓存目录。"""
     from loguru import logger
@@ -616,6 +620,7 @@ def get_review_data(request: Request, candidate_id: int) -> dict:
 
 
 @review_router.post("/api/{candidate_id}/claim")
+@media_reference_scope()
 def claim_review(candidate_id: int, request: Request, payload: ClaimRequest) -> dict:
     """领取候选，防止多位审核员同时修改。"""
     from app.db.entities import HighlightCandidate
@@ -641,6 +646,7 @@ def claim_review(candidate_id: int, request: Request, payload: ClaimRequest) -> 
 
 
 @review_router.post("/api/{candidate_id}/release")
+@media_reference_scope()
 def release_review(candidate_id: int, request: Request) -> dict:
     """释放候选领取。"""
     from app.db.entities import HighlightCandidate
@@ -666,6 +672,7 @@ def release_review(candidate_id: int, request: Request) -> dict:
 
 
 @review_router.put("/api/{candidate_id}/draft")
+@media_reference_scope()
 def update_review_draft(candidate_id: int, request: Request, payload: ReviewDraftRequest) -> dict:
     """持久化当前审核草稿。"""
     from app.db.entities import HighlightCandidate
@@ -695,6 +702,7 @@ def update_review_draft(candidate_id: int, request: Request, payload: ReviewDraf
 
 
 @review_router.post("/api/{candidate_id}/undo")
+@media_reference_scope()
 def undo_review_action(candidate_id: int, request: Request) -> dict:
     """撤销最近一次边界或审核决策修改。"""
     from app.db.entities import HighlightCandidate
@@ -757,7 +765,8 @@ def undo_review_action(candidate_id: int, request: Request) -> dict:
 
 
 @review_router.post("/api/{candidate_id}/adjust")
-async def adjust_boundary(
+@media_reference_scope()
+def adjust_boundary(
     candidate_id: int,
     request: Request,
     payload: BoundaryAdjustRequest,
@@ -849,10 +858,42 @@ async def submit_review(
     :param reason: 审核原因/备注。
     :returns: 操作结果。
     """
+    from app.web.services.background_jobs import web_job_manager
+
+    decision, reason, enqueue_unlinked_render, actor = await run_sync(
+        partial(_submit_review_sync, candidate_id, request, payload)
+    )
+    job = None
+    if enqueue_unlinked_render:
+        job = await web_job_manager.enqueue(
+            "candidate_render",
+            {"candidate_id": candidate_id, "reviewed_by": actor},
+            label=f"候选 #{candidate_id} 审核通过出片",
+            owner=actor,
+            dedup_key=f"candidate-render:{candidate_id}",
+        )
+    return {"status": decision, "reason": reason, "job": job}
+
+
+@media_reference_scope()
+def _submit_review_sync(
+    candidate_id: int, request: Request, payload: ReviewSubmitRequest
+) -> tuple[str, str | None, bool, str]:
+    """提交审核决断(细粒度), V0.1.12.8: 消除双写, 统一走 approve_event_and_task。
+
+    正向决断时调用 approve_event_and_task 传入外层 db session,
+    在同一事务中更新 Task.stage + Event.review_status + Candidate.status。
+    明确拒绝时同步更新 Event、Candidate、关联 Task 和未发布 FinalClip。
+
+    :param candidate_id: 候选 id。
+    :param decision: 审核决断(approved_solo/rejected/insufficient_context 等)。
+    :param reason: 审核原因/备注。
+    :returns: 操作结果。
+    """
     from datetime import UTC
     from datetime import datetime as _dt
 
-    from app.db.entities import CandidateStatus, HighlightCandidate, ReviewStatus, TaskStatus
+    from app.db.entities import HighlightCandidate, ReviewStatus, TaskStatus
     from app.db.session import get_session
     from app.web.services.review_workflow import (
         add_audit,
@@ -910,17 +951,19 @@ async def submit_review(
             # V0.1.12.8: 正向决断统一走 approve_event_and_task, 传入外层 db
             from app.pipeline.approval import approve_event_and_task
 
+            approved = approve_event_and_task(
+                task_id=task.id if task is not None else None,
+                event_id=event.id,
+                approved_by=actor,
+                reason=reason,
+                source="human",
+                review_decision=decision,
+                db=db,
+            )
+            if not approved:
+                raise HTTPException(409, "审核来源关联无效，未提交本次批准")
             if task is not None:
-                approved = approve_event_and_task(
-                    task_id=task.id,
-                    event_id=event.id,
-                    approved_by=actor,
-                    reason=reason,
-                    source="human",
-                    review_decision=decision,
-                    db=db,
-                )
-                if approved and decision == ReviewStatus.APPROVED_SOLO:
+                if decision == ReviewStatus.APPROVED_SOLO:
                     from app.pipeline.stage_result import enqueue_next
 
                     if task.stage == TaskStatus.APPROVED:
@@ -929,20 +972,7 @@ async def submit_review(
                     elif task.stage == TaskStatus.APPROVED_WAITING_RENDER:
                         enqueue_next(task, TaskStatus.QUEUED_FOR_RENDER)
                         db.add(task)
-                event.review_status = decision
-                event.review_reason = reason
-                event.review_by = actor
-                event.updated_at = _dt.now(UTC)
-                db.add(event)
             else:
-                # 无关联 task 时仅更新 Event + Candidate
-                event.review_status = decision
-                event.review_reason = reason
-                event.review_by = actor
-                event.updated_at = _dt.now(UTC)
-                db.add(event)
-                c.status = CandidateStatus.APPROVED
-                db.add(c)
                 enqueue_unlinked_render = decision == ReviewStatus.APPROVED_SOLO
         elif decision in (ReviewStatus.REJECTED, ReviewStatus.NOT_EXCITING):
             from app.pipeline.rejection import reject_candidate_and_outputs
@@ -1014,18 +1044,7 @@ async def submit_review(
         threshold_feedback.get("action"),
         threshold_feedback.get("threshold"),
     )
-    job = None
-    if enqueue_unlinked_render:
-        from app.web.services.background_jobs import web_job_manager
-
-        job = await web_job_manager.enqueue(
-            "candidate_render",
-            {"candidate_id": candidate_id, "reviewed_by": actor},
-            label=f"候选 #{candidate_id} 审核通过出片",
-            owner=actor,
-            dedup_key=f"candidate-render:{candidate_id}",
-        )
-    return {"status": decision, "reason": reason, "job": job}
+    return decision, reason, enqueue_unlinked_render, actor
 
 
 @review_router.post("/api/{candidate_id}/rerender")
@@ -1035,10 +1054,41 @@ async def rerender_clip(candidate_id: int, request: Request) -> dict:
     :param candidate_id: 候选 id。
     :returns: 新的 clip 信息或状态。
     """
+    from app.web.services.background_jobs import web_job_manager
+
+    event_id, start_ts, end_ts, source_label, actor = await run_sync(partial(_prepare_rerender, candidate_id, request))
+    version = f"review-{event_id}-{uuid4().hex[:8]}"
+    job = await web_job_manager.enqueue(
+        "review_rerender",
+        {
+            "candidate_id": candidate_id,
+            "start_ts": start_ts.isoformat(),
+            "end_ts": end_ts.isoformat(),
+            "version": version,
+        },
+        label=f"{source_label} · 候选 #{candidate_id} 审核版本渲染",
+        owner=actor,
+        dedup_key=f"review-rerender:{candidate_id}:{start_ts.isoformat()}:{end_ts.isoformat()}",
+    )
+    return {
+        "status": "accepted",
+        "job": job,
+        "version": job["payload"]["version"],
+        "start_ts": job["payload"]["start_ts"],
+        "end_ts": job["payload"]["end_ts"],
+    }
+
+
+@media_reference_scope()
+def _prepare_rerender(candidate_id: int, request: Request) -> tuple[int, datetime, datetime, str, str]:
+    """把调整边界后的切片提交到后台作业。
+
+    :param candidate_id: 候选 id。
+    :returns: 新的 clip 信息或状态。
+    """
     from app.clipping.core import ClipOptions, validate_clip_boundary
     from app.db.entities import HighlightCandidate
     from app.db.session import get_session
-    from app.web.services.background_jobs import web_job_manager
     from app.web.services.review_workflow import (
         add_audit,
         begin_review_write,
@@ -1076,30 +1126,11 @@ async def rerender_clip(candidate_id: int, request: Request) -> dict:
         db.add(event)
         add_audit(db, actor=actor, action="rerender", candidate_id=candidate_id)
 
-    version = f"review-{event_id}-{uuid4().hex[:8]}"
-    job = await web_job_manager.enqueue(
-        "review_rerender",
-        {
-            "candidate_id": candidate_id,
-            "start_ts": start_ts.isoformat(),
-            "end_ts": end_ts.isoformat(),
-            "version": version,
-        },
-        label=f"{source_label} · 候选 #{candidate_id} 审核版本渲染",
-        owner=actor,
-        dedup_key=f"review-rerender:{candidate_id}:{start_ts.isoformat()}:{end_ts.isoformat()}",
-    )
-    return {
-        "status": "accepted",
-        "job": job,
-        "version": job["payload"]["version"],
-        "start_ts": job["payload"]["start_ts"],
-        "end_ts": job["payload"]["end_ts"],
-    }
+    return event_id, start_ts, end_ts, source_label, actor
 
 
 @review_router.get("/api/{candidate_id}/preview")
-def get_review_preview(candidate_id: int) -> FileResponse:
+def get_review_preview(candidate_id: int) -> MediaFileResponse:
     """返回候选的按需渲染预览，不要求候选已批准或已出片。"""
     from app.db.entities import HighlightCandidate, HighlightEvent
     from app.db.session import get_session
@@ -1124,7 +1155,7 @@ def get_review_preview(candidate_id: int) -> FileResponse:
     except (OSError, RuntimeError) as exc:
         logger.exception("候选预览渲染失败 candidate_id={}", candidate_id)
         raise HTTPException(status_code=500, detail="候选预览渲染失败") from exc
-    return FileResponse(preview_path, media_type="video/mp4")
+    return MediaFileResponse(preview_path, media_type="video/mp4")
 
 
 @review_router.get("/api/{candidate_id}/waveform")

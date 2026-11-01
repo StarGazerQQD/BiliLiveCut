@@ -9,12 +9,10 @@ import uuid
 from datetime import UTC, datetime
 
 from app.analysis.transcription.process_tree import ProcessTree
+from app.core.cancellation import shutdown_event as shutdown_event
 from app.core.sanitize import safe_exception_summary
 
 _WORKER_ID: str = f"worker-{uuid.uuid4().hex[:8]}"
-
-# 关闭标记 — 使用 threading.Event, 确保所有模块读取同一共享状态
-shutdown_event: threading.Event = threading.Event()
 
 # 子进程跟踪 — 锁在模块初始化时立即创建, 避免延迟初始化竞态
 _subprocesses: dict[subprocess.Popen[str] | subprocess.Popen[bytes], ProcessTree] = {}

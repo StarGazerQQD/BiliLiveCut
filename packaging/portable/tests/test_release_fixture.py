@@ -1,4 +1,4 @@
-"""Release fixture isolation tests (V0.1.20.2 Alpha)."""
+"""Release fixture isolation tests (V0.1.20.3 Alpha)."""
 
 from __future__ import annotations
 

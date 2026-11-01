@@ -17,7 +17,13 @@ from typing import TYPE_CHECKING
 import psutil
 import pytest
 
-from app.analysis.transcription.process_pool import ASRProcessPool, ASRShutdownError, ASRTimeoutError, RemoteASRError
+from app.analysis.transcription.process_pool import (
+    ASRProcessExitError,
+    ASRProcessPool,
+    ASRShutdownError,
+    ASRTimeoutError,
+    RemoteASRError,
+)
 from app.core.config import settings
 from app.core.runtime_settings import effective_settings
 from app.pipeline.lease import LeaseLostError
@@ -54,6 +60,8 @@ def sdk_process(connection: Connection) -> None:
                 time.sleep(0.1)
         if mode == "error":
             send("error", error="ValueError: model invalid\nOriginal model traceback", models=[])
+        elif mode == "crash":
+            os._exit(19)
         elif mode == "device_failure":
             if not request["device_failures"]:
                 send(
@@ -107,6 +115,17 @@ def request(**context: object) -> dict[str, object]:
 
 def no_cancel() -> None:
     pass
+
+
+def test_real_sdk_process_crash_has_distinct_recovery_error() -> None:
+    pool = ASRProcessPool(sdk_process)
+    try:
+        with pytest.raises(ASRProcessExitError, match="ASR child"):
+            pool.execute(request(mode="crash"), timeout_s=15, check_cancelled=no_cancel)
+        assert all(value == 0 for value in pool._roles.values())
+        assert all(not slot.process.is_alive() for slot in pool._slots)
+    finally:
+        pool.shutdown(0)
 
 
 def semaphore_process(connection: Connection) -> None:

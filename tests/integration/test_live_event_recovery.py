@@ -2,18 +2,21 @@ from __future__ import annotations
 
 import asyncio
 import json
+import time
 from collections.abc import AsyncIterator
 from dataclasses import dataclass
+from types import SimpleNamespace
 from typing import TYPE_CHECKING
 
 import pytest
 from sqlalchemy import event
 from sqlalchemy.exc import OperationalError
+from sqlmodel import select
 
 from app.analysis.room_config import merge_room_config
 from app.core.config import settings
 from app.db import session as database
-from app.db.entities import LiveRoom
+from app.db.entities import LiveRoom, RecordingSession
 from app.db.session import get_session
 from app.pipeline.live_monitor import LiveMonitor
 from app.plugins.live_source import (
@@ -54,12 +57,18 @@ class RecoverySource:
         self.failed = asyncio.Event()
         self.connected = asyncio.Event()
         self.queue: asyncio.Queue[LiveStatus] = asyncio.Queue()
+        self.block_info_call: int | None = None
+        self.info_blocked = asyncio.Event()
+        self.info_release = asyncio.Event()
 
     async def resolve_room(self, value: str) -> SourceRoom:
         return SourceRoom(platform="recovery", source_id="1", canonical_url="https://recovery.invalid/1")
 
     async def get_room_info(self, room: SourceRoom) -> RoomSnapshot:
         self.calls += 1
+        if self.calls == self.block_info_call:
+            self.info_blocked.set()
+            await self.info_release.wait()
         if self.failures:
             self.failures -= 1
             self.failed.set()
@@ -68,7 +77,7 @@ class RecoverySource:
             self.unknown -= 1
             self.failed.set()
             return RoomSnapshot(status=LiveStatus.UNKNOWN)
-        return RoomSnapshot(status=self.status)
+        return RoomSnapshot(status=self.status, title="恢复测试直播")
 
     async def get_streams(self, room: SourceRoom, preference: StreamPreference) -> list[StreamSpec]:
         # 平台暂未提供媒体，真实录制器继续等待，仍可验收停止和实例身份。
@@ -144,6 +153,116 @@ async def test_initial_snapshot_recovers_without_reconnect_or_another_event(
     calls = recovery.source.calls
     await recovery.monitor._check_all()
     assert recovery.source.calls == calls
+
+
+async def _exhaust_live_recording(
+    recovery: RecoveryRuntime, monkeypatch: pytest.MonkeyPatch
+) -> tuple[rooms.RecordingRecovery, list[float]]:
+    now = [100.0]
+    monkeypatch.setattr(rooms, "time", SimpleNamespace(monotonic=lambda: now[0], time=time.time))
+    monkeypatch.setattr(settings, "recording_reconnect_max_attempts", 1)
+    recovery.source.status = LiveStatus.LIVE
+    await recovery.monitor._check_all()
+    await asyncio.wait_for(recovery.source.connected.wait(), 2)
+    entry = recovery.monitor._subscriptions[recovery.room_id]
+    await asyncio.wait_for(entry.snapshot_task, 2)
+    async with asyncio.timeout(3):
+        while recovery.manager.recovery(recovery.room_id) is None:
+            await asyncio.sleep(0.01)
+    cooling = recovery.manager.recovery(recovery.room_id)
+    assert cooling is not None and cooling.remaining() > 0
+    return cooling, now
+
+
+@pytest.mark.parametrize("failure", ["unknown", "temporary", "authentication"])
+async def test_event_cooldown_rechecks_without_a_new_live_event(
+    recovery: RecoveryRuntime, monkeypatch: pytest.MonkeyPatch, failure: str
+) -> None:
+    cooling, now = await _exhaust_live_recording(recovery, monkeypatch)
+    entry = recovery.monitor._subscriptions[recovery.room_id]
+    calls = recovery.source.calls
+    await recovery.monitor._check_all()
+    assert recovery.source.calls == calls
+    assert not recovery.manager.is_running(recovery.room_id)
+    now[0] = cooling.ready_at
+    if failure == "unknown":
+        recovery.source.unknown = 1
+    else:
+        recovery.source.failures = 1
+        recovery.source.error = SourceTemporaryError if failure == "temporary" else SourceAuthenticationError
+    await recovery.monitor._check_all()
+    assert entry.reconcile_task is not None
+    await asyncio.wait_for(entry.reconcile_task, 2)
+    assert not recovery.manager.is_running(recovery.room_id)
+    if failure == "authentication":
+        assert recovery.manager.recovery(recovery.room_id) is None
+        await recovery.monitor._check_all()
+        assert recovery.room_id not in recovery.monitor._subscriptions
+        return
+    assert recovery.manager.recovery(recovery.room_id) is cooling
+    assert cooling.remaining() > 0
+    now[0] = cooling.ready_at
+    monkeypatch.setattr(settings, "recording_reconnect_max_attempts", 1000)
+    await recovery.monitor._check_all()
+    await asyncio.wait_for(entry.reconcile_task, 2)
+    assert recovery.manager.is_running(recovery.room_id)
+    assert recovery.manager.recovery(recovery.room_id) is None
+
+
+async def test_new_offline_event_during_recovery_metadata_prevents_start(
+    recovery: RecoveryRuntime, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    cooling, now = await _exhaust_live_recording(recovery, monkeypatch)
+    now[0] = cooling.ready_at
+    entry = recovery.monitor._subscriptions[recovery.room_id]
+    # 第一次是冷却复核，第二次是创建录制器前的资料刷新。
+    recovery.source.block_info_call = recovery.source.calls + 2
+    await recovery.monitor._check_all()
+    await asyncio.wait_for(recovery.source.info_blocked.wait(), 2)
+    revision = entry.revision
+    offline = asyncio.create_task(recovery.source.send(LiveStatus.OFFLINE))
+    try:
+        async with asyncio.timeout(2):
+            while entry.revision == revision:
+                await asyncio.sleep(0)
+        recovery.source.status = LiveStatus.OFFLINE
+        recovery.source.info_release.set()
+        await asyncio.wait_for(entry.reconcile_task, 2)
+        await asyncio.wait_for(offline, 2)
+        assert not recovery.manager.is_running(recovery.room_id)
+        assert recovery.manager.recovery(recovery.room_id) is None
+        with get_session() as db:
+            sessions = db.exec(select(RecordingSession).where(RecordingSession.room_id == recovery.room_id)).all()
+            assert len(sessions) == 1 and sessions[0].status == "error"
+    finally:
+        recovery.source.info_release.set()
+        await asyncio.gather(offline, return_exceptions=True)
+    calls = recovery.source.calls
+    await recovery.monitor._check_all()
+    assert recovery.source.calls == calls
+
+
+@pytest.mark.parametrize("error", [SourceTemporaryError, SourceAuthenticationError])
+async def test_cancelled_cooldown_does_not_publish_late_lookup_error(
+    recovery: RecoveryRuntime, monkeypatch: pytest.MonkeyPatch, error: type[SourceError]
+) -> None:
+    cooling, now = await _exhaust_live_recording(recovery, monkeypatch)
+    now[0] = cooling.ready_at
+    entry = recovery.monitor._subscriptions[recovery.room_id]
+    recovery.source.block_info_call = recovery.source.calls + 1
+    recovery.source.failures = 1
+    recovery.source.error = error
+    await recovery.monitor._check_all()
+    await asyncio.wait_for(recovery.source.info_blocked.wait(), 2)
+    try:
+        await recovery.manager.stop(recovery.room_id, pause_auto_restart=True)
+        assert recovery.manager.recovery(recovery.room_id) is None
+        recovery.source.info_release.set()
+        await asyncio.wait_for(entry.reconcile_task, 2)
+        assert recovery.room_id not in recovery.monitor._errors
+        assert not recovery.manager.is_running(recovery.room_id)
+    finally:
+        recovery.source.info_release.set()
 
 
 @pytest.mark.parametrize("failure", ["failures", "unknown"])

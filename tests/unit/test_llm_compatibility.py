@@ -33,7 +33,7 @@ def _response(content: str | None, finish: str = "stop", reasoning: str = "") ->
 
 
 @pytest.fixture
-def completion_api(monkeypatch: MonkeyPatch) -> CompletionAPI:
+def completion_api(temp_db: None, monkeypatch: MonkeyPatch) -> CompletionAPI:
     def install(responses: list[SimpleNamespace]) -> list[dict[str, object]]:
         replies = iter(responses)
         calls: list[dict[str, object]] = []

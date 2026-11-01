@@ -1,6 +1,6 @@
 # Event-first 热点检测器
 
-适用版本：`0.1.20.2-alpha`。用户操作流程见[项目 README](../../README.md)和 [Portable 小白使用说明](../../packaging/portable/USER_GUIDE_ZH.md)；V0.1.17 基于分段峰值的历史实现与修复记录见 [0.1.17 系列 Changelog](../changelog/CHANGELOG_PRE_0.1.17.md)。
+适用版本：`0.1.20.3-alpha`。用户操作流程见[项目 README](../../README.md)和 [Portable 小白使用说明](../../packaging/portable/USER_GUIDE_ZH.md)；V0.1.17 基于分段峰值的历史实现与修复记录见 [0.1.17 系列 Changelog](../changelog/CHANGELOG_PRE_0.1.17.md)。
 
 `HotspotDetector` 在创建视频候选之前回答“这一时段是否发生了值得关注的变化”。它不调用 LLM，也不把 ASR 当作前置条件；检测结果先以 `HotspotEvent(status=provisional, candidate_id=NULL)` 保存。后续事件补全与成片评分再决定是否进入既有 `HighlightCandidate` / `HighlightEvent` 链。
 
@@ -54,6 +54,8 @@ BACKGROUND_ASR_PRIORITY=100
 EventEnricher 只回答“刚才发生了什么”，不修改 `heat_score`、`clip_score`、事件边界或生命周期。它把事件局部 ASR、相邻分段转写、代表弹幕、音频、SenseVoice、趋势及未来可扩展证据整理为带稳定 `evidence_id` 的内容寻址 Evidence Bundle，再要求 LLM 返回严格的 `title/summary/category/entities/semantic_confidence/evidence_ids` JSON。
 
 证据使用场次相对时间，分别记录词级、片段级、事件级和未知精度。上下文只来自峰值所在的连续录制元数据范围；缺少词级时间时不会按字符比例裁剪局部转写。窗口截断事件时，不混入无法定位的聚合转写与代表弹幕。完整 JSON 同时受字数、条目数量及字节大小约束，截断状态明确保留。这里的录制范围来自数据库元数据，不等于媒体文件已经通过可读性检查。
+
+模型请求内把证据编号映射为 `E1`、`E2` 等短编号，通过校验后还原完整来源 ID 再持久化。独立事实核验使用对应摘录的 `Q1`、`Q2` 编号，本地核对证据与原文绑定，模型无需重新抄写原文。标题和摘要分别检查完整数字，实体必须在同一条摘录内找到依据；空白、大小写和 Unicode 字形的规范化不引入实体别名。以上检查仍保留弹幕归因、未知时间、降级转写和标题/摘要独立核验要求。
 
 生成结果先检查字段集合、类别、长度、实体、数字和有效证据引用，再发起单独的事实核验请求，分别核对标题与摘要，并要求引用原文。字词覆盖率仅记录为诊断，语义改写不因覆盖率低而自动失败。弹幕支持的说法必须明确归因给“弹幕/观众”；只有音频等非文本信号时拒绝生成具体事实。仅有降级语音时必须保留不确定表述。语义置信度按语音质量与证据覆盖率设置上限，不能用热度替代。事实核验仍属于模型推断；真实素材质量验收延期，不承诺消除所有幻觉。
 

@@ -2,7 +2,6 @@
 
 from __future__ import annotations
 
-import os
 import subprocess
 import time
 from collections.abc import Callable, Sequence
@@ -10,7 +9,9 @@ from typing import Any
 
 from app.analysis.transcription.process_tree import ProcessTree
 from app.core.execution import retain_cleanup
+from app.core.process_spawn import SpawnPlan
 from app.core.sanitize import safe_exception_summary
+from app.core.supervisor import remaining_shutdown
 
 
 class ProcessCancelledError(RuntimeError):
@@ -42,37 +43,40 @@ def run_cancellable(
 
     if shutdown_event.is_set():
         raise ProcessShutdownError("服务正在关闭，不再启动媒体命令")
-    if os.name == "nt":
-        # 在 Job 接管前禁止子进程执行、退出或创建不受监管的后代。
-        kwargs["creationflags"] = kwargs.get("creationflags", 0) | 0x00000004  # CREATE_SUSPENDED
-    else:
-        kwargs["start_new_session"] = True
-    process = subprocess.Popen(command, text=text, **kwargs)
+    with SpawnPlan(command, {**kwargs, "text": text}) as plan:
+        process = subprocess.Popen(plan.command, **plan.options)
 
-    def cleanup_starting() -> None:
-        if process.poll() is None:
-            process.kill()
-        process.communicate(timeout=3)
+        def cleanup_starting() -> None:
+            if process.poll() is None:
+                process.kill()
+            process.communicate(timeout=3)
 
-    release_starting = retain_cleanup(cleanup_starting)
-    try:
-        tree = ProcessTree(process.pid)
-    except BaseException:
-        cleanup_starting()
+        release_starting = retain_cleanup(cleanup_starting)
+        try:
+            tree = ProcessTree(process.pid)
+        except BaseException:
+            cleanup_starting()
+            release_starting()
+            raise
+        plan.attach(tree)
+        track_subprocess(process, tree)
+
+        def cleanup() -> None:
+            terminate_owned_process(process, tree)
+            untrack_subprocess(process)
+
+        release = retain_cleanup(cleanup)
         release_starting()
-        raise
-    track_subprocess(process, tree)
-
-    def cleanup() -> None:
-        terminate_owned_process(process, tree)
-        untrack_subprocess(process)
-
-    release = retain_cleanup(cleanup)
-    release_starting()
+        try:
+            tree.resume_suspended()
+            plan.confirm()
+        except BaseException:
+            cleanup()
+            release()
+            raise
     started = time.monotonic()
     stdout = stderr = None
     try:
-        tree.resume_suspended()
         while True:
             if shutdown_event.is_set():
                 raise ProcessShutdownError("服务关闭，中止媒体命令")
@@ -119,7 +123,7 @@ def terminate_owned_process(
         except ProcessLookupError:
             pass  # 子进程在 poll 与 terminate 之间退出。
     try:
-        process.wait(timeout=3)
+        process.wait(timeout=remaining_shutdown(3))
     except subprocess.TimeoutExpired:
         try:
             process.kill()
@@ -127,6 +131,6 @@ def terminate_owned_process(
             pass
     tree.terminate()
     if drain_output:
-        return process.communicate(timeout=3)
-    process.wait(timeout=3)
+        return process.communicate(timeout=remaining_shutdown(3))
+    process.wait(timeout=remaining_shutdown(3))
     return None, None

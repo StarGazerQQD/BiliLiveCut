@@ -6,9 +6,47 @@
 
 from __future__ import annotations
 
-from pathlib import Path
+from pathlib import Path, PurePosixPath, PureWindowsPath
 
 from app.core.config import settings
+
+
+def resolve_storage_path(value: str | Path) -> Path:
+    """解析存储引用；相对值限定于当前根，既有绝对值保留原位置。"""
+    text = str(value)
+    if not text or text == "." or "\x00" in text:
+        raise ValueError("媒体路径不能为空")
+    path = Path(text)
+    if path.is_absolute():
+        return path.resolve()
+    if PureWindowsPath(text).drive or "\\" in text or ".." in PurePosixPath(text).parts:
+        raise ValueError("相对媒体路径必须是存储根内的 POSIX 路径")
+    root = Path(settings.storage_root).expanduser().resolve()
+    resolved = (root / path).resolve()
+    if not resolved.is_relative_to(root) or resolved == root:
+        raise ValueError("相对媒体路径不能越过存储根")
+    return resolved
+
+
+def to_storage_relative(value: str | Path) -> str:
+    """为受管物理路径保存相对引用，保留显式外部输出的绝对位置。"""
+    path = Path(value)
+    root = Path(settings.storage_root).expanduser().resolve()
+    physical = resolve_storage_path(value)
+    if path.is_absolute() and path.is_relative_to(root) and not physical.is_relative_to(root):
+        raise ValueError("媒体文件不能通过符号链接越过存储根")
+    if physical.is_relative_to(root):
+        relative = physical.relative_to(root)
+        if relative == Path("."):
+            raise ValueError("媒体路径不能是存储根本身")
+        return relative.as_posix()
+    return str(physical)
+
+
+def storage_path_aliases(value: str | Path) -> tuple[str, ...]:
+    """列出同一物理文件的当前规范引用，供幂等登记和引用保护使用。"""
+    path = resolve_storage_path(value)
+    return tuple(dict.fromkeys((str(value), str(path), path.as_posix(), to_storage_relative(path))))
 
 
 def storage_root() -> Path:
@@ -27,8 +65,13 @@ def _subdir(name: str) -> Path:
     :param name: 子目录名称。
     :returns: 子目录的 :class:`~pathlib.Path`。
     """
-    path = storage_root() / name
+    root = storage_root()
+    path = root / name
+    if not path.resolve().is_relative_to(root):
+        raise ValueError("存储目录不能通过链接越过存储根")
     path.mkdir(parents=True, exist_ok=True)
+    if not path.resolve().is_relative_to(root):
+        raise ValueError("存储目录不能通过链接越过存储根")
     return path
 
 
@@ -82,4 +125,4 @@ def session_raw_dir(session_id: int) -> Path:
     :param session_id: 录制会话主键。
     :returns: 会话专属目录的 :class:`~pathlib.Path`。
     """
-    return _subdir(f"raw/session_{session_id}")
+    return _session_directory(raw_dir(), session_id)

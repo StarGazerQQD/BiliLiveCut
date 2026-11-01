@@ -10,6 +10,7 @@ from typing import TYPE_CHECKING
 from pydantic import ValidationError
 from sqlmodel import Session
 
+from app.core.cancellation import check_cancellation, check_shutdown
 from app.core.runtime_settings import effective_settings
 from app.core.settings_store import get_setting
 from app.db.entities import AppSetting
@@ -23,6 +24,7 @@ from app.models.contracts import (
     ModelConfigurationChange,
     ModelConfigurationView,
     ModelConnection,
+    ModelProbeDiagnostic,
     ModelRoute,
 )
 
@@ -30,6 +32,7 @@ if TYPE_CHECKING:
     from app.core.config import Settings
 
 MODEL_CONFIGURATION_KEY = "model_configuration"
+_PROBE_PREFIX = "model_probe:v1:"
 
 
 def _stored(db: Session, key: str) -> str:
@@ -203,13 +206,21 @@ def _core(db: Session) -> tuple[Settings, int]:
     return core, revision
 
 
-def _view(config: ModelConfiguration, core: Settings, revision: int, *, legacy: bool) -> ModelConfigurationView:
+def _view(
+    config: ModelConfiguration,
+    core: Settings,
+    revision: int,
+    *,
+    legacy: bool,
+    diagnostics: list[ModelProbeDiagnostic] | None = None,
+) -> ModelConfigurationView:
     enabled = {item.id for item in config.connections if item.enabled}
     return ModelConfigurationView(
         revision=revision,
         source="legacy" if legacy else "routes",
         asr_selection=core.asr_remote_route_id,
         model_capacities=list(MODEL_CAPACITIES),
+        probe_diagnostics=diagnostics or [],
         connections=[
             ConnectionView(
                 id=item.id,
@@ -236,7 +247,96 @@ def model_configuration_view() -> ModelConfigurationView:
     with get_session() as db:
         db.connection().exec_driver_sql("BEGIN")
         core, revision = _core(db)
-        return _view(_read(db, core), core, revision, legacy=not bool(_stored(db, MODEL_CONFIGURATION_KEY)))
+        config = _read(db, core)
+        legacy = not bool(_stored(db, MODEL_CONFIGURATION_KEY))
+        return _view(
+            config, core, revision, legacy=legacy, diagnostics=[] if legacy else _probe_diagnostics(db, config)
+        )
+
+
+def _probe_diagnostics(db: Session, config: ModelConfiguration) -> list[ModelProbeDiagnostic]:
+    result = []
+    for route in config.routes:
+        row = db.get(AppSetting, _PROBE_PREFIX + route.id)
+        if row is not None:
+            result.append(ModelProbeDiagnostic.model_validate_json(row.value))
+    return result
+
+
+def _same_probe_connection(first: ModelConnection | None, second: ModelConnection | None) -> bool:
+    return (
+        first is not None
+        and second is not None
+        and (
+            first.id == second.id
+            and first.base_url == second.base_url
+            and first.enabled == second.enabled
+            and hmac.compare_digest(first.api_key.encode(), second.api_key.encode())
+        )
+    )
+
+
+def _invalidate_probe_diagnostics(db: Session, previous: ModelConfiguration, current: ModelConfiguration) -> None:
+    old_connections = {item.id: item for item in previous.connections}
+    new_connections = {item.id: item for item in current.connections}
+    new_routes = {item.id: item for item in current.routes}
+    ignored = {"name", "priority", "price_input_per_m", "price_output_per_m"}
+    for route in previous.routes:
+        new_route = new_routes.get(route.id)
+        if (
+            new_route is not None
+            and route.model_dump(exclude=ignored) == new_route.model_dump(exclude=ignored)
+            and _same_probe_connection(
+                old_connections.get(route.connection_id), new_connections.get(new_route.connection_id)
+            )
+        ):
+            continue
+        row = db.get(AppSetting, _PROBE_PREFIX + route.id)
+        if row is not None:
+            db.delete(row)
+
+
+def save_probe_diagnostic(route: ModelRoute, connection: ModelConnection, diagnostic: ModelProbeDiagnostic) -> bool:
+    """只保存仍与已存配置一致的选中路由观察，草稿及失效请求不写入。"""
+    check_cancellation()
+    with get_session() as db:
+        db.connection().exec_driver_sql("BEGIN IMMEDIATE")
+        raw = _stored(db, MODEL_CONFIGURATION_KEY)
+        if not raw:
+            return False
+        config = _parse(raw)
+        if not _probe_matches(config, route, connection):
+            return False
+        if (diagnostic.route_id, diagnostic.connection_id, diagnostic.model, diagnostic.base_url) != (
+            route.id,
+            connection.id,
+            route.model,
+            connection.base_url,
+        ):
+            raise ValueError("模型探测诊断与选中路由不一致")
+        check_shutdown()
+        row = db.get(AppSetting, _PROBE_PREFIX + route.id) or AppSetting(key=_PROBE_PREFIX + route.id, value="")
+        row.value = diagnostic.model_dump_json()
+        db.add(row)
+    return True
+
+
+def _probe_matches(config: ModelConfiguration, route: ModelRoute, connection: ModelConnection) -> bool:
+    current_route = next((item for item in config.routes if item.id == route.id), None)
+    current_connection = next((item for item in config.connections if item.id == connection.id), None)
+    return (
+        current_route == route
+        and current_connection is not None
+        and current_connection.name == connection.name
+        and _same_probe_connection(current_connection, connection)
+    )
+
+
+def probe_is_saved(route: ModelRoute, connection: ModelConnection) -> bool:
+    """发送前确认该选中路由已保存；其他用户随后保存同名草稿不能改变此结论。"""
+    with get_session() as db:
+        raw = _stored(db, MODEL_CONFIGURATION_KEY)
+        return bool(raw) and _probe_matches(_parse(raw), route, connection)
 
 
 def _merge(change: ModelConfigurationChange, existing: ModelConfiguration) -> ModelConfiguration:
@@ -265,15 +365,18 @@ def save_model_configuration(change: ModelConfigurationChange) -> ModelConfigura
 
     with configuration_transaction(change.revision) as (db, revision):
         core, _ = _core(db)
-        merged = _merge(change, _read(db, core))
+        previous = _read(db, core)
+        merged = _merge(change, previous)
         _validate_selection(merged, core.asr_remote_route_id)
+        _invalidate_probe_diagnostics(db, previous, merged)
         row = db.get(AppSetting, MODEL_CONFIGURATION_KEY) or AppSetting(key=MODEL_CONFIGURATION_KEY, value="")
         row.value = merged.model_dump_json()
         db.add(row)
         old = db.get(AppSetting, "llm_providers")
         if old is not None:
             db.delete(old)
-        response = _view(merged, core, revision, legacy=False)
+        db.flush()
+        response = _view(merged, core, revision, legacy=False, diagnostics=_probe_diagnostics(db, merged))
     return response
 
 

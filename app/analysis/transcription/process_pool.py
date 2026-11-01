@@ -30,6 +30,8 @@ from app.core.asr_failures import (
     device_failure_scope,
     permanent_device_error,
 )
+from app.core.cancellation import shutdown_event
+from app.core.supervisor import remaining_shutdown, shutdown_deadline, shutdown_scope
 
 if TYPE_CHECKING:
     from loguru import Message
@@ -43,6 +45,10 @@ class ASRTimeoutError(TimeoutError):
 
 class ASRShutdownError(RuntimeError):
     """Worker 停止后不再执行新推理，已运行推理在宽限截止后退出。"""
+
+
+class ASRProcessExitError(RuntimeError):
+    """ASR 子进程异常退出，跨重启计入持久恢复预算。"""
 
 
 class RemoteASRError(RuntimeError):
@@ -114,6 +120,7 @@ def _asr_child(connection: Connection) -> None:
     from app.analysis.model_pool import model_pool, preload_models
     from app.analysis.transcription.pipeline import get_default_pipeline
     from app.analysis.transcription.progress import set_progress_sink
+    from app.analysis.transcription.remote import RemoteCheckpoint, RemoteChunk
     from app.core.config import Settings
     from app.core.runtime_settings import publish_settings, settings_scope
     from app.core.sanitize import sanitize_diagnostic
@@ -163,6 +170,17 @@ def _asr_child(connection: Connection) -> None:
             )
 
         sink_id = logger.add(diagnostic, level="WARNING", diagnose=False, backtrace=False)
+
+        def save_chunk(
+            chunk: RemoteChunk,
+            emit: Callable[..., None] = emit,
+            request_id: str = request["request_id"],
+        ) -> None:
+            emit("checkpoint", payload=chunk.model_dump())
+            permit = _receive(connection)
+            if permit != {"kind": "checkpoint_saved", "request_id": request_id, "index": chunk.index}:
+                raise RuntimeError("ASR checkpoint commit was not acknowledged")
+
         try:
             values = Settings.model_validate(request["settings"]).model_dump()
             if request["device_scope"] != device_failure_scope(values):
@@ -185,8 +203,14 @@ def _asr_child(connection: Connection) -> None:
                     result = None
                 else:
                     progress("audio_validated", request["audio_evidence"])
+                    checkpoint = None
+                    if request.get("checkpoint_enabled") is True:
+                        chunks = [RemoteChunk.model_validate(item) for item in request.get("remote_chunks", [])]
+                        if len({chunk.index for chunk in chunks}) != len(chunks):
+                            raise ValueError("ASR checkpoint contains duplicate chunk indices")
+                        checkpoint = RemoteCheckpoint({chunk.index: chunk for chunk in chunks}, save_chunk)
                     result = get_default_pipeline()._transcribe_normalized(
-                        request["audio_path"], request.get("initial_prompt")
+                        request["audio_path"], request.get("initial_prompt"), checkpoint=checkpoint
                     )
                     result.metadata.setdefault("audio_evidence", request["audio_evidence"])
                 model_pool.cleanup_idle()
@@ -252,6 +276,10 @@ def _next_message(slot: _Slot, timeout: float = 0.2) -> dict[str, Any] | None:
     except queue.Empty:
         return None
     if isinstance(message, Exception):
+        if isinstance(message, (EOFError, BrokenPipeError)):
+            raise ASRProcessExitError(
+                f"ASR child connection closed pid={slot.process.pid} exitcode={slot.process.exitcode}"
+            ) from message
         raise RuntimeError(f"ASR IPC failed pid={slot.process.pid}: {type(message).__name__}") from message
     return message
 
@@ -278,6 +306,7 @@ class ASRProcessPool:
         self._roles: dict[str, int] = {}
         self._closed = False
         self._shutdown_at: float | None = None
+        self._cleanup_deadline: float | None = None
         self._operations: dict[str, dict[str, object]] = {}
         self._starting: dict[BaseProcess, Connection] = {}
         self._device_failures: dict[str, dict[tuple[str, str, str], DeviceFailure]] = {}
@@ -299,20 +328,25 @@ class ASRProcessPool:
 
     def check_shutdown(self) -> None:
         """现有解码或推理操作在统一宽限截止后协作退出。"""
-        if self._shutdown_at is not None and time.monotonic() >= self._shutdown_at:
+        if shutdown_event.is_set() or self._shutdown_at is not None and time.monotonic() >= self._shutdown_at:
             raise ASRShutdownError("ASR worker shutdown deadline reached")
 
     def _kill(self, slot: _Slot) -> None:
+        budget = 15.0 if self._cleanup_deadline is None else max(0.0, self._cleanup_deadline - time.monotonic())
+        with shutdown_scope(budget):
+            self._kill_slot(slot)
+
+    def _kill_slot(self, slot: _Slot) -> None:
         slot.io_stop.set()
         slot.tree.terminate()
-        slot.process.join(5)
+        slot.process.join(remaining_shutdown(5))
         if slot.process.is_alive():
             slot.process.kill()
-            slot.process.join(5)
+            slot.process.join(remaining_shutdown(5))
         if slot.process.is_alive():
             raise RuntimeError(f"ASR 子进程无法终止 pid={slot.process.pid}；资源名额保持占用")
         if slot.io_thread is not None and slot.io_thread.ident is not None:
-            slot.io_thread.join(5)
+            slot.io_thread.join(remaining_shutdown(5))
             if slot.io_thread.is_alive():
                 raise RuntimeError(f"ASR IPC 未退出 pid={slot.process.pid}；资源名额保持占用")
         slot.connection.close()
@@ -339,7 +373,7 @@ class ASRProcessPool:
                 return
             if process.is_alive():
                 process.kill()
-            process.join(5)
+            process.join(remaining_shutdown(5))
             if process.is_alive():
                 raise RuntimeError(f"ASR 启动失败后的进程尚未退出 pid={process.pid}")
             connection.close()
@@ -350,14 +384,14 @@ class ASRProcessPool:
         """空闲槽先正常退出，让模型库的 multiprocessing finalizer 释放信号量。"""
         if slot.ready and slot.process.is_alive():
             slot.outgoing.put({"operation": "shutdown"})
-            slot.process.join(3)
+            slot.process.join(remaining_shutdown(3))
         # SDK 卸载卡住或仍有后代时，仍由原有进程树监管兜底。
         self._kill(slot)
 
     def _check(self, deadline: float, checker: Callable[[], None], stage: str) -> None:
         checker()
         now = time.monotonic()
-        if self._shutdown_at is not None and now >= self._shutdown_at:
+        if shutdown_event.is_set() or self._shutdown_at is not None and now >= self._shutdown_at:
             raise ASRShutdownError(f"ASR shutdown deadline reached stage={stage}")
         if now >= deadline:
             raise ASRTimeoutError(f"ASR inference deadline reached stage={stage}")
@@ -369,6 +403,7 @@ class ASRProcessPool:
         timeout_s: float,
         check_cancelled: Callable[[], None],
         authorize_remote: Callable[[], None] | None = None,
+        on_checkpoint: Callable[[dict[str, object]], None] | None = None,
     ) -> dict[str, Any]:
         """等待资源、运行并监管一次请求，退出确认完成后才归还槽与角色名额。"""
         from app.core.config import Settings
@@ -461,14 +496,14 @@ class ASRProcessPool:
                         raise RuntimeError("ASR child readiness handshake failed")
                     slot.ready = True
                 elif not slot.process.is_alive():
-                    raise RuntimeError(f"ASR child startup failed exitcode={slot.process.exitcode}")
+                    raise ASRProcessExitError(f"ASR child startup failed exitcode={slot.process.exitcode}")
             slot.outgoing.put(request)
             while True:
                 self._check(deadline, check_cancelled, slot.stage)
                 message = _next_message(slot)
                 if message is None:
                     if not slot.process.is_alive():
-                        raise RuntimeError(
+                        raise ASRProcessExitError(
                             f"ASR child exited pid={slot.process.pid} "
                             f"exitcode={slot.process.exitcode} stage={slot.stage}"
                         )
@@ -485,6 +520,21 @@ class ASRProcessPool:
                         raise RuntimeError("远程 ASR 缺少父进程授权检查")
                     authorize_remote()
                     slot.outgoing.put({"kind": "authorization_granted", "request_id": request["request_id"]})
+                elif message["kind"] == "checkpoint":
+                    if on_checkpoint is None:
+                        raise RuntimeError("ASR checkpoint has no parent writer")
+                    from app.analysis.transcription.remote import RemoteChunk
+
+                    chunk = RemoteChunk.model_validate(message["payload"])
+                    self._check(deadline, check_cancelled, slot.stage)
+                    on_checkpoint(chunk.model_dump())
+                    slot.outgoing.put(
+                        {
+                            "kind": "checkpoint_saved",
+                            "request_id": request["request_id"],
+                            "index": chunk.index,
+                        }
+                    )
                 elif message["kind"] == "metric":
                     from app.analysis.asr_metrics import apply_event
 
@@ -561,10 +611,16 @@ class ASRProcessPool:
 
     def shutdown(self, grace_s: float) -> None:
         """拒绝新请求并给现有推理统一宽限；监管线程负责终止与确认退出。"""
-        deadline = time.monotonic() + grace_s
+        # 独立调用的零推理宽限仍允许物理清理；应用关闭时不超过共同期限。
+        with shutdown_scope(max(0.0, grace_s) + 12):
+            self._shutdown(grace_s)
+
+    def _shutdown(self, grace_s: float) -> None:
+        deadline = shutdown_deadline(max(0.0, grace_s) + 12)
+        self._cleanup_deadline = deadline
         with self._condition:
             self._closed = True
-            self._shutdown_at = deadline
+            self._shutdown_at = min(time.monotonic() + max(0.0, grace_s), deadline - min(5, remaining_shutdown(5)))
             self._condition.notify_all()
             for process in tuple(self._starting):
                 self._reap_starting(process)
@@ -582,8 +638,8 @@ class ASRProcessPool:
                 for slot in list(self._slots):
                     if slot.quarantined:
                         self._kill(slot)
-                self._condition.wait(0.2)
-                if time.monotonic() > deadline + 12:
+                self._condition.wait(remaining_shutdown(0.2))
+                if time.monotonic() >= deadline:
                     raise RuntimeError("ASR 监管线程未在终止宽限内归还进程槽")
             for slot in list(self._slots):
                 self._retire(slot)

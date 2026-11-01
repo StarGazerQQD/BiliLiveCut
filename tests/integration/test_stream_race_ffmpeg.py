@@ -15,6 +15,7 @@ import httpx
 import pytest
 
 from app.core.config import settings
+from app.core.paths import resolve_storage_path
 from app.plugins.live_source import SourceRoom, StreamSpec
 from app.recording.recorder import Recorder
 from app.recording.stream_race import StreamAttempt, StreamRace
@@ -239,7 +240,7 @@ async def test_recorder_recovers_from_hls_init_failure_through_real_source_chain
                 "stream=codec_name",
                 "-of",
                 "default=noprint_wrappers=1:nokey=1",
-                complete[0].file_path,
+                str(resolve_storage_path(complete[0].file_path)),
             ],
             capture_output=True,
             text=True,
@@ -443,7 +444,11 @@ async def test_real_ffmpeg_keeps_winning_http_connection_and_writes_playable_seg
 
 @pytest.mark.parametrize("parallel", [1, 2], ids=["serial", "race"])
 async def test_shutdown_flushes_final_segment_without_reconnecting(
-    temp_db: None, tmp_path: Path, monkeypatch: pytest.MonkeyPatch, parallel: int
+    temp_db: None,
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    parallel: int,
+    request: pytest.FixtureRequest,
 ) -> None:
     from sqlmodel import select
 
@@ -452,6 +457,7 @@ async def test_shutdown_flushes_final_segment_without_reconnecting(
     from app.pipeline import storage_lifecycle
     from app.pipeline.lifecycle import shutdown_event
     from app.recording import recorder as module
+    from app.recording.writer_ownership import SessionWriter
 
     binary = shutil.which(settings.ffmpeg_path)
     assert binary is not None
@@ -463,27 +469,30 @@ async def test_shutdown_flushes_final_segment_without_reconnecting(
     recorder = Recorder(
         SourceRoom(platform="external", source_id="1", canonical_url="https://example.invalid/1"), room_id
     )
+    writer = SessionWriter.create(tmp_path / "writers")
+    request.addfinalizer(writer.close)
+    recorder._writer = writer
     recorder._session_id = recorder._create_session()
     fetches = []
     processes = []
     spawn = asyncio.create_subprocess_exec
 
-    async def capture_spawn(*args, **kwargs):
+    async def capture_spawn(*args: str, **kwargs: object) -> asyncio.subprocess.Process:
         process = await spawn(*args, **kwargs)
         processes.append(process)
         return process
 
-    async def no_danmaku():
+    async def no_danmaku() -> None:
         pass
 
-    async def fetch():
+    async def fetch() -> StreamSpec:
         fetches.append(1)
         recorder._stream_candidates = [
             StreamSpec(url=f"https://example.invalid/{i}", transport="hls", container="ts") for i in range(parallel)
         ]
         return recorder._stream_candidates[0]
 
-    def command(stream, out_dir, prefix, segment_list):
+    def command(stream: StreamSpec, out_dir: Path, prefix: str, segment_list: Path) -> list[str]:
         return [
             binary,
             "-hide_banner",
@@ -532,11 +541,18 @@ async def test_shutdown_flushes_final_segment_without_reconnecting(
             segments = db.exec(select(RawSegment).where(RawSegment.session_id == recorder.session_id)).all()
         assert len(segments) == 1
         assert 0 < segments[0].duration_s < 60 and segments[0].size_bytes > 0
-        assert Path(segments[0].file_path).is_file()
+        assert resolve_storage_path(segments[0].file_path).is_file()
         assert fetches == [1] and not recorder._last_exit_abnormal
         assert all(process.returncode is not None for process in processes)
         probe = subprocess.run(
-            ["ffprobe", "-v", "error", "-show_entries", "stream=codec_type", segments[0].file_path],
+            [
+                "ffprobe",
+                "-v",
+                "error",
+                "-show_entries",
+                "stream=codec_type",
+                str(resolve_storage_path(segments[0].file_path)),
+            ],
             capture_output=True,
             text=True,
             timeout=5,

@@ -164,17 +164,14 @@ def test_completed_clip_delay_changes_raw_retention(temp_db: None, tmp_path: Pat
 
 def test_media_use_lock_blocks_cleanup_and_releases_after_failure(temp_db: None) -> None:
     from app.core.media_usage import media_in_use, media_operation
-    from app.db.session import get_session
     from app.pipeline.storage_lifecycle import cleanup_old_raw_files
 
     with pytest.raises(RuntimeError, match="failed operation"):
         with media_operation():
-            with get_session() as db:
-                assert media_in_use(db) is True
+            assert media_in_use() is True
             assert cleanup_old_raw_files() == 0
             raise RuntimeError("failed operation")
-    with get_session() as db:
-        assert media_in_use(db) is False
+    assert media_in_use() is False
 
 
 def test_alert_threshold_controls_notification_independently(temp_db: None, monkeypatch: MonkeyPatch) -> None:

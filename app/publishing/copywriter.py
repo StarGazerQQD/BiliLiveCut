@@ -23,6 +23,7 @@ from app.analysis.keywords import match_keywords
 from app.analysis.transcript_windows import extract_transcript_window
 from app.analysis.transcription.content import refined_transcript_text
 from app.clipping.core import select_covering_segments
+from app.core.cancellation import check_shutdown
 from app.core.config import settings
 from app.core.paths import session_upload_dir
 from app.core.runtime_settings import configured_task
@@ -280,6 +281,7 @@ def generate_copy(clip_id: int, *, task_lease: TaskLease | None = None) -> Final
             or input_fingerprint(db, clip.candidate_id) != fingerprint
         ):
             raise ValueError("成片或审核输入已改变，拒绝保存迟到文案")
+        check_shutdown()
         for name in ("title", "description", "tags_json", "publish_suggestion", "status"):
             setattr(clip, name, getattr(prepared, name))
         db.add(clip)

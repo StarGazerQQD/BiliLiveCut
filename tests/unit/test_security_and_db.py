@@ -176,6 +176,23 @@ class TestCsrfOriginParsing:
 class TestProxyEnvSetup:
     """测试 _setup_proxy_env 函数。"""
 
+    def test_uppercase_and_lowercase_bypass_lists_are_merged(self, monkeypatch: MonkeyPatch) -> None:
+        from app.web.main import _setup_proxy_env
+
+        environment = {
+            "NO_PROXY": "example.com,localhost",
+            "no_proxy": ".internal,example.com",
+            "HTTPS_PROXY": "http://proxy.invalid:8080",
+            "http_proxy": "http://other.invalid:8081",
+        }
+        monkeypatch.setattr(os, "environ", environment)
+        _setup_proxy_env()
+        _setup_proxy_env()
+        expected = "example.com,localhost,.internal,127.0.0.1,::1"
+        assert environment["NO_PROXY"] == environment["no_proxy"] == expected
+        assert environment["HTTPS_PROXY"] == "http://proxy.invalid:8080"
+        assert environment["http_proxy"] == "http://other.invalid:8081"
+
     def test_no_proxy_set_when_none_exists(self, monkeypatch: MonkeyPatch) -> None:
         """NO_PROXY 未设置时, 设置为 127.0.0.1,localhost,::1。"""
         monkeypatch.delenv("NO_PROXY", raising=False)

@@ -6,7 +6,7 @@
 
 from __future__ import annotations
 
-from sqlmodel import select
+from sqlmodel import Session, select
 
 from app.db.entities import AppSetting
 from app.db.session import get_session
@@ -99,6 +99,12 @@ def set_bool(key: str, value: bool) -> None:
     :param value: 布尔值。
     """
     set_setting(key, "true" if value else "false")
+
+
+def current_bool(db: Session, key: str) -> bool:
+    """在授权检查的当前事务读取开关，不继承任务开始时的旧快照。"""
+    row = db.get(AppSetting, key)
+    return (row.value if row is not None else _DEFAULTS.get(key, "false")).strip().lower() in _TRUE
 
 
 def biliup_enabled() -> bool:

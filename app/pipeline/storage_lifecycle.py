@@ -17,7 +17,8 @@ from typing import TYPE_CHECKING
 from loguru import logger
 
 from app.core.config import settings
-from app.core.paths import clips_dir, raw_dir
+from app.core.media_usage import media_cleanup_scope, media_in_use
+from app.core.paths import clips_dir, raw_dir, resolve_storage_path, storage_path_aliases
 
 if TYPE_CHECKING:
     from sqlmodel import Session
@@ -36,7 +37,7 @@ def _safe_unlink(disk_path: str, allowed_root: Path) -> bool:
     :returns: 是否成功删除。
     """
     try:
-        resolved = Path(disk_path).resolve()
+        resolved = resolve_storage_path(disk_path)
         resolved_root = allowed_root.resolve()
         # resolved 必须在 allowed_root 子树内
         resolved.relative_to(resolved_root)
@@ -155,6 +156,15 @@ def should_stop_recording() -> bool:
 
 
 def cleanup_old_raw_files(retention_days: int | None = None) -> int:
+    """取得媒体独占门后读取快照，在数据库事务外清理原始分段。"""
+    with media_cleanup_scope() as acquired:
+        if not acquired or media_in_use():
+            logger.info("原片清理暂停：媒体操作仍在使用源文件。")
+            return 0
+        return _cleanup_old_raw_files(retention_days)
+
+
+def _cleanup_old_raw_files(retention_days: int | None) -> int:
     """按数据库引用清理已结束且无活动任务的原始分段，保留未知文件。"""
     import json
     from datetime import UTC, datetime, timedelta
@@ -182,14 +192,10 @@ def cleanup_old_raw_files(retention_days: int | None = None) -> int:
         raise ValueError("原始录像保留天数必须 >= 1")
     age_cutoff = now - timedelta(days=days)
     clip_cutoff = now - timedelta(hours=settings.clip_cleanup_delay_hours)
+    allowed_root = raw_dir()
     cleaned = 0
-    with get_session() as db:
-        db.connection().exec_driver_sql("BEGIN IMMEDIATE")
-        from app.core.media_usage import media_in_use
-
-        if media_in_use(db):
-            logger.info("原片清理暂停：媒体操作仍在使用源文件。")
-            return 0
+    targets: list[tuple[str, int, bool, list[str]]] = []
+    with get_session(operation="raw_cleanup_snapshot") as db:
         # Web 作业可跨场次引用媒体，活动期间保守地停止自动原始文件清理。
         for row in db.exec(select(AppSetting).where(AppSetting.key.startswith("web_job:"))).all():
             try:
@@ -199,13 +205,9 @@ def cleanup_old_raw_files(retention_days: int | None = None) -> int:
                 return 0
             if not isinstance(payload, dict) or payload.get("status") in {"queued", "running", "cancelling"}:
                 return 0
-        protected_paths = {str(Path(value).resolve()) for value in db.exec(select(FinalClip.file_path)).all() if value}
-        protected_paths.update(
-            str(Path(value).resolve()) for value in db.exec(select(ClipVariant.file_path)).all() if value
-        )
-        shared_sources: dict[str, set[int]] = {}
-        for raw_path, session_id in db.exec(select(RawSegment.file_path, RawSegment.session_id)).all():
-            shared_sources.setdefault(str(Path(raw_path).resolve()), set()).add(session_id)
+        protected_values = {value for value in db.exec(select(FinalClip.file_path)).all() if value}
+        protected_values.update(value for value in db.exec(select(ClipVariant.file_path)).all() if value)
+        sources = db.exec(select(RawSegment.file_path, RawSegment.session_id)).all()
         recordings = db.exec(select(RecordingSession).where(RecordingSession.ended_at.is_not(None))).all()
         for recording in recordings:
             if recording.status not in {"stopped", "paused", "error"}:
@@ -247,7 +249,7 @@ def cleanup_old_raw_files(retention_days: int | None = None) -> int:
                 .where(HighlightCandidate.session_id == recording.id)
             ).all()
             for segment in segments:
-                rendered_old = False
+                rendered_paths: list[str] = []
                 if completed and segment.start_ts is not None and segment.end_ts is not None:
                     segment_task = next((task for task in tasks if task.segment_id == segment.id), None)
                     if (
@@ -255,30 +257,33 @@ def cleanup_old_raw_files(retention_days: int | None = None) -> int:
                         and segment_task.completed_at is not None
                         and segment_task.completed_at <= clip_cutoff
                     ):
-                        rendered_old = any(
-                            clip.status in {"generated", "ready", "published"}
+                        rendered_paths = [
+                            clip.file_path
+                            for clip, candidate in usable_clips
+                            if clip.status in {"generated", "ready", "published"}
                             and clip.created_at <= clip_cutoff
-                            and Path(clip.file_path).is_file()
                             and candidate.start_ts <= segment.start_ts
                             and candidate.end_ts >= segment.end_ts
-                            for clip, candidate in usable_clips
-                        )
-                if not expired and not rendered_old:
-                    continue
-                file = Path(segment.file_path)
-                resolved = str(file.resolve())
-                if (
-                    not file.is_file()
-                    or resolved in protected_paths
-                    or shared_sources.get(resolved, set()) - {recording.id}
-                ):
-                    continue
-                # 仅删除确认为托管原始媒体的单个文件，目录和非登记文件保持原样。
-                if _safe_unlink(segment.file_path, raw_dir()):
-                    cleaned += 1
-                    if cleaned >= 100:
-                        logger.info("本轮原片清理达到 100 个文件，余项在下轮继续。")
-                        return cleaned
+                        ]
+                if expired or rendered_paths:
+                    targets.append((segment.file_path, recording.id, expired, rendered_paths))
+    protected_paths = {str(resolve_storage_path(value)) for value in protected_values}
+    shared_sources: dict[str, set[int]] = {}
+    for raw_path, session_id in sources:
+        shared_sources.setdefault(str(resolve_storage_path(raw_path)), set()).add(session_id)
+    for raw_path, session_id, expired, rendered_paths in targets:
+        if not expired and not any(resolve_storage_path(path).is_file() for path in rendered_paths):
+            continue
+        file = resolve_storage_path(raw_path)
+        resolved = str(file.resolve())
+        if not file.is_file() or resolved in protected_paths or shared_sources.get(resolved, set()) - {session_id}:
+            continue
+        # 独占门保护引用快照；文件系统访问不再持有业务数据库事务。
+        if _safe_unlink(raw_path, allowed_root):
+            cleaned += 1
+            if cleaned >= 100:
+                logger.info("本轮原片清理达到 100 个文件，余项在下轮继续。")
+                return cleaned
     if cleaned:
         logger.info("已按保留策略清理 {} 个无活动引用的原始分段。", cleaned)
     return cleaned
@@ -298,8 +303,11 @@ def _clip_is_protected(db: Session, clip: FinalClip) -> bool:
     tasks = db.exec(select(SegmentTask).where(SegmentTask.clip_id == clip.id)).all()
     if any(task.stage not in {TaskStatus.FAILED, TaskStatus.CANCELLED, TaskStatus.COMPLETED} for task in tasks):
         return True
-    paths = [path for path in (clip.file_path, clip.cover_path) if path]
-    if db.exec(select(ClipVariant).where(ClipVariant.file_path.in_(paths))).first() is not None:
+    paths = [alias for path in (clip.file_path, clip.cover_path) if path for alias in storage_path_aliases(path)]
+    if (
+        db.exec(select(ClipVariant).where(ClipVariant.file_path.in_(paths) | ClipVariant.cover_path.in_(paths))).first()
+        is not None
+    ):
         return True
     return (
         db.exec(
@@ -314,20 +322,28 @@ def _clip_is_protected(db: Session, clip: FinalClip) -> bool:
 
 
 def cleanup_rejected_candidates() -> int:
+    """以独占媒体门保护快照和删除；状态提交使用独立短事务。"""
+    with media_cleanup_scope() as acquired:
+        if not acquired or media_in_use():
+            return 0
+        return _cleanup_rejected_candidates()
+
+
+def _cleanup_rejected_candidates() -> int:
     """清理被拒绝候选的切片文件。
 
     :returns: 清理的切片数。
     """
+    from sqlalchemy import update
     from sqlmodel import select
 
     from app.db.entities import CandidateStatus, FinalClip, HighlightCandidate
     from app.db.session import get_session
 
     cleaned = 0
-    with get_session() as db:
-        # 防止检查后另一个数据库写入者把同一素材加入发布或渲染流程。
-        if db.get_bind().dialect.name == "sqlite":
-            db.connection().exec_driver_sql("BEGIN IMMEDIATE")
+    allowed_root = clips_dir()
+    targets: list[tuple[int, list[FinalClip], bool]] = []
+    with get_session(operation="rejected_cleanup_snapshot") as db:
         rejected = db.exec(
             select(HighlightCandidate).where(
                 HighlightCandidate.status == CandidateStatus.REJECTED,
@@ -340,20 +356,26 @@ def cleanup_rejected_candidates() -> int:
                     FinalClip.candidate_id == cand.id,
                 )
             ).all()
-            fully_cleaned = True
-            for clip in clips:
-                if _clip_is_protected(db, clip):
-                    fully_cleaned = False
-                    continue
-                removed = not clip.file_path or _safe_unlink(clip.file_path, clips_dir())
-                if clip.file_path and removed:
-                    cleaned += 1
-                cover_removed = not clip.cover_path or _safe_unlink(clip.cover_path, clips_dir())
-                fully_cleaned = fully_cleaned and removed and cover_removed
-            # 更新状态为已清理。
-            if fully_cleaned:
-                cand.status = CandidateStatus.CLEANED
-                db.add(cand)
+            deletable = [clip for clip in clips if not _clip_is_protected(db, clip)]
+            targets.append((cand.id, deletable, len(deletable) == len(clips)))
+    completed: list[int] = []
+    for candidate_id, clips, fully_cleaned in targets:
+        for clip in clips:
+            removed = not clip.file_path or _safe_unlink(clip.file_path, allowed_root)
+            if clip.file_path and removed:
+                cleaned += 1
+            cover_removed = not clip.cover_path or _safe_unlink(clip.cover_path, allowed_root)
+            fully_cleaned = fully_cleaned and removed and cover_removed
+        if fully_cleaned:
+            completed.append(candidate_id)
+    if completed:
+        with get_session(operation="rejected_cleanup_result") as db:
+            for candidate_id in completed:
+                db.execute(
+                    update(HighlightCandidate)
+                    .where(HighlightCandidate.id == candidate_id, HighlightCandidate.status == CandidateStatus.REJECTED)
+                    .values(status=CandidateStatus.CLEANED)
+                )
 
     if cleaned:
         logger.info("已清理 {} 个被拒绝候选的切片文件。", cleaned)
@@ -378,6 +400,9 @@ def run_disk_maintenance(*, cleanup: bool = True) -> dict:
 
     # 清理。
     if cleanup:
+        from app.db.runtime_logs import prune_runtime_logs
+
+        result["cleaned_logs"] = prune_runtime_logs()
         result["cleaned_raw"] = cleanup_old_raw_files()
         result["cleaned_rejected"] = cleanup_rejected_candidates()
 

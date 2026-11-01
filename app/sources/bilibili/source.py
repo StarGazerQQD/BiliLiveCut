@@ -8,12 +8,14 @@ from typing import TYPE_CHECKING
 
 from app.core.config import settings
 from app.core.cookie import get_bilibili_cookie
+from app.core.sanitize import safe_exception_summary
 from app.plugins.live_source import (
     DanmakuSink,
     DanmakuSource,
     DanmakuStateSink,
     LiveStateSink,
     LiveStatus,
+    MetadataFailure,
     RoomSnapshot,
     SourceAuthenticationError,
     SourceDescriptor,
@@ -86,7 +88,19 @@ class BilibiliSource:
         status = {1: LiveStatus.LIVE, 0: LiveStatus.OFFLINE, 2: LiveStatus.OFFLINE}.get(
             info.live_status, LiveStatus.UNKNOWN
         )
-        return RoomSnapshot(status=status, title=info.title, uploader_name=info.uploader_name)
+        failure = None
+        if info.detail_error is not None:
+            error = info.detail_error
+            code = type(error).__name__
+            retry_after = None
+            if isinstance(error, BilibiliRateLimitError):
+                code = error.error_type.value
+                retry_after = error.retry_after_seconds
+            elif isinstance(error, BilibiliTransportError):
+                code = f"{code}:{error.status_code}"
+                retry_after = error.retry_after_seconds
+            failure = MetadataFailure(code=code, message=safe_exception_summary(error)[:2000], retry_after=retry_after)
+        return RoomSnapshot(status=status, title=info.title, uploader_name=info.uploader_name, metadata_failure=failure)
 
     async def get_streams(self, room: SourceRoom, preference: StreamPreference) -> list[StreamSpec]:
         """按宿主画质上限逐级取流；只在 Bilibili 内按 qn、同档协议偏好排序。"""

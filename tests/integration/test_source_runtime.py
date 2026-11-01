@@ -4,6 +4,7 @@ import asyncio
 import errno
 import json
 from collections import deque
+from collections.abc import Iterator
 from datetime import UTC, datetime, timedelta, timezone
 from pathlib import Path
 
@@ -13,6 +14,7 @@ from sqlmodel import select
 
 from app.analysis.source_policy import session_danmaku_lag_s, session_has_danmaku
 from app.core.config import settings
+from app.core.paths import resolve_storage_path
 from app.db.entities import AppSetting, Danmaku, LiveRoom, RawSegment, RecordingSession, SegmentTask
 from app.db.session import get_session
 from app.plugins.live_source import (
@@ -33,8 +35,16 @@ from app.plugins.live_source import (
 )
 from app.recording.danmaku import DanmakuCapture, read_evidence
 from app.recording.recorder import Recorder
+from app.recording.writer_ownership import SessionWriter
 from app.sources.registry import SourceRegistry, source_registry
 from app.sources.rooms import register_room, room_source
+from tests.process_fixtures import ExternalProcess, install_process_boundary
+
+
+@pytest.fixture
+def recording_writer(tmp_path: Path) -> Iterator[SessionWriter]:
+    with SessionWriter.create(tmp_path / "writers") as writer:
+        yield writer
 
 
 @pytest.mark.parametrize("failures", [1, 2])
@@ -132,7 +142,7 @@ async def test_recording_supervises_required_helpers(
     room = await register_room("123", True, "external")
     recorder = Recorder(room_source(room), room.id, metadata_prepared=True)
 
-    class Process:
+    class Process(ExternalProcess):
         stdin = None
         returncode: int | None = None
 
@@ -158,7 +168,7 @@ async def test_recording_supervises_required_helpers(
     async def broken(*args: object) -> None:
         raise PermissionError("helper cannot write token=private-helper")
 
-    monkeypatch.setattr(asyncio, "create_subprocess_exec", spawn)
+    install_process_boundary(monkeypatch, spawn)
     monkeypatch.setattr(recorder, method, broken)
     before = asyncio.all_tasks()
     with pytest.raises(PermissionError):
@@ -374,7 +384,7 @@ async def test_serial_reconnect_rotates_same_host_endpoints_with_refreshed_crede
             for name in ("first", "backup")
         ]
 
-    class FailedProcess:
+    class FailedProcess(ExternalProcess):
         stdin = None
         returncode = 1
 
@@ -398,7 +408,7 @@ async def test_serial_reconnect_rotates_same_host_endpoints_with_refreshed_crede
         return FailedProcess(b"[https @ 1] Connection timed out\n")
 
     monkeypatch.setattr(runtime, "get_streams", streams)
-    monkeypatch.setattr(asyncio, "create_subprocess_exec", spawn)
+    install_process_boundary(monkeypatch, spawn)
     monkeypatch.setattr(settings, "recording_stream_race_parallel", 2 if unsupported_progress else 1)
     monkeypatch.setattr(settings, "recording_reconnect_max_attempts", 3)
     monkeypatch.setattr(settings, "recording_reconnect_max_elapsed_s", 30)
@@ -472,12 +482,11 @@ async def test_race_registers_only_winner_and_reaps_all_processes(
     pipeline = make_pipeline_callback(room_id=room.id)
     recorder = None
 
-    class Process:
+    class Process(ExternalProcess):
         stdin = None
         returncode = None
 
         def __init__(self) -> None:
-            self.pid = len(processes) + 1
             self.stdout, self.stderr = asyncio.StreamReader(), asyncio.StreamReader()
             self.exited = asyncio.Event()
 
@@ -522,7 +531,7 @@ async def test_race_registers_only_winner_and_reaps_all_processes(
 
     monkeypatch.setattr(settings, "recording_stream_race_parallel", 2)
     monkeypatch.setattr(runtime, "get_streams", source_streams)
-    monkeypatch.setattr(asyncio, "create_subprocess_exec", spawn)
+    install_process_boundary(monkeypatch, spawn)
     recorder = Recorder(room_source(room), room.id, on_segment=on_segment, metadata_prepared=True)
     original_scan = recorder._scan_orphan_segments
 
@@ -550,20 +559,26 @@ async def test_race_registers_only_winner_and_reaps_all_processes(
         assert session.status == ("error" if finalization_error else "stopped") and session.ended_at is not None
         if not stop_in_race:
             assert recorder._selected_stream.url.startswith("https://good.invalid/")
-            folder = Path(segments[0].file_path).parent
-            assert list(folder.glob("*.ts")) == [Path(segments[0].file_path)]
+            media = resolve_storage_path(segments[0].file_path)
+            folder = media.parent
+            assert list(folder.glob("*.ts")) == [media]
             assert len(list(folder.glob("*.csv"))) == (1 if finalization_error else 0)
 
 
 @pytest.mark.parametrize("handoff", ["stop", "save_error"])
 async def test_unaccepted_winner_is_discarded(
-    runtime: RuntimeSource, monkeypatch: pytest.MonkeyPatch, tmp_path: Path, handoff: str
+    runtime: RuntimeSource,
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+    handoff: str,
+    recording_writer: SessionWriter,
 ) -> None:
     from app.recording.stream_race import StreamAttempt, StreamRace
 
     room = await register_room("123", True, "external")
     recorder = Recorder(room_source(room), room.id, metadata_prepared=True)
     recorder._stream_candidates = [StreamSpec(url="https://cdn.invalid/live", transport="flv", container="flv")]
+    recorder._writer = recording_writer
 
     class Process:
         returncode: int | None = None
@@ -748,7 +763,11 @@ async def test_unsupported_progress_falls_back_once_and_keeps_legacy_recording(
 
 @pytest.mark.parametrize("stop_stage", ["selection", "guard_cleanup"])
 async def test_stop_during_compatibility_fallback_never_starts_media(
-    runtime: RuntimeSource, monkeypatch: pytest.MonkeyPatch, tmp_path: Path, stop_stage: str
+    runtime: RuntimeSource,
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+    stop_stage: str,
+    recording_writer: SessionWriter,
 ) -> None:
     from app.recording.stream_race import StreamRace
 
@@ -758,6 +777,7 @@ async def test_stop_during_compatibility_fallback_never_starts_media(
         StreamSpec(url=f"https://{host}.invalid/live", transport="flv", container="flv") for host in ("a", "b")
     ]
     guard_started = asyncio.Event()
+    recorder._writer = recording_writer
 
     async def unsupported(self: StreamRace) -> None:
         await guard_started.wait()
@@ -785,7 +805,10 @@ async def test_stop_during_compatibility_fallback_never_starts_media(
 
 
 async def test_compatibility_fallback_does_not_mask_other_global_errors(
-    runtime: RuntimeSource, monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+    runtime: RuntimeSource,
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+    recording_writer: SessionWriter,
 ) -> None:
     from app.recording.stream_race import StreamRace
 
@@ -801,6 +824,8 @@ async def test_compatibility_fallback_does_not_mask_other_global_errors(
         ):
             attempt.remember(message)
             self.failures.append(attempt)
+
+    recorder._writer = recording_writer
 
     async def forbidden(*args: object) -> int:
         pytest.fail("其他全局参数错误不应被兼容回退掩盖")
@@ -921,7 +946,7 @@ async def test_auth_failure_ends_without_exhausting_retry_budget(runtime: Runtim
     assert runtime.stream_calls == 1 and not recorder.retry_budget_exhausted
     with get_session() as db:
         session = db.get(RecordingSession, recorder.session_id)
-        assert session.status == "stopped" and "authentication" in session.error_message
+        assert session.status == "error" and "authentication" in session.error_message
         assert "secret" not in session.error_message
 
 
@@ -1045,7 +1070,7 @@ async def test_ffmpeg_permanent_failure_persists_error_and_blocks_automatic_rest
     monkeypatch.setattr(rooms, "recorder_manager", manager)
     spawn_count = 0
 
-    class Process:
+    class Process(ExternalProcess):
         returncode = 1
         stdin = None
 
@@ -1068,7 +1093,7 @@ async def test_ffmpeg_permanent_failure_persists_error_and_blocks_automatic_rest
     async def ended(session_id: int) -> None:
         return None
 
-    monkeypatch.setattr(asyncio, "create_subprocess_exec", spawn)
+    install_process_boundary(monkeypatch, spawn)
     monkeypatch.setattr(rooms, "_on_session_end", ended)
     monitor = LiveMonitor()
     monitor._stop = asyncio.Event()
@@ -1224,7 +1249,7 @@ async def test_stderr_read_failure_terminates_process_and_finishes_session(
     room = await register_room("123", True, "external")
     recorder = Recorder(room_source(room), room.id, metadata_prepared=True)
 
-    class Process:
+    class Process(ExternalProcess):
         stdin = None
         returncode: int | None = None
 
@@ -1249,7 +1274,7 @@ async def test_stderr_read_failure_terminates_process_and_finishes_session(
     async def spawn(*args: object, **kwargs: object) -> Process:
         return process
 
-    monkeypatch.setattr(asyncio, "create_subprocess_exec", spawn)
+    install_process_boundary(monkeypatch, spawn)
     tasks_before = asyncio.all_tasks()
     with pytest.raises(OSError, match="broken stderr pipe"):
         await asyncio.wait_for(recorder.run(), 2)
@@ -1624,10 +1649,17 @@ async def test_automatic_entries_keep_external_identity_and_independent_switches
             db.add(RecordingSchedule(room_id=room.id, scheduled_at=datetime.now(UTC) - timedelta(seconds=1)))
         else:
             db.add(RecordingSession(id=1, room_id=room.id, status="recording"))
+            from app.core.paths import storage_root
+            from app.recording import intents
+
+            with SessionWriter.create(storage_root() / "writers") as writer:
+                intent = intents.accept(db, room.id, room_source(room), pipeline=False, produce=False, origin="manual")
+                intents.bind_session(db, 1, room.id, intent.generation, writer.identity)
     try:
         if trigger == "schedule":
             await main._run_due_schedules()
         else:
+            await rooms.settle_interrupted_recordings()
             assert await rooms.auto_recover_interrupted_sessions() == [room.id]
         await asyncio.wait_for(started.wait(), 2)
         with get_session() as db:

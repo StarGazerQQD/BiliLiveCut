@@ -9,6 +9,8 @@ from __future__ import annotations
 import random
 from datetime import UTC, datetime, timedelta
 
+from sqlalchemy.orm import object_session
+
 from app.core.sanitize import sanitize_diagnostic
 from app.db.entities import SegmentTask, TaskStatus
 
@@ -174,6 +176,10 @@ def mark_heartbeat(task: SegmentTask) -> None:
 
 def mark_completed(task: SegmentTask, processing_ms: int | None = None) -> None:
     """标记任务完成,记录总耗时。"""
+    from app.pipeline.recovery_budget import reset_recovery
+
+    if (db := object_session(task)) is not None:
+        reset_recovery(db, task)
     if processing_ms is None and task.started_at is not None:
         processing_ms = _elapsed_ms(task.started_at)
     task.processing_time_ms = processing_ms

@@ -24,7 +24,7 @@ class ScheduleRecorder(Protocol):
         """查询当前房间是否录制中。"""
         ...
 
-    async def start(self, room_id: int, *, pipeline: bool, produce: bool) -> object:
+    async def start(self, room_id: int, *, pipeline: bool, produce: bool, schedule_id: int | None = None) -> bool:
         """按房间策略启动录制。"""
         ...
 
@@ -77,8 +77,14 @@ class ScheduleRunner:
             try:
                 if not self._recorder.is_running(item["room_id"]):
                     pipeline, produce = await run_sync(partial(_room_policy, item["room_id"]))
-                    await self._recorder.start(item["room_id"], pipeline=pipeline, produce=produce)
-                    started = True
+                    started = await self._recorder.start(
+                        item["room_id"],
+                        pipeline=pipeline,
+                        produce=produce,
+                        schedule_id=item["id"],
+                    )
+                    if not started:
+                        continue
             except (ValueError, RuntimeError) as exc:
                 error = safe_exception_summary(exc)
                 logger.warning("预约触发失败 room={}: {}", item["room_id"], error)

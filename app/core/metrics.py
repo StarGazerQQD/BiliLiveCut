@@ -21,6 +21,7 @@ from dataclasses import dataclass, field
 from loguru import logger
 
 from app.core.sanitize import safe_exception_summary
+from app.core.supervisor import remaining_shutdown
 
 _collector_lock = threading.Lock()
 _collector_thread: threading.Thread | None = None
@@ -249,7 +250,7 @@ def stop_metrics_collector(timeout_s: float = 5.0) -> None:
         if _collector_thread is None:
             return
         _collector_stop.set()
-        _collector_thread.join(timeout=timeout_s)
+        _collector_thread.join(timeout=remaining_shutdown(timeout_s))
         if _collector_thread.is_alive():
             raise RuntimeError("指标采集线程未在关闭期限内退出")
         _collector_thread = None

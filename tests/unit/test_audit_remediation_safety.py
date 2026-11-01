@@ -14,6 +14,7 @@ import pytest
 from sqlmodel import select
 
 from app.plugins.live_source import SourceRoom, StreamSpec
+from tests.process_fixtures import ExternalProcess, install_process_boundary
 
 
 def test_journal_replay_preserves_success_written_during_replay(
@@ -70,39 +71,28 @@ def test_journal_failed_delete_preserves_unreplayed_success(tmp_path: Path, monk
 def test_pipeline_after_manual_export_records_remote_result(
     temp_db: None,
     tmp_path: Path,
+    pcm_wav: Path,
     monkeypatch: pytest.MonkeyPatch,
     timeout: bool,
 ) -> None:
     from app.core import settings_store
-    from app.db.entities import HighlightCandidate, HighlightEvent, RawSegment, SegmentTask, UploadAttempt, UploadTask
+    from app.db.entities import SegmentTask, TaskStatus, UploadAttempt, UploadTask
     from app.db.session import get_session
     from app.pipeline.lease import TaskLease
     from app.pipeline.workers.publish import run_publish
     from app.publishing import uploader
     from app.web.routers.clips import confirm_manual_upload
+    from tests.approval_fixtures import seed_automatic_task
 
-    now = datetime.now(UTC)
-    with get_session() as db:
-        db.add(HighlightCandidate(id=1, session_id=1, start_ts=now, peak_ts=now, end_ts=now, dedup_hash="remote"))
+    task_id = seed_automatic_task(pcm_wav, monkeypatch, stage=TaskStatus.APPROVED)
     clip_id = seed_clip(tmp_path)
     with get_session() as db:
-        db.add(RawSegment(id=1, session_id=1, seq=0, file_path=str(tmp_path / "raw.ts")))
-        db.add(HighlightEvent(id=1, candidate_id=1, session_id=1, review_status="approved_solo"))
-        db.add(
-            SegmentTask(
-                id=1,
-                segment_id=1,
-                session_id=1,
-                event_id=1,
-                candidate_id=1,
-                clip_id=clip_id,
-                stage="publishing",
-                claimed_by="audit",
-                lease_token="token",
-            )
-        )
+        task = db.get(SegmentTask, task_id)
+        task.clip_id, task.stage, task.claimed_by, task.lease_token = clip_id, "publishing", "audit", "token"
+        db.add(task)
         db.add(UploadTask(clip_id=clip_id, uploader="manual", status="success"))
     settings_store.set_bool("biliup_enabled", True)
+    settings_store.set_bool("auto_upload", True)
     monkeypatch.setattr(uploader.settings, "biliup_upload_cmd", "biliup upload {file}")
     calls: list[list[str]] = []
 
@@ -113,9 +103,9 @@ def test_pipeline_after_manual_export_records_remote_result(
         return subprocess.CompletedProcess(command, 0, b"BV12345678901", b"")
 
     monkeypatch.setattr(uploader.subprocess, "run", execute)
-    run_publish(TaskLease(1, "audit", "token", "publishing"))
+    run_publish(TaskLease(task_id, "audit", "token", "publishing"))
     with get_session() as db:
-        task = db.get(SegmentTask, 1)
+        task = db.get(SegmentTask, task_id)
         assert task.stage == ("awaiting_publish_confirmation" if timeout else "completed")
         assert task.lease_token is None
         assert db.exec(select(UploadAttempt)).one().status == ("reconciliation_required" if timeout else "success")
@@ -123,7 +113,7 @@ def test_pipeline_after_manual_export_records_remote_result(
         confirm_manual_upload(clip_id, submission_id="BV12345678901")
         with get_session() as db:
             assert db.exec(select(UploadAttempt)).one().status == "success"
-            assert db.get(SegmentTask, 1).stage == "completed"
+            assert db.get(SegmentTask, task_id).stage == "completed"
     assert len(calls) == 1
 
 
@@ -308,10 +298,13 @@ def test_failed_cleanup_keeps_candidate_retryable(
 
 @pytest.mark.asyncio
 async def test_disk_guard_stops_active_ffmpeg_and_releases_watchers(
-    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    temp_db: None, tmp_path: Path, monkeypatch: pytest.MonkeyPatch, request: pytest.FixtureRequest
 ) -> None:
+    from app.db.entities import LiveRoom
+    from app.db.session import get_session
     from app.pipeline import storage_lifecycle
     from app.recording import recorder as module
+    from app.recording.writer_ownership import SessionWriter
 
     finished = asyncio.Event()
     poll_waiting = asyncio.Event()
@@ -330,32 +323,43 @@ async def test_disk_guard_stops_active_ffmpeg_and_releases_watchers(
         poll_waiting.set()
         await release_poll.wait()
 
-    class MediaProcess:
+    class MediaProcess(ExternalProcess):
         returncode: int | None = None
         stderr = None
         stdin = None
 
         async def wait(self) -> int:
             await finished.wait()
-            self.returncode = 0
-            return 0
+            assert self.returncode is not None
+            return self.returncode
 
         def terminate(self) -> None:
             terminated.append(True)
+            self.returncode = 0
             finished.set()
 
         def kill(self) -> None:
+            self.returncode = -9
             finished.set()
 
     async def create_process(*args: str, **kwargs: object) -> MediaProcess:
         return MediaProcess()
 
     monkeypatch.setattr(storage_lifecycle, "should_stop_recording", disk_critical)
-    monkeypatch.setattr(module.asyncio, "create_subprocess_exec", create_process)
+    install_process_boundary(monkeypatch, create_process)
+    with get_session() as db:
+        room = LiveRoom(input_url="https://live.bilibili.com/1", room_id=1, authorized=True)
+        db.add(room)
+        db.flush()
+        room_id = room.id
     recorder = module.Recorder(
         source_room=SourceRoom(platform="bilibili", source_id="1", canonical_url="https://live.bilibili.com/1"),
-        db_room_id=1,
+        db_room_id=room_id,
     )
+    writer = SessionWriter.create(tmp_path / "writers")
+    request.addfinalizer(writer.close)
+    recorder._writer = writer
+    recorder._session_id = recorder._create_session()
     monkeypatch.setattr(recorder, "_sleep_or_stop", wait_for_next_poll)
     tasks_before = asyncio.all_tasks()
     operation = asyncio.create_task(

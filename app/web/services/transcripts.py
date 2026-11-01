@@ -15,6 +15,7 @@ from sqlalchemy import func
 from sqlmodel import Session, select
 
 from app.analysis.transcription.content import refined_transcript_text, transcript_text
+from app.core.media_usage import media_reference_scope
 from app.core.runtime_settings import configured_task
 from app.core.sanitize import safe_exception_summary, sanitize_diagnostic
 from app.db.entities import (
@@ -185,7 +186,7 @@ def remux_transcript_source(transcript_id: int) -> Path:
     :raises TranscriptNotFoundError: 转写或片段不存在。
     :raises TranscriptMediaError: 源文件越界、缺失、探测或 FFmpeg 失败。
     """
-    from app.core.paths import raw_dir, session_clips_dir
+    from app.core.paths import raw_dir, resolve_storage_path, session_clips_dir
 
     with get_session() as db:
         transcript = db.get(Transcript, transcript_id)
@@ -194,8 +195,12 @@ def remux_transcript_source(transcript_id: int) -> Path:
         segment = db.get(RawSegment, transcript.segment_id)
         if segment is None:
             raise TranscriptNotFoundError("转写对应的原始片段不存在")
-        source = Path(segment.file_path).resolve()
+        reference = segment.file_path
 
+    try:
+        source = resolve_storage_path(reference)
+    except ValueError as exc:
+        raise TranscriptMediaError("原始片段路径无效") from exc
     raw_root = raw_dir().resolve()
     if not source.is_relative_to(raw_root):
         raise TranscriptMediaError("原始片段不在受控录像目录内")
@@ -552,6 +557,7 @@ def list_transcripts(
     return result
 
 
+@media_reference_scope()
 def retranscribe_transcript(transcript_id: int) -> dict[str, int]:
     """安全删除污染转写并把原始片段重新放入转写队列。
 

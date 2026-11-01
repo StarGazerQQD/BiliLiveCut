@@ -65,15 +65,15 @@ def is_local_session(session_id: int, db: Session | None = None) -> bool:
     return room is not None and room.platform == "local"
 
 
-def session_danmaku_lag_s(session_id: int) -> float:
+def session_danmaku_lag_s(session_id: int, db: Session | None = None) -> float:
     """本地及外部 UTC 事件无需 Bili 接收延迟；新场次使用当场固定值。"""
     from app.recording.danmaku import read_evidence
 
-    with get_session() as db:
-        evidence = read_evidence(db, session_id)
-        if evidence is not None:
-            return evidence.lag_s
-        return 0.0
+    if db is None:
+        with get_session() as connection:
+            return session_danmaku_lag_s(session_id, connection)
+    evidence = read_evidence(db, session_id)
+    return evidence.lag_s if evidence is not None else 0.0
 
 
 def session_has_danmaku(

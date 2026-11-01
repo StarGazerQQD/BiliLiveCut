@@ -13,13 +13,7 @@ export interface paths {
         };
         /**
          * Get Analytics
-         * @description 返回 Dashboard 统计分析数据。
-         *
-         *     包含:
-         *     - 录制趋势(近 30 天每日录制会话数/时长)
-         *     - 切片统计(总数/已发布/总时长)
-         *     - 候选分布(分数区间分布/状态分布)
-         *     - 直播间排行(按切片数)
+         * @description 按包含今天的 UTC 日历范围汇总录制、产物、候选和房间排行。
          */
         get: operations["get_analytics_api_analytics_get"];
         put?: never;
@@ -1862,7 +1856,7 @@ export interface paths {
          * @description 更新模板配置。
          *
          *     :param template_id: 模板 ID。
-         *     :param request: FastAPI 请求对象(JSON body)。
+         *     :param body: 已校验的部分更新参数。
          *     :returns: 状态确认。
          */
         put: operations["update_template_api_templates__template_id__put"];
@@ -3005,6 +2999,44 @@ export interface components {
             /** Video Name */
             video_name: string;
         };
+        /**
+         * IntroTemplateUpdate
+         * @description 片头片尾参数的严格部分更新，允许原有文字变量与换行。
+         */
+        IntroTemplateUpdate: {
+            /** Intro Bg Color */
+            intro_bg_color?: string;
+            /** Intro Duration S */
+            intro_duration_s?: number;
+            /** Intro Enabled */
+            intro_enabled?: boolean;
+            /** Intro Font Color */
+            intro_font_color?: string;
+            /** Intro Font Name */
+            intro_font_name?: string;
+            /** Intro Font Size */
+            intro_font_size?: number;
+            /** Intro Text */
+            intro_text?: string;
+            /** Is Default */
+            is_default?: boolean;
+            /** Name */
+            name?: string;
+            /** Outro Bg Color */
+            outro_bg_color?: string;
+            /** Outro Duration S */
+            outro_duration_s?: number;
+            /** Outro Enabled */
+            outro_enabled?: boolean;
+            /** Outro Font Color */
+            outro_font_color?: string;
+            /** Outro Font Name */
+            outro_font_name?: string;
+            /** Outro Font Size */
+            outro_font_size?: number;
+            /** Outro Text */
+            outro_text?: string;
+        };
         JsonValue: unknown;
         /**
          * LLMProviderIn
@@ -3111,6 +3143,8 @@ export interface components {
             model: string;
             /** Number */
             number: number;
+            /** Output Tokens Limit */
+            output_tokens_limit?: number | null;
             /**
              * Protocol
              * @enum {string}
@@ -3122,9 +3156,11 @@ export interface components {
              * Purpose
              * @enum {string}
              */
-            purpose: "explanation" | "review" | "grounding" | "repair" | "context";
+            purpose: "explanation" | "review" | "grounding" | "repair" | "context" | "text" | "probe";
             /** Reported Model */
             reported_model?: string | null;
+            /** Request Id */
+            request_id?: string | null;
             /**
              * Status
              * @enum {string}
@@ -3200,6 +3236,8 @@ export interface components {
             connections: components["schemas"]["ConnectionView"][];
             /** Model Capacities */
             model_capacities?: components["schemas"]["ModelCapacity"][];
+            /** Probe Diagnostics */
+            probe_diagnostics?: components["schemas"]["ModelProbeDiagnostic"][];
             /** Revision */
             revision: number;
             /** Routes */
@@ -3246,16 +3284,79 @@ export interface components {
             routes: components["schemas"]["ModelRoute"][];
         };
         /**
+         * ModelProbeDiagnostic
+         * @description 有限样本的实际协议观察，不推断服务最大容量或参数执行效果。
+         */
+        ModelProbeDiagnostic: {
+            /** Attempts */
+            attempts: number;
+            /** Base Url */
+            base_url: string;
+            /** Connection Id */
+            connection_id: string;
+            /** Detail */
+            detail: string;
+            /** Elapsed S */
+            elapsed_s: number;
+            /** Estimated Cost Usd */
+            estimated_cost_usd?: number | null;
+            /** Model */
+            model: string;
+            /**
+             * Observed At
+             * Format: date-time
+             */
+            observed_at: string;
+            /** Output Limits */
+            output_limits?: number[];
+            /**
+             * Reasoning Parameter
+             * @enum {string}
+             */
+            reasoning_parameter: "not_sent" | "unknown" | "accepted" | "rejected";
+            /** Request Ids */
+            request_ids?: string[];
+            /** Route Id */
+            route_id: string;
+            /**
+             * Schema Version
+             * @default 1
+             * @constant
+             */
+            schema_version: 1;
+            /**
+             * Structured
+             * @enum {string}
+             */
+            structured: "unknown" | "accepted" | "rejected";
+            /**
+             * Structured Protocol
+             * @enum {string}
+             */
+            structured_protocol: "json_schema" | "json_object";
+            /**
+             * Text
+             * @enum {string}
+             */
+            text: "unknown" | "accepted" | "rejected";
+        };
+        /**
          * ModelProbeResult
          * @description 单条文本路由的有限调用结果。
          */
         ModelProbeResult: {
             /** Detail */
             detail: string;
+            diagnostic?: components["schemas"]["ModelProbeDiagnostic"] | null;
             /** Id */
             id: string;
             /** Ok */
             ok: boolean;
+            /**
+             * Persisted
+             * @default false
+             */
+            persisted: boolean;
         };
         /**
          * ModelRoute
@@ -3523,6 +3624,74 @@ export interface components {
             mode: "graceful" | "force";
         };
         /**
+         * SubtitleTemplateUpdate
+         * @description 字幕样式的部分更新；ASS 字形标志保持整数语义。
+         */
+        SubtitleTemplateUpdate: {
+            /** Alignment */
+            alignment?: number;
+            /** Angle */
+            angle?: number;
+            /** Back Color */
+            back_color?: string;
+            /** Bold */
+            bold?: number;
+            /** Border Style */
+            border_style?: number;
+            /** Description */
+            description?: string | null;
+            /** Encoding */
+            encoding?: number;
+            /** Font Name */
+            font_name?: string;
+            /** Font Size */
+            font_size?: number;
+            /** Is Default */
+            is_default?: boolean;
+            /** Italic */
+            italic?: number;
+            /** Line Gap Ms */
+            line_gap_ms?: number;
+            /** Margin L */
+            margin_l?: number;
+            /** Margin R */
+            margin_r?: number;
+            /** Margin V */
+            margin_v?: number;
+            /** Max Chars Per Line */
+            max_chars_per_line?: number;
+            /** Max Display Ms */
+            max_display_ms?: number;
+            /** Min Display Ms */
+            min_display_ms?: number;
+            /** Name */
+            name?: string;
+            /** Outline */
+            outline?: number;
+            /** Outline Color */
+            outline_color?: string;
+            /** Play Res X */
+            play_res_x?: number;
+            /** Play Res Y */
+            play_res_y?: number;
+            /** Primary Color */
+            primary_color?: string;
+            /** Scale X */
+            scale_x?: number;
+            /** Scale Y */
+            scale_y?: number;
+            /** Secondary Color */
+            secondary_color?: string;
+            /** Shadow */
+            shadow?: number;
+            /** Spacing */
+            spacing?: number;
+            /** Strikeout */
+            strikeout?: number;
+            /** Underline */
+            underline?: number;
+        };
+        /**
          * SuggestedBounds
          * @description 由明确时间证据支持的成片范围建议。
          */
@@ -3674,7 +3843,9 @@ export type $defs = Record<string, never>;
 export interface operations {
     get_analytics_api_analytics_get: {
         parameters: {
-            query?: never;
+            query?: {
+                days?: number;
+            };
             header?: never;
             path?: never;
             cookie?: never;
@@ -3690,6 +3861,15 @@ export interface operations {
                     "application/json": {
                         [key: string]: unknown;
                     };
+                };
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
                 };
             };
         };
@@ -4313,7 +4493,11 @@ export interface operations {
             };
             cookie?: never;
         };
-        requestBody?: never;
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["IntroTemplateUpdate"];
+            };
+        };
         responses: {
             /** @description Successful Response */
             200: {
@@ -6738,7 +6922,11 @@ export interface operations {
             };
             cookie?: never;
         };
-        requestBody?: never;
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["SubtitleTemplateUpdate"];
+            };
+        };
         responses: {
             /** @description Successful Response */
             200: {

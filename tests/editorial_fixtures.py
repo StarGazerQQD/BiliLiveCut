@@ -49,9 +49,9 @@ def install_editorial_service(
         elif "candidate" in data:
             assert grounded is not None, "测试必须明确指定事实核验服务的响应"
             quotes = [
-                {"evidence_id": item["evidence_id"], "quote": item["excerpts"][0]}
+                {"evidence_id": item["evidence_id"], "quote_id": item["quotes"][0]["quote_id"]}
                 for item in data["evidence"]
-                if item["excerpts"]
+                if item["quotes"]
             ][:16]
             text = json.dumps(
                 {

@@ -579,7 +579,10 @@ def check_csrf(audit: AuditResult) -> None:
         return
     content = main_py.read_text(encoding="utf-8")
     audit.check("CSRF _check_csrf", "_check_csrf" in content)
-    audit.check("Basic Auth 用户名验证", 'username != "admin"' in content)
+    audit.check(
+        "Basic Auth 用户名验证",
+        'username.casefold() != "admin"' in content and "username == username.strip()" in content,
+    )
 
 
 def run_audit(quick: bool = False) -> AuditResult:

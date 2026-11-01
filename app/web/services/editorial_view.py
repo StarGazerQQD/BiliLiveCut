@@ -10,7 +10,7 @@ from app.analysis.editorial_contracts import (
     FailureCode,
     validate_review_evidence,
 )
-from app.analysis.editorial_provenance import ReviewProvenance, canonical_hash
+from app.analysis.editorial_provenance import ReviewProvenance, frozen_review_fingerprint
 from app.db.entities import HighlightCandidate, HighlightEvent, HotspotEvent
 from app.web.editorial_contracts import EditorialPresentation
 from app.web.services.review_workflow import decode_features
@@ -92,16 +92,10 @@ def editorial_presentation(
                 range(1, execution.attempt_offset + 1)
             ):
                 raise ValueError("共享预算前序请求记录不完整")
-            expected = canonical_hash(
-                {
-                    "initial": provenance.initial_input.model_dump(mode="json")
-                    if provenance.initial_input is not None
-                    else None,
-                    "source": source.model_dump(mode="json") if source is not None else None,
-                    "revision": metadata.get("revision"),
-                    "policy": provenance.policy,
-                }
-            )
+            revision = metadata.get("revision")
+            if not isinstance(revision, str):
+                raise ValueError("编辑记录缺少数据修订")
+            expected = frozen_review_fingerprint(provenance.initial_input, source, revision, policy=provenance.policy)
             if expected != execution.input_fingerprint:
                 raise ValueError("执行输入与冻结策略指纹不一致")
             previous_attempts = provenance.prior_attempts

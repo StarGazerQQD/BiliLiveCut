@@ -17,7 +17,7 @@ from app.analysis.editorial_contracts import (
     TimeRange,
     validate_review_evidence,
 )
-from app.analysis.editorial_provenance import ReviewProvenance, canonical_hash
+from app.analysis.editorial_provenance import ReviewProvenance, canonical_hash, frozen_review_fingerprint
 
 Digest = Annotated[str, Field(pattern=r"^[0-9a-f]{64}$")]
 
@@ -52,15 +52,8 @@ class EvaluationRecord(_Contract):
         if self.provenance is not None:
             if self.execution is None or self.revision is None:
                 raise ValueError("执行来源缺少执行记录或数据修订")
-            expected = canonical_hash(
-                {
-                    "initial": self.provenance.initial_input.model_dump(mode="json")
-                    if self.provenance.initial_input is not None
-                    else None,
-                    "source": self.input.model_dump(mode="json") if self.input is not None else None,
-                    "revision": self.revision,
-                    "policy": self.provenance.policy,
-                }
+            expected = frozen_review_fingerprint(
+                self.provenance.initial_input, self.input, self.revision, policy=self.provenance.policy
             )
             if expected != self.execution.input_fingerprint:
                 raise ValueError("执行输入与策略指纹不一致")
@@ -159,9 +152,30 @@ class EvaluationLabels(_Contract):
         return self
 
 
+def _absent_request_metadata(attempts: list[ModelAttempt]) -> dict[int, set[str]]:
+    return {
+        index: absent
+        for index, attempt in enumerate(attempts)
+        if (absent := {"request_id", "output_tokens_limit"} - attempt.model_fields_set)
+    }
+
+
+def snapshot_payload(snapshot: EvaluationSnapshot) -> dict[str, object]:
+    """导出完整冻结资料，保留旧请求未记录的新增字段及显式未知值之间的区别。"""
+    records: dict[int, dict[str, object]] = {}
+    for index, record in enumerate(snapshot.records):
+        omitted: dict[str, object] = {}
+        if record.execution is not None:
+            omitted["execution"] = {"attempts": _absent_request_metadata(record.execution.attempts)}
+        if record.provenance is not None:
+            omitted["provenance"] = {"prior_attempts": _absent_request_metadata(record.provenance.prior_attempts)}
+        records[index] = omitted
+    return snapshot.model_dump(mode="json", exclude={"records": records})
+
+
 def snapshot_digest(snapshot: EvaluationSnapshot) -> str:
     """返回绑定人工标注与报告的完整快照指纹。"""
-    return canonical_hash(snapshot.model_dump(mode="json"))
+    return canonical_hash(snapshot_payload(snapshot))
 
 
 def label_template(

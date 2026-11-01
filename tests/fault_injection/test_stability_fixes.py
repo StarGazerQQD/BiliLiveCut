@@ -7,6 +7,7 @@ from __future__ import annotations
 
 import threading
 from datetime import UTC, datetime, timedelta
+from pathlib import Path
 
 import pytest
 
@@ -227,53 +228,35 @@ class TestAutoSwitches:
             assert t is not None
             assert t.stage == TaskStatus.AWAITING_REVIEW
 
-    def test_auto_approve_on_with_high_score_advances(self, test_db) -> None:
-        """auto_approve=true + 高分 → 自动批准 (V0.1.12.7: 需 event_id+Event)。"""
+    def test_auto_approve_on_with_high_score_advances(
+        self, test_db: None, pcm_wav: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """有效编辑来源下，auto_approve=true 与高于阈值的候选进入自动批准。"""
+        from sqlmodel import select
+
         from app.db.entities import (
             HighlightCandidate,
-            HighlightEvent,
             LiveRoom,
-            RecordingSession,
-            ReviewStatus,
             SegmentTask,
             TaskStatus,
         )
         from app.db.session import get_session
         from app.pipeline.scheduler import advance_awaiting_review
+        from tests.approval_fixtures import seed_automatic_task
 
+        task_id = seed_automatic_task(pcm_wav, monkeypatch)
         with get_session() as db:
-            room = LiveRoom(id=9005, input_url="test", auto_approve=True, auto_approve_threshold=0.80)
-            sess = RecordingSession(id=8005, room_id=9005)
-            cand = HighlightCandidate(
-                id=5003,
-                session_id=8005,
-                peak_ts=_now(),
-                start_ts=_now(),
-                end_ts=_now(),
-                highlight_score=0.95,
-                dedup_hash="scheduler-auto-approved-5003",
-            )
-            event = HighlightEvent(
-                id=7705,
-                candidate_id=5003,
-                session_id=8005,
-                raw_start_ts=_now(),
-                raw_end_ts=_now(),
-                review_status=ReviewStatus.PENDING,
-            )
-            task = SegmentTask(
-                segment_id=7005,
-                session_id=8005,
-                stage=TaskStatus.AWAITING_REVIEW,
-                candidate_id=5003,
-                event_id=7705,
-            )
-            db.add_all([room, sess, cand, event, task])
+            room = db.exec(select(LiveRoom)).one()
+            room.auto_approve, room.auto_approve_threshold = True, 0.80
+            task = db.get(SegmentTask, task_id)
+            candidate = db.get(HighlightCandidate, task.candidate_id)
+            candidate.highlight_score = 0.95
+            db.add_all((room, candidate))
 
         advance_awaiting_review()
 
         with get_session() as db:
-            t = db.get(SegmentTask, task.id)
+            t = db.get(SegmentTask, task_id)
             assert t is not None
             assert t.stage == TaskStatus.APPROVED
 

@@ -12,10 +12,56 @@ from pydantic import BaseModel, ConfigDict, Field, JsonValue, field_validator
 from app import __version__
 from app.analysis.editorial_contracts import EditorialReviewInputV1, ModelAttempt
 
+REVIEW_POLICY_VERSION = "editorial-decision-v3"
+
 
 def canonical_hash(value: object) -> str:
     """对规范化 JSON 计算身份，不将本机路径或密钥写入指纹资料。"""
     return hashlib.sha256(json.dumps(value, ensure_ascii=False, allow_nan=False, sort_keys=True).encode()).hexdigest()
+
+
+def semantic_policy_identity(policy: dict[str, object]) -> dict[str, object]:
+    """从已提供策略提取语义身份，不读取运行配置或初始化数据库。"""
+    routes = policy["routes"]
+    if not isinstance(routes, list) or any(not isinstance(route, dict) for route in routes):
+        raise ValueError("编辑路由策略必须为对象列表")
+    return {
+        "policy": policy["policy"],
+        "prompt": policy["prompt"],
+        "routes": [
+            {
+                name: route[name]
+                for name in ("id", "connection", "model", "priority", "endpoint_sha256")
+                if name in route
+            }
+            for route in routes
+        ],
+    }
+
+
+def frozen_review_fingerprint(
+    initial: EditorialReviewInputV1 | None,
+    source: EditorialReviewInputV1 | None,
+    revision: str,
+    *,
+    policy: dict[str, object],
+) -> str:
+    """按记录自带的策略版本验证完整输入，保留历史字段的原始缺省形态。"""
+    version = policy.get("policy")
+    if version == REVIEW_POLICY_VERSION:
+        identity = semantic_policy_identity(policy)
+    elif version in {"editorial-decision-v1", "editorial-decision-v2"}:
+        identity = policy
+    else:
+        raise ValueError("不支持的编辑策略版本")
+    return canonical_hash(
+        {
+            "initial": initial.model_dump(mode="json") if initial is not None else None,
+            "source": source.model_dump(mode="json") if source is not None else None,
+            "revision": revision,
+            "policy": identity,
+        }
+    )
 
 
 @lru_cache(maxsize=1)
@@ -55,6 +101,7 @@ class _PolicyRoute(BaseModel):
     tokens: int | None = Field(gt=0)
     priority: int
     capacity: _CapacityPolicy | None = None
+    endpoint_sha256: str | None = Field(default=None, pattern=r"^[0-9a-f]{64}$")
 
 
 class _Policy(BaseModel):

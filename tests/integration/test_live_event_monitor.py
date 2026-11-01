@@ -3,7 +3,7 @@
 from __future__ import annotations
 
 import asyncio
-from collections.abc import AsyncIterator
+from collections.abc import AsyncIterator, Callable
 from dataclasses import dataclass, field
 
 import pytest
@@ -108,17 +108,29 @@ async def runtime(temp_db: None, monkeypatch: pytest.MonkeyPatch) -> AsyncIterat
     value = Runtime(source, room.id, monitor, manager)
     monkeypatch.setattr(rooms_service, "recorder_manager", manager)
 
-    async def start(db_id: int, *, pipeline: bool, produce: bool, automatic: bool) -> None:
+    async def start(
+        db_id: int,
+        *,
+        pipeline: bool,
+        produce: bool,
+        automatic: bool,
+        recovery: rooms_service.RecordingRecovery | None = None,
+        still_current: Callable[[], bool] | None = None,
+    ) -> None:
         assert automatic
+        assert recovery is None
+        assert still_current is None or still_current()
         value.starts.append((db_id, pipeline, produce))
         manager._tasks[db_id] = asyncio.create_task(asyncio.Event().wait())
 
-    async def stop_current(db_id: int, token: object) -> bool:
+    async def stop_current(db_id: int, token: object, *, wait_for_next_live: bool = False) -> bool:
         if manager.recording_token(db_id) is not token:
             return False
         task = manager._tasks.pop(db_id)
         task.cancel()
         await asyncio.gather(task, return_exceptions=True)
+        if wait_for_next_live:
+            manager._set_recording_flags(db_id, wait_for_next_live=True)
         value.stops.append(db_id)
         value.stopped.set()
         return True

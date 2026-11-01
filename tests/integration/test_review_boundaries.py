@@ -15,6 +15,8 @@ pytest.importorskip("fastapi")
 from fastapi.testclient import TestClient  # noqa: E402
 from sqlmodel import select  # noqa: E402
 
+from app.core.paths import resolve_storage_path  # noqa: E402
+
 if TYPE_CHECKING:
     from _pytest.monkeypatch import MonkeyPatch
 
@@ -212,7 +214,7 @@ def test_rerender_uses_committed_adjusted_boundary_and_versioned_path(
             clip = db.get(FinalClip, state["result"]["clip_id"])
             assert clip.candidate_id == candidate_id
             assert clip.duration_s == pytest.approx(34, abs=0.3)
-            assert Path(clip.file_path).stat().st_size > 0
+            assert resolve_storage_path(clip.file_path).stat().st_size > 0
             assert f"job_{state['id']}_{state['attempt']}_" in Path(clip.file_path).stem
             assert db.exec(select(UploadTask)).all() == []
 

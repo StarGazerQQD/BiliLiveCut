@@ -24,7 +24,7 @@ Seconds = Annotated[float, Field(ge=0)]
 EvidenceState = Literal["available", "degraded", "missing", "disabled", "error", "pending"]
 EvidenceType = Literal["asr", "context_asr", "danmaku", "audio", "sensevoice", "trend", "visual"]
 ContextDirection = Literal["before", "after", "both"]
-ModelPurpose = Literal["explanation", "review", "grounding", "repair", "context"]
+ModelPurpose = Literal["explanation", "review", "grounding", "repair", "context", "text", "probe"]
 ModelProtocol = Literal["json_schema", "json_object", "text"]
 FailureCode = Literal[
     "disabled",
@@ -259,6 +259,8 @@ class ModelAttempt(_StrictContract):
     provider_id: Identity
     model: str = Field(min_length=1, max_length=256)
     reported_model: str | None = Field(default=None, min_length=1, max_length=256)
+    request_id: str | None = Field(default=None, min_length=1, max_length=128)
+    output_tokens_limit: int | None = Field(default=None, ge=1)
     protocol: ModelProtocol
     status: Literal["success", "failed"]
     error: FailureCode | None

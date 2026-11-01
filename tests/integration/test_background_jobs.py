@@ -6,6 +6,7 @@ import asyncio
 import json
 import time
 from datetime import UTC, datetime
+from pathlib import Path
 from threading import Event
 from typing import Any
 
@@ -73,12 +74,18 @@ async def test_shutdown_timeout_keeps_handler_and_blocks_new_work(temp_db: None,
         assert await asyncio.to_thread(entered.wait, 2)
         with pytest.raises(RuntimeError, match="未确认退出"):
             await manager.stop(timeout_s=0.01)
+        assert manager._stop_task is not None and not manager._stop_task.done()
+        if cancellable:
+            assert manager._cancel_events[job["id"]].is_set()
+            await _wait_for_status(job["id"], {"cancelling"})
         state = get_job(job["id"])
         assert state is not None
         assert state["status"] == ("cancelling" if cancellable else "running")
         assert job["id"] in manager._tasks
         assert not manager._tasks[job["id"]].cancelled()
         assert job["id"] in manager._cancel_events
+        with pytest.raises(RuntimeError, match="不能重新启动"):
+            await manager.start()
         with pytest.raises(RuntimeError, match="正在关闭"):
             await manager.enqueue("shutdown_test", {}, label="late", owner="tester")
         with pytest.raises(RuntimeError, match="正在关闭"):
@@ -111,13 +118,35 @@ async def test_background_failure_persists_safe_exception_chain(temp_db: None) -
 
 @pytest.mark.parametrize("status", ["failed", "skipped", "reconciliation_required", "success"])
 async def test_upload_job_reflects_actual_upload_terminal_status(
-    temp_db: None, monkeypatch: pytest.MonkeyPatch, status: str
+    temp_db: None, tmp_path: Path, monkeypatch: pytest.MonkeyPatch, status: str
 ) -> None:
-    from app.db.entities import UploadTask
-    from app.publishing import uploader
+    import subprocess
 
-    task = UploadTask(id=55, clip_id=1, uploader="biliup", status=status, last_error="token=private-error")
-    monkeypatch.setattr(uploader, "enqueue_and_upload", lambda clip_id: task)
+    from app.core import settings_store
+    from app.db.entities import FinalClip, UploadTask
+    from app.db.session import get_session
+    from app.publishing import journal, uploader
+
+    media = tmp_path / "upload.mp4"
+    if status != "skipped":
+        media.write_bytes(b"controlled upload boundary")
+    with get_session() as db:
+        db.add(FinalClip(id=1, candidate_id=1, file_path=str(media), title="标题", description="说明"))
+        db.flush()
+        db.add(UploadTask(id=55, clip_id=1, uploader="biliup", status="queued"))
+    settings_store.set_bool("biliup_enabled", True)
+    monkeypatch.setattr(journal, "_JOURNAL_DIR", tmp_path / "journal")
+    monkeypatch.setattr(uploader.settings, "biliup_upload_cmd", 'biliup upload "{file}"')
+
+    def external_upload(args: list[str], **kwargs: object) -> subprocess.CompletedProcess[bytes]:
+        if status == "failed":
+            raise PermissionError("token=private-error")
+        if status == "reconciliation_required":
+            raise subprocess.TimeoutExpired(args, 1800)
+        assert status == "success"
+        return subprocess.CompletedProcess(args, 0, b"BV12345678901", b"")
+
+    monkeypatch.setattr(uploader.subprocess, "run", external_upload)
     manager = WebJobManager()
     await manager.start()
     job = await manager.enqueue(

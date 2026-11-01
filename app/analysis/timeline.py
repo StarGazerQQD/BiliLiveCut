@@ -7,7 +7,7 @@ from dataclasses import dataclass
 from datetime import UTC, datetime, timedelta
 from typing import Any
 
-from sqlmodel import select
+from sqlmodel import Session, select
 
 from app.accelerators.dispatcher import interval_conflicts, representative_danmaku_statistics
 from app.core.config import settings
@@ -75,25 +75,28 @@ def representative_danmaku(
     *,
     limit: int = 2,
     lag_s: float | None = None,
+    db: Session | None = None,
 ) -> list[dict[str, object]]:
     """返回兼顾高频反应与信息量的确定性代表弹幕。"""
     if limit <= 0 or end_ts <= start_ts:
         return []
+    if db is None:
+        with get_session() as connection:
+            return representative_danmaku(session_id, start_ts, end_ts, limit=limit, lag_s=lag_s, db=connection)
     from app.analysis.source_policy import session_danmaku_lag_s
 
-    effective_lag = session_danmaku_lag_s(session_id) if lag_s is None else lag_s
+    effective_lag = session_danmaku_lag_s(session_id, db) if lag_s is None else lag_s
     receive_start, receive_end = align_danmaku_window(start_ts, end_ts, lag_s=effective_lag)
-    with get_session() as db:
-        rows = db.exec(
-            select(Danmaku)
-            .where(
-                Danmaku.session_id == session_id,
-                Danmaku.msg_type == DanmakuType.DANMAKU,
-                Danmaku.ts >= receive_start,
-                Danmaku.ts <= receive_end,
-            )
-            .order_by(Danmaku.ts.asc())
-        ).all()
+    rows = db.exec(
+        select(Danmaku)
+        .where(
+            Danmaku.session_id == session_id,
+            Danmaku.msg_type == DanmakuType.DANMAKU,
+            Danmaku.ts >= receive_start,
+            Danmaku.ts <= receive_end,
+        )
+        .order_by(Danmaku.ts.asc())
+    ).all()
 
     return select_representative_danmaku(
         [row.content for row in rows],

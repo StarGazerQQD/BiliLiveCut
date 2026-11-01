@@ -1,7 +1,7 @@
-"""持久化日志 — 远程成功结果在 DB 不可用时的兜底。
+"""持久化日志 — 远程成功结果在业务提交前的持久回执。
 
-当远程上传已返回 SUCCESS 但本地 DB 无法提交时 (如崩溃、连接断开),
-将结果写入此 Journal。重启后由 publish_recovery 回填 DB。
+远程上传返回 SUCCESS 后立即写入此 Journal，随后提交业务数据库。
+重启后由 publish_recovery 回填尚未完成提交的成功结果。
 
 Journal 不包含: Cookie, Authorization, API Key, 完整请求头, 敏感账号凭据。
 """
@@ -51,7 +51,7 @@ def write_remote_success(
 ) -> bool:
     """持久化远程成功结果（独立 JSON 文件，原子写入）。
 
-    调用时机: 远程返回 SUCCESS 但 DB submit 失败时。
+    调用时机: 远程返回 SUCCESS 后、业务提交前；也保留 DB submit 失败后的补写入口。
 
     不含敏感凭据 (Cookie/Token/API Key)。
 
@@ -108,7 +108,9 @@ def read_pending_entries() -> list[dict[str, str | int | None]]:
     ]
 
 
-def mark_replayed(attempt_token: str, publish_generation: int) -> bool:
+def mark_replayed(
+    attempt_token: str, publish_generation: int, *, remote_id: str | None = None, remote_url: str | None = None
+) -> bool:
     """回填成功后仅删除对应独立文件，不重写其他成功结果。"""
     for path in sorted(_JOURNAL_DIR.glob("publish_journal_*.json")):
         entry = _read_entry(path)
@@ -116,6 +118,10 @@ def mark_replayed(attempt_token: str, publish_generation: int) -> bool:
             entry is not None
             and entry.get("attempt_token") == attempt_token
             and entry.get("publish_generation") == publish_generation
+            and (
+                remote_id is None
+                or (entry.get("remote_id") == remote_id and (entry.get("remote_url") or "") == (remote_url or ""))
+            )
         ):
             try:
                 path.unlink(missing_ok=True)

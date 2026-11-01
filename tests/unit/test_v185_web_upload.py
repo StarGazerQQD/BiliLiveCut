@@ -45,12 +45,19 @@ def test_subtitle_default_switch_and_unicode_export(temp_db: None) -> None:
         r'"C:\Program Files\biliup.exe" upload {file} --title={title} --desc={desc}',
     ],
 )
-def test_biliup_preserves_exact_argv(monkeypatch: pytest.MonkeyPatch, template: str) -> None:
+@pytest.mark.parametrize("relative_reference", [False, True])
+def test_biliup_preserves_exact_argv(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, template: str, relative_reference: bool
+) -> None:
     from app.publishing import uploader
 
+    media = tmp_path / "视频 文件" / "录播.mp4"
+    media.parent.mkdir()
+    media.write_bytes(b"media")
+    reference = media.relative_to(tmp_path).as_posix() if relative_reference else str(media)
     clip = {
         "id": 1,
-        "file_path": r"D:\视频 文件\录播.mp4",
+        "file_path": reference,
         "title": '标题 "引用" & 特殊',
         "description": "说明\n下一行",
     }
@@ -61,12 +68,30 @@ def test_biliup_preserves_exact_argv(monkeypatch: pytest.MonkeyPatch, template: 
         assert kwargs["shell"] is False
         return subprocess.CompletedProcess(args, 0, b"BV12345678901", b"")
 
+    monkeypatch.setattr(uploader.settings, "storage_root", str(tmp_path))
     monkeypatch.setattr(uploader.settings, "biliup_upload_cmd", template)
     monkeypatch.setattr(uploader.subprocess, "run", execute)
     assert uploader.BiliupUploader().upload(clip).success
-    assert received[0][2] == clip["file_path"]
+    assert len(received) == 1
+    assert received[0][0] == (r"C:\Program Files\biliup.exe" if template.startswith('"') else "biliup")
+    assert received[0][1] == "upload"
+    assert received[0][2] == str(media.resolve())
     assert clip["title"] in received[0] or "--title=" + clip["title"] in received[0]
     assert clip["description"] in received[0] or "--desc=" + clip["description"] in received[0]
+    if template.startswith('"'):
+        assert received == [
+            [
+                r"C:\Program Files\biliup.exe",
+                "upload",
+                str(media.resolve()),
+                '--title=标题 "引用" & 特殊',
+                "--desc=说明\n下一行",
+            ]
+        ]
+    else:
+        assert received == [
+            ["biliup", "upload", str(media.resolve()), "--title", '标题 "引用" & 特殊', "--desc", "说明\n下一行"]
+        ]
 
 
 @pytest.mark.parametrize("unknown_result", [False, True])

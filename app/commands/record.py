@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import asyncio
 import signal
+from functools import partial
 
 import click
 from loguru import logger
@@ -11,6 +12,7 @@ from rich.console import Console
 from rich.table import Table
 
 from app.core.config import settings
+from app.core.execution import run_sync
 from app.db.entities import LiveRoom
 from app.db.session import get_session
 from app.db.session import init_db as _init_db
@@ -202,9 +204,8 @@ def cmd_record(
                     from app.analysis.reanalysis import request_session_reanalysis
                     from app.analysis.session_summary import request_session_timeline_summary
 
-                    reanalysis_requested = request_session_reanalysis(
-                        session_id,
-                        reason="session_finalized",
+                    reanalysis_requested = await run_sync(
+                        partial(request_session_reanalysis, session_id, reason="session_finalized")
                     )
                     if not reanalysis_requested:
                         request_session_timeline_summary(

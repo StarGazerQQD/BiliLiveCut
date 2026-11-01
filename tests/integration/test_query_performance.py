@@ -22,6 +22,8 @@ from app.db.entities import (
     LiveRoom,
     RawSegment,
     RecordingSession,
+    SegmentTask,
+    TaskStatus,
     Topic,
     Transcript,
 )
@@ -318,3 +320,67 @@ def test_limited_job_list_still_rejects_corruption_outside_visible_page(temp_db:
         db.add(AppSetting(key="web_job:bad", value='{"owner":"bob","updated_at":"1900-01-01"}'))
     with pytest.raises(ValueError, match="字段"):
         job_store.list_jobs(1, owner="alice")
+
+
+@pytest.mark.parametrize("inside_write", [False, True])
+def test_representative_danmaku_uses_one_connection_for_coverage_and_messages(
+    temp_db: None, inside_write: bool
+) -> None:
+    from app.analysis.timeline import representative_danmaku
+    from app.db.session import engine
+
+    start = datetime(2026, 10, 30)
+    with get_session() as db:
+        room = LiveRoom(input_url="same-connection", room_id=123)
+        db.add(room)
+        db.flush()
+        recording = RecordingSession(room_id=room.id)
+        db.add(recording)
+        db.flush()
+        session_id = recording.id
+        assert session_id is not None
+        db.add_all([Danmaku(session_id=session_id, room_id=123, ts=start, content="好精彩") for _ in range(3)])
+
+    checkouts: list[object] = []
+
+    def observe(connection: object, record: object, proxy: object) -> None:
+        checkouts.append(connection)
+
+    event.listen(engine, "checkout", observe)
+    try:
+        if inside_write:
+            with get_session() as db:
+                db.connection().exec_driver_sql("BEGIN IMMEDIATE")
+                result = representative_danmaku(session_id, start, start + timedelta(seconds=5), db=db)
+        else:
+            result = representative_danmaku(session_id, start, start + timedelta(seconds=5))
+    finally:
+        event.remove(engine, "checkout", observe)
+    assert len(checkouts) == 1
+    assert result and result[0]["count"] == 3
+
+
+@pytest.mark.parametrize("task_count", [1, 1000])
+def test_disabled_auto_approval_uses_one_aggregate_query_without_writes(temp_db: None, task_count: int) -> None:
+    from app.pipeline.scheduler import advance_awaiting_review
+
+    with get_session() as db:
+        db.add(LiveRoom(id=1, input_url="queue-query", auto_approve=False))
+        db.add(RecordingSession(id=1, room_id=1))
+        db.add_all(
+            [RawSegment(id=index + 1, session_id=1, seq=index, file_path="unused.mp4") for index in range(task_count)]
+        )
+        db.add_all(
+            [
+                SegmentTask(id=index + 1, segment_id=index + 1, session_id=1, stage=TaskStatus.AWAITING_REVIEW)
+                for index in range(task_count)
+            ]
+        )
+    with _queries() as queries:
+        advance_awaiting_review()
+    assert len(queries) == 1
+    assert queries[0].lstrip().upper().startswith("SELECT")
+    with get_session() as db:
+        assert (
+            len(db.exec(select(SegmentTask).where(SegmentTask.stage == TaskStatus.AWAITING_REVIEW)).all()) == task_count
+        )

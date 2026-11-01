@@ -49,3 +49,43 @@ def test_no_password_modifying_request_requires_same_origin(
         )
         assert rejected.status_code == 403
         assert accepted.json()["web_port"] == 8080
+
+
+def test_no_password_rejects_unknown_client_even_with_local_host(temp_db: None, monkeypatch: MonkeyPatch) -> None:
+    from app.web import main
+
+    monkeypatch.setattr(main, "_ADMIN_PASSWORD", "")
+    with TestClient(main.app, base_url="http://127.0.0.1", client=("unknown", 1234)) as client:
+        assert client.get("/api/settings").status_code == 403
+
+
+def test_api_documentation_requires_admin_when_password_is_configured(temp_db: None, monkeypatch: MonkeyPatch) -> None:
+    from app.web import main
+
+    monkeypatch.setattr(main, "_ADMIN_PASSWORD", "test-admin-password")
+    with TestClient(main.app) as client:
+        for path in ("/docs", "/redoc", "/openapi.json"):
+            assert client.get(path).status_code == 401
+            assert client.get(path, auth=("admin", "test-admin-password")).status_code == 200
+
+
+def test_trusted_https_forwarding_keeps_same_origin_csrf(temp_db: None, monkeypatch: MonkeyPatch) -> None:
+    from uvicorn.middleware.proxy_headers import ProxyHeadersMiddleware
+
+    from app.web import main
+
+    monkeypatch.setattr(main, "_ADMIN_PASSWORD", "test-admin-password")
+    app = ProxyHeadersMiddleware(main.app, trusted_hosts=["127.0.0.1"])
+    with TestClient(app, base_url="http://console.example", client=("127.0.0.1", 1234)) as client:
+        headers = {"X-Forwarded-For": "192.0.2.1", "X-Forwarded-Proto": "https", "Origin": "https://console.example"}
+        accepted = client.patch(
+            "/api/settings/port", headers=headers, auth=("admin", "test-admin-password"), json={"web_port": 8080}
+        )
+        assert accepted.status_code == 200, accepted.text
+        rejected = client.patch(
+            "/api/settings/port",
+            headers=headers | {"Origin": "https://other.example"},
+            auth=("admin", "test-admin-password"),
+            json={"web_port": 8081},
+        )
+        assert rejected.status_code == 403

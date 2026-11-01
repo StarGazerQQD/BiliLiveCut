@@ -136,21 +136,27 @@ export function RoomCard({
   const invalidate = () => {
     void query.invalidateQueries({ queryKey: ["api"] });
   };
-  const roomState = running
-    ? "recording"
-    : room.source_available === false
+  const roomState =
+    room.source_available === false && !running
       ? "unavailable"
-      : room.recording_state || "idle";
+      : !running &&
+          ["cooldown", "action_required", "manual_paused"].includes(
+            text(monitor.state),
+          )
+        ? monitor.state
+        : room.recording_state || (running ? "recording" : "idle");
   const eventState =
     monitor.state === "manual_paused"
       ? "已暂停"
-      : monitor.service_running === false
-        ? "服务未运行"
-        : monitor.connection_state === "available"
-          ? "监听中"
-          : monitor.connection_state === "failed"
-            ? "正在重连"
-            : "等待连接";
+      : ["stopped", "force_stopped"].includes(text(monitor.state))
+        ? "已停止"
+        : monitor.service_running === false
+          ? "服务未运行"
+          : monitor.connection_state === "available"
+            ? "监听中"
+            : monitor.connection_state === "failed"
+              ? "正在重连"
+              : "等待连接";
   return (
     <Card className="room-card gap-0 overflow-hidden py-0 shadow-none">
       <CardContent className="p-5">
@@ -201,9 +207,26 @@ export function RoomCard({
               开播事件 · {eventState}
             </p>
           )}
-        {Boolean(monitor.message || monitor.error || room.source_error) && (
+        {monitor.state === "cooldown" && (
+          <p className="mb-3 text-xs text-muted-foreground">
+            {number(monitor.retry_in_s) > 0
+              ? `约 ${Math.ceil(number(monitor.retry_in_s))} 秒后复核直播状态并尝试恢复`
+              : "正在复核直播状态，确认仍在直播后恢复录制"}
+          </p>
+        )}
+        {Boolean(
+          monitor.error ||
+          monitor.message ||
+          room.recording_message ||
+          room.source_error,
+        ) && (
           <p className="mb-4 text-xs leading-5 text-amber-700 dark:text-amber-400">
-            {text(monitor.message || monitor.error || room.source_error)}
+            {text(
+              monitor.error ||
+                monitor.message ||
+                room.recording_message ||
+                room.source_error,
+            )}
           </p>
         )}
         <div className="flex flex-wrap items-center gap-2 border-t pt-4">

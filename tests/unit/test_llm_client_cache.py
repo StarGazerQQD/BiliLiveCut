@@ -9,7 +9,9 @@ from threading import Event
 from types import ModuleType
 from typing import TYPE_CHECKING
 
+import httpx
 import pytest
+from openai import DEFAULT_CONNECTION_LIMITS, APIConnectionError, APIStatusError, APITimeoutError
 
 from app.analysis import llm
 from app.analysis.llm_providers import LLMProvider
@@ -19,27 +21,33 @@ if TYPE_CHECKING:
 
 
 class FakeClient:
-    def __init__(self, *, api_key: str, base_url: str | None) -> None:
+    def __init__(self, *, api_key: str, base_url: str | None, http_client: httpx.Client) -> None:
         self.api_key = api_key
         self.base_url = base_url
         self.close_count = 0
+        self.http_client = http_client
 
     def close(self) -> None:
         self.close_count += 1
+        self.http_client.close()
 
 
 @pytest.fixture
 def clients(monkeypatch: MonkeyPatch) -> list[FakeClient]:
     created: list[FakeClient] = []
 
-    def create(*, api_key: str, base_url: str | None, max_retries: int) -> FakeClient:
+    def create(*, api_key: str, base_url: str | None, max_retries: int, http_client: httpx.Client) -> FakeClient:
         assert max_retries == 0  # 只保留业务显式的有限回退，不能叠加 SDK 重试。
-        client = FakeClient(api_key=api_key, base_url=base_url)
+        client = FakeClient(api_key=api_key, base_url=base_url, http_client=http_client)
         created.append(client)
         return client
 
     module = ModuleType("openai")
     module.OpenAI = create
+    module.DEFAULT_CONNECTION_LIMITS = DEFAULT_CONNECTION_LIMITS
+    module.APIConnectionError = APIConnectionError
+    module.APIStatusError = APIStatusError
+    module.APITimeoutError = APITimeoutError
     monkeypatch.setitem(sys.modules, "openai", module)
     monkeypatch.setattr(llm, "_client_cache", {})
     monkeypatch.setattr(llm, "_client_active", {})
@@ -95,7 +103,7 @@ def test_failed_replacement_keeps_existing_connection(clients: list[FakeClient],
     provider = LLMProvider("failed", "test", "https://example.invalid", "samehead-old", "test")
     first = llm._get_client(provider)
 
-    def fail(*, api_key: str, base_url: str | None, max_retries: int) -> FakeClient:
+    def fail(*, api_key: str, base_url: str | None, max_retries: int, http_client: httpx.Client) -> FakeClient:
         assert max_retries == 0
         raise OSError("client initialization failed")
 
@@ -121,7 +129,7 @@ def test_rotation_waits_for_last_active_request_even_when_it_fails(
         assert client.close_count == 0
         if prompt == "failure":
             raise OSError("request failed")
-        return {"choices": [{"message": {"content": "success"}}]}
+        return {"choices": [{"finish_reason": "stop", "message": {"content": "success"}}]}
 
     monkeypatch.setattr(llm, "_create_completion", completion)
     with ThreadPoolExecutor(max_workers=2) as executor:

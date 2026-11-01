@@ -35,7 +35,8 @@ async def aclose(self) -> None: ...
 | --- | --- |
 | `SourceDescriptor` | `platform`：小写稳定平台标识，`local` 保留；`name`：显示名；`domains`：精确小写主机名元组，包含短链接域名，不接受通配符、端口、路径 |
 | `SourceRoom` | `platform`、严格字符串 `source_id`、HTTP(S) `canonical_url`；ID 不是宿主房间主键，也不能是随开播变化的场次 ID；规范地址不得含凭据、查询串或 fragment |
-| `RoomSnapshot` | `status` 为 `LiveStatus.LIVE/OFFLINE/UNKNOWN`；`title`、`uploader_name` 缺失时为 `None`；`observed_at` 默认 UTC 当前时间，显式传入必须带时区 |
+| `RoomSnapshot` | `status` 为 `LiveStatus.LIVE/OFFLINE/UNKNOWN`；`title`、`uploader_name` 缺失时为 `None`；`observed_at` 默认 UTC 当前时间，显式传入必须带时区；可选 `metadata_failure` 保存辅助资料失败，基础开播状态仍有效 |
+| `MetadataFailure` | 辅助资料错误的 `code`、不含凭据的 `message`，以及可选的非负有限秒数 `retry_after`；标题刷新据此退避，旧插件省略该字段即可 |
 | `StreamPreference` | `intent`：`best/balanced/data_saver`，默认 best；`preferred_transport`：`hls/flv`，默认 hls；平台负责解释和排序，宿主不比较平台清晰度数字 |
 | `StreamSpec` | `url` 临时 HTTP(S) 地址；`transport`：hls/flv；`container`：ts/fmp4/flv；`headers` 字典；可选 `quality_id`、`quality_label`、`codec`、带时区的 `expires_at` |
 
@@ -296,7 +297,7 @@ $env:PYTHONPATH = $blcSource.Path
 Launcher 只核对其锁内依赖，不会替插件恢复额外包；环境重建或换安装目录后需重新安装插件依赖。
 与核心版本冲突的插件须由插件作者解决约束，不能靠修改宿主运行时锁绕过。
 
-`0.1.20.2-alpha` 的冻结源码包含本接口，具体 source_commit 以 Portable 的 version.json 和 Payload 清单为准。
+`0.1.20.3-alpha` 的冻结源码包含本接口，具体 source_commit 以 Portable 的 version.json 和 Payload 清单为准。
 发行维护者必须先提交业务源码，再冻结并构建、验证 Portable；构建器拒绝与冻结基线不同的工作区源码。
 旧 Portable 包缺少契约时，需要升级宿主；手工替换 Runtime 文件可能破坏清单校验。
 

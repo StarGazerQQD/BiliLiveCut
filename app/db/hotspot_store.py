@@ -4,12 +4,14 @@ from __future__ import annotations
 
 from collections.abc import Collection
 from datetime import datetime
+from functools import partial
 
 from loguru import logger
 from sqlalchemy.exc import IntegrityError
 from sqlmodel import Session, select
 
 from app.db.entities import HotspotEvent, HotspotStatus, RecordingSession
+from app.db.notifications import log_after_commit
 
 
 def get_or_create_hotspot_event(
@@ -85,11 +87,15 @@ def get_or_create_hotspot_event(
             db.add(event)
             db.flush()
         db.refresh(event)
-        logger.info(
-            "hotspot_created: hotspot_id={} session_id={} event_key={}",
-            event.id,
-            session_id,
-            normalized_key[:32],
+        log_after_commit(
+            db,
+            partial(
+                logger.info,
+                "hotspot_created: hotspot_id={} session_id={} event_key={}",
+                event.id,
+                session_id,
+                normalized_key[:32],
+            ),
         )
         return event, True
     except IntegrityError:

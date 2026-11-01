@@ -15,6 +15,7 @@ from sqlmodel import select as _sql_select
 
 from app.db.entities import SubtitleTemplate
 from app.db.session import get_session
+from app.web.template_contracts import SubtitleTemplateUpdate
 
 router = APIRouter(prefix="/api/templates", tags=["subtitle_templates"])
 
@@ -202,47 +203,14 @@ def get_template(template_id: int, request: Request) -> dict[str, object]:
 
 
 @router.put("/{template_id}")
-async def update_template(template_id: int, request: Request) -> dict[str, str]:
+async def update_template(template_id: int, body: SubtitleTemplateUpdate) -> dict[str, str]:
     """更新模板配置。
 
     :param template_id: 模板 ID。
-    :param request: FastAPI 请求对象(JSON body)。
+    :param body: 已校验的部分更新参数。
     :returns: 状态确认。
     """
-    body = await request.json()
-    allowed = {
-        "name",
-        "description",
-        "font_name",
-        "font_size",
-        "primary_color",
-        "secondary_color",
-        "outline_color",
-        "back_color",
-        "bold",
-        "italic",
-        "underline",
-        "strikeout",
-        "scale_x",
-        "scale_y",
-        "spacing",
-        "angle",
-        "border_style",
-        "outline",
-        "shadow",
-        "alignment",
-        "margin_l",
-        "margin_r",
-        "margin_v",
-        "encoding",
-        "max_chars_per_line",
-        "min_display_ms",
-        "max_display_ms",
-        "line_gap_ms",
-        "play_res_x",
-        "play_res_y",
-        "is_default",
-    }
+    changes = body.model_dump(exclude_unset=True)
     with get_session() as db:
         if db.get_bind().dialect.name == "sqlite":
             db.connection().exec_driver_sql("BEGIN IMMEDIATE")
@@ -250,18 +218,10 @@ async def update_template(template_id: int, request: Request) -> dict[str, str]:
         if not t:
             raise HTTPException(status_code=404, detail="模板不存在")
 
-        # V0.1.9.1: 基础类型校验
-        for k in ("font_size", "max_chars_per_line", "min_display_ms", "max_display_ms"):
-            v = body.get(k)
-            if v is not None and (not isinstance(v, (int, float)) or v <= 0):
-                raise HTTPException(status_code=422, detail=f"{k} 必须为正数")
-        for k in ("scale_x", "scale_y", "spacing", "play_res_x", "play_res_y"):
-            v = body.get(k)
-            if v is not None and (not isinstance(v, (int, float)) or v < 0):
-                raise HTTPException(status_code=422, detail=f"{k} 不能为负数")
-        if body.get("is_default") is not None and not isinstance(body.get("is_default"), bool):
-            raise HTTPException(status_code=422, detail="is_default 必须为布尔值")
-        if body.get("is_default") is True:
+        if "min_display_ms" in changes or "max_display_ms" in changes:
+            if changes.get("min_display_ms", t.min_display_ms) > changes.get("max_display_ms", t.max_display_ms):
+                raise HTTPException(status_code=422, detail="最短显示时间不能大于最长显示时间")
+        if changes.get("is_default") is True:
             # 只有一个默认模板
             defaults = db.exec(
                 _sql_select(SubtitleTemplate).where(SubtitleTemplate.is_default == True)  # noqa: E712
@@ -270,9 +230,8 @@ async def update_template(template_id: int, request: Request) -> dict[str, str]:
                 dt.is_default = False
                 db.add(dt)
 
-        for key, value in body.items():
-            if key in allowed and hasattr(t, key):
-                setattr(t, key, value)
+        for key, value in changes.items():
+            setattr(t, key, value)
         db.add(t)
         db.commit()
 
@@ -332,10 +291,10 @@ async def import_ass_file(
     if not styles:
         raise HTTPException(status_code=400, detail="未在 ASS 文件中找到 [V4+ Styles] 段落的 Style 行")
 
-    created: list[dict[str, object]] = []
-    with get_session() as db:
+    validated: list[SubtitleTemplate] = []
+    try:
         for style in styles:
-            t = SubtitleTemplate(
+            values = SubtitleTemplateUpdate(
                 name=style.get("Name", "导入样式"),
                 description=f"从 {file.filename} 导入",
                 font_name=style.get("Fontname", "Noto Sans SC"),
@@ -361,11 +320,19 @@ async def import_ass_file(
                 margin_v=int(style.get("MarginV", 20)),
                 encoding=int(style.get("Encoding", 1)),
             )
+            validated.append(SubtitleTemplate(**values.model_dump(exclude_unset=True)))
+    except (ValueError, OverflowError) as exc:
+        raise HTTPException(status_code=422, detail="ASS 样式包含无效类型、颜色或数值") from exc
+
+    created: list[dict[str, object]] = []
+    with get_session() as db:
+        for t in validated:
             db.add(t)
-            db.commit()
-            db.refresh(t)
+        db.flush()
+        for t in validated:
             created.append({"id": t.id, "name": t.name})
-            logger.info("从 {} 导入 ASS 样式: {} (id={})", file.filename, t.name, t.id)
+    for item in created:
+        logger.info("从 {} 导入 ASS 样式: {} (id={})", file.filename, item["name"], item["id"])
 
     return {"imported": created}
 

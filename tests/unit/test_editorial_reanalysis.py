@@ -134,9 +134,11 @@ def test_late_reanalysis_cannot_overwrite_changed_state(
             transcript.final_text = "人工订正的新事实。"
             db.add(transcript)
         elif change == "configuration":
-            row = db.get(AppSetting, "configuration_revision") or AppSetting(key="configuration_revision", value="0")
-            row.value = str(int(row.value) + 1)
-            db.add(row)
+            from app.db.entities import LiveRoom
+
+            room = db.exec(select(LiveRoom)).one()
+            room.auto_approve_threshold = 0.99
+            db.add(room)
         elif change == "active_media_job":
             from tests.integration.test_job_transactions import _job
 
@@ -208,6 +210,43 @@ def test_preview_filters_rejected_hotspots_without_model_calls(
         assert first["total"] == 1 and first["targets"][0]["candidate_id"] is None
         assert preview_reanalysis(db, selection.model_copy(update={"failed_only": True}))["total"] == 0
     assert len(calls) == count
+
+
+def test_failed_explanation_is_selected_and_repaired_without_replacing_candidate(
+    temp_db: None, pcm_wav: Path, monkeypatch: MonkeyPatch
+) -> None:
+    import httpx
+
+    hotspot_id, _ = _seed(pcm_wav)
+    _service(monkeypatch, "recommend")
+    original_send = httpx.AsyncHTTPTransport.handle_async_request
+
+    async def send(transport: httpx.AsyncHTTPTransport, request: httpx.Request) -> httpx.Response:
+        payload = json.loads(request.content)
+        if '"verdict"' not in payload["messages"][0]["content"]:
+            return httpx.Response(403, json={"error": {"message": "controlled explanation failure"}})
+        return await original_send(transport, request)
+
+    monkeypatch.setattr(httpx.AsyncHTTPTransport, "handle_async_request", send)
+    candidate = score_hotspot_event(hotspot_id)
+    assert candidate is not None
+    with get_session() as db:
+        selection = ReanalysisSelection(session_id=candidate.session_id, failed_only=True)
+        preview = preview_reanalysis(db, selection)
+        assert preview["total"] == 1
+        features = json.loads(db.get(HotspotEvent, hotspot_id).features_json)
+        assert features["event_enrichment"]["status"] == "failed"
+        assert features["editorial_review"]["execution"]["status"] == "succeeded"
+        event_id = db.exec(select(HighlightEvent.id)).one()
+    _service(monkeypatch, "recommend")
+    drafts = compute_reanalysis(_targets(), cancelled=lambda: False)
+    with get_session() as db:
+        assert commit_reanalysis(db, drafts)["updated"] == 1
+    with get_session() as db:
+        assert preview_reanalysis(db, selection)["total"] == 0
+        assert db.exec(select(HighlightCandidate.id)).one() == candidate.id
+        assert db.exec(select(HighlightEvent.id)).one() == event_id
+        assert json.loads(db.get(HotspotEvent, hotspot_id).features_json)["event_enrichment"]["status"] == "succeeded"
 
 
 def test_pipeline_reanalysis_preserves_ids_with_real_lease(

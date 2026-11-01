@@ -19,6 +19,7 @@ from loguru import logger
 from sqlmodel import select
 
 from app.core.config import settings
+from app.core.paths import resolve_storage_path
 from app.db.entities import AppSetting, LiveRoom, RawSegment, RecordingSession, SegmentTask
 from app.db.session import get_session
 from app.pipeline.orchestrator import make_pipeline_callback
@@ -40,9 +41,11 @@ async def test_stopping_before_first_csv_entry_preserves_real_tail(
     media_service: MediaService,
     monkeypatch: pytest.MonkeyPatch,
     force: bool,
+    request: pytest.FixtureRequest,
 ) -> None:
     from app.clipping.core import probe_media
     from app.plugins.live_source import SourceRoom, StreamSpec
+    from app.recording.writer_ownership import SessionWriter
 
     media_service.keep_live = True
     monkeypatch.setattr(settings, "segment_duration_s", 60)
@@ -54,12 +57,20 @@ async def test_stopping_before_first_csv_entry_preserves_real_tail(
     async def receive(segment: RawSegment) -> None:
         delivered.append(segment.id)
 
+    with get_session() as db:
+        room = LiveRoom(input_url="https://live.bilibili.com/1", room_id=1, authorized=True)
+        db.add(room)
+        db.flush()
+        room_id = room.id
     recorder = Recorder(
         SourceRoom(platform="bilibili", source_id="1", canonical_url="https://live.bilibili.com/1"),
-        1,
+        room_id,
         on_segment=receive,
     )
-    recorder._session_id = 1
+    writer = SessionWriter.create(tmp_path / "writers")
+    request.addfinalizer(writer.close)
+    recorder._writer = writer
+    recorder._session_id = recorder._create_session()
     stream = StreamSpec(
         url=media_service.origin + "/media/token-0/index.m3u8",
         transport="hls",
@@ -72,10 +83,11 @@ async def test_stopping_before_first_csv_entry_preserves_real_tail(
             while not any(path.stat().st_size > 0 for path in output.glob("*.ts")):
                 assert not running.done()
                 await asyncio.sleep(0.05)
-        assert not (output / "segments.csv").read_text().strip()
+        listing = next(output.glob("*segments.csv"))
+        assert not listing.read_text().strip()
         if force:
             filename = next(output.glob("*.ts")).name
-            (output / "segments.csv").write_text(f"{filename},0,", encoding="utf-8")
+            listing.write_text(f"{filename},0,", encoding="utf-8")
         recorder.force_stop() if force else recorder.stop()
         await asyncio.wait_for(running, 15)
         with get_session() as db:
@@ -86,7 +98,7 @@ async def test_stopping_before_first_csv_entry_preserves_real_tail(
             assert duration > 0 and width > 0 and height > 0
             assert abs(segment.duration_s - duration) < 1
             assert segment.duration_s < 60
-        await recorder._scan_orphan_segments(output / "segments.csv", output)
+        await recorder._scan_orphan_segments(listing, output)
         assert len(delivered) == len(segments)
     finally:
         recorder.force_stop()
@@ -318,7 +330,9 @@ async def test_loaded_plugin_real_ffmpeg_reconnect_and_durable_pipeline(
             assert recording.ended_at is not None
             assert len(segments) >= 2 and len(tasks) == len(segments)
             assert len({item.file_path for item in segments}) == len(segments)
-            assert all(Path(item.file_path).stat().st_size > 1024 and item.duration_s > 1 for item in segments)
+            assert all(
+                resolve_storage_path(item.file_path).stat().st_size > 1024 and item.duration_s > 1 for item in segments
+            )
             evidence = read_evidence(db, recording.id)
             assert evidence.status == "unsupported" and not evidence.intervals
             assert not db.get(LiveRoom, room.id).auto_approve and not db.get(LiveRoom, room.id).auto_upload
@@ -520,9 +534,9 @@ def _advance_real_pipeline(room_id: int, session_id: int, monkeypatch: pytest.Mo
         assert clips, [(t.stage, t.last_error) for t in tasks]
         assert any(task.stage == TaskStatus.RENDERED for task in tasks)
         for clip in clips:
-            duration, width, height = probe_media(clip.file_path)
+            duration, width, height = probe_media(str(resolve_storage_path(clip.file_path)))
             assert duration >= 1 and width > 0 and height > 0
-            assert Path(clip.file_path).stat().st_size > 1024
+            assert resolve_storage_path(clip.file_path).stat().st_size > 1024
     for clip in clips:
         assert generate_copy(clip.id).title
     scheduler.advance_rendered()

@@ -19,6 +19,7 @@ def main() -> int:
         evaluate,
         label_template,
         snapshot_digest,
+        snapshot_payload,
     )
     from app.analysis.editorial_evaluation_io import export_snapshot, read_contract, write_result
 
@@ -44,7 +45,7 @@ def main() -> int:
     args = parser.parse_args()
     if args.command == "export":
         snapshot = export_snapshot(args.database, dataset_id=args.dataset_id, session_ids=args.session)
-        write_result(args.output, snapshot.model_dump(mode="json"))
+        write_result(args.output, snapshot_payload(snapshot))
         print(f"已导出 {len(snapshot.records)} 个对象；snapshot_sha256={snapshot_digest(snapshot)}")
     elif args.command == "label-template":
         snapshot = read_contract(args.snapshot, EvaluationSnapshot)

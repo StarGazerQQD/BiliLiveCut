@@ -27,9 +27,10 @@ import socket
 import threading
 import time
 from collections.abc import AsyncIterator, Callable
-from contextlib import suppress
+from contextlib import nullcontext, suppress
 from dataclasses import dataclass
-from datetime import date
+from datetime import UTC, date, datetime
+from email.utils import parsedate_to_datetime
 from pathlib import Path
 from typing import TYPE_CHECKING, TypeVar, cast
 from urllib.parse import urlsplit
@@ -54,7 +55,15 @@ from app.analysis.editorial_contracts import (
     parse_model_object,
 )
 from app.analysis.model_execution import ModelCallBudget, StructuredCallResult
+from app.analysis.model_journal import ModelRequestJournal
+from app.core.cancellation import OperationCancelledError, check_cancellation, shutdown_event
 from app.core.config import settings
+from app.core.http_transport import (
+    CancellableHTTPTransport,
+    HTTPRequestDeadline,
+    HTTPResponseInvalid,
+    bounded_http_request,
+)
 from app.core.paths import storage_root
 from app.core.sanitize import safe_exception_summary, sanitize_diagnostic
 from app.models.capacity import DEFAULT_OUTPUT_TOKENS, ModelCapacityError, output_arguments, output_budget
@@ -229,13 +238,23 @@ def _create_or_reuse_client(provider: provs.LLMProvider) -> OpenAI:
     if cached is not None and hmac.compare_digest(cached.api_key.encode("utf-8"), api_key.encode("utf-8")):
         return cached
     try:
-        from openai import OpenAI
+        from openai import DEFAULT_CONNECTION_LIMITS, OpenAI
     except ImportError as exc:  # pragma: no cover
         raise RuntimeError(
             '未安装 openai SDK。源码安装请执行: pip install -e ".[llm]";'
             "Portable 请重新运行 Launcher 完成依赖修复,或升级到最新完整包。"
         ) from exc
-    client = OpenAI(api_key=api_key, base_url=provider.base_url or None, max_retries=0)
+    limits = httpx.Limits(
+        max_connections=DEFAULT_CONNECTION_LIMITS.max_connections,
+        max_keepalive_connections=DEFAULT_CONNECTION_LIMITS.max_keepalive_connections,
+        keepalive_expiry=DEFAULT_CONNECTION_LIMITS.keepalive_expiry,
+    )
+    transport = httpx.Client(transport=CancellableHTTPTransport(limits=limits), follow_redirects=True)
+    try:
+        client = OpenAI(api_key=api_key, base_url=provider.base_url or None, max_retries=0, http_client=transport)
+    except BaseException:
+        transport.close()
+        raise
     for key in list(_client_cache):
         if key[0] == connection_id:
             old = _client_cache.pop(key)
@@ -254,24 +273,31 @@ def _close_client(client: object) -> None:
         close()
 
 
-def _account_usage(provider: provs.LLMProvider, resp: object) -> None:
-    """按 provider 的 token 价格累加预算花费(价格为 0 则不计费)。
+def close_clients() -> None:
+    """退休所有缓存连接；在途请求实际结束后才关闭其网络线程。"""
+    idle: list[object] = []
+    with _client_cache_lock:
+        for client in _client_cache.values():
+            if _client_active.get(id(client), 0):
+                _retired_clients[id(client)] = client
+            else:
+                idle.append(client)
+        _client_cache.clear()
+    for client in idle:
+        _close_client(client)
+    with _client_cache_lock:
+        if _client_active:
+            raise RuntimeError("模型请求尚未物理退出，保留客户端资源占用")
 
-    :param provider: 服务商配置。
-    :param resp: chat.completions 响应对象。
-    """
-    if provider.price_input_per_m <= 0 and provider.price_output_per_m <= 0:
-        return
-    usage = getattr(resp, "usage", None)
-    if usage is None:
-        return
-    prompt_tokens = getattr(usage, "prompt_tokens", 0) or 0
-    completion_tokens = getattr(usage, "completion_tokens", 0) or 0
-    cost = (
-        prompt_tokens / 1_000_000 * provider.price_input_per_m
-        + completion_tokens / 1_000_000 * provider.price_output_per_m
-    )
-    _add_spend(cost)
+
+def _account_usage(provider: provs.LLMProvider, usage: TokenUsage) -> None:
+    """仅将完整已知用量和价格记入金额，缺失信息保留未知状态。"""
+    if usage.estimated_cost_usd is not None:
+        _add_spend(usage.estimated_cost_usd)
+    else:
+        logger.warning(
+            "model_cost_unknown provider={} model={}，用量或价格不完整，金额未计入账本。", provider.id, provider.model
+        )
 
 
 def _field(value: object, name: str) -> object | None:
@@ -367,7 +393,29 @@ def probe_provider(provider: provs.LLMProvider) -> str:
     budget = _daily_budget()
     if budget > 0 and spend >= budget:
         raise BudgetAccountingError("已达到每日模型预算，无法发起测试请求")
-    return _complete(provider, "只回复 pong", max_tokens=4096, extra_body=_low_reasoning_options(provider) or None)
+    call_budget = ModelCallBudget(
+        max_attempts=min(2, settings.editorial_model_max_attempts),
+        max_elapsed_s=settings.editorial_model_deadline_s,
+        journal=ModelRequestJournal(target=f"probe:{provider.id}"),
+    )
+    with call_budget.operation():
+        return _complete(
+            provider,
+            "只回复 pong",
+            max_tokens=4096,
+            extra_body=_low_reasoning_options(provider) or None,
+            budget=call_budget,
+            purpose="probe",
+        )
+
+
+def _check_text_budget(budget: ModelCallBudget, *, before_request: bool = False, force_identity: bool = False) -> None:
+    check_cancellation(force=force_identity)
+    interruption = budget.interruption(before_request=before_request, force_identity=force_identity)
+    if interruption == "cancelled":
+        raise OperationCancelledError("模型请求所属执行已取消")
+    if interruption is not None:
+        raise _StructuredFailure(interruption)
 
 
 def _create_completion(
@@ -376,17 +424,32 @@ def _create_completion(
     prompt: str,
     max_tokens: int,
     extra_body: dict[str, object] | None,
+    budget: ModelCallBudget | None = None,
 ) -> object:
     """发起一次 OpenAI Chat Completions 请求。"""
+    from openai import APIConnectionError
+
+    check_cancellation()
     if provider.authorize is not None:
         provider.authorize()
-    return client.chat.completions.create(  # type: ignore[attr-defined,no-any-return]
-        model=provider.model,
-        **output_arguments(provider, max_tokens),
-        messages=[{"role": "user", "content": prompt}],
-        timeout=settings.llm_request_timeout_s,
-        **({"extra_body": extra_body} if extra_body else {}),
-    )
+    budget = budget or new_editorial_budget()
+    timeout = min(settings.llm_request_timeout_s, budget.remaining_s)
+    try:
+        with bounded_http_request(
+            timeout=timeout, max_response_bytes=_HTTP_RESPONSE_MAX_BYTES, check=lambda: _check_text_budget(budget)
+        ):
+            return client.chat.completions.create(  # type: ignore[attr-defined,no-any-return]
+                model=provider.model,
+                **output_arguments(provider, max_tokens),
+                messages=[{"role": "user", "content": prompt}],
+                timeout=timeout,
+                **({"extra_body": extra_body} if extra_body else {}),
+            )
+    except APIConnectionError:
+        # SDK 可能将传输取消包装成连接异常；关闭意图不能进入 provider 降级。
+        check_cancellation()
+        _check_text_budget(budget)
+        raise
 
 
 def _complete(
@@ -394,6 +457,9 @@ def _complete(
     prompt: str,
     max_tokens: int,
     extra_body: dict[str, object] | None = None,
+    *,
+    budget: ModelCallBudget | None = None,
+    purpose: ModelPurpose = "text",
 ) -> str:
     """用单个 provider 完成一次对话补全(失败会抛异常)。
 
@@ -403,11 +469,14 @@ def _complete(
     :param extra_body: 额外请求体(如联网搜索开关)。
     :returns: 模型输出文本。
     """
+    check_cancellation()
     with _client_cache_lock:
         client = _get_client(provider)
         _client_active[id(client)] = _client_active.get(id(client), 0) + 1
     try:
-        return _complete_using_client(client, provider, prompt, max_tokens, extra_body)
+        call_budget = budget or new_editorial_budget()
+        with call_budget.operation() if budget is None else nullcontext():
+            return _complete_using_client(client, provider, prompt, max_tokens, extra_body, call_budget, purpose)
     finally:
         retired = None
         with _client_cache_lock:
@@ -421,13 +490,188 @@ def _complete(
             _close_client(retired)
 
 
+def _text_attempt(
+    client: object,
+    provider: provs.LLMProvider,
+    prompt: str,
+    max_tokens: int,
+    extra_body: dict[str, object] | None,
+    budget: ModelCallBudget,
+    purpose: ModelPurpose,
+) -> object:
+    """一次实际文本请求的身份、用量和失败记录；不在该边界隐式补发。"""
+    from openai import APIConnectionError, APIStatusError, APITimeoutError
+
+    _check_text_budget(budget, before_request=True, force_identity=True)
+    spend = _today_spend()
+    if _daily_budget() > 0 and spend >= _daily_budget():
+        raise _StructuredFailure("daily_budget")
+    if provider.authorize is not None:
+        provider.authorize()
+    _check_text_budget(budget, before_request=True, force_identity=True)
+    budget.start_request(
+        provider_id=provider.id,
+        connection_id=provider.connection_id or provider.id,
+        model=provider.model,
+        purpose=purpose,
+        protocol="text",
+        output_tokens_limit=max_tokens,
+        request={
+            "endpoint": provider.base_url,
+            "model": provider.model,
+            "messages": [{"role": "user", "content": prompt}],
+            "output": output_arguments(provider, max_tokens),
+            "extra_body": extra_body,
+        },
+    )
+    started = time.monotonic()
+    usage = TokenUsage()
+    error: FailureCode | None = "provider_error"
+    diagnostic = None
+    request_id = None
+    reported_model = None
+    try:
+        response = _create_completion(client, provider, prompt, max_tokens, extra_body, budget)
+        request_id = _diagnostic_identifier(_field(response, "_request_id"), provider)
+        usage = _reported_usage(provider, response)
+        budget.request_receipt(usage, request_id)
+        _account_usage(provider, usage)
+        model = _field(response, "model")
+        if (
+            isinstance(model, str)
+            and 0 < len(model) <= 256
+            and sanitize_diagnostic(model, secrets=(provider.api_key,), limit=256) == model
+        ):
+            reported_model = model
+        if provider.authorize is not None:
+            provider.authorize()
+        _check_text_budget(budget, force_identity=True)
+        choice = _first_choice(response)
+        message = _field(choice, "message")
+        text = _extract_text(response)
+        if text and (
+            _field(choice, "finish_reason") != "stop" or _field(message, "refusal") or _field(message, "tool_calls")
+        ):
+            raise _StructuredFailure("invalid_output", _response_failure_diagnostic(choice, message))
+        error = None if text else "empty_response"
+        diagnostic = _structured_failure_diagnostic(error) if error is not None else None
+        return response
+    except OperationCancelledError:
+        error = "cancelled"
+        raise
+    except ModelAuthorizationError:
+        error = "unauthorized"
+        diagnostic = _structured_failure_diagnostic(error)
+        raise
+    except _StructuredFailure as exc:
+        error = exc.code
+        diagnostic = exc.diagnostic or _structured_failure_diagnostic(error)
+        raise
+    except (HTTPResponseInvalid, HTTPRequestDeadline) as exc:
+        error = (
+            "invalid_output"
+            if isinstance(exc, HTTPResponseInvalid)
+            else "deadline"
+            if budget.remaining_s <= 0
+            else "timeout"
+        )
+        diagnostic = _structured_failure_diagnostic(error)
+        raise _StructuredFailure(error, diagnostic) from exc
+    except APITimeoutError:
+        error = budget.interruption(before_request=False) or "timeout"
+        diagnostic = _structured_failure_diagnostic(error)
+        raise
+    except APIStatusError as exc:
+        error = (
+            "unauthorized"
+            if exc.status_code in {401, 403}
+            else "rate_limited"
+            if exc.status_code == 429
+            else "provider_error"
+        )
+        diagnostic = _http_failure_diagnostic(exc, provider, unsupported=False)
+        request_id = diagnostic.request_id
+        raise
+    except APIConnectionError as exc:
+        cause = exc.__cause__
+        if isinstance(cause, HTTPResponseInvalid):
+            error = "invalid_output"
+        elif isinstance(cause, HTTPRequestDeadline):
+            error = "deadline" if budget.remaining_s <= 0 else "timeout"
+        elif isinstance(cause, _StructuredFailure):
+            error = cause.code
+        else:
+            diagnostic = _connection_failure_diagnostic(exc)
+            raise
+        diagnostic = _structured_failure_diagnostic(error)
+        raise _StructuredFailure(error, diagnostic) from exc
+    finally:
+        budget.record(
+            ModelAttempt(
+                number=len(budget.attempts) + 1,
+                purpose=purpose,
+                provider_id=provider.id,
+                model=provider.model,
+                reported_model=reported_model,
+                request_id=request_id,
+                output_tokens_limit=max_tokens,
+                protocol="text",
+                status="success" if error is None else "failed",
+                error=error,
+                elapsed_s=max(0.0, time.monotonic() - started),
+                usage=usage,
+                diagnostic=diagnostic,
+            )
+        )
+        if error is not None:
+            logger.warning(
+                "text_model_call_failed operation={} attempt={} provider={} model={} error={} diagnostic={}",
+                budget.operation_id,
+                len(budget.attempts),
+                provider.id,
+                provider.model,
+                error,
+                diagnostic.model_dump(exclude_none=True) if diagnostic else None,
+            )
+
+
+def _text_response(
+    client: object,
+    provider: provs.LLMProvider,
+    prompt: str,
+    max_tokens: int,
+    extra_body: dict[str, object] | None,
+    budget: ModelCallBudget,
+    purpose: ModelPurpose,
+) -> object:
+    from openai import APIConnectionError, APIStatusError
+
+    while True:
+        try:
+            return _text_attempt(client, provider, prompt, max_tokens, extra_body, budget, purpose)
+        except APIStatusError as exc:
+            if not _wait_transport_retry(provider, budget, _transport_retry_delay(exc)):
+                raise
+        except APIConnectionError:
+            if not _wait_transport_retry(provider, budget, 1.0):
+                raise
+        except _StructuredFailure as exc:
+            if not _wait_transport_retry(provider, budget, 1.0 if exc.code == "timeout" else None):
+                raise
+
+
 def _complete_using_client(
-    client: object, provider: provs.LLMProvider, prompt: str, max_tokens: int, extra_body: dict[str, object] | None
+    client: object,
+    provider: provs.LLMProvider,
+    prompt: str,
+    max_tokens: int,
+    extra_body: dict[str, object] | None,
+    budget: ModelCallBudget,
+    purpose: ModelPurpose,
 ) -> str:
     """在客户端租用期间完成正文提取和空正文重试。"""
     max_tokens = output_budget(provider, max_tokens, [{"role": "user", "content": prompt}])
-    resp = _create_completion(client, provider, prompt, max_tokens, extra_body)
-    _account_usage(provider, resp)
+    resp = _text_response(client, provider, prompt, max_tokens, extra_body, budget, purpose)
     text = _extract_text(resp)
     if text:
         return text
@@ -448,6 +692,9 @@ def _complete_using_client(
             f"reasoning_tokens={reasoning_tokens}, reasoning={has_reasoning}；"
             "请提高该任务的输出预算，或选择思考开销较低的模型。"
         )
+    if not budget.claim_empty_retry():
+        _check_text_budget(budget, before_request=True, force_identity=True)
+        raise EmptyLLMResponseError("本次操作已消耗空正文重试额度")
     logger.warning(
         "模型 {} 返回空正文,finish_reason={} completion_tokens={} reasoning_tokens={} reasoning={};将{}重试一次。",
         provider.name,
@@ -458,8 +705,7 @@ def _complete_using_client(
         retry_mode,
     )
 
-    retry_resp = _create_completion(client, provider, prompt, max_tokens, retry_extra or None)
-    _account_usage(provider, retry_resp)
+    retry_resp = _text_response(client, provider, prompt, max_tokens, retry_extra or None, budget, purpose)
     retry_text = _extract_text(retry_resp)
     if retry_text:
         return retry_text
@@ -472,12 +718,13 @@ def _complete_using_client(
     )
 
 
-def new_editorial_budget(*, cancelled: Callable[[], bool] | None = None) -> ModelCallBudget:
+def new_editorial_budget(*, cancelled: Callable[[], bool] | None = None, target: str | None = None) -> ModelCallBudget:
     """从当前任务配置创建一次编辑操作预算，调用方跨步骤与重算复用。"""
     return ModelCallBudget(
         max_attempts=settings.editorial_model_max_attempts,
         max_elapsed_s=settings.editorial_model_deadline_s,
         cancelled=cancelled,
+        journal=ModelRequestJournal(target=target),
     )
 
 
@@ -571,12 +818,13 @@ async def _fetch_structured_response(
         raise _StructuredFailure("invalid_output") from exc
     if not isinstance(parsed, dict):
         raise _StructuredFailure("invalid_output")
+    parsed["_request_id"] = response.headers.get("x-request-id")
     return parsed
 
 
 async def _async_budget_interruption(budget: ModelCallBudget) -> FailureCode | None:
     # 取消回调可能读取租约数据库，不能阻塞负责接收响应的事件循环。
-    check = asyncio.create_task(asyncio.to_thread(budget.interruption, before_request=False))
+    check = asyncio.create_task(asyncio.to_thread(budget.interruption, before_request=False, force_identity=False))
     try:
         return await asyncio.shield(check)
     except asyncio.CancelledError:
@@ -599,23 +847,36 @@ async def _bounded_structured_response(
     request = asyncio.create_task(
         _fetch_structured_response(provider, messages, response_format, max_tokens, timeout, extra_body)
     )
+    check: asyncio.Task[FailureCode | None] | None = None
+    next_check = 0.0
     try:
         async with asyncio.timeout(timeout):
             while not request.done():
-                interruption = await _async_budget_interruption(budget)
-                if interruption is not None:
-                    raise _StructuredFailure(interruption)
+                if shutdown_event.is_set():
+                    raise _StructuredFailure("cancelled")
+                if check is not None and check.done():
+                    interruption = check.result()
+                    check = None
+                    next_check = time.monotonic() + 0.1
+                    if interruption is not None:
+                        raise _StructuredFailure(interruption)
+                if check is None and time.monotonic() >= next_check:
+                    check = asyncio.create_task(_async_budget_interruption(budget))
                 await asyncio.wait({request}, timeout=0.05)
             return request.result()
     except TimeoutError as exc:
         # Windows 事件循环定时器允许提前一个时钟粒度唤醒；分类依据实际设置的边界。
         raise _StructuredFailure("deadline" if deadline_limited else "timeout") from exc
     finally:
-        if not request.done():
-            request.cancel()
-        # 等待连接物理关闭后才退出，不遗留仍计费的本地后台请求。
-        with suppress(asyncio.CancelledError):
-            await request
+        try:
+            if not request.done():
+                request.cancel()
+            # 先关闭网络，再等待已发出的身份读取归还数据库连接。
+            with suppress(asyncio.CancelledError):
+                await request
+        finally:
+            if check is not None:
+                await check
 
 
 def _reported_usage(provider: provs.LLMProvider, response: object) -> TokenUsage:
@@ -646,6 +907,48 @@ def _reported_usage(provider: provs.LLMProvider, response: object) -> TokenUsage
 def _initial_structured_protocol(provider: provs.LLMProvider) -> ModelProtocol:
     """官方 DeepSeek Chat Completions 使用 JSON 模式，代理仍按其自身能力协商。"""
     return "json_object" if urlsplit(provider.base_url).hostname == "api.deepseek.com" else "json_schema"
+
+
+def _transport_retry_delay(error: object) -> float | None:
+    """仅对暂态 HTTP 拒绝读取标准 Retry-After，缺失或无效时使用有限退避。"""
+    if _field(error, "status_code") not in {408, 429, 500, 502, 503, 504}:
+        return None
+    response = _field(error, "response")
+    headers = _field(response, "headers")
+    value = headers.get("retry-after") if isinstance(headers, httpx.Headers) else None
+    if not isinstance(value, str):
+        return 1.0
+    if re.fullmatch(r"[0-9]+", value.strip()):
+        # 过长数值不必转成无界整数；明确拒绝在当前硬预算内提前重试。
+        return float(value) if len(value.strip()) < 16 else math.inf
+    try:
+        when = parsedate_to_datetime(value)
+        if when.tzinfo is None:
+            when = when.replace(tzinfo=UTC)
+        return max(0.0, (when - datetime.now(UTC)).total_seconds())
+    except (TypeError, ValueError, OverflowError):
+        return 1.0
+
+
+def _wait_transport_retry(provider: provs.LLMProvider, budget: ModelCallBudget, delay: float | None) -> bool:
+    """等待也消耗原截止时间，取消或额度不足时不补发；补发可能再次计费。"""
+    if delay is None or delay >= budget.remaining_s:
+        return False
+    if not budget.claim_transport_retry(provider.connection_id or provider.id, provider.base_url, provider.model):
+        return False
+    logger.warning(
+        "model_transport_retry operation={} provider={} model={} delay_s={}；上次费用可能未知，补发可能额外计费。",
+        budget.operation_id,
+        provider.id,
+        provider.model,
+        delay,
+    )
+    until = time.monotonic() + delay
+    while time.monotonic() < until:
+        if budget.interruption(force_identity=False) is not None:
+            return False
+        time.sleep(min(0.05, max(0.0, until - time.monotonic())))
+    return budget.interruption() is None
 
 
 def _unsupported_format(error: object, protocol: ModelProtocol) -> bool:
@@ -774,6 +1077,7 @@ _VALIDATION_REASONS = frozenset(
         "解释正文不能为空",
         "解释字段超过配置上限",
         "证据引用不能重复",
+        "证据引用未知的短标识",
         "解释引用未知或不可用证据",
         "非文本信号不能支持具体事件叙述",
         "解释实体缺少原文依据",
@@ -931,21 +1235,49 @@ def _structured_attempt(
             str(exc),
         )
         return StructuredCallResult(value=None, error="context_unavailable")
+    budget.start_request(
+        provider_id=provider.id,
+        connection_id=provider.connection_id or provider.id,
+        model=provider.model,
+        purpose=purpose,
+        protocol=protocol,
+        output_tokens_limit=max_tokens,
+        request={
+            "endpoint": provider.base_url,
+            "model": provider.model,
+            "messages": messages,
+            "response_format": response_format,
+            "output": output_arguments(provider, max_tokens),
+            "extra_body": extra_body,
+        },
+    )
     started = time.monotonic()
     usage = TokenUsage()
     reported_model = None
     error: FailureCode | None = "provider_error"
     value: _Result | None = None
     diagnostic: ModelFailureDiagnostic | None = None
+    request_id = None
+    retry_after_s = None
     try:
+        if provider.authorize is not None:
+            provider.authorize()
+        interruption = budget.interruption()
+        if interruption is not None:
+            raise _StructuredFailure(interruption)
         response = asyncio.run(
             _bounded_structured_response(provider, messages, response_format, max_tokens, budget, extra_body)
         )
+        request_id = _diagnostic_identifier(response.get("_request_id"), provider)
         usage = _reported_usage(provider, response)
-        if usage.estimated_cost_usd is not None:
-            _add_spend(usage.estimated_cost_usd)
+        budget.request_receipt(usage, request_id)
+        _account_usage(provider, usage)
         model = response.get("model")
-        if isinstance(model, str) and 0 < len(model) <= 256:
+        if (
+            isinstance(model, str)
+            and 0 < len(model) <= 256
+            and sanitize_diagnostic(model, secrets=(provider.api_key,), limit=256) == model
+        ):
             reported_model = model
         if provider.authorize is not None:
             provider.authorize()
@@ -974,12 +1306,16 @@ def _structured_attempt(
     except _StructuredFailure as exc:
         error = exc.code
         diagnostic = exc.diagnostic or _structured_failure_diagnostic(error)
+        retry_after_s = 1.0 if error == "timeout" else None
     except APITimeoutError:
         error = budget.interruption(before_request=False) or "timeout"
         diagnostic = _structured_failure_diagnostic(error)
+        retry_after_s = 1.0 if error == "timeout" else None
     except APIStatusError as exc:
         unsupported = _unsupported_format(exc, protocol)
         diagnostic = _http_failure_diagnostic(exc, provider, unsupported=unsupported)
+        request_id = diagnostic.request_id
+        retry_after_s = _transport_retry_delay(exc)
         if unsupported:
             error = "unsupported_format"
         elif exc.status_code in {401, 403}:
@@ -994,6 +1330,7 @@ def _structured_attempt(
             if isinstance(exc.__cause__, _StructuredFailure)
             else _connection_failure_diagnostic(exc)
         )
+        retry_after_s = 1.0 if not isinstance(exc.__cause__, _StructuredFailure) else None
     finally:
         budget.record(
             ModelAttempt(
@@ -1002,6 +1339,8 @@ def _structured_attempt(
                 provider_id=provider.id,
                 model=provider.model,
                 reported_model=reported_model,
+                request_id=request_id,
+                output_tokens_limit=max_tokens,
                 protocol=protocol,
                 status="success" if error is None else "failed",
                 error=error,
@@ -1023,7 +1362,7 @@ def _structured_attempt(
                 error,
                 diagnostic.model_dump(exclude_none=True) if diagnostic is not None else None,
             )
-    return StructuredCallResult(value=value, error=error)
+    return StructuredCallResult(value=value, error=error, retry_after_s=retry_after_s)
 
 
 def call_structured(
@@ -1063,7 +1402,7 @@ def call_structured(
         for provider in providers:
             repairing = False
             repair_reason = ""
-            extra_body = None
+            extra_body = _low_reasoning_options(provider) or None
             while True:
                 interruption = budget.interruption()
                 if interruption is not None:
@@ -1104,6 +1443,11 @@ def call_structured(
                 )
                 if last.error is None or last.error in {"unauthorized", "cancelled", "deadline"}:
                     return last
+                if _wait_transport_retry(provider, budget, last.retry_after_s):
+                    continue
+                interruption = budget.interruption(before_request=False)
+                if interruption is not None:
+                    return StructuredCallResult(value=None, error=interruption)
                 if last.error == "unsupported_format" and budget.downgrade_protocol(provider.id, provider.model):
                     continue
                 if last.error == "invalid_output" and budget.claim_repair():
@@ -1120,7 +1464,11 @@ def call_structured(
 
 
 def call_text(
-    prompt: str, max_tokens: int = DEFAULT_OUTPUT_TOKENS, *, capability: TextCapability = "analysis"
+    prompt: str,
+    max_tokens: int = DEFAULT_OUTPUT_TOKENS,
+    *,
+    capability: TextCapability = "analysis",
+    budget: ModelCallBudget | None = None,
 ) -> str | None:
     """按优先级遍历多个大模型完成文本生成,失败自动降级到下一个。
 
@@ -1131,25 +1479,7 @@ def call_text(
     :param max_tokens: 最大输出 token 数。
     :returns: 模型输出文本;不可用或全部失败时返回 ``None``。
     """
-    if not is_llm_enabled(capability):
-        return None
-    for provider in provs.active_providers(capability):
-        try:
-            text = _complete(provider, prompt, max_tokens)
-            if text:
-                return text
-            logger.warning("模型 {} 返回空结果,尝试下一个。", provider.name)
-        except BudgetAccountingError:
-            raise
-        except Exception as exc:  # noqa: BLE001 — 逐个降级
-            logger.opt(exception=exc).warning(
-                "模型调用失败 provider={} model={}，尝试下一个: {}",
-                provider.id,
-                provider.model,
-                safe_exception_summary(exc),
-            )
-    logger.error("所有大模型均不可用,降级为纯规则模式。")
-    return None
+    return _call_text_routes(prompt, max_tokens, capability=capability, budget=budget, search=False)
 
 
 def call_web_search(
@@ -1157,6 +1487,7 @@ def call_web_search(
     max_tokens: int = DEFAULT_OUTPUT_TOKENS,
     *,
     capability: TextCapability = "trends",
+    budget: ModelCallBudget | None = None,
 ) -> str | None:
     """按优先级遍历多个大模型完成(尽力联网搜索的)文本生成,失败自动降级。
 
@@ -1167,50 +1498,108 @@ def call_web_search(
     :param max_tokens: 最大输出 token 数。
     :returns: 模型输出文本;全部不可用时返回 ``None``。
     """
+    return _call_text_routes(prompt, max_tokens, capability=capability, budget=budget, search=True)
+
+
+def _unsupported_search(error: object, parameter: str) -> bool:
+    """只有服务明确拒绝已发送的搜索参数，才允许去掉该参数重新请求。"""
+    if _field(error, "status_code") not in {400, 422}:
+        return False
+    body = _field(error, "body")
+    detail = _field(body, "error") or body
+    param = str(_field(detail, "param") or "").casefold()
+    message = str(_field(detail, "message") or "").casefold()
+    code = str(_field(detail, "code") or "").casefold()
+    mentioned = param == parameter.casefold() or parameter.casefold() in message
+    explicit = code in {"unsupported_parameter", "unknown_parameter"} or any(
+        phrase in message
+        for phrase in (
+            "not supported",
+            "does not support",
+            "unsupported",
+            "unrecognized request argument",
+            "unknown parameter",
+            "unknown argument",
+        )
+    )
+    return mentioned and explicit
+
+
+def _call_text_routes(
+    prompt: str,
+    max_tokens: int,
+    *,
+    capability: TextCapability,
+    budget: ModelCallBudget | None,
+    search: bool,
+) -> str | None:
+    from openai import APIStatusError, OpenAIError
+
+    check_cancellation()
     if not is_llm_enabled(capability):
         return None
-    for provider in provs.active_providers(capability):
-        search_param = provider.web_search_param.strip()
-        # 1) 带联网搜索参数尝试。
-        if search_param:
+    call_budget = budget or new_editorial_budget()
+    with call_budget.operation():
+        for provider in provs.active_providers(capability):
+            search_param = provider.web_search_param.strip() if search else ""
+            extra = _low_reasoning_options(provider)
+            if search_param:
+                extra[search_param] = True
             try:
-                text = _complete(provider, prompt, max_tokens, {search_param: True})
-                if text:
-                    return text
-            except BudgetAccountingError:
+                _check_text_budget(call_budget, before_request=True, force_identity=True)
+                try:
+                    return _complete(provider, prompt, max_tokens, extra or None, budget=call_budget)
+                except APIStatusError as exc:
+                    if not search_param or not _unsupported_search(exc, search_param):
+                        raise
+                    logger.warning(
+                        "model_search_parameter_rejected operation={} provider={} parameter={}；"
+                        "在共享预算内改用普通请求。",
+                        call_budget.operation_id,
+                        provider.id,
+                        search_param,
+                    )
+                    extra.pop(search_param)
+                    return _complete(provider, prompt, max_tokens, extra or None, budget=call_budget)
+            except (BudgetAccountingError, OperationCancelledError):
                 raise
-            except Exception as exc:  # noqa: BLE001 — 不支持该参数则退化为普通调用
+            except ModelAuthorizationError:
+                logger.warning(
+                    "model_authorization_revoked operation={} provider={}", call_budget.operation_id, provider.id
+                )
+                return None
+            except _StructuredFailure as exc:
+                logger.warning(
+                    "text_model_operation_failed operation={} provider={} error={}",
+                    call_budget.operation_id,
+                    provider.id,
+                    exc.code,
+                )
+                if exc.code in {"attempt_budget", "deadline", "daily_budget", "unauthorized"}:
+                    return None
+            except (EmptyLLMResponseError, ModelCapacityError, OpenAIError, httpx.HTTPError) as exc:
                 logger.opt(exception=exc).warning(
-                    "模型 provider={} model={} 带联网参数({})调用失败,尝试普通调用: {}",
+                    "模型调用失败 operation={} provider={} model={}，尝试下一已配置路由: {}",
+                    call_budget.operation_id,
                     provider.id,
                     provider.model,
-                    search_param,
                     safe_exception_summary(exc),
                 )
-        # 2) 普通调用(无联网)。
-        try:
-            text = _complete(provider, prompt, max_tokens)
-            if text:
-                return text
-        except BudgetAccountingError:
-            raise
-        except Exception as exc:  # noqa: BLE001 — 降级到下一个 provider
-            logger.opt(exception=exc).warning(
-                "模型调用失败 provider={} model={}，尝试下一个: {}",
-                provider.id,
-                provider.model,
-                safe_exception_summary(exc),
-            )
-    logger.error("所有大模型均不可用,网感采集本次跳过。")
+            check_cancellation()
+            if call_budget.interruption() == "cancelled":
+                raise OperationCancelledError("模型请求所属执行已取消")
+    logger.error("所有已配置大模型均未产生有效正文。")
     return None
 
 
 def call_trend_search(
     prompt: str,
     max_tokens: int = DEFAULT_OUTPUT_TOKENS,
+    *,
+    budget: ModelCallBudget | None = None,
 ) -> str | None:
     """按热点路由生成内容；旧专用配置由兼容适配器读取，全部受预算限制。"""
-    return call_web_search(prompt, max_tokens, capability="trends")
+    return call_web_search(prompt, max_tokens, capability="trends", budget=budget)
 
 
 def extract_json_array(raw: str) -> list[object] | None:
@@ -1289,7 +1678,7 @@ _TRANSCRIPT_REFINEMENT_PROMPT = """你是一名中文直播内容编辑。请整
 {text}"""
 
 
-def refine_transcript(raw_text: str) -> TranscriptRefinement | None:
+def refine_transcript(raw_text: str, *, budget: ModelCallBudget | None = None) -> TranscriptRefinement | None:
     """用 LLM 整理并概括一个切片的 ASR 文本。
 
     LLM 不可用、输出不完整或解析失败时返回 ``None``，调用方应保留原始文本。
@@ -1304,6 +1693,7 @@ def refine_transcript(raw_text: str) -> TranscriptRefinement | None:
         _TRANSCRIPT_REFINEMENT_PROMPT.format(text=source),
         max_tokens=settings.transcript_llm_refine_max_tokens,
         capability="transcript",
+        **({"budget": budget} if budget is not None else {}),
     )
     if raw is None:
         return None

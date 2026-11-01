@@ -12,6 +12,7 @@ from threading import Lock
 import psutil
 
 from app.core.sanitize import safe_exception_summary
+from app.core.supervisor import shutdown_deadline
 
 
 class ProcessTree:
@@ -24,6 +25,8 @@ class ProcessTree:
         self._signal_sent = False
         self._group_missing = False
         self._handle: int | None = None
+        self._parent_pipe: int | None = None
+        self.guardian_pid: int | None = None
         if os.name != "nt":
             return
 
@@ -106,6 +109,10 @@ class ProcessTree:
             raise
         self._handle = handle
 
+    def own_parent_pipe(self, descriptor: int) -> None:
+        """保留 POSIX 父死亡通知写端，随进程退出自动关闭。"""
+        self._parent_pipe = descriptor
+
     def resume_suspended(self) -> None:
         """Windows 在 Job 接管完成后恢复新建的挂起进程；失败时回收独占进程树。"""
         if os.name != "nt":
@@ -127,6 +134,9 @@ class ProcessTree:
             if self._terminated:
                 return
             self._terminate()
+            if self._parent_pipe is not None:
+                os.close(self._parent_pipe)
+                self._parent_pipe = None
             # 成功终止后不再发送信号：Darwin 的僵尸进程组可能返回 EPERM，
             # 回收后的 PID/PGID 也可能被其他进程复用。失败则保留所有权供重试。
             # 调用方仍须通过 join/wait/communicate 确认退出和管道收尾。
@@ -147,7 +157,7 @@ class ProcessTree:
 
                 if not self._kernel.TerminateJobObject(self._handle, 1):
                     raise ctypes.WinError(ctypes.get_last_error())
-                deadline = time.monotonic() + 5
+                deadline = min(time.monotonic() + 5, shutdown_deadline(5))
                 while True:
                     accounting = Accounting()
                     if not self._kernel.QueryInformationJobObject(
@@ -177,7 +187,7 @@ class ProcessTree:
             self._wait_for_posix_exit()
 
     def _wait_for_posix_exit(self) -> None:
-        deadline = time.monotonic() + 5
+        deadline = min(time.monotonic() + 5, shutdown_deadline(5))
         while True:
             active = False
             for process in psutil.process_iter(attrs=["pid", "status"]):
@@ -188,6 +198,12 @@ class ProcessTree:
                 if owned and process.info["status"] not in (psutil.STATUS_ZOMBIE, psutil.STATUS_DEAD):
                     active = True
                     break
+                if owned and process.pid != self.pid:
+                    try:
+                        # 只回收已被 PID 1/subreaper 收养的本组子代；直接子进程由 Popen 保留退出码。
+                        os.waitpid(process.pid, os.WNOHANG)
+                    except ChildProcessError:
+                        pass  # 其它 init 持有回收权。
             if not active:
                 return
             if time.monotonic() >= deadline:

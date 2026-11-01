@@ -12,11 +12,12 @@ import pytest
 from sqlmodel import select
 
 from app.clipping.drafts import ClipDraft, input_fingerprint, publication, publish_draft
+from app.core.paths import resolve_storage_path
 from app.db import job_store
 from app.db.entities import FinalClip, HighlightCandidate
 from app.db.session import get_session
 from app.jobs.context import JobContext
-from app.jobs.contracts import JobAttempt, JobData, JobSuperseded, now_iso
+from app.jobs.contracts import JobAttempt, JobCancelled, JobData, JobSuperseded, now_iso
 from app.jobs.manager import JobManager
 
 
@@ -151,13 +152,14 @@ def test_changed_domain_input_rolls_back_job_and_result(temp_db: None) -> None:
     assert job_store.get_job(context.job_id)["status"] == "running"
 
 
-def test_cancelled_web_render_settles_pipeline_cancellation(temp_db: None) -> None:
-    from app.db.entities import HighlightEvent, SegmentTask
+def test_cancelled_web_render_settles_pipeline_cancellation(temp_db: None, pcm_wav: Path) -> None:
+    from app.db.entities import HighlightEvent, RawSegment, SegmentTask
     from app.web.services.candidates import approve_candidate_sync
 
     context, draft = _context(), _draft()
     candidate_id = draft.clip.candidate_id
     with get_session() as db:
+        db.add(RawSegment(id=1, session_id=1, seq=0, file_path=str(pcm_wav)))
         event = HighlightEvent(candidate_id=candidate_id, session_id=1, segment_id=1)
         db.add(event)
         db.flush()
@@ -199,6 +201,37 @@ def test_failed_publication_only_cleans_unreferenced_owned_files(
             raise OSError("发布失败")
     assert output.exists() == referenced
     assert original.read_bytes() == b"previous artifact"
+
+
+@pytest.mark.parametrize("interruption", ["cancel", "shutdown", "job_cancel", "job_superseded"])
+def test_draft_cleanup_failure_preserves_cancellation_and_original_error(
+    temp_db: None, tmp_path: Path, monkeypatch: pytest.MonkeyPatch, interruption: str
+) -> None:
+    from app.core.cancellation import OperationCancelledError, OperationShutdownError
+
+    output = tmp_path / "pending.mp4"
+    output.write_bytes(b"unpublished")
+    original = Path.unlink
+    error = {
+        "cancel": OperationCancelledError("user cancelled"),
+        "shutdown": OperationShutdownError("service stopping"),
+        "job_cancel": JobCancelled("job cancelled"),
+        "job_superseded": JobSuperseded("job replaced"),
+    }[interruption]
+
+    def locked_file(path: Path, missing_ok: bool = False) -> None:
+        if path == output:
+            raise PermissionError("fixture locked draft")
+        original(path, missing_ok=missing_ok)
+
+    monkeypatch.setattr(Path, "unlink", locked_file)
+    with pytest.raises(type(error)) as caught:
+        with publication((output,)):
+            raise error
+    assert caught.value is error
+    assert isinstance(caught.value.__cause__, PermissionError)
+    assert "fixture locked draft" in str(caught.value.__cause__)
+    assert output.read_bytes() == b"unpublished"
 
 
 @pytest.mark.parametrize("repeat", range(8))
@@ -383,13 +416,13 @@ async def test_web_render_publishes_real_media_copy_and_task_together(
             clip = db.exec(select(FinalClip)).one()
             assert state["result"]["clip_id"] == clip.id
             assert clip.title and clip.tags_json and clip.status == "reviewing"
-            assert Path(clip.file_path).stat().st_size > 0
+            assert resolve_storage_path(clip.file_path).stat().st_size > 0
             assert clip.duration_s == pytest.approx(3, abs=0.2)
             if operation == "candidate_render":
                 assert db.get(SegmentTask, pipeline_id).stage == "rendered"
                 variants = db.exec(select(ClipVariant)).all()
                 assert len(variants) >= 4
-                assert all(Path(variant.file_path).is_file() for variant in variants)
+                assert all(resolve_storage_path(variant.file_path).is_file() for variant in variants)
     finally:
         await manager.stop()
 
@@ -482,7 +515,7 @@ def test_collection_real_media_publication_checks_cancellation_and_inputs(
 
     if publication_state == "current":
         result = render()
-        assert result is not None and Path(result.file_path).stat().st_size > 0
+        assert result is not None and resolve_storage_path(result.file_path).stat().st_size > 0
         assert result.duration_s == pytest.approx(4, abs=0.3)
     else:
         with pytest.raises(JobSuperseded if publication_state == "cancelled" else ValueError):

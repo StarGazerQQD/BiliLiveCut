@@ -524,7 +524,7 @@ export function AnalyticsPage() {
     <Page
       eyebrow="INSIGHTS"
       title="数据分析"
-      description="从实际录制与制作记录，了解内容产出和候选质量。"
+      description="按包含今天的 UTC 自然日统计所选范围内的录制、产出和候选质量。"
       actions={
         <>
           <select

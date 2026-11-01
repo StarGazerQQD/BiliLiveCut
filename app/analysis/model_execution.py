@@ -7,12 +7,16 @@ from collections.abc import Callable, Iterator
 from contextlib import contextmanager
 from dataclasses import dataclass, field
 from threading import Lock
-from typing import Generic, TypeVar
+from typing import TYPE_CHECKING, Generic, TypeVar
 from uuid import uuid4
 
-from app.analysis.editorial_contracts import FailureCode, ModelAttempt, ModelProtocol
+from app.analysis.editorial_contracts import FailureCode, ModelAttempt, ModelProtocol, ModelPurpose, TokenUsage
+from app.core.cancellation import CancellationProbe, cancellation_requested
 
 T = TypeVar("T")
+
+if TYPE_CHECKING:
+    from app.analysis.model_journal import ModelRequestJournal
 
 
 @dataclass(frozen=True, slots=True)
@@ -21,6 +25,7 @@ class StructuredCallResult(Generic[T]):
 
     value: T | None = field(repr=False)
     error: FailureCode | None
+    retry_after_s: float | None = None
 
     def __post_init__(self) -> None:
         """拒绝同时包含成功值与失败分类的矛盾状态。"""
@@ -37,6 +42,7 @@ class ModelCallBudget:
         max_attempts: int,
         max_elapsed_s: float,
         cancelled: Callable[[], bool] | None = None,
+        journal: ModelRequestJournal | None = None,
     ) -> None:
         if type(max_attempts) is not int or not 1 <= max_attempts <= 32:
             raise ValueError("模型总请求次数必须在 1~32 之间")
@@ -46,13 +52,15 @@ class ModelCallBudget:
         self._operation_id = uuid4().hex
         self._started = time.monotonic()
         self._deadline = self._started + max_elapsed_s
-        self._cancelled = cancelled
+        self._cancelled = CancellationProbe(cancelled) if cancelled is not None else None
         self._attempts: list[ModelAttempt] = []
         self._repair_used = False
         self._context_used = False
         self._empty_used = False
         self._operation = Lock()
         self._protocols: dict[tuple[str, str], ModelProtocol] = {}
+        self._transport_retries: set[tuple[str, str, str]] = set()
+        self._journal = journal
 
     @property
     def operation_id(self) -> str:
@@ -74,9 +82,11 @@ class ModelCallBudget:
         """返回不可增删的实际请求记录视图。"""
         return tuple(self._attempts)
 
-    def interruption(self, *, before_request: bool = True) -> FailureCode | None:
+    def interruption(self, *, before_request: bool = True, force_identity: bool = True) -> FailureCode | None:
         """发送前与等待期间分别检查取消、截止时间及实际请求数量。"""
-        if self._cancelled is not None and self._cancelled():
+        if cancellation_requested(force=force_identity) or (
+            self._cancelled is not None and self._cancelled.poll(force=force_identity)
+        ):
             return "cancelled"
         if self.remaining_s <= 0:
             return "deadline"
@@ -99,6 +109,38 @@ class ModelCallBudget:
         if len(self._attempts) >= self._max_attempts or attempt.number != len(self._attempts) + 1:
             raise ValueError("模型请求记录超出次数上限或序号不连续")
         self._attempts.append(ModelAttempt.model_validate(attempt))
+        if self._journal is not None:
+            self._journal.finish(self.operation_id, attempt)
+
+    def start_request(
+        self,
+        *,
+        provider_id: str,
+        connection_id: str,
+        model: str,
+        purpose: ModelPurpose,
+        protocol: ModelProtocol,
+        output_tokens_limit: int,
+        request: object,
+    ) -> None:
+        """实际请求边界登记身份；纯计算预算不访问数据库。"""
+        if self._journal is not None:
+            self._journal.start(
+                operation_id=self.operation_id,
+                number=len(self._attempts) + 1,
+                provider_id=provider_id,
+                connection_id=connection_id,
+                model=model,
+                purpose=purpose,
+                protocol=protocol,
+                output_tokens_limit=output_tokens_limit,
+                request=request,
+            )
+
+    def request_receipt(self, usage: TokenUsage, request_id: str | None) -> None:
+        """保留已经收到的实际用量；后续业务失败不会抹除该回执。"""
+        if self._journal is not None:
+            self._journal.receipt(self.operation_id, len(self._attempts) + 1, usage, request_id)
 
     def claim_repair(self) -> bool:
         """整个操作最多允许一次格式或引用修复，不因路由切换重新授予。"""
@@ -119,6 +161,14 @@ class ModelCallBudget:
         if self._empty_used or self.interruption() is not None:
             return False
         self._empty_used = True
+        return True
+
+    def claim_transport_retry(self, connection_id: str, endpoint: str, model: str) -> bool:
+        """同一连接、端点和模型在整个操作中最多补发一次暂态失败请求。"""
+        identity = (connection_id, endpoint, model)
+        if identity in self._transport_retries or self.interruption() is not None:
+            return False
+        self._transport_retries.add(identity)
         return True
 
     def protocol(self, provider_id: str, model: str, *, initial: ModelProtocol = "json_schema") -> ModelProtocol:

@@ -45,7 +45,7 @@ class HighlightAudio:
 
 @dataclass(frozen=True, slots=True)
 class HighlightScoringRequest:
-    """宿主交给高光评分插件的完整、无 ORM 输入。"""
+    """宿主交给高光评分插件的完整、无 ORM 输入，file_path 已解析为绝对物理路径。"""
 
     segment_id: int
     session_id: int

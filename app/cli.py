@@ -107,7 +107,10 @@ def main() -> None:
         except (OSError, TypeError, ValueError):
             # 测试捕获器或嵌入式宿主可能禁止修改流配置；保留宿主设置。
             continue
-    app()
+    from app.core.supervisor import standalone_process
+
+    with standalone_process():
+        app()
 
 
 if __name__ == "__main__":

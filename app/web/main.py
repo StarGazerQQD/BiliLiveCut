@@ -26,6 +26,7 @@ from app import __version__, __version_label__
 from app.core.execution import run_sync
 from app.core.logging import setup_logging
 from app.core.supervisor import Service, Supervisor
+from app.db.service_ownership import ServiceOwnership
 from app.db.session import init_db
 from app.recording.schedule_runner import ScheduleRunner
 from app.web.routers.api import router as api_router
@@ -44,9 +45,7 @@ def _setup_proxy_env() -> None:
     不篡改用户代理配置 (HTTP_PROXY/HTTPS_PROXY/ALL_PROXY),
     但确保 localhost 始终绕过代理以支持本地 Dashboard 访问。
 
-    NO_PROXY 合并规则:
-    - 如果用户已设置 NO_PROXY, 追加 localhost 项
-    - 如果用户未设置, 设置 NO_PROXY=127.0.0.1,localhost,::1
+    合并大小写 NO_PROXY 中的全部条目，追加本地地址并同步写回两种拼写。
 
     SOCKS 诊断:
     - 如果检测到 ALL_PROXY 使用 socks:// scheme,
@@ -55,23 +54,21 @@ def _setup_proxy_env() -> None:
     import os as _os
 
     no_proxy_defaults = ["127.0.0.1", "localhost", "::1"]
-    existing = _os.environ.get("NO_PROXY", "") or _os.environ.get("no_proxy", "")
+    existing_items = [
+        item.strip()
+        for name in ("NO_PROXY", "no_proxy")
+        for item in _os.environ.get(name, "").split(",")
+        if item.strip()
+    ]
+    merged = ",".join(dict.fromkeys([*existing_items, *no_proxy_defaults]))
+    _os.environ["NO_PROXY"] = _os.environ["no_proxy"] = merged
 
-    if existing:
-        existing_items = [x.strip() for x in existing.split(",") if x.strip()]
-        for item in no_proxy_defaults:
-            if item not in existing_items:
-                existing_items.append(item)
-        _os.environ["NO_PROXY"] = ",".join(existing_items)
-    else:
-        _os.environ["NO_PROXY"] = ",".join(no_proxy_defaults)
-
-    # SOCKS diagnostic
+    # 本地访问绕过代理；SOCKS 配置仍影响外部模型、平台和下载请求。
     all_proxy = _os.environ.get("ALL_PROXY", "") or _os.environ.get("all_proxy", "")
     if all_proxy and all_proxy.lower().startswith("socks"):
         logger.warning(
             "检测到 SOCKS 代理配置。"
-            "请确认 httpx[socks] 已安装, 否则本地 Dashboard 请求可能失败。"
+            "请确认 httpx[socks] 已安装，否则外部模型、平台或下载请求可能失败。"
             "安装: pip install httpx[socks]",
         )
 
@@ -90,6 +87,19 @@ def _non_loopback_interface_addresses() -> list[str]:
 
 @asynccontextmanager
 async def lifespan(_app: FastAPI) -> AsyncIterator[None]:
+    """先取得实例所有权，再初始化数据库并恢复后台工作。"""
+    from app.db.session import engine
+
+    ownership = await run_sync(partial(ServiceOwnership, runtime_app_root(), engine), lambda owner: owner.release())
+    try:
+        async with _application_lifespan(_app, ownership):
+            yield
+    finally:
+        ownership.release()
+
+
+@asynccontextmanager
+async def _application_lifespan(_app: FastAPI, ownership: ServiceOwnership) -> AsyncIterator[None]:
     """应用生命周期:启动初始化、启动 TaskWorker、自动恢复、预约调度、关闭时优雅停止。"""
     setup_logging()
     await run_sync(init_db)
@@ -128,7 +138,8 @@ async def lifespan(_app: FastAPI) -> AsyncIterator[None]:
     _setup_proxy_env()
 
     # V0.1.6:启动持久化任务队列 Worker。
-    from app.notify.delivery import start_email_delivery, stop_email_delivery
+    from app.analysis.llm import close_clients
+    from app.notify.delivery import request_stop_delivery, start_email_delivery, stop_email_delivery
     from app.pipeline.lifecycle import shutdown_event
     from app.pipeline.task_worker import get_worker
     from app.plugins.manager import plugin_manager
@@ -159,18 +170,22 @@ async def lifespan(_app: FastAPI) -> AsyncIterator[None]:
     supervisor = Supervisor(
         [
             Service("qr_login", stop=qr_logins.stop),
-            Service("email_delivery", start_email_delivery, stop_email_delivery),
+            Service("model_connections", stop=partial(run_sync, close_clients)),
+            Service("email_delivery", start_email_delivery, stop_email_delivery, request_stop_delivery),
             Service("metrics", start_metrics, partial(run_sync, stop_metrics_collector)),
             Service("trends", start_trends, trend_scheduler.stop),
             Service("plugins", plugin_manager.start, plugin_manager.stop),
-            Service("worker", task_worker.start, task_worker.stop),
-            Service("web_jobs", web_job_manager.start, web_job_manager.stop),
+            Service("recording_settlement", rooms_service.settle_interrupted_recordings),
+            Service("worker", task_worker.start, task_worker.stop, task_worker.request_stop),
+            Service("web_jobs", web_job_manager.start, web_job_manager.stop, web_job_manager.request_stop),
             Service("recorders", recover_recordings, rooms_service.recorder_manager.stop_all),
             Service("schedules", schedules.start, schedules.stop),
             Service("live_monitor", live_monitor.start, live_monitor.stop),
         ],
         request_stop,
+        shutdown_timeout_s=lambda: _cfg_startup.worker_shutdown_timeout_seconds,
     )
+    ownership.supervisor = supervisor
     async with supervisor.running():
         logger.info("Web 后台已启动。")
         yield
@@ -259,7 +274,7 @@ _DOCKER_AUTH = (
 
 
 def _load_reviewer_passwords(raw: str) -> dict[str, str]:
-    """解析审核员账号配置，拒绝空账号、空密码和非字符串值。"""
+    """解析审核员配置，拒绝无效账号及已知模板占位密码。"""
     if not raw.strip():
         return {}
     try:
@@ -276,8 +291,11 @@ def _load_reviewer_passwords(raw: str) -> dict[str, str]:
         if isinstance(username, str)
         and isinstance(password, str)
         and username.strip()
-        and password
-        and username != "admin"
+        and username == username.strip()
+        and not any(ord(character) < 32 or ord(character) == 127 for character in username)
+        and password.strip()
+        and password.strip().casefold() != "change-me"
+        and username.casefold() != "admin"
     }
     if len(accounts) != len(value):
         logger.error("REVIEWER_ACCOUNTS_JSON 含无效账号，相关条目已忽略")
@@ -286,7 +304,7 @@ def _load_reviewer_passwords(raw: str) -> dict[str, str]:
 
 _REVIEWER_PASSWORDS = _load_reviewer_passwords(_cfg.reviewer_accounts_json)
 
-_AUTH_PROTECTED_PREFIXES = ("/api/", "/review/", "/collection/")
+_AUTH_PROTECTED_PREFIXES = ("/api/", "/review/", "/collection/", "/docs", "/redoc", "/openapi.json")
 _AUTH_WHITE_LIST = tuple()  # 未来可扩展公开端点
 
 # ── 登录失败限流 ────────────────────────────────────────────────────────────
@@ -484,9 +502,9 @@ class _AuthMiddleware(_BaseMiddleware):
 
         client_ip = request.client.host if request.client else "unknown"  # noqa: SLF001
 
-        # V0.1.13: 无密码时仅 loopback/测试环境 允许
+        # 无密码时只允许可确认的本机来源。
         if not _ADMIN_PASSWORD:
-            if not self._is_loopback(client_ip) and client_ip != "unknown":
+            if not self._is_loopback(client_ip):
                 logger.warning("access_denied: non-loopback request without ADMIN_PASSWORD from {}", client_ip)
                 return _JSONResponse(
                     {"detail": "安全策略: 未设置 ADMIN_PASSWORD 时仅允许本机访问管理接口。"},
@@ -597,15 +615,8 @@ class _RateLimitMiddleware(_BaseMiddleware):
         if request.method in ("GET", "HEAD", "OPTIONS"):
             return await call_next(request)
 
-        # V0.1.14.11: 检查可信代理头 (仅 loopback 连接视为可信)
+        # 代理头由 Uvicorn 按可信 peer 处理，限流不再次信任原始头。
         client_ip = request.client.host if request.client else "unknown"
-        if client_ip in ("127.0.0.1", "::1", "localhost"):
-            forwarded = request.headers.get("X-Forwarded-For", "")
-            if forwarded:
-                client_ip = forwarded.split(",")[0].strip()
-            real_ip = request.headers.get("X-Real-IP", "")
-            if real_ip:
-                client_ip = real_ip.strip()
 
         now = _time.time()
         entry = _rate_buckets.get(client_ip)
@@ -629,6 +640,10 @@ class _RateLimitMiddleware(_BaseMiddleware):
 
 
 app.add_middleware(_RateLimitMiddleware)
+
+from app.web.request_limits import RequestBodyLimitMiddleware  # noqa: E402
+
+app.add_middleware(RequestBodyLimitMiddleware)
 
 app.include_router(api_router)
 app.include_router(review_router)

@@ -14,19 +14,23 @@ import time
 import uuid
 from collections import deque
 from collections.abc import Callable
+from contextlib import nullcontext
 from dataclasses import dataclass, field
 from datetime import UTC, datetime
 from pathlib import Path
 
 from loguru import logger
 
+from app.analysis.transcription.process_tree import ProcessTree
 from app.core.async_cleanup import complete_cleanup
 from app.core.config import settings
 from app.core.ffmpeg_errors import FfmpegErrorType, classify_ffmpeg_error
 from app.core.process_control import ProcessCancelledError, run_cancellable
+from app.core.process_spawn import spawn_owned_async, terminate_owned_async, wait_process_exit
 from app.core.sanitize import sanitize_diagnostic
 from app.plugins.live_source import StreamSpec
 from app.recording.stream_failover import route_key
+from app.recording.writer_ownership import SessionWriter
 
 CommandBuilder = Callable[[StreamSpec, Path, str, Path], list[str]]
 FailureCallback = Callable[[StreamSpec], None]
@@ -41,6 +45,7 @@ class StreamAttempt:
     out_dir: Path
     prefix: str
     process: asyncio.subprocess.Process | None = field(default=None, repr=False)
+    tree: ProcessTree | None = field(default=None, repr=False)
     stderr_task: asyncio.Task[None] | None = field(default=None, repr=False)
     progress_task: asyncio.Task[None] | None = field(default=None, repr=False)
     ready: asyncio.Event = field(default_factory=asyncio.Event, repr=False)
@@ -50,6 +55,7 @@ class StreamAttempt:
     exit_code: int = 1
     global_error: bool = False
     progress_unsupported: bool = False
+    last_progress_at: float | None = None
     resource_errno: int | None = None
     _output_error: bool = field(default=False, repr=False)
     _last_video_probe_at: float = field(default=float("-inf"), repr=False)
@@ -115,6 +121,8 @@ class StreamAttempt:
         times: dict[str, int] = {}
         baseline: tuple[int, int] | None = None
         legacy_baseline: int | None = None
+        progress_high_water: int | None = None
+        frame_high_water: int | None = None
         while raw := await self.process.stdout.readline():
             key, _, value = raw.decode("ascii", errors="replace").strip().partition("=")
             if key in {"frame", "out_time_us", "out_time_ms"}:
@@ -139,6 +147,16 @@ class StreamAttempt:
                 media_us = next(
                     (times[name] for name in ("out_time_us", "out_time_ms", "out_time") if name in times), None
                 )
+                if media_us is not None and media_us >= 0 and (frame is None or frame > 0):
+                    if (
+                        progress_high_water is not None
+                        and media_us > progress_high_water
+                        and (frame is None or frame_high_water is not None and frame > frame_high_water)
+                    ):
+                        self.last_progress_at = time.monotonic()
+                    progress_high_water = max(progress_high_water or 0, media_us)
+                    if frame is not None:
+                        frame_high_water = max(frame_high_water or 0, frame)
                 if frame is not None and frame > 0 and media_us is not None:
                     if baseline is None or frame < baseline[0] or media_us < baseline[1]:
                         baseline = (frame, media_us)
@@ -242,12 +260,7 @@ class StreamAttempt:
                     self.stderr_task = asyncio.create_task(self.drain_stderr())
                 if self.progress_task is None:
                     self.progress_task = asyncio.create_task(self.drain_progress())
-                if proc.returncode is None:
-                    try:
-                        proc.kill()
-                    except ProcessLookupError:
-                        pass
-                await asyncio.wait_for(proc.wait(), 5)
+                await terminate_owned_async(proc, self.tree)
         finally:
             readers = [task for task in (self.stderr_task, self.progress_task) if task is not None]
             if readers:
@@ -321,6 +334,7 @@ class StreamRace:
         timeout_s: float,
         budget_s: float,
         launch_delay_s: float = 0.25,
+        writer: SessionWriter | None = None,
     ) -> None:
         # 精确重复才去重。同主机不同路径或凭据可能对应不同的可用端点。
         seen = set()
@@ -357,6 +371,7 @@ class StreamRace:
         self.timeout_s = timeout_s
         self.budget_s = budget_s
         self.launch_delay_s = max(0.0, launch_delay_s)
+        self.writer = writer
         self.winner: StreamAttempt | None = None
         self.failures: list[StreamAttempt] = []
 
@@ -368,29 +383,29 @@ class StreamRace:
         cmd = self.build_command(attempt.stream, attempt.out_dir, attempt.prefix, attempt.segment_list)
         # 保留默认进度周期，避免可选的 -stats_period 提高 FFmpeg 版本要求。
         cmd[1:1] = ["-progress", "pipe:1"]
-        spawn = asyncio.create_task(
-            asyncio.create_subprocess_exec(
-                *cmd,
-                stdin=asyncio.subprocess.PIPE,
-                stdout=asyncio.subprocess.PIPE,
-                stderr=asyncio.subprocess.PIPE,
-                **(
-                    {"creationflags": 0x00000200}  # CREATE_NEW_PROCESS_GROUP
-                    if os.name == "nt"
-                    else {"start_new_session": True}
-                ),
-            )
-        )
+
+        async def start_process() -> tuple[asyncio.subprocess.Process, ProcessTree]:
+            with self.writer.spawn_options() if self.writer is not None else nullcontext({}) as ownership:
+                return await spawn_owned_async(
+                    cmd,
+                    stdin=asyncio.subprocess.PIPE,
+                    stdout=asyncio.subprocess.PIPE,
+                    stderr=asyncio.subprocess.PIPE,
+                    **ownership,
+                    **({"creationflags": 0x00000200} if os.name == "nt" else {}),
+                )
+
+        spawn = asyncio.create_task(start_process())
         waits: list[asyncio.Task[object]] = []
         try:
             # 取消也必须拿到已启动的进程句柄，否则取消窗口可能留下孤儿 FFmpeg。
             try:
-                attempt.process = await asyncio.shield(spawn)
+                attempt.process, attempt.tree = await asyncio.shield(spawn)
             except asyncio.CancelledError:
 
                 async def finish_spawn() -> None:
                     try:
-                        attempt.process = await spawn
+                        attempt.process, attempt.tree = await spawn
                     except OSError:
                         pass
 
@@ -399,7 +414,7 @@ class StreamRace:
             attempt.stderr_task = asyncio.create_task(attempt.drain_stderr())
             attempt.progress_task = asyncio.create_task(attempt.drain_progress())
             ready = asyncio.create_task(attempt.ready.wait())
-            exited = asyncio.create_task(attempt.process.wait())
+            exited = asyncio.create_task(wait_process_exit(attempt.process))
             waits = [ready, exited]
             done, _ = await asyncio.wait(
                 [ready, exited, attempt.stderr_task, attempt.progress_task],

@@ -99,8 +99,8 @@ def extract_transcript_window(
 ) -> TranscriptWindow:
     """只返回与指定片内时间窗重叠的转写内容。
 
-    优先使用 ASR 词级时间戳。当前引擎没有返回可用词级时间戳时，按片段时长
-    对正文做比例裁剪，避免把候选之后的整段内容交给文案模型。
+    优先使用 ASR 词级时间戳。缺少词级时间时，仅在目标覆盖完整分段时提供
+    正文；局部窗口返回空正文，避免把字符位置当作真实媒体时间。
 
     :param text: 原始片段的完整转写正文。
     :param words_json: 词级时间戳 JSON。
@@ -124,13 +124,14 @@ def extract_transcript_window(
         index = word_cache.get(words_json)
         has_words = bool(index.words)
         selected = index.select(start, end)
-    if semantic_text is not None and (not has_words or (start <= 0 and end >= duration)):
+    complete = duration > 0 and start <= 0 and end >= duration
+    if semantic_text is not None and complete:
         # 整理正文没有词对齐信息：有词时间戳的局部窗口保留精确原文，
-        # 整段或原本无词时间戳时使用整理正文。原始词仍用于语速与字幕。
+        # 只有完整分段使用整理正文。原始词仍用于语速与字幕。
         return TranscriptWindow(
-            text=_proportional_text_slice(semantic_text, start_s=start, end_s=end, duration_s=duration),
+            text=semantic_text.strip(),
             words=selected,
-            precise=has_words and start <= 0 and end >= duration,
+            precise=has_words,
         )
     if has_words:
         return TranscriptWindow(
@@ -140,7 +141,7 @@ def extract_transcript_window(
         )
 
     return TranscriptWindow(
-        text=_proportional_text_slice(text, start_s=start, end_s=end, duration_s=duration),
+        text=text.strip() if complete else "",
         words=[],
         precise=False,
     )
@@ -156,7 +157,7 @@ def extract_session_transcript_window(
     """跨连续录制分段提取一个绝对时间窗内的转写。
 
     词级时间戳会被换算为相对整个目标窗口的秒数，便于语速计算和后续
-    时间轴展示。缺少词级时间戳的结果按各分段时长比例裁剪。
+    时间轴展示。缺少词级时间戳时，只纳入被完整覆盖的分段正文。
     """
     normalized_start = _coerce_datetime_like(start_ts, start_ts)
     normalized_end = _coerce_datetime_like(end_ts, start_ts)
@@ -272,18 +273,6 @@ def _join_word_tokens(words: list[dict[str, object]]) -> str:
 def _needs_ascii_space(left: str, right: str) -> bool:
     """仅在两个 ASCII 单词字符之间补空格，避免拆散中文。"""
     return left.isascii() and right.isascii() and left.isalnum() and right.isalnum()
-
-
-def _proportional_text_slice(text: str, *, start_s: float, end_s: float, duration_s: float) -> str:
-    """在缺少词级时间戳时按时长比例近似裁剪正文。"""
-    source = text.strip()
-    if not source or duration_s <= 0 or end_s <= start_s:
-        return source if start_s <= 0 and end_s > start_s else ""
-    if start_s <= 0 and end_s >= duration_s:
-        return source
-    start_index = min(len(source), max(0, math.floor(len(source) * start_s / duration_s)))
-    end_index = min(len(source), max(start_index, math.ceil(len(source) * end_s / duration_s)))
-    return source[start_index:end_index].strip()
 
 
 def _finite_float(value: float, fallback: float) -> float:
