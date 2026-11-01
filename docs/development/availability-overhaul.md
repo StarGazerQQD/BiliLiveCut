@@ -97,3 +97,21 @@ R1 仅处理 F03、F04。弹幕以场次内持久补做记录保留首次采样�
 目标回归覆盖 SQLite 真实写锁、连接池超时、后续消息继续接收、停止积压、相同内容消息、真实进程异常退出、未消费及已提交恢复、文件半写、失效 writer、终态事务与尾片登记失败、CLI 新旧场次顺序及重复补做。文件写失败后禁止继续追加，并冻结最后可信覆盖，避免把本地故障作为网络重连或将缺失窗口标成零弹幕。
 
 最近一组目标回归为 109 passed。完整回归、质量、来源同步、正式构建和远端 CI 尚未完成，R1 保持 `IN_PROGRESS`。
+
+### R1 本地完整验收
+
+最终业务源码为 `92d38f42d89104ed45bb83e007c7ac01e60c1791`。首次完整回归发现开播监听测试仍引用已移除的数据库入口；改为约束当前 journal 的数据库和文件追加入口，保留监听不得持久化弹幕的断言。旧录制控制测试也改用真实场次和持久终态，保留有限重试、错误原因和状态转换要求。
+
+最终使用上述完整回归命令，结果为 **4454 passed、覆盖率 86.22%、916.09 秒**，含真实 sdist/wheel。既有 setuptools warning、pytest-asyncio 启动弃用提示及 Cargo metadata 的格式版本提示如实保留。全部 12 项 pre-commit、OpenAPI、Python/Rust 离线锁一致性检查通过；文档 22 项、57 页构建和链接通过；完整 release audit 为 **63 PASS / 0 WARN / 0 FAIL**。
+
+正式执行 `build_engine_pack.py --fixture`、默认可重复 `build_payload.py`、`build_exe.py --without-engine-pack`。版本和第三方依赖未变，Payload、测试 Engine Pack 与 Lite EXE 均指向同一源码。逐文件摘要、ZIP 结构、内嵌 Payload/LICENSE、版本与来源清单、1951 个冻结模块的路径检查通过。
+
+| 制品 | 字节数 | SHA-256 | CRC32 |
+| --- | ---: | --- | --- |
+| source_payload.zip | 1577040 | `43de426144901d977d21330681a402aa6a32bbc88cc9889fa6024c9b51ad608e` | `63912C94` |
+| BiliLiveCut-EnginePack-0.1.20.3-alpha.zip（fixture） | 16260 | `7d53f7aabc8a7c2c037c33add8fc8afa4877453960d00e57496ecea4fa8dbde0` | `83698EB0` |
+| BiliLiveCut-Portable-Lite-v0.1.20.3-alpha-x64.exe | 67191104 | `ce1802e7b9fe675aca13a15dd4cf96f4e584ef3b69287a2006936e33d40fc330` | `80E49416` |
+
+新隔离目录仅复用已有 Python、wheel 和工具缓存，使用该冻结 EXE 的 `--offline --torch-runtime cpu` 完成全新安装，随后 `pip check`、运行时校验、四引擎 fixture 准备、HTTP/设置接口通过。分别终止后端、前端和控制台后均恢复新代次；退出后所属进程全部清理，无关哨兵进程保留。端口冲突只启动一代 API，明确退出且释放所属进程和端口。
+
+以上为 R1 的 CPU/fixture 工程验收，未替代 R5 的真实 GPU、24 小时流程及内容质量验收。远端适用 CI 尚待本阶段提交推送后核查，R1 保持 `IN_PROGRESS`，R2–R5 保持 `PENDING`。
