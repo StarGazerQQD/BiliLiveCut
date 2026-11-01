@@ -401,3 +401,29 @@ S7 完成记录经过文档 22 项检查、适用 pre-commit、57 页构建和�
 本阶段统一 `app/__init__.py` 版本真源及 Python、Rust、Portable、CLI、接口、当前使用说明和发布产物命名，新增 `V0.1.20.3 Alpha` 更新记录，保留旧版本和故障历史。`uv.lock` 与 `Cargo.lock` 通过正式工具更新项目自身版本，核查第三方锁版本不变。补齐使用指南中断流恢复和整场总结的当前行为说明。
 
 验收顺序为版本与兼容目标测试、完整应用及 Portable 回归、Ruff 与全部配置质量检查、前端和文档检查及构建、正式来源与默认可重复 Payload、Lite EXE、隔离冻结启动与恢复、清单及实际 diff。涉及版本的源码先固定为新增提交，来源信息与正式元数据随后同步；最后组合重新验收并等待全部适用远端 CI。本阶段不合并、创建标签或发布，不改动 E 盘 Portable，不调用外部模型。
+
+### S8 本地最终验收
+
+版本源码固定为 `df620581424ce925ef69ce9be3b7d5f5c39cac6f`，应用及 Portable 为 `0.1.20.3-alpha`，Rust 包为 `0.1.20-alpha.3`。版本真源、Python/Rust 元数据、CLI、OpenAPI、构建命名、当前文档与兼容测试已同步；CHANGELOG 新增本版本条目并保留真实历史。`uv lock --offline`、`cargo update --workspace --offline --manifest-path tools/native/rust/Cargo.toml` 仅更新项目自身版本，第三方锁版本、来源和摘要不变。专用环境的 `uv sync --locked --inexact --offline` 完成项目 editable 和原生扩展更新。
+
+使用说明同步了断流预算、同场冷却、标题退避、分层总结、ASR 持久断点、Schema 兼容及录播导入。自动批准、渲染前来源核验与投稿即时授权分别说明；连通测试如实描述最多两次请求、每次最多 4096 token 和共享预算，样本通过不证明服务最大容量。
+
+实际最终验收：
+
+1. 版本、CLI、Schema 兼容和构建契约初始目标 **128 passed**；同步五处来源信息及正式 fixture 元数据后，完整 Portable 与版本目标 **548 passed**。
+2. `python -m pytest tests packaging/portable/tests --timeout=600 --fail-on-skip --cov=app --cov-report=term --cov-report=xml --cov-fail-under=50 --durations=15 -o addopts=--tb=short -q`：**4427 passed、覆盖率 86.14%**，包含真实 sdist/wheel。保留一条 setuptools 安装接口弃用 warning；启动时的 pytest-asyncio 弃用提示及回环 HTTP 的单行诊断未被屏蔽，没有测试失败或线程警告。
+3. `python -m pre_commit run --all-files`：全部 **12 项通过**，包含 Ruff、格式、版本、审计、架构及 React 类型、lint、85 项单元测试。`python scripts/export_openapi.py --check`、`uv lock --check --offline` 和 Cargo `metadata --no-deps --locked --offline` 均通过。Python 未配置独立类型检查器，沿用项目既有质量工具。
+4. `npm --prefix frontend run format:check`、`npm --prefix frontend run build` 均通过；`npm --prefix docs run check` 为 **22 passed**，文档构建 **57 页及全部生成链接通过**。`python scripts/release_audit.py`：**63 PASS / 0 WARN / 0 FAIL**。
+5. `python packaging/portable/build_engine_pack.py --fixture` 自校验通过；默认 `python packaging/portable/build_payload.py` 保留源码冻结和双次可重复构建，330 个文件的 Payload 摘要一致；`python packaging/portable/build_exe.py --without-engine-pack` 生成新 Lite EXE。内嵌 Payload、LICENSE、版本、来源、清单及 **1951 个冻结模块路径**核验通过。PyInstaller 的四项可选隐藏导入 warning 与 S7 一致。
+
+最终制品清单如下，来源均为上述固定提交；Engine Pack 明确为测试 fixture：
+
+| 文件 | 大小（字节） | SHA-256 | CRC32 |
+| --- | ---: | --- | --- |
+| `source_payload.zip` | 1567014 | `3f140cf6c37ff4a08d5d89c3d4ca85a81f528756c335e61a3d413c640372a749` | `387EE4A6` |
+| `BiliLiveCut-Portable-Lite-v0.1.20.3-alpha-x64.exe` | 67181995 | `c6f82a54636f4186fc0f3d059796ab1f263e19a7ea844832a975655610bfa590` | `1BA07EFE` |
+| `BiliLiveCut-EnginePack-0.1.20.3-alpha.zip`（fixture） | 16260 | `55f981a1b58db28a1232b746c3b2f57396322cfde2db0c92a93f80cf1f8a9acd` | `A9A5B5DE` |
+
+隔离 Portable 副本保留旧 EXE 后完成离线版本更新，`pip check` 与 Runtime 校验通过，四引擎 fixture 准备及 Web/settings HTTP 检查通过。真实终止后端、前端、console 后均恢复唯一完整新代，旧进程与旧端口全部回收。冻结宿主异常退出时清理所属树并保留无关哨兵；启动预检后真实抢占前端端口时，仅启动一代 API、退出码为 `1`，所属树和 API 端口回收。该验证复用任务副本的离线环境，采用 CPU runtime，不代表全新 venv、GPU 或真实模型转写验收。
+
+本地日志、制品摘要和实际 diff 经独立只读复核，未发现阻断问题。最后仅补验收记录，继续执行文档适用检查、构建、来源基线和 diff 检查；未变化的应用完整回归与二进制结果保持有效。S8 保持 `IN_PROGRESS`，等待交付提交的全部适用远端 CI，尚未合并或发布。
