@@ -168,6 +168,7 @@ def regenerate_session_timeline_summary(session_id: int) -> dict[str, int | bool
             session_id,
             reason="manual_regenerate",
             force=True,
+            renew_budget=True,
         )
         return {"session_id": session_id, "requested": requested}
     except ValueError as exc:

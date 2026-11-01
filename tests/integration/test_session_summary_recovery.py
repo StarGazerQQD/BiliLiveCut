@@ -77,10 +77,25 @@ def _reply(payload: dict[str, object], *, large_leaf: bool = False) -> str:
 
 
 def _run(session_id: int) -> bool:
-    assert session_summary.request_session_timeline_summary(session_id, reason="manual", force=True)
-    claim = session_summary.claim_pending_session_summary()
-    assert claim is not None
-    return session_summary.execute_session_summary_claim(claim)
+    assert session_summary.request_session_timeline_summary(session_id, reason="manual", force=True, renew_budget=True)
+    return _continue(session_id)
+
+
+def _continue(session_id: int) -> bool:
+    for _ in range(33):
+        claim = session_summary.claim_pending_session_summary()
+        assert claim is not None
+        if session_summary.execute_session_summary_claim(claim):
+            return True
+        with get_session() as db:
+            row = db.get(AppSetting, f"session_timeline_summary_request:{session_id}")
+            payload = json.loads(row.value)
+            if payload["status"] != "pending" or payload["last_error"] != "本轮成功节点已保存，等待继续生成":
+                return False
+            # 推进调度到下一轮到期；请求身份、授权预算和失败次数保持原值。
+            payload["next_retry_at"] = None
+            row.value = json.dumps(payload)
+    raise AssertionError("正常分批未能在授权请求上限内结束")
 
 
 @pytest.mark.parametrize("large_leaf", [False, True])
@@ -241,7 +256,7 @@ def test_compression_preserves_single_character_tail_without_an_impossible_reque
     assert [node.text for node in nodes] == ["compressed", "!"]
 
 
-def test_shared_budget_failure_preserves_nodes_and_retry_sends_only_missing_work(
+def test_shared_budget_exhaustion_requires_explicit_renewal_and_preserves_nodes(
     temp_db: None, monkeypatch: pytest.MonkeyPatch
 ) -> None:
     session_id = _seed()
@@ -260,13 +275,63 @@ def test_shared_budget_failure_preserves_nodes_and_retry_sends_only_missing_work
         assert db.get(AppSetting, f"session_timeline_summary:{session_id}") is None
         pending = db.get(AppSetting, f"session_timeline_summary_request:{session_id}")
         payload = json.loads(pending.value)
-        assert payload["attempts"] == 1 and payload["status"] == "pending"
-        payload["next_retry_at"] = None
-        pending.value = json.dumps(payload)
+        assert payload["attempts"] == 0 and payload["status"] == "failed"
+        operation_id = payload["operation_id"]
     monkeypatch.setattr(settings, "editorial_model_max_attempts", 8)
-    claim = session_summary.claim_pending_session_summary()
-    assert claim is not None and session_summary.execute_session_summary_claim(claim)
+    assert session_summary.recover_running_session_summary_requests() == 0
+    assert not session_summary.request_session_timeline_summary(session_id, reason="automatic", force=True)
+    assert session_summary.claim_pending_session_summary() is None
+    assert len(calls) == 2
+    assert _run(session_id)
+    with get_session() as db:
+        request = json.loads(db.get(AppSetting, f"session_timeline_summary_request:{session_id}").value)
+        assert request["operation_id"] != operation_id and request["status"] == "completed"
     assert [item["content"]["sequence"] for item in calls if item["stage"] == "source"] == list(range(6))
+    assert len(calls) == 7
+
+
+def test_successful_slices_share_one_fixed_budget_without_business_failures(
+    temp_db: None,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    session_id = _seed()
+    monkeypatch.setattr(settings, "editorial_model_max_attempts", 8)
+    calls: list[dict[str, object]] = []
+
+    async def send(_transport: httpx.AsyncHTTPTransport, request: httpx.Request) -> httpx.Response:
+        payload = _payload(request)
+        calls.append(payload)
+        return httpx.Response(200, json=response(json.dumps({"summary": _reply(payload)})))
+
+    monkeypatch.setattr(httpx.AsyncHTTPTransport, "handle_async_request", send)
+    assert session_summary.request_session_timeline_summary(session_id, reason="fixed-budget")
+    identities: set[tuple[str, str]] = set()
+    for round_index in range(4):
+        claim = session_summary.claim_pending_session_summary()
+        assert claim is not None
+        assert session_summary.execute_session_summary_claim(claim) is (round_index == 3)
+        assert len(calls) == min((round_index + 1) * 2, 7)
+        with get_session() as db:
+            row = db.get(AppSetting, f"session_timeline_summary_request:{session_id}")
+            payload = json.loads(row.value)
+            assert payload["attempts"] == 0
+            assert payload["status"] == ("completed" if round_index == 3 else "pending")
+            identities.add((payload["operation_id"], payload["requested_at"]))
+            payload["next_retry_at"] = None
+            row.value = json.dumps(payload)
+    assert len(identities) == 1
+    operation_id, _ = identities.pop()
+    with get_session() as db:
+        records = [
+            json.loads(row.value)
+            for row in db.exec(
+                select(AppSetting).where(AppSetting.key.startswith(f"model_request:v1:{operation_id}:"))
+            ).all()
+        ]
+        assert sorted(record["number"] for record in records) == list(range(1, 8))
+        assert all(record["state"] == "finished" for record in records)
+    assert session_summary.request_session_timeline_summary(session_id, reason="automatic", force=True)
+    assert _continue(session_id)
     assert len(calls) == 7
 
 
@@ -343,32 +408,41 @@ def test_changed_source_expires_result_without_get_scheduling_or_reusing_old_fin
     )
     with get_session() as db:
         db.exec(select(LiveRoom)).one().title = "更正来源"
+        before = json.loads(db.get(AppSetting, f"session_timeline_summary_request:{session_id}").value)
     view = session_summary.session_timeline_summary_view(session_id, processing_state="completed", ended=True)
     assert view["needs_regeneration"] is True and view["summary"] is None
     with get_session() as db:
-        assert db.get(AppSetting, f"session_timeline_summary_request:{session_id}") is None
+        assert (
+            json.loads(db.get(AppSetting, f"session_timeline_summary_request:{session_id}").value)["status"]
+            == "completed"
+        )
     assert session_summary.ensure_session_timeline_summary_requested(session_id)
     claim = session_summary.claim_pending_session_summary()
     assert claim is not None and session_summary.execute_session_summary_claim(claim)
     assert len(calls) == 2 and "更正来源" in calls[1]["content"]
+    with get_session() as db:
+        after = json.loads(db.get(AppSetting, f"session_timeline_summary_request:{session_id}").value)
+        assert after["operation_id"] == before["operation_id"]
+        assert after["requested_at"] == before["requested_at"]
 
 
 def _summary_child() -> None:
     from app.db.session import init_db
 
     init_db()
-    claim = session_summary.claim_pending_session_summary()
-    assert claim is not None
-    assert session_summary.execute_session_summary_claim(claim)
+    with get_session() as db:
+        session_id = db.exec(select(RecordingSession.id)).one()
+    assert _continue(session_id)
 
 
-@pytest.mark.parametrize("failure_at", ["cache", "result"])
+@pytest.mark.parametrize("failure_at", ["cache", "result", "expired_result"])
 def test_storage_failure_stops_requests_and_completed_root_is_reused(
     temp_db: None, monkeypatch: pytest.MonkeyPatch, failure_at: str
 ) -> None:
     from sqlalchemy import event
 
     session_id = _seed()
+    monkeypatch.setattr(settings, "editorial_model_max_attempts", 8 if failure_at == "cache" else 7)
     calls: list[dict[str, object]] = []
 
     async def send(_transport: httpx.AsyncHTTPTransport, request: httpx.Request) -> httpx.Response:
@@ -399,6 +473,19 @@ def test_storage_failure_stops_requests_and_completed_root_is_reused(
         event.remove(engine, "before_cursor_execute", fail_storage)
     assert triggered and len(calls) == (1 if failure_at == "cache" else 7)
     before_retry = len(calls)
+    if failure_at == "expired_result":
+        import app.analysis.model_execution as execution
+        import app.analysis.model_journal as journal
+
+        future = datetime.now(UTC) + timedelta(days=1)
+
+        class FutureClock(datetime):
+            @classmethod
+            def now(cls, tz: object = None) -> datetime:
+                return future
+
+        monkeypatch.setattr(execution, "datetime", FutureClock)
+        monkeypatch.setattr(journal, "datetime", FutureClock)
     with get_session() as db:
         assert db.get(AppSetting, f"session_timeline_summary:{session_id}") is None
         row = db.get(AppSetting, f"session_timeline_summary_request:{session_id}")
@@ -406,9 +493,57 @@ def test_storage_failure_stops_requests_and_completed_root_is_reused(
         assert pending["attempts"] == 1 and pending["status"] == "pending"
         pending["next_retry_at"] = None
         row.value = json.dumps(pending)
-    claim = session_summary.claim_pending_session_summary()
-    assert claim is not None and session_summary.execute_session_summary_claim(claim)
+    assert _continue(session_id)
     assert len(calls) - before_retry == (7 if failure_at == "cache" else 0)
+
+
+def test_real_invalid_summary_stops_after_three_failures_without_resetting_budget(
+    temp_db: None,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    session_id = _seed(count=1, length=20)
+    calls: list[httpx.Request] = []
+
+    async def send(_transport: httpx.AsyncHTTPTransport, request: httpx.Request) -> httpx.Response:
+        calls.append(request)
+        return httpx.Response(200, json=response("{}"))
+
+    monkeypatch.setattr(httpx.AsyncHTTPTransport, "handle_async_request", send)
+    assert session_summary.request_session_timeline_summary(session_id, reason="invalid-response")
+    identities: set[str] = set()
+    for attempt in range(1, 4):
+        assert not _continue(session_id)
+        with get_session() as db:
+            row = db.get(AppSetting, f"session_timeline_summary_request:{session_id}")
+            payload = json.loads(row.value)
+            assert payload["attempts"] == attempt and payload["status"] == ("failed" if attempt == 3 else "pending")
+            identities.add(payload["operation_id"])
+            payload["next_retry_at"] = None
+            row.value = json.dumps(payload)
+    assert len(calls) == 3 and len(identities) == 1
+    assert not session_summary.request_session_timeline_summary(session_id, reason="automatic", force=True)
+    assert session_summary.claim_pending_session_summary() is None
+
+
+def test_old_active_request_is_preserved_until_explicit_budget_renewal(temp_db: None) -> None:
+    session_id = _seed(count=1, length=20)
+    assert session_summary.request_session_timeline_summary(session_id, reason="old-request")
+    with get_session() as db:
+        row = db.get(AppSetting, f"session_timeline_summary_request:{session_id}")
+        payload = json.loads(row.value)
+        del payload["operation_id"]
+        payload.update({"version": 3, "status": "running"})
+        original = row.value = json.dumps(payload)
+    assert session_summary.recover_running_session_summary_requests() == 0
+    assert session_summary.claim_pending_session_summary() is None
+    assert not session_summary.ensure_session_timeline_summary_requested(session_id)
+    assert not session_summary.request_session_timeline_summary(session_id, reason="automatic", force=True)
+    with get_session() as db:
+        assert db.get(AppSetting, f"session_timeline_summary_request:{session_id}").value == original
+    view = session_summary.session_timeline_summary_view(session_id, processing_state="completed", ended=True)
+    assert view["status"] == "failed" and "人工重新生成" in view["error"]
+    assert session_summary.request_session_timeline_summary(session_id, reason="manual", force=True, renew_budget=True)
+    assert session_summary.claim_pending_session_summary() is not None
 
 
 def test_real_process_restart_reuses_committed_leaf_and_keeps_unknown_inflight_request(
@@ -470,10 +605,17 @@ def test_real_process_restart_reuses_committed_leaf_and_keeps_unknown_inflight_r
                 unknown = [record for record in records if record["state"] == "unconfirmed"]
                 assert len(unknown) == 1 and unknown[0]["usage"]["estimated_cost_usd"] is None
             assert session_summary.recover_running_session_summary_requests() == 1
-            claim = session_summary.claim_pending_session_summary()
-            assert claim is not None and session_summary.execute_session_summary_claim(claim)
+            assert _continue(session_id)
             assert [item["content"]["sequence"] for item in calls if item["stage"] == "source"] == [0, 1, 1, 2, 3]
             assert calls[-1]["stage"] == "final"
+            with get_session() as db:
+                records = [
+                    json.loads(row.value)
+                    for row in db.exec(select(AppSetting).where(AppSetting.key.startswith("model_request:v1:"))).all()
+                ]
+                assert len({record["operation_id"] for record in records}) == 1
+                assert sorted(record["number"] for record in records) == list(range(1, len(calls) + 1))
+                assert len([record for record in records if record["state"] == "unconfirmed"]) == 1
         finally:
             if child.poll() is None:
                 child.kill()

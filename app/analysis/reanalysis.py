@@ -178,7 +178,13 @@ def request_session_reanalysis(
         db.add(existing)
         from app.analysis.session_summary import request_session_timeline_summary_in_session
 
-        request_session_timeline_summary_in_session(db, session_id, reason=f"reanalysis:{reason}", force=True)
+        request_session_timeline_summary_in_session(
+            db,
+            session_id,
+            reason=f"reanalysis:{reason}",
+            force=True,
+            renew_budget=explicit,
+        )
     logger.info("场次重分析已登记 session={} reason={} retranscribe={}", session_id, reason, payload["retranscribe"])
     return True
 

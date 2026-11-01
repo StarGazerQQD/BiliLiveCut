@@ -88,6 +88,14 @@ class SummaryNode:
     text: str
 
 
+class SummaryProgressPending(RuntimeError):
+    """本轮成功节点已保存，下一次领取继续同一操作。"""
+
+
+class SummaryBudgetExhausted(RuntimeError):
+    """授权额度或期限已耗尽，必须由用户明确重新生成。"""
+
+
 class SessionSummaryTree:
     """按真实容量生成摘要树，所有节点和补发共用一个请求预算。"""
 
@@ -100,6 +108,7 @@ class SessionSummaryTree:
         load: Callable[[str], SummaryCacheNode | None],
         save: Callable[[SummaryCacheNode], None],
         plan: Callable[[list[str]], None],
+        slice_limit: int | None = None,
     ) -> None:
         self.policy = policy
         self.budget = budget
@@ -107,6 +116,8 @@ class SessionSummaryTree:
         self.load = load
         self.save = save
         self.plan = plan
+        self.slice_limit = slice_limit
+        self._saved = 0
         self.routes = llm_providers.active_providers("summary")
 
     def fits(self, prompt: str) -> bool:
@@ -151,6 +162,11 @@ class SessionSummaryTree:
             if shorter_than is not None and len(cached.summary.encode()) >= shorter_than:
                 raise ModelCapacityError("总结缓存的压缩节点未满足压缩契约")
             return SummaryNode(key, cached.summary)
+        interruption = self.budget.interruption()
+        if interruption in {"attempt_budget", "deadline"}:
+            raise SummaryBudgetExhausted(f"整场总结授权预算已耗尽（{interruption}）；请调整配置后人工重新生成。")
+        if self.slice_limit is not None and self._saved >= self.slice_limit:
+            raise SummaryProgressPending("本轮成功节点已保存，等待继续生成")
         if not self.fits(prompt):
             raise ModelCapacityError("当前总结节点无法在保留输出空间后放入模型上下文；未截断素材。")
         raw = llm.call_text(
@@ -159,12 +175,16 @@ class SessionSummaryTree:
         parsed = llm.extract_json(raw) if raw else None
         value = parsed.get("summary") if parsed is not None else None
         if not isinstance(value, str) or not value.strip():
+            failure = self.budget.interruption() or self.budget.last_failure
+            if failure in {"attempt_budget", "deadline", "daily_budget"}:
+                raise SummaryBudgetExhausted(f"整场总结授权预算已耗尽（{failure}）；请调整配置后人工重新生成。")
             raise RuntimeError("整场 ASR 分析未返回有效 summary；已完成节点保留，未提交部分总结。")
         if shorter_than is not None and len(value.strip().encode()) >= shorter_than:
             raise ModelCapacityError("模型未缩短压缩节点；该响应不保存为成功缓存。")
         check_cancellation()
         self.guard()
         self.save(SummaryCacheNode(key=key, summary=value.strip(), operation_id=self.budget.operation_id))
+        self._saved += 1
         return SummaryNode(key, value.strip())
 
     def _prompt(self, stage: str, content: object) -> str:

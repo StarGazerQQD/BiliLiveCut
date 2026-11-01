@@ -26,7 +26,9 @@ from sqlmodel import Session
 from app.core import settings_store
 from app.core.config import settings
 from app.core.configuration import configuration_transaction
+from app.core.runtime_settings import settings_scope
 from app.db.entities import AppSetting
+from app.models.authorization_revision import authorization_revisions, update_authorization_revisions
 from app.models.configuration import MODEL_CONFIGURATION_KEY, authorize_model_call, configured_models
 from app.models.contracts import TEXT_CAPABILITIES, ModelConnection, ModelRoute, TextCapability
 
@@ -64,6 +66,7 @@ class LLMProvider:
     context_window_tokens: int | None = None
     max_input_tokens: int | None = None
     authorize: Callable[[], None] | None = field(default=None, repr=False, compare=False)
+    authorization_revision: int = field(default=0, repr=False, compare=False)
 
     def to_dict(self) -> dict:
         """序列化为可持久化字典(含明文 key)。
@@ -207,6 +210,11 @@ def load_providers(capability: TextCapability = "analysis") -> list[LLMProvider]
 
     :returns: provider 列表。
     """
+    with settings_scope():
+        return _load_providers(capability)
+
+
+def _load_providers(capability: TextCapability) -> list[LLMProvider]:
     if capability not in TEXT_CAPABILITIES:
         raise ValueError("文字生成仅接受文字业务能力，ASR 必须使用语音转写入口")
     config = configured_models()
@@ -239,10 +247,12 @@ def load_providers(capability: TextCapability = "analysis") -> list[LLMProvider]
                     ),
                 ),
             )
+    revisions = authorization_revisions()
     for provider in items:
         if provider.authorize is not None:
             continue
         connection_id = provider.connection_id or f"legacy-{provider.id}"
+        provider.authorization_revision = revisions.get(connection_id, 0)
         route_id = provider.id if provider.connection_id else f"{capability}-{provider.id}"
         provider.authorize = partial(authorize_model_call, connection_id, route_id, provider.base_url, provider.api_key)
     return sorted(items, key=lambda p: (p.priority, p.name))
@@ -269,14 +279,20 @@ def save_providers(items: list[LLMProvider]) -> None:
 
     :param items: provider 列表。
     """
-    with configuration_transaction() as (db, _revision):
-        _save_legacy(db, items)
+    with configuration_transaction() as (db, revision):
+        _save_legacy(db, items, revision)
     logger.info("已保存 {} 个大模型配置。", len(items))
 
 
-def _save_legacy(db: Session, items: list[LLMProvider]) -> None:
+def _save_legacy(db: Session, items: list[LLMProvider], revision: int) -> None:
     if db.get(AppSetting, MODEL_CONFIGURATION_KEY) is not None:
         raise ValueError("已启用独立业务路由，请使用模型连接与路由页面；旧整表接口不能覆盖新配置")
+    update_authorization_revisions(
+        db,
+        {f"legacy-{item['id']}": (item["base_url"], item["api_key"], item["enabled"]) for item in _read_raw(db)},
+        {f"legacy-{item.id}": (item.base_url, item.api_key, item.enabled) for item in items},
+        revision,
+    )
     row = db.get(AppSetting, _STORE_KEY) or AppSetting(key=_STORE_KEY, value="")
     row.value = json.dumps([p.to_dict() for p in items], ensure_ascii=False, allow_nan=False)
     db.add(row)
@@ -329,7 +345,7 @@ def merge_and_save(incoming: list[dict]) -> list[dict]:
     :param incoming: 前端提交的 provider 字典列表(``api_key`` 可为空表示不修改)。
     :returns: 保存后的对外视图列表。
     """
-    with configuration_transaction() as (db, _revision):
+    with configuration_transaction() as (db, revision):
         merged = merge_providers(incoming, db=db)
-        _save_legacy(db, merged)
+        _save_legacy(db, merged, revision)
     return [p.public_dict() for p in merged]

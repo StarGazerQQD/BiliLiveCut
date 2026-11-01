@@ -13,10 +13,20 @@ from uuid import uuid4
 from loguru import logger
 from sqlmodel import Session, select
 
+from app.analysis.model_execution import ModelCallBudget
+from app.analysis.model_journal import ModelRequestJournal
 from app.analysis.session_coverage import session_asr_coverage
-from app.analysis.session_summary_tree import SessionSummaryTree, SummaryCacheNode, summary_hash, summary_policy
+from app.analysis.session_summary_tree import (
+    SessionSummaryTree,
+    SummaryBudgetExhausted,
+    SummaryCacheNode,
+    SummaryProgressPending,
+    summary_hash,
+    summary_policy,
+)
 from app.analysis.transcription.content import transcript_text
 from app.core.cancellation import OperationCancelledError, OperationShutdownError, check_cancellation, check_shutdown
+from app.core.config import settings
 from app.core.runtime_settings import configured_entry
 from app.core.sanitize import safe_exception_summary, sanitize_diagnostic
 from app.db.entities import (
@@ -35,6 +45,7 @@ _RESULT_PREFIX = "session_timeline_summary:"
 _REQUEST_PREFIX = "session_timeline_summary_request:"
 _REANALYSIS_PREFIX = "session_reanalysis:"
 _SUMMARY_VERSION = 3
+_REQUEST_VERSION = 4
 _REQUEST_FIELDS = {
     "version",
     "session_id",
@@ -46,6 +57,7 @@ _REQUEST_FIELDS = {
     "started_at",
     "next_retry_at",
     "last_error",
+    "operation_id",
 }
 _RESULT_FIELDS = {
     "version",
@@ -103,6 +115,7 @@ def request_session_timeline_summary(
     *,
     reason: str,
     force: bool = False,
+    renew_budget: bool = False,
 ) -> bool:
     """持久化一场直播的整场时间线总结请求。
 
@@ -125,6 +138,7 @@ def request_session_timeline_summary(
             session_id,
             reason=reason,
             force=force,
+            renew_budget=renew_budget,
         )
     if not created:
         return False
@@ -138,6 +152,7 @@ def request_session_timeline_summary_in_session(
     *,
     reason: str,
     force: bool = False,
+    renew_budget: bool = False,
 ) -> bool:
     """在调用方已持有的写事务内登记请求，不再取得进程锁，避免锁序反转。"""
     reason = reason.strip()
@@ -148,16 +163,20 @@ def request_session_timeline_summary_in_session(
     key = _request_key(session_id)
     existing = db.get(AppSetting, key)
     previous = _decode_request(existing.value if existing is not None else None)
-    if not force and previous.get("version") == _SUMMARY_VERSION and previous.get("status") in {"pending", "running"}:
+    if existing is not None and not renew_budget and (not previous or previous.get("operation_id") is None):
         return False
+    if previous and not renew_budget and (not force or previous["status"] == "failed"):
+        return False
+    inherit = bool(previous) and not renew_budget
     payload = {
-        "version": _SUMMARY_VERSION,
+        "version": _REQUEST_VERSION,
         "session_id": session_id,
         "request_id": uuid4().hex,
         "reason": reason[:200],
         "status": "pending",
-        "attempts": 0,
-        "requested_at": _now_iso(),
+        "attempts": previous["attempts"] if inherit else 0,
+        "requested_at": previous["requested_at"] if inherit else _now_iso(),
+        "operation_id": previous["operation_id"] if inherit else uuid4().hex,
         "started_at": None,
         "next_retry_at": None,
         "last_error": None,
@@ -182,7 +201,7 @@ def ensure_session_timeline_summary_requested(session_id: int) -> bool:
             return False
         request = db.get(AppSetting, _request_key(session_id))
         request_payload = _decode_request(request.value if request is not None else None)
-        if request is not None and request_payload.get("version") == _SUMMARY_VERSION:
+        if request is not None and request_payload.get("status") != "completed":
             return False
         result = db.get(AppSetting, _result_key(session_id))
         result_payload = _decode_result(result.value if result is not None else None)
@@ -194,7 +213,12 @@ def ensure_session_timeline_summary_requested(session_id: int) -> bool:
             and result_payload.get("coverage") == coverage
         ):
             return False
-        return request_session_timeline_summary_in_session(db, session_id, reason="missing_or_changed_input")
+        return request_session_timeline_summary_in_session(
+            db,
+            session_id,
+            reason="missing_or_changed_input",
+            force=request_payload.get("status") == "completed",
+        )
 
 
 def compensate_session_summaries(*, after_id: int = 0, limit: int = 50) -> tuple[int, int]:
@@ -219,9 +243,8 @@ def recover_running_session_summary_requests() -> int:
         rows = db.exec(select(AppSetting).where(AppSetting.key.startswith(_REQUEST_PREFIX))).all()
         for row in rows:
             payload = _decode_request(row.value)
-            if payload.get("version") != _SUMMARY_VERSION:
-                db.delete(row)
-                logger.warning("已删除非当前格式的整场总结请求 key={}", row.key)
+            if payload.get("version") != _REQUEST_VERSION:
+                logger.warning("整场总结请求格式不可恢复，保留记录等待人工重新生成 key={}", row.key)
                 continue
             if payload.get("status") != "running":
                 continue
@@ -254,9 +277,8 @@ def claim_pending_session_summary() -> SessionSummaryClaim | None:
         ).all()
         for row in rows:
             payload = _decode_request(row.value)
-            if payload.get("version") != _SUMMARY_VERSION:
-                db.delete(row)
-                logger.warning("已删除非当前格式的整场总结请求 key={}", row.key)
+            if payload.get("version") != _REQUEST_VERSION:
+                logger.warning("整场总结请求格式不可恢复，保留记录等待人工重新生成 key={}", row.key)
                 continue
             if payload.get("status") != "pending":
                 continue
@@ -300,6 +322,12 @@ def execute_session_summary_claim(claim: SessionSummaryClaim) -> bool:
     except SessionSummaryNotReady:
         _return_claim_to_queue(claim, error="场次重分析尚未稳定", count_attempt=False)
         return False
+    except SummaryProgressPending:
+        _return_claim_to_queue(claim, error="本轮成功节点已保存，等待继续生成", count_attempt=False)
+        return False
+    except SummaryBudgetExhausted as exc:
+        _return_claim_to_queue(claim, error=str(exc), count_attempt=False, terminal=True)
+        return False
     except Exception as exc:  # noqa: BLE001 — 持久任务需要记录并有限重试
         logger.exception("整场高光总结失败 session={}", claim.session_id)
         _return_claim_to_queue(claim, error=safe_exception_summary(exc), count_attempt=True)
@@ -328,9 +356,11 @@ def build_session_timeline_summary(session_id: int, *, claim: SessionSummaryClai
         policy = summary_policy(_summary_prompt("", []))
         signature = _summary_input_signature(db, session_id, blocks, policy=policy)
         generation = None
+        operation_id = None
         if claim is not None:
             request = _require_summary_claim(db, claim)
             generation = str(request["requested_at"])
+            operation_id = request["operation_id"]
         previous_row = db.get(AppSetting, _result_key(session_id))
         previous = _decode_result(previous_row.value if previous_row else None)
         recovered = (
@@ -343,7 +373,6 @@ def build_session_timeline_summary(session_id: int, *, claim: SessionSummaryClai
         generated = "本场没有可供分析的最终 ASR 文本。"
         source = "empty"
     else:
-        from app.analysis import llm
 
         def validate(db: Session) -> None:
             if claim is not None:
@@ -408,8 +437,22 @@ def build_session_timeline_summary(session_id: int, *, claim: SessionSummaryClai
                 ),
             )
 
-        budget = llm.new_editorial_budget(cancelled=cancelled, target=f"session-summary:{session_id}")
-        tree = SessionSummaryTree(policy=policy, budget=budget, guard=guard, load=load, save=save, plan=plan)
+        budget = ModelCallBudget(
+            max_attempts=settings.editorial_model_max_attempts,
+            max_elapsed_s=settings.editorial_model_deadline_s,
+            cancelled=cancelled,
+            journal=ModelRequestJournal(target=f"session-summary:{session_id}", guard=validate),
+            operation_id=operation_id,
+        )
+        tree = SessionSummaryTree(
+            policy=policy,
+            budget=budget,
+            guard=guard,
+            load=load,
+            save=save,
+            plan=plan,
+            slice_limit=2 if claim is not None else None,
+        )
         generated = tree.build(
             full_prompt=_summary_prompt(source_label, blocks)
             + "\n覆盖情况（仅根据已有证据分析，不推断缺失时段）："
@@ -560,7 +603,7 @@ def _commit_summary_result(claim: SessionSummaryClaim, result: dict[str, Any]) -
         request_payload = _decode_request(request.value if request is not None else None)
         if (
             request is None
-            or request_payload.get("version") != _SUMMARY_VERSION
+            or request_payload.get("version") != _REQUEST_VERSION
             or request_payload.get("request_id") != claim.request_id
             or request_payload.get("status") != "running"
         ):
@@ -584,7 +627,9 @@ def _commit_summary_result(claim: SessionSummaryClaim, result: dict[str, Any]) -
             row.updated_at = datetime.now(UTC)
         db.add(row)
 
-        db.delete(request)
+        request_payload.update({"status": "completed", "started_at": None, "next_retry_at": None, "last_error": None})
+        request.value = _encode(request_payload)
+        db.add(request)
         return True
 
 
@@ -593,16 +638,17 @@ def _return_claim_to_queue(
     *,
     error: str,
     count_attempt: bool,
+    terminal: bool = False,
 ) -> None:
     with _SUMMARY_LOCK, get_session() as db:
         if db.get_bind().dialect.name == "sqlite":
             db.connection().exec_driver_sql("BEGIN IMMEDIATE")
         row = db.get(AppSetting, _request_key(claim.session_id))
         payload = _decode_request(row.value if row is not None else None)
-        if row is None or payload.get("version") != _SUMMARY_VERSION or payload.get("request_id") != claim.request_id:
+        if row is None or payload.get("version") != _REQUEST_VERSION or payload.get("request_id") != claim.request_id:
             return
         attempts = payload["attempts"] + (1 if count_attempt else 0)
-        failed = count_attempt and attempts >= _MAX_ATTEMPTS
+        failed = terminal or (count_attempt and attempts >= _MAX_ATTEMPTS)
         delay_s = min(60, 2 ** max(1, attempts)) if count_attempt else 2
         payload.update(
             {
@@ -709,7 +755,10 @@ def _decode_object(raw: str | None) -> dict[str, Any]:
 def _decode_request(raw: str | None) -> dict[str, Any]:
     """解析当前且唯一的整场分析请求格式。"""
     value = _decode_object(raw)
-    if set(value) != _REQUEST_FIELDS or value.get("version") != _SUMMARY_VERSION:
+    legacy = set(value) == _REQUEST_FIELDS - {"operation_id"} and value.get("version") == 3
+    if legacy:
+        value = {**value, "version": _REQUEST_VERSION, "operation_id": None}
+    if set(value) != _REQUEST_FIELDS or value.get("version") != _REQUEST_VERSION:
         return {}
     if not isinstance(value["session_id"], int) or isinstance(value["session_id"], bool):
         return {}
@@ -717,7 +766,7 @@ def _decode_request(raw: str | None) -> dict[str, Any]:
         return {}
     if not isinstance(value["reason"], str) or not value["reason"]:
         return {}
-    if value["status"] not in {"pending", "running", "failed"}:
+    if value["status"] not in {"pending", "running", "failed", "completed"}:
         return {}
     if not isinstance(value["attempts"], int) or isinstance(value["attempts"], bool) or value["attempts"] < 0:
         return {}
@@ -726,6 +775,10 @@ def _decode_request(raw: str | None) -> dict[str, Any]:
     for field_name in ("started_at", "next_retry_at", "last_error"):
         if value[field_name] is not None and not isinstance(value[field_name], str):
             return {}
+    if legacy:
+        value.update({"status": "failed", "last_error": "旧请求没有持久授权预算；请人工重新生成整场总结。"})
+    elif not isinstance(value["operation_id"], str) or len(value["operation_id"]) != 32:
+        return {}
     return value
 
 

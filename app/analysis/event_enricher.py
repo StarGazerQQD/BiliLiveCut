@@ -29,6 +29,7 @@ from app.core.config import settings
 from app.core.runtime_settings import configured_task
 from app.db.entities import HotspotEvent, HotspotStatus, utcnow
 from app.db.session import get_session
+from app.models.authorization_revision import authorization_revisions
 
 EVENT_ENRICHER_VERSION = 2
 _RETRY_LIMIT = 3
@@ -149,6 +150,7 @@ class EventEnrichmentDraft:
     attempts: tuple[ModelAttempt, ...] = ()
     elapsed_s: float = 0.0
     lexical_coverage: float | None = None
+    authorization_identity: tuple[tuple[str, int], ...] = ()
 
 
 def _mapping(raw: str | None) -> dict[str, object]:
@@ -254,7 +256,16 @@ def build_event_evidence_bundle(
     )
 
 
-def _enrichment_is_current(event: HotspotEvent, fingerprint: str) -> bool:
+def _same_authorization(metadata: Mapping[str, object], identity: tuple[tuple[str, int], ...]) -> bool:
+    stored = metadata.get("authorization_identity")
+    return stored == dict(identity) if stored is not None else all(revision == 0 for _, revision in identity)
+
+
+def _enrichment_is_current(
+    event: HotspotEvent,
+    fingerprint: str,
+    identity: tuple[tuple[str, int], ...] = (),
+) -> bool:
     metadata = _mapping(event.features_json).get("event_enrichment")
     if (
         not isinstance(metadata, Mapping)
@@ -264,7 +275,9 @@ def _enrichment_is_current(event: HotspotEvent, fingerprint: str) -> bool:
         return False
     if metadata.get("status") == "succeeded":
         return bool(event.title and event.summary and event.category)
-    if metadata.get("error") in {"disabled", "unauthorized", "cancelled"}:
+    if metadata.get("error") == "unauthorized":
+        return _same_authorization(metadata, identity)
+    if metadata.get("error") in {"disabled", "cancelled"}:
         return True
     failures = metadata.get("failure_count")
     if type(failures) is int and failures >= _RETRY_LIMIT:
@@ -293,12 +306,21 @@ def compute_event_enrichment(
     """在事务外生成与核验解释，缓存成功和有限失败重试分别处理。"""
     cfg = config or EventEnricherConfig()
     budget = budget or llm.new_editorial_budget(target=f"hotspot:{event_id}")
+    providers = llm_providers.active_providers("analysis")
+    identity = tuple(
+        sorted(
+            {
+                (provider.connection_id or f"legacy-{provider.id}", provider.authorization_revision)
+                for provider in providers
+            }
+        )
+    )
     with get_session() as db:
-        bundle = build_event_evidence_bundle(db, event_id, config=cfg)
+        bundle = build_event_evidence_bundle(db, event_id, config=cfg, providers=providers)
         event = db.get(HotspotEvent, bundle.event_id)
         if event is None:
             raise EventTargetUnavailableError("事件在读取时消失")
-        if not force and _enrichment_is_current(event, bundle.fingerprint):
+        if not force and _enrichment_is_current(event, bundle.fingerprint, identity):
             return None
     if bundle.source is None or not any(
         item.excerpts for item in bundle.evidence if item.state in {"available", "degraded"}
@@ -329,6 +351,7 @@ def compute_event_enrichment(
                 attempts=budget.attempts,
                 elapsed_s=budget.elapsed_s,
                 lexical_coverage=result.lexical_coverage,
+                authorization_identity=identity,
             )
         assert result.error is not None
         error, coverage = result.error, result.lexical_coverage
@@ -350,6 +373,7 @@ def compute_event_enrichment(
         attempts=budget.attempts,
         elapsed_s=budget.elapsed_s,
         lexical_coverage=coverage,
+        authorization_identity=identity,
     )
 
 
@@ -386,9 +410,21 @@ def commit_event_enrichment(
         return False
     features = _mapping(event.features_json)
     previous = features.get("event_enrichment")
+    if draft.error == "unauthorized":
+        revisions = authorization_revisions(db)
+        if any(revisions.get(identity, 0) != revision for identity, revision in draft.authorization_identity):
+            return False
+        if (
+            isinstance(previous, Mapping)
+            and previous.get("bundle_fingerprint") == current.fingerprint
+            and previous.get("status") == "succeeded"
+        ):
+            return False
     failures = (
         previous.get("failure_count", 0)
-        if isinstance(previous, Mapping) and previous.get("bundle_fingerprint") == current.fingerprint
+        if isinstance(previous, Mapping)
+        and previous.get("bundle_fingerprint") == current.fingerprint
+        and (previous.get("error") != "unauthorized" or _same_authorization(previous, draft.authorization_identity))
         else 0
     )
     failures = failures if type(failures) is int and failures >= 0 else 0
@@ -396,6 +432,7 @@ def commit_event_enrichment(
         "version": EVENT_ENRICHER_VERSION,
         "policy_version": EXPLANATION_POLICY_VERSION,
         "bundle_fingerprint": current.fingerprint,
+        "authorization_identity": dict(draft.authorization_identity),
         "source": draft.source,
         "status": "succeeded"
         if draft.error is None

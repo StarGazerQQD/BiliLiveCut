@@ -608,7 +608,7 @@ def _text_attempt(
     finally:
         budget.record(
             ModelAttempt(
-                number=len(budget.attempts) + 1,
+                number=budget.next_number,
                 purpose=purpose,
                 provider_id=provider.id,
                 model=provider.model,
@@ -627,7 +627,7 @@ def _text_attempt(
             logger.warning(
                 "text_model_call_failed operation={} attempt={} provider={} model={} error={} diagnostic={}",
                 budget.operation_id,
-                len(budget.attempts),
+                budget.request_count,
                 provider.id,
                 provider.model,
                 error,
@@ -1334,7 +1334,7 @@ def _structured_attempt(
     finally:
         budget.record(
             ModelAttempt(
-                number=len(budget.attempts) + 1,
+                number=budget.next_number,
                 purpose=purpose,
                 provider_id=provider.id,
                 model=provider.model,
@@ -1354,7 +1354,7 @@ def _structured_attempt(
                 "structured_model_call_failed operation={} attempt={} purpose={} provider={} model={} protocol={} "
                 "error={} diagnostic={}",
                 budget.operation_id,
-                len(budget.attempts),
+                budget.request_count,
                 purpose,
                 provider.id,
                 provider.model,
@@ -1540,6 +1540,7 @@ def _call_text_routes(
         return None
     call_budget = budget or new_editorial_budget()
     with call_budget.operation():
+        call_budget.note_failure(None)
         for provider in provs.active_providers(capability):
             search_param = provider.web_search_param.strip() if search else ""
             extra = _low_reasoning_options(provider)
@@ -1564,11 +1565,13 @@ def _call_text_routes(
             except (BudgetAccountingError, OperationCancelledError):
                 raise
             except ModelAuthorizationError:
+                call_budget.note_failure("unauthorized")
                 logger.warning(
                     "model_authorization_revoked operation={} provider={}", call_budget.operation_id, provider.id
                 )
                 return None
             except _StructuredFailure as exc:
+                call_budget.note_failure(exc.code)
                 logger.warning(
                     "text_model_operation_failed operation={} provider={} error={}",
                     call_budget.operation_id,
