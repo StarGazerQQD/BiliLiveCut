@@ -334,14 +334,18 @@ def test_review_submission_advances_linked_task_state(
     assert task_id is not None
 
     auth = ("alice", "alice-pass")
-    with review_client as client:
-        client.post(f"/review/api/{candidate_id}/claim", json={"force": False}, auth=auth)
-        submitted = client.post(
+    # 此处验证审核事务的排队结果，不启动 lifespan 中会立即领取任务的消费者。
+    try:
+        claimed = review_client.post(f"/review/api/{candidate_id}/claim", json={"force": False}, auth=auth)
+        submitted = review_client.post(
             f"/review/api/{candidate_id}/review",
             json={"decision": decision, "reason": "回归测试"},
             auth=auth,
         )
+    finally:
+        review_client.close()
 
+    assert claimed.status_code == 200
     assert submitted.status_code == 200
     with get_session() as db:
         task = db.get(SegmentTask, task_id)
