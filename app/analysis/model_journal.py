@@ -9,11 +9,12 @@ from datetime import UTC, datetime, timedelta
 from typing import Literal
 from uuid import uuid4
 
-from pydantic import BaseModel, ConfigDict, Field, ValidationError
+from pydantic import BaseModel, ConfigDict, Field, ValidationError, model_validator
 from sqlalchemy.exc import SQLAlchemyError
 from sqlmodel import Session, select
 
 from app.analysis.editorial_contracts import ModelAttempt, ModelProtocol, ModelPurpose, TokenUsage
+from app.analysis.search_contracts import SearchEvidence
 from app.db.entities import AppSetting, SystemLog
 from app.db.session import get_session
 
@@ -57,7 +58,7 @@ class ModelRequestRecord(BaseModel):
     model: str = Field(min_length=1, max_length=256)
     purpose: ModelPurpose
     protocol: ModelProtocol
-    output_tokens_limit: int = Field(ge=1)
+    output_tokens_limit: int | None = Field(ge=1)
     input_sha256: str = Field(pattern=r"^[0-9a-f]{64}$")
     started_at: datetime
     state: Literal["unconfirmed", "response_received", "finished"] = "unconfirmed"
@@ -66,6 +67,17 @@ class ModelRequestRecord(BaseModel):
     request_id: str | None = Field(default=None, max_length=128)
     usage: TokenUsage = Field(default_factory=TokenUsage)
     attempt: ModelAttempt | None = None
+    search: SearchEvidence | None = None
+
+    @model_validator(mode="after")
+    def validate_output_limit(self) -> ModelRequestRecord:
+        """搜索无 token 输出；生成请求继续要求明确正数上限。"""
+        if self.protocol == "search":
+            if self.purpose != "search" or self.output_tokens_limit is not None:
+                raise ValueError("搜索请求不得声明 token 输出额度")
+        elif self.purpose == "search" or self.output_tokens_limit is None:
+            raise ValueError("生成请求必须声明 token 输出额度")
+        return self
 
 
 class ModelRequestJournal:
@@ -174,7 +186,7 @@ class ModelRequestJournal:
         model: str,
         purpose: ModelPurpose,
         protocol: ModelProtocol,
-        output_tokens_limit: int,
+        output_tokens_limit: int | None,
         request: object,
     ) -> None:
         """发送前持久登记；该记录不证明请求已到达服务，也不提供服务端幂等保证。"""
@@ -225,6 +237,15 @@ class ModelRequestJournal:
                 }
             )
             row.value = updated.model_dump_json()
+            db.add(row)
+
+    def save_search(self, operation_id: str, number: int, evidence: SearchEvidence) -> None:
+        """在后续生成前持久保存实际搜索来源，失败时停止业务调用。"""
+        with self._write() as db:
+            row, record = self._read(db, operation_id, number)
+            if record.protocol != "search" or record.state != "response_received":
+                raise ModelJournalError("搜索来源缺少对应服务回执")
+            row.value = record.model_copy(update={"search": evidence}).model_dump_json()
             db.add(row)
 
     def finish(self, operation_id: str, attempt: ModelAttempt) -> None:

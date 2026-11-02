@@ -24,8 +24,8 @@ Seconds = Annotated[float, Field(ge=0)]
 EvidenceState = Literal["available", "degraded", "missing", "disabled", "error", "pending"]
 EvidenceType = Literal["asr", "context_asr", "danmaku", "audio", "sensevoice", "trend", "visual"]
 ContextDirection = Literal["before", "after", "both"]
-ModelPurpose = Literal["explanation", "review", "grounding", "repair", "context", "text", "probe"]
-ModelProtocol = Literal["json_schema", "json_object", "text"]
+ModelPurpose = Literal["explanation", "review", "grounding", "repair", "context", "text", "probe", "search"]
+ModelProtocol = Literal["json_schema", "json_object", "text", "search"]
 FailureCode = Literal[
     "disabled",
     "daily_budget",

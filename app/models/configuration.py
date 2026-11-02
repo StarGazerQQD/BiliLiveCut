@@ -149,6 +149,7 @@ def _legacy(db: Session, core: Settings) -> ModelConfiguration:
                     priority=provider.priority,
                     enabled=provider.enabled,
                     web_search_param=provider.web_search_param,
+                    deepseek_search_enabled=provider.deepseek_search_enabled,
                     price_input_per_m=provider.price_input_per_m,
                     price_output_per_m=provider.price_output_per_m,
                 )

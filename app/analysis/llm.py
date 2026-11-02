@@ -56,6 +56,7 @@ from app.analysis.editorial_contracts import (
 )
 from app.analysis.model_execution import ModelCallBudget, StructuredCallResult
 from app.analysis.model_journal import ModelRequestJournal
+from app.analysis.model_search import SearchFailure, search_context
 from app.core.cancellation import OperationCancelledError, check_cancellation, shutdown_event
 from app.core.config import settings
 from app.core.http_transport import (
@@ -1375,6 +1376,7 @@ def call_structured(
     purpose: ModelPurpose,
     max_tokens: int,
     capability: TextCapability = "analysis",
+    search_query: str | None = None,
 ) -> StructuredCallResult[_Result]:
     """严格结构化调用，格式协商、一次修复与路由切换全部消耗共享预算。"""
     encoded = json.dumps(payload, ensure_ascii=False, allow_nan=False, separators=(",", ":"))
@@ -1403,6 +1405,18 @@ def call_structured(
             repairing = False
             repair_reason = ""
             extra_body = _low_reasoning_options(provider) or None
+            context = ""
+            if provider.deepseek_search_enabled:
+                if _daily_budget() > 0 and _today_spend() >= _daily_budget():
+                    return StructuredCallResult(value=None, error="daily_budget")
+                try:
+                    context = search_context(provider, search_query or encoded, budget)
+                except SearchFailure as exc:
+                    return StructuredCallResult(value=None, error=exc.code)
+                except OperationCancelledError:
+                    return StructuredCallResult(value=None, error="cancelled")
+                except ModelAuthorizationError:
+                    return StructuredCallResult(value=None, error="unauthorized")
             while True:
                 interruption = budget.interruption()
                 if interruption is not None:
@@ -1429,7 +1443,7 @@ def call_structured(
                             else ""
                         ),
                     },
-                    {"role": "user", "content": encoded},
+                    {"role": "user", "content": encoded + context},
                 ]
                 last = _structured_attempt(
                     provider,
@@ -1460,6 +1474,8 @@ def call_structured(
                     extra_body = _low_reasoning_options(provider) or None
                     continue
                 break
+            if provider.deepseek_search_enabled:
+                return last
         return last
 
 
@@ -1469,6 +1485,7 @@ def call_text(
     *,
     capability: TextCapability = "analysis",
     budget: ModelCallBudget | None = None,
+    search_query: str | None = None,
 ) -> str | None:
     """按优先级遍历多个大模型完成文本生成,失败自动降级到下一个。
 
@@ -1479,7 +1496,9 @@ def call_text(
     :param max_tokens: 最大输出 token 数。
     :returns: 模型输出文本;不可用或全部失败时返回 ``None``。
     """
-    return _call_text_routes(prompt, max_tokens, capability=capability, budget=budget, search=False)
+    return _call_text_routes(
+        prompt, max_tokens, capability=capability, budget=budget, search=False, search_query=search_query
+    )
 
 
 def call_web_search(
@@ -1488,6 +1507,7 @@ def call_web_search(
     *,
     capability: TextCapability = "trends",
     budget: ModelCallBudget | None = None,
+    search_query: str | None = None,
 ) -> str | None:
     """按优先级遍历多个大模型完成(尽力联网搜索的)文本生成,失败自动降级。
 
@@ -1498,7 +1518,9 @@ def call_web_search(
     :param max_tokens: 最大输出 token 数。
     :returns: 模型输出文本;全部不可用时返回 ``None``。
     """
-    return _call_text_routes(prompt, max_tokens, capability=capability, budget=budget, search=True)
+    return _call_text_routes(
+        prompt, max_tokens, capability=capability, budget=budget, search=True, search_query=search_query
+    )
 
 
 def _unsupported_search(error: object, parameter: str) -> bool:
@@ -1532,6 +1554,7 @@ def _call_text_routes(
     capability: TextCapability,
     budget: ModelCallBudget | None,
     search: bool,
+    search_query: str | None,
 ) -> str | None:
     from openai import APIStatusError, OpenAIError
 
@@ -1542,14 +1565,18 @@ def _call_text_routes(
     with call_budget.operation():
         call_budget.note_failure(None)
         for provider in provs.active_providers(capability):
-            search_param = provider.web_search_param.strip() if search else ""
+            deepseek_search = provider.deepseek_search_enabled and (capability != "trends" or search)
+            search_param = provider.web_search_param.strip() if search and not deepseek_search else ""
             extra = _low_reasoning_options(provider)
             if search_param:
                 extra[search_param] = True
             try:
                 _check_text_budget(call_budget, before_request=True, force_identity=True)
+                if _daily_budget() > 0 and _today_spend() >= _daily_budget():
+                    raise _StructuredFailure("daily_budget")
+                context = search_context(provider, search_query or prompt, call_budget) if deepseek_search else ""
                 try:
-                    return _complete(provider, prompt, max_tokens, extra or None, budget=call_budget)
+                    return _complete(provider, prompt + context, max_tokens, extra or None, budget=call_budget)
                 except APIStatusError as exc:
                     if not search_param or not _unsupported_search(exc, search_param):
                         raise
@@ -1570,6 +1597,12 @@ def _call_text_routes(
                     "model_authorization_revoked operation={} provider={}", call_budget.operation_id, provider.id
                 )
                 return None
+            except SearchFailure as exc:
+                call_budget.note_failure(exc.code)
+                logger.warning(
+                    "真实搜索未完成 operation={} provider={} error={}", call_budget.operation_id, provider.id, exc.code
+                )
+                return None
             except _StructuredFailure as exc:
                 call_budget.note_failure(exc.code)
                 logger.warning(
@@ -1588,6 +1621,8 @@ def _call_text_routes(
                     provider.model,
                     safe_exception_summary(exc),
                 )
+            if deepseek_search:
+                return None
             check_cancellation()
             if call_budget.interruption() == "cancelled":
                 raise OperationCancelledError("模型请求所属执行已取消")
@@ -1600,9 +1635,10 @@ def call_trend_search(
     max_tokens: int = DEFAULT_OUTPUT_TOKENS,
     *,
     budget: ModelCallBudget | None = None,
+    search_query: str | None = None,
 ) -> str | None:
     """按热点路由生成内容；旧专用配置由兼容适配器读取，全部受预算限制。"""
-    return call_web_search(prompt, max_tokens, capability="trends", budget=budget)
+    return call_web_search(prompt, max_tokens, capability="trends", budget=budget, search_query=search_query)
 
 
 def extract_json_array(raw: str) -> list[object] | None:
@@ -1696,6 +1732,7 @@ def refine_transcript(raw_text: str, *, budget: ModelCallBudget | None = None) -
         _TRANSCRIPT_REFINEMENT_PROMPT.format(text=source),
         max_tokens=settings.transcript_llm_refine_max_tokens,
         capability="transcript",
+        search_query=source,
         **({"budget": budget} if budget is not None else {}),
     )
     if raw is None:

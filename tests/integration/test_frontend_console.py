@@ -327,6 +327,107 @@ def test_console_starts_independent_frontend_and_api_and_cleans_up(
                 process.wait(timeout=25)
 
 
+@pytest.mark.parametrize("mode,exit_code", [("clean", 0), ("failed", 1), ("forced", 1)])
+@pytest.mark.parametrize("stop_request", ["pipe", "delegated_pipe", "launcher_signal"])
+def test_console_manual_stop_reports_backend_outcome(
+    tmp_path: Path, mode: str, exit_code: int, stop_request: str
+) -> None:
+    root = Path(__file__).resolve().parents[2]
+    dist = tmp_path / "dist"
+    dist.mkdir()
+    (dist / "index.html").write_text("<main>shutdown regression</main>")
+    counter = tmp_path / "backend-events.jsonl"
+    with socket.socket() as probe:
+        probe.bind(("127.0.0.1", 0))
+        port = probe.getsockname()[1]
+    env = {
+        **os.environ,
+        "PYTHONPATH": os.pathsep.join([str(root), str(root / "packaging/portable/src")]),
+        "PYTHONIOENCODING": "utf-8",
+        "_BLC_PARENT_STDIN": "1",
+        "BLC_APP_ROOT": str(tmp_path),
+        "STORAGE_ROOT": str(tmp_path / "storage"),
+        "DATABASE_URL": f"sqlite:///{tmp_path / 'test.db'}",
+        "ADMIN_PASSWORD": "",
+        "DOCKER_AUTH_ENABLED": "false",
+        "BILIBILI_COOKIE": "",
+        "ASR_NO_MODEL_DOWNLOAD": "1",
+        "TREND_ENABLED": "false",
+        "TREND_SCHEDULE_ENABLED": "false",
+    }
+    if stop_request == "delegated_pipe":
+        env["_BLC_RESTART_OWNER"] = "launcher"
+    signal_file = tmp_path / "manual-stop"
+    command = [
+        sys.executable,
+        str(root / "tests/integration/console_cleanup_actor.py"),
+        str(counter),
+        "--backend-stop",
+        mode,
+    ]
+    if stop_request == "launcher_signal":
+        command.extend(["--stop-signal-file", str(signal_file)])
+    command.extend(["start", "--port", str(port), "--frontend-dir", str(dist)])
+    if stop_request == "launcher_signal":
+        command = [
+            sys.executable,
+            "-c",
+            "import os,sys; from blc_portable.launcher.main import _run_service; "
+            "sys.exit(_run_service(sys.argv[1:], env=dict(os.environ), cwd=os.getcwd()))",
+            *command,
+        ]
+    log_path = tmp_path / "console.log"
+    with log_path.open("w", encoding="utf-8") as log:
+        process = subprocess.Popen(
+            command,
+            cwd=tmp_path,
+            env=env,
+            stdin=subprocess.PIPE,
+            stdout=log,
+            stderr=log,
+        )
+        children: list[psutil.Process] = []
+        try:
+            deadline = time.monotonic() + 25
+            while "前后端已就绪" not in log_path.read_text(encoding="utf-8"):
+                assert process.poll() is None and time.monotonic() < deadline, log_path.read_text(encoding="utf-8")
+                time.sleep(0.1)
+            children = psutil.Process(process.pid).children(recursive=True)
+            identities = {(child.pid, child.create_time()) for child in children}
+            if stop_request == "launcher_signal":
+                signal_file.touch()
+            else:
+                _stop_console(process)
+            actual_code = process.wait(timeout=45)
+            exited_at = time.monotonic()
+            _, alive = psutil.wait_procs(children, timeout=5)
+            assert not alive, "人工停止后必须回收全部所属进程"
+            events = [json.loads(line) for line in counter.read_text(encoding="utf-8").splitlines()]
+            starts = [event for event in events if "started_at" in event]
+            stops = [event for event in events if "parent_eof_at" in event]
+            assert len(starts) == len(stops) == 1, events
+            assert starts[0]["pid"] == stops[0]["pid"]
+            assert (starts[0]["pid"], starts[0]["create_time"]) in identities
+            assert starts[0]["started_at"] <= stops[0]["parent_eof_at"] < exited_at
+            output = log_path.read_text(encoding="utf-8")
+            assert "秒后恢复" not in output
+            if mode == "forced":
+                assert not any("stopped_at" in event for event in events), events
+                assert "强制终止前后端及其子进程" in output
+            else:
+                finished = [event for event in events if "stopped_at" in event]
+                assert len(finished) == 1 and finished[0]["exit_code"] == exit_code, events
+                assert stops[0]["parent_eof_at"] <= finished[0]["stopped_at"] < exited_at
+            assert actual_code == exit_code, output
+        finally:
+            if process.poll() is None:
+                if stop_request == "launcher_signal":
+                    signal_file.touch()
+                else:
+                    _stop_console(process)
+                process.wait(timeout=45)
+
+
 def test_frontend_alone_serves_build_without_opening_database(tmp_path: Path):
     """独立前端不依赖数据库兼容性；没有后端时页面可用、API 明确返回 502。"""
     from urllib.error import HTTPError
@@ -393,7 +494,10 @@ def test_frontend_alone_serves_build_without_opening_database(tmp_path: Path):
 
 
 @pytest.mark.parametrize("supervisor,exit_code", [("console", 1), ("delegated", 78), ("launcher", 1)])
-def test_start_cleans_up_api_when_frontend_port_is_occupied(tmp_path: Path, supervisor: str, exit_code: int) -> None:
+@pytest.mark.parametrize("backend_mode", ["application", "failed"])
+def test_start_cleans_up_api_when_frontend_port_is_occupied(
+    tmp_path: Path, supervisor: str, exit_code: int, backend_mode: str
+) -> None:
     import re
 
     root = Path(__file__).resolve().parents[2]
@@ -417,6 +521,7 @@ def test_start_cleans_up_api_when_frontend_port_is_occupied(tmp_path: Path, supe
     }
     if supervisor == "delegated":
         env["_BLC_RESTART_OWNER"] = "launcher"
+    counter = tmp_path / "backend-events.jsonl"
     with socket.socket() as occupied:
         if hasattr(socket, "SO_EXCLUSIVEADDRUSE"):
             occupied.setsockopt(socket.SOL_SOCKET, socket.SO_EXCLUSIVEADDRUSE, 1)
@@ -424,6 +529,15 @@ def test_start_cleans_up_api_when_frontend_port_is_occupied(tmp_path: Path, supe
         occupied.listen()
         port = occupied.getsockname()[1]
         command = [sys.executable, "-m", "app.cli", "start", "--port", str(port), "--frontend-dir", str(dist)]
+        if backend_mode == "failed":
+            command = [
+                sys.executable,
+                str(root / "tests/integration/console_cleanup_actor.py"),
+                str(counter),
+                "--backend-stop",
+                "failed",
+                *command[3:],
+            ]
         if supervisor == "launcher":
             command = [
                 sys.executable,
@@ -445,9 +559,17 @@ def test_start_cleans_up_api_when_frontend_port_is_occupied(tmp_path: Path, supe
                 assert process.wait(timeout=30) == exit_code
                 log.seek(0)
                 output = log.read()
-                api_ports = {int(value) for value in re.findall(r"http://127\.0\.0\.1:(\d+)", output)} - {port}
+                if backend_mode == "failed":
+                    events = [json.loads(line) for line in counter.read_text(encoding="utf-8").splitlines()]
+                    starts = [event for event in events if "started_at" in event]
+                    stops = [event for event in events if "stopped_at" in event]
+                    assert len(starts) == len(stops) == 1, events
+                    assert starts[0]["pid"] == stops[0]["pid"] and stops[0]["exit_code"] == 1, events
+                    api_ports = {starts[0]["port"]}
+                else:
+                    api_ports = {int(value) for value in re.findall(r"http://127\.0\.0\.1:(\d+)", output)} - {port}
+                    assert output.count("API 启动中") == 1, output
                 assert api_ports, output
-                assert output.count("API 启动中") == 1, output
                 assert "秒后恢复" not in output, output
                 for api_port in api_ports:
                     with socket.socket() as probe:

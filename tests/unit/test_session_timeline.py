@@ -31,7 +31,29 @@ from app.db.entities import (
     Transcript,
 )
 from app.db.session import get_session
+from app.models.configuration import save_model_configuration
+from app.models.contracts import ConnectionChange, ModelConfigurationChange, ModelRoute
 from app.web.services.timeline import get_session_timeline, list_session_timelines
+
+
+@pytest.fixture
+def summary_model(temp_db: None) -> None:
+    save_model_configuration(
+        ModelConfigurationChange(
+            revision=0,
+            connections=[ConnectionChange(id="summary", name="总结测试", base_url="https://fixture.invalid/v1")],
+            routes=[
+                ModelRoute(
+                    id="summary",
+                    name="总结测试",
+                    connection_id="summary",
+                    capability="summary",
+                    model="summary-fixture",
+                    max_output_tokens=1048576,
+                )
+            ],
+        )
+    )
 
 
 def _seed_timeline() -> int:
@@ -415,7 +437,7 @@ def test_event_first_timeline_keeps_hotspots_without_candidates_and_avoids_linke
 
 
 def test_whole_session_summary_analyzes_all_final_asr_once_in_time_order(
-    temp_db: None,
+    summary_model: None,
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     """整场总结必须按时间聚合全部最终 ASR，并只调用一次 LLM。"""
@@ -474,7 +496,7 @@ def test_whole_session_summary_analyzes_all_final_asr_once_in_time_order(
 
 
 def test_whole_session_summary_waits_for_final_analysis_and_retries_empty_llm_result(
-    temp_db: None,
+    summary_model: None,
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     """请求应等待分析稳定；LLM 空结果不得降级为摘要拼接。"""
@@ -520,7 +542,7 @@ def test_whole_session_summary_waits_for_final_analysis_and_retries_empty_llm_re
 
 
 @pytest.mark.parametrize("after_write_lock", [False, True])
-def test_summary_shutdown_preserves_attempts_and_revokes_claim(temp_db: None, after_write_lock: bool) -> None:
+def test_summary_shutdown_preserves_attempts_and_revokes_claim(summary_model: None, after_write_lock: bool) -> None:
     from sqlalchemy import event
 
     from app.core.cancellation import shutdown_event
@@ -581,14 +603,14 @@ def test_timeline_view_does_not_enqueue_missing_summary_for_finished_session(tem
 
     payload = get_session_timeline(session_id)
 
-    assert payload["whole_session_summary"]["status"] == "pending"
+    assert payload["whole_session_summary"]["status"] == "unconfigured"
     with get_session() as db:
         row = db.get(AppSetting, f"session_timeline_summary_request:{session_id}")
         assert row is None
 
 
 def test_whole_session_summary_recovers_running_request_and_rejects_stale_claim(
-    temp_db: None,
+    summary_model: None,
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     """重启应恢复运行请求，强制重生成后旧线程不得覆盖新请求。"""
@@ -636,7 +658,7 @@ def test_whole_session_summary_recovers_running_request_and_rejects_stale_claim(
 
 
 def test_whole_session_summary_stops_retrying_after_three_failures(
-    temp_db: None,
+    summary_model: None,
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     """整场总结执行异常最多重试三次，之后保留可见失败状态。"""

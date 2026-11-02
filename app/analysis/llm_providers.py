@@ -30,7 +30,13 @@ from app.core.runtime_settings import settings_scope
 from app.db.entities import AppSetting
 from app.models.authorization_revision import authorization_revisions, update_authorization_revisions
 from app.models.configuration import MODEL_CONFIGURATION_KEY, authorize_model_call, configured_models
-from app.models.contracts import TEXT_CAPABILITIES, ModelConnection, ModelRoute, TextCapability
+from app.models.contracts import (
+    DEEPSEEK_SEARCH_BASE_URLS,
+    TEXT_CAPABILITIES,
+    ModelConnection,
+    ModelRoute,
+    TextCapability,
+)
 
 _STORE_KEY = "llm_providers"
 
@@ -57,6 +63,7 @@ class LLMProvider:
     api_key: str = field(repr=False)
     model: str
     web_search_param: str = ""
+    deepseek_search_enabled: bool = False
     price_input_per_m: float = 0.0
     price_output_per_m: float = 0.0
     enabled: bool = True
@@ -80,6 +87,7 @@ class LLMProvider:
             "api_key": self.api_key,
             "model": self.model,
             "web_search_param": self.web_search_param,
+            "deepseek_search_enabled": self.deepseek_search_enabled,
             "price_input_per_m": self.price_input_per_m,
             "price_output_per_m": self.price_output_per_m,
             "enabled": self.enabled,
@@ -112,6 +120,7 @@ _PROVIDER_FIELDS = {
     "api_key",
     "model",
     "web_search_param",
+    "deepseek_search_enabled",
     "price_input_per_m",
     "price_output_per_m",
     "enabled",
@@ -128,7 +137,7 @@ def _coerce(raw: dict) -> LLMProvider:
     """
     if not isinstance(raw, dict):
         raise ValueError("LLM provider 必须是对象")
-    missing = _PROVIDER_FIELDS - set(raw)
+    missing = (_PROVIDER_FIELDS - {"deepseek_search_enabled"}) - set(raw)
     unknown = set(raw) - _PROVIDER_FIELDS
     if missing:
         raise ValueError(f"LLM provider 缺少字段: {sorted(missing)}")
@@ -145,6 +154,10 @@ def _coerce(raw: dict) -> LLMProvider:
         raise ValueError("LLM provider id/name/base_url/model 不能为空")
     if not isinstance(raw["enabled"], bool):
         raise ValueError("LLM provider enabled 必须是布尔值")
+    if not isinstance(raw.get("deepseek_search_enabled", False), bool):
+        raise ValueError("LLM provider deepseek_search_enabled 必须是布尔值")
+    if raw.get("deepseek_search_enabled", False) and base_url.rstrip("/").casefold() not in DEEPSEEK_SEARCH_BASE_URLS:
+        raise ValueError("DeepSeek 真实搜索仅支持官方 api.deepseek.com 连接")
     for field_name in ("price_input_per_m", "price_output_per_m"):
         if not isinstance(raw[field_name], (int, float)) or isinstance(raw[field_name], bool):
             raise ValueError(f"LLM provider {field_name} 必须是数字")
@@ -160,6 +173,7 @@ def _coerce(raw: dict) -> LLMProvider:
         api_key=raw["api_key"],
         model=model,
         web_search_param=raw["web_search_param"].strip(),
+        deepseek_search_enabled=raw.get("deepseek_search_enabled", False),
         price_input_per_m=raw["price_input_per_m"],
         price_output_per_m=raw["price_output_per_m"],
         enabled=raw["enabled"],
@@ -194,6 +208,7 @@ def from_route(route: ModelRoute, connection: ModelConnection) -> LLMProvider:
         api_key=connection.api_key,
         model=route.model,
         web_search_param=route.web_search_param,
+        deepseek_search_enabled=route.deepseek_search_enabled,
         price_input_per_m=route.price_input_per_m,
         price_output_per_m=route.price_output_per_m,
         enabled=route.enabled and connection.enabled,
@@ -309,6 +324,7 @@ def merge_providers(incoming: list[dict], *, db: Session | None = None) -> list[
     seen: set[str] = set()
     for item in incoming:
         raw = dict(item)
+        raw.setdefault("deepseek_search_enabled", False)
         clear_key = raw.pop("clear_api_key", False)
         if not isinstance(clear_key, bool):
             raise ValueError("clear_api_key 必须为布尔值")

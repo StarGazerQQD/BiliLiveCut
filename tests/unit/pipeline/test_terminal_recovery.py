@@ -583,7 +583,10 @@ def test_summary_stop_fences_old_result_without_attempt(temp_db: None) -> None:
 
 
 def test_filled_gap_replaces_degraded_summary_as_recovered(temp_db: None, monkeypatch: pytest.MonkeyPatch) -> None:
-    from app.analysis import llm
+    import httpx
+
+    from app.analysis import llm_providers
+    from tests.integration.test_structured_llm import response
 
     task_id, segment_id, session_id = seed(TaskStatus.FAILED)
     stale_recovery.recover_stale()
@@ -595,12 +598,24 @@ def test_filled_gap_replaces_degraded_summary_as_recovered(temp_db: None, monkey
         task.stage = TaskStatus.COMPLETED
         db.add(task)
         db.add(Transcript(segment_id=segment_id, final_text="恢复后的内容"))
-    monkeypatch.setattr(llm, "call_text", lambda *args, **kwargs: '{"summary":"补齐结果"}')
-    assert session_summary.execute_session_summary_claim(session_summary.claim_pending_session_summary())
+    assert session_summary.claim_pending_session_summary() is None
+    llm_providers.save_providers(
+        [llm_providers.LLMProvider("summary", "总结", "https://fixture.invalid/v1", "fixture-key", "fixture-model")]
+    )
+    requests: list[httpx.Request] = []
+
+    async def send(_transport: httpx.AsyncHTTPTransport, request: httpx.Request) -> httpx.Response:
+        requests.append(request)
+        return httpx.Response(200, json=response('{"summary":"补齐结果"}'), request=request)
+
+    monkeypatch.setattr(httpx.AsyncHTTPTransport, "handle_async_request", send)
+    claim = session_summary.claim_pending_session_summary()
+    assert claim is not None and session_summary.execute_session_summary_claim(claim)
     view = session_summary.session_timeline_summary_view(session_id, ended=True, processing_state="completed")
     assert view["summary_mode"] == "recovered"
     assert view["coverage"]["coverage_ratio"] == 1
     assert view["summary"] == "补齐结果"
+    assert len(requests) == 1
 
 
 def test_resource_reservations_are_released_by_lease_generation(temp_db: None, monkeypatch: pytest.MonkeyPatch) -> None:

@@ -1417,6 +1417,11 @@
             "title": "Clear Api Key",
             "type": "boolean"
           },
+          "deepseek_search_enabled": {
+            "default": false,
+            "title": "Deepseek Search Enabled",
+            "type": "boolean"
+          },
           "enabled": {
             "default": true,
             "title": "Enabled",
@@ -1610,7 +1615,8 @@
             "enum": [
               "json_schema",
               "json_object",
-              "text"
+              "text",
+              "search"
             ],
             "title": "Protocol",
             "type": "string"
@@ -1630,7 +1636,8 @@
               "repair",
               "context",
               "text",
-              "probe"
+              "probe",
+              "search"
             ],
             "title": "Purpose",
             "type": "string"
@@ -2234,6 +2241,11 @@
               }
             ],
             "title": "Context Window Tokens"
+          },
+          "deepseek_search_enabled": {
+            "default": false,
+            "title": "Deepseek Search Enabled",
+            "type": "boolean"
           },
           "enabled": {
             "default": true,

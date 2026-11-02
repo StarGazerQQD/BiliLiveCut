@@ -218,8 +218,10 @@ def _decorate(db: Session, target: ReanalysisTarget, metadata: object, own_task_
     )
 
 
-def list_reanalysis_targets(db: Session, session_id: int, *, own_task_id: int | None = None) -> list[ReanalysisTarget]:
-    """列出热点、历史候选及未生成候选的旧链窗口，每个业务对象仅出现一次。"""
+def list_reanalysis_targets(
+    db: Session, session_id: int, *, own_task_id: int | None = None, segment_id: int | None = None
+) -> list[ReanalysisTarget]:
+    """按既有归属列出目标，可在计算指纹和保护状态前筛选单个分段。"""
     if db.get(RecordingSession, session_id) is None:
         raise ValueError("录制场次不存在")
     segments = db.exec(select(RawSegment).where(RawSegment.session_id == session_id).order_by(RawSegment.id)).all()
@@ -249,6 +251,11 @@ def list_reanalysis_targets(db: Session, session_id: int, *, own_task_id: int | 
         )
         if segment is None:
             continue
+        # 全场热点关联仍参与去重，候选的审核事件可能登记在另一个分段。
+        if hotspot.candidate_id is not None:
+            used.add(hotspot.candidate_id)
+        if segment_id is not None and segment.id != segment_id:
+            continue
         event = events_by_candidate.get(hotspot.candidate_id)
         target = ReanalysisTarget(
             key=f"hotspot:{hotspot.id}",
@@ -263,8 +270,6 @@ def list_reanalysis_targets(db: Session, session_id: int, *, own_task_id: int | 
         targets.append(
             _decorate(db, target, decode_features(hotspot.features_json).get("editorial_review"), own_task_id)
         )
-        if hotspot.candidate_id is not None:
-            used.add(hotspot.candidate_id)
     for candidate in candidates:
         if candidate.id in used:
             continue
@@ -281,7 +286,7 @@ def list_reanalysis_targets(db: Session, session_id: int, *, own_task_id: int | 
                 ),
                 None,
             )
-        if segment is None:
+        if segment is None or segment_id is not None and segment.id != segment_id:
             continue
         target = ReanalysisTarget(
             key=f"candidate:{candidate.id}",
@@ -297,6 +302,8 @@ def list_reanalysis_targets(db: Session, session_id: int, *, own_task_id: int | 
             _decorate(db, target, decode_features(candidate.features_json).get("editorial_review"), own_task_id)
         )
     for segment in segments:
+        if segment_id is not None and segment.id != segment_id:
+            continue
         record = db.get(AppSetting, f"editorial_segment:{segment.id}")
         if record is None:
             continue

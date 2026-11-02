@@ -169,11 +169,11 @@ def test_shutdown_during_probe_preserves_usage_without_persisting_diagnostic(
         llm.close_clients()
 
 
-@pytest.mark.parametrize("changed", ["name", "model", "credential", "endpoint", "removed"])
+@pytest.mark.parametrize("changed", ["name", "model", "credential", "endpoint", "removed", "search"])
 def test_saved_diagnostics_invalidate_only_affected_requests(
     temp_db: None, probe_transport: ProbeTransport, changed: str
 ) -> None:
-    configuration = catalog(routes=2)
+    configuration = catalog(routes=2, base_url="https://api.deepseek.com/v1")
     configuration.connections.append(configuration.connections[0].model_copy(update={"id": "independent"}))
     configuration.routes[1].connection_id = "independent"
     save_model_configuration(configuration)
@@ -191,6 +191,8 @@ def test_saved_diagnostics_invalidate_only_affected_requests(
             configuration.connections[0].api_key = "new-secret"
         elif changed == "endpoint":
             configuration.connections[0].base_url = "https://new.invalid/v1"
+        elif changed == "search":
+            configuration.routes[0].deepseek_search_enabled = True
         else:
             configuration.routes.pop(0)
         result = save_model_configuration(configuration)

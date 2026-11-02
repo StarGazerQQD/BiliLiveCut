@@ -219,6 +219,7 @@ def build_event_evidence_bundle(
             "model": item.model,
             "endpoint_sha256": hashlib.sha256(item.base_url.encode()).hexdigest(),
             "priority": item.priority,
+            **({"deepseek_search_enabled": True} if item.deepseek_search_enabled else {}),
         }
         for item in (llm_providers.active_providers("analysis") if providers is None else providers)
     ]

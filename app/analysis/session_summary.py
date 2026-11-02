@@ -13,6 +13,7 @@ from uuid import uuid4
 from loguru import logger
 from sqlmodel import Session, select
 
+from app.analysis.llm_providers import active_providers
 from app.analysis.model_execution import ModelCallBudget
 from app.analysis.model_journal import ModelRequestJournal
 from app.analysis.session_coverage import session_asr_coverage
@@ -73,6 +74,7 @@ _RESULT_FIELDS = {
     "summary_mode",
 }
 _MAX_ATTEMPTS = 3
+_UNCONFIGURED_MESSAGE = "未配置可用的整场总结模型；启用总结路由后，待处理请求会继续。"
 _GMT8 = timezone(timedelta(hours=8))
 _SUMMARY_LOCK = threading.RLock()
 _UNSETTLED_STAGES = {
@@ -108,6 +110,10 @@ class SessionTranscriptBlock:
 
 class SessionSummaryNotReady(RuntimeError):
     """场次在领取后又进入重分析，暂时不能生成总结。"""
+
+
+class SessionSummaryUnconfigured(RuntimeError):
+    """已有文本，但当前没有启用的总结模型路由。"""
 
 
 def request_session_timeline_summary(
@@ -269,6 +275,7 @@ def recover_running_session_summary_requests() -> int:
 def claim_pending_session_summary() -> SessionSummaryClaim | None:
     """原子领取一个已经结束且分析稳定的整场总结请求。"""
     now = datetime.now(UTC)
+    configured = bool(active_providers("summary"))
     with _SUMMARY_LOCK, get_session() as db:
         if db.get_bind().dialect.name == "sqlite":
             db.connection().exec_driver_sql("BEGIN IMMEDIATE")
@@ -292,6 +299,8 @@ def claim_pending_session_summary() -> SessionSummaryClaim | None:
                 logger.warning("已清理键值不一致的整场总结请求 key={}", row.key)
                 continue
             if not _session_ready(db, session_id):
+                continue
+            if not configured and _session_transcript_blocks(db, session_id):
                 continue
             payload.update(
                 {
@@ -322,6 +331,9 @@ def execute_session_summary_claim(claim: SessionSummaryClaim) -> bool:
     except SessionSummaryNotReady:
         _return_claim_to_queue(claim, error="场次重分析尚未稳定", count_attempt=False)
         return False
+    except SessionSummaryUnconfigured:
+        _return_claim_to_queue(claim, error=_UNCONFIGURED_MESSAGE, count_attempt=False)
+        return False
     except SummaryProgressPending:
         _return_claim_to_queue(claim, error="本轮成功节点已保存，等待继续生成", count_attempt=False)
         return False
@@ -351,6 +363,8 @@ def build_session_timeline_summary(session_id: int, *, claim: SessionSummaryClai
         if not _session_ready(db, session_id):
             raise SessionSummaryNotReady(f"录制会话尚未完成最终分析: session_id={session_id}")
         blocks = _session_transcript_blocks(db, session_id)
+        if blocks and not active_providers("summary"):
+            raise SessionSummaryUnconfigured(_UNCONFIGURED_MESSAGE)
         coverage = session_asr_coverage(db, session_id)
         source_label = _session_source_label(db, session_id)
         policy = summary_policy(_summary_prompt("", []))
@@ -512,6 +526,8 @@ def session_timeline_summary_view(
 
     request_status = request["status"] if request else ""
     if request_status in {"pending", "running"}:
+        if request_status == "pending" and blocks and not active_providers("summary"):
+            return {**base, "status": "unconfigured", "message": _UNCONFIGURED_MESSAGE}
         return {
             **base,
             "status": "generating" if request_status == "running" else "pending",
@@ -535,6 +551,8 @@ def session_timeline_summary_view(
             "generated_at": _gmt8_iso(result["generated_at"]),
         }
     # GET 仅报告缺失或过期状态；实际请求由生命周期或用户显式操作登记。
+    if blocks and not active_providers("summary"):
+        return {**base, "status": "unconfigured", "message": _UNCONFIGURED_MESSAGE, "needs_regeneration": True}
     return {**base, "status": "pending", "needs_regeneration": True}
 
 

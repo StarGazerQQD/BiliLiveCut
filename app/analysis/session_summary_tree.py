@@ -64,7 +64,9 @@ def summary_policy(full_prompt_policy: str, *, db: Session | None = None) -> str
             "node_prompt": _NODE_INSTRUCTION,
             "full_prompt": full_prompt_policy,
             "routes": [
-                [route.id, route.connection_id, route.base_url, route.model, route.priority] for route in routes
+                [route.id, route.connection_id, route.base_url, route.model, route.priority]
+                + ([{"deepseek_search_enabled": True}] if route.deepseek_search_enabled else [])
+                for route in routes
             ],
         }
     )
@@ -118,6 +120,7 @@ class SessionSummaryTree:
         self.plan = plan
         self.slice_limit = slice_limit
         self._saved = 0
+        self._search_query = ""
         self.routes = llm_providers.active_providers("summary")
 
     def fits(self, prompt: str) -> bool:
@@ -170,7 +173,11 @@ class SessionSummaryTree:
         if not self.fits(prompt):
             raise ModelCapacityError("当前总结节点无法在保留输出空间后放入模型上下文；未截断素材。")
         raw = llm.call_text(
-            prompt, max_tokens=settings.highlight_llm_max_tokens, capability="summary", budget=self.budget
+            prompt,
+            max_tokens=settings.highlight_llm_max_tokens,
+            capability="summary",
+            budget=self.budget,
+            search_query=self._search_query,
         )
         parsed = llm.extract_json(raw) if raw else None
         value = parsed.get("summary") if parsed is not None else None
@@ -278,6 +285,7 @@ class SessionSummaryTree:
         generation: str | None,
     ) -> str:
         """小输入一次综合；大输入复用叶节点和祖先，始终覆盖全部有序素材。"""
+        self._search_query = " ".join(block.text[:64] for block in blocks)[:128]
         generation_suffix = "\n本次总结请求标识：" + generation if generation else ""
         complete_prompt = full_prompt + generation_suffix
         if self.fits(complete_prompt):

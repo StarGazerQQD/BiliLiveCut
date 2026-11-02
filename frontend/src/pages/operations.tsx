@@ -487,7 +487,15 @@ export function TrendsPage() {
                       阅读来源
                     </ExternalLink>
                     <span className="text-xs text-muted-foreground">
-                      {time(entry.collected_at)}
+                      采集：{time(entry.collected_at)}
+                      {entry.search != null && (
+                        <span className="ml-2">
+                          来源发布时间：
+                          {time(
+                            rows(obj(entry.search).sources)[0]?.published_at,
+                          )}
+                        </span>
+                      )}
                     </span>
                   </div>
                 </CardContent>

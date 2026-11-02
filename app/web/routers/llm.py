@@ -27,6 +27,7 @@ class LLMProviderIn(BaseModel):
     api_key: str = ""
     clear_api_key: bool = False
     web_search_param: str = ""
+    deepseek_search_enabled: bool = False
     price_input_per_m: float = 0.0
     price_output_per_m: float = 0.0
     enabled: bool = True

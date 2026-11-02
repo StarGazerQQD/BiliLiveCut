@@ -1252,6 +1252,7 @@ def _run_service(command: list[str], *, env: dict[str, str], cwd: str) -> int:
     from app.core.supervisor import remaining_shutdown, shutdown_scope
     from config.service_restart import (
         CLEANUP_UNCONFIRMED_EXIT,
+        MANUAL_STOP_FAILED_EXIT,
         OUTER_SHUTDOWN_LIMIT_S,
         RESTART_OWNER_ENV,
         SERVICE_BIND_FAILED_EXIT,
@@ -1336,6 +1337,9 @@ def _run_service(command: list[str], *, env: dict[str, str], cwd: str) -> int:
                     except KeyboardInterrupt:
                         manual_stop = True
         code = process.returncode
+        if code == MANUAL_STOP_FAILED_EXIT:
+            print("[ERROR] 人工关闭期间后台收尾失败，已停止自动恢复，请检查服务日志。")
+            return 1
         if manual_stop:
             return code if code is not None and code >= 0 else 130
         if health_failed and code == 0:

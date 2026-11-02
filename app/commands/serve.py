@@ -366,7 +366,7 @@ def cmd_console(
             if isinstance(exc, click.exceptions.Exit) and exc.exit_code == 0:
                 break
             if parent_stopped.is_set():
-                break
+                raise
             if externally_supervised:
                 raise
             if isinstance(exc, click.exceptions.Exit) and exc.exit_code == SERVICE_BIND_FAILED_EXIT:
@@ -403,6 +403,7 @@ def _console_generation(
     from app.core.process_spawn import spawn_owned
     from app.core.supervisor import remaining_shutdown, shutdown_scope
     from config.service_restart import (
+        MANUAL_STOP_FAILED_EXIT,
         OUTER_SHUTDOWN_LIMIT_S,
         STARTUP_READY_LIMIT_S,
         UNRESPONSIVE_SHUTDOWN_LIMIT_S,
@@ -433,11 +434,14 @@ def _console_generation(
     previous_signals = {number: signal.getsignal(number) for number in shutdown_signals}
     closing = False
     force_exit = False
+    stop_signal_received = False
     health_failed = False
+    frontend_bind_failed = False
     process_options = {"creationflags": subprocess.CREATE_NEW_PROCESS_GROUP} if os.name == "nt" else {}
 
     def terminate(_number: int, _frame: FrameType | None) -> None:
-        nonlocal force_exit
+        nonlocal force_exit, stop_signal_received
+        stop_signal_received = True
         parent_stopped.set()
         if closing:
             force_exit = True
@@ -523,9 +527,10 @@ def _console_generation(
                 next_probe = time.monotonic() + 1
             time.sleep(0.25)
         codes = [process.poll() for process in processes]
+        frontend_bind_failed = codes[-1] == SERVICE_BIND_FAILED_EXIT
         code = (
             SERVICE_BIND_FAILED_EXIT
-            if codes[-1] == SERVICE_BIND_FAILED_EXIT
+            if frontend_bind_failed
             else next(
                 (code for code in codes if code is not None),
                 0 if parent_stopped.is_set() else 1,
@@ -541,6 +546,7 @@ def _console_generation(
         try:
             console.print("[yellow]正在停止录制并释放后台资源，再次按 Ctrl+C 可强制退出。[/yellow]")
             cleanup_errors: list[Exception] = []
+            backend_forced = False
             cleanup_limit = UNRESPONSIVE_SHUTDOWN_LIMIT_S if health_failed else OUTER_SHUTDOWN_LIMIT_S
             with shutdown_scope(cleanup_limit) as shutdown_deadline:
                 try:
@@ -557,6 +563,7 @@ def _console_generation(
                 graceful_deadline = shutdown_deadline - min(5.0, cleanup_limit / 2)
                 while processes and processes[0].poll() is None:
                     if force_exit or time.monotonic() >= graceful_deadline:
+                        backend_forced = True
                         console.print("[yellow]强制终止前后端及其子进程。[/yellow]")
                         break
                     time.sleep(0.1)
@@ -573,6 +580,19 @@ def _console_generation(
                         cleanup_errors.append(exc)
             if cleanup_errors:
                 raise ExceptionGroup("前后端进程清理未全部确认", cleanup_errors)
+            if processes:
+                backend_code = processes[0].returncode
+                if backend_forced or backend_code:
+                    if backend_forced:
+                        logger.error("后台未完成正常关闭，已强制回收，退出码：{}", backend_code)
+                    else:
+                        logger.error("后台关闭失败，退出码：{}", backend_code)
+                    code = backend_code if not backend_forced and backend_code is not None and backend_code > 0 else 1
+                    if frontend_bind_failed:
+                        code = SERVICE_BIND_FAILED_EXIT
+                    if stop_signal_received and os.environ.get(RESTART_OWNER_ENV) == "launcher":
+                        code = MANUAL_STOP_FAILED_EXIT
+                    raise click.exceptions.Exit(code)
         finally:
             for number, previous in previous_signals.items():
                 signal.signal(number, previous)

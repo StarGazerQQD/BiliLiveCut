@@ -3058,6 +3058,11 @@ export interface components {
              */
             clear_api_key: boolean;
             /**
+             * Deepseek Search Enabled
+             * @default false
+             */
+            deepseek_search_enabled: boolean;
+            /**
              * Enabled
              * @default true
              */
@@ -3151,14 +3156,14 @@ export interface components {
              * Protocol
              * @enum {string}
              */
-            protocol: "json_schema" | "json_object" | "text";
+            protocol: "json_schema" | "json_object" | "text" | "search";
             /** Provider Id */
             provider_id: string;
             /**
              * Purpose
              * @enum {string}
              */
-            purpose: "explanation" | "review" | "grounding" | "repair" | "context" | "text" | "probe";
+            purpose: "explanation" | "review" | "grounding" | "repair" | "context" | "text" | "probe" | "search";
             /** Reported Model */
             reported_model?: string | null;
             /** Request Id */
@@ -3374,6 +3379,11 @@ export interface components {
             connection_id: string;
             /** Context Window Tokens */
             context_window_tokens?: number | null;
+            /**
+             * Deepseek Search Enabled
+             * @default false
+             */
+            deepseek_search_enabled: boolean;
             /**
              * Enabled
              * @default true

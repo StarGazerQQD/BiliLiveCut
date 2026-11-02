@@ -3,7 +3,7 @@
 调用具备联网搜索能力的模型,采集近期全网(B 站/抖音/微博热搜等)高热度的
 短视频/直播相关话题,产出结构化记录(标题、摘要、标签、热度、题材、链接)。
 
-设计与 :mod:`app.analysis.llm` 一致:LLM 不可用时返回空列表,绝不抛错中断流程。
+LLM 不可用时返回空列表；取消、授权与账本写入错误保留原有诊断。
 合规说明:仅采集公开的热门榜单/话题文字信息用于选题与文案参考,不抓取受保护内容。
 """
 
@@ -15,6 +15,8 @@ from dataclasses import dataclass, field
 from loguru import logger
 
 from app.analysis import llm as llm_mod
+from app.analysis.model_execution import ModelCallBudget
+from app.analysis.search_contracts import SearchEvidence
 from app.core.config import settings
 from app.core.runtime_settings import configured_task
 
@@ -33,7 +35,7 @@ _COLLECT_PROMPT = """你是一名资深的短视频/直播内容运营,擅长把
 "summary": "1-2 句概括为什么热、看点是什么", \
 "tags": ["相关标签或热词", "..."], \
 "heat": 0到100的相对热度数字, \
-"url": "可选的来源链接或留空"}}
+"url": "提供检索来源时必须原样引用其中的 URL；没有检索来源时可留空"}}
 
 要求:标题与标签要真实反映当下流行表达;heat 用相对值体现热度高低;尽量覆盖不同题材。"""
 
@@ -58,6 +60,7 @@ class TrendRecord:
     tags: list[str] = field(default_factory=list)
     heat: float = 0.0
     url: str | None = None
+    search: SearchEvidence | None = None
 
 
 def _coerce_record(item: object) -> TrendRecord | None:
@@ -92,7 +95,7 @@ def _coerce_record(item: object) -> TrendRecord | None:
     )
 
 
-def collect_trends(topic: str = "") -> list[TrendRecord]:
+def collect_trends(topic: str = "", *, budget: ModelCallBudget | None = None) -> list[TrendRecord]:
     """联网采集近期热门内容并解析为记录列表。
 
     :param topic: 采集主题提示(留空用默认主题)。
@@ -108,10 +111,12 @@ def collect_trends(topic: str = "") -> list[TrendRecord]:
         max_items=request_limit,
     )
 
+    call_budget = budget or llm_mod.new_editorial_budget(target="trends")
+    search_offset = len(call_budget.search_results)
     if settings.trend_web_search:
-        raw = llm_mod.call_trend_search(prompt)
+        raw = llm_mod.call_trend_search(prompt, budget=call_budget, search_query=topic or _DEFAULT_TOPIC)
     else:
-        raw = llm_mod.call_text(prompt, capability="trends")
+        raw = llm_mod.call_text(prompt, capability="trends", budget=call_budget, search_query=topic or _DEFAULT_TOPIC)
 
     if raw is None:
         logger.warning("网感采集未获得模型输出(LLM 不可用或超预算),返回空。")
@@ -122,13 +127,27 @@ def collect_trends(topic: str = "") -> list[TrendRecord]:
         logger.warning("网感采集输出无法解析为 JSON 数组: {}", raw[:200])
         return []
 
-    records = [r for r in (_coerce_record(it) for it in data) if r is not None]
+    searches = call_budget.search_results[search_offset:]
+    evidence = searches[-1] if searches else None
+    records: list[TrendRecord] = []
+    for item in data:
+        record = _coerce_record(item)
+        if record is None:
+            continue
+        if evidence is not None:
+            source = next((source for source in evidence.sources if source.url == record.url), None)
+            if source is None:
+                logger.warning("网感条目没有引用本次实际检索来源，已拒绝入库。")
+                continue
+            record.search = evidence.model_copy(update={"sources": [source]})
+            record.url = source.url
+        records.append(record)
     logger.info("网感采集解析出 {} 条记录。", len(records))
     return records[:request_limit]
 
 
 @configured_task
-def collect_and_save(topic: str = "") -> int:
+def collect_and_save(topic: str = "", *, budget: ModelCallBudget | None = None) -> int:
     """采集并写入资料库,返回新增/更新的条目数。
 
     :param topic: 采集主题提示。
@@ -136,7 +155,7 @@ def collect_and_save(topic: str = "") -> int:
     """
     from app.trends import store
 
-    records = collect_trends(topic)
+    records = collect_trends(topic, **({"budget": budget} if budget is not None else {}))
     if not records:
         return 0
     saved = store.save_trends(records)
@@ -158,6 +177,7 @@ def trend_to_dict(rec: TrendRecord) -> dict:
         "tags": rec.tags,
         "heat": rec.heat,
         "url": rec.url,
+        "search": rec.search.model_dump(mode="json") if rec.search is not None else None,
     }
 
 

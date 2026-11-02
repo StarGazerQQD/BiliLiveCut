@@ -223,6 +223,7 @@ def explain(
         budget=budget,
         purpose="explanation",
         max_tokens=max_tokens,
+        search_query=" ".join(text for item in wire_source.evidence for text in item.excerpts),
     )
     if generated.value is None:
         return ExplanationResult(None, generated.error, None)
@@ -256,6 +257,7 @@ def explain(
         budget=budget,
         purpose="grounding",
         max_tokens=max_tokens,
+        search_query=" ".join(text for item in wire_source.evidence for text in item.excerpts),
     )
     if checked.value is None:
         return ExplanationResult(None, checked.error, coverage)

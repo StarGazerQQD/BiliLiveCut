@@ -61,6 +61,7 @@ def review_policy_identity(*, providers: list[llm_providers.LLMProvider] | None 
                 "tokens": route.max_output_tokens,
                 "capacity": capacity_identity(route),
                 "priority": route.priority,
+                **({"deepseek_search_enabled": True} if route.deepseek_search_enabled else {}),
             }
             for route in (llm_providers.active_providers("analysis") if providers is None else providers)
         ],
@@ -169,6 +170,7 @@ def judge_editorial(
                 budget=budget,
                 purpose="review" if index == 0 else "context",
                 max_tokens=settings.hotspot_enrichment_llm_max_tokens,
+                search_query=" ".join(text for item in source.evidence for text in item.excerpts),
             )
             result, error = called.value, called.error
             if result is None or result.missing_context is None or index == 1:

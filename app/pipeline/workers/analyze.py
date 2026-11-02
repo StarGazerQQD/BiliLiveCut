@@ -324,11 +324,7 @@ def analyze_compute(task_id: int) -> dict[str, Any]:
         from app.analysis.reanalysis_targets import list_reanalysis_targets
 
         with get_session() as db:
-            targets = [
-                item
-                for item in list_reanalysis_targets(db, session_id, own_task_id=task_id)
-                if item.segment_id == segment_id
-            ]
+            targets = list_reanalysis_targets(db, session_id, own_task_id=task_id, segment_id=segment_id)
         if targets:
 
             def reanalysis_cancelled() -> bool:

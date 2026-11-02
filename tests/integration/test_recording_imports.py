@@ -337,6 +337,7 @@ def test_local_asr_uses_configured_llm_for_refinement_and_full_summary(
 ) -> None:
     from app.analysis import llm_providers
     from app.analysis.session_summary import (
+        SessionSummaryUnconfigured,
         build_session_timeline_summary,
         claim_pending_session_summary,
         ensure_session_timeline_summary_requested,
@@ -389,10 +390,22 @@ def test_local_asr_uses_configured_llm_for_refinement_and_full_summary(
             db.add(Transcript(segment_id=task.segment_id, final_text=f"分段{task.segment_id}：{text}"))
     session_id = get_import(import_id).session_id
     assert session_id is not None
-    if provider_mode != "enabled":
+    if provider_mode == "disabled":
+        with pytest.raises(SessionSummaryUnconfigured, match="未配置可用的整场总结模型"):
+            build_session_timeline_summary(session_id)
+        assert ensure_session_timeline_summary_requested(session_id)
+        assert claim_pending_session_summary() is None
+        with get_session() as db:
+            pending = db.get(AppSetting, f"session_timeline_summary_request:{session_id}")
+            assert pending is not None
+            request = json.loads(pending.value)
+            assert request["status"] == "pending" and request["attempts"] == 0
+        assert calls == []
+        return
+    if provider_mode == "unavailable":
         with pytest.raises(RuntimeError, match="整场 ASR 分析未返回有效 summary"):
             build_session_timeline_summary(session_id)
-        assert len(calls) == (0 if provider_mode == "disabled" else 4)
+        assert len(calls) == 4
         return
     summary = build_session_timeline_summary(session_id)
     assert summary["source"] == "llm" and summary["summary"] == expected_summary

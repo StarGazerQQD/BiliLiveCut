@@ -29,6 +29,7 @@ def refinement_policy() -> str:
             "prompt": llm._TRANSCRIPT_REFINEMENT_PROMPT,
             "routes": [
                 [route.id, route.connection_id, route.base_url, route.model, route.priority]
+                + ([{"deepseek_search_enabled": True}] if route.deepseek_search_enabled else [])
                 for route in llm_providers.active_providers("transcript")
             ],
         }

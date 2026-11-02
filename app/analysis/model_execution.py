@@ -13,6 +13,7 @@ from typing import TYPE_CHECKING, Generic, TypeVar
 from uuid import uuid4
 
 from app.analysis.editorial_contracts import FailureCode, ModelAttempt, ModelProtocol, ModelPurpose, TokenUsage
+from app.analysis.search_contracts import SearchEvidence
 from app.core.cancellation import CancellationProbe, cancellation_requested
 
 T = TypeVar("T")
@@ -57,6 +58,7 @@ class ModelCallBudget:
         self._deadline = self._started + max_elapsed_s
         self._cancelled = CancellationProbe(cancelled) if cancelled is not None else None
         self._attempts: list[ModelAttempt] = []
+        self._search_results: list[SearchEvidence] = []
         self._repair_used = False
         self._context_used = False
         self._empty_used = False
@@ -171,7 +173,7 @@ class ModelCallBudget:
         model: str,
         purpose: ModelPurpose,
         protocol: ModelProtocol,
-        output_tokens_limit: int,
+        output_tokens_limit: int | None,
         request: object,
     ) -> None:
         """实际请求边界登记身份；纯计算预算不访问数据库。"""
@@ -192,6 +194,17 @@ class ModelCallBudget:
         """保留已经收到的实际用量；后续业务失败不会抹除该回执。"""
         if self._journal is not None:
             self._journal.receipt(self.operation_id, self.next_number, usage, request_id)
+
+    def save_search(self, evidence: SearchEvidence) -> None:
+        """搜索与后续生成共用请求账本；来源写入失败时不能继续发送。"""
+        if self._journal is not None:
+            self._journal.save_search(self.operation_id, self.next_number, evidence)
+        self._search_results.append(evidence)
+
+    @property
+    def search_results(self) -> tuple[SearchEvidence, ...]:
+        """返回当前执行取得的真实搜索来源，供业务结果保存引用。"""
+        return tuple(self._search_results)
 
     def claim_repair(self) -> bool:
         """整个操作最多允许一次格式或引用修复，不因路由切换重新授予。"""

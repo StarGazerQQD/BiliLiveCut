@@ -266,6 +266,13 @@ const routeFields: FieldSpec[] = [
   },
   { name: "web_search_param", label: "联网搜索参数" },
   {
+    name: "deepseek_search_enabled",
+    label: "DeepSeek 真实搜索",
+    type: "boolean",
+    description:
+      "仅支持 DeepSeek 官方连接。先检索来源再生成，每次搜索单独计入请求预算；关闭时不发送搜索请求。",
+  },
+  {
     name: "context_window_tokens",
     label: "路由上下文 Token 上限",
     type: "number",
@@ -424,7 +431,7 @@ function ModelProbeSummary({ diagnostic }: { diagnostic: Row }) {
           ? "未知"
           : `$${text(diagnostic.estimated_cost_usd)}`}
       </p>
-      <p>探测不验证最大上下文、最大输出或思考控制的实际效果。</p>
+      <p>探测不验证真实搜索、最大上下文、最大输出或思考控制的实际效果。</p>
       <p>
         观察时间：{text(diagnostic.observed_at)} · 请求 ID：
         {Array.isArray(diagnostic.request_ids) && diagnostic.request_ids.length
@@ -724,6 +731,7 @@ export function LlmPage({
                         enabled: true,
                         priority: 100,
                         web_search_param: "",
+                        deepseek_search_enabled: false,
                         context_window_tokens: null,
                         max_input_tokens: null,
                         max_output_tokens: null,
@@ -803,6 +811,7 @@ export function LlmPage({
                         route.capability !== "asr" ||
                         ![
                           "web_search_param",
+                          "deepseek_search_enabled",
                           "context_window_tokens",
                           "max_input_tokens",
                           "max_output_tokens",
@@ -820,6 +829,7 @@ export function LlmPage({
                             field.name === "capability" && value === "asr"
                               ? {
                                   web_search_param: "",
+                                  deepseek_search_enabled: false,
                                   context_window_tokens: null,
                                   max_input_tokens: null,
                                   max_output_tokens: null,

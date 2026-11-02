@@ -583,7 +583,7 @@ def test_frozen_entry_collects_engine_pack_config_dependencies() -> None:
     assert 'str(_project_root / "config" / _name), "provisioner/config"' in content
 
 
-@pytest.mark.parametrize("exit_code,starts,expected_code", [(0, 1, 0), (7, 4, 7), (75, 1, 75), (78, 1, 1)])
+@pytest.mark.parametrize("exit_code,starts,expected_code", [(0, 1, 0), (7, 4, 7), (75, 1, 75), (78, 1, 1), (79, 1, 1)])
 def test_launcher_owns_one_bounded_restart_budget_for_real_processes(
     tmp_path: Path,
     exit_code: int,
