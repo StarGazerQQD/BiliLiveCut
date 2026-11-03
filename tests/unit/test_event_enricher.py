@@ -540,8 +540,10 @@ def test_event_evidence_preserves_times_and_unknown_values(temp_db: None) -> Non
     timed.update(
         start_ts=(_START + timedelta(seconds=95)).isoformat(), end_ts=(_START + timedelta(seconds=105)).isoformat()
     )
+    unknown = _evidence_item("unknown", "asr", excerpt="比赛规则说明")
+    unknown["detail"].update(start_offset_s=30, end_offset_s=120)
     event_id = _seed_event(
-        evidence=[timed, _evidence_item("unknown", "asr", excerpt="比赛规则说明")],
+        evidence=[timed, unknown],
         representative=[{"text": "刚才的操作怎么样"}],
     )
     with get_session() as db:
@@ -552,6 +554,28 @@ def test_event_evidence_preserves_times_and_unknown_values(temp_db: None) -> Non
     assert items["unknown"].start_s is None and items["unknown"].timing_precision == "unknown"
     representative = next(item for item in source.evidence if ":danmaku:" in item.evidence_id)
     assert representative.detail.count is None and representative.start_s is None
+
+
+@pytest.mark.parametrize("recorded", [False, True])
+def test_excluded_timed_asr_cannot_return_as_unknown_event_text(temp_db: None, recorded: bool) -> None:
+    text = "本段前后一起讨论的挑战规则，不能作为窄事件的完整发言。"
+    item = _evidence_item("hotspot-asr:window", "asr", excerpt=text)
+    item.update(
+        start_ts=(_START + timedelta(seconds=25)).isoformat(), end_ts=(_START + timedelta(seconds=115)).isoformat()
+    )
+    event_id = _seed_event(evidence=[item] if recorded else [], transcript_text=text)
+    with get_session() as db:
+        event = db.get(HotspotEvent, event_id)
+        event.start_ts = _START + timedelta(seconds=50)
+        event.peak_ts = _START + timedelta(seconds=60)
+        event.end_ts = _START + timedelta(seconds=70)
+    with get_session() as db:
+        source = build_event_evidence_bundle(db, event_id, config=EventEnricherConfig(context_s=0)).source
+    assert source is not None
+    assert any(text in evidence.excerpts for evidence in source.evidence) is (not recorded)
+    if recorded:
+        assert source.truncated
+        assert not any(evidence.evidence_id.endswith(":event_asr") for evidence in source.evidence)
 
 
 def test_context_window_stops_at_actual_recording_gap(temp_db: None) -> None:

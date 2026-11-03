@@ -75,9 +75,10 @@ def test_actual_sdk_explanation_and_grounding_restrict_to_their_actual_reference
 ) -> None:
     source = _source(
         evidence=[
-            _evidence(),
+            _evidence(excerpts=["主播解释挑战规则，随后完成挑战。", "挑战规则由主播说明。"]),
             _evidence(evidence_id="degraded:2", state="degraded"),
             _evidence(evidence_id="missing:3", state="missing", excerpts=[]),
+            _evidence(evidence_id="audio:4", type="audio", excerpts=[], detail={"metrics": {"rms": 0.5}}),
         ]
     )
     output = {
@@ -86,7 +87,7 @@ def test_actual_sdk_explanation_and_grounding_restrict_to_their_actual_reference
         "category": "discussion",
         "entities": [],
         "semantic_confidence": 0.8,
-        "evidence_ids": ["E1"],
+        "evidence_ids": ["E1", "E2", "E4"],
     }
     calls = install_editorial_service(monkeypatch, lambda *_args, **_kwargs: json.dumps(output), grounded=True)
     result = explain(
@@ -98,14 +99,24 @@ def test_actual_sdk_explanation_and_grounding_restrict_to_their_actual_reference
         max_entities=12,
     )
     assert result.output is not None and len(calls) == 2
-    assert result.output.evidence_ids == ["asr:1"]
+    assert result.output.evidence_ids == ["asr:1", "degraded:2", "audio:4"]
     assert calls[0]["response_format"]["json_schema"]["schema"]["properties"]["evidence_ids"]["items"]["enum"] == [
         "E1",
         "E2",
+        "E4",
     ]
-    assert calls[1]["response_format"]["json_schema"]["schema"]["$defs"]["GroundingQuote"]["properties"]["evidence_id"][
-        "enum"
-    ] == ["E1"]
+    quote_schema = calls[1]["response_format"]["json_schema"]["schema"]["$defs"]["GroundingQuote"]
+    pairs = {
+        (evidence_id, quote_id)
+        for branch in quote_schema["anyOf"]
+        for evidence_id in branch["properties"]["evidence_id"]["enum"]
+        for quote_id in branch["properties"]["quote_id"]["enum"]
+    }
+    sent = json.loads(calls[1]["messages"][1]["content"])
+    actual_pairs = {(item["evidence_id"], quote["quote_id"]) for item in sent["evidence"] for quote in item["quotes"]}
+    assert pairs == actual_pairs == {("E1", "Q1"), ("E1", "Q2"), ("E2", "Q3")}
+    assert all(branch["additionalProperties"] is False for branch in quote_schema["anyOf"])
+    assert all(set(branch["required"]) == {"evidence_id", "quote_id"} for branch in quote_schema["anyOf"])
     assert "E 编号" in calls[0]["messages"][0]["content"] and "Q 编号" in calls[1]["messages"][0]["content"]
 
 

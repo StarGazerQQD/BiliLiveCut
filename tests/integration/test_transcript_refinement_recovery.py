@@ -27,6 +27,65 @@ from tests.integration.test_structured_llm import catalog, response
 from tests.unit.test_editorial_review import _seed
 
 
+@pytest.mark.parametrize("field", ["clean_text", "summary"])
+@pytest.mark.parametrize("invalid", [None, [], {}, True, 17, " \n\t"])
+def test_invalid_refinement_fields_preserve_raw_transcript(
+    temp_db: None, pcm_wav: Path, monkeypatch: pytest.MonkeyPatch, field: str, invalid: object
+) -> None:
+    _check_refinement_response(pcm_wav, monkeypatch, {field: invalid}, accepted=False)
+
+
+@pytest.mark.parametrize("length", [120, 121])
+def test_refinement_summary_length_is_validated_without_truncation(
+    temp_db: None, pcm_wav: Path, monkeypatch: pytest.MonkeyPatch, length: int
+) -> None:
+    _check_refinement_response(pcm_wav, monkeypatch, {"summary": "摘" * length}, accepted=length == 120)
+
+
+def _check_refinement_response(
+    pcm_wav: Path, monkeypatch: pytest.MonkeyPatch, updates: dict[str, object], *, accepted: bool
+) -> None:
+    _, segment_id = _seed(pcm_wav)
+    config = catalog()
+    save_model_configuration(
+        config.model_copy(
+            update={"routes": [route.model_copy(update={"capability": "transcript"}) for route in config.routes]}
+        )
+    )
+    monkeypatch.setattr(settings_store, "transcript_llm_refine_enabled", lambda: True)
+    payload = {"clean_text": "整理后的规则讲解。", "summary": "比赛规则", **updates}
+    calls: list[httpx.Request] = []
+
+    async def send(_transport: httpx.AsyncHTTPTransport, request: httpx.Request) -> httpx.Response:
+        calls.append(request)
+        return httpx.Response(200, json=response(json.dumps(payload)))
+
+    monkeypatch.setattr(httpx.AsyncHTTPTransport, "handle_async_request", send)
+    try:
+        with get_session() as db:
+            original = db.exec(select(Transcript).where(Transcript.segment_id == segment_id)).one()
+            raw, words, transcript_id = original.final_text, original.words_json, original.id
+        draft = compute_refinement(raw, target=f"segment:{segment_id}")
+        assert draft.status == ("succeeded" if accepted else "failed")
+        assert len(calls) == 1 and len(draft.attempts) == 1
+        with get_session() as db:
+            assert store_refinement(db, db.get(Transcript, transcript_id), draft)
+        with get_session() as db:
+            transcript = db.get(Transcript, transcript_id)
+            saved = json.loads(db.get(AppSetting, f"transcript_refinement:v1:{segment_id}").value)
+            assert transcript.final_text == raw and transcript.words_json == words
+            assert saved["status"] == draft.status
+            if accepted:
+                assert transcript_text(transcript) == payload["clean_text"]
+                assert saved["summary"] == payload["summary"]
+            else:
+                assert transcript_text(transcript) == raw
+                assert "transcript_refinement" not in json.loads(transcript.auxiliary_json or "{}")
+                assert saved["clean_text"] is None and saved["summary"] is None
+    finally:
+        llm.close_clients()
+
+
 @pytest.mark.parametrize("change", ["none", "manual", "source", "lease", "shutdown"])
 def test_failed_refinement_reuses_persisted_raw_text_and_rejects_late_changes(
     temp_db: None, pcm_wav: Path, monkeypatch: pytest.MonkeyPatch, change: str

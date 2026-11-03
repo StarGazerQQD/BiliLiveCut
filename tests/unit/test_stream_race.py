@@ -22,14 +22,26 @@ from app.recording.stream_race import StreamAttempt, StreamRace
 
 
 @pytest.mark.parametrize("evidence", ["video", "audio_only", "single_frame", "invalid_json", "timestamp_na"])
+@pytest.mark.parametrize("stale_size", [False, True])
 async def test_progress_without_frame_requires_actual_video_packets(
-    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, evidence: str
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, evidence: str, stale_size: bool
 ) -> None:
     attempt = StreamAttempt(streams("a")[0], tmp_path, "unique_")
     (tmp_path / "unique_00000.ts").write_bytes(b"local candidate")
     (tmp_path / "unique_00001.ts").touch()  # 分段切换后的空末片不能遮住已落盘的视频。
     process = FakeProcess(1)
     attempt.process = process
+    original_stat = Path.stat
+
+    def directory_stat(path: Path, *, follow_symlinks: bool = True) -> os.stat_result:
+        result = original_stat(path, follow_symlinks=follow_symlinks)
+        if stale_size and path.parent == tmp_path and path.suffix == ".ts":
+            values = list(result)
+            values[6] = 0
+            return os.stat_result(values)
+        return result
+
+    monkeypatch.setattr(Path, "stat", directory_stat)
 
     def probe(command: list[str], **kwargs: object) -> subprocess.CompletedProcess[str]:
         assert command[-1] == str(tmp_path / "unique_00000.ts")
@@ -62,6 +74,36 @@ async def test_missing_frame_without_own_output_cannot_win(tmp_path: Path, monke
 
     monkeypatch.setattr("app.recording.stream_race.run_cancellable", forbidden)
     assert not await attempt._has_video_packets()
+
+
+async def test_candidate_scan_finishes_file_access_before_cancellation_returns(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    attempt = StreamAttempt(streams("a")[0], tmp_path, "unique_")
+    media = tmp_path / "unique_00000.ts"
+    media.write_bytes(b"local candidate")
+    inode = media.stat().st_ino
+    entered, release = threading.Event(), threading.Event()
+    original_fstat = os.fstat
+
+    def blocked_fstat(descriptor: int) -> os.stat_result:
+        result = original_fstat(descriptor)
+        if result.st_ino == inode:
+            entered.set()
+            assert release.wait(5)
+        return result
+
+    monkeypatch.setattr(os, "fstat", blocked_fstat)
+    task = asyncio.create_task(attempt._has_video_packets())
+    try:
+        assert await asyncio.to_thread(entered.wait, 2)
+        task.cancel()
+        await asyncio.sleep(0.02)
+        assert not task.done()
+    finally:
+        release.set()
+        await asyncio.gather(task, return_exceptions=True)
+    assert task.cancelled()
 
 
 async def test_local_video_probe_is_reaped_before_cancellation_finishes(
@@ -644,9 +686,9 @@ async def test_staggered_race_avoids_extra_process_for_fast_primary_but_hedges_s
         await race.close()
 
 
-@pytest.mark.parametrize("output_fault", [False, True])
+@pytest.mark.parametrize("failure", ["process_exit", "output_fault", "progress_eof", "progress_error"])
 async def test_winner_that_fails_during_loser_cleanup_is_not_handed_off(
-    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, output_fault: bool
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, failure: str
 ) -> None:
     processes = []
     race = race_for(tmp_path, streams("slow", "good"))
@@ -663,8 +705,14 @@ async def test_winner_that_fails_during_loser_cleanup_is_not_handed_off(
 
     async def close(attempt: StreamAttempt, *, discard: bool) -> None:
         if race.winner is not None and attempt is not race.winner and discard:
-            if output_fault:
+            if failure == "output_fault":
                 race.winner.remember(b"Error writing output: No space left on device")
+            elif failure == "progress_eof":
+                race.winner.process.stdout.feed_eof()
+                await asyncio.sleep(0)
+            elif failure == "progress_error":
+                race.winner.process.stdout.set_exception(OSError("controlled pipe failure"))
+                await asyncio.sleep(0)
             else:
                 race.winner.process.kill()
         await original_close(attempt, discard=discard)
@@ -675,6 +723,16 @@ async def test_winner_that_fails_during_loser_cleanup_is_not_handed_off(
         assert await race.run() is None
         assert race.winner is None and race.failures
         assert all(process.returncode is not None for process in processes)
+        diagnostic = " | ".join(race.failures[-1].tail)
+        reason = "progress_reader_done" if failure.startswith("progress_") else failure
+        assert f"handoff_reason={reason}" in diagnostic
+        assert "exit_code=" in diagnostic
+        if failure == "process_exit":
+            assert "exit_code=-9" in diagnostic
+        if failure == "progress_error":
+            assert "progress_state=error:OSError" in diagnostic
+        elif failure == "progress_eof":
+            assert "progress_state=finished" in diagnostic
     finally:
         await race.close()
 

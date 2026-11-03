@@ -1703,12 +1703,12 @@ def extract_json(raw: str) -> dict | None:
 _TRANSCRIPT_REFINEMENT_PROMPT = """你是一名中文直播内容编辑。请整理下面这一段自动语音识别文本。
 
 要求：
-1. 不删减事实、专有名词、数字和关键语气，不添加原文没有的信息；
+1. 不删减事实、专有名词、数字和关键语气，不添加原文没有的信息；保留说话对象、否定和不确定性，不推断未明说的因果关系；
 2. 删除 ASR 解码或 VAD 分句边界产生的连续重复词句，但保留主播有明确语义的强调、复述和口头禅；
 3. 仅在上下文足够明确时修正常见同音字或断句错误；
 4. 补全标点，按语义整理成可读句子和短段落；
-5. 再给出一段不超过 120 个汉字的内容概括；
-6. 只输出 JSON，不要代码围栏或其他说明。
+5. 再给出一段不超过 120 个字符（含标点）的内容概括；
+6. clean_text 和 summary 必须都是非空字符串；只输出 JSON，不要代码围栏或其他说明。
 
 输出格式：
 {{"clean_text":"整理后的完整文本","summary":"本片段概括"}}
@@ -1741,12 +1741,16 @@ def refine_transcript(raw_text: str, *, budget: ModelCallBudget | None = None) -
     if data is None:
         logger.warning("转写整理输出无法解析为 JSON: head={!r} tail={!r}", raw[:160], raw[-160:])
         return None
-    clean_text = str(data.get("clean_text", "")).strip()
-    summary = str(data.get("summary", "")).strip()
-    if not clean_text or not summary:
-        logger.warning("转写整理输出缺少 clean_text 或 summary，已保留原始 ASR 文本。")
+    clean_text = data.get("clean_text")
+    summary = data.get("summary")
+    if not isinstance(clean_text, str) or not isinstance(summary, str):
+        logger.warning("转写整理输出字段必须为字符串，已保留原始 ASR 文本。")
         return None
-    return TranscriptRefinement(clean_text=clean_text, summary=summary[:120])
+    clean_text, summary = clean_text.strip(), summary.strip()
+    if not clean_text or not summary or len(summary) > 120:
+        logger.warning("转写整理输出为空或摘要超过 120 字符，已保留原始 ASR 文本。")
+        return None
+    return TranscriptRefinement(clean_text=clean_text, summary=summary)
 
 
 _JUDGE_PROMPT = """你是一名 Bilibili 短视频切片编辑。下面是一段直播录制候选窗口的信息,请判断它是否包含\

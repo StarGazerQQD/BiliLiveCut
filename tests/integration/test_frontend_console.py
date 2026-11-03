@@ -94,6 +94,85 @@ def _stop_console(process: subprocess.Popen) -> None:
         process.send_signal(signal.SIGTERM)
 
 
+def _startup_diagnostics(tmp_path: Path) -> Path:
+    diagnostics = tmp_path / "startup-diagnostics"
+    diagnostics.mkdir()
+    # 在应用和测试 actor 导入前启动堆栈采样，子进程继承相同诊断环境。
+    (diagnostics / "sitecustomize.py").write_text(
+        "import faulthandler\nfaulthandler.dump_traceback_later(20, repeat=True)\n", encoding="utf-8"
+    )
+    return diagnostics
+
+
+def _console_diagnostics(log_path: Path, counter: Path) -> str:
+    events = counter.read_text(encoding="utf-8") if counter.exists() else "<not created>"
+    return f"{log_path.name}:\n{log_path.read_text(encoding='utf-8')}\n{counter.name}:\n{events}"
+
+
+def _wait_console_exit(process: subprocess.Popen[bytes], timeout: float, log_path: Path, counter: Path) -> int:
+    try:
+        return process.wait(timeout=timeout)
+    except subprocess.TimeoutExpired as error:
+        raise AssertionError(_console_diagnostics(log_path, counter)) from error
+
+
+def test_http_actor_serves_and_stops_without_reverse_dns(tmp_path: Path) -> None:
+    root = Path(__file__).resolve().parents[2]
+    diagnostics = _startup_diagnostics(tmp_path)
+    with (diagnostics / "sitecustomize.py").open("a", encoding="utf-8") as customization:
+        customization.write(
+            "import socket\ndef reject_reverse_dns(*args, **kwargs):\n"
+            "    raise RuntimeError('unexpected reverse DNS before serving')\n"
+            "socket.getfqdn = reject_reverse_dns\n"
+        )
+    with socket.socket() as probe:
+        probe.bind(("127.0.0.1", 0))
+        port = probe.getsockname()[1]
+    counter, log_path = tmp_path / "backend-events.jsonl", tmp_path / "actor.log"
+    env = {**os.environ, "PYTHONPATH": os.pathsep.join((str(diagnostics), str(root))), "PYTHONIOENCODING": "utf-8"}
+    opener = build_opener(ProxyHandler({}))
+    with log_path.open("w", encoding="utf-8") as log:
+        process = subprocess.Popen(
+            [sys.executable, str(root / "tests/integration/http_service_actor.py"), str(port), str(counter), "clean"],
+            cwd=tmp_path,
+            env=env,
+            stdin=subprocess.PIPE,
+            stdout=log,
+            stderr=log,
+        )
+        try:
+            deadline = time.monotonic() + 25
+            while True:
+                assert process.poll() is None and time.monotonic() < deadline, _console_diagnostics(log_path, counter)
+                try:
+                    with opener.open(f"http://127.0.0.1:{port}/auth/status", timeout=0.5) as response:
+                        assert response.status == 200
+                        break
+                except (URLError, TimeoutError):
+                    time.sleep(0.05)
+            owner = psutil.Process(process.pid)
+            owned = [owner, *owner.children(recursive=True)]
+            identities = {(child.pid, child.create_time()) for child in owned}
+            _stop_console(process)
+            assert _wait_console_exit(process, 30, log_path, counter) == 0
+            events = [json.loads(line) for line in counter.read_text(encoding="utf-8").splitlines()]
+            assert len(events) == 3 and len({item["pid"] for item in events}) == 1
+            assert (events[0]["pid"], events[0]["create_time"]) in identities
+            assert events[0]["started_at"] <= events[1]["parent_eof_at"] <= events[2]["stopped_at"]
+            assert events[2]["exit_code"] == 0
+            _, alive = psutil.wait_procs(owned, timeout=5)
+            assert not alive
+        finally:
+            if process.poll() is None:
+                if process.stdin is not None and not process.stdin.closed:
+                    process.stdin.close()
+                try:
+                    process.wait(timeout=5)
+                except subprocess.TimeoutExpired:
+                    process.kill()
+                    process.wait(timeout=5)
+
+
 @pytest.mark.parametrize(
     "close_during_startup,active_sse",
     [(False, False), (True, False), (False, True)],
@@ -194,12 +273,7 @@ def test_console_starts_independent_frontend_and_api_and_cleans_up(
     dist = tmp_path / "frontend"
     dist.mkdir()
     (dist / "index.html").write_text("<main>independent frontend</main>")
-    diagnostics = tmp_path / "startup-diagnostics"
-    diagnostics.mkdir()
-    # 子进程启动卡住时保留真实线程堆栈，前端和后端沿用相同的诊断环境。
-    (diagnostics / "sitecustomize.py").write_text(
-        "import faulthandler\nfaulthandler.dump_traceback_later(20, repeat=True)\n", encoding="utf-8"
-    )
+    diagnostics = _startup_diagnostics(tmp_path)
     with socket.socket() as probe:
         probe.bind((host, 0))
         port = probe.getsockname()[1]
@@ -337,12 +411,13 @@ def test_console_manual_stop_reports_backend_outcome(
     dist.mkdir()
     (dist / "index.html").write_text("<main>shutdown regression</main>")
     counter = tmp_path / "backend-events.jsonl"
+    diagnostics = _startup_diagnostics(tmp_path)
     with socket.socket() as probe:
         probe.bind(("127.0.0.1", 0))
         port = probe.getsockname()[1]
     env = {
         **os.environ,
-        "PYTHONPATH": os.pathsep.join([str(root), str(root / "packaging/portable/src")]),
+        "PYTHONPATH": os.pathsep.join([str(diagnostics), str(root), str(root / "packaging/portable/src")]),
         "PYTHONIOENCODING": "utf-8",
         "_BLC_PARENT_STDIN": "1",
         "BLC_APP_ROOT": str(tmp_path),
@@ -390,7 +465,7 @@ def test_console_manual_stop_reports_backend_outcome(
         try:
             deadline = time.monotonic() + 25
             while "前后端已就绪" not in log_path.read_text(encoding="utf-8"):
-                assert process.poll() is None and time.monotonic() < deadline, log_path.read_text(encoding="utf-8")
+                assert process.poll() is None and time.monotonic() < deadline, _console_diagnostics(log_path, counter)
                 time.sleep(0.1)
             children = psutil.Process(process.pid).children(recursive=True)
             identities = {(child.pid, child.create_time()) for child in children}
@@ -398,7 +473,7 @@ def test_console_manual_stop_reports_backend_outcome(
                 signal_file.touch()
             else:
                 _stop_console(process)
-            actual_code = process.wait(timeout=45)
+            actual_code = _wait_console_exit(process, 45, log_path, counter)
             exited_at = time.monotonic()
             _, alive = psutil.wait_procs(children, timeout=5)
             assert not alive, "人工停止后必须回收全部所属进程"
@@ -425,7 +500,7 @@ def test_console_manual_stop_reports_backend_outcome(
                     signal_file.touch()
                 else:
                     _stop_console(process)
-                process.wait(timeout=45)
+                _wait_console_exit(process, 45, log_path, counter)
 
 
 def test_frontend_alone_serves_build_without_opening_database(tmp_path: Path):
@@ -504,9 +579,10 @@ def test_start_cleans_up_api_when_frontend_port_is_occupied(
     dist = tmp_path / "dist"
     dist.mkdir()
     (dist / "index.html").write_text("<main>built frontend</main>")
+    diagnostics = _startup_diagnostics(tmp_path)
     env = {
         **os.environ,
-        "PYTHONPATH": os.pathsep.join([str(root), str(root / "packaging/portable/src")]),
+        "PYTHONPATH": os.pathsep.join([str(diagnostics), str(root), str(root / "packaging/portable/src")]),
         "_BLC_PARENT_STDIN": "1",
         "PYTHONIOENCODING": "utf-8",
         "BLC_APP_ROOT": str(tmp_path),
@@ -546,7 +622,8 @@ def test_start_cleans_up_api_when_frontend_port_is_occupied(
                 "sys.exit(_run_service(sys.argv[1:], env=dict(os.environ), cwd=os.getcwd()))",
                 *command,
             ]
-        with (tmp_path / "start.log").open("w+", encoding="utf-8") as log:
+        log_path = tmp_path / "start.log"
+        with log_path.open("w+", encoding="utf-8") as log:
             process = subprocess.Popen(
                 command,
                 cwd=tmp_path,
@@ -556,7 +633,7 @@ def test_start_cleans_up_api_when_frontend_port_is_occupied(
                 stderr=log,
             )
             try:
-                assert process.wait(timeout=30) == exit_code
+                assert _wait_console_exit(process, 30, log_path, counter) == exit_code
                 log.seek(0)
                 output = log.read()
                 if backend_mode == "failed":
@@ -581,4 +658,4 @@ def test_start_cleans_up_api_when_frontend_port_is_occupied(
             finally:
                 if process.poll() is None:
                     _stop_console(process)
-                    process.wait(timeout=25)
+                    _wait_console_exit(process, 25, log_path, counter)

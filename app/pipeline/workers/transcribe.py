@@ -8,14 +8,17 @@ from __future__ import annotations
 
 import json
 import logging
+import math
 import time
 from collections.abc import Mapping
+from datetime import UTC, datetime, timedelta
 from typing import TYPE_CHECKING, Any
 
 from sqlmodel import Session, select
 
 from app.analysis.hotspot_lifecycle import resolve_merged_hotspot_event
 from app.analysis.reanalysis_policy import segment_protection_reason
+from app.analysis.timeline import datetime_epoch
 from app.analysis.transcription.process_pool import ASRProcessExitError, ASRShutdownError
 from app.analysis.transcription.refinement import (
     RefinementDraft,
@@ -51,7 +54,7 @@ _logger = logging.getLogger(__name__)
 def _load_segment_ctx(segment_id: int) -> dict[str, Any]:
     """读取转写计算所需的片段元数据 (纯读取, 不写入)。
 
-    :returns: {"file_path": str, "initial_prompt": str | None, "session_id": int}
+    :returns: 文件、提示词、所属场次与已知时间范围内的片段时长。
     """
     from app.analysis.transcription.pipeline import _build_whisper_prompt  # noqa: PLC0415
 
@@ -62,10 +65,16 @@ def _load_segment_ctx(segment_id: int) -> dict[str, Any]:
         file_path = segment.file_path
         initial_prompt = _build_whisper_prompt(db, segment)
         session_id = segment.session_id
+        duration_s = None
+        if segment.start_ts is not None and segment.end_ts is not None:
+            origin = datetime.fromtimestamp(datetime_epoch(segment.start_ts), UTC)
+            limit = datetime.fromtimestamp(datetime_epoch(segment.end_ts), UTC)
+            duration_s = (limit - origin).total_seconds()
     return {
         "file_path": str(resolve_storage_path(file_path)),
         "initial_prompt": initial_prompt,
         "session_id": session_id,
+        "duration_s": duration_s,
     }
 
 
@@ -136,6 +145,7 @@ def transcribe_compute(task_id: int, pipeline: ASRExecutor | None = None) -> dic
             initial_prompt=initial_prompt,
             segment_id=segment_id,
             session_id=task_session_id,
+            segment_duration_s=ctx["duration_s"],
             windows=windows if isinstance(windows, list) else [],
         )
 
@@ -273,6 +283,7 @@ def _transcribe_hotspot_attention(
     initial_prompt: str | None,
     segment_id: int,
     session_id: int,
+    segment_duration_s: float | None,
     windows: list[object],
 ) -> dict[str, Any]:
     """先识别持久化 attention windows，不在本次任务中执行完整转写。"""
@@ -291,12 +302,17 @@ def _transcribe_hotspot_attention(
         end_value = raw_window.get("end_offset_s")
         if not isinstance(event_key, str) or not event_key:
             continue
-        if not isinstance(start_value, (int, float)) or not isinstance(end_value, (int, float)):
-            continue
+        if type(start_value) not in {int, float} or type(end_value) not in {int, float}:
+            raise ValueError("局部 ASR 时间窗口无效")
         start_s = float(start_value)
         end_s = float(end_value)
-        if end_s <= start_s:
-            continue
+        if segment_duration_s is not None and end_s > segment_duration_s:
+            # 旧任务曾把片尾舍入到三位小数；在识别前还原，提交仍严格校验实际边界。
+            if end_s != round(segment_duration_s, 3):
+                raise ValueError("局部 ASR 时间窗口超出执行片段")
+            end_s = segment_duration_s
+        if not math.isfinite(start_s) or not math.isfinite(end_s) or start_s < 0 or end_s <= start_s:
+            raise ValueError("局部 ASR 时间窗口无效")
         try:
             result = pipeline.transcribe_window(
                 file_path,
@@ -418,7 +434,7 @@ def commit_transcript(lease: TaskLease, compute_result: dict[str, Any], ms: int)
                 return
 
             if compute_result.get("hotspot_asr") is True:
-                _commit_hotspot_attention(db, task, compute_result, ms)
+                _commit_hotspot_attention(db, task, compute_result, ms, segment=segment)
                 db.commit()
                 return
 
@@ -523,6 +539,8 @@ def _commit_hotspot_attention(
     task: SegmentTask,
     compute_result: Mapping[str, object],
     processing_ms: int,
+    *,
+    segment: RawSegment,
 ) -> None:
     """提交局部 ASR 证据并把同一任务重新排队为后台完整转写。"""
     raw_results = compute_result.get("attention_results")
@@ -550,7 +568,7 @@ def _commit_hotspot_attention(
         text = item.get("text")
         if isinstance(text, str) and text.strip():
             event.transcript_text = text.strip()
-        event.evidence_json = _merge_attention_evidence(event.evidence_json, event_key, item, state)
+        event.evidence_json = _merge_attention_evidence(event.evidence_json, event_key, item, state, segment=segment)
         event.updated_at = utcnow()
         db.add(event)
 
@@ -566,6 +584,8 @@ def _commit_hotspot_attention(
             item = result_by_key.get(event_key) if isinstance(event_key, str) else None
             if item is not None:
                 state = _attention_result_state(item)
+                window["start_offset_s"] = item.get("start_offset_s")
+                window["end_offset_s"] = item.get("end_offset_s")
                 window["status"] = "failed" if state == "unavailable" else "completed"
                 window["quality_state"] = state
                 error = item.get("error")
@@ -599,6 +619,8 @@ def _merge_attention_evidence(
     event_key: str,
     result: Mapping[str, object],
     state: str,
+    *,
+    segment: RawSegment,
 ) -> str:
     """幂等写入一条热点局部 ASR 证据，不破坏其他模态。"""
     try:
@@ -615,6 +637,7 @@ def _merge_attention_evidence(
     excerpts = [text.strip()] if isinstance(text, str) and text.strip() else []
     detail: dict[str, object] = {
         "state": state,
+        "segment_id": segment.id,
         "start_offset_s": result.get("start_offset_s"),
         "end_offset_s": result.get("end_offset_s"),
         "backend": result.get("backend"),
@@ -633,11 +656,36 @@ def _merge_attention_evidence(
             "score": 1.0 if state == "available" else (0.35 if state == "degraded" else 0.0),
             "detail": detail,
             "excerpts": excerpts,
+            **_attention_timing(segment, result),
         }
     )
     payload["version"] = 1
     payload["items"] = items
     return json.dumps(payload, ensure_ascii=False, allow_nan=False, separators=(",", ":"))
+
+
+def _attention_timing(segment: RawSegment, result: Mapping[str, object]) -> dict[str, str | None]:
+    start, end = result.get("start_offset_s"), result.get("end_offset_s")
+    if (
+        type(start) not in {int, float}
+        or type(end) not in {int, float}
+        or not math.isfinite(start)
+        or not math.isfinite(end)
+        or start < 0
+        or end <= start
+    ):
+        raise ValueError("局部 ASR 时间窗口无效")
+    if segment.start_ts is None:
+        return {"start_ts": None, "end_ts": None}
+    origin = datetime.fromtimestamp(datetime_epoch(segment.start_ts), UTC)
+    if segment.end_ts is not None:
+        limit = datetime.fromtimestamp(datetime_epoch(segment.end_ts), UTC)
+        if end > (limit - origin).total_seconds():
+            raise ValueError("局部 ASR 时间窗口超出执行片段")
+    return {
+        "start_ts": (origin + timedelta(seconds=start)).isoformat(),
+        "end_ts": (origin + timedelta(seconds=end)).isoformat(),
+    }
 
 
 def _attention_result_state(result: Mapping[str, object]) -> str:

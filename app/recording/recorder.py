@@ -60,7 +60,7 @@ from app.plugins.live_source import (
 from app.recording import intents
 from app.recording.danmaku import DanmakuCapture
 from app.recording.stream_failover import StreamFailover
-from app.recording.stream_race import StreamAttempt, StreamRace
+from app.recording.stream_race import StreamAttempt, StreamRace, active_media_size
 from app.recording.writer_ownership import SessionWriter
 from app.sources.registry import source_registry
 
@@ -1006,7 +1006,7 @@ class Recorder:
                 if path.is_symlink() or not path.is_file():
                     continue
                 try:
-                    size = path.stat().st_size
+                    size = active_media_size(path)
                 except FileNotFoundError:
                     continue
                 if size > sizes.get(path, 0):

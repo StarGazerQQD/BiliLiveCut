@@ -7,6 +7,7 @@ import threading
 import time
 from http.server import BaseHTTPRequestHandler, HTTPServer
 from pathlib import Path
+from socketserver import TCPServer
 
 import psutil
 
@@ -43,6 +44,11 @@ def main() -> None:
 
     class Server(HTTPServer):
         allow_reuse_address = True
+
+        def server_bind(self) -> None:
+            # 测试只服务本机地址，不在就绪前依赖无时限反向 DNS 查询。
+            TCPServer.server_bind(self)
+            self.server_name, self.server_port = self.server_address[:2]
 
     with Server(("127.0.0.1", port), Handler) as server:
 

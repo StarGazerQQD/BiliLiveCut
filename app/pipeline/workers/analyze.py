@@ -1354,10 +1354,16 @@ def _build_hotspot_attention_windows(
     hotspots: list[Mapping[str, object]],
 ) -> list[dict[str, object]]:
     """把本段 provisional 热点转换为可恢复的局部 ASR 窗口。"""
+    from datetime import UTC
+
+    from app.analysis.timeline import datetime_epoch
+
     if segment.start_ts is None:
         return []
+    origin = datetime.fromtimestamp(datetime_epoch(segment.start_ts), UTC)
     if segment.end_ts is not None:
-        duration_s = max(0.0, (segment.end_ts - segment.start_ts).total_seconds())
+        end = datetime.fromtimestamp(datetime_epoch(segment.end_ts), UTC)
+        duration_s = max(0.0, (end - origin).total_seconds())
     else:
         duration_s = float(segment.duration_s or settings.segment_duration_s)
     windows: list[dict[str, object]] = []
@@ -1369,12 +1375,7 @@ def _build_hotspot_attention_windows(
             continue
         if not isinstance(peak_ts, datetime):
             continue
-        try:
-            peak_offset_s = (peak_ts - segment.start_ts).total_seconds()
-        except TypeError:
-            peak_value = peak_ts.replace(tzinfo=None)
-            start_value = segment.start_ts.replace(tzinfo=None)
-            peak_offset_s = (peak_value - start_value).total_seconds()
+        peak_offset_s = datetime_epoch(peak_ts) - datetime_epoch(origin)
         start_offset_s = max(0.0, peak_offset_s - settings.hotspot_asr_pre_roll_s)
         end_offset_s = min(duration_s, peak_offset_s + settings.hotspot_asr_post_roll_s)
         if end_offset_s - start_offset_s < 1.0:
@@ -1384,7 +1385,7 @@ def _build_hotspot_attention_windows(
             {
                 "event_key": event_key,
                 "start_offset_s": round(start_offset_s, 3),
-                "end_offset_s": round(end_offset_s, 3),
+                "end_offset_s": min(duration_s, round(end_offset_s, 3)),
                 "status": "pending",
             }
         )

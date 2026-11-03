@@ -486,7 +486,9 @@ def test_whole_session_summary_analyzes_all_final_asr_once_in_time_order(
     assert result["transcript_count"] == 2
     assert result["summary"] == "19:00:00 主播先介绍挑战规则，19:05:00 挑战反转并成功。"
     assert len(prompts) == 1
-    assert prompts[0].index("[19:00:00][timeline_000.ts]") < prompts[0].index("[19:05:00][timeline_001.ts]")
+    blocks = json.loads(prompts[0].split("整场 ASR：\n", 1)[1].split("\n覆盖情况（", 1)[0])
+    assert [block["source_file"] for block in blocks] == ["timeline_000.ts", "timeline_001.ts"]
+    assert [block["start_at"] for block in blocks] == ["2026-08-05T19:00:00+08:00", "2026-08-05T19:05:00+08:00"]
     assert "主播开场介绍挑战规则" in prompts[0]
     assert "挑战中途出现反转" in prompts[0]
     assert "候选梗概" not in prompts[0]

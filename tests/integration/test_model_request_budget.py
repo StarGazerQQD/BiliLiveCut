@@ -18,9 +18,11 @@ import pytest
 
 from app.analysis import llm
 from app.analysis.model_execution import ModelCallBudget
+from app.analysis.model_journal import ModelRequestJournal
 from app.core.cancellation import OperationCancelledError, OperationShutdownError, shutdown_event
 from app.core.config import settings
 from app.models.configuration import save_model_configuration
+from tests.integration.test_model_journal import _records
 from tests.integration.test_structured_llm import call, catalog, response
 
 if TYPE_CHECKING:
@@ -174,8 +176,9 @@ def test_text_success_and_error_bodies_are_bounded_and_closed(
 
 
 @pytest.mark.parametrize("minimum_descriptor", [0] if os.name == "nt" else [0, 1100])
+@pytest.mark.parametrize("limit", ["deadline", "timeout"])
 def test_text_trickled_network_response_cannot_extend_deadline(
-    temp_db: None, monkeypatch: MonkeyPatch, minimum_descriptor: int
+    temp_db: None, monkeypatch: MonkeyPatch, minimum_descriptor: int, limit: str
 ) -> None:
     closed = Event()
     requests: list[str] = []
@@ -237,14 +240,24 @@ def test_text_trickled_network_response_cannot_extend_deadline(
         # 用真实请求完成客户端冷初始化，原有短预算只测已进入网络的滴流响应。
         assert llm.call_text("预热连接", budget=ModelCallBudget(max_attempts=1, max_elapsed_s=10)) == "连接就绪"
         assert len(requests) == 1
-        budget = ModelCallBudget(max_attempts=8, max_elapsed_s=0.4)
+        monkeypatch.setattr(settings, "llm_request_timeout_s", 1 if limit == "timeout" else 60)
+        budget = ModelCallBudget(
+            max_attempts=1 if limit == "timeout" else 8,
+            max_elapsed_s=10 if limit == "timeout" else 0.4,
+            journal=ModelRequestJournal(),
+        )
         started = time.monotonic()
         assert llm.call_text("绝对截止", budget=budget) is None
         assert time.monotonic() - started < 2
         assert len(requests) == 2, requests
         assert closed.wait(2)
         assert len(budget.attempts) == 1
-        assert budget.attempts[0].error == "deadline"
+        assert budget.attempts[0].error == limit
+        (record,) = _records()
+        assert record.state == "finished" and record.attempt.status == "failed"
+        assert record.attempt.error == limit and record.received_at is None
+        assert record.usage.input_tokens is None and record.usage.output_tokens is None
+        assert record.usage.estimated_cost_usd is None
     finally:
         llm.close_clients()
         server.shutdown()

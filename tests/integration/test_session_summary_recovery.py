@@ -136,15 +136,55 @@ def test_hierarchy_uses_all_blocks_and_only_invalidates_changed_ancestors(
     assert calls[-1]["stage"] == "final"
 
 
+@pytest.mark.parametrize("known_end", [False, True])
+def test_short_summary_preserves_dates_gaps_and_unknown_end(
+    temp_db: None, monkeypatch: pytest.MonkeyPatch, known_end: bool
+) -> None:
+    session_id = _seed(count=2, length=50)
+    with get_session() as db:
+        segments = db.exec(select(RawSegment).order_by(RawSegment.seq)).all()
+        recording = db.get(RecordingSession, session_id)
+        recording.started_at = datetime(2026, 10, 30, 15, 58, tzinfo=UTC)
+        recording.ended_at = datetime(2026, 10, 30, 16, 25, tzinfo=UTC)
+        segments[0].start_ts = recording.started_at
+        segments[0].end_ts = datetime(2026, 10, 30, 16, 3, tzinfo=UTC)
+        segments[1].start_ts = datetime(2026, 10, 30, 16, 20, tzinfo=UTC)
+        segments[1].end_ts = recording.ended_at if known_end else None
+    calls: list[dict[str, object]] = []
+
+    async def send(_transport: httpx.AsyncHTTPTransport, request: httpx.Request) -> httpx.Response:
+        calls.append(_payload(request))
+        return httpx.Response(200, json=response('{"summary":"有间隙的两段素材，无法确认期间情况。"}'))
+
+    monkeypatch.setattr(httpx.AsyncHTTPTransport, "handle_async_request", send)
+    assert _run(session_id)
+    assert len(calls) == 1 and calls[0]["stage"] == "whole"
+    prompt = calls[0]["content"]
+    records = json.loads(prompt.split("整场 ASR：\n", 1)[1].split("\n覆盖情况（", 1)[0])
+    assert [item["start_at"] for item in records] == ["2026-10-30T23:58:00+08:00", "2026-10-31T00:20:00+08:00"]
+    assert [item["end_at"] for item in records] == [
+        "2026-10-31T00:03:00+08:00",
+        "2026-10-31T00:25:00+08:00" if known_end else None,
+    ]
+    assert [item["text"] for item in records] == [f"segment{index}:" + "x" * 50 for index in range(2)]
+    assert "录制间隙" in prompt and "精确事件时间" in prompt and "因果" in prompt
+
+
 def test_single_large_block_is_partitioned_without_missing_text_or_guessed_time(
     temp_db: None, monkeypatch: pytest.MonkeyPatch
 ) -> None:
     session_id = _seed(count=1, length=12000)
+    with get_session() as db:
+        segment = db.exec(select(RawSegment)).one()
+        segment.start_ts = datetime(2026, 10, 30, 15, 58, tzinfo=UTC)
+        segment.end_ts = datetime(2026, 10, 30, 16, 3, tzinfo=UTC)
     calls: list[dict[str, object]] = []
+    prompts: list[str] = []
 
     async def send(_transport: httpx.AsyncHTTPTransport, request: httpx.Request) -> httpx.Response:
         payload = _payload(request)
         calls.append(payload)
+        prompts.append(json.loads(request.content)["messages"][0]["content"])
         return httpx.Response(200, json=response(json.dumps({"summary": _reply(payload)})))
 
     monkeypatch.setattr(httpx.AsyncHTTPTransport, "handle_async_request", send)
@@ -153,6 +193,9 @@ def test_single_large_block_is_partitioned_without_missing_text_or_guessed_time(
     assert len(leaves) > 1
     assert "".join(item["text"] for item in leaves) == "segment0:" + "x" * 12000
     assert len({(item["start_at"], item["end_at"]) for item in leaves}) == 1
+    assert leaves[0]["start_at"] == "2026-10-30T23:58:00+08:00"
+    assert leaves[0]["end_at"] == "2026-10-31T00:03:00+08:00"
+    assert all("GMT+8" in prompt for prompt in prompts)
     cursor = 0
     for item in leaves:
         assert item["character_range"] == [cursor, cursor + len(item["text"])]
