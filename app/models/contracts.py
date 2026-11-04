@@ -11,6 +11,7 @@ TextCapability = Literal["analysis", "transcript", "trends", "summary", "copywri
 Capability = Literal[TextCapability, "asr"]
 TEXT_CAPABILITIES: tuple[TextCapability, ...] = ("analysis", "transcript", "trends", "summary", "copywriting")
 MAX_CONFIGURABLE_TOKENS = 2_097_152
+DEEPSEEK_SEARCH_BASE_URLS = frozenset({"https://api.deepseek.com", "https://api.deepseek.com/v1"})
 Identity = Annotated[str, Field(min_length=1, max_length=128, pattern=r"^[^\x00-\x20\x7F]+$")]
 Name = Annotated[
     str, Field(min_length=1, max_length=200, pattern=r"^[^\s\x00-\x1F\x7F](?:[^\x00-\x1F\x7F]*[^\s\x00-\x1F\x7F])?$")
@@ -69,6 +70,7 @@ class ModelRoute(BaseModel):
     enabled: bool = True
     priority: int = Field(default=100, ge=-1000000, le=1000000)
     web_search_param: str = Field(default="", max_length=64, pattern=r"^(?:[A-Za-z][A-Za-z0-9_]*)?$")
+    deepseek_search_enabled: bool = False
     context_window_tokens: int | None = Field(default=None, ge=1024, le=MAX_CONFIGURABLE_TOKENS)
     max_input_tokens: int | None = Field(default=None, ge=128, le=MAX_CONFIGURABLE_TOKENS)
     max_output_tokens: int | None = Field(default=None, ge=16, le=MAX_CONFIGURABLE_TOKENS)
@@ -90,6 +92,7 @@ class ModelRoute(BaseModel):
             raise ValueError("搜索开关键不能覆盖协议字段")
         if self.capability == "asr" and (
             self.web_search_param
+            or self.deepseek_search_enabled
             or self.context_window_tokens is not None
             or self.max_input_tokens is not None
             or self.max_output_tokens is not None
@@ -116,6 +119,12 @@ class ModelConfiguration(BaseModel):
             raise ValueError("模型连接或路由 ID 不能重复")
         if any(route.connection_id not in connections for route in self.routes):
             raise ValueError("模型路由引用了不存在的服务连接")
+        endpoints = {item.id: item.base_url.casefold() for item in self.connections}
+        if any(
+            route.deepseek_search_enabled and endpoints[route.connection_id] not in DEEPSEEK_SEARCH_BASE_URLS
+            for route in self.routes
+        ):
+            raise ValueError("DeepSeek 真实搜索仅支持官方 api.deepseek.com 连接")
         return self
 
 

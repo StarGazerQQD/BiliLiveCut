@@ -213,13 +213,25 @@ async def test_repeated_cancellation_reaps_live_media_guard_and_process(
         await asyncio.gather(task, return_exceptions=True)
 
 
+@pytest.mark.parametrize("stale_size", [False, True])
 async def test_healthy_long_segment_can_outlive_failure_budget(
-    runtime: RuntimeSource, monkeypatch: pytest.MonkeyPatch, video: Path
+    runtime: RuntimeSource, monkeypatch: pytest.MonkeyPatch, video: Path, stale_size: bool
 ) -> None:
     room = await register_room("123", True, "external")
     processes = _process_boundary(monkeypatch, video, "grow")
     monkeypatch.setattr(settings, "recording_reconnect_max_elapsed_s", 0.1)
     monkeypatch.setattr(settings, "recording_stream_race_timeout_s", 0.8)
+    original_stat = Path.stat
+
+    def directory_stat(path: Path, *, follow_symlinks: bool = True) -> os.stat_result:
+        result = original_stat(path, follow_symlinks=follow_symlinks)
+        if stale_size and path.suffix == ".ts" and path != video:
+            values = list(result)
+            values[6] = 0
+            return os.stat_result(values)
+        return result
+
+    monkeypatch.setattr(Path, "stat", directory_stat)
     recorder = Recorder(room_source(room), room.id, metadata_prepared=True)
     task = asyncio.create_task(recorder.run())
     try:
@@ -230,6 +242,7 @@ async def test_healthy_long_segment_can_outlive_failure_budget(
         assert not task.done() and processes[0].returncode is None
         assert not recorder.retry_budget_exhausted and runtime.stream_calls == 1
     finally:
+        monkeypatch.setattr(Path, "stat", original_stat)
         recorder.stop()
         await asyncio.wait_for(task, 12)
     assert processes[0].returncode == 0 and recorder.recording_error is None

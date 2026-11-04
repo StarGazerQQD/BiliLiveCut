@@ -24,7 +24,7 @@ import traceback
 from collections.abc import Sequence
 from contextlib import ExitStack
 from pathlib import Path
-from typing import Any
+from typing import TYPE_CHECKING, Any
 
 from blc_portable.console import configure_console_encoding
 from blc_portable.diagnostics import exception_summary, redact_diagnostic
@@ -32,11 +32,14 @@ from config import file_locks as shared_file_locks
 from config.file_locks import FileLock
 from config.launcher_settings import APP_ROOT_ENV, WEB_PORT_ENV, load_launcher_config, validate_web_port
 
+if TYPE_CHECKING:
+    import psutil
+
 # -- Constants ──────────────────────────────────────────────────
 APP_NAME = "BiliLiveCut"
 VERSION = "V0.1.20.3 Alpha"
 RELEASE_VERSION = "0.1.20.3-alpha"
-SOURCE_COMMIT_SHORT = "df62058"
+SOURCE_COMMIT_SHORT = "070c48a"
 # NOTE: RELEASE_ID 将在获得 Payload SHA-256 后动态生成 (内容寻址)
 SUPPORTED_PYTHON_VERSIONS = frozenset({(3, 11), (3, 12)})
 
@@ -1223,17 +1226,39 @@ def _service_http_ready(web_port: int) -> bool:
         connection.close()
 
 
+def _wait_for_service_members(members: list[psutil.Process], *, timeout: float) -> None:
+    """确认登记成员已停止执行，外部父进程持有的僵尸回收权不阻止恢复。"""
+    import psutil
+
+    _, pending = psutil.wait_procs(members, timeout=timeout)
+    active: list[int] = []
+    for member in pending:
+        try:
+            if member.status() not in (psutil.STATUS_ZOMBIE, psutil.STATUS_DEAD):
+                active.append(member.pid)
+        except psutil.NoSuchProcess:
+            pass  # 成员在等待结束和状态读取之间退出。
+    if active:
+        raise RuntimeError(f"健康故障清理未确认，所属子进程仍在执行：{active}")
+
+
 def _run_service(command: list[str], *, env: dict[str, str], cwd: str) -> int:
     """Portable 独占有限恢复预算；人工退出不重启，上一代清理失败不启动下一代。"""
     import time
 
+    import psutil
+
     from app.core.process_spawn import spawn_owned
+    from app.core.supervisor import remaining_shutdown, shutdown_scope
     from config.service_restart import (
         CLEANUP_UNCONFIRMED_EXIT,
+        MANUAL_STOP_FAILED_EXIT,
         OUTER_SHUTDOWN_LIMIT_S,
         RESTART_OWNER_ENV,
         SERVICE_BIND_FAILED_EXIT,
+        UNRESPONSIVE_SHUTDOWN_LIMIT_S,
         RestartBudget,
+        ServiceReadiness,
     )
 
     options = {"creationflags": subprocess.CREATE_NEW_PROCESS_GROUP} if os.name == "nt" else {}
@@ -1248,39 +1273,83 @@ def _run_service(command: list[str], *, env: dict[str, str], cwd: str) -> int:
             **options,
         )
         manual_stop = False
+        health_failed = False
+        health_deadline: float | None = None
+        health_members: list[psutil.Process] = []
         try:
             next_probe = 0.0
+            readiness = ServiceReadiness(time.monotonic())
             try:
                 while process.poll() is None:
                     if web_port is not None and time.monotonic() >= next_probe:
                         ready = _service_http_ready(web_port)
-                        budget.observe(ready=ready, now=time.monotonic())
+                        observed_at = time.monotonic()
+                        budget.observe(ready=ready, now=observed_at)
+                        if failure := readiness.observe(ready=ready, now=observed_at):
+                            health_failed = True
+                            health_deadline = observed_at + UNRESPONSIVE_SHUTDOWN_LIMIT_S
+                            try:
+                                health_members = psutil.Process(process.pid).children(recursive=True)
+                            except psutil.NoSuchProcess:
+                                pass
+                            print(f"[ERROR] {failure}，开始有界回收所属服务进程。", flush=True)
+                            assert process.stdin is not None
+                            process.stdin.close()
+                            try:
+                                process.wait(
+                                    timeout=max(
+                                        0.0,
+                                        health_deadline
+                                        - time.monotonic()
+                                        - min(5.0, UNRESPONSIVE_SHUTDOWN_LIMIT_S / 2),
+                                    )
+                                )
+                            except subprocess.TimeoutExpired:
+                                pass
+                            break
                         next_probe = time.monotonic() + 1
                     time.sleep(0.25)
             except KeyboardInterrupt:
                 manual_stop = True
-                assert process.stdin is not None
-                process.stdin.close()
-                try:
-                    process.wait(timeout=OUTER_SHUTDOWN_LIMIT_S)
-                except (KeyboardInterrupt, subprocess.TimeoutExpired):
-                    tree.terminate()
-                    process.wait(timeout=5)
-            code = process.returncode
-            budget.ended(time.monotonic())
+                # 健康故障回收期间人工停止不能重新开始长时间业务等待。
+                if not health_failed:
+                    assert process.stdin is not None
+                    process.stdin.close()
+                    try:
+                        process.wait(timeout=OUTER_SHUTDOWN_LIMIT_S)
+                    except (KeyboardInterrupt, subprocess.TimeoutExpired):
+                        tree.terminate()
+                        process.wait(timeout=5)
+            budget.ended()
         finally:
             if process.stdin is not None and not process.stdin.closed:
                 process.stdin.close()
-            tree.terminate()
-            process.wait(timeout=5)
+            cleanup_remaining = max(0.0, health_deadline - time.monotonic()) if health_deadline is not None else 10.0
+            with shutdown_scope(cleanup_remaining):
+                while True:
+                    try:
+                        tree.terminate()
+                        process.wait(timeout=remaining_shutdown(5))
+                        if health_members:
+                            # POSIX 子服务各有独立进程组，需等其父死亡监管完成，不能只确认 console PID。
+                            _wait_for_service_members(health_members, timeout=remaining_shutdown(5))
+                        break
+                    except KeyboardInterrupt:
+                        manual_stop = True
+        code = process.returncode
+        if code == MANUAL_STOP_FAILED_EXIT:
+            print("[ERROR] 人工关闭期间后台收尾失败，已停止自动恢复，请检查服务日志。")
+            return 1
         if manual_stop:
             return code if code is not None and code >= 0 else 130
+        if health_failed and code == 0:
+            code = 1
         if code in {0, CLEANUP_UNCONFIRMED_EXIT}:
             return code
         if code == SERVICE_BIND_FAILED_EXIT:
             print("[ERROR] 前端监听绑定失败，所属服务已关闭，请检查地址、端口占用及权限。")
             return 1
-        delay = budget.failed(time.monotonic())
+        delay = budget.failed()
         if delay is None:
             print("[ERROR] 服务连续异常退出，自动恢复预算已耗尽，请检查日志后重新启动。")
             return code if code is not None and code > 0 else 1

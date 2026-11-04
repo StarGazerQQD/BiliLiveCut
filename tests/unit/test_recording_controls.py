@@ -635,32 +635,30 @@ async def test_transport_eof_refreshes_signed_address_and_stops_at_budget(
 async def test_temporary_stream_failure_budget_keeps_error_status(
     temp_db: None, tmp_path: Path, monkeypatch: MonkeyPatch
 ) -> None:
+    from app.db.entities import RecordingSession
+    from app.db.session import get_session
     from app.plugins.live_source import SourceTemporaryError
     from app.recording import recorder as recorder_module
 
+    room_id, _, _ = _seed_room_session(tmp_path)
     recorder = recorder_module.Recorder(
-        source_room=SourceRoom(platform="bilibili", source_id="123", canonical_url="https://live.bilibili.com/123"),
-        db_room_id=1,
+        source_room=SourceRoom(platform="bilibili", source_id="200", canonical_url="https://live.bilibili.com/200"),
+        db_room_id=room_id,
         metadata_prepared=True,
     )
-    updates: list[dict[str, object]] = []
 
     async def failed_stream(room: SourceRoom, preference: object) -> list[StreamSpec]:
         raise SourceTemporaryError("live but no compatible quality")
 
-    async def no_wait(seconds: float) -> None:
-        await asyncio.sleep(0)
-
     monkeypatch.setattr(recorder_module.source_registry, "get_streams", failed_stream)
-    monkeypatch.setattr(recorder_module, "session_raw_dir", lambda sid: tmp_path)
-    monkeypatch.setattr(recorder, "_create_session", lambda: 123)
-    monkeypatch.setattr(recorder, "_update_session", lambda **kwargs: updates.append(kwargs))
-    monkeypatch.setattr(recorder, "_sleep_or_stop", no_wait)
     monkeypatch.setattr(recorder_module.settings, "collect_danmaku", False)
     monkeypatch.setattr(recorder_module.settings, "recording_reconnect_max_attempts", 2)
+    monkeypatch.setattr(recorder_module.settings, "reconnect_max_backoff_s", 0.01)
     await recorder.run()
-    assert updates[-1]["status"] == "error"
-    assert "取流暂时失败" in str(updates[-1]["error_message"])
+    with get_session() as db:
+        session = db.get(RecordingSession, recorder.session_id)
+        assert session.status == "error"
+        assert "取流暂时失败" in session.error_message
 
 
 @pytest.mark.asyncio
@@ -670,47 +668,43 @@ async def test_recorder_auto_stops_after_consecutive_retry_limit(
     monkeypatch: MonkeyPatch,
 ) -> None:
     """持续无流达到次数上限后按真实失败收尾。"""
+    from app.db.entities import RecordingSession
+    from app.db.session import get_session
     from app.pipeline import storage_lifecycle
     from app.recording import recorder as recorder_module
 
+    room_id, _, _ = _seed_room_session(tmp_path)
+    states: list[str] = []
+
+    def on_state(status: str, session_id: int | None) -> None:
+        states.append(status)
+
     recorder = recorder_module.Recorder(
-        source_room=SourceRoom(
-            platform="bilibili", source_id="23771139", canonical_url="https://live.bilibili.com/23771139"
-        ),
-        db_room_id=1,
+        source_room=SourceRoom(platform="bilibili", source_id="200", canonical_url="https://live.bilibili.com/200"),
+        db_room_id=room_id,
+        metadata_prepared=True,
+        on_state=on_state,
     )
-    updates: list[dict[str, object]] = []
     fetch_calls = 0
-
-    def create_session() -> int:
-        return 91
-
-    def update_session(**kwargs: object) -> None:
-        updates.append(kwargs)
 
     async def fetch_stream(_self: object, _room: SourceRoom, _preference: object) -> list[StreamSpec]:
         nonlocal fetch_calls
         fetch_calls += 1
         return []
 
-    async def no_wait(_seconds: float) -> None:
-        await asyncio.sleep(0)
-
-    monkeypatch.setattr(recorder_module, "session_raw_dir", lambda _session_id: tmp_path)
     monkeypatch.setattr(storage_lifecycle, "should_stop_recording", lambda: False)
     monkeypatch.setattr(recorder_module.settings, "collect_danmaku", False)
     monkeypatch.setattr(recorder_module.settings, "recording_reconnect_max_attempts", 3)
     monkeypatch.setattr(recorder_module.settings, "recording_reconnect_max_elapsed_s", 0)
-    monkeypatch.setattr(recorder, "_create_session", create_session)
-    monkeypatch.setattr(recorder, "_update_session", update_session)
     monkeypatch.setattr("app.sources.bilibili.source.BilibiliSource.get_streams", fetch_stream)
-    monkeypatch.setattr(recorder, "_sleep_or_stop", no_wait)
+    monkeypatch.setattr(recorder_module.settings, "reconnect_max_backoff_s", 0.01)
 
     await recorder.run()
 
     assert fetch_calls == 3
-    assert any("3/3 次" in str(update.get("error_message", "")) for update in updates)
-    assert [update.get("status") for update in updates[-2:]] == ["finalizing", "error"]
+    with get_session() as db:
+        assert "3/3 次" in db.get(RecordingSession, recorder.session_id).error_message
+    assert states[-2:] == ["finalizing", "error"]
 
 
 @pytest.mark.asyncio

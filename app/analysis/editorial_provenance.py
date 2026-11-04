@@ -31,7 +31,7 @@ def semantic_policy_identity(policy: dict[str, object]) -> dict[str, object]:
         "routes": [
             {
                 name: route[name]
-                for name in ("id", "connection", "model", "priority", "endpoint_sha256")
+                for name in ("id", "connection", "model", "priority", "endpoint_sha256", "deepseek_search_enabled")
                 if name in route
             }
             for route in routes
@@ -69,13 +69,17 @@ def editorial_code_identity() -> str:
     """读取实际安装源码，跨源码包和 wheel 保持相同的编辑链身份。"""
     names = (
         "analysis/editorial_contracts.py",
+        "analysis/editorial_references.py",
         "analysis/editorial_review.py",
         "analysis/editorial_provenance.py",
         "analysis/editorial_review_sources.py",
+        "analysis/media_validation_windows.py",
         "analysis/editorial_evidence.py",
         "analysis/editorial_explanation.py",
         "analysis/event_enricher.py",
         "analysis/model_execution.py",
+        "analysis/model_search.py",
+        "analysis/search_contracts.py",
         "analysis/llm.py",
         "models/capacity.py",
         "analysis/clip_scorer.py",
@@ -102,6 +106,7 @@ class _PolicyRoute(BaseModel):
     priority: int
     capacity: _CapacityPolicy | None = None
     endpoint_sha256: str | None = Field(default=None, pattern=r"^[0-9a-f]{64}$")
+    deepseek_search_enabled: bool = False
 
 
 class _Policy(BaseModel):

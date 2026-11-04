@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import asyncio
 from collections.abc import AsyncIterator
 from contextlib import asynccontextmanager
 from typing import TYPE_CHECKING
@@ -40,6 +41,7 @@ from app.sources.bilibili.client import (
 
 if TYPE_CHECKING:
     from app.recording.danmaku_archive import DanmakuArchive
+    from app.recording.danmaku_journal import DanmakuJournal
 
 
 class BilibiliSource:
@@ -143,15 +145,30 @@ class BilibiliSource:
         finally:
             client.stop()
 
-    def danmaku_for_session(self, session_id: int, *, archive: DanmakuArchive | None = None) -> DanmakuSource:
+    def danmaku_for_session(
+        self,
+        session_id: int,
+        *,
+        archive: DanmakuArchive | None = None,
+        journal: DanmakuJournal | None = None,
+        gate: asyncio.Lock | None = None,
+    ) -> DanmakuSource:
         """宿主内部会话适配，保留 Bilibili 既有事件类型、采样和存储语义。"""
-        return _BilibiliSessionDanmaku(session_id, archive)
+        return _BilibiliSessionDanmaku(session_id, archive, journal, gate)
 
 
 class _BilibiliSessionDanmaku:
-    def __init__(self, session_id: int, archive: DanmakuArchive | None) -> None:
+    def __init__(
+        self,
+        session_id: int,
+        archive: DanmakuArchive | None,
+        journal: DanmakuJournal | None,
+        gate: asyncio.Lock | None,
+    ) -> None:
         self.session_id = session_id
         self.archive = archive
+        self.journal = journal
+        self.gate = gate
 
     async def collect_danmaku(self, room: SourceRoom, emit: DanmakuSink, state: DanmakuStateSink) -> None:
         """现有客户端负责 Bili 事件入库，不重复发送为普通文本事件。"""
@@ -164,6 +181,8 @@ class _BilibiliSessionDanmaku:
             cookie=get_bilibili_cookie(),
             on_state=state,
             archive=self.archive,
+            journal=self.journal,
+            frame_gate=self.gate,
             sampling_policy=lambda: session_sampling_policy(self.session_id),
         )
         try:

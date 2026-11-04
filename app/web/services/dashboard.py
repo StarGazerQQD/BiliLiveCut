@@ -4,6 +4,7 @@ from __future__ import annotations
 
 from typing import Any
 
+from sqlalchemy import func
 from sqlmodel import select
 
 from app.db.entities import (
@@ -99,11 +100,15 @@ def _room_dict(room: LiveRoom, runtime: dict[str, Any]) -> dict[str, Any]:
     }
 
 
-def danmaku_overview(limit: int = 50, session_id: int | None = None) -> dict[str, Any]:
+def danmaku_overview(
+    limit: int = 50, session_id: int | None = None, *, session_limit: int = 50, session_offset: int = 0
+) -> dict[str, Any]:
     """返回最近弹幕与按会话聚合的弹幕热度统计。
 
     :param limit: 返回的最近弹幕条数。
     :param session_id: 仅查询指定会话(可选)。
+    :param session_limit: 当前页最多返回的场次数。
+    :param session_offset: 场次分页起点，不影响最近弹幕和全局计数。
     :returns: ``{"available", "recent": [...], "sessions": [...]}``。
     """
     with get_session() as db:
@@ -112,48 +117,30 @@ def danmaku_overview(limit: int = 50, session_id: int | None = None) -> dict[str
             stmt = stmt.where(Danmaku.session_id == session_id)
         recent_rows = db.exec(stmt.limit(limit)).all() if limit >= 0 else db.exec(stmt).all()[:limit]
 
-        # 按会话聚合数量(简单热度指标)。
-        agg_stmt = select(Danmaku.session_id, Danmaku.value)
-        if session_id is not None:
-            agg_stmt = agg_stmt.where(Danmaku.session_id == session_id)
-        # 按原查询顺序累计浮点值，流式读取避免保留全部历史弹幕。
-        counts: dict[int, dict[str, float]] = {}
-        total = 0
-        for sid, value in db.exec(agg_stmt).yield_per(512):
-            bucket = counts.setdefault(sid, {"count": 0.0, "intensity": 0.0})
-            bucket["count"] += 1
-            bucket["intensity"] += float(value)
-            total += 1
+        from app.web.services.danmaku_statistics import danmaku_page
         from app.web.services.source_identity import source_identities_for_sessions, unknown_source_identity
 
-        session_stmt = select(RecordingSession.id).order_by(RecordingSession.id.desc()).limit(limit)
-        if session_id is not None:
-            session_stmt = session_stmt.where(RecordingSession.id == session_id)
-        source_session_ids = set(db.exec(session_stmt).all())
+        page = danmaku_page(db, session_id=session_id, limit=session_limit, offset=session_offset)
+        source_session_ids = set(page.session_ids)
         source_session_ids.update(row.session_id for row in recent_rows)
-        source_session_ids.update(counts)
         sources = source_identities_for_sessions(db, source_session_ids)
 
-    from app.analysis.source_policy import session_danmaku_view
     from app.recording.danmaku_archive import archive_view
-
-    evidence = {sid: session_danmaku_view(sid) for sid in source_session_ids}
-    for sid in source_session_ids:
-        counts.setdefault(sid, {"count": 0.0, "intensity": 0.0})
 
     sessions = [
         {
             "session_id": sid,
-            "count": int(v["count"]) if evidence[sid]["available"] or v["count"] else None,
-            "intensity": round(v["intensity"], 2) if evidence[sid]["available"] or v["count"] else None,
+            "count": count if page.evidence[sid]["available"] or count else None,
+            "intensity": round(weight, 2) if page.evidence[sid]["available"] or count else None,
             "intensity_unit": "Bilibili 事件权重"
             if sources.get(sid, unknown_source_identity())["platform"] == "bilibili"
             else "普通文本条数",
-            "evidence": evidence[sid],
+            "evidence": page.evidence[sid],
             "archive": archive_view(sid),
             **sources.get(sid, unknown_source_identity()),
         }
-        for sid, v in sorted(counts.items(), reverse=True)
+        for sid in page.session_ids
+        for count, weight in [page.counts.get(sid, (0, 0.0))]
     ]
     recent = [
         {
@@ -167,10 +154,16 @@ def danmaku_overview(limit: int = 50, session_id: int | None = None) -> dict[str
         for d in recent_rows
     ]
     return {
-        "available": any(item["available"] for item in evidence.values()),
-        "total": total,
+        "available": page.available,
+        "total": page.total_comments,
         "recent": recent,
         "sessions": sessions,
+        "session_pagination": {
+            "offset": session_offset,
+            "limit": session_limit,
+            "total": page.total_sessions,
+            "has_more": session_offset + len(page.session_ids) < page.total_sessions,
+        },
     }
 
 
@@ -181,16 +174,15 @@ def pipeline_progress(session_id: int | None = None) -> dict[str, Any]:
     :returns: 含各阶段计数的字典。
     """
     with get_session() as db:
-        stmt = select(RawSegment)
+        stmt = select(RawSegment.status, func.count()).group_by(RawSegment.status)
         if session_id is not None:
             stmt = stmt.where(RawSegment.session_id == session_id)
-        segments = db.exec(stmt).all()
+        counts = dict(db.exec(stmt).all())
 
-    recorded = sum(1 for s in segments if s.status == SegmentStatus.RECORDED)
-    transcribed = sum(1 for s in segments if s.status == SegmentStatus.TRANSCRIBED)
-    scored = sum(1 for s in segments if s.status == SegmentStatus.SCORED)
-
-    total = len(segments)
+    recorded = counts.get(SegmentStatus.RECORDED, 0)
+    transcribed = counts.get(SegmentStatus.TRANSCRIBED, 0)
+    scored = counts.get(SegmentStatus.SCORED, 0)
+    total = sum(counts.values())
     return {
         "total_segments": total,
         "recorded": recorded,

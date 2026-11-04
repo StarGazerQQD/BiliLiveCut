@@ -40,6 +40,7 @@ from app.db.entities import (
 from app.db.session import get_session
 from app.plugins.live_source import SourceRoom, SourceUnavailable
 from app.recording import intents
+from app.recording.danmaku_journal import drain_journal, journal_closed
 from app.recording.metadata import refresh_room_metadata
 from app.recording.recorder import Recorder
 from app.sources.registry import source_registry
@@ -52,7 +53,7 @@ async def _on_session_end(session_id: int) -> None:
 
     :param session_id: 结束的会话 id。
     """
-    reanalysis_requested, summary_requested = await run_sync(partial(_queue_session_end, session_id))
+    reanalysis_requested, summary_requested = await run_sync(partial(queue_recording_end, session_id))
     with get_session() as db:
         session = db.get(RecordingSession, session_id)
         session_status = session.status if session is not None else None
@@ -471,7 +472,6 @@ class RecorderManager:
             if recovery is not None and recovery.generation is not None:
                 if previous is None or previous.generation != recovery.generation or previous.state != "cooldown":
                     return False
-                pipeline_enabled, produce = previous.pipeline, previous.produce
             room.enabled = True
             # Pipeline 回调及后续调度器都会读取房间级 auto_analyze。
             # 与 CLI 保持一致：有效开关为真时同步开启，否则回调即使已安装也会跳过任务登记。
@@ -927,13 +927,19 @@ def finalize_recording_requests(db: Session, session_id: int) -> tuple[bool, boo
     execution = intents.load_execution(db, session_id)
     if execution is not None and execution.settled:
         return False, False
+    if not journal_closed(db, session_id):
+        raise RuntimeError("弹幕补做尚未完成，保留录制收尾请求")
     _finalize_manual_markers(session_id, db)
-    reanalysis = request_session_reanalysis(session_id, reason="session_finalized", db=db)
-    summary = reanalysis or request_session_timeline_summary_in_session(
-        db,
-        session_id,
-        reason="session_finalized_without_reanalysis",
-        force=True,
+    analyze = execution is None or execution.final_analysis
+    reanalysis = analyze and request_session_reanalysis(session_id, reason="session_finalized", db=db)
+    summary = analyze and (
+        reanalysis
+        or request_session_timeline_summary_in_session(
+            db,
+            session_id,
+            reason="session_finalized_without_reanalysis",
+            force=True,
+        )
     )
     if execution is not None:
         execution.settled = True
@@ -942,7 +948,10 @@ def finalize_recording_requests(db: Session, session_id: int) -> tuple[bool, boo
 
 
 @media_operation()
-def _queue_session_end(session_id: int) -> tuple[bool, bool]:
+def queue_recording_end(session_id: int) -> tuple[bool, bool]:
+    """正常结束只补一批弹幕，剩余积压交由周期清算，不无限延迟录制退出。"""
+    if not drain_journal(session_id):
+        raise RuntimeError("弹幕补做尚未完成，保留录制收尾请求")
     with get_session() as db:
         if db.get_bind().dialect.name == "sqlite":
             db.connection().exec_driver_sql("BEGIN IMMEDIATE")

@@ -15,6 +15,7 @@ from app.core.runtime_settings import effective_settings
 from app.core.settings_store import get_setting
 from app.db.entities import AppSetting
 from app.db.session import get_session
+from app.models.authorization_revision import update_authorization_revisions
 from app.models.capacity import MODEL_CAPACITIES
 from app.models.contracts import (
     TEXT_CAPABILITIES,
@@ -148,6 +149,7 @@ def _legacy(db: Session, core: Settings) -> ModelConfiguration:
                     priority=provider.priority,
                     enabled=provider.enabled,
                     web_search_param=provider.web_search_param,
+                    deepseek_search_enabled=provider.deepseek_search_enabled,
                     price_input_per_m=provider.price_input_per_m,
                     price_output_per_m=provider.price_output_per_m,
                 )
@@ -367,6 +369,12 @@ def save_model_configuration(change: ModelConfigurationChange) -> ModelConfigura
         core, _ = _core(db)
         previous = _read(db, core)
         merged = _merge(change, previous)
+        update_authorization_revisions(
+            db,
+            {item.id: (item.base_url, item.api_key, item.enabled) for item in previous.connections},
+            {item.id: (item.base_url, item.api_key, item.enabled) for item in merged.connections},
+            revision,
+        )
         _validate_selection(merged, core.asr_remote_route_id)
         _invalidate_probe_diagnostics(db, previous, merged)
         row = db.get(AppSetting, MODEL_CONFIGURATION_KEY) or AppSetting(key=MODEL_CONFIGURATION_KEY, value="")

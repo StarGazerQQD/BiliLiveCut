@@ -66,10 +66,15 @@ _locks: WeakKeyDictionary[asyncio.AbstractEventLoop, dict[int, asyncio.Lock]] = 
 def read_metadata(db: Session, key: str, model: type[_Model]) -> _Model | None:
     """读取严格校验的版本化元数据；损坏记录显示未知并保留原文件。"""
     row = db.get(AppSetting, key)
-    if row is None:
+    return decode_metadata(key, row.value if row is not None else None, model)
+
+
+def decode_metadata(key: str, value: str | None, model: type[_Model]) -> _Model | None:
+    """批量读取与单条读取共用相同的缺失、校验及告警语义。"""
+    if value is None:
         return None
     try:
-        return model.model_validate_json(row.value)
+        return model.model_validate_json(value)
     except ValidationError:
         logger.warning("元数据结构无效 key={}", key)
         return None

@@ -68,7 +68,7 @@ def diagnose_provider(provider: LLMProvider) -> ModelProbeDiagnostic:
                     "probe",
                     _validate_probe,
                     options or None,
-                )
+                ).result
                 if result.error is None:
                     structured = "accepted"
                     detail = "文本与结构化样本已通过；服务是否严格执行模式及思考控制仍未知。"

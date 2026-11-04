@@ -168,6 +168,7 @@ def regenerate_session_timeline_summary(session_id: int) -> dict[str, int | bool
             session_id,
             reason="manual_regenerate",
             force=True,
+            renew_budget=True,
         )
         return {"session_id": session_id, "requested": requested}
     except ValueError as exc:
@@ -265,11 +266,20 @@ def reanalyze_session(session_id: int, payload: ReanalysisRequest) -> dict[str, 
 
 
 @router.get("/danmaku")
-def get_danmaku(limit: int = 50, session_id: int | None = None) -> dict[str, Any]:
+def get_danmaku(
+    limit: int = 50,
+    session_id: int | None = None,
+    session_limit: int = Query(50, ge=1, le=200),
+    session_offset: int = Query(0, ge=0),
+) -> dict[str, Any]:
     """返回最近弹幕与各会话弹幕热度统计。
 
     :param limit: 返回的最近弹幕条数。
     :param session_id: 仅查询指定会话(可选)。
+    :param session_limit: 场次分页大小，与最近弹幕条数分别处理。
+    :param session_offset: 按场次编号倒序翻页的起点。
     """
     limit = _clamp(limit, 1, _MAX_QUERY_LIMIT)
-    return dashboard_service.danmaku_overview(limit=limit, session_id=session_id)
+    return dashboard_service.danmaku_overview(
+        limit=limit, session_id=session_id, session_limit=session_limit, session_offset=session_offset
+    )

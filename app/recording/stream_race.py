@@ -24,6 +24,7 @@ from loguru import logger
 from app.analysis.transcription.process_tree import ProcessTree
 from app.core.async_cleanup import complete_cleanup
 from app.core.config import settings
+from app.core.execution import run_sync
 from app.core.ffmpeg_errors import FfmpegErrorType, classify_ffmpeg_error
 from app.core.process_control import ProcessCancelledError, run_cancellable
 from app.core.process_spawn import spawn_owned_async, terminate_owned_async, wait_process_exit
@@ -35,6 +36,23 @@ from app.recording.writer_ownership import SessionWriter
 CommandBuilder = Callable[[StreamSpec, Path, str, Path], list[str]]
 FailureCallback = Callable[[StreamSpec], None]
 _RESOURCE_ERRNOS = {errno.EMFILE, errno.ENFILE, errno.ENOMEM, errno.EAGAIN}
+
+
+def active_media_size(path: Path) -> int:
+    """读取活动媒体句柄大小，避免 Windows 目录元数据滞后导致误报停滞。"""
+    with path.open("rb") as media:
+        return os.fstat(media.fileno()).st_size
+
+
+def _reader_state(task: asyncio.Task[None] | None) -> str:
+    if task is None:
+        return "missing"
+    if task.cancelled():
+        return "cancelled"
+    if not task.done():
+        return "running"
+    error = task.exception()
+    return f"error:{type(error).__name__}" if error is not None else "finished"
 
 
 @dataclass
@@ -179,11 +197,20 @@ class StreamAttempt:
         if now - self._last_video_probe_at < 1.0:
             return False
         self._last_video_probe_at = now
-        paths = [
-            path
-            for path in self.out_dir.glob(f"{self.prefix}*.ts")
-            if not path.is_symlink() and path.is_file() and path.stat().st_size > 0
-        ]
+
+        def candidates() -> list[Path]:
+            paths = []
+            for path in self.out_dir.glob(f"{self.prefix}*.ts"):
+                if path.is_symlink() or not path.is_file():
+                    continue
+                try:
+                    if active_media_size(path) > 0:
+                        paths.append(path)
+                except FileNotFoundError:
+                    continue
+            return paths
+
+        paths = await run_sync(candidates)
         if not paths:
             return False
         # 当前末片可能刚建立且仍为空；优先检查本候选首片已经落盘的视频。
@@ -551,7 +578,26 @@ class StreamRace:
             or any(task is None or task.done() for task in (winner.stderr_task, winner.progress_task))
         ):
             if not self.stop.is_set():
-                winner.remember(b"Winning stream ended or failed during process handoff")
+                process = winner.process
+                reason = (
+                    "output_fault"
+                    if winner.global_error
+                    else "process_missing"
+                    if process is None
+                    else "process_exit"
+                    if process.returncode is not None
+                    else "stderr_reader_done"
+                    if winner.stderr_task is None or winner.stderr_task.done()
+                    else "progress_reader_done"
+                )
+                winner.remember(
+                    (
+                        "Winning stream ended or failed during process handoff "
+                        f"handoff_reason={reason} exit_code={process.returncode if process is not None else None} "
+                        f"stderr_state={_reader_state(winner.stderr_task)} "
+                        f"progress_state={_reader_state(winner.progress_task)}"
+                    ).encode()
+                )
                 self.failures.append(winner)
                 self.on_failure(winner.stream)
             self.winner = None

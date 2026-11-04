@@ -15,6 +15,7 @@ from loguru import logger
 from pydantic import BaseModel, ConfigDict, Field
 from sqlmodel import select as _sql_select
 
+from app.analysis.timeline import datetime_epoch
 from app.analysis.transcript_windows import extract_transcript_window
 from app.core.execution import run_sync
 from app.core.media_usage import media_reference_scope
@@ -470,9 +471,9 @@ def get_review_data(request: Request, candidate_id: int) -> dict:
                 total_s = (ctx_end - ctx_start).total_seconds()
                 num_buckets = max(1, int(total_s / bucket_s))
                 counts = [0] * num_buckets
-                t0_ts = int(t0.timestamp()) if hasattr(t0, "timestamp") else 0
+                t0_ts = int(datetime_epoch(t0))
                 for ts in danmaku_rows:
-                    ts_ts = int(ts.timestamp()) if hasattr(ts, "timestamp") else 0
+                    ts_ts = int(datetime_epoch(ts))
                     idx = (ts_ts - t0_ts) // bucket_s
                     if 0 <= idx < num_buckets:
                         counts[idx] += 1

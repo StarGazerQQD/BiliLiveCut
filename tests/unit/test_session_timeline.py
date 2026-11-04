@@ -5,6 +5,7 @@ from __future__ import annotations
 import json
 from datetime import UTC, datetime, timedelta
 
+import httpx
 import pytest
 from sqlmodel import select
 
@@ -31,7 +32,35 @@ from app.db.entities import (
     Transcript,
 )
 from app.db.session import get_session
+from app.models.configuration import save_model_configuration
+from app.models.contracts import ConnectionChange, ModelConfigurationChange, ModelRoute
 from app.web.services.timeline import get_session_timeline, list_session_timelines
+from tests.integration.test_session_summary_recovery import _grounding_reply
+from tests.integration.test_structured_llm import response
+
+
+@pytest.fixture
+def summary_model(temp_db: None) -> None:
+    save_model_configuration(
+        ModelConfigurationChange(
+            revision=0,
+            connections=[
+                ConnectionChange(
+                    id="summary", name="总结测试", base_url="https://fixture.invalid/v1", api_key="private-test-key"
+                )
+            ],
+            routes=[
+                ModelRoute(
+                    id="summary",
+                    name="总结测试",
+                    connection_id="summary",
+                    capability="summary",
+                    model="summary-fixture",
+                    max_output_tokens=1048576,
+                )
+            ],
+        )
+    )
 
 
 def _seed_timeline() -> int:
@@ -415,12 +444,10 @@ def test_event_first_timeline_keeps_hotspots_without_candidates_and_avoids_linke
 
 
 def test_whole_session_summary_analyzes_all_final_asr_once_in_time_order(
-    temp_db: None,
+    summary_model: None,
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    """整场总结必须按时间聚合全部最终 ASR，并只调用一次 LLM。"""
-    from app.analysis import llm
-
+    """整场总结一次综合全部原文，独立核验通过后保存。"""
     session_id = _seed_timeline()
     with get_session() as db:
         pending = db.get(AppSetting, f"session_reanalysis:{session_id}")
@@ -450,21 +477,29 @@ def test_whole_session_summary_analyzes_all_final_asr_once_in_time_order(
 
     prompts: list[str] = []
 
-    def fake_call_text(prompt: str, max_tokens: int, *, capability: str, **_kwargs: object) -> str:
-        prompts.append(prompt)
-        assert max_tokens == 1048576
-        assert capability == "summary"
-        return '{"summary":"19:00:00 主播先介绍挑战规则，19:05:00 挑战反转并成功。"}'
+    checks: list[httpx.Request] = []
 
-    monkeypatch.setattr(llm, "call_text", fake_call_text)
+    async def send(_transport: httpx.AsyncHTTPTransport, request: httpx.Request) -> httpx.Response:
+        if checked := _grounding_reply(request):
+            checks.append(request)
+            return checked
+        prompt = json.loads(request.content)["messages"][0]["content"]
+        prompts.append(prompt)
+        return httpx.Response(
+            200, json=response('{"summary":"19:00:00 主播先介绍挑战规则，19:05:00 挑战反转并成功。"}')
+        )
+
+    monkeypatch.setattr(httpx.AsyncHTTPTransport, "handle_async_request", send)
     result = build_session_timeline_summary(session_id)
 
     assert result["source"] == "llm"
     assert result["analysis_basis"] == "full_session_asr"
     assert result["transcript_count"] == 2
     assert result["summary"] == "19:00:00 主播先介绍挑战规则，19:05:00 挑战反转并成功。"
-    assert len(prompts) == 1
-    assert prompts[0].index("[19:00:00][timeline_000.ts]") < prompts[0].index("[19:05:00][timeline_001.ts]")
+    assert len(prompts) == len(checks) == 1
+    blocks = json.loads(prompts[0].split("整场 ASR：\n", 1)[1].split("\n覆盖情况（", 1)[0])
+    assert [block["source_file"] for block in blocks] == ["timeline_000.ts", "timeline_001.ts"]
+    assert [block["start_at"] for block in blocks] == ["2026-08-05T19:00:00+08:00", "2026-08-05T19:05:00+08:00"]
     assert "主播开场介绍挑战规则" in prompts[0]
     assert "挑战中途出现反转" in prompts[0]
     assert "候选梗概" not in prompts[0]
@@ -474,7 +509,7 @@ def test_whole_session_summary_analyzes_all_final_asr_once_in_time_order(
 
 
 def test_whole_session_summary_waits_for_final_analysis_and_retries_empty_llm_result(
-    temp_db: None,
+    summary_model: None,
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     """请求应等待分析稳定；LLM 空结果不得降级为摘要拼接。"""
@@ -520,7 +555,7 @@ def test_whole_session_summary_waits_for_final_analysis_and_retries_empty_llm_re
 
 
 @pytest.mark.parametrize("after_write_lock", [False, True])
-def test_summary_shutdown_preserves_attempts_and_revokes_claim(temp_db: None, after_write_lock: bool) -> None:
+def test_summary_shutdown_preserves_attempts_and_revokes_claim(summary_model: None, after_write_lock: bool) -> None:
     from sqlalchemy import event
 
     from app.core.cancellation import shutdown_event
@@ -581,14 +616,14 @@ def test_timeline_view_does_not_enqueue_missing_summary_for_finished_session(tem
 
     payload = get_session_timeline(session_id)
 
-    assert payload["whole_session_summary"]["status"] == "pending"
+    assert payload["whole_session_summary"]["status"] == "unconfigured"
     with get_session() as db:
         row = db.get(AppSetting, f"session_timeline_summary_request:{session_id}")
         assert row is None
 
 
 def test_whole_session_summary_recovers_running_request_and_rejects_stale_claim(
-    temp_db: None,
+    summary_model: None,
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     """重启应恢复运行请求，强制重生成后旧线程不得覆盖新请求。"""
@@ -636,7 +671,7 @@ def test_whole_session_summary_recovers_running_request_and_rejects_stale_claim(
 
 
 def test_whole_session_summary_stops_retrying_after_three_failures(
-    temp_db: None,
+    summary_model: None,
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     """整场总结执行异常最多重试三次，之后保留可见失败状态。"""

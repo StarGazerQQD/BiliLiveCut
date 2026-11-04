@@ -10,12 +10,18 @@ import httpx
 import pytest
 
 from app.core.cancellation import OperationCancelledError, cancellation_scope, shutdown_event
-from app.core.http_transport import CancellableHTTPTransport, HTTPRequestDeadline, bounded_http_request
+from app.core.http_transport import (
+    CancellableHTTPTransport,
+    HTTPRequestDeadline,
+    HTTPResponseTooLarge,
+    bounded_http_request,
+)
 
 
-@pytest.mark.parametrize("interruption", ["cancel", "shutdown", "deadline"])
+@pytest.mark.parametrize("interruption", ["cancel", "shutdown", "deadline", "none"])
+@pytest.mark.parametrize("poll_interval_s", [0.0, 10.0])
 def test_cancellation_waits_for_response_cleanup_already_in_progress(
-    monkeypatch: pytest.MonkeyPatch, interruption: str
+    monkeypatch: pytest.MonkeyPatch, interruption: str, poll_interval_s: float
 ) -> None:
     closing, completed, interrupted, peer_closed = Event(), Event(), Event(), Event()
     requests: list[str] = []
@@ -89,13 +95,24 @@ def test_cancellation_waits_for_response_cleanup_already_in_progress(
     try:
         with httpx.Client(transport=CancellableHTTPTransport(limits=httpx.Limits())) as client:
             assert client.post(f"http://127.0.0.1:{server.server_port}/warmup", content=b"warmup").text == "ok"
-            with cancellation_scope(lambda: interruption == "cancel" and closing.is_set()):
+            with cancellation_scope(
+                lambda: interruption == "cancel" and closing.is_set(), poll_interval_s=poll_interval_s
+            ):
                 started = time.monotonic()
                 with bounded_http_request(
                     timeout=0.4 if interruption == "deadline" else 10, max_response_bytes=2, check=lambda: None
                 ):
-                    with pytest.raises(HTTPRequestDeadline if interruption == "deadline" else OperationCancelledError):
+                    expected_error = (
+                        HTTPRequestDeadline
+                        if interruption == "deadline"
+                        else HTTPResponseTooLarge
+                        if interruption == "none"
+                        else OperationCancelledError
+                    )
+                    with pytest.raises(expected_error) as error:
                         client.post(f"http://127.0.0.1:{server.server_port}/v1/chat/completions", content=b"request")
+                    if interruption == "cancel" and poll_interval_s == 10:
+                        assert isinstance(error.value.__context__, HTTPResponseTooLarge)
                 assert time.monotonic() - started < 2
             assert closing.is_set() and completed.is_set() and not interrupted.is_set()
             assert peer_closed.wait(2)

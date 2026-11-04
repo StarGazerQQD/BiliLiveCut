@@ -8,8 +8,8 @@ import subprocess
 import threading
 from datetime import timedelta
 from pathlib import Path
-from types import SimpleNamespace
 
+import httpx
 import pytest
 from fastapi.testclient import TestClient
 from pytest import MonkeyPatch
@@ -78,8 +78,9 @@ def _ready_import(monkeypatch: MonkeyPatch, *, comments: bool = True, audio: boo
 
 
 def _configure_llm(monkeypatch: MonkeyPatch, replies: list[str | None]) -> list[dict[str, object]]:
-    """仅替换外部 SDK 边界，验证持久配置、请求构造和结果处理的实际链路。"""
-    from app.analysis import llm, llm_providers
+    """仅替换 HTTP 边界，验证 SDK、持久配置、请求和结果处理的实际链路。"""
+    from app.analysis import llm_providers
+    from tests.integration.test_structured_llm import response
 
     llm_providers.save_providers(
         [
@@ -94,29 +95,23 @@ def _configure_llm(monkeypatch: MonkeyPatch, replies: list[str | None]) -> list[
     )
     calls: list[dict[str, object]] = []
 
-    def complete(**kwargs: object) -> SimpleNamespace:
-        calls.append(kwargs)
+    def complete(request: httpx.Request) -> httpx.Response:
+        assert str(request.url) == "https://example.invalid/v1/chat/completions"
+        calls.append(json.loads(request.content))
         assert replies, "出现了未预期的 LLM 请求"
         content = replies.pop(0)
         if content is None:
-            import httpx
-            from openai import APIStatusError
+            return httpx.Response(503, headers={"Retry-After": "0"}, json={"error": "模拟服务暂不可用"})
+        return httpx.Response(200, json=response(content))
 
-            reply = httpx.Response(
-                503,
-                headers={"Retry-After": "0"},
-                request=httpx.Request("POST", "https://example.invalid/v1/chat/completions"),
-            )
-            raise APIStatusError("模拟服务暂不可用", response=reply, body={})
-        return SimpleNamespace(
-            choices=[SimpleNamespace(message=SimpleNamespace(content=content), finish_reason="stop")], usage=None
-        )
+    def send(_transport: httpx.HTTPTransport, request: httpx.Request) -> httpx.Response:
+        return complete(request)
 
-    def client(provider: llm_providers.LLMProvider) -> SimpleNamespace:
-        assert provider.base_url == "https://example.invalid/v1"
-        return SimpleNamespace(chat=SimpleNamespace(completions=SimpleNamespace(create=complete)))
+    async def send_async(_transport: httpx.AsyncHTTPTransport, request: httpx.Request) -> httpx.Response:
+        return complete(request)
 
-    monkeypatch.setattr(llm, "_get_client", client)
+    monkeypatch.setattr(httpx.HTTPTransport, "handle_request", send)
+    monkeypatch.setattr(httpx.AsyncHTTPTransport, "handle_async_request", send_async)
     return calls
 
 
@@ -337,6 +332,7 @@ def test_local_asr_uses_configured_llm_for_refinement_and_full_summary(
 ) -> None:
     from app.analysis import llm_providers
     from app.analysis.session_summary import (
+        SessionSummaryUnconfigured,
         build_session_timeline_summary,
         claim_pending_session_summary,
         ensure_session_timeline_summary_requested,
@@ -355,8 +351,15 @@ def test_local_asr_uses_configured_llm_for_refinement_and_full_summary(
     cleaned = "今天讨论游戏操作方法。这一段需要先观察对手，再选择合适的位置。"
     expected_summary = "这场录播讲解了观察对手与选择位置的操作方法。"
     monkeypatch.setattr(settings_store, "transcript_llm_refine_enabled", lambda: True)
+    grounding = json.dumps(
+        {"supported": True, "reason": "操作方法有原文依据", "quotes": [{"source_index": 0, "text": text}]}
+    )
     replies = (
-        [json.dumps({"clean_text": cleaned, "summary": "游戏操作方法"}), json.dumps({"summary": expected_summary})]
+        [
+            json.dumps({"clean_text": cleaned, "summary": "游戏操作方法"}),
+            json.dumps({"summary": expected_summary}),
+            grounding,
+        ]
         if provider_mode == "enabled"
         else [None, None, None, None]
     )
@@ -389,28 +392,42 @@ def test_local_asr_uses_configured_llm_for_refinement_and_full_summary(
             db.add(Transcript(segment_id=task.segment_id, final_text=f"分段{task.segment_id}：{text}"))
     session_id = get_import(import_id).session_id
     assert session_id is not None
-    if provider_mode != "enabled":
+    if provider_mode == "disabled":
+        with pytest.raises(SessionSummaryUnconfigured, match="未配置可用的整场总结模型"):
+            build_session_timeline_summary(session_id)
+        assert ensure_session_timeline_summary_requested(session_id)
+        assert claim_pending_session_summary() is None
+        with get_session() as db:
+            pending = db.get(AppSetting, f"session_timeline_summary_request:{session_id}")
+            assert pending is not None
+            request = json.loads(pending.value)
+            assert request["status"] == "pending" and request["attempts"] == 0
+        assert calls == []
+        return
+    if provider_mode == "unavailable":
         with pytest.raises(RuntimeError, match="整场 ASR 分析未返回有效 summary"):
             build_session_timeline_summary(session_id)
-        assert len(calls) == (0 if provider_mode == "disabled" else 4)
+        assert len(calls) == 4
         return
     summary = build_session_timeline_summary(session_id)
     assert summary["source"] == "llm" and summary["summary"] == expected_summary
-    assert len(calls) == 2 and all(call["model"] == "fixture-model" for call in calls)
+    assert len(calls) == 3 and all(call["model"] == "fixture-model" for call in calls)
     assert text in str(calls[0]["messages"])
     assert all(f"分段{task.segment_id}" in str(calls[1]["messages"]) for task in tasks)
+    assert expected_summary in str(calls[2]["messages"])
+    assert all(f"分段{task.segment_id}" in str(calls[2]["messages"]) for task in tasks)
 
     # 已有转写摘录必须自动失效，用原有转写重新调用 LLM，无需重新导入/ASR。
     with get_session() as db:
         db.add(
             AppSetting(key=f"session_timeline_summary:{session_id}", value=json.dumps({**summary, "source": "local"}))
         )
-    replies.append(json.dumps({"summary": expected_summary}))
+    replies.extend([json.dumps({"summary": expected_summary}), grounding])
     assert ensure_session_timeline_summary_requested(session_id)
     claim = claim_pending_session_summary()
     assert claim is not None and execute_session_summary_claim(claim)
     assert session_timeline_summary_view(session_id, processing_state="ready", ended=True)["source"] == "llm"
-    assert len(asr_calls) == 1 and len(calls) == 3
+    assert len(asr_calls) == 1 and len(calls) == 5
 
 
 def test_imported_hotspot_reanalysis_replaces_cached_fallback_with_llm(temp_db: None, monkeypatch: MonkeyPatch) -> None:

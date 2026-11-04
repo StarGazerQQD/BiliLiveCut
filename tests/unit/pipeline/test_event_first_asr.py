@@ -3,10 +3,12 @@
 from __future__ import annotations
 
 import json
-from datetime import UTC, datetime, timedelta
+import wave
+from datetime import UTC, datetime, timedelta, timezone
 from typing import TYPE_CHECKING
 
 import numpy as np
+import pytest
 from sqlmodel import select
 
 from app.analysis.audio import AudioFeatures
@@ -25,6 +27,8 @@ from app.db.session import get_session
 from app.pipeline.lease import TaskLease
 
 if TYPE_CHECKING:
+    from pathlib import Path
+
     from _pytest.monkeypatch import MonkeyPatch
 
 _START = datetime(2026, 8, 31, 12, 0, 0)
@@ -264,7 +268,9 @@ def test_hotspot_asr_compute_runs_window_without_background(
     assert result["attention_results"][0]["quality"]["state"] == "available"
 
 
-def test_hotspot_asr_commit_requeues_background_and_updates_event(temp_db: None) -> None:
+@pytest.mark.parametrize("segment_offset", [0, 300])
+def test_hotspot_asr_commit_requeues_background_and_updates_event(temp_db: None, segment_offset: int) -> None:
+    from app.analysis.event_enricher import build_event_evidence_bundle
     from app.core.config import settings
     from app.pipeline.workers.transcribe import commit_transcript
 
@@ -289,7 +295,14 @@ def test_hotspot_asr_commit_requeues_background_and_updates_event(temp_db: None)
         context_json=context,
     )
     with get_session() as db:
-        db.add(HotspotEvent(**_hotspot_payload(session_id)))
+        segment = db.get(RawSegment, segment_id)
+        segment.seq = segment_offset // 300
+        segment.start_ts += timedelta(seconds=segment_offset)
+        segment.end_ts += timedelta(seconds=segment_offset)
+        hotspot = _hotspot_payload(session_id)
+        for key in ("start_ts", "peak_ts", "end_ts"):
+            hotspot[key] += timedelta(seconds=segment_offset)
+        db.add(HotspotEvent(**hotspot))
 
     commit_transcript(
         _lease(task_id, TaskStatus.TRANSCRIBING),
@@ -314,10 +327,24 @@ def test_hotspot_asr_commit_requeues_background_and_updates_event(temp_db: None)
     with get_session() as db:
         task = db.get(SegmentTask, task_id)
         event = db.exec(select(HotspotEvent).where(HotspotEvent.session_id == session_id)).one()
+        source = build_event_evidence_bundle(db, event.id).source
 
     assert event.transcript_text == "热点局部转写"
     evidence = json.loads(event.evidence_json)
     assert evidence["items"][0]["id"] == "hotspot-asr:detector-v1:event-1"
+    local = evidence["items"][0]
+    assert local["detail"]["segment_id"] == segment_id
+    assert datetime.fromisoformat(local["start_ts"]) == _START.replace(tzinfo=UTC) + timedelta(
+        seconds=segment_offset + 25
+    )
+    assert source is not None
+    projected = next(item for item in source.evidence if item.evidence_id == local["id"])
+    assert (projected.start_s, projected.end_s, projected.context_role) == (
+        segment_offset + 25,
+        segment_offset + 115,
+        "mixed",
+    )
+    assert projected.detail.segment_id == segment_id
     assert task is not None and task.stage == TaskStatus.QUEUED_FOR_TRANS
     assert task.priority == settings.near_live_asr_priority
     event_first = json.loads(task.context_json)["event_first"]
@@ -390,6 +417,149 @@ def test_hotspot_asr_for_merged_alias_updates_canonical_event(temp_db: None) -> 
     assert alias.transcript_text is None
     evidence = json.loads(canonical.evidence_json or "{}")
     assert evidence["items"][0]["id"] == f"hotspot-asr:{alias_key}"
+    assert evidence["items"][0]["detail"]["segment_id"] == segment_id
+    assert datetime.fromisoformat(evidence["items"][0]["start_ts"]) == _START.replace(tzinfo=UTC) + timedelta(
+        seconds=25
+    )
+
+
+@pytest.mark.parametrize(
+    "start,end", [(True, 10), ("1", 10), (0, float("inf")), (-1, 10), (10, 10), (20, 10), (0, 121)]
+)
+def test_hotspot_asr_invalid_window_is_rejected(start: object, end: object) -> None:
+    from app.pipeline.workers.transcribe import _merge_attention_evidence
+
+    segment = RawSegment(
+        id=1, session_id=1, seq=0, file_path="x.ts", start_ts=_START, end_ts=_START + timedelta(seconds=120)
+    )
+    with pytest.raises(ValueError, match="局部 ASR 时间"):
+        _merge_attention_evidence(
+            None, "event", {"start_offset_s": start, "end_offset_s": end}, "available", segment=segment
+        )
+
+
+@pytest.mark.parametrize("known_start", [False, True])
+def test_hotspot_asr_time_uses_actual_segment_timezone_or_remains_unknown(known_start: bool) -> None:
+    from app.pipeline.workers.transcribe import _merge_attention_evidence
+
+    start = _START.replace(tzinfo=UTC).astimezone(timezone(timedelta(hours=8))) if known_start else None
+    segment = RawSegment(id=7, session_id=1, seq=3, file_path="x.ts", start_ts=start)
+    payload = json.loads(
+        _merge_attention_evidence(
+            None, "event", {"start_offset_s": 25, "end_offset_s": 115}, "available", segment=segment
+        )
+    )
+    item = payload["items"][0]
+    assert item["detail"]["segment_id"] == 7
+    assert item["start_ts"] == (
+        (_START.replace(tzinfo=UTC) + timedelta(seconds=25)).isoformat() if known_start else None
+    )
+    assert item["end_ts"] == (
+        (_START.replace(tzinfo=UTC) + timedelta(seconds=115)).isoformat() if known_start else None
+    )
+
+
+def test_attention_window_preserves_timezone_and_exact_segment_end() -> None:
+    from app.pipeline.workers.analyze import _build_hotspot_attention_windows
+
+    segment = RawSegment(
+        id=1, session_id=1, seq=0, file_path="x.ts", start_ts=_START, end_ts=_START + timedelta(seconds=120.0006)
+    )
+    peak = (_START.replace(tzinfo=UTC) + timedelta(seconds=110)).astimezone(timezone(timedelta(hours=8)))
+    windows = _build_hotspot_attention_windows(segment, [{"event_key": "event", "peak_ts": peak}])
+    assert len(windows) == 1
+    assert 0 <= windows[0]["start_offset_s"] < 110
+    assert windows[0]["end_offset_s"] == 120.0006
+
+
+@pytest.mark.parametrize("stored_end", [120.001, 120.002])
+def test_persisted_rounded_attention_end_recovers_before_real_asr(
+    temp_db: None, tmp_path: Path, monkeypatch: MonkeyPatch, stored_end: float
+) -> None:
+    from app.analysis.transcription.backends import FunASRBackend
+    from app.analysis.transcription.pipeline import ASRPipeline
+    from app.core.config import settings
+    from app.db.entities import Transcript
+    from app.pipeline.claiming import pop_and_claim
+    from app.pipeline.workers.transcribe import commit_transcript, transcribe_compute
+
+    duration = 120.000625
+    source = tmp_path / "legacy-window.wav"
+    with wave.open(str(source), "wb") as audio:
+        audio.setparams((1, 2, 16000, 0, "NONE", "not compressed"))
+        audio.writeframes(b"\x01\x00" * 1920010)
+    context = json.dumps(
+        {
+            "event_first": {
+                "asr_mode": "hotspot",
+                "attention_windows": [
+                    {
+                        "event_key": "detector-v1:event-1",
+                        "start_offset_s": 110.0,
+                        "end_offset_s": stored_end,
+                    }
+                ],
+            }
+        }
+    )
+    task_id, segment_id, session_id = _seed_pipeline_task(stage=TaskStatus.TRANSCRIBING, context_json=context)
+    with get_session() as db:
+        segment = db.get(RawSegment, segment_id)
+        assert segment is not None
+        segment.file_path = str(source)
+        segment.end_ts = _START + timedelta(seconds=duration)
+        segment.duration_s = duration
+        db.add(segment)
+        db.add(HotspotEvent(**_hotspot_payload(session_id)))
+    observed_durations: list[float] = []
+
+    class ModelBoundary:
+        def generate(self, **kwargs: object) -> list[dict[str, str]]:
+            inputs = kwargs["input"]
+            assert isinstance(inputs, list) and len(inputs) == 1
+            with wave.open(inputs[0], "rb") as audio:
+                observed_durations.append(audio.getnframes() / audio.getframerate())
+            return [{"text": "片尾仍有一段完整讲话，需要保留原文。"}]
+
+    backend = FunASRBackend(sensevoice=False)
+    monkeypatch.setattr(backend, "_load_funasr", lambda *, for_primary=False: ModelBoundary())
+    monkeypatch.setattr(settings, "asr_primary", "funasr_nano")
+    pipeline = ASRPipeline(primary_backend=backend)
+    if stored_end != round(duration, 3):
+        with pytest.raises(ValueError, match="超出执行片段"):
+            transcribe_compute(task_id, pipeline=pipeline)
+        assert observed_durations == []
+        return
+    result = transcribe_compute(task_id, pipeline=pipeline)
+    assert len(observed_durations) == 1
+    assert observed_durations[0] == pytest.approx(duration - 110, abs=1 / 16000)
+    assert result["attention_results"][0]["end_offset_s"] == duration
+    commit_transcript(_lease(task_id, TaskStatus.TRANSCRIBING), result, 1)
+    with get_session() as db:
+        task = db.get(SegmentTask, task_id)
+        event = db.exec(select(HotspotEvent).where(HotspotEvent.session_id == session_id)).one()
+        assert task is not None and task.stage == TaskStatus.QUEUED_FOR_TRANS
+        context = json.loads(task.context_json)["event_first"]
+        assert context["asr_mode"] == "background"
+        assert context["attention_windows"][0]["end_offset_s"] == duration
+        evidence = json.loads(event.evidence_json)["items"][0]
+        assert db.exec(select(Transcript)).all() == []
+        assert evidence["detail"]["end_offset_s"] == duration
+        assert datetime.fromisoformat(evidence["end_ts"]) == _START.replace(tzinfo=UTC) + timedelta(seconds=duration)
+    claimed = pop_and_claim(TaskStatus.QUEUED_FOR_TRANS)
+    assert claimed is not None and claimed.id == task_id
+    assert claimed.claimed_by is not None and claimed.lease_token is not None
+    background = transcribe_compute(task_id, pipeline=pipeline)
+    assert background["transcribed"] is True
+    assert observed_durations == [pytest.approx(duration - 110, abs=1 / 16000), duration]
+    commit_transcript(TaskLease(task_id, claimed.claimed_by, claimed.lease_token, claimed.stage), background, 1)
+    with get_session() as db:
+        task = db.get(SegmentTask, task_id)
+        assert task is not None and task.stage == TaskStatus.TRANSCRIBED
+        assert task.claimed_by is None and task.lease_token is None
+        transcripts = db.exec(select(Transcript)).all()
+        assert len(transcripts) == 1 and transcripts[0].segment_id == segment_id
+        assert transcripts[0].final_text == "片尾仍有一段完整讲话，需要保留原文。"
 
 
 def test_background_asr_still_runs_after_hotspot_pass(

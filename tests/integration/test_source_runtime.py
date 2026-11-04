@@ -7,6 +7,7 @@ from collections import deque
 from collections.abc import Iterator
 from datetime import UTC, datetime, timedelta, timezone
 from pathlib import Path
+from typing import BinaryIO, TextIO
 
 import pytest
 from loguru import logger
@@ -59,22 +60,36 @@ async def test_failed_danmaku_checkpoint_freezes_last_confirmed_coverage(
     capture.evidence.status = DanmakuStatus.AVAILABLE
     capture.evidence.confirmed_until = confirmed
     capture.evidence.intervals = [CaptureInterval(start=confirmed - timedelta(seconds=30))]
-    original = capture._save_sync
+    await capture._save(confirmed_until=confirmed)
+    await capture._flush_pending()
+    original = Path.open
     calls = 0
 
-    def fail_then_recover(payload: str) -> None:
+    def fail_then_recover(
+        path: Path,
+        mode: str = "r",
+        buffering: int = -1,
+        encoding: str | None = None,
+        errors: str | None = None,
+        newline: str | None = None,
+    ) -> BinaryIO | TextIO:
         nonlocal calls
-        calls += 1
-        if calls <= failures:
-            raise OSError("coverage database unavailable")
-        original(payload)
+        if path.name == "danmaku-pending.jsonl" and mode == "ab":
+            calls += 1
+            if calls <= failures:
+                raise OSError("coverage journal unavailable")
+        return original(path, mode, buffering, encoding, errors, newline)
 
-    monkeypatch.setattr(capture, "_save_sync", fail_then_recover)
+    monkeypatch.setattr(Path, "open", fail_then_recover)
     failed = asyncio.create_task(capture._save())
     failed.add_done_callback(capture._observe_task)
     await asyncio.gather(failed, return_exceptions=True)
     await asyncio.sleep(0)
-    await capture.stop()
+    with pytest.raises(OSError, match="停止追加"):
+        await capture.stop()
+    from app.recording.danmaku_journal import drain_journal
+
+    assert drain_journal(999, close=True)
     assert capture.evidence.status == DanmakuStatus.FAILED
     assert capture.evidence.intervals[-1].end == confirmed
     with get_session() as db:
@@ -97,15 +112,20 @@ async def test_danmaku_failure_waits_for_older_checkpoint_before_saving_final_st
     capture.evidence.confirmed_until = confirmed
     capture.evidence.intervals = [CaptureInterval(start=confirmed - timedelta(seconds=30))]
     started, release = threading.Event(), threading.Event()
-    original = capture._save_sync
-    writes: list[str] = []
+    original = Path.open
 
-    def delayed_first_write(payload: str) -> None:
-        if not started.is_set():
+    def delayed_first_write(
+        path: Path,
+        mode: str = "r",
+        buffering: int = -1,
+        encoding: str | None = None,
+        errors: str | None = None,
+        newline: str | None = None,
+    ) -> BinaryIO | TextIO:
+        if path.name == "danmaku-pending.jsonl" and mode == "ab" and not started.is_set():
             started.set()
             assert release.wait(5), "test did not release pending write"
-        original(payload)
-        writes.append(payload)
+        return original(path, mode, buffering, encoding, errors, newline)
 
     async def checkpoint() -> None:
         async with capture._state_lock:
@@ -114,7 +134,7 @@ async def test_danmaku_failure_waits_for_older_checkpoint_before_saving_final_st
     async def failed_helper() -> None:
         raise OSError("capture helper failed")
 
-    monkeypatch.setattr(capture, "_save_sync", delayed_first_write)
+    monkeypatch.setattr(Path, "open", delayed_first_write)
     capture._task = asyncio.create_task(checkpoint())
     try:
         assert await asyncio.to_thread(started.wait, 3)
@@ -124,7 +144,9 @@ async def test_danmaku_failure_waits_for_older_checkpoint_before_saving_final_st
         await asyncio.gather(capture._heartbeat_task, return_exceptions=True)
         await asyncio.sleep(0)
         assert capture.evidence.status == DanmakuStatus.FAILED
-        assert not writes
+        from app.recording.danmaku_journal import journal_path
+
+        assert len(journal_path(999).read_bytes().splitlines()) == 1
     finally:
         release.set()
         await capture.stop()
@@ -1517,6 +1539,9 @@ def test_bilibili_frames_preserve_gift_superchat_sampling_and_text(temp_db: None
     client = DanmakuClient(room_id=321, session_id=1)
     client._sampler = DanmakuSampler()
     client._handle_frame(b"".join(encode_packet(OP_MESSAGE, json.dumps(msg).encode()) for msg in messages))
+    from app.recording.danmaku_journal import drain_journal
+
+    assert drain_journal(1)
     with get_session() as db:
         rows = db.exec(select(Danmaku).order_by(Danmaku.id)).all()
         assert [row.msg_type for row in rows] == ["danmaku", "gift", "superchat", "interact"]
@@ -1712,7 +1737,7 @@ async def test_manual_pause_and_source_disable_preserve_flags_and_finalize_once(
     assert runtime.closed and not manager.is_running(room.id)
 
 
-async def test_capture_stop_waits_for_started_database_write(
+async def test_capture_stop_waits_for_started_journal_write(
     runtime: RuntimeSource,
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
@@ -1724,15 +1749,26 @@ async def test_capture_stop_waits_for_started_database_write(
     capture = DanmakuCapture(source, room_source(room), room.id, 1)
     writing = threading.Event()
     release = threading.Event()
-    original = capture._save_sync
+    original = Path.open
+    writes = 0
 
-    def delayed(payload: str) -> None:
-        if json.loads(payload)["status"] == "available" and not json.loads(payload)["ended_at"]:
-            writing.set()
-            assert release.wait(5)
-        original(payload)
+    def delayed(
+        path: Path,
+        mode: str = "r",
+        buffering: int = -1,
+        encoding: str | None = None,
+        errors: str | None = None,
+        newline: str | None = None,
+    ) -> BinaryIO | TextIO:
+        nonlocal writes
+        if path.name == "danmaku-pending.jsonl" and mode == "ab":
+            writes += 1
+            if writes == 2:
+                writing.set()
+                assert release.wait(5)
+        return original(path, mode, buffering, encoding, errors, newline)
 
-    monkeypatch.setattr(capture, "_save_sync", delayed)
+    monkeypatch.setattr(Path, "open", delayed)
     await capture.start()
     stop_task: asyncio.Task[None] | None = None
     try:
@@ -1806,15 +1842,22 @@ async def test_repeated_cancel_waits_for_initial_capture_write_before_releasing_
     room = await register_room("123", True, "external")
     writing = threading.Event()
     release = threading.Event()
-    original = DanmakuCapture._save_sync
+    original = Path.open
 
-    def delayed(self: DanmakuCapture, payload: str) -> None:
-        if not json.loads(payload)["ended_at"]:
+    def delayed(
+        path: Path,
+        mode: str = "r",
+        buffering: int = -1,
+        encoding: str | None = None,
+        errors: str | None = None,
+        newline: str | None = None,
+    ) -> BinaryIO | TextIO:
+        if path.name == "danmaku-pending.jsonl" and mode == "ab":
             writing.set()
             assert release.wait(5)
-        original(self, payload)
+        return original(path, mode, buffering, encoding, errors, newline)
 
-    monkeypatch.setattr(DanmakuCapture, "_save_sync", delayed)
+    monkeypatch.setattr(Path, "open", delayed)
     recorder = Recorder(room_source(room), room.id)
     task = asyncio.create_task(recorder.run())
     try:

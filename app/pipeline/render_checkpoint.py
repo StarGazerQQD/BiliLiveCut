@@ -10,6 +10,7 @@ from datetime import UTC, date, datetime
 from pydantic import BaseModel, ConfigDict, Field
 from sqlmodel import Session, select
 
+from app.analysis.editorial_review_sources import media_file_identity
 from app.clipping.core import probe_media
 from app.clipping.danmaku import render_danmaku_rows
 from app.clipping.drafts import _snapshot
@@ -104,7 +105,10 @@ def render_input_fingerprint(db: Session, task: SegmentTask, options: ClipOption
     for segment in segments:
         values = _snapshot(segment)
         values.pop("status")
-        values["file_identity"] = list(file_stamp(segment.file_path))
+        identity = media_file_identity(segment)
+        if identity is None:
+            raise FileNotFoundError(segment.file_path)
+        values["file_identity"] = identity
         segment_values.append(values)
     data: dict[str, object] = {
         "version": 1,

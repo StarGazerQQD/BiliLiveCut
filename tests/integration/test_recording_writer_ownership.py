@@ -3,35 +3,52 @@ from __future__ import annotations
 import subprocess
 import sys
 from pathlib import Path
+from typing import TYPE_CHECKING
 
+import psutil
 import pytest
 
 from app.core.process_spawn import spawn_owned, spawn_owned_async, terminate_owned_async
 from app.recording.writer_ownership import SessionWriter
 
+if TYPE_CHECKING:
+    from app.analysis.transcription.process_tree import ProcessTree
+
 
 def test_last_actual_writer_keeps_ownership_after_parent_handle_closes(tmp_path: Path) -> None:
     writer = SessionWriter.create(tmp_path)
     identity = writer.identity
-    processes: list[subprocess.Popen[bytes]] = []
+    processes: list[tuple[subprocess.Popen[bytes], ProcessTree]] = []
+    writers: list[psutil.Process] = []
     try:
         for _ in range(3):
             with writer.spawn_options() as options:
-                processes.append(subprocess.Popen([sys.executable, "-c", "import time;time.sleep(60)"], **options))
+                process, tree = spawn_owned(
+                    [sys.executable, "-c", "import os,time;print(os.getpid(),flush=True);time.sleep(60)"],
+                    stdout=subprocess.PIPE,
+                    **options,
+                )
+                processes.append((process, tree))
+                assert process.stdout is not None
+                writers.append(psutil.Process(int(process.stdout.readline())))
+                writers[-1].create_time()
         writer.close()
-        for process in processes:
+        for (process, tree), actual_writer in zip(processes, writers, strict=True):
             with pytest.raises(OSError):
                 SessionWriter.recover(identity)
-            process.kill()
+            # Windows venv 启动器可能另建真实解释器；须确认完整写入进程树退出。
+            tree.terminate()
             process.wait(timeout=5)
+            actual_writer.wait(timeout=5)
         with SessionWriter.recover(identity) as recovered:
             assert recovered.identity == identity
     finally:
         writer.close()
-        for process in processes:
-            if process.poll() is None:
-                process.kill()
+        for process, tree in processes:
+            tree.terminate()
             process.wait(timeout=5)
+            if process.stdout is not None:
+                process.stdout.close()
     assert Path(identity.path).is_file()
 
 

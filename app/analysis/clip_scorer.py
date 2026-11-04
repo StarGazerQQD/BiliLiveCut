@@ -488,6 +488,41 @@ class _EventContext:
     input_fingerprint: str
 
 
+def _event_recording_context(
+    db: Session,
+    event: HotspotEvent,
+    config: ClipScorerConfig,
+) -> tuple[tuple[RawSegment, ...], RawSegment, datetime, datetime]:
+    segments = tuple(
+        db.exec(
+            select(RawSegment)
+            .where(
+                RawSegment.session_id == event.session_id,
+                RawSegment.start_ts.is_not(None),
+                RawSegment.end_ts.is_not(None),
+            )
+            .order_by(RawSegment.seq.asc())
+        ).all()
+    )
+    segment = _segment_for_peak(segments, event.peak_ts)
+    if segment.id is None or segment.start_ts is None or segment.end_ts is None:
+        raise ValueError(f"HotspotEvent 峰值没有可用录像分段: event_id={event.id}")
+    block_start, block_end = contiguous_recording_range(list(segments), segment, gap_tolerance_s=config.gap_tolerance_s)
+    return segments, segment, block_start, block_end
+
+
+def event_clip_media_bounds(db: Session, event: HotspotEvent) -> tuple[int, datetime, datetime]:
+    """与正式评分共用峰值分段及连续块，只读取元数据以安排文件预检。"""
+    config = ClipScorerConfig.from_settings()
+    _, segment, block_start, block_end = _event_recording_context(db, event, config)
+    assert segment.id is not None
+    return (
+        segment.id,
+        max(block_start, event.peak_ts - timedelta(seconds=config.max_duration_s)),
+        min(block_end, event.peak_ts + timedelta(seconds=config.max_duration_s)),
+    )
+
+
 def _load_event_context(
     db: Session,
     event: HotspotEvent,
@@ -503,25 +538,7 @@ def _load_event_context(
     if session is None:
         raise ValueError(f"RecordingSession 不存在: session_id={event.session_id}")
     room = db.get(LiveRoom, session.room_id)
-    segments = tuple(
-        db.exec(
-            select(RawSegment)
-            .where(
-                RawSegment.session_id == event.session_id,
-                RawSegment.start_ts.is_not(None),
-                RawSegment.end_ts.is_not(None),
-            )
-            .order_by(RawSegment.seq.asc())
-        ).all()
-    )
-    segment = _segment_for_peak(segments, event.peak_ts)
-    if segment.id is None or segment.start_ts is None or segment.end_ts is None:
-        raise ValueError(f"HotspotEvent 峰值没有可用录像分段: event_id={event.id}")
-    block_start, block_end = contiguous_recording_range(
-        list(segments),
-        segment,
-        gap_tolerance_s=config.gap_tolerance_s,
-    )
+    segments, segment, block_start, block_end = _event_recording_context(db, event, config)
     event_features = _json_mapping(event.features_json)
     review_meta = review.metadata() if review is not None else event_features.get("editorial_review")
     review_execution = review_meta.get("execution") if isinstance(review_meta, Mapping) else None

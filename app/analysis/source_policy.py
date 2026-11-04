@@ -6,11 +6,15 @@ import json
 from bisect import bisect_right
 from dataclasses import dataclass
 from datetime import UTC, datetime
+from typing import TYPE_CHECKING
 
 from sqlmodel import Session
 
 from app.db.entities import AppSetting, LiveRoom, RecordingSession
 from app.db.session import get_session
+
+if TYPE_CHECKING:
+    from app.recording.danmaku_evidence import DanmakuEvidence
 
 
 @dataclass(frozen=True, slots=True)
@@ -108,14 +112,37 @@ def session_danmaku_view(session_id: int) -> dict[str, object]:
     with get_session() as db:
         evidence = read_evidence(db, session_id)
         if evidence is not None:
-            return {
-                "state": evidence.status.value,
-                "interrupted": evidence.interrupted,
-                "available": bool(evidence.intervals),
-                "ended_at": evidence.ended_at.isoformat() if evidence.ended_at else None,
-                "archive_error": evidence.archive_error,
-            }
-        if is_local_session(session_id, db):
-            available = session_has_danmaku(session_id)
-            return {"state": "available" if available else "unsupported", "available": available, "ended_at": None}
-        return {"state": "unavailable", "available": False, "ended_at": None}
+            return _captured_view(evidence)
+        local = is_local_session(session_id, db)
+        row = db.get(AppSetting, f"local_source:{session_id}") if local else None
+        return _missing_capture_view(local, row.value if row is not None else None)
+
+
+def _captured_view(evidence: DanmakuEvidence) -> dict[str, object]:
+    return {
+        "state": evidence.status.value,
+        "interrupted": evidence.interrupted,
+        "available": bool(evidence.intervals),
+        "ended_at": evidence.ended_at.isoformat() if evidence.ended_at else None,
+        "archive_error": evidence.archive_error,
+    }
+
+
+def _missing_capture_view(is_local: bool, local_value: str | None) -> dict[str, object]:
+    if is_local:
+        available = local_value is not None and json.loads(local_value).get("has_comments") is True
+        return {"state": "available" if available else "unsupported", "available": available, "ended_at": None}
+    return {"state": "unavailable", "available": False, "ended_at": None}
+
+
+def danmaku_view_from_metadata(
+    session_id: int, *, evidence_value: str | None, is_local: bool, local_value: str | None
+) -> dict[str, object]:
+    """从同一读取快照解释采集证据，保留直播证据优先及本地导入语义。"""
+    from app.recording.danmaku_evidence import DanmakuEvidence
+    from app.recording.metadata import decode_metadata
+
+    evidence = decode_metadata(f"session_danmaku:{session_id}", evidence_value, DanmakuEvidence)
+    if evidence is not None:
+        return _captured_view(evidence)
+    return _missing_capture_view(is_local, local_value)

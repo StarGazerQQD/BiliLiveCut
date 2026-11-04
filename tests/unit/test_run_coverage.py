@@ -95,7 +95,7 @@ def test_application_partition_keeps_coverage_and_required_distribution_step(mon
     for step in (distribution, coverage):
         assert "if" not in step and not step.get("continue-on-error", False)
     assert distribution["timeout-minutes"] == 15
-    assert coverage["timeout-minutes"] == 30
+    assert coverage["timeout-minutes"] == "${{ matrix.os == 'windows-latest' && 40 || 30 }}"
     assert coverage["env"]["PYTEST_ADDOPTS"] == "--timeout=120"
     for scope in (workflow, workflow["jobs"]["test"], workflow["jobs"]["test-macos"], distribution):
         assert "PYTEST_ADDOPTS" not in scope.get("env", {})

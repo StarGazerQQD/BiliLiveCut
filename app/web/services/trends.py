@@ -6,8 +6,16 @@ import asyncio
 import json
 from typing import Any
 
+from app.analysis.search_contracts import SearchEvidence
 from app.core.config import settings
 from app.web.services.notifications import push_notification
+
+
+def _search_evidence(raw_json: str | None) -> dict[str, object] | None:
+    """读取本次来源元数据；旧资料没有搜索证据时保留未知状态。"""
+    raw = json.loads(raw_json or "{}")
+    evidence = raw.get("search") if isinstance(raw, dict) else None
+    return SearchEvidence.model_validate(evidence).model_dump(mode="json") if evidence is not None else None
 
 
 def trends_overview(limit: int = 30, days: int = 7) -> dict[str, Any]:
@@ -39,6 +47,7 @@ def trends_overview(limit: int = 30, days: int = 7) -> dict[str, Any]:
                 "heat": round(it.heat, 1),
                 "seen_count": it.seen_count,
                 "collected_at": it.collected_at.isoformat() if it.collected_at else None,
+                "search": _search_evidence(it.raw_json),
             }
             for it in items
         ],

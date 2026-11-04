@@ -67,6 +67,9 @@ def save_trends(records: list[TrendRecord]) -> int:
                 existing.collected_at = now
                 if rec.summary:
                     existing.summary = rec.summary
+                if rec.url is not None:
+                    existing.url = rec.url
+                existing.raw_json = json.dumps(trend_to_dict(rec), ensure_ascii=False)
                 merged_tags = list(dict.fromkeys(json.loads(existing.tags_json) + rec.tags))
                 existing.tags_json = json.dumps(merged_tags, ensure_ascii=False)
                 merged_kw = list(dict.fromkeys(json.loads(existing.keywords_json) + keywords))

@@ -3,6 +3,7 @@ from __future__ import annotations
 import asyncio
 import json
 from datetime import UTC, datetime
+from pathlib import Path
 from threading import Event
 from typing import TYPE_CHECKING
 
@@ -16,11 +17,14 @@ from app.db.entities import Danmaku
 from app.db.session import get_session
 from app.plugins.live_source import DanmakuEvent, DanmakuSink, DanmakuStateSink, DanmakuStatus, SourceRoom
 from app.recording import danmaku as capture_module
-from app.recording.danmaku import DanmakuCapture
+from app.recording.danmaku import DanmakuCapture, read_evidence
 from app.recording.danmaku_archive import archive_path
+from app.recording.danmaku_journal import journal_path
 from tests.unit.test_live_sources import Source
 
 if TYPE_CHECKING:
+    from typing import IO
+
     from pytest import MonkeyPatch
 
 
@@ -51,7 +55,7 @@ def stored_count() -> int:
         return len(db.exec(select(Danmaku)).all())
 
 
-async def test_normal_collector_end_flushes_full_batches_and_tail(temp_db: None) -> None:
+async def test_completed_journal_backlog_flushes_full_batches_and_tail(temp_db: None, monkeypatch: MonkeyPatch) -> None:
     from app.db.session import engine
 
     transactions: set[object] = set()
@@ -69,14 +73,34 @@ async def test_normal_collector_end_flushes_full_batches_and_tail(temp_db: None)
 
     feed = Feed(253)
     capture = capture_for(feed)
+    reading, release = Event(), Event()
+    original_open = Path.open
+
+    def hold_reads(path: Path, mode: str = "r", *args: object, **kwargs: object) -> IO[str] | IO[bytes]:
+        if path == journal_path(1) and mode == "rb" and not release.is_set():
+            reading.set()
+            if not release.wait(10):
+                raise TimeoutError("controlled journal read was not released")
+        return original_open(path, mode, *args, **kwargs)
+
     event.listen(engine, "before_cursor_execute", observe)
     try:
         await capture.start()
+        # 只控制外部文件读取，完整积压先到位，事务数不依赖收发线程的交错顺序。
+        monkeypatch.setattr(Path, "open", hold_reads)
         assert capture._task is not None
         await asyncio.wait_for(asyncio.shield(capture._task), 5)
-        await capture.stop()
+        assert await asyncio.to_thread(reading.wait, 2)
+        release.set()
+        async with asyncio.timeout(5):
+            while await asyncio.to_thread(stored_count) != 253:
+                await asyncio.sleep(0.01)
     finally:
-        event.remove(engine, "before_cursor_execute", observe)
+        release.set()
+        try:
+            await capture.stop()
+        finally:
+            event.remove(engine, "before_cursor_execute", observe)
     assert await asyncio.to_thread(stored_count) == 253
     assert len(transactions) == 3
     records = [json.loads(line) for line in archive_path(1).read_text(encoding="utf-8").splitlines()]
@@ -102,14 +126,14 @@ async def test_periodic_flush_preserves_small_batch_and_coverage(temp_db: None, 
 async def test_failed_batch_keeps_pending_and_does_not_advance_coverage(
     temp_db: None, monkeypatch: MonkeyPatch
 ) -> None:
-    monkeypatch.setattr(capture_module, "_BATCH_POLL_S", 3600)
     feed = Feed(0, pause=True)
     capture = capture_for(feed)
-    await capture.start()
-    await asyncio.wait_for(feed.sent.wait(), 2)
+    await capture._state(DanmakuStatus.AVAILABLE)
+    await capture._flush_pending()
     message = DanmakuEvent(occurred_at=datetime.now(UTC), content="retry-without-duplicate")
     await capture._emit(message)
-    confirmed = capture.evidence.confirmed_until
+    with get_session() as db:
+        confirmed = read_evidence(db, 1).confirmed_until
 
     def set_trigger(enabled: bool) -> None:
         with get_session() as db:
@@ -123,10 +147,12 @@ async def test_failed_batch_keeps_pending_and_does_not_advance_coverage(
 
     await asyncio.to_thread(set_trigger, True)
     try:
+        async with capture._state_lock:
+            await capture._save()
         with pytest.raises(IntegrityError):
-            async with capture._state_lock:
-                await capture._save()
-        assert capture.evidence.confirmed_until == confirmed
+            await capture._flush_pending()
+        with get_session() as db:
+            assert read_evidence(db, 1).confirmed_until == confirmed
         assert await asyncio.to_thread(stored_count) == 0
     finally:
         await asyncio.to_thread(set_trigger, False)
@@ -162,7 +188,8 @@ async def test_cancelled_inflight_batch_is_not_replayed_after_commit(temp_db: No
     capture = capture_for(Feed(0))
     event.listen(engine, "before_cursor_execute", before_cursor)
     event.listen(engine, "commit", committing)
-    emitting = asyncio.create_task(capture._emit(DanmakuEvent(occurred_at=datetime.now(UTC), content="cancel-safe")))
+    await capture._emit(DanmakuEvent(occurred_at=datetime.now(UTC), content="cancel-safe"))
+    emitting = asyncio.create_task(capture._flush_pending())
     try:
         assert await asyncio.to_thread(started.wait, 2)
         emitting.cancel()

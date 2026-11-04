@@ -32,7 +32,7 @@ from app.analysis.transcription.content import refined_transcript_text
 from app.analysis.transcription.quality import assess_transcript_quality
 from app.db.entities import HotspotEvent, RawSegment, RecordingSession, Transcript
 
-EVIDENCE_POLICY_VERSION = "bounded-evidence-v3"
+EVIDENCE_POLICY_VERSION = "bounded-evidence-v4"
 AUDIENCE_PROFILE = "面向不了解该场次前后经过的普通观众，证据不足时保留人工复核。"
 PREFERENCE_VERSION = "general-audience-v1"
 _TYPES = {"asr", "context_asr", "danmaku", "audio", "sensevoice", "trend", "visual"}
@@ -79,7 +79,9 @@ def _detail(raw: Mapping[str, object]) -> EvidenceDetail:
             selected[key] = float(value)
     quality = detail.get("quality")
     state = quality.get("state") if isinstance(quality, Mapping) else None
+    segment_id = detail.get("segment_id")
     return EvidenceDetail(
+        segment_id=segment_id if type(segment_id) is int and segment_id > 0 else None,
         backend=_text(detail.get("backend"), 128) or None,
         model=_text(detail.get("model_id"), 256) or None,
         quality=_text(state, 240) or None,
@@ -290,6 +292,14 @@ def build_event_input(
             )
         )
     existing = {text.casefold() for item in evidence for text in item.excerpts}
+    # 已保存来源的正文沿用其状态和时间过滤结果，不能重新降为 unknown 绕过边界。
+    existing.update(
+        _text(text, min(max_excerpt_chars, EXCERPT_MAX_CHARS)).casefold()
+        for raw in raw_items
+        if isinstance(raw, dict) and raw.get("type") in {"asr", "context_asr"} and isinstance(raw.get("excerpts"), list)
+        for text in raw["excerpts"]
+        if isinstance(text, str)
+    )
     event_text = _text(event.transcript_text, min(max_excerpt_chars, EXCERPT_MAX_CHARS))
     truncated = truncated or bool(event.transcript_text and len(event.transcript_text) > max_excerpt_chars)
     if complete_event and event_text and event_text.casefold() not in existing:

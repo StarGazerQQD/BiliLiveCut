@@ -376,10 +376,11 @@ def test_refine_transcript_prompt_requests_conservative_repetition_cleanup(monke
     """整理提示词应清除 ASR 边界复读，同时明确保留真实口语强调。"""
     captured: dict[str, object] = {}
 
-    def fake_call_text(prompt: str, max_tokens: int = 512, *, capability: str) -> str:
+    def fake_call_text(prompt: str, max_tokens: int = 512, *, capability: str, search_query: str) -> str:
         captured["prompt"] = prompt
         captured["max_tokens"] = max_tokens
         assert capability == "transcript"
+        assert search_query == "等一下我们先看看等一下我们先看看"
         return '{"clean_text":"整理后的正文。","summary":"本段摘要"}'
 
     monkeypatch.setattr(llm_mod, "call_text", fake_call_text)

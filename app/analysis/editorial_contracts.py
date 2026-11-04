@@ -4,7 +4,7 @@ from __future__ import annotations
 import json
 from typing import Annotated, Literal, NoReturn, Self
 
-from pydantic import BaseModel, ConfigDict, Field, model_validator
+from pydantic import BaseModel, ConfigDict, Field, ValidationError, model_validator
 
 INPUT_MAX_BYTES = 524_288
 OUTPUT_MAX_BYTES = 16_777_216
@@ -24,8 +24,8 @@ Seconds = Annotated[float, Field(ge=0)]
 EvidenceState = Literal["available", "degraded", "missing", "disabled", "error", "pending"]
 EvidenceType = Literal["asr", "context_asr", "danmaku", "audio", "sensevoice", "trend", "visual"]
 ContextDirection = Literal["before", "after", "both"]
-ModelPurpose = Literal["explanation", "review", "grounding", "repair", "context", "text", "probe"]
-ModelProtocol = Literal["json_schema", "json_object", "text"]
+ModelPurpose = Literal["explanation", "review", "grounding", "repair", "context", "text", "probe", "search"]
+ModelProtocol = Literal["json_schema", "json_object", "text", "search"]
 FailureCode = Literal[
     "disabled",
     "daily_budget",
@@ -350,10 +350,20 @@ def validate_review_evidence(
     result = EditorialReviewResultV1.model_validate(result)
     source = EditorialReviewInputV1.model_validate(source)
     evidence = {item.evidence_id: item for item in source.evidence}
-    for identity in result.evidence_ids:
+    for index, identity in enumerate(result.evidence_ids):
         item = evidence.get(identity)
         if item is None or item.state not in {"available", "degraded"}:
-            raise ValueError("判断引用了不存在或不可用的证据")
+            raise ValidationError.from_exception_data(
+                "EditorialReviewResultV1",
+                [
+                    {
+                        "type": "value_error",
+                        "loc": ("evidence_ids", index),
+                        "input": None,
+                        "ctx": {"error": ValueError("判断引用了不存在或不可用的证据")},
+                    }
+                ],
+            )
     if result.verdict in {"recommend", "reject"} and not any(
         evidence[identity].state == "available" for identity in result.evidence_ids
     ):

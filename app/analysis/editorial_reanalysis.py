@@ -20,6 +20,7 @@ from app.analysis.editorial_review_sources import (
     media_validation_scope,
 )
 from app.analysis.event_enricher import EventEnrichmentDraft, commit_event_enrichment
+from app.analysis.media_validation_windows import reanalysis_media_windows
 from app.analysis.reanalysis_targets import (
     ReanalysisTarget,
     list_reanalysis_targets,
@@ -373,7 +374,10 @@ def run_editorial_reanalysis(context: JobContext, payload: dict[str, JsonValue])
     context.report(5, "正在核验重分析对象")
     drafts = compute_reanalysis(targets, cancelled=context.cancelled)
     context.check_cancelled()
-    with media_validation_scope(session_ids=[item.session_id for item in targets]), context.result_transaction() as db:
+    with (
+        media_validation_scope(load_windows=lambda db: reanalysis_media_windows(db, drafts)),
+        context.result_transaction() as db,
+    ):
         result = commit_reanalysis(db, drafts)
         context.check_cancelled()
         context.complete(db, result)

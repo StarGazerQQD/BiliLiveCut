@@ -71,6 +71,29 @@ def test_route_rejects_blank_or_ambiguous_model_identity(value: str) -> None:
         ModelRoute(id="route", name="名称", connection_id="connection", capability="analysis", model=value)
 
 
+@pytest.mark.parametrize(
+    "base_url", ["http://api.deepseek.com", "https://proxy.example/v1", "https://api.deepseek.com/custom"]
+)
+def test_real_search_rejects_nonofficial_connections_before_save(temp_db: None, base_url: str) -> None:
+    configuration = change()
+    configuration.connections[0].base_url = base_url
+    configuration.routes[0].deepseek_search_enabled = True
+    with pytest.raises(ValidationError, match="官方"):
+        save_model_configuration(configuration)
+    assert model_configuration_view().revision == 0
+
+
+def test_real_search_rejects_asr_and_preserves_legacy_default(temp_db: None) -> None:
+    with pytest.raises(ValidationError, match="ASR"):
+        ModelRoute(id="asr", name="语音", connection_id="c", capability="asr", model="m", deepseek_search_enabled=True)
+    configuration = change()
+    legacy = configuration.model_dump()
+    for route in legacy["routes"]:
+        route.pop("deepseek_search_enabled")
+    saved = save_model_configuration(ModelConfigurationChange.model_validate(legacy))
+    assert all(not route.deepseek_search_enabled for route in saved.routes)
+
+
 def test_text_entrypoints_reject_asr_before_accessing_network(temp_db: None) -> None:
     save_model_configuration(change())
     for operation in (llm.call_text, llm.call_web_search):

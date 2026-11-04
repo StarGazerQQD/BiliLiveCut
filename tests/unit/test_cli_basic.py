@@ -381,8 +381,9 @@ def test_record_rejects_produce_without_pipeline(
 
 
 @pytest.mark.parametrize("backend_exit", [None, 0, 1])
+@pytest.mark.parametrize("clock_step", [0.0, 0.125])
 def test_console_isolates_terminal_signals_and_waits_for_backend_cleanup(
-    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, backend_exit: int | None
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, backend_exit: int | None, clock_step: float
 ) -> None:
     import signal
     import time
@@ -399,6 +400,12 @@ def test_console_isolates_terminal_signals_and_waits_for_backend_cleanup(
     options = []
     ownership = []
     original_signals = {number: signal.getsignal(number) for number in (signal.SIGINT, signal.SIGTERM)}
+    clock_value = 100.0
+
+    def monotonic() -> float:
+        nonlocal clock_value
+        clock_value += clock_step
+        return clock_value
 
     class Process:
         returncode = None
@@ -430,7 +437,7 @@ def test_console_isolates_terminal_signals_and_waits_for_backend_cleanup(
             pytest.fail("正常关闭不能由启动器提前强杀后端")
 
         def wait(self, timeout: float | None = None) -> int:
-            assert timeout == 5, "已经确认结束的服务仍须有限确认启动进程退出"
+            assert timeout == 5 - clock_step, "等待必须扣除期限计算期间已经消耗的时间"
             expected_code = (78 if self.pid == 2 else backend_exit) if binding_failure else 0
             assert self.returncode == expected_code
             assert expected_code is not None
@@ -482,6 +489,7 @@ def test_console_isolates_terminal_signals_and_waits_for_backend_cleanup(
     monkeypatch.setattr(process_tree, "ProcessTree", SystemOwnership)
     monkeypatch.setattr(subprocess, "Popen", spawn)
     monkeypatch.setattr(time, "sleep", sleep)
+    monkeypatch.setattr(time, "monotonic", monotonic)
     monkeypatch.setattr(
         urllib.request,
         "build_opener",

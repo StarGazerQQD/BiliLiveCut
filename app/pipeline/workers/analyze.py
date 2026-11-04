@@ -22,8 +22,15 @@ from sqlalchemy.exc import IntegrityError as _IntegrityError
 from sqlmodel import Session, select
 
 from app.analysis import audio as audio_mod
-from app.analysis.editorial_review_sources import media_validation_scope
+from app.analysis.editorial_review_sources import MediaWindow, media_validation_scope
 from app.analysis.keywords import match_keywords
+from app.analysis.media_validation_windows import (
+    event_result_windows,
+    hotspot_media_windows,
+    reanalysis_media_windows,
+    segment_result_windows,
+    target_media_windows,
+)
 from app.analysis.model_execution import ModelCallBudget
 from app.analysis.reanalysis_targets import ReanalysisTarget, target_fingerprint, target_media_bounds, target_protection
 from app.analysis.room_config import room_highlight_keywords
@@ -317,11 +324,7 @@ def analyze_compute(task_id: int) -> dict[str, Any]:
         from app.analysis.reanalysis_targets import list_reanalysis_targets
 
         with get_session() as db:
-            targets = [
-                item
-                for item in list_reanalysis_targets(db, session_id, own_task_id=task_id)
-                if item.segment_id == segment_id
-            ]
+            targets = list_reanalysis_targets(db, session_id, own_task_id=task_id, segment_id=segment_id)
         if targets:
 
             def reanalysis_cancelled() -> bool:
@@ -402,7 +405,9 @@ def commit_highlight(lease: TaskLease, compute_result: dict[str, Any], ms: int) 
     """在写事务前核对文件，再以租约和来源快照提交分析结果。"""
     check_cancellation()
     started = time.monotonic()
-    with media_validation_scope(task_id=lease.task_id):
+    with media_validation_scope(
+        task_id=lease.task_id, load_windows=lambda db: _computed_media_windows(db, compute_result)
+    ):
         session_id = _commit_highlight(lease, compute_result, ms)
     if session_id is not None:
         # 来源预检只覆盖对应事务；模型计算必须读取提交后的实时证据。
@@ -418,6 +423,17 @@ def commit_highlight(lease: TaskLease, compute_result: dict[str, Any], ms: int) 
             _commit_event_analysis(lease, results, ms + int((time.monotonic() - started) * 1000), budgets)
         except LeaseLostError:
             _logger.warning("stale_result_discarded: highlight task=%s 已失去租约", lease.task_id)
+
+
+def _computed_media_windows(db: Session, result: Mapping[str, object]) -> list[MediaWindow]:
+    from app.analysis.editorial_reanalysis import ReanalysisDraft
+
+    if "reanalysis_results" in result:
+        drafts = result["reanalysis_results"]
+        if not isinstance(drafts, list) or any(not isinstance(item, ReanalysisDraft) for item in drafts):
+            raise ValueError("流水线重分析结果格式无效")
+        return reanalysis_media_windows(db, drafts)
+    return segment_result_windows(db, result)
 
 
 def _commit_highlight(lease: TaskLease, compute_result: dict[str, Any], ms: int) -> int | None:
@@ -708,7 +724,16 @@ def _commit_event_analysis(
     for attempt in range(2):
         check_cancellation()
         with (
-            media_validation_scope(task_id=lease.task_id),
+            media_validation_scope(
+                task_id=lease.task_id,
+                load_windows=partial(
+                    _event_batch_media_windows,
+                    task_id=lease.task_id,
+                    results=results,
+                    admitted=admitted,
+                    progress=progress,
+                ),
+            ),
             get_session(operation="event_analysis_commit", task_id=lease.task_id) as db,
         ):
             connection = db.connection()
@@ -783,6 +808,24 @@ def _commit_event_analysis(
                 result = _compute_pending_event(event_id, budget=_event_model_budget(event_id, budgets, lease))
             if result is not None:
                 results.append(result)
+
+
+def _event_batch_media_windows(
+    db: Session,
+    task_id: int,
+    results: list[object],
+    admitted: set[int],
+    progress: _EventBatchCheckpoint | None,
+) -> list[MediaWindow]:
+    task = db.get(SegmentTask, task_id)
+    if task is None:
+        return []
+    windows = event_result_windows(db, results, checkpoints=True)
+    windows.extend(hotspot_media_windows(db, _canonical_event_ids(db, admitted, task.session_id), checkpoints=True))
+    if progress is not None:
+        for saved in progress.candidates:
+            windows.extend(target_media_windows(db, saved.target))
+    return windows
 
 
 def _reusable_event_result(previous: object, event_id: int, lease: TaskLease) -> dict[str, object] | None:
@@ -1138,7 +1181,10 @@ def score_hotspot_event(event_id: int) -> HighlightCandidate | None:
     clip_draft = result["clip_draft"]
     if not isinstance(clip_draft, EventClipDraft):
         raise TypeError("事件评分结果缺少 EventClipDraft")
-    with media_validation_scope(session_ids=[clip_draft.session_id]), get_session(operation="event_score_commit") as db:
+    with (
+        media_validation_scope(load_windows=lambda db: event_result_windows(db, [result])),
+        get_session(operation="event_score_commit") as db,
+    ):
         connection = db.connection()
         if connection.dialect.name == "sqlite":
             connection.exec_driver_sql("BEGIN IMMEDIATE")
@@ -1217,7 +1263,10 @@ def score_segment_direct(segment_id: int) -> HighlightCandidate | None:
         drafts.extend(item for item in additional if isinstance(item, dict))
 
     primary: HighlightCandidate | None = None
-    with media_validation_scope(session_ids=[session_id]), get_session(operation="segment_score_commit") as db:
+    with (
+        media_validation_scope(load_windows=lambda db: segment_result_windows(db, compute_result)),
+        get_session(operation="segment_score_commit") as db,
+    ):
         from app.analysis.scoring_config import get_scoring_config
 
         if db.get_bind().dialect.name == "sqlite":
@@ -1305,10 +1354,16 @@ def _build_hotspot_attention_windows(
     hotspots: list[Mapping[str, object]],
 ) -> list[dict[str, object]]:
     """把本段 provisional 热点转换为可恢复的局部 ASR 窗口。"""
+    from datetime import UTC
+
+    from app.analysis.timeline import datetime_epoch
+
     if segment.start_ts is None:
         return []
+    origin = datetime.fromtimestamp(datetime_epoch(segment.start_ts), UTC)
     if segment.end_ts is not None:
-        duration_s = max(0.0, (segment.end_ts - segment.start_ts).total_seconds())
+        end = datetime.fromtimestamp(datetime_epoch(segment.end_ts), UTC)
+        duration_s = max(0.0, (end - origin).total_seconds())
     else:
         duration_s = float(segment.duration_s or settings.segment_duration_s)
     windows: list[dict[str, object]] = []
@@ -1320,12 +1375,7 @@ def _build_hotspot_attention_windows(
             continue
         if not isinstance(peak_ts, datetime):
             continue
-        try:
-            peak_offset_s = (peak_ts - segment.start_ts).total_seconds()
-        except TypeError:
-            peak_value = peak_ts.replace(tzinfo=None)
-            start_value = segment.start_ts.replace(tzinfo=None)
-            peak_offset_s = (peak_value - start_value).total_seconds()
+        peak_offset_s = datetime_epoch(peak_ts) - datetime_epoch(origin)
         start_offset_s = max(0.0, peak_offset_s - settings.hotspot_asr_pre_roll_s)
         end_offset_s = min(duration_s, peak_offset_s + settings.hotspot_asr_post_roll_s)
         if end_offset_s - start_offset_s < 1.0:
@@ -1335,7 +1385,7 @@ def _build_hotspot_attention_windows(
             {
                 "event_key": event_key,
                 "start_offset_s": round(start_offset_s, 3),
-                "end_offset_s": round(end_offset_s, 3),
+                "end_offset_s": min(duration_s, round(end_offset_s, 3)),
                 "status": "pending",
             }
         )

@@ -309,6 +309,8 @@ export interface paths {
          *
          *     :param limit: 返回的最近弹幕条数。
          *     :param session_id: 仅查询指定会话(可选)。
+         *     :param session_limit: 场次分页大小，与最近弹幕条数分别处理。
+         *     :param session_offset: 按场次编号倒序翻页的起点。
          */
         get: operations["get_danmaku_api_danmaku_get"];
         put?: never;
@@ -3056,6 +3058,11 @@ export interface components {
              */
             clear_api_key: boolean;
             /**
+             * Deepseek Search Enabled
+             * @default false
+             */
+            deepseek_search_enabled: boolean;
+            /**
              * Enabled
              * @default true
              */
@@ -3149,14 +3156,14 @@ export interface components {
              * Protocol
              * @enum {string}
              */
-            protocol: "json_schema" | "json_object" | "text";
+            protocol: "json_schema" | "json_object" | "text" | "search";
             /** Provider Id */
             provider_id: string;
             /**
              * Purpose
              * @enum {string}
              */
-            purpose: "explanation" | "review" | "grounding" | "repair" | "context" | "text" | "probe";
+            purpose: "explanation" | "review" | "grounding" | "repair" | "context" | "text" | "probe" | "search";
             /** Reported Model */
             reported_model?: string | null;
             /** Request Id */
@@ -3372,6 +3379,11 @@ export interface components {
             connection_id: string;
             /** Context Window Tokens */
             context_window_tokens?: number | null;
+            /**
+             * Deepseek Search Enabled
+             * @default false
+             */
+            deepseek_search_enabled: boolean;
             /**
              * Enabled
              * @default true
@@ -4305,6 +4317,8 @@ export interface operations {
             query?: {
                 limit?: number;
                 session_id?: number | null;
+                session_limit?: number;
+                session_offset?: number;
             };
             header?: never;
             path?: never;

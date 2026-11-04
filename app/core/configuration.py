@@ -129,6 +129,7 @@ def _publication(
     db: Session, stored: dict[str, str], core: Settings, runtime: RuntimeOptions
 ) -> tuple[dict[str, object], dict[str, str]]:
     """在当前事务中准备完整快照，提交后不再进行可能失败的数据库读取。"""
+    from app.models.authorization_revision import AUTHORIZATION_REVISIONS_KEY
     from app.models.configuration import MODEL_CONFIGURATION_KEY, validate_asr_selection
 
     validate_asr_selection(db, core)
@@ -137,12 +138,14 @@ def _publication(
     extras.update({key: _encode(getattr(core, key)) for key in Settings.model_fields if key not in BOOTSTRAP})
     for row in db.exec(
         select(AppSetting).where(
-            AppSetting.key.in_({"llm_providers", MODEL_CONFIGURATION_KEY}) | AppSetting.key.startswith("plugin.")
+            AppSetting.key.in_({"llm_providers", MODEL_CONFIGURATION_KEY, AUTHORIZATION_REVISIONS_KEY})
+            | AppSetting.key.startswith("plugin.")
         )
     ).all():
         extras[row.key] = row.value
     extras.setdefault("llm_providers", "")
     extras.setdefault(MODEL_CONFIGURATION_KEY, "")
+    extras.setdefault(AUTHORIZATION_REVISIONS_KEY, "{}")
     return overrides, extras
 
 

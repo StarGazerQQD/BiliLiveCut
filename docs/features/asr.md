@@ -93,6 +93,8 @@ uv pip install --python .venv/Scripts/python.exe --require-hashes -r packaging/p
 
 随后在「设置中心 → ASR」选择设备；已保存的 Web 配置优先于 `.env`，正在运行的任务仍使用开始时的快照。Fun-ASR-Nano/Paraformer 使用主设备，SenseVoice 使用辅助设备，Paraformer 的局部复核使用复核设备。Whisper 包括直接选择为主引擎时，均使用 `ASR_FALLBACK_DEVICE`。CPU 任务、媒体解码、调度及部分音频预处理仍会使用 CPU；增加并发前应确认显存余量。
 
+Whisper 加载前的资源预检支持 `cuda` 和 `cuda:N`，通过 CUDA 逻辑设备的 UUID 查询对应显卡，遵循可见设备及排序规则。无法确认所选显卡时保留未知状态。现有预算只覆盖 `tiny`、`small`、`medium`、`large-v3`；本地模型目录及其他模型标识没有对应预算时明确报告资源需求未知，不套用 `small`。默认 `ASR_RESOURCE_POLICY=warn` 记录原因后继续实际加载；`strict` 在资源不足或无法确认需求时阻止加载。预算只是加载前估算，不能保证推理期间不会耗尽显存；正式包模型的来源和完整性由安装器独立校验。
+
 FunASR 在加载前检查 Torch 构建、可见 GPU 和实际 CUDA 运算，加载后核对主模型、VAD 与标点模型参数设备；CUDA 不可用时明确失败，保留原有可选后端回退记录。Whisper 使用 CTranslate2，单独检查其 CUDA 能力。当前 Windows CTranslate2 需要 cuBLAS 12；cu130 Torch 自带 cuBLAS 13，安装器因此另外安装 NVIDIA 官方 cuBLAS 12。预检和 Whisper 共用加载器，核验进程中真实 DLL 路径及版本；cu126 优先复用同环境 Torch 的 cuBLAS 12，拒绝重复来源或混用不同目录的 cuBLASLt。Portable 不接受受管环境外的库，源码启动仍支持已配置的系统 CUDA。远程转写主引擎的 device 配置不决定服务端设备。
 
 `BiliLiveCut-Portable.exe --doctor` 显示实际解释器、Torch 构建、CUDA 可用性和 CTranslate2 可见 GPU 数；源码 `doctor` 另按当前有效角色设备检查，并在显式 CUDA 不可用时返回失败。成功安装 CUDA wheel 与本机可以执行 CUDA 推理是分别核验的两个结果。

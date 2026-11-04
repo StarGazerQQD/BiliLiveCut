@@ -26,9 +26,17 @@ from sqlmodel import Session
 from app.core import settings_store
 from app.core.config import settings
 from app.core.configuration import configuration_transaction
+from app.core.runtime_settings import settings_scope
 from app.db.entities import AppSetting
+from app.models.authorization_revision import authorization_revisions, update_authorization_revisions
 from app.models.configuration import MODEL_CONFIGURATION_KEY, authorize_model_call, configured_models
-from app.models.contracts import TEXT_CAPABILITIES, ModelConnection, ModelRoute, TextCapability
+from app.models.contracts import (
+    DEEPSEEK_SEARCH_BASE_URLS,
+    TEXT_CAPABILITIES,
+    ModelConnection,
+    ModelRoute,
+    TextCapability,
+)
 
 _STORE_KEY = "llm_providers"
 
@@ -55,6 +63,7 @@ class LLMProvider:
     api_key: str = field(repr=False)
     model: str
     web_search_param: str = ""
+    deepseek_search_enabled: bool = False
     price_input_per_m: float = 0.0
     price_output_per_m: float = 0.0
     enabled: bool = True
@@ -64,6 +73,7 @@ class LLMProvider:
     context_window_tokens: int | None = None
     max_input_tokens: int | None = None
     authorize: Callable[[], None] | None = field(default=None, repr=False, compare=False)
+    authorization_revision: int = field(default=0, repr=False, compare=False)
 
     def to_dict(self) -> dict:
         """序列化为可持久化字典(含明文 key)。
@@ -77,6 +87,7 @@ class LLMProvider:
             "api_key": self.api_key,
             "model": self.model,
             "web_search_param": self.web_search_param,
+            "deepseek_search_enabled": self.deepseek_search_enabled,
             "price_input_per_m": self.price_input_per_m,
             "price_output_per_m": self.price_output_per_m,
             "enabled": self.enabled,
@@ -109,6 +120,7 @@ _PROVIDER_FIELDS = {
     "api_key",
     "model",
     "web_search_param",
+    "deepseek_search_enabled",
     "price_input_per_m",
     "price_output_per_m",
     "enabled",
@@ -125,7 +137,7 @@ def _coerce(raw: dict) -> LLMProvider:
     """
     if not isinstance(raw, dict):
         raise ValueError("LLM provider 必须是对象")
-    missing = _PROVIDER_FIELDS - set(raw)
+    missing = (_PROVIDER_FIELDS - {"deepseek_search_enabled"}) - set(raw)
     unknown = set(raw) - _PROVIDER_FIELDS
     if missing:
         raise ValueError(f"LLM provider 缺少字段: {sorted(missing)}")
@@ -142,6 +154,10 @@ def _coerce(raw: dict) -> LLMProvider:
         raise ValueError("LLM provider id/name/base_url/model 不能为空")
     if not isinstance(raw["enabled"], bool):
         raise ValueError("LLM provider enabled 必须是布尔值")
+    if not isinstance(raw.get("deepseek_search_enabled", False), bool):
+        raise ValueError("LLM provider deepseek_search_enabled 必须是布尔值")
+    if raw.get("deepseek_search_enabled", False) and base_url.rstrip("/").casefold() not in DEEPSEEK_SEARCH_BASE_URLS:
+        raise ValueError("DeepSeek 真实搜索仅支持官方 api.deepseek.com 连接")
     for field_name in ("price_input_per_m", "price_output_per_m"):
         if not isinstance(raw[field_name], (int, float)) or isinstance(raw[field_name], bool):
             raise ValueError(f"LLM provider {field_name} 必须是数字")
@@ -157,6 +173,7 @@ def _coerce(raw: dict) -> LLMProvider:
         api_key=raw["api_key"],
         model=model,
         web_search_param=raw["web_search_param"].strip(),
+        deepseek_search_enabled=raw.get("deepseek_search_enabled", False),
         price_input_per_m=raw["price_input_per_m"],
         price_output_per_m=raw["price_output_per_m"],
         enabled=raw["enabled"],
@@ -191,6 +208,7 @@ def from_route(route: ModelRoute, connection: ModelConnection) -> LLMProvider:
         api_key=connection.api_key,
         model=route.model,
         web_search_param=route.web_search_param,
+        deepseek_search_enabled=route.deepseek_search_enabled,
         price_input_per_m=route.price_input_per_m,
         price_output_per_m=route.price_output_per_m,
         enabled=route.enabled and connection.enabled,
@@ -207,6 +225,11 @@ def load_providers(capability: TextCapability = "analysis") -> list[LLMProvider]
 
     :returns: provider 列表。
     """
+    with settings_scope():
+        return _load_providers(capability)
+
+
+def _load_providers(capability: TextCapability) -> list[LLMProvider]:
     if capability not in TEXT_CAPABILITIES:
         raise ValueError("文字生成仅接受文字业务能力，ASR 必须使用语音转写入口")
     config = configured_models()
@@ -239,10 +262,12 @@ def load_providers(capability: TextCapability = "analysis") -> list[LLMProvider]
                     ),
                 ),
             )
+    revisions = authorization_revisions()
     for provider in items:
         if provider.authorize is not None:
             continue
         connection_id = provider.connection_id or f"legacy-{provider.id}"
+        provider.authorization_revision = revisions.get(connection_id, 0)
         route_id = provider.id if provider.connection_id else f"{capability}-{provider.id}"
         provider.authorize = partial(authorize_model_call, connection_id, route_id, provider.base_url, provider.api_key)
     return sorted(items, key=lambda p: (p.priority, p.name))
@@ -269,14 +294,20 @@ def save_providers(items: list[LLMProvider]) -> None:
 
     :param items: provider 列表。
     """
-    with configuration_transaction() as (db, _revision):
-        _save_legacy(db, items)
+    with configuration_transaction() as (db, revision):
+        _save_legacy(db, items, revision)
     logger.info("已保存 {} 个大模型配置。", len(items))
 
 
-def _save_legacy(db: Session, items: list[LLMProvider]) -> None:
+def _save_legacy(db: Session, items: list[LLMProvider], revision: int) -> None:
     if db.get(AppSetting, MODEL_CONFIGURATION_KEY) is not None:
         raise ValueError("已启用独立业务路由，请使用模型连接与路由页面；旧整表接口不能覆盖新配置")
+    update_authorization_revisions(
+        db,
+        {f"legacy-{item['id']}": (item["base_url"], item["api_key"], item["enabled"]) for item in _read_raw(db)},
+        {f"legacy-{item.id}": (item.base_url, item.api_key, item.enabled) for item in items},
+        revision,
+    )
     row = db.get(AppSetting, _STORE_KEY) or AppSetting(key=_STORE_KEY, value="")
     row.value = json.dumps([p.to_dict() for p in items], ensure_ascii=False, allow_nan=False)
     db.add(row)
@@ -293,6 +324,7 @@ def merge_providers(incoming: list[dict], *, db: Session | None = None) -> list[
     seen: set[str] = set()
     for item in incoming:
         raw = dict(item)
+        raw.setdefault("deepseek_search_enabled", False)
         clear_key = raw.pop("clear_api_key", False)
         if not isinstance(clear_key, bool):
             raise ValueError("clear_api_key 必须为布尔值")
@@ -329,7 +361,7 @@ def merge_and_save(incoming: list[dict]) -> list[dict]:
     :param incoming: 前端提交的 provider 字典列表(``api_key`` 可为空表示不修改)。
     :returns: 保存后的对外视图列表。
     """
-    with configuration_transaction() as (db, _revision):
+    with configuration_transaction() as (db, revision):
         merged = merge_providers(incoming, db=db)
-        _save_legacy(db, merged)
+        _save_legacy(db, merged, revision)
     return [p.public_dict() for p in merged]

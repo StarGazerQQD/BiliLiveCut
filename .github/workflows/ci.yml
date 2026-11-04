@@ -149,8 +149,8 @@ jobs:
         shell: bash
         env:
           ASR_NO_MODEL_DOWNLOAD: "1"
-        run: python -m pytest tests/integration/test_frontend_console.py --timeout=120 --fail-on-skip
-        timeout-minutes: 3
+        run: python -m pytest tests/integration/test_frontend_console.py --timeout=120 --fail-on-skip -vv --durations=10
+        timeout-minutes: 5
 
       - name: Verify SSE state events (Linux)
         if: runner.os == 'Linux'
@@ -160,6 +160,12 @@ jobs:
         run: python -m pytest tests/integration/test_state_events.py --timeout=60 --fail-on-skip --tb=long -vv --durations=10
         timeout-minutes: 5
 
+      - name: Verify service member exit (Linux)
+        if: runner.os == 'Linux'
+        shell: bash
+        run: python -m pytest packaging/portable/tests/test_service_member_exit.py --timeout=60 --fail-on-skip --tb=long -vv
+        timeout-minutes: 3
+
       # 实际日志显示发行包用例占用约 285 秒；独立验收保留全部检查和各步时限。
       - name: Run real sdist and wheel integration
         shell: bash
@@ -168,7 +174,8 @@ jobs:
         run: python -m pytest tests/integration/test_wheel_frontend.py --fail-on-skip --durations=10
         timeout-minutes: 15
 
-      # Windows/Python 3.11 的 3358 项全部通过仍耗时 897.96 秒，需为收尾保留余量。
+      # Windows/Python 3.11 的 4193 项全部通过耗时 1799.33 秒，30 分钟总限在报告收尾时触发。
+      # Windows 预留完整测试及收尾余量；Linux 保留 30 分钟步骤预算。
       # 应用测试单项限时 120 秒；发行包构建仍使用上方独立步骤的预算。
       - name: Run pytest with coverage (≥50%)
         shell: bash
@@ -176,7 +183,7 @@ jobs:
           ASR_NO_MODEL_DOWNLOAD: "1"
           PYTEST_ADDOPTS: "--timeout=120"
         run: python scripts/run_coverage.py --application-only
-        timeout-minutes: 30
+        timeout-minutes: ${{ matrix.os == 'windows-latest' && 40 || 30 }}
 
       - name: Upload coverage report
         if: always()
@@ -339,7 +346,7 @@ jobs:
         shell: bash
         env:
           ASR_NO_MODEL_DOWNLOAD: "1"
-        run: python -m pytest tests/unit/test_process_tree.py tests/unit/test_process_control.py tests/unit/test_service_shutdown.py tests/integration/test_frontend_console.py --timeout=120 --fail-on-skip
+        run: python -m pytest tests/unit/test_process_tree.py tests/unit/test_process_control.py tests/unit/test_service_shutdown.py tests/integration/test_frontend_console.py packaging/portable/tests/test_service_member_exit.py --timeout=120 --fail-on-skip
         timeout-minutes: 10
 
       - name: Run pytest with coverage (>=50%)
