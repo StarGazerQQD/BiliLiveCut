@@ -11,7 +11,7 @@ from app.db.entities import AppSetting
 from app.db.session import get_session
 from app.models.configuration import model_configuration_view, save_model_configuration
 from app.models.contracts import ModelConfigurationChange
-from tests.integration.test_session_summary_recovery import _seed
+from tests.integration.test_session_summary_recovery import _grounding_reply, _seed
 from tests.integration.test_structured_llm import catalog, response
 
 
@@ -54,6 +54,8 @@ def test_unconfigured_summary_waits_without_spending_attempts_and_resumes_same_o
 
     async def send(_transport: httpx.AsyncHTTPTransport, request: httpx.Request) -> httpx.Response:
         calls.append(request)
+        if checked := _grounding_reply(request):
+            return checked
         return httpx.Response(200, json=response('{"summary":"已有事实的完整总结"}'))
 
     monkeypatch.setattr(httpx.AsyncHTTPTransport, "handle_async_request", send)
@@ -71,7 +73,7 @@ def test_unconfigured_summary_waits_without_spending_attempts_and_resumes_same_o
     claim = session_summary.claim_pending_session_summary()
     assert claim is not None
     assert session_summary.execute_session_summary_claim(claim)
-    assert len(calls) == 1
+    assert len(calls) == 2
     assert _view(session_id)["status"] == "ready"
     completed = _request(session_id)
     assert completed["operation_id"] == original["operation_id"]

@@ -29,3 +29,19 @@ class EvidenceReferences:
         if any(identity not in self.originals for identity in identities):
             raise ValueError("证据引用未知的短标识")
         return [self.originals[identity] for identity in identities]
+
+    def payload(self) -> dict[str, object]:
+        """分离可引用材料与不可用状态；完整来源仍由 source 保留。"""
+        payload = self.source.model_dump(mode="json", exclude={"evidence"})
+        payload["evidence"] = [
+            item.model_dump(mode="json") for item in self.source.evidence if item.state in {"available", "degraded"}
+        ]
+        payload["availability"] = [
+            item.model_dump(
+                mode="json",
+                include={"type", "state", "start_s", "end_s", "timing_precision", "context_role"},
+            )
+            for item in self.source.evidence
+            if item.state not in {"available", "degraded"}
+        ]
+        return payload

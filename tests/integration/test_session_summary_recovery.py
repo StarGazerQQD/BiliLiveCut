@@ -29,7 +29,7 @@ def _seed(*, count: int = 6, length: int = 1500, endpoint: str = "https://fixtur
         config.model_copy(
             update={
                 "routes": [
-                    route.model_copy(update={"capability": "summary", "context_window_tokens": 6000})
+                    route.model_copy(update={"capability": "summary", "context_window_tokens": 8000})
                     for route in config.routes
                 ]
             }
@@ -76,6 +76,21 @@ def _reply(payload: dict[str, object], *, large_leaf: bool = False) -> str:
     return "完整全场总结" if stage in {"final", "whole"} else "归并事件与已知时间"
 
 
+def _grounding_reply(request: httpx.Request) -> httpx.Response | None:
+    wire = json.loads(request.content)
+    if len(wire["messages"]) < 2:
+        return None
+    payload = json.loads(wire["messages"][1]["content"])
+    if "candidate" not in payload or "material" not in payload:
+        return None
+    result = {
+        "supported": True,
+        "reason": "受控服务确认素材支持",
+        "quotes": [{"source_index": 0, "text": payload["material"][0]["text"][:1000]}],
+    }
+    return httpx.Response(200, json=response(json.dumps(result)))
+
+
 def _run(session_id: int) -> bool:
     assert session_summary.request_session_timeline_summary(session_id, reason="manual", force=True, renew_budget=True)
     return _continue(session_id)
@@ -107,6 +122,8 @@ def test_hierarchy_uses_all_blocks_and_only_invalidates_changed_ancestors(
     calls: list[dict[str, object]] = []
 
     async def send(_transport: httpx.AsyncHTTPTransport, request: httpx.Request) -> httpx.Response:
+        if checked := _grounding_reply(request):
+            return checked
         payload = _payload(request)
         calls.append(payload)
         return httpx.Response(200, json=response(json.dumps({"summary": _reply(payload, large_leaf=large_leaf)})))
@@ -122,7 +139,7 @@ def test_hierarchy_uses_all_blocks_and_only_invalidates_changed_ancestors(
             for row in db.exec(select(AppSetting).where(AppSetting.key.startswith("model_request:v1:"))).all()
         ]
         assert len({item["operation_id"] for item in requests}) == 1
-        assert len(requests) == len(calls)
+        assert len(requests) == 2 * len(calls)
         plan = json.loads(db.get(AppSetting, f"summary_plan:v1:{session_id}").value)
         assert len(plan["nodes"]) == 6
         target = db.exec(
@@ -153,6 +170,8 @@ def test_short_summary_preserves_dates_gaps_and_unknown_end(
     calls: list[dict[str, object]] = []
 
     async def send(_transport: httpx.AsyncHTTPTransport, request: httpx.Request) -> httpx.Response:
+        if checked := _grounding_reply(request):
+            return checked
         calls.append(_payload(request))
         return httpx.Response(200, json=response('{"summary":"有间隙的两段素材，无法确认期间情况。"}'))
 
@@ -175,6 +194,7 @@ def test_summary_keeps_uploader_and_replay_title_in_every_request(
     temp_db: None, monkeypatch: pytest.MonkeyPatch, length: int
 ) -> None:
     session_id = _seed(count=1, length=length)
+    monkeypatch.setattr(settings, "editorial_model_max_attempts", 32)
     with get_session() as db:
         room = db.exec(select(LiveRoom)).one()
         room.uploader_name = "素材上传者"
@@ -183,6 +203,8 @@ def test_summary_keeps_uploader_and_replay_title_in_every_request(
     calls: list[dict[str, object]] = []
 
     async def send(_transport: httpx.AsyncHTTPTransport, request: httpx.Request) -> httpx.Response:
+        if checked := _grounding_reply(request):
+            return checked
         prompts.append(json.loads(request.content)["messages"][0]["content"])
         payload = _payload(request)
         calls.append(payload)
@@ -204,6 +226,7 @@ def test_single_large_block_is_partitioned_without_missing_text_or_guessed_time(
     temp_db: None, monkeypatch: pytest.MonkeyPatch
 ) -> None:
     session_id = _seed(count=1, length=12000)
+    monkeypatch.setattr(settings, "editorial_model_max_attempts", 32)
     with get_session() as db:
         segment = db.exec(select(RawSegment)).one()
         segment.start_ts = datetime(2026, 10, 30, 15, 58, tzinfo=UTC)
@@ -212,6 +235,8 @@ def test_single_large_block_is_partitioned_without_missing_text_or_guessed_time(
     prompts: list[str] = []
 
     async def send(_transport: httpx.AsyncHTTPTransport, request: httpx.Request) -> httpx.Response:
+        if checked := _grounding_reply(request):
+            return checked
         payload = _payload(request)
         calls.append(payload)
         prompts.append(json.loads(request.content)["messages"][0]["content"])
@@ -235,14 +260,14 @@ def test_single_large_block_is_partitioned_without_missing_text_or_guessed_time(
 def test_large_multibyte_intermediate_is_compressed_completely_in_shared_budget(
     temp_db: None, monkeypatch: pytest.MonkeyPatch
 ) -> None:
-    session_id = _seed(count=2, length=3000)
+    session_id = _seed(count=5, length=1100)
     config = catalog(revision=1)
     save_model_configuration(
         config.model_copy(
             update={
                 "routes": [
                     route.model_copy(
-                        update={"capability": "summary", "context_window_tokens": 6000, "max_output_tokens": 4096}
+                        update={"capability": "summary", "context_window_tokens": 12000, "max_output_tokens": 4096}
                     )
                     for route in config.routes
                 ]
@@ -251,9 +276,11 @@ def test_large_multibyte_intermediate_is_compressed_completely_in_shared_budget(
     )
     monkeypatch.setattr(settings, "editorial_model_max_attempts", 32)
     calls: list[dict[str, object]] = []
-    oversized = "内容" * 1200
+    oversized = "内容" * 1150
 
     async def send(_transport: httpx.AsyncHTTPTransport, request: httpx.Request) -> httpx.Response:
+        if checked := _grounding_reply(request):
+            return checked
         payload = _payload(request)
         calls.append(payload)
         text = oversized if payload["stage"] == "source" else _reply(payload)
@@ -320,6 +347,8 @@ def test_compression_preserves_single_character_tail_without_an_impossible_reque
     calls: list[dict[str, object]] = []
 
     async def send(_transport: httpx.AsyncHTTPTransport, request: httpx.Request) -> httpx.Response:
+        if checked := _grounding_reply(request):
+            return checked
         calls.append(_payload(request))
         return httpx.Response(200, json=response('{"summary":"compressed"}'))
 
@@ -336,6 +365,8 @@ def test_shared_budget_exhaustion_requires_explicit_renewal_and_preserves_nodes(
     calls: list[dict[str, object]] = []
 
     async def send(_transport: httpx.AsyncHTTPTransport, request: httpx.Request) -> httpx.Response:
+        if checked := _grounding_reply(request):
+            return checked
         payload = _payload(request)
         calls.append(payload)
         return httpx.Response(200, json=response(json.dumps({"summary": _reply(payload)})))
@@ -343,18 +374,18 @@ def test_shared_budget_exhaustion_requires_explicit_renewal_and_preserves_nodes(
     monkeypatch.setattr(httpx.AsyncHTTPTransport, "handle_async_request", send)
     monkeypatch.setattr(settings, "editorial_model_max_attempts", 2)
     assert not _run(session_id)
-    assert len(calls) == 2
+    assert len(calls) == 1
     with get_session() as db:
         assert db.get(AppSetting, f"session_timeline_summary:{session_id}") is None
         pending = db.get(AppSetting, f"session_timeline_summary_request:{session_id}")
         payload = json.loads(pending.value)
         assert payload["attempts"] == 0 and payload["status"] == "failed"
         operation_id = payload["operation_id"]
-    monkeypatch.setattr(settings, "editorial_model_max_attempts", 8)
+    monkeypatch.setattr(settings, "editorial_model_max_attempts", 16)
     assert session_summary.recover_running_session_summary_requests() == 0
     assert not session_summary.request_session_timeline_summary(session_id, reason="automatic", force=True)
     assert session_summary.claim_pending_session_summary() is None
-    assert len(calls) == 2
+    assert len(calls) == 1
     assert _run(session_id)
     with get_session() as db:
         request = json.loads(db.get(AppSetting, f"session_timeline_summary_request:{session_id}").value)
@@ -368,10 +399,12 @@ def test_successful_slices_share_one_fixed_budget_without_business_failures(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     session_id = _seed()
-    monkeypatch.setattr(settings, "editorial_model_max_attempts", 8)
+    monkeypatch.setattr(settings, "editorial_model_max_attempts", 14)
     calls: list[dict[str, object]] = []
 
     async def send(_transport: httpx.AsyncHTTPTransport, request: httpx.Request) -> httpx.Response:
+        if checked := _grounding_reply(request):
+            return checked
         payload = _payload(request)
         calls.append(payload)
         return httpx.Response(200, json=response(json.dumps({"summary": _reply(payload)})))
@@ -401,7 +434,7 @@ def test_successful_slices_share_one_fixed_budget_without_business_failures(
                 select(AppSetting).where(AppSetting.key.startswith(f"model_request:v1:{operation_id}:"))
             ).all()
         ]
-        assert sorted(record["number"] for record in records) == list(range(1, 8))
+        assert sorted(record["number"] for record in records) == list(range(1, 15))
         assert all(record["state"] == "finished" for record in records)
     assert session_summary.request_session_timeline_summary(session_id, reason="automatic", force=True)
     assert _continue(session_id)
@@ -470,6 +503,8 @@ def test_changed_source_expires_result_without_get_scheduling_or_reusing_old_fin
     calls: list[dict[str, object]] = []
 
     async def send(_transport: httpx.AsyncHTTPTransport, request: httpx.Request) -> httpx.Response:
+        if checked := _grounding_reply(request):
+            return checked
         payload = _payload(request)
         calls.append(payload)
         return httpx.Response(200, json=response(json.dumps({"summary": _reply(payload)})))
@@ -517,10 +552,12 @@ def test_storage_failure_stops_requests_and_completed_root_is_reused(
     from sqlalchemy import event
 
     session_id = _seed()
-    monkeypatch.setattr(settings, "editorial_model_max_attempts", 8 if failure_at == "cache" else 7)
+    monkeypatch.setattr(settings, "editorial_model_max_attempts", 16 if failure_at == "cache" else 14)
     calls: list[dict[str, object]] = []
 
     async def send(_transport: httpx.AsyncHTTPTransport, request: httpx.Request) -> httpx.Response:
+        if checked := _grounding_reply(request):
+            return checked
         payload = _payload(request)
         calls.append(payload)
         return httpx.Response(200, json=response(json.dumps({"summary": _reply(payload)})))
@@ -622,26 +659,36 @@ def test_old_active_request_is_preserved_until_explicit_budget_renewal(temp_db: 
 
 
 def test_real_process_restart_reuses_committed_leaf_and_keeps_unknown_inflight_request(
-    temp_db: None, tmp_path: Path
+    temp_db: None, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
     arrived = Event()
     release = Event()
     calls: list[dict[str, object]] = []
+    http_count = 0
 
     class Handler(BaseHTTPRequestHandler):
         def log_message(self, _format: str, *args: object) -> None:
             pass
 
         def do_POST(self) -> None:
+            nonlocal http_count
             body = self.rfile.read(int(self.headers["Content-Length"]))
-            payload = _payload(httpx.Request("POST", "http://127.0.0.1", content=body))
-            calls.append(payload)
-            if len(calls) == 2:
+            http_count += 1
+            request = httpx.Request("POST", "http://127.0.0.1", content=body)
+            checked = _grounding_reply(request)
+            if checked is None:
+                payload = _payload(request)
+                calls.append(payload)
+            if http_count == 3:
                 arrived.set()
                 release.wait(25)
                 self.close_connection = True
                 return
-            encoded = json.dumps(response(json.dumps({"summary": _reply(payload)}))).encode()
+            encoded = (
+                checked.content
+                if checked is not None
+                else json.dumps(response(json.dumps({"summary": _reply(payload)}))).encode()
+            )
             self.send_response(200)
             self.send_header("Content-Type", "application/json")
             self.send_header("Content-Length", str(len(encoded)))
@@ -652,8 +699,11 @@ def test_real_process_restart_reuses_committed_leaf_and_keeps_unknown_inflight_r
     thread = Thread(target=server.serve_forever, daemon=True)
     thread.start()
     session_id = _seed(count=4, length=2000, endpoint=f"http://127.0.0.1:{server.server_port}/v1")
+    monkeypatch.setattr(settings, "editorial_model_max_attempts", 16)
     assert session_summary.request_session_timeline_summary(session_id, reason="process-test")
-    environment = dict(os.environ, NO_PROXY="127.0.0.1,localhost", no_proxy="127.0.0.1,localhost")
+    environment = dict(
+        os.environ, NO_PROXY="127.0.0.1,localhost", no_proxy="127.0.0.1,localhost", EDITORIAL_MODEL_MAX_ATTEMPTS="16"
+    )
     log_path = tmp_path / "summary-child.log"
     with log_path.open("wb") as log:
         child = subprocess.Popen(
@@ -689,7 +739,7 @@ def test_real_process_restart_reuses_committed_leaf_and_keeps_unknown_inflight_r
                     for row in db.exec(select(AppSetting).where(AppSetting.key.startswith("model_request:v1:"))).all()
                 ]
                 assert len({record["operation_id"] for record in records}) == 1
-                assert sorted(record["number"] for record in records) == list(range(1, len(calls) + 1))
+                assert sorted(record["number"] for record in records) == list(range(1, http_count + 1))
                 assert len([record for record in records if record["state"] == "unconfirmed"]) == 1
         finally:
             if child.poll() is None:

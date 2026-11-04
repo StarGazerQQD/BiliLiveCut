@@ -5,6 +5,7 @@ from __future__ import annotations
 import json
 from datetime import UTC, datetime, timedelta
 
+import httpx
 import pytest
 from sqlmodel import select
 
@@ -34,6 +35,8 @@ from app.db.session import get_session
 from app.models.configuration import save_model_configuration
 from app.models.contracts import ConnectionChange, ModelConfigurationChange, ModelRoute
 from app.web.services.timeline import get_session_timeline, list_session_timelines
+from tests.integration.test_session_summary_recovery import _grounding_reply
+from tests.integration.test_structured_llm import response
 
 
 @pytest.fixture
@@ -41,7 +44,11 @@ def summary_model(temp_db: None) -> None:
     save_model_configuration(
         ModelConfigurationChange(
             revision=0,
-            connections=[ConnectionChange(id="summary", name="总结测试", base_url="https://fixture.invalid/v1")],
+            connections=[
+                ConnectionChange(
+                    id="summary", name="总结测试", base_url="https://fixture.invalid/v1", api_key="private-test-key"
+                )
+            ],
             routes=[
                 ModelRoute(
                     id="summary",
@@ -440,9 +447,7 @@ def test_whole_session_summary_analyzes_all_final_asr_once_in_time_order(
     summary_model: None,
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    """整场总结必须按时间聚合全部最终 ASR，并只调用一次 LLM。"""
-    from app.analysis import llm
-
+    """整场总结一次综合全部原文，独立核验通过后保存。"""
     session_id = _seed_timeline()
     with get_session() as db:
         pending = db.get(AppSetting, f"session_reanalysis:{session_id}")
@@ -472,20 +477,26 @@ def test_whole_session_summary_analyzes_all_final_asr_once_in_time_order(
 
     prompts: list[str] = []
 
-    def fake_call_text(prompt: str, max_tokens: int, *, capability: str, **_kwargs: object) -> str:
-        prompts.append(prompt)
-        assert max_tokens == 1048576
-        assert capability == "summary"
-        return '{"summary":"19:00:00 主播先介绍挑战规则，19:05:00 挑战反转并成功。"}'
+    checks: list[httpx.Request] = []
 
-    monkeypatch.setattr(llm, "call_text", fake_call_text)
+    async def send(_transport: httpx.AsyncHTTPTransport, request: httpx.Request) -> httpx.Response:
+        if checked := _grounding_reply(request):
+            checks.append(request)
+            return checked
+        prompt = json.loads(request.content)["messages"][0]["content"]
+        prompts.append(prompt)
+        return httpx.Response(
+            200, json=response('{"summary":"19:00:00 主播先介绍挑战规则，19:05:00 挑战反转并成功。"}')
+        )
+
+    monkeypatch.setattr(httpx.AsyncHTTPTransport, "handle_async_request", send)
     result = build_session_timeline_summary(session_id)
 
     assert result["source"] == "llm"
     assert result["analysis_basis"] == "full_session_asr"
     assert result["transcript_count"] == 2
     assert result["summary"] == "19:00:00 主播先介绍挑战规则，19:05:00 挑战反转并成功。"
-    assert len(prompts) == 1
+    assert len(prompts) == len(checks) == 1
     blocks = json.loads(prompts[0].split("整场 ASR：\n", 1)[1].split("\n覆盖情况（", 1)[0])
     assert [block["source_file"] for block in blocks] == ["timeline_000.ts", "timeline_001.ts"]
     assert [block["start_at"] for block in blocks] == ["2026-08-05T19:00:00+08:00", "2026-08-05T19:05:00+08:00"]

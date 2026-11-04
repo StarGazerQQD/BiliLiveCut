@@ -69,6 +69,7 @@ def editorial_code_identity() -> str:
     """读取实际安装源码，跨源码包和 wheel 保持相同的编辑链身份。"""
     names = (
         "analysis/editorial_contracts.py",
+        "analysis/editorial_references.py",
         "analysis/editorial_review.py",
         "analysis/editorial_provenance.py",
         "analysis/editorial_review_sources.py",

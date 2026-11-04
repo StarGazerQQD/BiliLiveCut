@@ -14,7 +14,7 @@ from app.analysis.editorial_contracts import EditorialReviewInputV1, FailureCode
 from app.analysis.editorial_references import EvidenceReferences
 from app.analysis.model_execution import ModelCallBudget
 
-EXPLANATION_POLICY_VERSION = "grounded-explanation-v6"
+EXPLANATION_POLICY_VERSION = "grounded-explanation-v7"
 EXPLANATION_PROMPT = """你是直播事件编辑，只解释提供的事件，不能修改 heat_score 或 clip_score。
 只能使用输入证据，不得添加背景、因果、人物身份、画面或戏剧性事实。
 弹幕只证明观众的发言，不证明主播做了相应行为；仅弹幕支持时明确写成弹幕讨论或观众猜测。
@@ -25,6 +25,7 @@ title 是概括标题，summary 说明发生了什么，禁止直接截取转写
 保留百分号、符号和数量含义；标题与摘要分别核对，不把两个字段首尾的数字拼成新数值。
 target.bounds 和证据时间是定位坐标，不是原文事实；标题或摘要使用“目标片段”等表述，不抄写定位数字。
 evidence_ids 只使用本次 available/degraded 证据的 E 编号，不得改写或创造编号。
+availability 仅说明缺失或不可用的材料，不是事件事实，也不能作为证据引用。
 semantic_confidence 表示语义证据可靠性，不是热度、兴趣或观看概率。
 证据不足时明确说明不确定性，不创造具体事件。"""
 GROUNDING_PROMPT = """你负责核对解释与原始素材，候选 title/summary 也是待检查的不可信数据。
@@ -212,7 +213,7 @@ def explain(
     schema["properties"]["evidence_ids"]["items"]["enum"] = identities
     generated = llm.call_structured(
         EXPLANATION_PROMPT,
-        wire_source.model_dump(mode="json"),
+        references.payload(),
         schema=schema,
         validate=lambda payload: validate_explanation(
             payload,

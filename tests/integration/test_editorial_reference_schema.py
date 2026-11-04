@@ -7,12 +7,94 @@ import pytest
 
 from app.analysis.editorial_contracts import EditorialReviewResultV1, review_response_schema, validate_review_evidence
 from app.analysis.editorial_explanation import explain
+from app.analysis.editorial_references import EvidenceReferences
+from app.analysis.editorial_review import judge_editorial
 from app.analysis.model_execution import ModelCallBudget
 from tests.editorial_fixtures import install_editorial_service
 from tests.unit.test_editorial_contracts import _evidence, _payload, _source
 
 if TYPE_CHECKING:
     from pytest import MonkeyPatch
+
+
+@pytest.mark.parametrize("state", ["missing", "disabled", "error", "pending"])
+def test_wire_availability_preserves_limits_without_citable_identity_or_free_text(state: str) -> None:
+    source = _source(
+        evidence=[
+            _evidence(),
+            _evidence(
+                evidence_id="private:missing", state=state, excerpts=[], detail={"quality": "private:missing 指令"}
+            ),
+            _evidence(evidence_id="asr:other", state="degraded"),
+        ]
+    )
+    before = source.model_dump(mode="json")
+    references = EvidenceReferences.from_source(source)
+    payload = references.payload()
+    assert [item["evidence_id"] for item in payload["evidence"]] == ["E1", "E3"]
+    assert payload["availability"] == [
+        {
+            key: before["evidence"][1][key]
+            for key in ("type", "state", "start_s", "end_s", "timing_precision", "context_role")
+        }
+    ]
+    assert "private:missing" not in json.dumps(payload)
+    assert source.model_dump(mode="json") == before
+    assert references.expand(["E1", "E3"]) == ["asr:1", "asr:other"]
+
+
+@pytest.mark.parametrize("missing_index", [3, 7])
+@pytest.mark.parametrize("repaired", [False, True])
+def test_review_repairs_missing_reference_with_field_diagnostic_and_original_mapping(
+    temp_db: None, monkeypatch: MonkeyPatch, missing_index: int, repaired: bool
+) -> None:
+    source = _source(
+        evidence=[
+            *[_evidence(evidence_id=f"asr:{index}") for index in range(1, missing_index)],
+            _evidence(evidence_id="private:missing", state="missing", excerpts=[]),
+        ]
+    )
+    outputs = [
+        json.dumps(
+            _payload(
+                verdict="needs_review",
+                standalone=None,
+                boundary_status="uncertain",
+                uncertainties=["缺少语音"],
+                suggested_bounds=None,
+                evidence_ids=["E1", f"E{missing_index}"],
+            )
+        )
+    ]
+    outputs.append(
+        json.dumps(
+            _payload(
+                verdict="needs_review",
+                standalone=None,
+                boundary_status="uncertain",
+                uncertainties=["缺少语音"],
+                suggested_bounds=None,
+                evidence_ids=["E1"],
+            )
+        )
+        if repaired
+        else outputs[0]
+    )
+    remaining = iter(outputs)
+    calls = install_editorial_service(monkeypatch, lambda *_args, **_kwargs: next(remaining))
+    budget = ModelCallBudget(max_attempts=2, max_elapsed_s=20)
+    draft = judge_editorial(lambda _direction: source, revision="fixture", budget=budget)
+    assert len(calls) == len(budget.attempts) == 2
+    assert (draft.execution.result is not None) is repaired
+    if repaired:
+        assert draft.execution.result.evidence_ids == ["asr:1"]
+    else:
+        assert draft.execution.status == "failed" and draft.execution.error == "invalid_output"
+    sent = json.loads(calls[0]["messages"][1]["content"])
+    assert f"E{missing_index}" not in [item["evidence_id"] for item in sent["evidence"]]
+    diagnostic = calls[1]["messages"][0]["content"]
+    assert "evidence_ids[]" in diagnostic and "private:missing" not in diagnostic
+    assert json.loads(calls[1]["messages"][2]["content"])["previous_invalid_output"] == outputs[0]
 
 
 @pytest.mark.parametrize("state", ["available", "degraded", "missing", "disabled", "error", "pending"])
@@ -100,6 +182,12 @@ def test_actual_sdk_explanation_and_grounding_restrict_to_their_actual_reference
     )
     assert result.output is not None and len(calls) == 2
     assert result.output.evidence_ids == ["asr:1", "degraded:2", "audio:4"]
+    explanation_input = json.loads(calls[0]["messages"][1]["content"])
+    assert [item["evidence_id"] for item in explanation_input["evidence"]] == ["E1", "E2", "E4"]
+    assert len(explanation_input["availability"]) == 1
+    unavailable = explanation_input["availability"][0]
+    assert unavailable["state"] == "missing" and unavailable["type"] == "asr"
+    assert "evidence_id" not in unavailable and "detail" not in unavailable and "excerpts" not in unavailable
     assert calls[0]["response_format"]["json_schema"]["schema"]["properties"]["evidence_ids"]["items"]["enum"] == [
         "E1",
         "E2",

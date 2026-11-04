@@ -586,6 +586,7 @@ def test_filled_gap_replaces_degraded_summary_as_recovered(temp_db: None, monkey
     import httpx
 
     from app.analysis import llm_providers
+    from tests.integration.test_session_summary_recovery import _grounding_reply
     from tests.integration.test_structured_llm import response
 
     task_id, segment_id, session_id = seed(TaskStatus.FAILED)
@@ -606,6 +607,8 @@ def test_filled_gap_replaces_degraded_summary_as_recovered(temp_db: None, monkey
 
     async def send(_transport: httpx.AsyncHTTPTransport, request: httpx.Request) -> httpx.Response:
         requests.append(request)
+        if checked := _grounding_reply(request):
+            return checked
         return httpx.Response(200, json=response('{"summary":"补齐结果"}'), request=request)
 
     monkeypatch.setattr(httpx.AsyncHTTPTransport, "handle_async_request", send)
@@ -615,7 +618,7 @@ def test_filled_gap_replaces_degraded_summary_as_recovered(temp_db: None, monkey
     assert view["summary_mode"] == "recovered"
     assert view["coverage"]["coverage_ratio"] == 1
     assert view["summary"] == "补齐结果"
-    assert len(requests) == 1
+    assert len(requests) == 2
 
 
 def test_resource_reservations_are_released_by_lease_generation(temp_db: None, monkeypatch: pytest.MonkeyPatch) -> None:
