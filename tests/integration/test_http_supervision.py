@@ -5,7 +5,9 @@ import socket
 import subprocess
 import sys
 import time
+from contextlib import nullcontext
 from pathlib import Path
+from typing import TYPE_CHECKING
 from urllib.error import URLError
 from urllib.request import ProxyHandler, build_opener
 
@@ -13,6 +15,11 @@ import psutil
 import pytest
 
 from tests.integration.test_frontend_console import _service_leaves, _service_snapshot, _service_tree, _stop_console
+
+if TYPE_CHECKING:
+    from typing import Literal
+
+    from pytest import MonkeyPatch
 
 
 def _active_members(members: list[psutil.Process]) -> list[tuple[int, str]]:
@@ -29,21 +36,30 @@ def _active_members(members: list[psutil.Process]) -> list[tuple[int, str]]:
 
 
 @pytest.mark.parametrize(
-    "supervisor,stalled,action",
+    "supervisor,stalled,action,snapshot_failure",
     [
-        ("console", "backend", "recover"),
-        ("console", "frontend", "recover"),
-        ("launcher", "backend", "recover"),
-        ("launcher", "console", "recover"),
-        ("console", "backend", "transient"),
-        ("launcher", "backend", "transient"),
-        ("console", "backend", "stop"),
-        ("console-signal", "backend", "stop"),
-        ("launcher", "console", "stop"),
+        ("console", "backend", "recover", "none"),
+        ("console", "frontend", "recover", "none"),
+        ("launcher", "backend", "recover", "none"),
+        ("launcher", "console", "recover", "none"),
+        ("console", "backend", "transient", "none"),
+        ("launcher", "backend", "transient", "none"),
+        ("console", "backend", "stop", "none"),
+        ("console-signal", "backend", "stop", "none"),
+        ("launcher", "console", "stop", "none"),
+        ("console", "backend", "recover", "once"),
+        ("launcher", "backend", "recover", "once"),
+        ("console", "backend", "recover", "persistent"),
+        ("console", "backend", "recover", "active"),
     ],
 )
 def test_alive_service_http_outage_recovers_without_overlapping_generations(
-    tmp_path: Path, supervisor: str, stalled: str, action: str
+    tmp_path: Path,
+    monkeypatch: MonkeyPatch,
+    supervisor: str,
+    stalled: str,
+    action: str,
+    snapshot_failure: Literal["none", "once", "persistent", "active"],
 ) -> None:
     root = Path(__file__).resolve().parents[2]
     frontend = tmp_path / "frontend"
@@ -146,27 +162,74 @@ def test_alive_service_http_outage_recovers_without_overlapping_generations(
                 assert output.count("API 启动中") == 1, output
                 assert "秒后恢复" not in output, output
             else:
+                denied_reads = 0
+                original_cmdline = psutil.Process.cmdline
+                if snapshot_failure != "none":
+
+                    def interrupted_cmdline(child: psutil.Process) -> list[str]:
+                        nonlocal denied_reads
+                        command = original_cmdline(child)
+                        if (
+                            (denied_reads == 0 or snapshot_failure == "persistent")
+                            and command[1:3] == ["-m", "app.cli"]
+                            and command[3:4] in (["backend"], ["frontend"])
+                            and (snapshot_failure == "active" or not _active_members(owned))
+                        ):
+                            denied_reads += 1
+                            raise psutil.AccessDenied(pid=child.pid)
+                        return command
+
+                    monkeypatch.setattr(psutil.Process, "cmdline", interrupted_cmdline)
                 deadline = time.monotonic() + 35
-                while True:
-                    assert process.poll() is None, log_path.read_text(encoding="utf-8")
-                    after = _service_snapshot(parent)
-                    new_members = set(after) - set(before)
-                    if new_members:
-                        assert not _active_members(owned), "新一代出现时旧所属树仍在执行"
-                    new_leaves = _service_leaves(after)
-                    try:
-                        with opener.open(f"http://127.0.0.1:{port}/auth/status", timeout=0.5) as response:
-                            if (
-                                response.status == 200
-                                and all(len(members) == 1 for members in new_leaves.values())
-                                and set(before).isdisjoint(after)
-                            ):
-                                owned.extend(_service_tree(after))
-                                break
-                    except (OSError, URLError):
-                        pass
-                    assert time.monotonic() < deadline, log_path.read_text(encoding="utf-8")
-                    time.sleep(0.1)
+                snapshot_error: psutil.AccessDenied | None = None
+                if snapshot_failure == "persistent":
+                    expected_failure = pytest.raises(
+                        AssertionError, match=r"最后一次进程快照读取异常：psutil\.AccessDenied"
+                    )
+                elif snapshot_failure == "active":
+                    expected_failure = pytest.raises(psutil.AccessDenied)
+                else:
+                    expected_failure = nullcontext()
+                with expected_failure:
+                    while True:
+                        assert process.poll() is None, log_path.read_text(encoding="utf-8")
+                        try:
+                            after = _service_snapshot(parent)
+                        except psutil.AccessDenied as exc:
+                            # 旧树已停止后才允许重读，避免缺失观测掩盖代际重叠。
+                            if _active_members(owned):
+                                raise
+                            snapshot_error = exc
+                        else:
+                            new_members = set(after) - set(before)
+                            if new_members:
+                                assert not _active_members(owned), "新一代出现时旧所属树仍在执行"
+                            new_leaves = _service_leaves(after)
+                            try:
+                                with opener.open(f"http://127.0.0.1:{port}/auth/status", timeout=0.5) as response:
+                                    if (
+                                        response.status == 200
+                                        and all(len(members) == 1 for members in new_leaves.values())
+                                        and set(before).isdisjoint(after)
+                                    ):
+                                        owned.extend(_service_tree(after))
+                                        break
+                            except (OSError, URLError):
+                                pass
+                        assert time.monotonic() < deadline, (
+                            f"最后一次进程快照读取异常：{snapshot_error!r}\n{log_path.read_text(encoding='utf-8')}"
+                        )
+                        time.sleep(0.1)
+                if snapshot_failure == "active":
+                    assert denied_reads == 1 and _active_members(owned)
+                    assert sentinel.poll() is None
+                    return
+                if snapshot_failure == "persistent":
+                    assert denied_reads > 1
+                    monkeypatch.setattr(psutil.Process, "cmdline", original_cmdline)
+                    owned.extend(_service_tree(_service_snapshot(parent)))
+                else:
+                    assert denied_reads == int(snapshot_failure == "once")
                 output = log_path.read_text(encoding="utf-8")
                 assert output.count("API 启动中") == 2, output
                 assert output.count("秒后恢复") == 1, output
