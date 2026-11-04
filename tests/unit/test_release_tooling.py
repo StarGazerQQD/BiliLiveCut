@@ -307,6 +307,22 @@ def test_windows_payload_jobs_run_on_windows_and_verify_native_modules() -> None
     assert "Full Bundle native acceleration OK" in release_source
 
 
+def test_release_full_suite_budget_preserves_required_checks() -> None:
+    workflow = yaml.safe_load((run_ruff.REPO_ROOT / ".github/workflows/release.yml").read_text(encoding="utf-8"))
+    job = workflow["jobs"]["test"]
+    step = next(step for step in job["steps"] if step.get("name") == "Run pytest")
+
+    assert job["runs-on"] == "ubuntu-latest"
+    assert job["needs"] == "validate-tag"
+    assert step["timeout-minutes"] == 30
+    assert step["run"] == "python -m pytest tests/ -v --tb=short --fail-on-skip"
+    assert step["env"]["ASR_NO_MODEL_DOWNLOAD"] == "1"
+    for scope in (job, step):
+        assert "if" not in scope and not scope.get("continue-on-error", False)
+    for name in ("build-sdist", "build-payload"):
+        assert workflow["jobs"][name]["needs"] == "test"
+
+
 def test_macos_coverage_timeout_has_runtime_headroom() -> None:
     """macOS 全量覆盖测试必须为正常运行波动保留足够余量。"""
     ci_workflow = yaml.safe_load((run_ruff.REPO_ROOT / ".github/workflows/ci.yml").read_text(encoding="utf-8"))

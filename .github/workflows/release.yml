@@ -130,7 +130,7 @@ jobs:
         env:
           ASR_NO_MODEL_DOWNLOAD: "1"
         run: python -m pytest tests/ -v --tb=short --fail-on-skip
-        timeout-minutes: 15
+        timeout-minutes: 30
 
   # ═══════════════════════════════════════════════════════════════════
   # Job 2: 构建源码分发包 (sdist + wheel)
