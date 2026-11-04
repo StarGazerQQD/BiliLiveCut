@@ -107,6 +107,8 @@ python -m pre_commit run --all-files --show-diff-on-failure
 
 CI 的每周定时任务只运行依赖审计，避免无源码变更时重复执行整套测试与 Portable 构建。各矩阵覆盖率文件按目录保存；`CI status` 汇总所有适用 job 的结果，可作为分支保护的必需检查。是否启用分支保护由仓库管理员配置。
 
+Release 工作流在 Ubuntu / Python 3.12 上执行完整 `tests/`，测试步骤上限为 30 分钟，保留发行包集成测试、`--fail-on-skip` 和 `ASR_NO_MODEL_DOWNLOAD=1`。测试失败或达到总时限后，后续构建与发布作业不会执行。
+
 GitHub Actions 的 macOS 全量测试在 `main` 推送、面向 `main` 的 PR 和手动运行 CI（`workflow_dispatch`）时执行；三种事件的 `CI status` 都要求 macOS 成功，不接受跳过，从而在合并前发现平台问题。macOS 先运行进程清理与真实服务退出回归，失败时保留子进程诊断，再执行完整覆盖率测试。覆盖率测试步骤上限为 90 分钟，整个 job 上限为 120 分钟，为依赖安装和报告上传保留余量。
 
 macOS 字幕和片头测试需要带 `subtitles`、`drawtext` 滤镜的 FFmpeg。CI 安装 Homebrew 的 [`ffmpeg-full`](https://formulae.brew.sh/formula/ffmpeg-full)，通过 `brew --prefix --installed ffmpeg-full` 解析路径，并显式设置 `FFMPEG_PATH`、`FFPROBE_PATH` 和后续步骤的 `PATH`。该配方为 keg-only，仅安装它不会替换默认路径中的普通 `ffmpeg`；普通版缺少这些滤镜时会导致真实烧录测试失败。安装步骤检查两个可执行文件和所需滤镜，缺失时在完整测试前直接报错，不跳过字幕或片头测试。
