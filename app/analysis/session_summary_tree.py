@@ -29,6 +29,8 @@ _NODE_INSTRUCTION = (
     "严格按已有日期、时区和顺序综合事件、人物、转折、关键数字和不确定性，保留主体和否定，不推断未明说的因果。"
     "只能引用已给出的真实时间范围；字符范围不是时间，不能按字数猜测子片段时间。"
     "素材区间不代表精确事件时间，不能把全部发言定位到起点；未知时间保持未知。"
+    "time_basis=recording 表示录制坐标，录制日期不能用作原直播或内容事件的发生日期。"
+    "原事件时间只能依据正文中的明确表述；来源名称与标题仅供识别素材，不证明正文人物身份或事件时间。"
     "录制间隙、重复素材及文件相邻不证明事件连续，跨块关联须有文本依据，转写覆盖完整不代表没有录制间隙。"
     "需要保留跨块事件的上下文及完整日期、时区和真实区间，供后续全场综合；不得逐块摘抄拼接。"
     '只返回 JSON 对象 {"summary":"完整分析正文"}。\n'
@@ -124,6 +126,7 @@ class SessionSummaryTree:
         self.slice_limit = slice_limit
         self._saved = 0
         self._search_query = ""
+        self._source_label = ""
         self.routes = llm_providers.active_providers("summary")
 
     def fits(self, prompt: str) -> bool:
@@ -199,7 +202,9 @@ class SessionSummaryTree:
 
     def _prompt(self, stage: str, content: object) -> str:
         return _NODE_INSTRUCTION + json.dumps(
-            {"stage": stage, "content": content}, ensure_ascii=False, separators=(",", ":")
+            {"stage": stage, "source": self._source_label, "content": content},
+            ensure_ascii=False,
+            separators=(",", ":"),
         )
 
     def _leaf_prompt(self, block: SessionTranscriptBlock, start: int, end: int) -> str:
@@ -209,6 +214,7 @@ class SessionSummaryTree:
                 "segment_id": block.segment_id,
                 "sequence": block.sequence,
                 "source_file": block.source_file,
+                "time_basis": "recording",
                 "start_at": block.start_at.isoformat() if block.start_at else None,
                 "end_at": block.end_at.isoformat() if block.end_at else None,
                 "character_range": [start, end],
@@ -288,6 +294,7 @@ class SessionSummaryTree:
         generation: str | None,
     ) -> str:
         """小输入一次综合；大输入复用叶节点和祖先，始终覆盖全部有序素材。"""
+        self._source_label = source_label
         self._search_query = " ".join(block.text[:64] for block in blocks)[:128]
         generation_suffix = "\n本次总结请求标识：" + generation if generation else ""
         complete_prompt = full_prompt + generation_suffix
@@ -302,7 +309,6 @@ class SessionSummaryTree:
                 self._prompt(
                     "final",
                     {
-                        "source": source_label,
                         "coverage": coverage,
                         "instruction": "对全部有序节点进行全场综合，保留重要事件时刻，不逐块拼接，不推断缺失时段。",
                         "summaries": [node.text for node in nodes],

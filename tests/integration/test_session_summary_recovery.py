@@ -72,7 +72,7 @@ def _reply(payload: dict[str, object], *, large_leaf: bool = False) -> str:
     stage = payload["stage"]
     if stage == "source":
         content = payload["content"]
-        return f"节点{content['sequence']}:{content['character_range']}" + ("a" * 1900 if large_leaf else "事实与时间")
+        return f"节点{content['sequence']}:{content['character_range']}" + ("a" * 1400 if large_leaf else "事实与时间")
     return "完整全场总结" if stage in {"final", "whole"} else "归并事件与已知时间"
 
 
@@ -168,6 +168,36 @@ def test_short_summary_preserves_dates_gaps_and_unknown_end(
     ]
     assert [item["text"] for item in records] == [f"segment{index}:" + "x" * 50 for index in range(2)]
     assert "录制间隙" in prompt and "精确事件时间" in prompt and "因果" in prompt
+
+
+@pytest.mark.parametrize("length", [50, 12000])
+def test_summary_keeps_uploader_and_replay_title_in_every_request(
+    temp_db: None, monkeypatch: pytest.MonkeyPatch, length: int
+) -> None:
+    session_id = _seed(count=1, length=length)
+    with get_session() as db:
+        room = db.exec(select(LiveRoom)).one()
+        room.uploader_name = "素材上传者"
+        room.title = "历史直播循环回放"
+    prompts: list[str] = []
+    calls: list[dict[str, object]] = []
+
+    async def send(_transport: httpx.AsyncHTTPTransport, request: httpx.Request) -> httpx.Response:
+        prompts.append(json.loads(request.content)["messages"][0]["content"])
+        payload = _payload(request)
+        calls.append(payload)
+        return httpx.Response(200, json=response(json.dumps({"summary": _reply(payload)})))
+
+    monkeypatch.setattr(httpx.AsyncHTTPTransport, "handle_async_request", send)
+    assert _run(session_id)
+    assert calls[-1]["stage"] == ("whole" if length == 50 else "final")
+    assert all("素材上传者" in prompt and "历史直播循环回放" in prompt for prompt in prompts)
+    assert all("录制日期不能用作原直播或内容事件的发生日期" in prompt for prompt in prompts)
+    if length == 50:
+        records = json.loads(prompts[0].split("整场 ASR：\n", 1)[1].split("\n覆盖情况（", 1)[0])
+    else:
+        records = [item["content"] for item in calls if item["stage"] == "source"]
+    assert records and all(item["time_basis"] == "recording" for item in records)
 
 
 def test_single_large_block_is_partitioned_without_missing_text_or_guessed_time(
@@ -435,6 +465,8 @@ def test_changed_source_expires_result_without_get_scheduling_or_reusing_old_fin
     temp_db: None, monkeypatch: pytest.MonkeyPatch
 ) -> None:
     session_id = _seed(count=1, length=20)
+    with get_session() as db:
+        db.exec(select(LiveRoom)).one().uploader_name = "固定上传者"
     calls: list[dict[str, object]] = []
 
     async def send(_transport: httpx.AsyncHTTPTransport, request: httpx.Request) -> httpx.Response:

@@ -134,6 +134,55 @@ def test_explanation_without_citable_evidence_stops_before_network(temp_db: None
     assert result.output is None and result.error == "context_unavailable" and not calls
 
 
+@pytest.mark.parametrize("repaired", [False, True])
+def test_grounding_repair_receives_bad_audio_quote_and_still_validates_actual_pairs(
+    temp_db: None, monkeypatch: MonkeyPatch, repaired: bool
+) -> None:
+    source = _source(
+        evidence=[
+            _evidence(excerpts=["主播解释挑战规则。"]),
+            _evidence(evidence_id="asr:2", state="degraded", excerpts=["挑战规则"]),
+            _evidence(evidence_id="missing:3", state="missing", excerpts=[]),
+            _evidence(evidence_id="audio:4", type="audio", excerpts=[], detail={"metrics": {"rms": 0.5}}),
+        ]
+    )
+    explanation = {
+        "title": "挑战规则",
+        "summary": "主播解释挑战规则。",
+        "category": "discussion",
+        "entities": [],
+        "semantic_confidence": 0.8,
+        "evidence_ids": ["E1", "E4"],
+    }
+    replies: list[str] = []
+
+    def grounding(_payload: dict[str, object]) -> str:
+        quote = {"evidence_id": "E1" if replies and repaired else "E4", "quote_id": "Q1"}
+        text = json.dumps(
+            {
+                "judgements": [
+                    {"field": field, "supported": True, "reason": "核对原文", "quotes": [quote]}
+                    for field in ("title", "summary")
+                ]
+            }
+        )
+        replies.append(text)
+        return text
+
+    calls = install_editorial_service(
+        monkeypatch, lambda *_args, **_kwargs: json.dumps(explanation), grounding_reply=grounding
+    )
+    budget = ModelCallBudget(max_attempts=4, max_elapsed_s=20)
+    result = explain(source, budget, max_tokens=512, max_title_chars=32, max_summary_chars=360, max_entities=12)
+    assert len(calls) == 3 and [item.purpose for item in budget.attempts] == ["explanation", "grounding", "repair"]
+    assert (result.output is not None) is repaired
+    assert result.error == (None if repaired else "invalid_output")
+    assert calls[2]["messages"][1] == calls[1]["messages"][1]
+    assert json.loads(calls[2]["messages"][2]["content"]) == {"previous_invalid_output": replies[0]}
+    assert calls[2]["messages"][2]["role"] == "user"
+    assert calls[2]["response_format"] == calls[1]["response_format"]
+
+
 def test_empty_source_keeps_empty_review_references_and_no_suggested_bounds() -> None:
     source = _source(evidence=[])
     schema = review_response_schema(source)
