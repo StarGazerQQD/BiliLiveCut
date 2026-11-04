@@ -144,11 +144,12 @@ async def test_collection_continues_through_database_outage_without_resampling(
         await capture.start()
         send("before")
         await until(lambda: stored_count() == 1)
-        with get_session() as db:
-            baseline = read_evidence(db, 1)
         if failure == "sqlite_busy":
             lock = sqlite3.connect(engine.url.database, isolation_level=None)
             lock.execute("BEGIN IMMEDIATE")
+            # 写锁生效后读取故障基线，避免把此前正常提交的覆盖心跳误判为越过故障写入。
+            with get_session() as db:
+                baseline = read_evidence(db, 1)
         blocked = True
         send("same-message")
         send("same-message")
