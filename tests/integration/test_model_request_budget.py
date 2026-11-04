@@ -15,12 +15,14 @@ from typing import TYPE_CHECKING
 
 import httpx
 import pytest
+from sqlmodel import Session
 
 from app.analysis import llm
 from app.analysis.model_execution import ModelCallBudget
 from app.analysis.model_journal import ModelRequestJournal
 from app.core.cancellation import OperationCancelledError, OperationShutdownError, shutdown_event
 from app.core.config import settings
+from app.db.entities import AppSetting
 from app.models.configuration import save_model_configuration
 from tests.integration.test_model_journal import _records
 from tests.integration.test_structured_llm import call, catalog, response
@@ -177,11 +179,29 @@ def test_text_success_and_error_bodies_are_bounded_and_closed(
 
 @pytest.mark.parametrize("minimum_descriptor", [0] if os.name == "nt" else [0, 1100])
 @pytest.mark.parametrize("limit", ["deadline", "timeout"])
+@pytest.mark.parametrize("slow_journal", [False, True])
 def test_text_trickled_network_response_cannot_extend_deadline(
-    temp_db: None, monkeypatch: MonkeyPatch, minimum_descriptor: int, limit: str
+    temp_db: None, monkeypatch: MonkeyPatch, minimum_descriptor: int, limit: str, slow_journal: bool
 ) -> None:
     closed = Event()
     requests: list[str] = []
+    network_closed: list[float] = []
+    delayed_commits: list[float] = []
+    original_commit = Session.commit
+
+    def commit(db: Session) -> None:
+        if slow_journal and any(
+            isinstance(row, AppSetting)
+            and row.key.startswith("model_request:v1:")
+            and json.loads(row.value)["state"] == "finished"
+            for row in [*db.new, *db.dirty]
+        ):
+            # 在外部数据库提交边界注入延迟，真实请求记录仍须完成持久化。
+            delayed_commits.append(time.monotonic())
+            time.sleep(2.2)
+        original_commit(db)
+
+    monkeypatch.setattr(Session, "commit", commit)
 
     class Handler(BaseHTTPRequestHandler):
         protocol_version = "HTTP/1.1"
@@ -221,9 +241,11 @@ def test_text_trickled_network_response_cannot_extend_deadline(
                         self.wfile.write(b" ")
                         self.wfile.flush()
                         if readable.select(0.03) and connection.recv(1) == b"":
+                            network_closed.append(time.monotonic())
                             closed.set()
                             break
             except OSError:
+                network_closed.append(time.monotonic())
                 closed.set()
             finally:
                 self.close_connection = True
@@ -248,16 +270,24 @@ def test_text_trickled_network_response_cannot_extend_deadline(
         )
         started = time.monotonic()
         assert llm.call_text("绝对截止", budget=budget) is None
-        assert time.monotonic() - started < 2
+        call_elapsed = time.monotonic() - started
         assert len(requests) == 2, requests
         assert closed.wait(2)
+        # 保留调用前的起点，以真实连接关闭为终点，记录持久化完成后单独核验。
+        assert len(network_closed) == 1
+        assert 0 <= network_closed[0] - started < 2
         assert len(budget.attempts) == 1
+        assert budget.attempts[0].elapsed_s < 2
         assert budget.attempts[0].error == limit
         (record,) = _records()
         assert record.state == "finished" and record.attempt.status == "failed"
         assert record.attempt.error == limit and record.received_at is None
         assert record.usage.input_tokens is None and record.usage.output_tokens is None
         assert record.usage.estimated_cost_usd is None
+        assert record.attempt == budget.attempts[0]
+        assert len(delayed_commits) == int(slow_journal)
+        if slow_journal:
+            assert call_elapsed >= 2.2
     finally:
         llm.close_clients()
         server.shutdown()
