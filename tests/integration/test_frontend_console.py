@@ -28,13 +28,22 @@ def _service_snapshot(parent: psutil.Process) -> dict[tuple[int, float], tuple[p
             command = child.cmdline()
             if command[1:3] == ["-m", "app.cli"] and command[3:4] in (["backend"], ["frontend"]):
                 result[(child.pid, child.create_time())] = (child, command[3], child.ppid())
+        except psutil.AccessDenied:
+            # macOS 读取退出中进程的命令行可能被拒绝，只排除已确认终止的原身份。
+            try:
+                if not child.is_running() or child.status() in (psutil.STATUS_ZOMBIE, psutil.STATUS_DEAD):
+                    continue
+            except psutil.NoSuchProcess:
+                continue
+            raise
         except psutil.NoSuchProcess:
             # 旧代正在退出，仍由保留的原进程对象和 wait_procs 验证最终回收。
             continue
     return result
 
 
-def test_service_snapshot_rejects_partial_result_when_cmdline_is_denied(monkeypatch: MonkeyPatch) -> None:
+@pytest.mark.parametrize("status", [psutil.STATUS_RUNNING, psutil.STATUS_SLEEPING, psutil.STATUS_STOPPED])
+def test_service_snapshot_rejects_partial_result_when_cmdline_is_denied(monkeypatch: MonkeyPatch, status: str) -> None:
     process = psutil.Process()
     other = process.parent()
     assert other is not None
@@ -53,10 +62,83 @@ def test_service_snapshot_rejects_partial_result_when_cmdline_is_denied(monkeypa
 
     monkeypatch.setattr(psutil.Process, "children", children)
     monkeypatch.setattr(psutil.Process, "cmdline", cmdline)
+    monkeypatch.setattr(psutil.Process, "is_running", lambda child: True)
+    monkeypatch.setattr(psutil.Process, "status", lambda child: status)
     with pytest.raises(psutil.AccessDenied) as failure:
         _service_snapshot(process)
     assert failure.value is denied
     assert inspected == [process.pid, other.pid]
+
+
+@pytest.mark.parametrize("state", [psutil.STATUS_ZOMBIE, psutil.STATUS_DEAD, "gone", "reaped"])
+def test_service_snapshot_rechecks_denied_process_exit_before_collecting_services(
+    monkeypatch: MonkeyPatch, state: str
+) -> None:
+    process = psutil.Process()
+    other = process.parent()
+    assert other is not None
+    inspected: list[int] = []
+    checked: list[int] = []
+    original_is_running = psutil.Process.is_running
+    original_status = psutil.Process.status
+
+    def children(parent: psutil.Process, recursive: bool = False) -> list[psutil.Process]:
+        assert parent == process and recursive
+        return [other, process]
+
+    def cmdline(child: psutil.Process) -> list[str]:
+        inspected.append(child.pid)
+        if child == other:
+            raise psutil.AccessDenied(pid=child.pid)
+        return [sys.executable, "-m", "app.cli", "backend"]
+
+    def is_running(child: psutil.Process) -> bool:
+        if child != other:
+            return original_is_running(child)
+        checked.append(child.pid)
+        return state != "gone"
+
+    def status(child: psutil.Process) -> str:
+        if child != other:
+            return original_status(child)
+        if state == "reaped":
+            raise psutil.NoSuchProcess(child.pid)
+        return state
+
+    monkeypatch.setattr(psutil.Process, "children", children)
+    monkeypatch.setattr(psutil.Process, "cmdline", cmdline)
+    monkeypatch.setattr(psutil.Process, "is_running", is_running)
+    monkeypatch.setattr(psutil.Process, "status", status)
+    assert _service_snapshot(process) == {(process.pid, process.create_time()): (process, "backend", process.ppid())}
+    assert inspected == [other.pid, process.pid]
+    assert checked == [other.pid]
+
+
+def test_service_snapshot_rejects_unreadable_exit_state(monkeypatch: MonkeyPatch) -> None:
+    process = psutil.Process()
+    denied = psutil.AccessDenied(pid=process.pid)
+    state_denied = psutil.AccessDenied(pid=process.pid, name="status")
+
+    def children(parent: psutil.Process, recursive: bool = False) -> list[psutil.Process]:
+        assert parent == process and recursive
+        return [process]
+
+    def cmdline(child: psutil.Process) -> list[str]:
+        assert child == process
+        raise denied
+
+    def status(child: psutil.Process) -> str:
+        assert child == process
+        raise state_denied
+
+    monkeypatch.setattr(psutil.Process, "children", children)
+    monkeypatch.setattr(psutil.Process, "cmdline", cmdline)
+    monkeypatch.setattr(psutil.Process, "is_running", lambda child: True)
+    monkeypatch.setattr(psutil.Process, "status", status)
+    with pytest.raises(psutil.AccessDenied) as failure:
+        _service_snapshot(process)
+    assert failure.value is state_denied
+    assert state_denied.__context__ is denied
 
 
 def _service_leaves(
