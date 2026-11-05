@@ -6,6 +6,7 @@ import asyncio
 import json
 import subprocess
 import threading
+from collections.abc import Callable
 from datetime import timedelta
 from pathlib import Path
 
@@ -77,7 +78,9 @@ def _ready_import(monkeypatch: MonkeyPatch, *, comments: bool = True, audio: boo
     return record.id
 
 
-def _configure_llm(monkeypatch: MonkeyPatch, replies: list[str | None]) -> list[dict[str, object]]:
+def _configure_llm(
+    monkeypatch: MonkeyPatch, replies: list[str | None | Callable[[httpx.Request], str]]
+) -> list[dict[str, object]]:
     """仅替换 HTTP 边界，验证 SDK、持久配置、请求和结果处理的实际链路。"""
     from app.analysis import llm_providers
     from tests.integration.test_structured_llm import response
@@ -100,6 +103,8 @@ def _configure_llm(monkeypatch: MonkeyPatch, replies: list[str | None]) -> list[
         calls.append(json.loads(request.content))
         assert replies, "出现了未预期的 LLM 请求"
         content = replies.pop(0)
+        if callable(content):
+            content = content(request)
         if content is None:
             return httpx.Response(503, headers={"Retry-After": "0"}, json={"error": "模拟服务暂不可用"})
         return httpx.Response(200, json=response(content))
@@ -351,9 +356,14 @@ def test_local_asr_uses_configured_llm_for_refinement_and_full_summary(
     cleaned = "今天讨论游戏操作方法。这一段需要先观察对手，再选择合适的位置。"
     expected_summary = "这场录播讲解了观察对手与选择位置的操作方法。"
     monkeypatch.setattr(settings_store, "transcript_llm_refine_enabled", lambda: True)
-    grounding = json.dumps(
-        {"supported": True, "reason": "操作方法有原文依据", "quotes": [{"source_index": 0, "text": text}]}
-    )
+
+    def grounding(request: httpx.Request) -> str:
+        wire = json.loads(request.content)
+        material = json.loads(wire["messages"][1]["content"])["material"]
+        return json.dumps(
+            {"status": "supported", "reason": "操作方法有原文依据", "evidence_ids": [material[0]["evidence_id"]]}
+        )
+
     replies = (
         [
             json.dumps({"clean_text": cleaned, "summary": "游戏操作方法"}),
@@ -510,8 +520,8 @@ def test_imported_hotspot_reanalysis_replaces_cached_fallback_with_llm(temp_db: 
                     "hook": "周末挑战的规则与奖励",
                     "reason": "挑战说明具有明确的信息价值。",
                     "evidence_ids": evidence_ids,
-                    "standalone": True,
-                    "boundary_status": "complete",
+                    "standalone": None,
+                    "boundary_status": "uncertain",
                     "suggested_bounds": None,
                     "missing_context": None,
                     "uncertainties": [],
@@ -540,6 +550,7 @@ def test_imported_hotspot_reanalysis_replaces_cached_fallback_with_llm(temp_db: 
     assert enrichment.title == "主播宣布周末挑战规则"
     review = drafts[0]["review"].execution
     assert review.status == "succeeded" and review.result.verdict == "recommend"
+    assert review.result.standalone is None and review.result.boundary_status == "uncertain"
     assert review.attempt_offset == 2 and review.attempts[0].number == 3
     assert len(calls) == 3 and text in str(calls[0]["messages"])
     assert json.loads(drafts[0]["clip_draft"].features_json)["editorial_review"]["execution"] == review.model_dump(

@@ -115,7 +115,12 @@ def test_reference_schema_matches_local_availability_and_time_rules(state: str, 
     references = schema["properties"]["evidence_ids"]
     result = EditorialReviewResultV1.model_validate(
         _payload(
-            verdict="needs_review", uncertainties=["需人工复核"], evidence_ids=[item.evidence_id], suggested_bounds=None
+            verdict="needs_review",
+            uncertainties=["需人工复核"],
+            evidence_ids=[item.evidence_id],
+            suggested_bounds=None,
+            standalone=None,
+            boundary_status="uncertain",
         )
     )
     if usable:
@@ -126,7 +131,14 @@ def test_reference_schema_matches_local_availability_and_time_rules(state: str, 
         with pytest.raises(ValueError, match="不存在或不可用"):
             validate_review_evidence(result, source)
     empty = EditorialReviewResultV1.model_validate(
-        _payload(verdict="needs_review", uncertainties=["证据不足"], evidence_ids=[], suggested_bounds=None)
+        _payload(
+            verdict="needs_review",
+            uncertainties=["证据不足"],
+            evidence_ids=[],
+            suggested_bounds=None,
+            standalone=None,
+            boundary_status="uncertain",
+        )
     )
     validate_review_evidence(empty, source)
     with_bounds = result.model_copy(
@@ -148,7 +160,10 @@ def test_point_timed_metric_remains_eligible_for_needs_review_bounds() -> None:
     assert schema["properties"]["evidence_ids"]["items"]["enum"] == [item.evidence_id]
     assert schema["$defs"]["SuggestedBounds"]["properties"]["evidence_ids"]["items"]["enum"] == [item.evidence_id]
     validate_review_evidence(
-        EditorialReviewResultV1.model_validate(_payload(verdict="needs_review", uncertainties=["只有测量"])), source
+        EditorialReviewResultV1.model_validate(
+            _payload(verdict="needs_review", uncertainties=["只有测量"], standalone=None, boundary_status="uncertain")
+        ),
+        source,
     )
 
 
@@ -277,7 +292,14 @@ def test_empty_source_keeps_empty_review_references_and_no_suggested_bounds() ->
     assert schema["properties"]["evidence_ids"]["maxItems"] == 0
     assert schema["properties"]["suggested_bounds"] == {"type": "null"}
     result = EditorialReviewResultV1.model_validate(
-        _payload(verdict="needs_review", evidence_ids=[], uncertainties=["无可用证据"], suggested_bounds=None)
+        _payload(
+            verdict="needs_review",
+            evidence_ids=[],
+            uncertainties=["无可用证据"],
+            suggested_bounds=None,
+            standalone=None,
+            boundary_status="uncertain",
+        )
     )
     validate_review_evidence(result, source)
 

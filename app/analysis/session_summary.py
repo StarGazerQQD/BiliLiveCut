@@ -25,6 +25,7 @@ from app.analysis.session_summary_tree import (
     summary_hash,
     summary_policy,
 )
+from app.analysis.summary_verification import SummaryDraftNode
 from app.analysis.transcription.content import transcript_text
 from app.core.cancellation import OperationCancelledError, OperationShutdownError, check_cancellation, check_shutdown
 from app.core.config import settings
@@ -437,6 +438,39 @@ def build_session_timeline_summary(session_id: int, *, claim: SessionSummaryClai
         def save(node: SummaryCacheNode) -> None:
             persist(f"summary_cache:v1:{session_id}:{node.key}", node.model_dump_json())
 
+        def load_draft(key: str) -> SummaryDraftNode | None:
+            if claim is None:
+                return None
+            with get_session() as db:
+                validate(db)
+                row = db.get(AppSetting, f"summary_draft:v1:{session_id}:{key}")
+                return SummaryDraftNode.model_validate_json(row.value) if row else None
+
+        def save_draft(node: SummaryDraftNode) -> None:
+            persist(f"summary_draft:v1:{session_id}:{node.key}", node.model_dump_json())
+
+        def publish(node: SummaryDraftNode, completed: int, total: int, status: str, error: str | None) -> None:
+            persist(
+                f"summary_progress:v1:{session_id}",
+                _encode(
+                    {
+                        "version": 1,
+                        "signature": signature,
+                        "coverage": coverage,
+                        "operation_id": operation_id,
+                        "generation": generation,
+                        "draft_summary": node.summary,
+                        "draft_generated_at": node.generated_at,
+                        "verification": {
+                            "status": status,
+                            "completed_nodes": completed,
+                            "total_nodes": total,
+                            "error": error,
+                        },
+                    }
+                ),
+            )
+
         def plan(keys: list[str]) -> None:
             persist(
                 f"summary_plan:v1:{session_id}",
@@ -451,8 +485,20 @@ def build_session_timeline_summary(session_id: int, *, claim: SessionSummaryClai
                 ),
             )
 
+        with get_session() as db:
+            progress_row = db.get(AppSetting, f"summary_progress:v1:{session_id}")
+            progress = _decode_object(progress_row.value if progress_row else None)
+            has_root_draft = (
+                progress.get("version") == 1
+                and progress.get("signature") == signature
+                and progress.get("coverage") == coverage
+                and progress.get("operation_id") == operation_id
+                and progress.get("generation") == generation
+                and isinstance(progress.get("draft_summary"), str)
+            )
+
         budget = ModelCallBudget(
-            max_attempts=settings.editorial_model_max_attempts,
+            max_attempts=settings.summary_model_max_attempts,
             max_elapsed_s=settings.editorial_model_deadline_s,
             cancelled=cancelled,
             journal=ModelRequestJournal(target=f"session-summary:{session_id}", guard=validate),
@@ -466,6 +512,10 @@ def build_session_timeline_summary(session_id: int, *, claim: SessionSummaryClai
             save=save,
             plan=plan,
             slice_limit=2 if claim is not None else None,
+            load_draft=load_draft,
+            save_draft=save_draft,
+            publish=publish,
+            has_root_draft=has_root_draft,
         )
         generated = tree.build(
             full_prompt=_summary_prompt(source_label, blocks)
@@ -508,6 +558,8 @@ def session_timeline_summary_view(
         blocks = _session_transcript_blocks(db, session_id)
         coverage = session_asr_coverage(db, session_id)
         signature = _summary_input_signature(db, session_id, blocks)
+        progress_row = db.get(AppSetting, f"summary_progress:v1:{session_id}")
+        progress = _decode_object(progress_row.value if progress_row else None)
 
     base = {
         "analysis_basis": "full_session_asr",
@@ -518,13 +570,34 @@ def session_timeline_summary_view(
         "generated_at": None,
         "needs_regeneration": False,
         "coverage": coverage,
+        "draft_summary": None,
+        "draft_generated_at": None,
+        "verification": {"status": "not_run", "completed_nodes": 0, "total_nodes": 0, "error": None},
     }
+    if (
+        progress.get("version") == 1
+        and progress.get("signature") == signature
+        and progress.get("coverage") == coverage
+        and progress.get("operation_id") == request.get("operation_id")
+        and isinstance(progress.get("draft_summary"), str)
+        and isinstance(progress.get("verification"), dict)
+    ):
+        base.update(
+            draft_summary=progress["draft_summary"],
+            draft_generated_at=_gmt8_iso(progress.get("draft_generated_at")),
+            verification=progress["verification"],
+        )
     if not ended or processing_state == "recording":
         return {**base, "status": "recording"}
     if processing_state in {"finalizing", "processing"}:
         return {**base, "status": "waiting"}
 
     request_status = request["status"] if request else ""
+    if base["verification"]["status"] in {"pending", "verifying"}:
+        if request_status == "failed":
+            base["verification"] = {**base["verification"], "status": "failed", "error": request["last_error"]}
+        elif request_status == "pending":
+            base["verification"] = {**base["verification"], "status": "pending"}
     if request_status in {"pending", "running"}:
         if request_status == "pending" and blocks and not active_providers("summary"):
             return {**base, "status": "unconfigured", "message": _UNCONFIGURED_MESSAGE}
@@ -549,6 +622,8 @@ def session_timeline_summary_view(
             "summary": result["summary"],
             "source": result["source"],
             "generated_at": _gmt8_iso(result["generated_at"]),
+            "draft_summary": None,
+            "verification": {**base["verification"], "status": "verified", "error": None},
         }
     # GET 仅报告缺失或过期状态；实际请求由生命周期或用户显式操作登记。
     if blocks and not active_providers("summary"):

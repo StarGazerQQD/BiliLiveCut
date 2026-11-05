@@ -886,6 +886,7 @@ def _compute_event_clip_result(
         EventTargetUnavailableError,
         build_event_evidence_bundle,
         compute_event_enrichment,
+        enrichment_matches_source,
     )
 
     budget = budget or llm.new_editorial_budget(target=f"hotspot:{event_id}")
@@ -910,6 +911,28 @@ def _compute_event_clip_result(
             review = compute_event_review(event_id, budget)
             if review.execution.status == "cancelled":
                 return None
+            with get_session() as db:
+                current = db.get(HotspotEvent, event_id)
+                if current is None:
+                    return None
+                same_source = enrichment_matches_source(current, enrichment, review.source)
+            if not same_source:
+                refreshed_offset = len(budget.attempts)
+                enrichment = compute_event_enrichment(
+                    event_id,
+                    budget=budget,
+                    force=force,
+                    evidence_source=review.source,
+                    expanded_context=review.expanded_context,
+                )
+                if budget.interruption(before_request=False) == "cancelled":
+                    return None
+                review = replace(
+                    review,
+                    provenance=review.provenance.model_copy(
+                        update={"subsequent_attempts": list(budget.attempts[refreshed_offset:])}
+                    ),
+                )
             draft = compute_hotspot_clip_draft(
                 event_id,
                 enrichment=enrichment,
@@ -1968,7 +1991,8 @@ def _score_segment_draft(
     )
 
     # 编辑价值单独判断，低热度不再阻止真实内容进入编辑调用。
-    from app.analysis.editorial_review import editorial_auto_approvable, editorial_candidate
+    from app.analysis.editorial_contracts import TimeRange
+    from app.analysis.editorial_review import editorial_auto_approvable, editorial_candidate, final_bounds_metadata
     from app.analysis.editorial_review_sources import (
         SegmentReviewSnapshot,
         compute_segment_review,
@@ -2031,10 +2055,19 @@ def _score_segment_draft(
                 and media_bounds_accessible(db, source, proposed_start, proposed_end)
             ):
                 start_ts, end_ts, applied = proposed_start, proposed_end, True
-        review_metadata["media_accessible"] = media_bounds_accessible(db, source, start_ts, end_ts)
-    review_metadata["suggested_bounds_applied"] = applied
-    review_metadata["bounds_complete"] = (
-        applied if suggestion is not None else (start_ts <= analysis_start_ts and end_ts >= analysis_end_ts)
+        accessible = media_bounds_accessible(db, source, start_ts, end_ts)
+    from app.analysis.timeline import datetime_epoch
+
+    actual_bounds = (
+        TimeRange(
+            start_s=datetime_epoch(start_ts) - source.time_origin_epoch_s,
+            end_s=datetime_epoch(end_ts) - source.time_origin_epoch_s,
+        )
+        if source is not None and source.time_origin_epoch_s is not None
+        else None
+    )
+    review_metadata.update(
+        final_bounds_metadata(review, actual_bounds, media_accessible=accessible, suggestion_applied=applied)
     )
 
     # 去重只改变入选状态，仍保留完整证据和计算字段用于原位重评。
@@ -2073,7 +2106,7 @@ def _score_segment_draft(
         json.dumps(
             {
                 "editorial_review": review_metadata,
-                "semantic_completeness": result.standalone if result is not None else None,
+                "semantic_completeness": review_metadata.get("clip_standalone"),
                 "features": features,
                 "keyword_hits": kw_hits,
                 "audio": _audio_meta(feats),

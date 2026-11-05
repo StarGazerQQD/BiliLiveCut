@@ -6,7 +6,7 @@ from typing import Annotated, Literal, NoReturn, Self
 
 from pydantic import BaseModel, ConfigDict, Field, ValidationError, model_validator
 
-INPUT_MAX_BYTES = 524_288
+INPUT_MAX_BYTES = 2_097_152
 OUTPUT_MAX_BYTES = 16_777_216
 EVIDENCE_MAX_CHARS = 120_000
 EXCERPT_MAX_CHARS = 20_000
@@ -345,6 +345,8 @@ def review_response_schema(source: EditorialReviewInputV1) -> dict[str, object]:
 def validate_review_evidence(
     result: EditorialReviewResultV1,
     source: EditorialReviewInputV1,
+    *,
+    require_complete_support: bool = True,
 ) -> EditorialReviewResultV1:
     """对照原始输入核验引用和建议范围，不将结构正确等同于事实正确。"""
     result = EditorialReviewResultV1.model_validate(result)
@@ -380,8 +382,21 @@ def validate_review_evidence(
             item = evidence[identity]
             if item.timing_precision == "unknown" or item.start_s is None or item.end_s is None:
                 raise ValueError("没有时间定位的证据不能支持边界建议")
-            if item.end_s < suggestion.start_s or item.start_s > suggestion.end_s:
+            if item.end_s <= suggestion.start_s or item.start_s >= suggestion.end_s:
                 raise ValueError("边界证据与建议范围没有交集")
+    evaluated_bounds = suggestion or source.target.bounds
+    if require_complete_support and result.boundary_status == "complete":
+        textual = [evidence[identity] for identity in result.evidence_ids if evidence[identity].excerpts]
+        if not textual or any(
+            item.start_s is None
+            or item.end_s is None
+            or item.start_s < evaluated_bounds.start_s
+            or item.end_s > evaluated_bounds.end_s
+            or item.end_s <= evaluated_bounds.start_s
+            or item.start_s >= evaluated_bounds.end_s
+            for item in textual
+        ):
+            raise ValueError("片内独立理解需要已定位且完整位于判断范围内的内容；请扩展范围或保留未知")
     return result
 
 

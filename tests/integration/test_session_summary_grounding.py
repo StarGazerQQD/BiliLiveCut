@@ -19,6 +19,7 @@ def test_summary_is_verified_before_cache_and_ready_without_human_labels(
     temp_db: None, monkeypatch: pytest.MonkeyPatch, supported: bool
 ) -> None:
     session_id = _seed(count=1, length=20)
+    monkeypatch.setattr(settings, "summary_model_max_attempts", 2)
     original = "演员没起床，铃没有响，是哪里出错？"
     candidate = "铃未响导致演员迟起。" if not supported else "发言者说演员未起床并询问铃未响的原因。"
     with get_session() as db:
@@ -37,9 +38,9 @@ def test_summary_is_verified_before_cache_and_ready_without_human_labels(
             assert material["material"][0]["time_basis"] == "recording"
             assert material["coverage"] is not None
             result = {
-                "supported": supported,
+                "status": "supported" if supported else "unsupported",
                 "reason": "因果未明" if not supported else "保留不确定性",
-                "quotes": [{"source_index": 0, "text": original}],
+                "evidence_ids": [material["material"][0]["evidence_id"]] if supported else [],
             }
         return httpx.Response(200, json=response(json.dumps(result)))
 
@@ -63,7 +64,7 @@ def test_unverified_summary_cannot_be_cached_when_shared_budget_ends(
     temp_db: None, monkeypatch: pytest.MonkeyPatch
 ) -> None:
     session_id = _seed(count=1, length=20)
-    monkeypatch.setattr(settings, "editorial_model_max_attempts", 1)
+    monkeypatch.setattr(settings, "summary_model_max_attempts", 1)
     calls: list[httpx.Request] = []
 
     async def send(_transport: httpx.AsyncHTTPTransport, request: httpx.Request) -> httpx.Response:
@@ -72,7 +73,7 @@ def test_unverified_summary_cannot_be_cached_when_shared_budget_ends(
 
     monkeypatch.setattr(httpx.AsyncHTTPTransport, "handle_async_request", send)
     assert not _run(session_id)
-    assert len(calls) == 1
+    assert len(calls) == 0
     with get_session() as db:
         assert not db.exec(select(AppSetting).where(AppSetting.key.startswith("summary_cache:v1:"))).all()
         assert db.get(AppSetting, f"session_timeline_summary:{session_id}") is None
@@ -91,22 +92,20 @@ def test_summary_rejects_invalid_grounding_and_unverifiable_large_candidate(
         if len(calls) == 1:
             result = {"summary": "内容" * 2000 if fault == "oversized" else "候选概括"}
         else:
-            material = json.loads(wire["messages"][1]["content"])["material"]
-            text = material[0]["text"] if fault == "unknown_index" else "虚构正文"
+            assert json.loads(wire["messages"][1]["content"])["material"]
+            text = "S_unknown" if fault == "unknown_index" else "虚构正文"
             if fault == "instruction_quote":
                 text = "不推断未明说的因果"
             result = {
-                "supported": True,
+                "status": "supported",
                 "reason": "受控非法响应",
-                "quotes": []
-                if fault == "empty_quotes"
-                else [{"source_index": 99 if fault == "unknown_index" else 0, "text": text}],
+                "evidence_ids": [] if fault == "empty_quotes" else [text],
             }
         return httpx.Response(200, json=response(json.dumps(result)))
 
     monkeypatch.setattr(httpx.AsyncHTTPTransport, "handle_async_request", send)
     assert not _run(session_id)
-    assert len(calls) == (1 if fault == "oversized" else 3)
+    assert len(calls) == 3
     with get_session() as db:
         assert not db.exec(select(AppSetting).where(AppSetting.key.startswith("summary_cache:v1:"))).all()
         assert db.get(AppSetting, f"session_timeline_summary:{session_id}") is None

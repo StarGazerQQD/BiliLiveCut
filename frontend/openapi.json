@@ -493,6 +493,47 @@
             ],
             "title": "Candidate Id"
           },
+          "clip_boundary_status": {
+            "default": "uncertain",
+            "enum": [
+              "complete",
+              "uncertain"
+            ],
+            "title": "Clip Boundary Status",
+            "type": "string"
+          },
+          "clip_bounds": {
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/TimeRange"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "clip_bounds_error": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Clip Bounds Error"
+          },
+          "clip_standalone": {
+            "anyOf": [
+              {
+                "type": "boolean"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Clip Standalone"
+          },
           "editorial_state": {
             "default": "not_run",
             "enum": [
@@ -611,6 +652,14 @@
             "default": "editorial-view-v1",
             "title": "Schema Version",
             "type": "string"
+          },
+          "subsequent_attempts": {
+            "items": {
+              "$ref": "#/components/schemas/ModelAttempt"
+            },
+            "maxItems": 32,
+            "title": "Subsequent Attempts",
+            "type": "array"
           },
           "summary": {
             "title": "Summary",
@@ -983,16 +1032,12 @@
           "whole_session_summary": {
             "anyOf": [
               {
-                "additionalProperties": {
-                  "$ref": "#/components/schemas/JsonValue"
-                },
-                "type": "object"
+                "$ref": "#/components/schemas/SessionSummaryPresentation"
               },
               {
                 "type": "null"
               }
-            ],
-            "title": "Whole Session Summary"
+            ]
           }
         },
         "required": [
@@ -2739,6 +2784,133 @@
         "title": "ScheduleRequest",
         "type": "object"
       },
+      "SessionSummaryPresentation": {
+        "additionalProperties": true,
+        "description": "兼容既有总结字段，并正式披露草稿和核验进度。",
+        "properties": {
+          "analysis_basis": {
+            "const": "full_session_asr",
+            "default": "full_session_asr",
+            "title": "Analysis Basis",
+            "type": "string"
+          },
+          "character_count": {
+            "default": 0,
+            "minimum": 0.0,
+            "title": "Character Count",
+            "type": "integer"
+          },
+          "coverage": {
+            "additionalProperties": {
+              "$ref": "#/components/schemas/JsonValue"
+            },
+            "title": "Coverage",
+            "type": "object"
+          },
+          "draft_generated_at": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Draft Generated At"
+          },
+          "draft_summary": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Draft Summary"
+          },
+          "error": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Error"
+          },
+          "generated_at": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Generated At"
+          },
+          "needs_regeneration": {
+            "default": false,
+            "title": "Needs Regeneration",
+            "type": "boolean"
+          },
+          "source": {
+            "anyOf": [
+              {
+                "enum": [
+                  "llm",
+                  "empty"
+                ],
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Source"
+          },
+          "status": {
+            "enum": [
+              "recording",
+              "waiting",
+              "pending",
+              "generating",
+              "unconfigured",
+              "failed",
+              "ready"
+            ],
+            "title": "Status",
+            "type": "string"
+          },
+          "summary": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Summary"
+          },
+          "transcript_count": {
+            "default": 0,
+            "minimum": 0.0,
+            "title": "Transcript Count",
+            "type": "integer"
+          },
+          "verification": {
+            "$ref": "#/components/schemas/SummaryVerificationPresentation"
+          }
+        },
+        "required": [
+          "status"
+        ],
+        "title": "SessionSummaryPresentation",
+        "type": "object"
+      },
       "SplitTopicRequest": {
         "additionalProperties": false,
         "description": "拆分主题请求体（提取指定事件组成新主题）。",
@@ -2992,6 +3164,71 @@
           "evidence_ids"
         ],
         "title": "SuggestedBounds",
+        "type": "object"
+      },
+      "SummaryVerificationPresentation": {
+        "description": "正文与事实核验分别展示，失败草稿不会冒充正式结果。",
+        "properties": {
+          "completed_nodes": {
+            "default": 0,
+            "minimum": 0.0,
+            "title": "Completed Nodes",
+            "type": "integer"
+          },
+          "error": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Error"
+          },
+          "status": {
+            "default": "not_run",
+            "enum": [
+              "not_run",
+              "pending",
+              "verifying",
+              "verified",
+              "needs_review",
+              "failed"
+            ],
+            "title": "Status",
+            "type": "string"
+          },
+          "total_nodes": {
+            "default": 0,
+            "minimum": 0.0,
+            "title": "Total Nodes",
+            "type": "integer"
+          }
+        },
+        "title": "SummaryVerificationPresentation",
+        "type": "object"
+      },
+      "TimeRange": {
+        "additionalProperties": false,
+        "description": "相对场次开始的有限秒数范围，不能表示未知时间。",
+        "properties": {
+          "end_s": {
+            "minimum": 0.0,
+            "title": "End S",
+            "type": "number"
+          },
+          "start_s": {
+            "minimum": 0.0,
+            "title": "Start S",
+            "type": "number"
+          }
+        },
+        "required": [
+          "start_s",
+          "end_s"
+        ],
+        "title": "TimeRange",
         "type": "object"
       },
       "TokenUsage": {

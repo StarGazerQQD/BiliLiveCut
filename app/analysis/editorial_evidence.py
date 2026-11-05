@@ -32,7 +32,7 @@ from app.analysis.transcription.content import refined_transcript_text
 from app.analysis.transcription.quality import assess_transcript_quality
 from app.db.entities import HotspotEvent, RawSegment, RecordingSession, Transcript
 
-EVIDENCE_POLICY_VERSION = "bounded-evidence-v4"
+EVIDENCE_POLICY_VERSION = "bounded-evidence-v5-context-parts"
 AUDIENCE_PROFILE = "面向不了解该场次前后经过的普通观众，证据不足时保留人工复核。"
 PREFERENCE_VERSION = "general-audience-v1"
 _TYPES = {"asr", "context_asr", "danmaku", "audio", "sensevoice", "trend", "visual"}
@@ -133,7 +133,7 @@ def _recording_ranges(segments: list[RawSegment], origin: float) -> list[TimeRan
     return [TimeRange(start_s=start, end_s=end) for start, end in merged]
 
 
-def _context(
+def _context_window(
     db: Session, segments: list[RawSegment], origin: float, window: TimeRange, bounds: TimeRange, limit: int
 ) -> tuple[list[EditorialEvidence], bool]:
     result: list[EditorialEvidence] = []
@@ -200,6 +200,37 @@ def _context(
                 **timing,
             )
         )
+    return result, truncated
+
+
+def _context(
+    db: Session, segments: list[RawSegment], origin: float, window: TimeRange, bounds: TimeRange, limit: int
+) -> tuple[list[EditorialEvidence], bool]:
+    """保留完整上下文，同时提供能精确定位的片内、前文和后文摘录。"""
+    result, truncated = _context_window(db, segments, origin, window, bounds, limit)
+    by_id = {segment.id: segment for segment in segments}
+    for item in list(result):
+        if item.timing_precision != "word" or item.context_role != "mixed":
+            continue
+        segment = by_id.get(item.detail.segment_id)
+        if segment is None:
+            continue
+        for role, lower, upper in (
+            ("before", window.start_s, min(window.end_s, bounds.start_s)),
+            ("event", max(window.start_s, bounds.start_s), min(window.end_s, bounds.end_s)),
+            ("after", max(window.start_s, bounds.end_s), window.end_s),
+        ):
+            if upper <= lower:
+                continue
+            parts, limited = _context_window(
+                db, [segment], origin, TimeRange(start_s=lower, end_s=upper), bounds, limit
+            )
+            truncated = truncated or limited
+            result.extend(
+                part.model_copy(update={"evidence_id": f"{part.evidence_id}:{role}"})
+                for part in parts
+                if part.timing_precision == "word" and part.excerpts
+            )
     return result, truncated
 
 
@@ -344,7 +375,9 @@ def build_event_input(
             )
         )
     # 优先保留实际文字和事件证据；完整序列化大小包含全部详情与时间字段。
-    evidence.sort(key=lambda item: (not bool(item.excerpts), item.context_role not in {"event", "mixed"}))
+    evidence.sort(
+        key=lambda item: (not bool(item.excerpts), item.context_role != "event", item.context_role != "mixed")
+    )
     selected: list[EditorialEvidence] = []
     used: set[str] = set()
     remaining = max_evidence_chars

@@ -12,7 +12,7 @@ from pydantic import BaseModel, ConfigDict, Field, JsonValue, field_validator
 from app import __version__
 from app.analysis.editorial_contracts import EditorialReviewInputV1, ModelAttempt
 
-REVIEW_POLICY_VERSION = "editorial-decision-v3"
+REVIEW_POLICY_VERSION = "editorial-decision-v4-clip-bounds"
 
 
 def canonical_hash(value: object) -> str:
@@ -48,7 +48,7 @@ def frozen_review_fingerprint(
 ) -> str:
     """按记录自带的策略版本验证完整输入，保留历史字段的原始缺省形态。"""
     version = policy.get("policy")
-    if version == REVIEW_POLICY_VERSION:
+    if version in {REVIEW_POLICY_VERSION, "editorial-decision-v3"}:
         identity = semantic_policy_identity(policy)
     elif version in {"editorial-decision-v1", "editorial-decision-v2"}:
         identity = policy
@@ -131,6 +131,7 @@ class ReviewProvenance(BaseModel):
     initial_input: EditorialReviewInputV1 | None
     operation_id: str = Field(pattern=r"^[0-9a-f]{32}$")
     prior_attempts: list[ModelAttempt] = Field(max_length=32)
+    subsequent_attempts: list[ModelAttempt] = Field(default_factory=list, max_length=32)
 
     @field_validator("policy")
     @classmethod

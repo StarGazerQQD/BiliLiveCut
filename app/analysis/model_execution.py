@@ -60,6 +60,7 @@ class ModelCallBudget:
         self._attempts: list[ModelAttempt] = []
         self._search_results: list[SearchEvidence] = []
         self._repair_used = False
+        self._repair_scopes: set[str] = set()
         self._context_used = False
         self._empty_used = False
         self._operation = Lock()
@@ -85,6 +86,7 @@ class ModelCallBudget:
             )
             self._protocols = {(provider, model): protocol for provider, model, protocol in state.protocols}
             self._transport_retries = set(state.transport_retries)
+            self._repair_scopes = set(state.repair_scopes)
 
     @property
     def request_count(self) -> int:
@@ -95,6 +97,11 @@ class ModelCallBudget:
     def next_number(self) -> int:
         """当前发送和结束回执共同使用的连续请求编号。"""
         return self.request_count + 1
+
+    @property
+    def remaining_requests(self) -> int:
+        """返回同一持久授权中尚可发送的总请求数。"""
+        return max(0, self._max_attempts - self.request_count)
 
     @property
     def last_failure(self) -> FailureCode | None:
@@ -109,6 +116,7 @@ class ModelCallBudget:
         if self._journal is not None:
             self._journal.save_allowances(
                 repair=self._repair_used,
+                repair_scopes=self._repair_scopes,
                 context=self._context_used,
                 empty=self._empty_used,
                 protocols=self._protocols,
@@ -206,11 +214,17 @@ class ModelCallBudget:
         """返回当前执行取得的真实搜索来源，供业务结果保存引用。"""
         return tuple(self._search_results)
 
-    def claim_repair(self) -> bool:
-        """整个操作最多允许一次格式或引用修复，不因路由切换重新授予。"""
-        if self._repair_used or self.interruption() is not None:
+    def claim_repair(self, scope: str | None = None) -> bool:
+        """默认整次操作修复一次；分批核验可按持久内容身份各修复一次。"""
+        if scope is not None and (len(scope) != 64 or any(char not in "0123456789abcdef" for char in scope)):
+            raise ValueError("修复作用域必须是实际批次的内容哈希")
+        used = self._repair_used if scope is None else scope in self._repair_scopes
+        if used or self.interruption() is not None:
             return False
-        self._repair_used = True
+        if scope is None:
+            self._repair_used = True
+        else:
+            self._repair_scopes.add(scope)
         self._save_allowances()
         return True
 

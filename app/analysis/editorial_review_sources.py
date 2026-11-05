@@ -19,15 +19,12 @@ from sqlmodel import Session, select
 
 from app.analysis import llm_providers
 from app.analysis.editorial_contracts import (
-    CONTEXT_SECONDS,
-    EVIDENCE_MAX_CHARS,
-    EXCERPT_MAX_CHARS,
-    EXPANDED_CONTEXT_SECONDS,
     ContextDirection,
     EditorialExecutionV1,
     EditorialReviewInputV1,
+    TimeRange,
 )
-from app.analysis.editorial_evidence import EvidenceContextUnavailable, build_event_input, build_segment_input
+from app.analysis.editorial_evidence import EvidenceContextUnavailable, build_segment_input
 from app.analysis.editorial_provenance import ReviewProvenance, frozen_review_fingerprint
 from app.analysis.editorial_review import (
     EditorialReviewDraft,
@@ -36,7 +33,7 @@ from app.analysis.editorial_review import (
     review_fingerprint,
     review_policy_identity,
 )
-from app.analysis.event_enricher import EventTargetUnavailableError, build_event_evidence_bundle
+from app.analysis.event_enricher import EventTargetUnavailableError, build_event_evidence_bundle, event_evidence_source
 from app.analysis.model_execution import ModelCallBudget
 from app.analysis.timeline import datetime_epoch
 from app.core.media_usage import media_reference_scope
@@ -238,17 +235,7 @@ def event_review_source(
     event = db.get(HotspotEvent, event_id)
     if event is None:
         raise EventTargetUnavailableError(f"编辑判断事件不存在: event_id={event_id}")
-    try:
-        return build_event_input(
-            db,
-            event,
-            context_s=EXPANDED_CONTEXT_SECONDS if direction is not None else CONTEXT_SECONDS,
-            max_evidence_chars=EVIDENCE_MAX_CHARS,
-            max_excerpt_chars=EXCERPT_MAX_CHARS,
-            context_direction=direction,
-        )
-    except EvidenceContextUnavailable:
-        return None
+    return event_evidence_source(db, event, direction)
 
 
 def compute_event_review(event_id: int, budget: ModelCallBudget) -> EditorialReviewDraft:
@@ -599,6 +586,9 @@ def automatic_review_is_current(db: Session, event: HighlightEvent, candidate: H
             if not snapshot.is_current(db, policy=policy):
                 return False
         start, end = datetime_epoch(candidate.start_ts) - origin, datetime_epoch(candidate.end_ts) - origin
+        actual = TimeRange.model_validate(metadata.get("final_bounds"))
+        if abs(start - actual.start_s) > 1e-6 or abs(end - actual.end_s) > 1e-6:
+            return False
         if abs(datetime_epoch(candidate.peak_ts) - origin - target.peak_s) > 1e-6:
             return False
         result = execution.result

@@ -14,6 +14,43 @@ const base = {
   event_id: 17,
 };
 
+it.each([true, null])(
+  "separates the model judgement from confirmed clip bounds (%s)",
+  (confirmed) => {
+    render(
+      <EditorialResult
+        value={{
+          ...base,
+          clip_standalone: confirmed,
+          clip_boundary_status: confirmed ? "complete" : "uncertain",
+          execution: {
+            elapsed_s: 1,
+            attempts: [],
+            result: {
+              verdict: "recommend",
+              interest_rating: 3,
+              hook: "规则说明",
+              reason: "讲清比赛规则",
+              standalone: true,
+              boundary_status: "complete",
+              uncertainties: [],
+              evidence_ids: ["E1"],
+            },
+          },
+        }}
+      />,
+    );
+    expect(
+      screen.getByText(/模型判断范围内独立理解：可以/),
+    ).toBeInTheDocument();
+    expect(
+      screen.getByText(
+        confirmed ? /实际成片独立理解：可以/ : /实际成片独立理解：尚未确认/,
+      ),
+    ).toBeInTheDocument();
+  },
+);
+
 it("separates identities, unknown scores and actual model failure", () => {
   render(
     <EditorialResult

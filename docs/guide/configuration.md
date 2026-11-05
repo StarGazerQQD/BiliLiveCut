@@ -161,6 +161,7 @@ Web 中保存的业务设置优先于环境或项目默认值。保存前会校�
 | `asr_inference_max_timeout_s` | 单次 ASR 总预算上限（秒） | 语音转写 / 全局 | 7200 | 整数；60～43200 | 下次任务 |
 | `llm_request_timeout_s` | LLM 单次请求超时（秒） | 大模型 / 全局 | 600 | 数值；1～3600 | 下次任务 |
 | `editorial_model_max_attempts` | 编辑分析总请求次数上限 | 高光分析 / 全局 | 8 | 整数；1～32 | 下次任务 |
+| `summary_model_max_attempts` | 整场总结总请求次数上限 | 高光分析 / 全局 | 32 | 整数；1～32 | 下次任务 |
 | `editorial_model_deadline_s` | 编辑分析总时间预算（秒） | 高光分析 / 全局 | 1800 | 数值；1～14400 | 下次任务 |
 | `llm_daily_budget` | LLM 每日预算（美元，0 不限） | 大模型 / 全局 | 0.0 | 数值；0.0～不限 | 下次任务 |
 | `transcript_llm_refine_enabled` | LLM 整理转写与摘要 | 大模型 / 全局 | True | 开关 | 下次任务 |

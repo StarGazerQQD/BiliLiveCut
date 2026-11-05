@@ -16,6 +16,8 @@ from app.analysis.editorial_contracts import (
     CONTEXT_SECONDS,
     EVIDENCE_MAX_CHARS,
     EXCERPT_MAX_CHARS,
+    EXPANDED_CONTEXT_SECONDS,
+    ContextDirection,
     EditorialReviewInputV1,
     FailureCode,
     ModelAttempt,
@@ -151,6 +153,73 @@ class EventEnrichmentDraft:
     elapsed_s: float = 0.0
     lexical_coverage: float | None = None
     authorization_identity: tuple[tuple[str, int], ...] = ()
+    evidence_source_fingerprint: str | None = None
+    expanded_context: ContextDirection | None = None
+
+
+def evidence_source_fingerprint(source: EditorialReviewInputV1 | None) -> str | None:
+    """绑定解释实际阅读的完整材料，基础事件身份保持独立。"""
+    if source is None:
+        return None
+    return hashlib.sha256(
+        json.dumps(source.model_dump(mode="json"), ensure_ascii=False, sort_keys=True, separators=(",", ":")).encode()
+    ).hexdigest()
+
+
+def event_evidence_source(
+    db: Session,
+    event: HotspotEvent,
+    direction: ContextDirection | None = None,
+    *,
+    config: EventEnricherConfig | None = None,
+) -> EditorialReviewInputV1 | None:
+    """解释和判断共用方向明确的真实材料窗口。"""
+    cfg = config or EventEnricherConfig()
+    try:
+        return build_event_input(
+            db,
+            event,
+            context_s=EXPANDED_CONTEXT_SECONDS if direction is not None else cfg.context_s,
+            max_evidence_chars=cfg.max_evidence_chars,
+            max_excerpt_chars=cfg.max_excerpt_chars,
+            context_direction=direction,
+        )
+    except EvidenceContextUnavailable:
+        return None
+
+
+def enrichment_matches_source(
+    event: HotspotEvent, draft: EventEnrichmentDraft | None, source: EditorialReviewInputV1 | None
+) -> bool:
+    """缓存命中没有新草稿时，同样检查已保存解释的实际材料。"""
+    metadata = _mapping(event.features_json).get("event_enrichment")
+    actual = (
+        draft.evidence_source_fingerprint
+        if draft is not None
+        else (metadata.get("evidence_source_fingerprint") if isinstance(metadata, Mapping) else None)
+    )
+    return actual == evidence_source_fingerprint(source)
+
+
+def enrichment_source_is_current(
+    db: Session,
+    event: HotspotEvent,
+    draft: EventEnrichmentDraft | None = None,
+    *,
+    config: EventEnricherConfig | None = None,
+) -> bool:
+    """提交及评分前核对扩展材料，避免基础窗口外变化命中过期解释。"""
+    metadata = _mapping(event.features_json).get("event_enrichment")
+    if draft is None and not isinstance(metadata, Mapping):
+        return True
+    direction = draft.expanded_context if draft is not None else metadata.get("expanded_context")
+    if direction is not None and (not isinstance(direction, str) or direction not in {"before", "after", "both"}):
+        return False
+    if draft is not None and draft.evidence_source_fingerprint is None and direction is None:
+        return True
+    if draft is None and metadata.get("evidence_source_fingerprint") is None and direction is None:
+        return True
+    return enrichment_matches_source(event, draft, event_evidence_source(db, event, direction, config=config))
 
 
 def _mapping(raw: str | None) -> dict[str, object]:
@@ -183,16 +252,7 @@ def build_event_evidence_bundle(
     event = resolve_merged_hotspot_event(db, raw)
     if event.id is None or event.status == HotspotStatus.DISMISSED:
         raise EventTargetUnavailableError(f"事件不可用于解释: event_id={event_id}")
-    try:
-        source = build_event_input(
-            db,
-            event,
-            context_s=cfg.context_s,
-            max_evidence_chars=cfg.max_evidence_chars,
-            max_excerpt_chars=cfg.max_excerpt_chars,
-        )
-    except EvidenceContextUnavailable:
-        source = None
+    source = event_evidence_source(db, event, config=cfg)
     evidence = (
         tuple(
             EventEvidence(
@@ -289,11 +349,11 @@ def _enrichment_is_current(
     return datetime_epoch(utcnow()) < datetime_epoch(datetime.fromisoformat(next_retry))
 
 
-def _confidence(bundle: EventEvidenceBundle, references: Sequence[str]) -> float:
-    referenced = [item for item in bundle.evidence if item.evidence_id in references and item.excerpts]
-    semantic = [item for item in referenced if item.evidence_type in {"asr", "context_asr", "trend", "visual"}]
+def _confidence(source: EditorialReviewInputV1, coverage: float, references: Sequence[str]) -> float:
+    referenced = [item for item in source.evidence if item.evidence_id in references and item.excerpts]
+    semantic = [item for item in referenced if item.type in {"asr", "context_asr", "trend", "visual"}]
     ceiling = 0.95 if any(item.state == "available" for item in semantic) else 0.45 if semantic else 0.4
-    return min(ceiling, 0.25 + max(0.0, min(1.0, bundle.evidence_coverage)) * 0.75)
+    return min(ceiling, 0.25 + max(0.0, min(1.0, coverage)) * 0.75)
 
 
 @configured_task
@@ -303,6 +363,8 @@ def compute_event_enrichment(
     force: bool = False,
     config: EventEnricherConfig | None = None,
     budget: ModelCallBudget | None = None,
+    evidence_source: EditorialReviewInputV1 | None = None,
+    expanded_context: ContextDirection | None = None,
 ) -> EventEnrichmentDraft | None:
     """在事务外生成与核验解释，缓存成功和有限失败重试分别处理。"""
     cfg = config or EventEnricherConfig()
@@ -321,16 +383,30 @@ def compute_event_enrichment(
         event = db.get(HotspotEvent, bundle.event_id)
         if event is None:
             raise EventTargetUnavailableError("事件在读取时消失")
-        if not force and _enrichment_is_current(event, bundle.fingerprint, identity):
+        actual_source = event_evidence_source(db, event, expanded_context, config=cfg)
+        if evidence_source is not None and evidence_source != actual_source:
+            raise EventEvidenceChangedError("解释实际上下文已变化，未采用旧判断材料")
+        if (
+            not force
+            and _enrichment_is_current(event, bundle.fingerprint, identity)
+            and (
+                (
+                    evidence_source is None
+                    and expanded_context is None
+                    or enrichment_matches_source(event, None, actual_source)
+                )
+                and enrichment_source_is_current(db, event, config=cfg)
+            )
+        ):
             return None
-    if bundle.source is None or not any(
-        item.excerpts for item in bundle.evidence if item.state in {"available", "degraded"}
+    if actual_source is None or not any(
+        item.excerpts for item in actual_source.evidence if item.state in {"available", "degraded"}
     ):
         error: FailureCode = "context_unavailable"
         coverage = None
     else:
         result = explain(
-            bundle.source,
+            actual_source,
             budget,
             max_tokens=settings.hotspot_enrichment_llm_max_tokens,
             max_title_chars=cfg.max_title_chars,
@@ -346,13 +422,21 @@ def compute_event_enrichment(
                 summary=value.summary,
                 category=value.category,
                 entities=tuple(value.entities),
-                semantic_confidence=round(min(value.semantic_confidence, _confidence(bundle, value.evidence_ids)), 6),
+                semantic_confidence=round(
+                    min(
+                        value.semantic_confidence,
+                        _confidence(actual_source, bundle.evidence_coverage, value.evidence_ids),
+                    ),
+                    6,
+                ),
                 evidence_ids=tuple(value.evidence_ids),
                 source="llm",
                 attempts=budget.attempts,
                 elapsed_s=budget.elapsed_s,
                 lexical_coverage=result.lexical_coverage,
                 authorization_identity=identity,
+                evidence_source_fingerprint=evidence_source_fingerprint(actual_source),
+                expanded_context=expanded_context,
             )
         assert result.error is not None
         error, coverage = result.error, result.lexical_coverage
@@ -375,6 +459,8 @@ def compute_event_enrichment(
         elapsed_s=budget.elapsed_s,
         lexical_coverage=coverage,
         authorization_identity=identity,
+        evidence_source_fingerprint=evidence_source_fingerprint(actual_source),
+        expanded_context=expanded_context,
     )
 
 
@@ -389,7 +475,12 @@ def commit_event_enrichment(
         current = build_event_evidence_bundle(db, draft.event_id, config=cfg)
     except EventTargetUnavailableError:
         return False
-    if current.fingerprint != draft.bundle_fingerprint:
+    current_event = db.get(HotspotEvent, draft.event_id)
+    if (
+        current_event is None
+        or current.fingerprint != draft.bundle_fingerprint
+        or not enrichment_source_is_current(db, current_event, draft, config=cfg)
+    ):
         logger.info("event_enrichment_stale: event_id={}", draft.event_id)
         return False
     if draft.source not in {"llm", "fallback"} or (draft.source == "llm") != (draft.error is None):
@@ -404,7 +495,9 @@ def commit_event_enrichment(
         raise ValueError("解释正文或类别无效")
     if not math.isfinite(draft.semantic_confidence) or not 0 <= draft.semantic_confidence <= 1:
         raise ValueError("解释置信度无效")
-    if not set(draft.evidence_ids).issubset(current.evidence_ids):
+    actual_source = event_evidence_source(db, current_event, draft.expanded_context, config=cfg)
+    actual_ids = {item.evidence_id for item in actual_source.evidence} if actual_source is not None else set()
+    if not set(draft.evidence_ids).issubset(actual_ids):
         raise ValueError("解释引用不在当前证据中")
     event = db.get(HotspotEvent, current.event_id)
     if event is None:
@@ -433,6 +526,8 @@ def commit_event_enrichment(
         "version": EVENT_ENRICHER_VERSION,
         "policy_version": EXPLANATION_POLICY_VERSION,
         "bundle_fingerprint": current.fingerprint,
+        "evidence_source_fingerprint": draft.evidence_source_fingerprint,
+        "expanded_context": draft.expanded_context,
         "authorization_identity": dict(draft.authorization_identity),
         "source": draft.source,
         "status": "succeeded"
