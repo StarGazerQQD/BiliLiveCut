@@ -24,7 +24,7 @@
 
 热点采集还受 `trend_web_search` 总开关控制。开启真实搜索时，只有引用本次检索 URL 的条目可以入库，保留来源标题、URL、实际检索时间和可空发布时间；页面分别显示采集时间与来源发布时间。普通「联网搜索参数」仍按兼容服务协议发送布尔参数，不能据此确认已联网；「测试此路由」只验证文本和结构化样本，不调用真实搜索。切换真实搜索开关后，旧模型诊断及相关业务分析指纹失效，原文、历史结果和人工审核记录保留。
 
-思考控制按已核实的官方端点与模型匹配：[DeepSeek](https://api-docs.deepseek.com/zh-cn/guides/thinking_mode/) 的 `deepseek-flash` / `deepseek-v4-pro` 可关闭思考；[MiniMax](https://platform.minimax.cn/docs/api-reference/text-openai-api) 的 `MiniMax-M3.1-Flash` 强制思考，使用 `reasoning_effort=low` 进行连通测试或空正文重试。自定义地址及未核实的模型保持原参数，不因返回推理内容就发送禁用思考指令。业务请求仍遵守原有输出预算，重试最多一次；推理过程不作为最终正文保存。
+思考控制按已核实的官方端点与模型匹配：[DeepSeek](https://api-docs.deepseek.com/zh-cn/guides/thinking_mode/) 的 `deepseek-flash` / `deepseek-v4-pro` 可关闭思考；[MiniMax](https://platform.minimax.cn/docs/api-reference/text-openai-api) 的 `MiniMax-M3.1-Flash` 强制思考，使用 `reasoning_effort=low` 进行连通测试或空正文重试。自定义地址及未核实的模型保持原参数，不因返回推理内容就发送禁用思考指令。业务请求仍遵守原有输出预算，同一操作的空正文重试最多一次，并计入总请求预算；推理过程不作为最终正文保存。
 
 以下预设按官方公开接入信息核对。地址填写基础路径，不要再追加 `/chat/completions`。模型可用性、额度、价格以对应平台控制台为准；预设不自动填写价格或开通模型。
 

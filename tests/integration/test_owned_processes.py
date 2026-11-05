@@ -199,6 +199,11 @@ def test_owned_backend_deadline_exits_even_with_blocked_executor(tmp_path: Path,
 import asyncio, os, sys, threading, time
 from contextlib import asynccontextmanager
 from pathlib import Path
+stderr_pipe = None
+if os.environ['STDERR_MODE'] == 'blocked':
+    # 启动日志保留到backend.log，故障注入前不占用真实stderr管道。
+    stderr_pipe = os.dup(2)
+    os.dup2(1, 2)
 from app.web.main import app
 from app.cli import main
 if os.environ['STDERR_MODE'] == 'thread_unavailable':
@@ -209,7 +214,7 @@ if os.environ['STDERR_MODE'] == 'thread_unavailable':
         return original_start(thread)
     threading.Thread.start = start
 original = app.router.lifespan_context
-async def disrupt_stderr():
+async def disrupt_stderr() -> None:
     root = Path(os.environ['BLC_APP_ROOT'])
     while not (root / 'disrupt-stderr').exists():
         await asyncio.sleep(0.02)
@@ -217,14 +222,28 @@ async def disrupt_stderr():
     if mode == 'closed':
         os.close(2)
     elif mode == 'blocked':
+        assert stderr_pipe is not None
+        assert os.write(stderr_pipe, b'x' * 64) == 64
+        os.dup2(stderr_pipe, 2)
+        os.close(stderr_pipe)
+        entered = threading.Event()
         done = threading.Event()
-        def fill():
-            for _ in range(262144):
-                os.write(2, b'x' * 64)
-            done.set()
-        threading.Thread(target=fill, daemon=True).start()
+        write_errors: list[OSError] = []
+        def fill() -> None:
+            entered.set()
+            try:
+                for _ in range(262144):
+                    os.write(2, b'x' * 64)
+            except OSError as exc:
+                write_errors.append(exc)
+            else:
+                done.set()
+        writer = threading.Thread(target=fill, daemon=True)
+        writer.start()
         await asyncio.sleep(0.2)
-        assert not done.is_set(), 'stderr pipe did not block'
+        if write_errors:
+            raise RuntimeError('stderr writer failed') from write_errors[0]
+        assert entered.is_set() and writer.is_alive() and not done.is_set(), 'stderr pipe did not block'
     (root / 'stderr-ready').write_text(mode)
 @asynccontextmanager
 async def blocked(application):

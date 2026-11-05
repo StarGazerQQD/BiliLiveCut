@@ -6,6 +6,7 @@ import subprocess
 import sys
 import time
 from contextlib import nullcontext
+from http.client import HTTPException
 from pathlib import Path
 from typing import TYPE_CHECKING
 from urllib.error import URLError
@@ -135,7 +136,7 @@ def test_alive_service_http_outage_recovers_without_overlapping_generations(
             if stalled_backend is not None:
                 stalled_backend.suspend()
             if action == "transient":
-                with pytest.raises((OSError, URLError)):
+                with pytest.raises((OSError, URLError, HTTPException)):
                     opener.open(f"http://127.0.0.1:{port}/auth/status", timeout=0.5)
                 time.sleep(0.5)
                 suspended.resume()
@@ -146,7 +147,7 @@ def test_alive_service_http_outage_recovers_without_overlapping_generations(
                         with opener.open(f"http://127.0.0.1:{port}/auth/status", timeout=1) as response:
                             assert response.status == 200
                             break
-                    except (OSError, URLError):
+                    except (OSError, URLError, HTTPException):
                         assert time.monotonic() < deadline
                 time.sleep(4)
                 assert set(_service_snapshot(parent)) == set(before)
@@ -214,7 +215,7 @@ def test_alive_service_http_outage_recovers_without_overlapping_generations(
                                     ):
                                         owned.extend(_service_tree(after))
                                         break
-                            except (OSError, URLError):
+                            except (OSError, URLError, HTTPException):
                                 pass
                         assert time.monotonic() < deadline, (
                             f"最后一次进程快照读取异常：{snapshot_error!r}\n{log_path.read_text(encoding='utf-8')}"
