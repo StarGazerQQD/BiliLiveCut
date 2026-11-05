@@ -4,6 +4,7 @@ import { Clock3, Sparkles } from "lucide-react";
 import { useAction, useApi } from "@/api/client";
 import { EditorialResult } from "@/components/editorial-result";
 import { EditorialReanalysis } from "@/components/editorial-reanalysis";
+import { SessionSummary } from "@/components/session-summary";
 import { obj, rows, text, number, time, duration } from "@/lib/data";
 import {
   Page,
@@ -37,7 +38,6 @@ export function SessionsPage() {
   const action = useAction();
   const data = obj(detail.data);
   const info = obj(data.session);
-  const wholeSummary = obj(data.whole_session_summary);
   return (
     <Page
       eyebrow="ANALYZE / MOMENTS"
@@ -209,12 +209,7 @@ export function SessionsPage() {
                 整场高光总结
               </summary>
               <div className="mt-4">
-                {wholeSummary.status === "unconfigured" && (
-                  <p className="mb-3 text-sm text-muted-foreground">
-                    未配置可用的整场总结模型。请在模型设置中启用总结路由，待处理请求会继续。
-                  </p>
-                )}
-                <Evidence value={data.whole_session_summary} />
+                <SessionSummary value={data.whole_session_summary} />
               </div>
             </details>
             <label className="flex items-center gap-2 text-sm">

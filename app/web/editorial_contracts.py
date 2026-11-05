@@ -11,6 +11,7 @@ from app.analysis.editorial_contracts import (
     EditorialExecutionV1,
     FailureCode,
     ModelAttempt,
+    TimeRange,
 )
 from app.analysis.reanalysis_targets import ReanalysisSelection, ReanalysisTarget
 
@@ -30,10 +31,15 @@ class EditorialPresentation(BaseModel):
     editorial_state: Literal["succeeded", "failed", "disabled", "cancelled", "not_run", "invalid"] = "not_run"
     execution: EditorialExecutionV1 | None = None
     previous_attempts: list[ModelAttempt] = Field(default_factory=list, max_length=32)
+    subsequent_attempts: list[ModelAttempt] = Field(default_factory=list, max_length=32)
     evidence: list[EditorialEvidence] = Field(default_factory=list)
     time_origin_epoch_s: float | None = None
     expanded_context: ContextDirection | None = None
     technical_score: float | None = None
+    clip_standalone: bool | None = None
+    clip_boundary_status: Literal["complete", "uncertain"] = "uncertain"
+    clip_bounds: TimeRange | None = None
+    clip_bounds_error: str | None = None
 
 
 class EditorialTimelinePoint(BaseModel):
@@ -55,6 +61,34 @@ class EditorialTimelinePoint(BaseModel):
     editorial: EditorialPresentation
 
 
+class SummaryVerificationPresentation(BaseModel):
+    """正文与事实核验分别展示，失败草稿不会冒充正式结果。"""
+
+    status: Literal["not_run", "pending", "verifying", "verified", "needs_review", "failed"] = "not_run"
+    completed_nodes: int = Field(default=0, ge=0)
+    total_nodes: int = Field(default=0, ge=0)
+    error: str | None = None
+
+
+class SessionSummaryPresentation(BaseModel):
+    """兼容既有总结字段，并正式披露草稿和核验进度。"""
+
+    model_config = ConfigDict(extra="allow")
+    status: Literal["recording", "waiting", "pending", "generating", "unconfigured", "failed", "ready"]
+    analysis_basis: Literal["full_session_asr"] = "full_session_asr"
+    transcript_count: int = Field(default=0, ge=0)
+    character_count: int = Field(default=0, ge=0)
+    summary: str | None = None
+    source: Literal["llm", "empty"] | None = None
+    generated_at: str | None = None
+    needs_regeneration: bool = False
+    coverage: dict[str, JsonValue] = Field(default_factory=dict)
+    draft_summary: str | None = None
+    draft_generated_at: str | None = None
+    verification: SummaryVerificationPresentation = Field(default_factory=SummaryVerificationPresentation)
+    error: str | None = None
+
+
 class EditorialTimelineResponse(BaseModel):
     """场次读取只投影持久状态，不能隐式发起模型请求。"""
 
@@ -62,7 +96,7 @@ class EditorialTimelineResponse(BaseModel):
     timezone: str
     points: list[EditorialTimelinePoint]
     counts: dict[str, int]
-    whole_session_summary: dict[str, JsonValue] | None = None
+    whole_session_summary: SessionSummaryPresentation | None = None
 
 
 class EditorialPreview(BaseModel):

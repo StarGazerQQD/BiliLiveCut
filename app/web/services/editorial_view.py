@@ -8,9 +8,11 @@ from app.analysis.editorial_contracts import (
     EditorialExecutionV1,
     EditorialReviewInputV1,
     FailureCode,
+    TimeRange,
     validate_review_evidence,
 )
-from app.analysis.editorial_provenance import ReviewProvenance, frozen_review_fingerprint
+from app.analysis.editorial_provenance import REVIEW_POLICY_VERSION, ReviewProvenance, frozen_review_fingerprint
+from app.analysis.timeline import datetime_epoch
 from app.db.entities import HighlightCandidate, HighlightEvent, HotspotEvent
 from app.web.editorial_contracts import EditorialPresentation
 from app.web.services.review_workflow import decode_features
@@ -81,11 +83,14 @@ def editorial_presentation(
         if execution.result is not None:
             if source is None:
                 raise ValueError("编辑判断缺少原始证据")
-            validate_review_evidence(execution.result, source)
+            validate_review_evidence(
+                execution.result, source, require_complete_support=execution.policy_version == REVIEW_POLICY_VERSION
+            )
         direction = metadata.get("expanded_context")
         if direction is not None and (not isinstance(direction, str) or direction not in {"before", "after", "both"}):
             raise ValueError("上下文方向无效")
         previous_attempts = []
+        subsequent_attempts = []
         if metadata.get("provenance") is not None:
             provenance = ReviewProvenance.model_validate(metadata["provenance"])
             if [attempt.number for attempt in provenance.prior_attempts] != list(
@@ -99,17 +104,52 @@ def editorial_presentation(
             if expected != execution.input_fingerprint:
                 raise ValueError("执行输入与冻结策略指纹不一致")
             previous_attempts = provenance.prior_attempts
+            following = execution.attempt_offset + len(execution.attempts) + 1
+            if [attempt.number for attempt in provenance.subsequent_attempts] != list(
+                range(following, following + len(provenance.subsequent_attempts))
+            ):
+                raise ValueError("共享预算后续请求记录不完整")
+            subsequent_attempts = provenance.subsequent_attempts
     except ValueError:
         # 旧记录可读，但损坏的机器判断不能继续作为可信结论展示。
         return view.model_copy(update={"editorial_state": "invalid"})
+    confirmed = False
+    actual = None
+    if candidate is not None and source is not None and source.time_origin_epoch_s is not None:
+        raw_bounds = metadata.get("final_bounds")
+        if isinstance(raw_bounds, Mapping):
+            try:
+                actual = TimeRange.model_validate(raw_bounds)
+            except ValueError:
+                actual = None
+        confirmed = bool(
+            actual is not None
+            and abs(datetime_epoch(candidate.start_ts) - source.time_origin_epoch_s - actual.start_s) < 1e-6
+            and abs(datetime_epoch(candidate.end_ts) - source.time_origin_epoch_s - actual.end_s) < 1e-6
+            and metadata.get("clip_standalone") is True
+            and metadata.get("bounds_complete") is True
+            and metadata.get("media_accessible") is True
+            and execution.policy_version == REVIEW_POLICY_VERSION
+        )
     return view.model_copy(
         update={
             "editorial_state": execution.status,
             "execution": execution,
             "previous_attempts": previous_attempts,
+            "subsequent_attempts": subsequent_attempts,
             "evidence": source.evidence if source is not None else [],
             "time_origin_epoch_s": source.time_origin_epoch_s if source is not None else None,
             "expanded_context": direction,
+            "clip_standalone": True if confirmed else None,
+            "clip_boundary_status": "complete" if confirmed else "uncertain",
+            "clip_bounds": actual,
+            "clip_bounds_error": None
+            if confirmed
+            else (
+                metadata.get("bounds_error")
+                if isinstance(metadata.get("bounds_error"), str)
+                else "实际成片范围尚未确认可独立理解。"
+            ),
         }
     )
 

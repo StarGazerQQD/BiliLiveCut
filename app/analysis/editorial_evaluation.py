@@ -17,7 +17,12 @@ from app.analysis.editorial_contracts import (
     TimeRange,
     validate_review_evidence,
 )
-from app.analysis.editorial_provenance import ReviewProvenance, canonical_hash, frozen_review_fingerprint
+from app.analysis.editorial_provenance import (
+    REVIEW_POLICY_VERSION,
+    ReviewProvenance,
+    canonical_hash,
+    frozen_review_fingerprint,
+)
 
 Digest = Annotated[str, Field(pattern=r"^[0-9a-f]{64}$")]
 
@@ -48,7 +53,11 @@ class EvaluationRecord(_Contract):
         if self.execution is not None and self.execution.result is not None:
             if self.input is None:
                 raise ValueError("编辑结果缺少输入")
-            validate_review_evidence(self.execution.result, self.input)
+            validate_review_evidence(
+                self.execution.result,
+                self.input,
+                require_complete_support=self.execution.policy_version == REVIEW_POLICY_VERSION,
+            )
         if self.provenance is not None:
             if self.execution is None or self.revision is None:
                 raise ValueError("执行来源缺少执行记录或数据修订")
@@ -59,6 +68,11 @@ class EvaluationRecord(_Contract):
                 raise ValueError("执行输入与策略指纹不一致")
             if [a.number for a in self.provenance.prior_attempts] != list(range(1, self.execution.attempt_offset + 1)):
                 raise ValueError("共享预算前序请求记录不完整")
+            following = self.execution.attempt_offset + len(self.execution.attempts) + 1
+            if [a.number for a in self.provenance.subsequent_attempts] != list(
+                range(following, following + len(self.provenance.subsequent_attempts))
+            ):
+                raise ValueError("共享预算后续请求记录不完整")
         return self
 
 
@@ -168,7 +182,12 @@ def snapshot_payload(snapshot: EvaluationSnapshot) -> dict[str, object]:
         if record.execution is not None:
             omitted["execution"] = {"attempts": _absent_request_metadata(record.execution.attempts)}
         if record.provenance is not None:
-            omitted["provenance"] = {"prior_attempts": _absent_request_metadata(record.provenance.prior_attempts)}
+            omitted["provenance"] = {
+                "prior_attempts": _absent_request_metadata(record.provenance.prior_attempts),
+                "subsequent_attempts": _absent_request_metadata(record.provenance.subsequent_attempts),
+            }
+            if "subsequent_attempts" not in record.provenance.model_fields_set:
+                omitted["provenance"]["subsequent_attempts"] = True
         records[index] = omitted
     return snapshot.model_dump(mode="json", exclude={"records": records})
 
@@ -268,7 +287,11 @@ def _cost(records: list[EvaluationRecord]) -> dict[str, object]:
             continue
         provenance = record.provenance
         operation = provenance.operation_id if provenance is not None else record.key
-        for attempt in (provenance.prior_attempts if provenance is not None else []) + record.execution.attempts:
+        for attempt in (
+            (provenance.prior_attempts if provenance is not None else [])
+            + record.execution.attempts
+            + (provenance.subsequent_attempts if provenance is not None else [])
+        ):
             key = (operation, attempt.number)
             if key in unique and unique[key] != attempt:
                 raise ValueError("共享请求的成本记录相互矛盾")

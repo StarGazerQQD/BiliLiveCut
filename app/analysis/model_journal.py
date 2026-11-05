@@ -38,6 +38,7 @@ class ModelOperationState(BaseModel):
     deadline: datetime
     request_count: int = Field(default=0, ge=0, le=32)
     repair_used: bool = False
+    repair_scopes: list[str] = Field(default_factory=list, max_length=32)
     context_used: bool = False
     empty_used: bool = False
     protocols: list[tuple[str, str, ModelProtocol]] = Field(default_factory=list)
@@ -142,6 +143,7 @@ class ModelRequestJournal:
         self,
         *,
         repair: bool,
+        repair_scopes: set[str],
         context: bool,
         empty: bool,
         protocols: dict[tuple[str, str], ModelProtocol],
@@ -153,6 +155,7 @@ class ModelRequestJournal:
         state = self._state.model_copy(
             update={
                 "repair_used": repair,
+                "repair_scopes": sorted(repair_scopes),
                 "context_used": context,
                 "empty_used": empty,
                 "protocols": [(provider, model, protocol) for (provider, model), protocol in sorted(protocols.items())],

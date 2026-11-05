@@ -14,12 +14,14 @@ from app.analysis.editorial_contracts import (
     EditorialReviewInputV1,
     EditorialReviewResultV1,
     FailureCode,
+    TimeRange,
     review_response_schema,
     validate_review_evidence,
 )
 from app.analysis.editorial_provenance import (
     REVIEW_POLICY_VERSION,
     ReviewProvenance,
+    canonical_hash,
     capture_provenance,
     frozen_review_fingerprint,
     semantic_policy_identity,
@@ -39,6 +41,8 @@ availability 仅说明不可用材料及局限，没有可引用编号，也不�
 ASR 缺失不等于拒绝；仅有测量指标、降级证据或无法理解内容时给 needs_review 并明确 uncertainties。
 recommend/reject 必须有足够内容证据。recommend 提供具体 hook；reject 说明不值得剪辑的内容依据。
 standalone 未知使用 null；时长、热度、语音置信度都不能证明内容完整。
+standalone 判断针对 suggested_bounds（提供建议时）或 target.bounds，不能用片外上下文替代片内理解。
+complete 的引用内容必须有真实时间并完整进入该范围；无时间或跨范围材料仍可帮助解释，但独立性须保留未知。
 缺上下文时 boundary_status=needs_expansion，missing_context=before/after/both；提供范围外内容前不得假定结论。
 边界字段只允许以下组合：complete 配 standalone=true、missing_context=null；
 needs_expansion 配明确 missing_context；uncertain 配 missing_context=null，standalone 保留实际判断或 null。
@@ -171,6 +175,7 @@ def judge_editorial(
                 budget=budget,
                 purpose="review" if index == 0 else "context",
                 max_tokens=settings.hotspot_enrichment_llm_max_tokens,
+                repair_scope=canonical_hash([REVIEW_POLICY_VERSION, REVIEW_PROMPT, references.payload()]),
                 search_query=" ".join(text for item in source.evidence for text in item.excerpts),
             )
             result, error = called.value, called.error
@@ -207,6 +212,58 @@ def editorial_candidate(execution: EditorialExecutionV1 | None, *, technical_sco
     return technical_score >= threshold
 
 
+def final_bounds_metadata(
+    review: EditorialReviewDraft,
+    bounds: TimeRange | None,
+    *,
+    media_accessible: bool,
+    suggestion_applied: bool,
+) -> dict[str, object]:
+    """两条成片链共用实际范围确认，模型原始结论保留在 execution 内。"""
+    result, source = review.execution.result, review.source
+    evaluated = (result.suggested_bounds or source.target.bounds) if result is not None and source is not None else None
+    complete = (
+        bounds is not None
+        and source is not None
+        and evaluated is not None
+        and source.window.contains(bounds)
+        and any(block.contains(bounds) for block in source.recording_ranges)
+        and bounds.contains(evaluated)
+        and (result.suggested_bounds is None or suggestion_applied)
+    )
+    confirmed = bool(
+        complete
+        and media_accessible
+        and not source.truncated
+        and result.standalone is True
+        and result.boundary_status == "complete"
+    )
+    error = None
+    if not confirmed:
+        if bounds is None:
+            error = "缺少实际成片时间原点，无法确认范围。"
+        elif not media_accessible:
+            error = "实际成片范围的媒体不可用。"
+        elif result is not None and result.suggested_bounds is not None and not suggestion_applied:
+            error = "模型建议范围未实际应用，当前片段的独立理解尚未确认。"
+        elif not complete:
+            error = "实际成片未完整覆盖判断范围，或超出已提供的连续素材。"
+        elif source.truncated:
+            error = "输入素材已截断，实际成片的独立理解尚未确认。"
+        else:
+            error = "模型尚未确认该范围可独立理解。"
+    return {
+        "media_accessible": media_accessible,
+        "suggested_bounds_applied": suggestion_applied,
+        "bounds_complete": bool(complete),
+        "evaluated_bounds": evaluated.model_dump(mode="json") if evaluated is not None else None,
+        "final_bounds": bounds.model_dump(mode="json") if bounds is not None else None,
+        "clip_standalone": True if confirmed else None,
+        "clip_boundary_status": "complete" if confirmed else "uncertain",
+        "bounds_error": error,
+    }
+
+
 def editorial_auto_approvable(metadata: object) -> bool:
     """只有可独立理解且边界完整的明确推荐允许机器批准。"""
     if not isinstance(metadata, Mapping):
@@ -218,13 +275,18 @@ def editorial_auto_approvable(metadata: object) -> bool:
         if result is None or execution.status != "succeeded":
             return False
         validate_review_evidence(result, source)
+        actual = TimeRange.model_validate(metadata.get("final_bounds"))
+        if not source.window.contains(actual) or not actual.contains(result.suggested_bounds or source.target.bounds):
+            return False
     except ValueError:
         return False
     return (
         result.verdict == "recommend"
+        and execution.policy_version == REVIEW_POLICY_VERSION
         and result.standalone is True
         and result.boundary_status == "complete"
         and not source.truncated
         and metadata.get("media_accessible") is True
         and metadata.get("bounds_complete") is True
+        and metadata.get("clip_standalone") is True
     )

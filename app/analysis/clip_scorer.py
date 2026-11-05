@@ -13,10 +13,12 @@ from typing import TYPE_CHECKING, Any
 from loguru import logger
 from sqlmodel import Session, select
 
+from app.analysis.editorial_contracts import TimeRange
 from app.analysis.editorial_review import (
     EditorialReviewDraft,
     editorial_auto_approvable,
     editorial_candidate,
+    final_bounds_metadata,
     semantic_review_policy,
 )
 from app.analysis.editorial_review_sources import (
@@ -30,6 +32,8 @@ from app.analysis.event_enricher import (
     EventEvidenceChangedError,
     EventTargetUnavailableError,
     build_event_evidence_bundle,
+    enrichment_matches_source,
+    enrichment_source_is_current,
 )
 from app.analysis.highlight import candidate_time_bounds, contiguous_recording_range
 from app.analysis.scoring_config import get_scoring_config
@@ -313,22 +317,23 @@ def compute_hotspot_clip_draft(
                     and media_bounds_accessible(db, source, proposed_start, proposed_end)
                 ):
                     start_ts, end_ts = proposed_start, proposed_end
-            review_metadata["media_accessible"] = media_bounds_accessible(db, source, start_ts, end_ts)
-            review_metadata["suggested_bounds_applied"] = suggestion is not None and (
+            accessible = media_bounds_accessible(db, source, start_ts, end_ts)
+            applied = suggestion is not None and (
                 source is not None
                 and source.time_origin_epoch_s is not None
                 and abs(datetime_epoch(start_ts) - source.time_origin_epoch_s - suggestion.start_s) < 1e-6
                 and abs(datetime_epoch(end_ts) - source.time_origin_epoch_s - suggestion.end_s) < 1e-6
             )
-            review_metadata["bounds_complete"] = (
-                review_metadata["suggested_bounds_applied"]
-                if suggestion is not None
-                else (
-                    source is not None
-                    and source.time_origin_epoch_s is not None
-                    and datetime_epoch(start_ts) <= source.time_origin_epoch_s + source.target.bounds.start_s
-                    and datetime_epoch(end_ts) >= source.time_origin_epoch_s + source.target.bounds.end_s
+            actual_bounds = (
+                TimeRange(
+                    start_s=datetime_epoch(start_ts) - source.time_origin_epoch_s,
+                    end_s=datetime_epoch(end_ts) - source.time_origin_epoch_s,
                 )
+                if source is not None and source.time_origin_epoch_s is not None
+                else None
+            )
+            review_metadata.update(
+                final_bounds_metadata(review, actual_bounds, media_accessible=accessible, suggestion_applied=applied)
             )
     initial_status = CandidateStatus.PENDING
     if (
@@ -356,7 +361,7 @@ def compute_hotspot_clip_draft(
     if review_metadata is not None:
         features["editorial_review"] = review_metadata
         result = review.execution.result
-        features["semantic_completeness"] = result.standalone if result is not None else None
+        features["semantic_completeness"] = review_metadata.get("clip_standalone")
     return EventClipDraft(
         hotspot_event_id=context.event_id,
         event_key=context.event_key,
@@ -544,6 +549,17 @@ def _load_event_context(
     review_execution = review_meta.get("execution") if isinstance(review_meta, Mapping) else None
     enrichment_meta = event_features.get("event_enrichment")
     meta = dict(enrichment_meta) if isinstance(enrichment_meta, Mapping) else {}
+    if not enrichment_source_is_current(db, event, enrichment):
+        raise EventEvidenceChangedError("解释的实际上下文已变化")
+    actual_identity = (
+        enrichment.evidence_source_fingerprint if enrichment is not None else meta.get("evidence_source_fingerprint")
+    )
+    if (
+        review is not None
+        and actual_identity is not None
+        and not enrichment_matches_source(event, enrichment, review.source)
+    ):
+        raise EventEvidenceChangedError("解释与编辑判断没有使用同一上下文")
     title = enrichment.title if enrichment is not None else event.title
     summary = enrichment.summary if enrichment is not None else event.summary
     category = enrichment.category if enrichment is not None else event.category
@@ -607,6 +623,7 @@ def _load_event_context(
             "representative_danmaku": [dict(item) for item in representative],
         },
         "bundle_fingerprint": bundle_fingerprint,
+        "explanation_source_fingerprint": actual_identity,
         "modality_scores": dict(modality_scores),
         "novelty": novelty,
         "asr_quality_score": speech_completeness,

@@ -220,7 +220,10 @@ def test_unknown_time_stays_null_and_cannot_support_boundary_suggestion() -> Non
     assert item.start_s is None and item.end_s is None
     with pytest.raises(ValueError, match="没有时间定位"):
         validate_review_evidence(_review(), _source(evidence=[item]))
-    assert validate_review_evidence(_review(suggested_bounds=None), _source(evidence=[item])).verdict == "recommend"
+    with pytest.raises(ValueError, match="片内独立理解"):
+        validate_review_evidence(_review(suggested_bounds=None), _source(evidence=[item]))
+    uncertain = _review(suggested_bounds=None, boundary_status="uncertain", standalone=None)
+    assert validate_review_evidence(uncertain, _source(evidence=[item])).verdict == "recommend"
     with pytest.raises(ValidationError, match="空时间"):
         _evidence(timing_precision="unknown")
 
@@ -291,7 +294,7 @@ def test_total_budget_includes_detail_and_serialization_overhead() -> None:
             excerpts=["证据" * 10_000] * 8,
             detail={"metrics": {f"指标{n}": float(n) for n in range(24)}},
         )
-        for index in range(2)
+        for index in range(INPUT_MAX_BYTES // 480_000 + 1)
     ]
     with pytest.raises(ValidationError, match="完整编辑输入超过"):
         _source(evidence=evidence)
@@ -479,4 +482,4 @@ def test_large_multibyte_evidence_retains_full_text_and_still_rejects_new_bounda
     with pytest.raises(ValidationError):
         _evidence(excerpts=["中" * (EXCERPT_MAX_CHARS + 1)])
     with pytest.raises(ValidationError, match="完整编辑输入超过字节上限"):
-        _source(evidence=[_evidence(evidence_id=f"asr:{index}", excerpts=[text]) for index in range(30)])
+        _source(evidence=[_evidence(evidence_id=f"asr:{index}", excerpts=[text]) for index in range(60)])

@@ -11,10 +11,11 @@ from pydantic import BaseModel, ConfigDict, Field
 
 from app.analysis import llm
 from app.analysis.editorial_contracts import EditorialReviewInputV1, FailureCode, Identity, citable_evidence_ids
+from app.analysis.editorial_provenance import canonical_hash
 from app.analysis.editorial_references import EvidenceReferences
 from app.analysis.model_execution import ModelCallBudget
 
-EXPLANATION_POLICY_VERSION = "grounded-explanation-v7"
+EXPLANATION_POLICY_VERSION = "grounded-explanation-v8-context"
 EXPLANATION_PROMPT = """你是直播事件编辑，只解释提供的事件，不能修改 heat_score 或 clip_score。
 只能使用输入证据，不得添加背景、因果、人物身份、画面或戏剧性事实。
 弹幕只证明观众的发言，不证明主播做了相应行为；仅弹幕支持时明确写成弹幕讨论或观众猜测。
@@ -225,6 +226,7 @@ def explain(
         budget=budget,
         purpose="explanation",
         max_tokens=max_tokens,
+        repair_scope=canonical_hash([EXPLANATION_POLICY_VERSION, "explanation", references.payload(), schema]),
         search_query=" ".join(text for item in wire_source.evidence for text in item.excerpts),
     )
     if generated.value is None:
@@ -268,6 +270,7 @@ def explain(
         budget=budget,
         purpose="grounding",
         max_tokens=max_tokens,
+        repair_scope=canonical_hash([EXPLANATION_POLICY_VERSION, "grounding", payload, grounding_schema]),
         search_query=" ".join(text for item in wire_source.evidence for text in item.excerpts),
     )
     if checked.value is None:

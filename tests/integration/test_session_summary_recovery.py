@@ -84,9 +84,9 @@ def _grounding_reply(request: httpx.Request) -> httpx.Response | None:
     if "candidate" not in payload or "material" not in payload:
         return None
     result = {
-        "supported": True,
+        "status": "supported",
         "reason": "受控服务确认素材支持",
-        "quotes": [{"source_index": 0, "text": payload["material"][0]["text"][:1000]}],
+        "evidence_ids": [payload["material"][0]["evidence_id"]],
     }
     return httpx.Response(200, json=response(json.dumps(result)))
 
@@ -118,7 +118,7 @@ def test_hierarchy_uses_all_blocks_and_only_invalidates_changed_ancestors(
     temp_db: None, monkeypatch: pytest.MonkeyPatch, large_leaf: bool
 ) -> None:
     session_id = _seed()
-    monkeypatch.setattr(settings, "editorial_model_max_attempts", 32)
+    monkeypatch.setattr(settings, "summary_model_max_attempts", 32)
     calls: list[dict[str, object]] = []
 
     async def send(_transport: httpx.AsyncHTTPTransport, request: httpx.Request) -> httpx.Response:
@@ -132,7 +132,7 @@ def test_hierarchy_uses_all_blocks_and_only_invalidates_changed_ancestors(
     assert _run(session_id)
     assert [item["content"]["sequence"] for item in calls if item["stage"] == "source"] == list(range(6))
     assert calls[-1]["stage"] == "final"
-    assert any(item["stage"] == "reduce" for item in calls) is large_leaf
+    assert any(item["stage"] in {"reduce", "compress"} for item in calls) is large_leaf
     with get_session() as db:
         requests = [
             json.loads(row.value)
@@ -149,7 +149,7 @@ def test_hierarchy_uses_all_blocks_and_only_invalidates_changed_ancestors(
     calls.clear()
     assert _run(session_id)
     assert [item["content"]["sequence"] for item in calls if item["stage"] == "source"] == [2]
-    assert sum(item["stage"] == "reduce" for item in calls) == (1 if large_leaf else 0)
+    assert sum(item["stage"] in {"reduce", "compress"} for item in calls) == (1 if large_leaf else 0)
     assert calls[-1]["stage"] == "final"
 
 
@@ -194,7 +194,7 @@ def test_summary_keeps_uploader_and_replay_title_in_every_request(
     temp_db: None, monkeypatch: pytest.MonkeyPatch, length: int
 ) -> None:
     session_id = _seed(count=1, length=length)
-    monkeypatch.setattr(settings, "editorial_model_max_attempts", 32)
+    monkeypatch.setattr(settings, "summary_model_max_attempts", 32)
     with get_session() as db:
         room = db.exec(select(LiveRoom)).one()
         room.uploader_name = "素材上传者"
@@ -226,7 +226,7 @@ def test_single_large_block_is_partitioned_without_missing_text_or_guessed_time(
     temp_db: None, monkeypatch: pytest.MonkeyPatch
 ) -> None:
     session_id = _seed(count=1, length=12000)
-    monkeypatch.setattr(settings, "editorial_model_max_attempts", 32)
+    monkeypatch.setattr(settings, "summary_model_max_attempts", 32)
     with get_session() as db:
         segment = db.exec(select(RawSegment)).one()
         segment.start_ts = datetime(2026, 10, 30, 15, 58, tzinfo=UTC)
@@ -274,7 +274,7 @@ def test_large_multibyte_intermediate_is_compressed_completely_in_shared_budget(
             }
         )
     )
-    monkeypatch.setattr(settings, "editorial_model_max_attempts", 32)
+    monkeypatch.setattr(settings, "summary_model_max_attempts", 32)
     calls: list[dict[str, object]] = []
     oversized = "内容" * 1150
 
@@ -339,7 +339,7 @@ def test_compression_preserves_single_character_tail_without_an_impossible_reque
     low, high = 0, len(parent.text)
     while low < high:
         middle = (low + high + 1) // 2
-        if tree.fits(tree._compression_prompt(parent, 0, middle)):
+        if tree.fits(tree._compression_prompt(parent, 0, middle), [{"text": parent.text[:middle]}]):
             low = middle
         else:
             high = middle - 1
@@ -372,20 +372,20 @@ def test_shared_budget_exhaustion_requires_explicit_renewal_and_preserves_nodes(
         return httpx.Response(200, json=response(json.dumps({"summary": _reply(payload)})))
 
     monkeypatch.setattr(httpx.AsyncHTTPTransport, "handle_async_request", send)
-    monkeypatch.setattr(settings, "editorial_model_max_attempts", 2)
+    monkeypatch.setattr(settings, "summary_model_max_attempts", 2)
     assert not _run(session_id)
-    assert len(calls) == 1
+    assert len(calls) == 0
     with get_session() as db:
         assert db.get(AppSetting, f"session_timeline_summary:{session_id}") is None
         pending = db.get(AppSetting, f"session_timeline_summary_request:{session_id}")
         payload = json.loads(pending.value)
         assert payload["attempts"] == 0 and payload["status"] == "failed"
         operation_id = payload["operation_id"]
-    monkeypatch.setattr(settings, "editorial_model_max_attempts", 16)
+    monkeypatch.setattr(settings, "summary_model_max_attempts", 16)
     assert session_summary.recover_running_session_summary_requests() == 0
     assert not session_summary.request_session_timeline_summary(session_id, reason="automatic", force=True)
     assert session_summary.claim_pending_session_summary() is None
-    assert len(calls) == 1
+    assert len(calls) == 0
     assert _run(session_id)
     with get_session() as db:
         request = json.loads(db.get(AppSetting, f"session_timeline_summary_request:{session_id}").value)
@@ -399,7 +399,7 @@ def test_successful_slices_share_one_fixed_budget_without_business_failures(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     session_id = _seed()
-    monkeypatch.setattr(settings, "editorial_model_max_attempts", 14)
+    monkeypatch.setattr(settings, "summary_model_max_attempts", 14)
     calls: list[dict[str, object]] = []
 
     async def send(_transport: httpx.AsyncHTTPTransport, request: httpx.Request) -> httpx.Response:
@@ -552,7 +552,7 @@ def test_storage_failure_stops_requests_and_completed_root_is_reused(
     from sqlalchemy import event
 
     session_id = _seed()
-    monkeypatch.setattr(settings, "editorial_model_max_attempts", 16 if failure_at == "cache" else 14)
+    monkeypatch.setattr(settings, "summary_model_max_attempts", 16 if failure_at == "cache" else 14)
     calls: list[dict[str, object]] = []
 
     async def send(_transport: httpx.AsyncHTTPTransport, request: httpx.Request) -> httpx.Response:
@@ -583,7 +583,7 @@ def test_storage_failure_stops_requests_and_completed_root_is_reused(
         assert not _run(session_id)
     finally:
         event.remove(engine, "before_cursor_execute", fail_storage)
-    assert triggered and len(calls) == (1 if failure_at == "cache" else 7)
+    assert triggered and len(calls) == 7
     before_retry = len(calls)
     if failure_at == "expired_result":
         import app.analysis.model_execution as execution
@@ -606,7 +606,7 @@ def test_storage_failure_stops_requests_and_completed_root_is_reused(
         pending["next_retry_at"] = None
         row.value = json.dumps(pending)
     assert _continue(session_id)
-    assert len(calls) - before_retry == (7 if failure_at == "cache" else 0)
+    assert len(calls) - before_retry == 0
 
 
 def test_real_invalid_summary_stops_after_three_failures_without_resetting_budget(
@@ -679,7 +679,7 @@ def test_real_process_restart_reuses_committed_leaf_and_keeps_unknown_inflight_r
             if checked is None:
                 payload = _payload(request)
                 calls.append(payload)
-            if http_count == 3:
+            if http_count == 2:
                 arrived.set()
                 release.wait(25)
                 self.close_connection = True
@@ -699,10 +699,10 @@ def test_real_process_restart_reuses_committed_leaf_and_keeps_unknown_inflight_r
     thread = Thread(target=server.serve_forever, daemon=True)
     thread.start()
     session_id = _seed(count=4, length=2000, endpoint=f"http://127.0.0.1:{server.server_port}/v1")
-    monkeypatch.setattr(settings, "editorial_model_max_attempts", 16)
+    monkeypatch.setattr(settings, "summary_model_max_attempts", 16)
     assert session_summary.request_session_timeline_summary(session_id, reason="process-test")
     environment = dict(
-        os.environ, NO_PROXY="127.0.0.1,localhost", no_proxy="127.0.0.1,localhost", EDITORIAL_MODEL_MAX_ATTEMPTS="16"
+        os.environ, NO_PROXY="127.0.0.1,localhost", no_proxy="127.0.0.1,localhost", SUMMARY_MODEL_MAX_ATTEMPTS="16"
     )
     log_path = tmp_path / "summary-child.log"
     with log_path.open("wb") as log:
@@ -721,7 +721,8 @@ def test_real_process_restart_reuses_committed_leaf_and_keeps_unknown_inflight_r
             child.kill()
             child.wait(timeout=5)
             with get_session() as db:
-                assert len(db.exec(select(AppSetting).where(AppSetting.key.startswith("summary_cache:v1:"))).all()) == 1
+                assert len(db.exec(select(AppSetting).where(AppSetting.key.startswith("summary_draft:v1:"))).all()) == 1
+                assert not db.exec(select(AppSetting).where(AppSetting.key.startswith("summary_cache:v1:"))).all()
                 assert db.get(AppSetting, f"session_timeline_summary:{session_id}") is None
                 records = [
                     json.loads(row.value)

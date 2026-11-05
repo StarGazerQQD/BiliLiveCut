@@ -2737,6 +2737,17 @@ export interface components {
             /** Candidate Id */
             candidate_id?: number | null;
             /**
+             * Clip Boundary Status
+             * @default uncertain
+             * @enum {string}
+             */
+            clip_boundary_status: "complete" | "uncertain";
+            clip_bounds?: components["schemas"]["TimeRange"] | null;
+            /** Clip Bounds Error */
+            clip_bounds_error?: string | null;
+            /** Clip Standalone */
+            clip_standalone?: boolean | null;
+            /**
              * Editorial State
              * @default not_run
              * @enum {string}
@@ -2766,6 +2777,8 @@ export interface components {
              * @constant
              */
             schema_version: "editorial-view-v1";
+            /** Subsequent Attempts */
+            subsequent_attempts?: components["schemas"]["ModelAttempt"][];
             /** Summary */
             summary: string;
             /** Technical Score */
@@ -2889,10 +2902,7 @@ export interface components {
             };
             /** Timezone */
             timezone: string;
-            /** Whole Session Summary */
-            whole_session_summary?: {
-                [key: string]: components["schemas"]["JsonValue"];
-            } | null;
+            whole_session_summary?: components["schemas"]["SessionSummaryPresentation"] | null;
         };
         /**
          * EvidenceDetail
@@ -3598,6 +3608,57 @@ export interface components {
             scheduled_at: string;
         };
         /**
+         * SessionSummaryPresentation
+         * @description 兼容既有总结字段，并正式披露草稿和核验进度。
+         */
+        SessionSummaryPresentation: {
+            /**
+             * Analysis Basis
+             * @default full_session_asr
+             * @constant
+             */
+            analysis_basis: "full_session_asr";
+            /**
+             * Character Count
+             * @default 0
+             */
+            character_count: number;
+            /** Coverage */
+            coverage?: {
+                [key: string]: components["schemas"]["JsonValue"];
+            };
+            /** Draft Generated At */
+            draft_generated_at?: string | null;
+            /** Draft Summary */
+            draft_summary?: string | null;
+            /** Error */
+            error?: string | null;
+            /** Generated At */
+            generated_at?: string | null;
+            /**
+             * Needs Regeneration
+             * @default false
+             */
+            needs_regeneration: boolean;
+            /** Source */
+            source?: ("llm" | "empty") | null;
+            /**
+             * Status
+             * @enum {string}
+             */
+            status: "recording" | "waiting" | "pending" | "generating" | "unconfigured" | "failed" | "ready";
+            /** Summary */
+            summary?: string | null;
+            /**
+             * Transcript Count
+             * @default 0
+             */
+            transcript_count: number;
+            verification?: components["schemas"]["SummaryVerificationPresentation"];
+        } & {
+            [key: string]: unknown;
+        };
+        /**
          * SplitTopicRequest
          * @description 拆分主题请求体（提取指定事件组成新主题）。
          */
@@ -3712,6 +3773,40 @@ export interface components {
             end_s: number;
             /** Evidence Ids */
             evidence_ids: string[];
+            /** Start S */
+            start_s: number;
+        };
+        /**
+         * SummaryVerificationPresentation
+         * @description 正文与事实核验分别展示，失败草稿不会冒充正式结果。
+         */
+        SummaryVerificationPresentation: {
+            /**
+             * Completed Nodes
+             * @default 0
+             */
+            completed_nodes: number;
+            /** Error */
+            error?: string | null;
+            /**
+             * Status
+             * @default not_run
+             * @enum {string}
+             */
+            status: "not_run" | "pending" | "verifying" | "verified" | "needs_review" | "failed";
+            /**
+             * Total Nodes
+             * @default 0
+             */
+            total_nodes: number;
+        };
+        /**
+         * TimeRange
+         * @description 相对场次开始的有限秒数范围，不能表示未知时间。
+         */
+        TimeRange: {
+            /** End S */
+            end_s: number;
             /** Start S */
             start_s: number;
         };

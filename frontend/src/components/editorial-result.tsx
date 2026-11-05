@@ -67,6 +67,7 @@ export function EditorialResult({
   const execution = view.execution;
   const result = execution?.result;
   const previousAttempts = view.previous_attempts || [];
+  const subsequentAttempts = view.subsequent_attempts || [];
   return (
     <section
       className="space-y-3 rounded-xl border p-4"
@@ -128,7 +129,7 @@ export function EditorialResult({
           {result.hook && <p className="text-sm">吸引点：{result.hook}</p>}
           <p className="text-sm leading-7">判断依据：{result.reason}</p>
           <p className="text-xs">
-            独立理解：
+            模型判断范围内独立理解：
             {result.standalone == null
               ? "未知"
               : result.standalone
@@ -136,6 +137,16 @@ export function EditorialResult({
                 : "仍依赖上下文"}{" "}
             · {editorialLabels[result.boundary_status]}
           </p>
+          <p className="text-xs">
+            实际成片独立理解：
+            {view.clip_standalone === true ? "可以" : "尚未确认"}
+            {view.clip_boundary_status === "complete"
+              ? " · 边界完整"
+              : " · 边界待确认"}
+          </p>
+          {view.clip_bounds_error && (
+            <p className="text-xs">{view.clip_bounds_error}</p>
+          )}
           {result.missing_context && (
             <p className="text-xs">
               缺少{editorialLabels[result.missing_context]}
@@ -218,7 +229,16 @@ export function EditorialResult({
             同一操作前序 {execution.attempt_offset || 0} 次请求 · 已保存{" "}
             {previousAttempts.length} 条前序记录
           </p>
-          {[...previousAttempts, ...execution.attempts].map((attempt) => (
+          {!!subsequentAttempts.length && (
+            <p className="my-2 text-xs">
+              判断后上下文解释 {subsequentAttempts.length} 次请求
+            </p>
+          )}
+          {[
+            ...previousAttempts,
+            ...execution.attempts,
+            ...subsequentAttempts,
+          ].map((attempt) => (
             <div
               className="mb-2 rounded-lg bg-muted/50 p-3 text-xs leading-6"
               key={attempt.number}
@@ -229,7 +249,11 @@ export function EditorialResult({
               <p>
                 {attempt.number <= (execution.attempt_offset || 0)
                   ? "同一操作前序请求"
-                  : "本次判断请求"}
+                  : attempt.number >
+                      (execution.attempt_offset || 0) +
+                        execution.attempts.length
+                    ? "判断后上下文解释请求"
+                    : "本次判断请求"}
                 {" · "}
                 用途：
                 {editorialLabels[attempt.purpose] ||
