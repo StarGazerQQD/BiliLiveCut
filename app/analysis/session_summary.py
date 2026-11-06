@@ -26,7 +26,6 @@ from app.analysis.session_summary_tree import (
     summary_policy,
 )
 from app.analysis.summary_verification import SummaryDraftNode
-from app.analysis.transcription.content import transcript_text
 from app.core.cancellation import OperationCancelledError, OperationShutdownError, check_cancellation, check_shutdown
 from app.core.config import settings
 from app.core.runtime_settings import configured_entry
@@ -822,7 +821,7 @@ def _session_transcript_blocks(db: Session, session_id: int) -> list[SessionTran
         if segment.id is None:
             continue
         transcript = transcript_by_segment.get(segment.id)
-        text = transcript_text(transcript).strip() if transcript is not None else ""
+        text = transcript.final_text.strip() if transcript is not None else ""
         if not text:
             continue
         source_file = segment.file_path.strip().replace("\\", "/").rsplit("/", maxsplit=1)[-1]

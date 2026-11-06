@@ -22,6 +22,14 @@ if TYPE_CHECKING:
     from app.analysis.model_journal import ModelRequestJournal
 
 
+class StructuredValidationError(ValueError):
+    """仅供同一纠错请求使用的定位信息，不进入日志或持久诊断。"""
+
+    def __init__(self, message: str, details: dict[str, object]) -> None:
+        super().__init__(message)
+        self.details = details
+
+
 @dataclass(frozen=True, slots=True)
 class StructuredCallResult(Generic[T]):
     """只携带通过业务验证的值，失败时保留分类而不构造业务结论。"""

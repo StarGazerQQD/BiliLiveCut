@@ -322,6 +322,22 @@ def _same_authorization(metadata: Mapping[str, object], identity: tuple[tuple[st
     return stored == dict(identity) if stored is not None else all(revision == 0 for _, revision in identity)
 
 
+def _has_matching_success(event: HotspotEvent, fingerprint: str, source_fingerprint: str | None) -> bool:
+    metadata = _mapping(event.features_json).get("event_enrichment")
+    return bool(
+        source_fingerprint
+        and isinstance(metadata, Mapping)
+        and metadata.get("version") == EVENT_ENRICHER_VERSION
+        and metadata.get("policy_version") == EXPLANATION_POLICY_VERSION
+        and metadata.get("status") == "succeeded"
+        and metadata.get("bundle_fingerprint") == fingerprint
+        and metadata.get("evidence_source_fingerprint") == source_fingerprint
+        and event.title
+        and event.summary
+        and event.category
+    )
+
+
 def _enrichment_is_current(
     event: HotspotEvent,
     fingerprint: str,
@@ -440,6 +456,24 @@ def compute_event_enrichment(
             )
         assert result.error is not None
         error, coverage = result.error, result.lexical_coverage
+    with get_session() as db:
+        current = db.get(HotspotEvent, event_id)
+        if (
+            current is not None
+            and _has_matching_success(
+                current,
+                bundle.fingerprint,
+                evidence_source_fingerprint(actual_source),
+            )
+            and build_event_evidence_bundle(db, event_id, config=cfg).fingerprint == bundle.fingerprint
+            and (
+                enrichment_matches_source(
+                    current, None, event_evidence_source(db, current, expanded_context, config=cfg)
+                )
+            )
+        ):
+            logger.warning("event_enrichment_retry_failed event={} error={} retained_success=true", event_id, error)
+            return None
     description = (
         "自动解释未启用，尚无经过核验的内容摘要。" if error == "disabled" else "解释未完成核验，尚无可采用的内容摘要。"
     )
@@ -504,6 +538,13 @@ def commit_event_enrichment(
         return False
     features = _mapping(event.features_json)
     previous = features.get("event_enrichment")
+    if draft.error is not None and _has_matching_success(
+        event,
+        current.fingerprint,
+        draft.evidence_source_fingerprint,
+    ):
+        logger.warning("event_enrichment_retry_failed event={} error={} retained_success=true", event.id, draft.error)
+        return False
     if draft.error == "unauthorized":
         revisions = authorization_revisions(db)
         if any(revisions.get(identity, 0) != revision for identity, revision in draft.authorization_identity):

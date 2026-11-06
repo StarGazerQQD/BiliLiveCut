@@ -3,7 +3,7 @@ import userEvent from "@testing-library/user-event";
 import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
 import { MemoryRouter } from "react-router";
 import { afterEach, expect, it, vi } from "vitest";
-import { DanmakuPage } from "./library";
+import { DanmakuPage, TranscriptsPage } from "./library";
 
 vi.mock("@/api/auth", () => ({
   authHeaders: () => ({}),
@@ -12,6 +12,42 @@ vi.mock("@/api/auth", () => ({
   refreshAuth: vi.fn(),
 }));
 afterEach(() => vi.unstubAllGlobals());
+
+it("renders the API summary and its pending-context state beside unchanged ASR", async () => {
+  vi.stubGlobal(
+    "fetch",
+    vi.fn(
+      async () =>
+        new Response(
+          JSON.stringify([
+            {
+              id: 7,
+              session_id: 1,
+              segment_seq: 0,
+              text: "原始转写内容。",
+              summary: "连续上下文摘要内容。",
+              summary_status: "ready",
+              summary_needs_context: true,
+            },
+          ]),
+          { headers: { "Content-Type": "application/json" } },
+        ),
+    ),
+  );
+  const client = new QueryClient();
+  const view = render(
+    <QueryClientProvider client={client}>
+      <MemoryRouter initialEntries={["/?session=1"]}>
+        <TranscriptsPage />
+      </MemoryRouter>
+    </QueryClientProvider>,
+  );
+  expect(await screen.findByText("连续上下文摘要内容。")).toBeInTheDocument();
+  expect(screen.getByText("原始转写内容。")).toBeInTheDocument();
+  expect(screen.getByText(/后文到达后补充理解/)).toBeInTheDocument();
+  view.unmount();
+  client.clear();
+});
 
 it("pages old sessions and returns to the same page without loading all history", async () => {
   const requests: URL[] = [];

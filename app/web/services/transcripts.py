@@ -104,6 +104,9 @@ def correct_transcript(
         transcript.auxiliary_json = json.dumps(auxiliary, ensure_ascii=False)
         db.add(transcript)
         session_id = segment.session_id
+        from app.analysis.segment_summary import request_segment_summary
+
+        request_segment_summary(db, session_id)
 
     from app.analysis.reanalysis import request_session_reanalysis
 
@@ -520,6 +523,14 @@ def list_transcripts(
             db,
             (sid for _, _, sid in rows if sid is not None),
         )
+        from app.analysis.segment_summary import segment_summary_views
+
+        by_session = {sid: segment_summary_views(db, sid) for sid in {s for _, _, s in rows if s is not None}}
+        summary_views = {
+            transcript.id: by_session[sid].get(transcript.segment_id, {})
+            for transcript, _, sid in rows
+            if sid is not None
+        }
     result: list[dict[str, Any]] = []
     for transcript, segment, sid in rows:
         source = sources.get(sid, unknown_source_identity())
@@ -541,7 +552,11 @@ def list_transcripts(
                 "language": transcript.language,
                 "text": transcript_text(transcript),
                 "raw_text": transcript.base_text or transcript.final_text,
-                "summary": str(refinement.get("summary", "")),
+                "summary": summary_views.get(transcript.id, {}).get("context_summary")
+                if summary_views.get(transcript.id, {}).get("summary_status", "legacy") != "legacy"
+                else str(refinement.get("summary", "")),
+                "refinement_summary": str(refinement.get("summary", "")),
+                **summary_views.get(transcript.id, {}),
                 "llm_refined": refined_transcript_text(transcript) is not None,
                 "primary_backend": transcript.primary_backend,
                 "result_type": auxiliary.get("result_type", "speech"),
@@ -651,6 +666,9 @@ def retranscribe_transcript(transcript_id: int) -> dict[str, int]:
         db.flush()
         if task.id is None:
             raise RuntimeError("重转写任务创建失败")
+        from app.analysis.segment_summary import request_segment_summary
+
+        request_segment_summary(db, segment.session_id)
         return {"task_id": task.id, "segment_id": segment.id}
 
 

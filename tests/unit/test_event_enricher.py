@@ -755,6 +755,73 @@ def test_fact_check_uses_same_attempt_budget_as_generation(temp_db: None, monkey
     assert result.source == "fallback" and len(result.attempts) == len(requests) == 1
 
 
+@pytest.mark.parametrize("change", [None, "source", "policy"])
+def test_forced_failed_retry_preserves_only_success_with_identical_source_and_policy(
+    temp_db: None,
+    monkeypatch: MonkeyPatch,
+    change: str | None,
+) -> None:
+    from app.analysis import event_enricher
+    from app.analysis.model_execution import ModelCallBudget
+
+    event_id = _seed_event(evidence=[_evidence_item("speech", "asr", excerpt="主播介绍挑战规则")])
+    output = {
+        "title": "挑战规则说明",
+        "summary": "主播介绍挑战规则。",
+        "category": "discussion",
+        "entities": [],
+        "semantic_confidence": 0.8,
+        "evidence_ids": ["E1"],
+    }
+    install_editorial_service(monkeypatch, lambda *_args, **_kwargs: json.dumps(output), grounded=True)
+    assert enrich_hotspot_event(event_id).source == "llm"
+    with get_session() as db:
+        event = db.get(HotspotEvent, event_id)
+        before = (event.title, event.summary, event.category, event.semantic_confidence, event.features_json)
+        if change == "source":
+            event.transcript_text = "变化后的事件原文。"
+            db.add(event)
+    if change == "policy":
+        monkeypatch.setattr(event_enricher, "EXPLANATION_POLICY_VERSION", "changed-policy")
+    calls = install_editorial_service(monkeypatch, lambda *_args, **_kwargs: None)
+    budget = ModelCallBudget(max_attempts=3, max_elapsed_s=20)
+    result = compute_event_enrichment(event_id, force=True, budget=budget)
+    assert len(calls) == len(budget.attempts) == 2
+    if change is None:
+        assert result is None
+        with get_session() as db:
+            event = db.get(HotspotEvent, event_id)
+            assert (
+                event.title,
+                event.summary,
+                event.category,
+                event.semantic_confidence,
+                event.features_json,
+            ) == before
+    else:
+        assert result is not None and result.source == "fallback"
+
+
+def test_late_failure_cannot_overwrite_a_new_same_source_success(temp_db: None, monkeypatch: MonkeyPatch) -> None:
+    event_id = _seed_event(evidence=[_evidence_item("speech", "asr", excerpt="主播介绍挑战规则")])
+    install_editorial_service(monkeypatch, lambda *_args, **_kwargs: None)
+    failed = compute_event_enrichment(event_id)
+    assert failed is not None and failed.error
+    output = {
+        "title": "挑战规则说明",
+        "summary": "主播介绍挑战规则。",
+        "category": "discussion",
+        "entities": [],
+        "semantic_confidence": 0.8,
+        "evidence_ids": ["E1"],
+    }
+    install_editorial_service(monkeypatch, lambda *_args, **_kwargs: json.dumps(output), grounded=True)
+    assert enrich_hotspot_event(event_id).source == "llm"
+    with get_session() as db:
+        assert not commit_event_enrichment(db, failed)
+        assert db.get(HotspotEvent, event_id).title == "挑战规则说明"
+
+
 @pytest.mark.parametrize("limits", [(32, 360, 12), (12, 60, 1)])
 def test_explanation_request_schema_uses_actual_configured_limits(
     temp_db: None, monkeypatch: MonkeyPatch, limits: tuple[int, int, int]

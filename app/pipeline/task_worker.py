@@ -72,6 +72,7 @@ _logger = logger
 
 
 if TYPE_CHECKING:
+    from app.analysis.segment_summary import SegmentSummaryClaim
     from app.analysis.session_summary import SessionSummaryClaim
 
 # ═══════════════════════════════════════════════════
@@ -264,6 +265,8 @@ class TaskWorker:
         self._rendering: set[asyncio.Task[None]] = set()
         self._publishing: set[asyncio.Task[None]] = set()
         self._session_summaries: set[asyncio.Task[bool]] = set()
+        self._segment_summaries: set[asyncio.Task[bool]] = set()
+        self._segment_summary_claims: dict[asyncio.Task[bool], SegmentSummaryClaim] = {}
         self._summary_claims: dict[asyncio.Task[bool], SessionSummaryClaim] = {}
         self._main_task: asyncio.Task[None] | None = None
         self._stop_task: asyncio.Task[None] | None = None
@@ -271,6 +274,7 @@ class TaskWorker:
         self._running: bool = False
         self._next_summary_scan = 0.0
         self._summary_scan_cursor = 0
+        self._segment_summary_scan_cursor = ""
         self._next_maintenance = time.monotonic() + 3600
         _logger.info("TaskWorker init worker_id={}", _WORKER_ID)
 
@@ -295,6 +299,9 @@ class TaskWorker:
         from app.analysis.session_summary import recover_running_session_summary_requests
 
         await _thread_io(recover_running_session_summary_requests)
+        from app.analysis.segment_summary import recover_segment_summaries
+
+        await _thread_io(recover_segment_summaries)
         self._main_task = asyncio.create_task(self._loop())
         if settings.asr_preload_on_start:
             self._preload_task = asyncio.create_task(self._preload_models())
@@ -361,6 +368,7 @@ class TaskWorker:
             await _thread_io(partial(get_process_pool().shutdown, grace_period))
         except (RuntimeError, OSError, asyncio.CancelledError):
             # 进程终止异常也必须撤销迟到计算的写入权，但不能声称原生进程已退出。
+            from app.analysis.segment_summary import release_segment_summary
             from app.analysis.session_summary import interrupt_summary_execution
             from app.pipeline.stale_recovery import release_stopped_computations
 
@@ -368,6 +376,8 @@ class TaskWorker:
                 await asyncio.to_thread(release_stopped_computations, _WORKER_ID)
                 for claim in self._summary_claims.values():
                     await asyncio.to_thread(interrupt_summary_execution, claim)
+                for claim in self._segment_summary_claims.values():
+                    await asyncio.to_thread(release_segment_summary, claim)
             finally:
                 await asyncio.to_thread(cleanup_subprocesses)
             raise
@@ -382,6 +392,7 @@ class TaskWorker:
             ("rendering", self._rendering),
             ("publishing", self._publishing),
             ("session_summaries", self._session_summaries),
+            ("segment_summaries", self._segment_summaries),
         ]:
             pending = {t for t in coll if not t.done()}
             if pending:
@@ -403,6 +414,13 @@ class TaskWorker:
                         claim = self._summary_claims.get(future)
                         if claim is not None:
                             await asyncio.to_thread(interrupt_summary_execution, claim)
+                if still_running and coll_name == "segment_summaries":
+                    from app.analysis.segment_summary import release_segment_summary
+
+                    for future in still_running:
+                        claim = self._segment_summary_claims.get(future)
+                        if claim is not None:
+                            await asyncio.to_thread(release_segment_summary, claim)
                 if still_running:
                     unfinished.update(still_running)
 
@@ -421,6 +439,7 @@ class TaskWorker:
             *self._rendering,
             *self._publishing,
             *self._session_summaries,
+            *self._segment_summaries,
         )
         return (*tasks, *(task for task in (self._main_task, self._preload_task, self._stop_task) if task is not None))
 
@@ -461,7 +480,16 @@ class TaskWorker:
                     _, self._summary_scan_cursor = await _thread_io(
                         partial(compensate_session_summaries, after_id=self._summary_scan_cursor)
                     )
+                    from app.analysis.segment_summary import compensate_segment_summaries
+
+                    self._segment_summary_scan_cursor = await _thread_io(
+                        partial(
+                            compensate_segment_summaries,
+                            after_key=self._segment_summary_scan_cursor,
+                        )
+                    )
                     self._next_summary_scan = time.monotonic() + 60
+                await self._dispatch_segment_summaries()
                 await self._dispatch_session_summaries()
                 # V0.1.13: Disk protection
                 from app.pipeline.storage_lifecycle import is_safe_for_new_tasks
@@ -489,6 +517,49 @@ class TaskWorker:
             except Exception as exc:
                 _logger.opt(exception=exc).warning("tick error: {}", safe_exception_summary(exc))
             await asyncio.sleep(2)
+
+    async def _dispatch_segment_summaries(self) -> None:
+        """按场次领取单步连续摘要，模型等待不占用调度循环或ASR槽位。"""
+        from app.analysis.segment_summary import (
+            claim_pending_segment_summary,
+            execute_segment_summary_claim,
+            release_segment_summary,
+        )
+        from app.core.cancellation import OperationCancelledError
+
+        for future in list(self._segment_summaries):
+            if not future.done():
+                continue
+            error = future.exception() if not future.cancelled() else OperationCancelledError("摘要执行被取消")
+            if error is not None:
+                claim = self._segment_summary_claims[future]
+                _logger.error(
+                    "segment_summary_execution_failed session={} segment={} error={}",
+                    claim.step.session_id,
+                    claim.step.segment_id,
+                    safe_exception_summary(error),
+                )
+                await _thread_io(
+                    partial(release_segment_summary, claim, failed=not isinstance(error, OperationCancelledError))
+                )
+            self._segment_summaries.remove(future)
+            self._segment_summary_claims.pop(future)
+        if self._segment_summaries:
+            return
+
+        def return_unstarted(claim: SegmentSummaryClaim | None) -> None:
+            if claim is not None:
+                release_segment_summary(claim)
+
+        claim = await _thread_io(claim_pending_segment_summary, return_unstarted)
+        if claim is None:
+            return
+        future = asyncio.create_task(
+            _thread_io(partial(execute_segment_summary_claim, claim)),
+            name=f"segment-summary:{claim.step.session_id}:{claim.step.segment_id}",
+        )
+        self._segment_summaries.add(future)
+        self._segment_summary_claims[future] = claim
 
     async def _dispatch_session_summaries(self) -> None:
         """串行领取整场总结，避免与分段分析争用 LLM 和数据库写入。"""

@@ -324,7 +324,14 @@ def test_failed_output_is_kept_for_repair_transport_retry_and_cleared_on_route_s
     budget = ModelCallBudget(max_attempts=3, max_elapsed_s=20)
     assert call(budget).error is None and len(requests) == 3
     sent = [json.loads(request.content) for request in requests]
-    assert json.loads(sent[1]["messages"][2]["content"]) == {"previous_invalid_output": invalid}
+    repair = json.loads(sent[1]["messages"][2]["content"])
+    assert set(repair) == {"previous_invalid_output", "validation_feedback"}
+    assert repair["previous_invalid_output"] == invalid
+    assert repair["validation_feedback"]["issues"][0] == {
+        "location": ["answer"],
+        "type": "string_type",
+        "limits": {},
+    }
     if retry_transport:
         assert sent[2]["messages"] == sent[1]["messages"]
         assert [item.purpose for item in budget.attempts] == ["review", "repair", "repair"]
@@ -758,7 +765,11 @@ def test_validation_diagnostics_and_repair_use_only_trusted_reasons(
     assert [attempt.purpose for attempt in budget.attempts] == ["review", "repair"]
     messages = json.loads(requests[1].content)["messages"]
     assert len(messages) == 3 and messages[2]["role"] == "user"
-    assert json.loads(messages[2]["content"]) == {"previous_invalid_output": invalid}
+    repair = json.loads(messages[2]["content"])
+    assert set(repair) == {"previous_invalid_output", "validation_feedback"}
+    assert repair["previous_invalid_output"] == invalid
+    assert isinstance(repair["validation_feedback"], dict)
+    assert "private-secret" not in json.dumps(repair["validation_feedback"])
     assert messages[1] == json.loads(requests[0].content)["messages"][1]
     assert "不能作为事实证据" in repair_system
 

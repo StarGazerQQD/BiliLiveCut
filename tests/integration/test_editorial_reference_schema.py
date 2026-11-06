@@ -281,7 +281,11 @@ def test_grounding_repair_receives_bad_audio_quote_and_still_validates_actual_pa
     assert (result.output is not None) is repaired
     assert result.error == (None if repaired else "invalid_output")
     assert calls[2]["messages"][1] == calls[1]["messages"][1]
-    assert json.loads(calls[2]["messages"][2]["content"]) == {"previous_invalid_output": replies[0]}
+    repair = json.loads(calls[2]["messages"][2]["content"])
+    assert set(repair) == {"previous_invalid_output", "validation_feedback"}
+    assert repair["previous_invalid_output"] == replies[0]
+    assert repair["validation_feedback"]["location"] == ["judgements", 0, "quotes", 0]
+    assert {"evidence_id": "E1", "quote_id": "Q1"} in repair["validation_feedback"]["valid_pairs"]
     assert calls[2]["messages"][2]["role"] == "user"
     assert calls[2]["response_format"] == calls[1]["response_format"]
 
