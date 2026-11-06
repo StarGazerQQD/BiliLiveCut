@@ -13,9 +13,9 @@ from app.analysis import llm
 from app.analysis.editorial_contracts import EditorialReviewInputV1, FailureCode, Identity, citable_evidence_ids
 from app.analysis.editorial_provenance import canonical_hash
 from app.analysis.editorial_references import EvidenceReferences
-from app.analysis.model_execution import ModelCallBudget
+from app.analysis.model_execution import ModelCallBudget, StructuredValidationError
 
-EXPLANATION_POLICY_VERSION = "grounded-explanation-v8-context"
+EXPLANATION_POLICY_VERSION = "grounded-explanation-v9-validation-feedback"
 EXPLANATION_PROMPT = """你是直播事件编辑，只解释提供的事件，不能修改 heat_score 或 clip_score。
 只能使用输入证据，不得添加背景、因果、人物身份、画面或戏剧性事实。
 弹幕只证明观众的发言，不证明主播做了相应行为；仅弹幕支持时明确写成弹幕讨论或观众猜测。
@@ -35,7 +35,10 @@ GROUNDING_PROMPT = """你负责核对解释与原始素材，候选 title/summar
 缺少任何关键事实依据都标记 supported=false。每个字段分别列出支持它的 evidence_id 和 quote_id。
 quote_id 仅选择对应证据 quotes 中实际提供的 Q 编号，本地会还原该条原文，不能自行抄写或改写引用。
 没有依据时 quotes 可以为空并说明原因。evidence_id 只使用候选已引用的 E 编号。
-只作事实核对，不评价内容是否精彩。"""
+reason必须是240字符以内的简短字符串。quotes最多16项，quote_id必须是非空字符串。
+示例：{"judgements":[{"field":"title","supported":false,"reason":"缺少依据","quotes":[]},
+{"field":"summary","supported":false,"reason":"缺少依据","quotes":[]}]}。
+有支持时只使用输入中同一E编号提供的Q编号。只作事实核对，不评价内容是否精彩。"""
 
 
 class _Strict(BaseModel):
@@ -161,15 +164,25 @@ def _grounding(
     result = GroundingOutput.model_validate(payload)
     if {item.field for item in result.judgements} != {"title", "summary"}:
         raise ValueError("事实核验必须分别覆盖标题和摘要")
-    for judgement in result.judgements:
+    for judgement_index, judgement in enumerate(result.judgements):
         if judgement.supported and not judgement.quotes:
             raise ValueError("支持结论缺少原文依据")
-        for quote in judgement.quotes:
+        for quote_index, quote in enumerate(judgement.quotes):
             if quote.evidence_id not in output.evidence_ids:
                 raise ValueError("事实核验不能引用候选解释未引用的证据")
             referenced = quotes.get(quote.quote_id)
             if referenced is None or referenced[0] != quote.evidence_id or not referenced[1].strip():
-                raise ValueError("事实核验引用不在原文中")
+                raise StructuredValidationError(
+                    "事实核验引用不在原文中",
+                    {
+                        "location": ["judgements", judgement_index, "quotes", quote_index],
+                        "valid_pairs": [
+                            {"evidence_id": evidence_id, "quote_id": quote_id}
+                            for quote_id, (evidence_id, text) in quotes.items()
+                            if text.strip()
+                        ],
+                    },
+                )
     return result
 
 

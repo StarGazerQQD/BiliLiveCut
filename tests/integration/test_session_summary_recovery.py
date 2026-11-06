@@ -29,7 +29,7 @@ def _seed(*, count: int = 6, length: int = 1500, endpoint: str = "https://fixtur
         config.model_copy(
             update={
                 "routes": [
-                    route.model_copy(update={"capability": "summary", "context_window_tokens": 8000})
+                    route.model_copy(update={"capability": "summary", "context_window_tokens": 200000})
                     for route in config.routes
                 ]
             }
@@ -114,7 +114,7 @@ def _continue(session_id: int) -> bool:
 
 
 @pytest.mark.parametrize("large_leaf", [False, True])
-def test_hierarchy_uses_all_blocks_and_only_invalidates_changed_ancestors(
+def test_whole_generation_uses_all_original_blocks_and_regenerates_changed_source(
     temp_db: None, monkeypatch: pytest.MonkeyPatch, large_leaf: bool
 ) -> None:
     session_id = _seed()
@@ -130,9 +130,10 @@ def test_hierarchy_uses_all_blocks_and_only_invalidates_changed_ancestors(
 
     monkeypatch.setattr(httpx.AsyncHTTPTransport, "handle_async_request", send)
     assert _run(session_id)
-    assert [item["content"]["sequence"] for item in calls if item["stage"] == "source"] == list(range(6))
-    assert calls[-1]["stage"] == "final"
-    assert any(item["stage"] in {"reduce", "compress"} for item in calls) is large_leaf
+    assert len(calls) == 1 and calls[0]["stage"] == "whole"
+    records = json.loads(calls[0]["content"].split("整场 ASR：\n", 1)[1].split("\n覆盖情况（", 1)[0])
+    assert [item["sequence"] for item in records] == list(range(6))
+    assert [item["text"] for item in records] == [f"segment{i}:" + "x" * 1500 for i in range(6)]
     with get_session() as db:
         requests = [
             json.loads(row.value)
@@ -141,16 +142,17 @@ def test_hierarchy_uses_all_blocks_and_only_invalidates_changed_ancestors(
         assert len({item["operation_id"] for item in requests}) == 1
         assert len(requests) == 2 * len(calls)
         plan = json.loads(db.get(AppSetting, f"summary_plan:v1:{session_id}").value)
-        assert len(plan["nodes"]) == 6
+        assert len(plan["nodes"]) == 1
         target = db.exec(
             select(Transcript).join(RawSegment, Transcript.segment_id == RawSegment.id).where(RawSegment.seq == 2)
         ).one()
         target.final_text = "changed:" + "y" * 1500
     calls.clear()
     assert _run(session_id)
-    assert [item["content"]["sequence"] for item in calls if item["stage"] == "source"] == [2]
-    assert sum(item["stage"] in {"reduce", "compress"} for item in calls) == (1 if large_leaf else 0)
-    assert calls[-1]["stage"] == "final"
+    assert len(calls) == 1 and calls[0]["stage"] == "whole"
+    records = json.loads(calls[0]["content"].split("整场 ASR：\n", 1)[1].split("\n覆盖情况（", 1)[0])
+    assert records[2]["text"] == "changed:" + "y" * 1500
+    assert len(records) == 6
 
 
 @pytest.mark.parametrize("known_end", [False, True])
@@ -212,17 +214,14 @@ def test_summary_keeps_uploader_and_replay_title_in_every_request(
 
     monkeypatch.setattr(httpx.AsyncHTTPTransport, "handle_async_request", send)
     assert _run(session_id)
-    assert calls[-1]["stage"] == ("whole" if length == 50 else "final")
+    assert len(calls) == 1 and calls[0]["stage"] == "whole"
     assert all("素材上传者" in prompt and "历史直播循环回放" in prompt for prompt in prompts)
     assert all("录制日期不能用作原直播或内容事件的发生日期" in prompt for prompt in prompts)
-    if length == 50:
-        records = json.loads(prompts[0].split("整场 ASR：\n", 1)[1].split("\n覆盖情况（", 1)[0])
-    else:
-        records = [item["content"] for item in calls if item["stage"] == "source"]
+    records = json.loads(prompts[0].split("整场 ASR：\n", 1)[1].split("\n覆盖情况（", 1)[0])
     assert records and all(item["time_basis"] == "recording" for item in records)
 
 
-def test_single_large_block_is_partitioned_without_missing_text_or_guessed_time(
+def test_single_large_block_is_sent_whole_without_missing_text_or_guessed_time(
     temp_db: None, monkeypatch: pytest.MonkeyPatch
 ) -> None:
     session_id = _seed(count=1, length=12000)
@@ -244,20 +243,17 @@ def test_single_large_block_is_partitioned_without_missing_text_or_guessed_time(
 
     monkeypatch.setattr(httpx.AsyncHTTPTransport, "handle_async_request", send)
     assert _run(session_id)
-    leaves = [item["content"] for item in calls if item["stage"] == "source"]
-    assert len(leaves) > 1
+    assert len(calls) == 1 and calls[0]["stage"] == "whole"
+    leaves = json.loads(prompts[0].split("整场 ASR：\n", 1)[1].split("\n覆盖情况（", 1)[0])
+    assert len(leaves) == 1
     assert "".join(item["text"] for item in leaves) == "segment0:" + "x" * 12000
     assert len({(item["start_at"], item["end_at"]) for item in leaves}) == 1
     assert leaves[0]["start_at"] == "2026-10-30T23:58:00+08:00"
     assert leaves[0]["end_at"] == "2026-10-31T00:03:00+08:00"
     assert all("GMT+8" in prompt for prompt in prompts)
-    cursor = 0
-    for item in leaves:
-        assert item["character_range"] == [cursor, cursor + len(item["text"])]
-        cursor += len(item["text"])
 
 
-def test_large_multibyte_intermediate_is_compressed_completely_in_shared_budget(
+def test_large_multibyte_whole_result_is_preserved_completely_in_shared_budget(
     temp_db: None, monkeypatch: pytest.MonkeyPatch
 ) -> None:
     session_id = _seed(count=5, length=1100)
@@ -267,7 +263,7 @@ def test_large_multibyte_intermediate_is_compressed_completely_in_shared_budget(
             update={
                 "routes": [
                     route.model_copy(
-                        update={"capability": "summary", "context_window_tokens": 12000, "max_output_tokens": 4096}
+                        update={"capability": "summary", "context_window_tokens": 200000, "max_output_tokens": 4096}
                     )
                     for route in config.routes
                 ]
@@ -283,36 +279,14 @@ def test_large_multibyte_intermediate_is_compressed_completely_in_shared_budget(
             return checked
         payload = _payload(request)
         calls.append(payload)
-        text = oversized if payload["stage"] == "source" else _reply(payload)
+        text = oversized if payload["stage"] == "whole" else _reply(payload)
         return httpx.Response(200, json=response(json.dumps({"summary": text})))
 
     monkeypatch.setattr(httpx.AsyncHTTPTransport, "handle_async_request", send)
     assert _run(session_id)
-    compressed = [item["content"] for item in calls if item["stage"] == "compress"]
-    assert compressed
-    source_count = sum(item["stage"] == "source" for item in calls)
-    carried = []
-    for item in calls:
-        texts = (
-            item["content"]
-            if item["stage"] == "reduce"
-            else (item["content"]["summaries"] if item["stage"] == "final" else [])
-        )
-        carried.extend(text for text in texts if text and set(text) <= set("内容"))
-    groups: list[list[dict[str, object]]] = []
-    for part in compressed:
-        if part["character_range"][0] == 0:
-            groups.append([])
-        groups[-1].append(part)
-    assert len(groups) == len(carried) == source_count
-    for parts, tail in zip(groups, carried, strict=True):
-        cursor = 0
-        for part in parts:
-            start, end = part["character_range"]
-            assert start == cursor and part["summary"] == oversized[start:end]
-            cursor = end
-        assert "".join(part["summary"] for part in parts) + tail == oversized
-    assert calls[-1]["stage"] == "final"
+    assert len(calls) == 1 and calls[0]["stage"] == "whole"
+    view = session_summary.session_timeline_summary_view(session_id, processing_state="completed", ended=True)
+    assert view["summary"] == oversized
     with get_session() as db:
         records = [
             json.loads(row.value)
@@ -321,29 +295,10 @@ def test_large_multibyte_intermediate_is_compressed_completely_in_shared_budget(
         assert len({record["operation_id"] for record in records}) == 1
 
 
-def test_compression_preserves_single_character_tail_without_an_impossible_request(
+def test_full_original_capacity_failure_preserves_tail_and_sends_no_request(
     temp_db: None, monkeypatch: pytest.MonkeyPatch
 ) -> None:
-    from app.analysis.session_summary_tree import SessionSummaryTree, SummaryNode
-
-    _seed(count=1)
-    tree = SessionSummaryTree(
-        policy="test-policy",
-        budget=llm.new_editorial_budget(),
-        guard=lambda: None,
-        load=lambda _key: None,
-        save=lambda _node: None,
-        plan=lambda _keys: None,
-    )
-    parent = SummaryNode("a" * 64, "x" * 10000)
-    low, high = 0, len(parent.text)
-    while low < high:
-        middle = (low + high + 1) // 2
-        if tree.fits(tree._compression_prompt(parent, 0, middle), [{"text": parent.text[:middle]}]):
-            low = middle
-        else:
-            high = middle - 1
-    parent = SummaryNode(parent.key, "x" * low + "!")
+    session_id = _seed(count=1, length=300000)
     calls: list[dict[str, object]] = []
 
     async def send(_transport: httpx.AsyncHTTPTransport, request: httpx.Request) -> httpx.Response:
@@ -353,9 +308,13 @@ def test_compression_preserves_single_character_tail_without_an_impossible_reque
         return httpx.Response(200, json=response('{"summary":"compressed"}'))
 
     monkeypatch.setattr(httpx.AsyncHTTPTransport, "handle_async_request", send)
-    nodes = tree._compress(parent)
-    assert len(calls) == 1 and calls[0]["content"]["summary"] == "x" * low
-    assert [node.text for node in nodes] == ["compressed", "!"]
+    assert not _run(session_id) and not calls
+    with get_session() as db:
+        transcript = db.exec(select(Transcript)).one()
+        assert transcript.final_text == "segment0:" + "x" * 300000
+        assert db.get(AppSetting, f"session_timeline_summary:{session_id}") is None
+        request = json.loads(db.get(AppSetting, f"session_timeline_summary_request:{session_id}").value)
+        assert "容量" in request["last_error"]
 
 
 def test_shared_budget_exhaustion_requires_explicit_renewal_and_preserves_nodes(
@@ -372,7 +331,7 @@ def test_shared_budget_exhaustion_requires_explicit_renewal_and_preserves_nodes(
         return httpx.Response(200, json=response(json.dumps({"summary": _reply(payload)})))
 
     monkeypatch.setattr(httpx.AsyncHTTPTransport, "handle_async_request", send)
-    monkeypatch.setattr(settings, "summary_model_max_attempts", 2)
+    monkeypatch.setattr(settings, "summary_model_max_attempts", 1)
     assert not _run(session_id)
     assert len(calls) == 0
     with get_session() as db:
@@ -390,11 +349,10 @@ def test_shared_budget_exhaustion_requires_explicit_renewal_and_preserves_nodes(
     with get_session() as db:
         request = json.loads(db.get(AppSetting, f"session_timeline_summary_request:{session_id}").value)
         assert request["operation_id"] != operation_id and request["status"] == "completed"
-    assert [item["content"]["sequence"] for item in calls if item["stage"] == "source"] == list(range(6))
-    assert len(calls) == 7
+    assert len(calls) == 1 and calls[0]["stage"] == "whole"
 
 
-def test_successful_slices_share_one_fixed_budget_without_business_failures(
+def test_whole_generation_and_verification_share_one_fixed_budget_without_business_failures(
     temp_db: None,
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
@@ -411,22 +369,16 @@ def test_successful_slices_share_one_fixed_budget_without_business_failures(
 
     monkeypatch.setattr(httpx.AsyncHTTPTransport, "handle_async_request", send)
     assert session_summary.request_session_timeline_summary(session_id, reason="fixed-budget")
-    identities: set[tuple[str, str]] = set()
-    for round_index in range(4):
-        claim = session_summary.claim_pending_session_summary()
-        assert claim is not None
-        assert session_summary.execute_session_summary_claim(claim) is (round_index == 3)
-        assert len(calls) == min((round_index + 1) * 2, 7)
-        with get_session() as db:
-            row = db.get(AppSetting, f"session_timeline_summary_request:{session_id}")
-            payload = json.loads(row.value)
-            assert payload["attempts"] == 0
-            assert payload["status"] == ("completed" if round_index == 3 else "pending")
-            identities.add((payload["operation_id"], payload["requested_at"]))
-            payload["next_retry_at"] = None
-            row.value = json.dumps(payload)
-    assert len(identities) == 1
-    operation_id, _ = identities.pop()
+    claim = session_summary.claim_pending_session_summary()
+    assert claim is not None
+    assert session_summary.execute_session_summary_claim(claim)
+    assert len(calls) == 1 and calls[0]["stage"] == "whole"
+    with get_session() as db:
+        row = db.get(AppSetting, f"session_timeline_summary_request:{session_id}")
+        payload = json.loads(row.value)
+        assert payload["attempts"] == 0
+        assert payload["status"] == "completed"
+        operation_id = payload["operation_id"]
     with get_session() as db:
         records = [
             json.loads(row.value)
@@ -434,11 +386,11 @@ def test_successful_slices_share_one_fixed_budget_without_business_failures(
                 select(AppSetting).where(AppSetting.key.startswith(f"model_request:v1:{operation_id}:"))
             ).all()
         ]
-        assert sorted(record["number"] for record in records) == list(range(1, 15))
+        assert sorted(record["number"] for record in records) == [1, 2]
         assert all(record["state"] == "finished" for record in records)
     assert session_summary.request_session_timeline_summary(session_id, reason="automatic", force=True)
     assert _continue(session_id)
-    assert len(calls) == 7
+    assert len(calls) == 1
 
 
 @pytest.mark.parametrize("change", ["source", "text", "claim", "shutdown", "policy"])
@@ -583,7 +535,7 @@ def test_storage_failure_stops_requests_and_completed_root_is_reused(
         assert not _run(session_id)
     finally:
         event.remove(engine, "before_cursor_execute", fail_storage)
-    assert triggered and len(calls) == 7
+    assert triggered and len(calls) == 1
     before_retry = len(calls)
     if failure_at == "expired_result":
         import app.analysis.model_execution as execution
@@ -658,7 +610,7 @@ def test_old_active_request_is_preserved_until_explicit_budget_renewal(temp_db: 
     assert session_summary.claim_pending_session_summary() is not None
 
 
-def test_real_process_restart_reuses_committed_leaf_and_keeps_unknown_inflight_request(
+def test_real_process_restart_reuses_whole_draft_and_keeps_unknown_verification_request(
     temp_db: None, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
     arrived = Event()
@@ -732,8 +684,7 @@ def test_real_process_restart_reuses_committed_leaf_and_keeps_unknown_inflight_r
                 assert len(unknown) == 1 and unknown[0]["usage"]["estimated_cost_usd"] is None
             assert session_summary.recover_running_session_summary_requests() == 1
             assert _continue(session_id)
-            assert [item["content"]["sequence"] for item in calls if item["stage"] == "source"] == [0, 1, 1, 2, 3]
-            assert calls[-1]["stage"] == "final"
+            assert len(calls) == 1 and calls[0]["stage"] == "whole"
             with get_session() as db:
                 records = [
                     json.loads(row.value)

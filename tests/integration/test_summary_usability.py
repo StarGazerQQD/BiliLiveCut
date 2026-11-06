@@ -78,7 +78,7 @@ def test_failed_verification_preserves_full_draft_without_repeating_generation(
         row.value = json.dumps(pending)
     recover = True
     assert _continue(session_id)
-    assert generated == (1 if count == 1 else 7)
+    assert generated == 1
     view = session_summary.session_timeline_summary_view(session_id, processing_state="completed", ended=True)
     assert view["summary"] == "完整总结正文" and view["verification"]["status"] == "verified"
 
@@ -217,11 +217,11 @@ def test_json_object_verification_plan_uses_actual_wire_format_at_context_bounda
     assert verification_fits(payload, schema, [provider])
 
 
-def test_child_revision_cannot_spend_last_request_on_an_unverifiable_new_root(
+def test_whole_revision_cannot_spend_last_request_on_an_unverifiable_result(
     temp_db: None, monkeypatch: pytest.MonkeyPatch
 ) -> None:
     session_id = _seed(count=6, length=1500)
-    monkeypatch.setattr(settings, "summary_model_max_attempts", 15)
+    monkeypatch.setattr(settings, "summary_model_max_attempts", 2)
     root_generations = 0
 
     async def send(_transport: httpx.AsyncHTTPTransport, request: httpx.Request) -> httpx.Response:
@@ -240,7 +240,7 @@ def test_child_revision_cannot_spend_last_request_on_an_unverifiable_new_root(
             payload = json.loads(wire["messages"][1]["content"])
             result = (
                 {"status": "unsupported", "reason": "该节点需要修订", "evidence_ids": []}
-                if payload["candidate"] == "叶节点5"
+                if payload["candidate"] == "完整全场总结"
                 else _support(payload)
             )
         return httpx.Response(200, json=response(json.dumps(result)))
@@ -248,6 +248,9 @@ def test_child_revision_cannot_spend_last_request_on_an_unverifiable_new_root(
     monkeypatch.setattr(httpx.AsyncHTTPTransport, "handle_async_request", send)
     assert not _run(session_id)
     assert root_generations == 1
+    with get_session() as db:
+        records = db.exec(select(AppSetting).where(AppSetting.key.startswith("model_request:v1:"))).all()
+        assert len(records) == 2
 
 
 def test_local_revision_preserves_the_following_paragraph_and_separator(

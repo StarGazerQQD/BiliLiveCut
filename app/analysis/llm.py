@@ -1207,12 +1207,48 @@ def _validation_failure_diagnostic(error: ValueError, schema: dict[str, object])
     return ModelFailureDiagnostic(category="validation", summary=summary)
 
 
+def _validation_repair_feedback(error: ValueError, schema: dict[str, object]) -> dict[str, object]:
+    """把位置和可信数值约束交给纠错输入，日志继续只使用脱敏摘要。"""
+    from app.analysis.model_execution import StructuredValidationError
+
+    if isinstance(error, StructuredValidationError):
+        return error.details
+    if isinstance(error.__cause__, json.JSONDecodeError):
+        cause = error.__cause__
+        return {"json_line": cause.lineno, "json_column": cause.colno, "json_position": cause.pos}
+    if not isinstance(error, ValidationError):
+        return {}
+    paths = _validation_schema_paths(schema)
+    issues: list[dict[str, object]] = []
+    for issue in error.errors(include_input=False, include_context=True, include_url=False)[:16]:
+        kind = issue["type"] if issue["type"] in _VALIDATION_TYPES else "schema_invalid"
+        path: tuple[str, ...] = ()
+        location: list[str | int] = []
+        for part in issue["loc"]:
+            normalized = "[]" if type(part) is int and part >= 0 else part
+            if not isinstance(normalized, str) or (*path, normalized) not in paths:
+                location.append("<extra_field>" if kind == "extra_forbidden" else "<structure>")
+                break
+            path = (*path, normalized)
+            location.append(part)
+        limits = {
+            key: value
+            for key, value in issue.get("ctx", {}).items()
+            if key in {"min_length", "max_length", "gt", "ge", "lt", "le"}
+            and type(value) in {int, float}
+            and math.isfinite(value)
+        }
+        issues.append({"location": location, "type": kind, "limits": limits})
+    return {"issues": issues}
+
+
 @dataclass(frozen=True, slots=True)
 class _StructuredAttemptResult(Generic[_Result]):
     """失败正文仅在本次路由的纠错上下文中使用，不进入业务结果和诊断账本。"""
 
     result: StructuredCallResult[_Result]
     invalid_response: str | None = field(default=None, repr=False)
+    repair_feedback: dict[str, object] = field(default_factory=dict, repr=False)
 
 
 def structured_response_format(
@@ -1281,6 +1317,7 @@ def _structured_attempt(
     request_id = None
     retry_after_s = None
     invalid_response = None
+    repair_feedback: dict[str, object] = {}
     try:
         if provider.authorize is not None:
             provider.authorize()
@@ -1319,6 +1356,7 @@ def _structured_attempt(
             error = "invalid_output"
             diagnostic = _validation_failure_diagnostic(exc, schema)
             invalid_response = text
+            repair_feedback = _validation_repair_feedback(exc, schema)
         else:
             error = budget.interruption(before_request=False)
             if error is not None:
@@ -1386,7 +1424,7 @@ def _structured_attempt(
                 diagnostic.model_dump(exclude_none=True) if diagnostic is not None else None,
             )
     return _StructuredAttemptResult(
-        StructuredCallResult(value=value, error=error, retry_after_s=retry_after_s), invalid_response
+        StructuredCallResult(value=value, error=error, retry_after_s=retry_after_s), invalid_response, repair_feedback
     )
 
 
@@ -1510,7 +1548,10 @@ def call_structured(
                     repairing = True
                     if attempt.invalid_response is not None:
                         repair_input = json.dumps(
-                            {"previous_invalid_output": attempt.invalid_response},
+                            {
+                                "previous_invalid_output": attempt.invalid_response,
+                                "validation_feedback": attempt.repair_feedback,
+                            },
                             ensure_ascii=False,
                             separators=(",", ":"),
                         )

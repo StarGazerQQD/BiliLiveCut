@@ -521,6 +521,9 @@ def commit_transcript(lease: TaskLease, compute_result: dict[str, Any], ms: int)
             enqueue_next(task, TaskStatus.TRANSCRIBED)
             db.add(task)
 
+            from app.analysis.segment_summary import request_segment_summary
+
+            request_segment_summary(db, task.session_id)
             db.commit()
 
             _logger.info(

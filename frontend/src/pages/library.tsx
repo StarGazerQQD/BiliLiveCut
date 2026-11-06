@@ -654,9 +654,29 @@ export function TranscriptsPage() {
                           "当前分段没有可用语音文本",
                         )}
                       </p>
-                      {entry.refine_summary ? (
+                      {entry.summary ? (
                         <p className="mt-4 rounded-xl bg-primary/5 p-4 text-xs leading-6 text-muted-foreground">
-                          {text(entry.refine_summary)}
+                          {text(entry.summary)}
+                        </p>
+                      ) : null}
+                      {entry.summary_status &&
+                      entry.summary_status !== "legacy" ? (
+                        <p className="mt-2 text-xs text-muted-foreground">
+                          {entry.summary_status === "ready"
+                            ? "连续上下文摘要"
+                            : entry.summary_status === "pending"
+                              ? "分段摘要等待前文或处理"
+                              : entry.summary_status === "running"
+                                ? "分段摘要生成中"
+                                : entry.summary_status === "stale"
+                                  ? "原文已变化，分段摘要待更新"
+                                  : "分段摘要生成失败"}
+                          {entry.summary_needs_context
+                            ? " · 后文到达后补充理解"
+                            : ""}
+                          {entry.summary_error
+                            ? ` · ${text(entry.summary_error)}`
+                            : ""}
                         </p>
                       ) : null}
                       <div className="mt-4 flex flex-wrap items-center gap-2 border-t pt-4">

@@ -98,6 +98,9 @@ def queue_session_reanalysis(
             # 严禁部分重置：否则一部分任务被重排、另一部分仍在提交旧结果，会形成混合版本时间线。
             result.skipped_active = len(active_tasks)
             return result
+        from app.analysis.segment_summary import request_segment_summary
+
+        request_segment_summary(db, session_id, force=reason == "manual")
 
         for segment in segments:
             task = tasks_by_segment.get(segment.id)
