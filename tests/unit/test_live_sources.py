@@ -6,6 +6,7 @@ import json
 import sys
 from datetime import UTC, datetime, timedelta
 from pathlib import Path
+from types import SimpleNamespace
 
 import pytest
 from loguru import logger
@@ -79,6 +80,106 @@ async def test_last_source_attempt_preserves_retry_after_and_cooldown() -> None:
     with pytest.raises(SourceRateLimited):
         await registry.get_room_info(room)
     assert source.calls == 2
+
+
+@pytest.mark.parametrize("error_type", [SourceTemporaryError, SourceRateLimited])
+async def test_cooldown_remaining_never_exceeds_declared_delay_at_float_boundary(
+    monkeypatch: MonkeyPatch,
+    error_type: type[SourceTemporaryError],
+) -> None:
+    from app.sources import registry as registry_module
+
+    clock = [2000.3]
+    monkeypatch.setattr(registry_module, "time", SimpleNamespace(monotonic=lambda: clock[0]))
+    registry = SourceRegistry()
+    source = Source()
+    source.error = error_type("busy", retry_after=120)
+    registry.register_many("test", [source])
+    room = await registry.resolve_room("id", "sample")
+    with pytest.raises(error_type):
+        await registry.get_room_info(room)
+    with pytest.raises(SourceRateLimited) as caught:
+        await registry.get_room_info(room)
+    assert caught.value.retry_after == 120 and source.calls == 1
+    clock[0] += 30
+    with pytest.raises(SourceRateLimited) as advanced:
+        await registry.get_room_info(room)
+    assert advanced.value.retry_after == 90 and source.calls == 1
+    clock[0] += 91
+    source.error = None
+    assert (await registry.get_room_info(room)).status == LiveStatus.UNKNOWN
+    assert source.calls == 2
+
+
+async def test_queued_source_call_observes_bounded_cooldown_before_plugin_request(monkeypatch: MonkeyPatch) -> None:
+    from app.sources import registry as registry_module
+
+    monkeypatch.setattr(registry_module, "time", SimpleNamespace(monotonic=lambda: 2000.3))
+    ready, release = asyncio.Event(), asyncio.Event()
+
+    class BusySource(Source):
+        async def get_room_info(self, room: SourceRoom) -> RoomSnapshot:
+            self.calls += 1
+            ready.set()
+            await release.wait()
+            raise SourceTemporaryError("busy", retry_after=120)
+
+    registry = SourceRegistry()
+    source = BusySource()
+    registry.register_many("test", [source])
+    registry._entries["sample"].slots = asyncio.Semaphore(1)
+    room = await registry.resolve_room("id", "sample")
+    first = asyncio.create_task(registry.get_room_info(room))
+    await ready.wait()
+    queued = asyncio.create_task(registry.get_room_info(room))
+    await asyncio.sleep(0)
+    await asyncio.sleep(0)
+    release.set()
+    results = await asyncio.gather(first, queued, return_exceptions=True)
+    assert isinstance(results[0], SourceTemporaryError)
+    assert isinstance(results[1], SourceRateLimited) and results[1].retry_after == 120
+    assert source.calls == 1
+
+
+async def test_inflight_shorter_retry_after_does_not_shorten_existing_cooldown(monkeypatch: MonkeyPatch) -> None:
+    from app.sources import registry as registry_module
+
+    clock = [2000.3]
+    monkeypatch.setattr(registry_module, "time", SimpleNamespace(monotonic=lambda: clock[0]))
+    both_started = asyncio.Event()
+    releases = [asyncio.Event(), asyncio.Event()]
+
+    class BusySource(Source):
+        async def get_room_info(self, room: SourceRoom) -> RoomSnapshot:
+            index = self.calls
+            self.calls += 1
+            if self.calls == 2:
+                both_started.set()
+            if index < 2:
+                await releases[index].wait()
+                raise SourceTemporaryError("busy", retry_after=120 if index == 0 else 30)
+            return RoomSnapshot(status=LiveStatus.UNKNOWN)
+
+    registry = SourceRegistry()
+    source = BusySource()
+    registry.register_many("test", [source])
+    room = await registry.resolve_room("id", "sample")
+    first = asyncio.create_task(registry.get_room_info(room))
+    second = asyncio.create_task(registry.get_room_info(room))
+    await both_started.wait()
+    releases[0].set()
+    with pytest.raises(SourceTemporaryError):
+        await first
+    clock[0] += 10
+    releases[1].set()
+    with pytest.raises(SourceTemporaryError):
+        await second
+    with pytest.raises(SourceRateLimited) as caught:
+        await registry.get_room_info(room)
+    assert caught.value.retry_after == 110 and source.calls == 2
+    clock[0] += 111
+    assert (await registry.get_room_info(room)).status == LiveStatus.UNKNOWN
+    assert source.calls == 3
 
 
 @pytest.mark.parametrize("retry_after,expected", [("300", 300), ("inf", 60), ("nan", 60), ("-1", 60), ("invalid", 60)])

@@ -43,13 +43,24 @@ class _Entry:
     source: LiveSource
     descriptor: SourceDescriptor = field(init=False)
     draining: bool = False
-    cooldown_until: float = 0.0
+    cooldown_started: float = 0.0
+    cooldown_duration: float = 0.0
     operations: set[asyncio.Task[object]] = field(default_factory=set)
     users: dict[object, DrainCallback] = field(default_factory=dict)
     slots: asyncio.Semaphore = field(default_factory=lambda: asyncio.Semaphore(4))
 
     def __post_init__(self) -> None:
         self.descriptor = self.source.descriptor
+
+    def cooldown_remaining(self, now: float) -> float:
+        """从已用时长扣减，避免绝对截止值相减把冷却余量扩大。"""
+        return max(0.0, self.cooldown_duration - max(0.0, now - self.cooldown_started))
+
+    def defer(self, delay: float) -> None:
+        """保留较长的已有冷却，同时记录新的计时起点。"""
+        now = time.monotonic()
+        self.cooldown_duration = max(self.cooldown_remaining(now), delay)
+        self.cooldown_started = now
 
 
 class SourceRegistry:
@@ -154,7 +165,7 @@ class SourceRegistry:
     async def _call(self, entry: _Entry, operation: Callable[[], Awaitable[T]]) -> T:
         if entry.draining:
             raise SourceUnavailable("来源正在停用")
-        remaining = entry.cooldown_until - time.monotonic()
+        remaining = entry.cooldown_remaining(time.monotonic())
         if remaining > 0:
             raise SourceRateLimited("来源处于限流等待期", retry_after=remaining)
 
@@ -163,19 +174,19 @@ class SourceRegistry:
                 for attempt in range(self.attempts):
                     if entry.draining:
                         raise SourceUnavailable("来源正在停用")
-                    remaining = entry.cooldown_until - time.monotonic()
+                    remaining = entry.cooldown_remaining(time.monotonic())
                     if remaining > 0:
                         raise SourceRateLimited("来源处于限流等待期", retry_after=remaining)
                     try:
                         return await asyncio.wait_for(operation(), timeout=self.timeout_s)
                     except SourceRateLimited as exc:
                         delay = exc.retry_after if exc.retry_after is not None else 60.0
-                        entry.cooldown_until = max(entry.cooldown_until, time.monotonic() + delay)
+                        entry.defer(delay)
                         raise
                     except (SourceTemporaryError, TimeoutError) as exc:
                         delay = max(self.retry_delay_s, getattr(exc, "retry_after", None) or 0.0)
                         if delay > 5:
-                            entry.cooldown_until = max(entry.cooldown_until, time.monotonic() + delay)
+                            entry.defer(delay)
                             raise SourceTemporaryError("来源请求需要延后重试", retry_after=delay) from exc
                         if attempt + 1 == self.attempts:
                             raise SourceTemporaryError("来源请求超时或暂时失败，请稍后重试", retry_after=delay) from exc
