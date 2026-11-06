@@ -3,12 +3,10 @@ from __future__ import annotations
 import json
 import sqlite3
 import subprocess
-from concurrent.futures import ThreadPoolExecutor
 from contextlib import closing
 from datetime import timedelta
 from os import stat_result
 from pathlib import Path
-from threading import Event
 
 import pytest
 from sqlalchemy import event as sqlalchemy_event
@@ -71,27 +69,27 @@ def test_receipt_arriving_during_media_preflight_precedes_revoked_send_authoriza
     monkeypatch.setattr(uploader.subprocess, "run", send)
     result = execute_remote_upload(token, task_lease=lease)
     assert result["outcome"] == "success"
-    entered, release = Event(), Event()
+    injected_paths: list[Path] = []
     original_stat = Path.stat
 
     def media_boundary(path: Path, *, follow_symlinks: bool = True) -> stat_result:
-        if path == pcm_wav and not entered.is_set():
-            entered.set()
-            assert release.wait(5)
+        if path == pcm_wav and not injected_paths:
+            # 在真实媒体探测期间提交回执并撤权，交错顺序不依赖线程调度或数据库耗时。
+            injected_paths.append(path)
+            commit_publish_result(token, generation, result)
+            settings_store.set_bool("auto_upload", False)
         return original_stat(path, follow_symlinks=follow_symlinks)
 
     monkeypatch.setattr(Path, "stat", media_boundary)
-    with ThreadPoolExecutor(max_workers=1) as executor:
-        preparing = executor.submit(prepare_publish_attempt, lease)
-        try:
-            assert entered.wait(5)
-            commit_publish_result(token, generation, result)
-            settings_store.set_bool("auto_upload", False)
-        finally:
-            release.set()
-        prepared = preparing.result(timeout=5)
+    prepared = prepare_publish_attempt(lease)
+    assert injected_paths == [pcm_wav]
+    assert settings_store.get_bool("auto_upload") is False
     assert prepared.get("already_success"), prepared
     assert prepared["attempt_token"] == token and len(calls) == 1
+    assert prepared["publish_generation"] == generation
+    with get_session() as db:
+        attempt = db.exec(select(UploadAttempt)).one()
+        assert (attempt.status, attempt.remote_id) == ("success", "BV12345678901")
 
 
 @pytest.mark.parametrize("entry", ["pipeline", "upload"])
