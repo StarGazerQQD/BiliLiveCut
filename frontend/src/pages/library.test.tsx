@@ -49,52 +49,58 @@ it("renders the API summary and its pending-context state beside unchanged ASR",
   client.clear();
 });
 
-it("keeps the refinement summary visible when the context summary fails", async () => {
-  vi.stubGlobal(
-    "fetch",
-    vi.fn(async () =>
-      Response.json([
-        {
-          id: 7,
-          session_id: 1,
-          text: "转写正文。",
-          refinement_summary: "第一段整理摘要。",
-          summary: null,
-          context_summary: null,
-          summary_status: "failed",
-          summary_error: "invalid_output",
-        },
-        {
-          id: 8,
-          session_id: 1,
-          text: "下一段正文。",
-          refinement_summary: "第二段整理摘要。",
-          summary: "第二段连续上下文。",
-          context_summary: "第二段连续上下文。",
-          summary_status: "ready",
-        },
-      ]),
-    ),
-  );
-  const client = new QueryClient();
-  const view = render(
-    <QueryClientProvider client={client}>
-      <MemoryRouter initialEntries={["/?session=1"]}>
-        <TranscriptsPage />
-      </MemoryRouter>
-    </QueryClientProvider>,
-  );
-  expect(await screen.findByText("第一段整理摘要。")).toBeInTheDocument();
-  expect(screen.getByText("第二段整理摘要。")).toBeInTheDocument();
-  expect(screen.getByText("第二段连续上下文。")).toBeInTheDocument();
-  expect(screen.getAllByText("本段转写摘要")).toHaveLength(2);
-  expect(screen.getByText("连续上下文摘要")).toBeInTheDocument();
-  expect(
-    screen.getByText(/分段摘要生成失败.*invalid_output/),
-  ).toBeInTheDocument();
-  view.unmount();
-  client.clear();
-});
+it.each([
+  ["pending", "分段摘要等待前文或处理"],
+  ["running", "分段摘要生成中"],
+  ["stale", "原文已变化，分段摘要待更新"],
+  ["failed", "分段摘要生成失败 · invalid_output"],
+])(
+  "keeps the refinement summary visible while context is %s",
+  async (status, label) => {
+    vi.stubGlobal(
+      "fetch",
+      vi.fn(async () =>
+        Response.json([
+          {
+            id: 7,
+            session_id: 1,
+            text: "转写正文。",
+            refinement_summary: "第一段整理摘要。",
+            summary: null,
+            context_summary: null,
+            summary_status: status,
+            summary_error: status === "failed" ? "invalid_output" : null,
+          },
+          {
+            id: 8,
+            session_id: 1,
+            text: "下一段正文。",
+            refinement_summary: "第二段整理摘要。",
+            summary: "第二段连续上下文。",
+            context_summary: "第二段连续上下文。",
+            summary_status: "ready",
+          },
+        ]),
+      ),
+    );
+    const client = new QueryClient();
+    const view = render(
+      <QueryClientProvider client={client}>
+        <MemoryRouter initialEntries={["/?session=1"]}>
+          <TranscriptsPage />
+        </MemoryRouter>
+      </QueryClientProvider>,
+    );
+    expect(await screen.findByText("第一段整理摘要。")).toBeInTheDocument();
+    expect(screen.getByText("第二段整理摘要。")).toBeInTheDocument();
+    expect(screen.getByText("第二段连续上下文。")).toBeInTheDocument();
+    expect(screen.getAllByText("本段转写摘要")).toHaveLength(2);
+    expect(screen.getByText("连续上下文摘要")).toBeInTheDocument();
+    expect(screen.getByText(label)).toBeInTheDocument();
+    view.unmount();
+    client.clear();
+  },
+);
 
 it("pages old sessions and returns to the same page without loading all history", async () => {
   const requests: URL[] = [];

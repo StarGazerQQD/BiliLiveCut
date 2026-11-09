@@ -1563,7 +1563,9 @@ def call_structured(
                         )
                     diagnostic = budget.attempts[-1].diagnostic
                     if attempt.output_truncated:
-                        repair_reason = "\n上次输出达到长度上限。请压缩措辞、去除重复，优先完成全部必填字段和 JSON 闭合。"
+                        repair_reason = (
+                            "\n上次输出达到长度上限。请压缩措辞、去除重复，优先完成全部必填字段和 JSON 闭合。"
+                        )
                     elif diagnostic is not None and diagnostic.category == "validation":
                         repair_reason = "\n本地校验原因：" + diagnostic.summary
                     continue
