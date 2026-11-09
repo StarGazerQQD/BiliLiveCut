@@ -599,6 +599,15 @@ export function TranscriptsPage() {
             <div className="space-y-4">
               {transcripts.map((entry) => {
                 const id = number(entry.id);
+                const hasContextStatus =
+                  entry.summary_status && entry.summary_status !== "legacy";
+                const refinementSummary =
+                  entry.refinement_summary ||
+                  (!hasContextStatus ? entry.summary : null);
+                const contextSummary =
+                  entry.context_summary === undefined && hasContextStatus
+                    ? entry.summary
+                    : entry.context_summary;
                 return (
                   <Card key={id} className="gap-0 py-0 shadow-none">
                     <CardContent className="p-5">
@@ -654,16 +663,30 @@ export function TranscriptsPage() {
                           "当前分段没有可用语音文本",
                         )}
                       </p>
-                      {entry.summary ? (
-                        <p className="mt-4 rounded-xl bg-primary/5 p-4 text-xs leading-6 text-muted-foreground">
-                          {text(entry.summary)}
-                        </p>
+                      {refinementSummary ? (
+                        <div className="mt-4 rounded-xl bg-primary/5 p-4 text-xs leading-6 text-muted-foreground">
+                          <p className="font-medium text-foreground">
+                            本段转写摘要
+                          </p>
+                          <p className="whitespace-pre-wrap">
+                            {text(refinementSummary)}
+                          </p>
+                        </div>
                       ) : null}
-                      {entry.summary_status &&
-                      entry.summary_status !== "legacy" ? (
+                      {contextSummary ? (
+                        <div className="mt-4 rounded-xl bg-primary/5 p-4 text-xs leading-6 text-muted-foreground">
+                          <p className="font-medium text-foreground">
+                            连续上下文摘要
+                          </p>
+                          <p className="whitespace-pre-wrap">
+                            {text(contextSummary)}
+                          </p>
+                        </div>
+                      ) : null}
+                      {hasContextStatus ? (
                         <p className="mt-2 text-xs text-muted-foreground">
                           {entry.summary_status === "ready"
-                            ? "连续上下文摘要"
+                            ? "连续上下文摘要已生成"
                             : entry.summary_status === "pending"
                               ? "分段摘要等待前文或处理"
                               : entry.summary_status === "running"

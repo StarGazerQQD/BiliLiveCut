@@ -864,6 +864,23 @@ def test_known_incomplete_response_reasons_use_safe_fixed_diagnostics(
     assert "private-secret" not in attempt.model_dump_json()
 
 
+def test_truncated_output_repair_asks_for_concise_complete_json(temp_db: None, transport: Transport) -> None:
+    save_model_configuration(catalog())
+    truncated = response('{"answer":"private-truncated-output')
+    truncated["choices"][0]["finish_reason"] = "length"
+    requests = transport([(200, truncated), (200, response())])
+    budget = ModelCallBudget(max_attempts=2, max_elapsed_s=20)
+
+    result = call(budget)
+
+    assert result.value is not None and result.value.answer == "有效正文"
+    assert len(requests) == 2
+    assert [attempt.purpose for attempt in budget.attempts] == ["review", "repair"]
+    messages = json.loads(requests[1].content)["messages"]
+    assert "优先完成全部必填字段和 JSON 闭合" in messages[0]["content"]
+    assert "private-truncated-output" not in requests[1].content.decode()
+
+
 @pytest.mark.parametrize(
     ("endpoint", "model", "parameter", "expected"),
     [

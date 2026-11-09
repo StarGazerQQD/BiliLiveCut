@@ -465,6 +465,7 @@ def execute_segment_summary_claim(claim: SegmentSummaryClaim) -> bool:
         instructions = _instructions(_PROMPT, allowed)
         error: FailureCode | None = None
         value: SegmentSummaryOutput | None = None
+        stage = "input"
         if not _fits(instructions, payload, schema):
             compact_payload = {"memory": payload["memory"], "history": payload["history"]}
             compact_allowed = _provided_ids(memory, [c for c in claim.prefix[:-1] if c.segment_id in history])
@@ -487,6 +488,8 @@ def execute_segment_summary_claim(claim: SegmentSummaryClaim) -> bool:
             )
             if compact is None or compact.value is None:
                 error = compact.error if compact is not None else "context_unavailable"
+                if compact is not None:
+                    stage = "context"
             else:
                 memory, history = compact.value.memory, history[-2:]
                 with get_session() as db:
@@ -505,6 +508,7 @@ def execute_segment_summary_claim(claim: SegmentSummaryClaim) -> bool:
         if error is None and not _fits(instructions, payload, schema):
             error = "context_unavailable"
         if error is None:
+            stage = "segment"
             result = llm.call_structured(
                 instructions,
                 payload,
@@ -541,11 +545,13 @@ def execute_segment_summary_claim(claim: SegmentSummaryClaim) -> bool:
             queue.status = "pending"
             _put(db, row.key, queue)
         logger.info(
-            "segment_summary_finished session={} segment={} status={} error={}",
+            "segment_summary_finished session={} segment={} status={} error={} operation={} stage={}",
             step.session_id,
             step.segment_id,
             step.status,
             step.error,
+            budget.operation_id,
+            stage,
         )
         return value is not None
 
