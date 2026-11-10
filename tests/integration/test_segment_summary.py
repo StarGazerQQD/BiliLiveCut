@@ -6,6 +6,7 @@ from datetime import UTC, datetime, timedelta, tzinfo
 
 import httpx
 import pytest
+from loguru import logger
 from sqlmodel import select
 
 from app.analysis import llm
@@ -329,6 +330,60 @@ def test_model_repair_receives_exact_segment_validation_location(
         assert view["summary_status"] == ("ready" if recover else "failed")
         assert view["summary_error"] == (None if recover else "invalid_output")
     assert len(service) == 2 and summaries.claim_pending_segment_summary() is None
+
+
+def test_model_repairs_extra_memory_field_in_same_operation_without_logging_field(
+    service: list[dict[str, object]], monkeypatch: pytest.MonkeyPatch
+) -> None:
+    session, ids = seed(["本段讨论加赛规则。"])
+    monkeypatch.setattr(summaries.settings, "editorial_model_max_attempts", 2)
+    extra_field = "unexpected_memory_field"
+    extra_value = "synthetic-private-marker"
+    memory = {"text": "正在讨论加赛规则。", "source_ids": ids}
+    corrected_summary = "本段讨论了加赛规则。"
+
+    async def send(_transport: httpx.AsyncHTTPTransport, request: httpx.Request) -> httpx.Response:
+        body = json.loads(request.content)
+        service.append(body)
+        if len(service) == 1:
+            value = {
+                "summary": "待纠错摘要。",
+                "needs_context": False,
+                "memory": [{**memory, extra_field: extra_value}],
+            }
+        else:
+            feedback = json.loads(body["messages"][-1]["content"])["validation_feedback"]
+            assert feedback["issues"] == [
+                {"location": ["memory", 0, "<extra_field>"], "type": "extra_forbidden", "limits": {}}
+            ]
+            value = {"summary": corrected_summary, "needs_context": False, "memory": [memory]}
+        return httpx.Response(200, json=response(json.dumps(value, ensure_ascii=False)))
+
+    monkeypatch.setattr(httpx.AsyncHTTPTransport, "handle_async_request", send)
+    messages: list[str] = []
+    sink = logger.add(messages.append, format="{message}", level="WARNING", diagnose=False)
+    try:
+        claim = run_one()
+    finally:
+        logger.remove(sink)
+
+    assert len(service) == 2 and summaries.claim_pending_segment_summary() is None
+    diagnostics = [message for message in messages if "structured_model_call_failed" in message]
+    assert len(diagnostics) == 1 and "memory[].<额外字段>: extra_forbidden" in diagnostics[0]
+    assert all(extra_field not in message and extra_value not in message for message in messages)
+    with get_session() as db:
+        view = summaries.segment_summary_view(db, session, ids[0])
+        assert view["summary_status"] == "ready" and view["context_summary"] == corrected_summary
+        assert view["summary_error"] is None
+        rows = db.exec(select(AppSetting).where(AppSetting.key.startswith("model_request:v1:"))).all()
+        requests = sorted((json.loads(row.value) for row in rows), key=lambda record: record["number"])
+        assert {record["operation_id"] for record in requests} == {claim.step.operation_id}
+        assert [(record["number"], record["purpose"], record["attempt"]["error"]) for record in requests] == [
+            (1, "explanation", "invalid_output"),
+            (2, "repair", None),
+        ]
+        budget = json.loads(db.get(AppSetting, f"model_operation:v1:{claim.step.operation_id}").value)
+        assert budget["max_attempts"] == budget["request_count"] == 2
 
 
 def test_source_revision_is_visible_as_stale_without_overwriting_history(service: list[dict[str, object]]) -> None:
