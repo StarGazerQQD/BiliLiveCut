@@ -2,7 +2,7 @@ from __future__ import annotations
 
 import json
 from collections.abc import Iterator
-from datetime import datetime, timedelta
+from datetime import UTC, datetime, timedelta, tzinfo
 
 import httpx
 import pytest
@@ -231,6 +231,104 @@ def test_memory_cannot_cite_future_or_unknown_sources(service: list[dict[str, ob
     }
     with pytest.raises(ValueError, match="原文段号"):
         summaries._checked(value, summaries.SegmentSummaryOutput, {1})
+
+
+@pytest.mark.parametrize("recover", [True, False])
+def test_transient_failure_resumes_once_with_same_operation_after_restart(
+    service: list[dict[str, object]], monkeypatch: pytest.MonkeyPatch, recover: bool
+) -> None:
+    session, ids = seed(["第一段原文。", "下一段原文。"])
+    clock = datetime.now(UTC)
+    responses = 0
+
+    class Clock(datetime):
+        @classmethod
+        def now(cls, tz: tzinfo | None = None) -> datetime:
+            return clock.astimezone(tz)
+
+    async def send(_transport: httpx.AsyncHTTPTransport, request: httpx.Request) -> httpx.Response:
+        nonlocal responses
+        body = json.loads(request.content)
+        service.append(body)
+        target = json.loads(body["messages"][1]["content"])["target"]["segment_id"]
+        if target == ids[0]:
+            responses += 1
+            if responses <= 2 or not recover:
+                return httpx.Response(503, headers={"Retry-After": "0"}, json={"error": {"message": "unavailable"}})
+        value = {"summary": "依据本段内容的摘要。", "needs_context": False, "memory": []}
+        return httpx.Response(200, json=response(json.dumps(value, ensure_ascii=False)))
+
+    monkeypatch.setattr(summaries, "datetime", Clock)
+    monkeypatch.setattr(httpx.AsyncHTTPTransport, "handle_async_request", send)
+    first = summaries.claim_pending_segment_summary()
+    assert first is not None and not summaries.execute_segment_summary_claim(first)
+    assert responses == 2
+    summaries.recover_segment_summaries()
+    with get_session() as db:
+        summaries.request_segment_summary(db, session)
+        view = summaries.segment_summary_view(db, session, ids[0])
+        assert view["summary_status"] == "pending" and view["summary_error"] == "provider_error"
+    other, _ = seed(["另一场原文。"])
+    assert run_one().step.session_id == other
+    assert summaries.claim_pending_segment_summary() is None
+    assert responses == 2
+    clock += timedelta(seconds=5)
+    second = summaries.claim_pending_segment_summary()
+    assert second is not None and second.step.segment_id == ids[0]
+    assert second.step.operation_id == first.step.operation_id and second.step.lease != first.step.lease
+    assert summaries.execute_segment_summary_claim(second) is recover
+    assert responses == 3
+    with get_session() as db:
+        view = summaries.segment_summary_view(db, session, ids[0])
+        assert view["summary_status"] == ("ready" if recover else "failed")
+    assert run_one().step.segment_id == ids[1]
+    assert summaries.claim_pending_segment_summary() is None
+
+
+@pytest.mark.parametrize("defect", ["blank_summary", "blank_memory", "unknown_source", "long_summary"])
+def test_model_repair_receives_exact_segment_validation_location(
+    service: list[dict[str, object]], monkeypatch: pytest.MonkeyPatch, defect: str
+) -> None:
+    session, ids = seed(["有效原文。"])
+    bad_summary, bad_memory, issue = {
+        "blank_summary": (" ", [], {"location": ["summary"], "type": "blank_text"}),
+        "blank_memory": (
+            "本段摘要。",
+            [{"text": " ", "source_ids": ids}],
+            {"location": ["memory", 0, "text"], "type": "blank_text"},
+        ),
+        "unknown_source": (
+            "本段摘要。",
+            [{"text": "不得引用其他来源。", "source_ids": [ids[0] + 100]}],
+            {"location": ["memory", 0, "source_ids", 0], "type": "not_in_enum"},
+        ),
+        "long_summary": (
+            "长" * 1001,
+            [],
+            {"location": ["summary"], "type": "string_too_long", "limits": {"max_length": 1000}},
+        ),
+    }[defect]
+    recover = defect != "unknown_source"
+
+    async def send(_transport: httpx.AsyncHTTPTransport, request: httpx.Request) -> httpx.Response:
+        body = json.loads(request.content)
+        service.append(body)
+        if len(service) == 1:
+            value = {"summary": bad_summary, "needs_context": False, "memory": bad_memory}
+        else:
+            feedback = json.loads(body["messages"][-1]["content"])["validation_feedback"]
+            assert feedback["issues"] == [issue]
+            value = {"summary": "本段摘要。" if recover else " ", "needs_context": False, "memory": []}
+        return httpx.Response(200, json=response(json.dumps(value, ensure_ascii=False)))
+
+    monkeypatch.setattr(httpx.AsyncHTTPTransport, "handle_async_request", send)
+    claim = summaries.claim_pending_segment_summary()
+    assert claim is not None and summaries.execute_segment_summary_claim(claim) is recover
+    with get_session() as db:
+        view = summaries.segment_summary_view(db, session, ids[0])
+        assert view["summary_status"] == ("ready" if recover else "failed")
+        assert view["summary_error"] == (None if recover else "invalid_output")
+    assert len(service) == 2 and summaries.claim_pending_segment_summary() is None
 
 
 def test_source_revision_is_visible_as_stale_without_overwriting_history(service: list[dict[str, object]]) -> None:
