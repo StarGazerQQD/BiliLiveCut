@@ -1109,6 +1109,9 @@ _VALIDATION_REASONS = frozenset(
         "没有时间定位的证据不能支持边界建议",
         "边界证据与建议范围没有交集",
         "单纯技术信号不能支持确定的编辑判断",
+        "分段摘要不能为空",
+        "连续总结记忆不能为空",
+        "连续总结记忆引用了不存在的原文段号",
     }
 )
 _VALIDATION_TYPES = frozenset(
@@ -1249,6 +1252,7 @@ class _StructuredAttemptResult(Generic[_Result]):
     result: StructuredCallResult[_Result]
     invalid_response: str | None = field(default=None, repr=False)
     repair_feedback: dict[str, object] = field(default_factory=dict, repr=False)
+    output_truncated: bool = False
 
 
 def structured_response_format(
@@ -1318,6 +1322,7 @@ def _structured_attempt(
     retry_after_s = None
     invalid_response = None
     repair_feedback: dict[str, object] = {}
+    output_truncated = False
     try:
         if provider.authorize is not None:
             provider.authorize()
@@ -1345,6 +1350,7 @@ def _structured_attempt(
             raise _StructuredFailure(interruption)
         choice = _first_choice(response)
         message = _field(choice, "message")
+        output_truncated = _field(choice, "finish_reason") == "length" and not _field(message, "refusal")
         if _field(choice, "finish_reason") != "stop" or _field(message, "refusal") or _field(message, "tool_calls"):
             raise _StructuredFailure("invalid_output", _response_failure_diagnostic(choice, message))
         text = _extract_text(response)
@@ -1424,7 +1430,10 @@ def _structured_attempt(
                 diagnostic.model_dump(exclude_none=True) if diagnostic is not None else None,
             )
     return _StructuredAttemptResult(
-        StructuredCallResult(value=value, error=error, retry_after_s=retry_after_s), invalid_response, repair_feedback
+        StructuredCallResult(value=value, error=error, retry_after_s=retry_after_s),
+        invalid_response,
+        repair_feedback,
+        output_truncated,
     )
 
 
@@ -1556,7 +1565,11 @@ def call_structured(
                             separators=(",", ":"),
                         )
                     diagnostic = budget.attempts[-1].diagnostic
-                    if diagnostic is not None and diagnostic.category == "validation":
+                    if attempt.output_truncated:
+                        repair_reason = (
+                            "\n上次输出达到长度上限。请压缩措辞、去除重复，优先完成全部必填字段和 JSON 闭合。"
+                        )
+                    elif diagnostic is not None and diagnostic.category == "validation":
                         repair_reason = "\n本地校验原因：" + diagnostic.summary
                     continue
                 if last.error == "empty_response" and budget.claim_empty_retry():

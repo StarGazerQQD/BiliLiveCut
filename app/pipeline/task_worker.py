@@ -534,10 +534,11 @@ class TaskWorker:
             if error is not None:
                 claim = self._segment_summary_claims[future]
                 _logger.error(
-                    "segment_summary_execution_failed session={} segment={} error={}",
+                    "segment_summary_execution_failed session={} segment={} error={} operation={} stage=execution",
                     claim.step.session_id,
                     claim.step.segment_id,
                     safe_exception_summary(error),
+                    claim.step.operation_id,
                 )
                 await _thread_io(
                     partial(release_segment_summary, claim, failed=not isinstance(error, OperationCancelledError))
