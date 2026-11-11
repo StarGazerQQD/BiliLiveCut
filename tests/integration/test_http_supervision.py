@@ -15,6 +15,7 @@ from urllib.request import ProxyHandler, build_opener
 import psutil
 import pytest
 
+from tests.integration.http_supervision_actor import LAUNCHER_HTTP_READY
 from tests.integration.test_frontend_console import _service_leaves, _service_snapshot, _service_tree, _stop_console
 
 if TYPE_CHECKING:
@@ -109,13 +110,20 @@ def test_alive_service_http_outage_recovers_without_overlapping_generations(
         parent = psutil.Process(process.pid)
         try:
             deadline = time.monotonic() + 45
-            while "前后端已就绪" not in log_path.read_text(encoding="utf-8"):
-                assert process.poll() is None and time.monotonic() < deadline, log_path.read_text(encoding="utf-8")
+            expected_readiness = ["前后端已就绪"]
+            if supervisor == "launcher":
+                expected_readiness.append(LAUNCHER_HTTP_READY)
+            while True:
+                output = log_path.read_text(encoding="utf-8")
+                missing_readiness = [marker for marker in expected_readiness if marker not in output]
+                if not missing_readiness:
+                    break
+                assert process.poll() is None and time.monotonic() < deadline, (
+                    f"启动就绪信号缺失：{missing_readiness}\n{output}"
+                )
                 time.sleep(0.1)
             with opener.open(f"http://127.0.0.1:{port}/auth/status", timeout=2) as response:
                 assert response.status == 200
-            # 等外层监督也完成首次成功观测，随后注入真实 OS 挂起。
-            time.sleep(1.3)
             before = _service_snapshot(parent)
             leaves = _service_leaves(before)
             assert all(len(members) == 1 for members in leaves.values()), before
