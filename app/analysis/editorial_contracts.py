@@ -316,6 +316,16 @@ class EditorialExecutionV1(_StrictContract):
         return self
 
 
+class FinalBoundsReviewV1(_StrictContract):
+    """最终固定范围的独立复核，保留初判和同一操作的真实请求记录。"""
+
+    schema_version: Literal["editorial-final-bounds-v1"] = "editorial-final-bounds-v1"
+    parent_fingerprint: str = Field(pattern=r"^[0-9a-f]{64}$")
+    bounds: TimeRange
+    execution: EditorialExecutionV1
+    input: EditorialReviewInputV1 | None = None
+
+
 def citable_evidence_ids(source: EditorialReviewInputV1, *, timed: bool = False) -> list[str]:
     """按现有引用校验的可用状态和时间条件列出源 ID，不修改证据身份。"""
     return [

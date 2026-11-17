@@ -15,8 +15,10 @@ from __future__ import annotations
 
 import hashlib
 import json
+import os
 import re
 import subprocess
+import sys
 import tempfile
 from collections.abc import Callable
 from datetime import UTC, datetime
@@ -376,6 +378,34 @@ def _render_intro_outro_cards(
     return cards
 
 
+def _windows_font_file(family: str) -> Path | None:
+    if sys.platform != "win32":
+        return None
+    import winreg
+
+    font_key = r"Software\Microsoft\Windows NT\CurrentVersion\Fonts"
+    roots = (
+        (winreg.HKEY_CURRENT_USER, Path(os.environ.get("LOCALAPPDATA", "")) / "Microsoft/Windows/Fonts"),
+        (winreg.HKEY_LOCAL_MACHINE, Path(os.environ.get("WINDIR", r"C:\Windows")) / "Fonts"),
+    )
+    family_key = family.casefold()
+    for hive, directory in roots:
+        try:
+            key = winreg.OpenKey(hive, font_key)
+        except (FileNotFoundError, PermissionError):
+            continue
+        with key:
+            for index in range(winreg.QueryInfoKey(key)[1]):
+                name, filename, _ = winreg.EnumValue(key, index)
+                name = name.split(" (", 1)[0].split(" & ", 1)[0]
+                if name.casefold() != family_key or not isinstance(filename, str) or not filename:
+                    continue
+                font = directory / os.path.expandvars(filename)
+                if font.is_absolute() and font.is_file():
+                    return font
+    return None
+
+
 def _render_text_card(
     out_path: Path,
     text: str,
@@ -402,15 +432,18 @@ def _render_text_card(
     :param height: 视频高。
     :param options: 当前任务的编码选项快照。
     """
-    import re as _re
-    import tempfile as _tmp
+    family = font_name.strip() or "sans"
+    # Windows 能定位字体文件时，让 drawtext 直接打开文件。
+    font_file = _windows_font_file(family)
+    font_option = (
+        f"fontfile={_escape_filter_value(font_file.as_posix())}"
+        if font_file is not None
+        else f"font={_escape_filter_value(family)}"
+    )
+    safe_font_color = font_color if re.fullmatch(r"#?[0-9a-fA-F]{3,8}", font_color or "") else "white"
+    safe_bg_color = bg_color if re.fullmatch(r"#?[0-9a-fA-F]{3,8}", bg_color or "") else "black"
 
-    # C4:清洗 FFmpeg drawtext 参数,防止滤镜注入。
-    safe_font = _re.sub(r"[':,;\\]", "", font_name or "sans")
-    safe_font_color = font_color if _re.fullmatch(r"#?[0-9a-fA-F]{3,8}", font_color or "") else "white"
-    safe_bg_color = bg_color if _re.fullmatch(r"#?[0-9a-fA-F]{3,8}", bg_color or "") else "black"
-
-    tf = _tmp.NamedTemporaryFile(mode="w", suffix=".txt", delete=False, encoding="utf-8")
+    tf = tempfile.NamedTemporaryFile(mode="w", suffix=".txt", delete=False, encoding="utf-8")
     tf.write(text)
     tf.close()
 
@@ -426,7 +459,7 @@ def _render_text_card(
         "-vf",
         (
             f"drawtext=textfile={_escape_filter_value(Path(tf.name).as_posix())}:"
-            f"font='{safe_font}':"
+            f"{font_option}:"
             f"fontcolor={safe_font_color}:fontsize={font_size}:"
             f"x=(w-text_w)/2:y=(h-text_h)/2:"
             f"box=1:boxcolor=black@0.4:boxborderw=20"
@@ -439,15 +472,14 @@ def _render_text_card(
     try:
         subprocess.run(cmd, capture_output=True, check=True, timeout=60)
         logger.info("标题卡已生成: {} ({}s)", out_path.name, duration_s)
-    except subprocess.TimeoutExpired:
-        logger.error("标题卡渲染超时(60s): {}", out_path.name)
+    except subprocess.TimeoutExpired as exc:
+        raise RuntimeError("标题卡渲染超时（60秒）") from exc
     except subprocess.CalledProcessError as exc:
         stderr = exc.stderr.decode("utf-8", errors="ignore") if exc.stderr else ""
         error_type = classify_ffmpeg_error(exc.returncode, stderr)
         logger.warning("标题卡渲染失败 [{}]: {}", error_type.name, stderr)
+        raise RuntimeError(f"标题卡渲染失败（{error_type.name}，退出码 {exc.returncode}）") from exc
     finally:
-        import os
-
         try:
             os.unlink(tf.name)
         except OSError:

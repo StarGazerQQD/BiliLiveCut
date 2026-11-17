@@ -62,7 +62,7 @@ def test_expanded_review_and_refreshed_explanation_use_identical_material(
         data = json.loads(prompt.rsplit("\n", 1)[1])
         ids = [item["evidence_id"] for item in data["evidence"] if item["excerpts"]]
         if '"verdict"' in prompt:
-            need_before = data["window"]["start_s"] > 0
+            need_before = data["window"]["start_s"] > 0 and not data["clip_constraints"]["fixed_bounds"]
             return json.dumps(
                 _payload(
                     verdict="needs_review",
@@ -96,8 +96,9 @@ def test_expanded_review_and_refreshed_explanation_use_identical_material(
     enrichment = calculated["enrichment"]
     assert review.expanded_context == "before" and enrichment is not None
     assert enrichment.semantic_confidence > 0.4
-    assert len(calls) == 6
-    assert [attempt.number for attempt in review.provenance.subsequent_attempts] == [5, 6]
+    assert len(calls) == 7
+    assert [attempt.number for attempt in review.provenance.subsequent_attempts] == [5, 6, 7]
+    assert review.final_review is not None and review.final_review.execution.result.standalone is None
     generated = [
         json.loads(call["messages"][1]["content"]) for call in calls if '"category"' in call["messages"][0]["content"]
     ]
@@ -112,7 +113,7 @@ def test_expanded_review_and_refreshed_explanation_use_identical_material(
         assert commit_event_enrichment(db, enrichment)
     calls.clear()
     cached = _compute_event_clip_result(event_id)
-    assert cached is not None and cached["enrichment"] is None and len(calls) == 2
+    assert cached is not None and cached["enrichment"] is None and len(calls) == 3
     with get_session() as db:
         transcript = db.exec(select(Transcript).where(Transcript.segment_id == segment_id)).one()
         words = json.loads(transcript.words_json)
@@ -124,12 +125,14 @@ def test_expanded_review_and_refreshed_explanation_use_identical_material(
         assert validate_event_clip_draft(db, calculated["clip_draft"], enrichment=enrichment, review=review) is None
 
 
-def test_legacy_judgement_is_retained_without_confirming_actual_clip(temp_db: None) -> None:
+@pytest.mark.parametrize("version", ["editorial-decision-v3", "editorial-decision-v4-clip-bounds"])
+def test_legacy_judgement_is_retained_without_confirming_actual_clip(temp_db: None, version: str) -> None:
     source = _source(evidence=[_evidence(start_s=None, end_s=None, timing_precision="unknown", context_role="unknown")])
-    policy = {**review_policy_identity(), "policy": "editorial-decision-v3"}
+    policy = {**review_policy_identity(), "policy": version}
+    policy.pop("clip_max_duration_s")
     provenance = capture_provenance(policy, source, operation_id="a" * 32, prior_attempts=[])
     execution = _execution(
-        policy_version="editorial-decision-v3",
+        policy_version=version,
         result=_review(suggested_bounds=None),
         input_fingerprint=frozen_review_fingerprint(source, source, "legacy", policy=policy),
     )

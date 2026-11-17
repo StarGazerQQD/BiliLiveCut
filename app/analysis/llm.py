@@ -1457,6 +1457,7 @@ def call_structured(
     max_tokens: int,
     capability: TextCapability = "analysis",
     search_query: str | None = None,
+    allow_search: bool = True,
     repair_scope: str | None = None,
     input_max_bytes: int = INPUT_MAX_BYTES,
 ) -> StructuredCallResult[_Result]:
@@ -1488,7 +1489,7 @@ def call_structured(
             repair_input: str | None = None
             extra_body = _low_reasoning_options(provider) or None
             context = ""
-            if provider.deepseek_search_enabled:
+            if allow_search and provider.deepseek_search_enabled:
                 if _daily_budget() > 0 and _today_spend() >= _daily_budget():
                     return StructuredCallResult(value=None, error="daily_budget")
                 try:
@@ -1576,7 +1577,7 @@ def call_structured(
                     extra_body = _low_reasoning_options(provider) or None
                     continue
                 break
-            if provider.deepseek_search_enabled:
+            if allow_search and provider.deepseek_search_enabled:
                 return last
         return last
 

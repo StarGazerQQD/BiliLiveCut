@@ -22,13 +22,15 @@ from app.analysis.editorial_contracts import (
     ContextDirection,
     EditorialExecutionV1,
     EditorialReviewInputV1,
+    FinalBoundsReviewV1,
     TimeRange,
 )
-from app.analysis.editorial_evidence import EvidenceContextUnavailable, build_segment_input
+from app.analysis.editorial_evidence import EvidenceContextUnavailable, build_segment_input, fixed_clip_transcripts
 from app.analysis.editorial_provenance import ReviewProvenance, frozen_review_fingerprint
 from app.analysis.editorial_review import (
     EditorialReviewDraft,
     editorial_auto_approvable,
+    fixed_clip_input,
     judge_editorial,
     review_fingerprint,
     review_policy_identity,
@@ -267,7 +269,33 @@ def event_review_is_current(
         return False
     initial = event_review_source(db, event_id, None)
     source = event_review_source(db, event_id, draft.expanded_context)
-    return draft.execution.input_fingerprint == review_fingerprint(initial, source, bundle.fingerprint, policy=policy)
+    return draft.execution.input_fingerprint == review_fingerprint(
+        initial, source, bundle.fingerprint, policy=policy
+    ) and _fixed_clip_is_current(db, draft, source)
+
+
+def _build_fixed_clip_input(db: Session, source: EditorialReviewInputV1, bounds: TimeRange) -> EditorialReviewInputV1:
+    origin = source.time_origin_epoch_s
+    if origin is None:
+        return fixed_clip_input(source, bounds)
+    start = datetime.fromtimestamp(origin + bounds.start_s, UTC)
+    end = datetime.fromtimestamp(origin + bounds.end_s, UTC)
+    segments = _media_rows(db, source.target.session_id, start, end)
+    transcripts, truncated = fixed_clip_transcripts(db, segments, origin, bounds)
+    return fixed_clip_input(source, bounds, transcripts=transcripts, truncated=truncated)
+
+
+def load_fixed_clip_input(source: EditorialReviewInputV1, bounds: TimeRange) -> EditorialReviewInputV1:
+    """在只读会话内重新取成片词级证据，返回后再发送模型请求。"""
+    with get_session() as db:
+        return _build_fixed_clip_input(db, source, bounds)
+
+
+def _fixed_clip_is_current(db: Session, draft: EditorialReviewDraft, source: EditorialReviewInputV1 | None) -> bool:
+    final = draft.final_review
+    if final is None or final.input is None:
+        return True
+    return source is not None and final.input == _build_fixed_clip_input(db, source, final.bounds)
 
 
 def segment_review_revision(
@@ -430,8 +458,10 @@ class SegmentReviewSnapshot:
             revision = _combined_media_revision(revisions, self.review.expanded_context)
         except ValueError:
             return False
-        return revision == self.review.revision and self.review.execution.input_fingerprint == review_fingerprint(
-            initial, source, revision, policy=policy
+        return (
+            revision == self.review.revision
+            and self.review.execution.input_fingerprint == review_fingerprint(initial, source, revision, policy=policy)
+            and _fixed_clip_is_current(db, self.review, source)
         )
 
 
@@ -545,7 +575,10 @@ def automatic_review_is_current(db: Session, event: HighlightEvent, candidate: H
             != execution.input_fingerprint
         ):
             return False
-        draft = EditorialReviewDraft(execution, source, cast(ContextDirection | None, direction), revision, provenance)
+        final = FinalBoundsReviewV1.model_validate(metadata["final_review"]) if "final_review" in metadata else None
+        draft = EditorialReviewDraft(
+            execution, source, cast(ContextDirection | None, direction), revision, provenance, final
+        )
         providers = _current_review_providers(db)
         policy = review_policy_identity(providers=providers)
         target = source.target
@@ -585,7 +618,9 @@ def automatic_review_is_current(db: Session, event: HighlightEvent, candidate: H
             )
             if not snapshot.is_current(db, policy=policy):
                 return False
-        start, end = datetime_epoch(candidate.start_ts) - origin, datetime_epoch(candidate.end_ts) - origin
+        preview_start = event.adjusted_start_ts if event.adjusted_start_ts is not None else candidate.start_ts
+        preview_end = event.adjusted_end_ts if event.adjusted_end_ts is not None else candidate.end_ts
+        start, end = datetime_epoch(preview_start) - origin, datetime_epoch(preview_end) - origin
         actual = TimeRange.model_validate(metadata.get("final_bounds"))
         if abs(start - actual.start_s) > 1e-6 or abs(end - actual.end_s) > 1e-6:
             return False
@@ -594,7 +629,10 @@ def automatic_review_is_current(db: Session, event: HighlightEvent, candidate: H
         result = execution.result
         assert result is not None
         suggestion = result.suggested_bounds
-        if suggestion is not None:
+        if "final_review" in metadata:
+            # 固定范围及其片内证据已由 editorial_auto_approvable 核验。
+            pass
+        elif suggestion is not None:
             if abs(start - suggestion.start_s) > 1e-6 or abs(end - suggestion.end_s) > 1e-6:
                 return False
         elif not (
@@ -602,6 +640,6 @@ def automatic_review_is_current(db: Session, event: HighlightEvent, candidate: H
             and target.bounds.end_s <= end <= source.window.end_s
         ):
             return False
-        return media_bounds_accessible(db, source, candidate.start_ts, candidate.end_ts)
+        return media_bounds_accessible(db, source, preview_start, preview_end)
     except ValueError:
         return False

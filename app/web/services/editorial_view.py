@@ -12,6 +12,7 @@ from app.analysis.editorial_contracts import (
     validate_review_evidence,
 )
 from app.analysis.editorial_provenance import REVIEW_POLICY_VERSION, ReviewProvenance, frozen_review_fingerprint
+from app.analysis.editorial_review import confirmed_clip_result
 from app.analysis.timeline import datetime_epoch
 from app.db.entities import HighlightCandidate, HighlightEvent, HotspotEvent
 from app.web.editorial_contracts import EditorialPresentation
@@ -122,14 +123,17 @@ def editorial_presentation(
                 actual = TimeRange.model_validate(raw_bounds)
             except ValueError:
                 actual = None
+        preview_start = (
+            event.adjusted_start_ts if event is not None and event.adjusted_start_ts is not None else candidate.start_ts
+        )
+        preview_end = (
+            event.adjusted_end_ts if event is not None and event.adjusted_end_ts is not None else candidate.end_ts
+        )
         confirmed = bool(
             actual is not None
-            and abs(datetime_epoch(candidate.start_ts) - source.time_origin_epoch_s - actual.start_s) < 1e-6
-            and abs(datetime_epoch(candidate.end_ts) - source.time_origin_epoch_s - actual.end_s) < 1e-6
-            and metadata.get("clip_standalone") is True
-            and metadata.get("bounds_complete") is True
-            and metadata.get("media_accessible") is True
-            and execution.policy_version == REVIEW_POLICY_VERSION
+            and abs(datetime_epoch(preview_start) - source.time_origin_epoch_s - actual.start_s) < 1e-6
+            and abs(datetime_epoch(preview_end) - source.time_origin_epoch_s - actual.end_s) < 1e-6
+            and confirmed_clip_result(metadata) is not None
         )
     return view.model_copy(
         update={

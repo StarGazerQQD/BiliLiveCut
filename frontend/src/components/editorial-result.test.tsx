@@ -1,4 +1,4 @@
-import { render, screen } from "@testing-library/react";
+import { fireEvent, render, screen } from "@testing-library/react";
 import { expect, it } from "vitest";
 import { EditorialResult } from "./editorial-result";
 
@@ -40,14 +40,19 @@ it.each([true, null])(
         }}
       />,
     );
-    expect(
-      screen.getByText(/模型判断范围内独立理解：可以/),
-    ).toBeInTheDocument();
+    expect(screen.getByText(/模型判断范围内独立理解：可以/)).not.toBeVisible();
     expect(
       screen.getByText(
         confirmed ? /实际成片独立理解：可以/ : /实际成片独立理解：尚未确认/,
       ),
-    ).toBeInTheDocument();
+    ).not.toBeVisible();
+    const toggle = screen.getByText("独立理解与成片边界");
+    fireEvent.click(toggle);
+    expect(screen.getByText(/模型判断范围内独立理解：可以/)).toBeVisible();
+    expect(screen.getByText(/实际成片独立理解：/)).toBeVisible();
+    fireEvent.click(toggle);
+    expect(screen.getByText(/模型判断范围内独立理解：可以/)).not.toBeVisible();
+    expect(screen.getByText(/实际成片独立理解：/)).not.toBeVisible();
   },
 );
 

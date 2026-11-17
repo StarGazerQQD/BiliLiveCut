@@ -12,7 +12,7 @@ from pydantic import BaseModel, ConfigDict, Field, JsonValue, field_validator
 from app import __version__
 from app.analysis.editorial_contracts import EditorialReviewInputV1, ModelAttempt
 
-REVIEW_POLICY_VERSION = "editorial-decision-v4-clip-bounds"
+REVIEW_POLICY_VERSION = "editorial-decision-v6-clip-transcript"
 
 
 def canonical_hash(value: object) -> str:
@@ -28,6 +28,7 @@ def semantic_policy_identity(policy: dict[str, object]) -> dict[str, object]:
     return {
         "policy": policy["policy"],
         "prompt": policy["prompt"],
+        **({"clip_max_duration_s": policy["clip_max_duration_s"]} if "clip_max_duration_s" in policy else {}),
         "routes": [
             {
                 name: route[name]
@@ -48,7 +49,12 @@ def frozen_review_fingerprint(
 ) -> str:
     """按记录自带的策略版本验证完整输入，保留历史字段的原始缺省形态。"""
     version = policy.get("policy")
-    if version in {REVIEW_POLICY_VERSION, "editorial-decision-v3"}:
+    if version in {
+        REVIEW_POLICY_VERSION,
+        "editorial-decision-v5-fixed-clip",
+        "editorial-decision-v4-clip-bounds",
+        "editorial-decision-v3",
+    }:
         identity = semantic_policy_identity(policy)
     elif version in {"editorial-decision-v1", "editorial-decision-v2"}:
         identity = policy
@@ -118,6 +124,7 @@ class _Policy(BaseModel):
     deadline: float = Field(gt=0)
     request_timeout: float = Field(gt=0)
     max_tokens: int = Field(gt=0)
+    clip_max_duration_s: float | None = Field(default=None, ge=5)
 
 
 class ReviewProvenance(BaseModel):

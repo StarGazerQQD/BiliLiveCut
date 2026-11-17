@@ -152,11 +152,11 @@ def test_shadow_probability_does_not_change_rule_decision(
     assert metadata["prediction"]["shadow_probability"] == 0.95
 
 
-def test_llm_reason_is_limited_to_candidate_time_window(
+def test_llm_reason_uses_candidate_evidence_with_labeled_context(
     temp_db: None,
     monkeypatch: MonkeyPatch,
 ) -> None:
-    """高光理由不得读取候选结束后的同一原始分段内容。"""
+    """高光理由依据片内材料，片外文字明确标记为上下文。"""
     from app.analysis import highlight
     from app.analysis.scoring_config import ScoringConfig
     from app.pipeline.workers import analyze
@@ -199,9 +199,12 @@ def test_llm_reason_is_limited_to_candidate_time_window(
 
     def model_response(prompt: str, **_kwargs: object) -> str:
         data = json.loads(prompt.rsplit("\n", 1)[1])
-        text_items = [item for item in data["evidence"] if item["excerpts"]]
+        text_items = [item for item in data["evidence"] if item["excerpts"] and item["context_role"] == "event"]
         captured["text"] = " ".join(text for item in text_items for text in item["excerpts"])
-        captured["window_start"] = data["window"]["start_s"]
+        captured["target_bounds"] = data["target"]["bounds"]
+        captured["after"] = [
+            text for item in data["evidence"] if item["context_role"] == "after" for text in item["excerpts"]
+        ]
         return json.dumps(
             _payload(evidence_ids=[text_items[0]["evidence_id"]], suggested_bounds=None, reason="当前爆点")
         )
@@ -216,7 +219,8 @@ def test_llm_reason_is_limited_to_candidate_time_window(
     assert result["decision"] == HighlightDecision.CANDIDATE
     assert captured["text"] == "当前爆点"
     assert captured["keyword_text"] == "当前爆点"
-    assert captured["window_start"] == 61.0
+    assert captured["target_bounds"] == {"start_s": 61.0, "end_s": 63.0}
+    assert captured["after"] == ["候选结束后发生的另一件事"]
     assert captured["danmaku_start"] == datetime(2026, 1, 3, 12, 1, 8, 500000)
     assert captured["danmaku_end"] == datetime(2026, 1, 3, 12, 1, 10, 500000)
     assert result["reason"] == "当前爆点"

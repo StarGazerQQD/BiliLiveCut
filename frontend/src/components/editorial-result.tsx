@@ -128,22 +128,29 @@ export function EditorialResult({
         <>
           {result.hook && <p className="text-sm">吸引点：{result.hook}</p>}
           <p className="text-sm leading-7">判断依据：{result.reason}</p>
-          <p className="text-xs">
-            模型判断范围内独立理解：
-            {result.standalone == null
-              ? "未知"
-              : result.standalone
-                ? "可以"
-                : "仍依赖上下文"}{" "}
-            · {editorialLabels[result.boundary_status]}
-          </p>
-          <p className="text-xs">
-            实际成片独立理解：
-            {view.clip_standalone === true ? "可以" : "尚未确认"}
-            {view.clip_boundary_status === "complete"
-              ? " · 边界完整"
-              : " · 边界待确认"}
-          </p>
+          <details>
+            <summary className="cursor-pointer text-xs">
+              独立理解与成片边界
+            </summary>
+            <div className="mt-3 space-y-3">
+              <p className="text-xs">
+                模型判断范围内独立理解：
+                {result.standalone == null
+                  ? "未知"
+                  : result.standalone
+                    ? "可以"
+                    : "仍依赖上下文"}{" "}
+                · {editorialLabels[result.boundary_status]}
+              </p>
+              <p className="text-xs">
+                实际成片独立理解：
+                {view.clip_standalone === true ? "可以" : "尚未确认"}
+                {view.clip_boundary_status === "complete"
+                  ? " · 边界完整"
+                  : " · 边界待确认"}
+              </p>
+            </div>
+          </details>
           {view.clip_bounds_error && (
             <p className="text-xs">{view.clip_bounds_error}</p>
           )}
@@ -231,7 +238,7 @@ export function EditorialResult({
           </p>
           {!!subsequentAttempts.length && (
             <p className="my-2 text-xs">
-              判断后上下文解释 {subsequentAttempts.length} 次请求
+              判断后复核与解释 {subsequentAttempts.length} 次请求
             </p>
           )}
           {[
@@ -252,7 +259,7 @@ export function EditorialResult({
                   : attempt.number >
                       (execution.attempt_offset || 0) +
                         execution.attempts.length
-                    ? "判断后上下文解释请求"
+                    ? "判断后复核或解释请求"
                     : "本次判断请求"}
                 {" · "}
                 用途：

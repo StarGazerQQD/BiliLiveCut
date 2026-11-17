@@ -851,7 +851,7 @@ def _reusable_event_result(previous: object, event_id: int, lease: TaskLease) ->
     ):
         return None
     metadata = _json_object(clip.features_json).get("editorial_review")
-    if not isinstance(metadata, dict) or metadata.get("execution") != review.execution.model_dump(mode="json"):
+    if not review.matches_metadata(metadata):
         return None
     with get_session() as db:
         if db.get_bind().dialect.name == "sqlite":
@@ -940,7 +940,11 @@ def _compute_event_clip_result(
                 audio_features=audio_features,
                 audio_segment_id=audio_segment_id,
                 expected_candidate_id=expected_candidate_id,
+                budget=budget,
             )
+            if budget.interruption(before_request=False) == "cancelled":
+                return None
+            review = review.with_final_review(_json_object(draft.features_json)["editorial_review"])
         except EventTargetUnavailableError as exc:
             _logger.info("event_analysis_target_changed: event_id=%s error=%s", event_id, exc)
             return None
@@ -1095,7 +1099,7 @@ def _commit_event_clip_results(
                 continue
             candidate_features = _json_object(clip_draft.features_json)
             metadata = candidate_features.get("editorial_review")
-            if not isinstance(metadata, dict) or metadata.get("execution") != review.execution.model_dump(mode="json"):
+            if not review.matches_metadata(metadata):
                 raise ValueError("候选与编辑判断必须来自同一计算结果")
         event = validate_event_clip_draft(db, clip_draft, enrichment=enrichment, review=review)
         if event is None:
@@ -1992,14 +1996,16 @@ def _score_segment_draft(
 
     # 编辑价值单独判断，低热度不再阻止真实内容进入编辑调用。
     from app.analysis.editorial_contracts import TimeRange
-    from app.analysis.editorial_review import editorial_auto_approvable, editorial_candidate, final_bounds_metadata
+    from app.analysis.editorial_review import editorial_auto_approvable, editorial_candidate, review_final_bounds
     from app.analysis.editorial_review_sources import (
         SegmentReviewSnapshot,
         compute_segment_review,
+        load_fixed_clip_input,
         media_bounds_accessible,
     )
 
     top_danmaku = representative_danmaku(session_id, analysis_start_ts, analysis_end_ts)
+    budget = budget or llm_mod.new_editorial_budget(target=f"segment:{segment_id}")
     review = compute_segment_review(
         segment_id,
         start_ts=analysis_start_ts,
@@ -2007,7 +2013,7 @@ def _score_segment_draft(
         peak_ts=peak_ts,
         metrics=features,
         danmaku=top_danmaku,
-        budget=budget or llm_mod.new_editorial_budget(target=f"segment:{segment_id}"),
+        budget=budget,
     )
     result = review.execution.result
     review_metadata = review.metadata()
@@ -2066,9 +2072,16 @@ def _score_segment_draft(
         if source is not None and source.time_origin_epoch_s is not None
         else None
     )
-    review_metadata.update(
-        final_bounds_metadata(review, actual_bounds, media_accessible=accessible, suggestion_applied=applied)
+    review_metadata = review_final_bounds(
+        review,
+        actual_bounds,
+        media_accessible=accessible,
+        suggestion_applied=applied,
+        budget=budget,
+        load_clip_input=load_fixed_clip_input,
     )
+    review = review.with_final_review(review_metadata)
+    snapshot = replace(snapshot, review=review)
 
     # 去重只改变入选状态，仍保留完整证据和计算字段用于原位重评。
     duplicate = selected and _is_duplicate(

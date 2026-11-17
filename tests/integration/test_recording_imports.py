@@ -552,7 +552,9 @@ def test_imported_hotspot_reanalysis_replaces_cached_fallback_with_llm(temp_db: 
     assert review.status == "succeeded" and review.result.verdict == "recommend"
     assert review.result.standalone is None and review.result.boundary_status == "uncertain"
     assert review.attempt_offset == 2 and review.attempts[0].number == 3
-    assert len(calls) == 3 and text in str(calls[0]["messages"])
+    assert len(calls) == 4 and text in str(calls[0]["messages"])
+    assert drafts[0]["review"].final_review.execution.result.standalone is None
+    assert [attempt.number for attempt in drafts[0]["review"].provenance.subsequent_attempts] == [4]
     assert json.loads(drafts[0]["clip_draft"].features_json)["editorial_review"]["execution"] == review.model_dump(
         mode="json"
     )

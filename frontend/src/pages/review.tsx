@@ -430,7 +430,7 @@ function ReviewEditor() {
           (event.target.matches(
             "input,textarea,select,button,a,[contenteditable]",
           ) ||
-            event.target.closest('[role="dialog"]')))
+            event.target.closest('summary,[role="dialog"]')))
       )
         return;
       const media = video.current;

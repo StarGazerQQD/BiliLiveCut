@@ -13,7 +13,7 @@ const view = {
   technical_score: null,
 };
 
-async function basicRoutes(page: Page) {
+async function basicRoutes(page: Page, editorial: object = view) {
   await page.route("**/*", async (route) => {
     const path = new URL(route.request().url()).pathname;
     if (!/^\/(api|auth|review\/api)/.test(path)) return route.continue();
@@ -40,7 +40,7 @@ async function basicRoutes(page: Page) {
               hotspot_duration_s: 20,
               clip_duration_s: 6,
               review_url: "/review/22",
-              editorial: view,
+              editorial,
             },
           ],
         },
@@ -54,7 +54,7 @@ async function basicRoutes(page: Page) {
             end_ts: "2026-10-26T10:00:06",
           },
           viewer: { actor: "本机管理员", role: "admin", blinded: false },
-          editorial: view,
+          editorial,
           workflow: {
             claim: { active: true, claimed_by: "本机管理员" },
             draft: { reason: "服务端备注" },
@@ -62,6 +62,46 @@ async function basicRoutes(page: Page) {
         },
       });
     return route.fulfill({ json: [] });
+  });
+}
+
+for (const url of ["/sessions?session=7", "/review/22"]) {
+  test(`collapses independent understanding by default on ${url}`, async ({
+    page,
+  }) => {
+    await basicRoutes(page, {
+      ...view,
+      clip_standalone: null,
+      clip_boundary_status: "uncertain",
+      execution: {
+        elapsed_s: 1,
+        attempts: [],
+        result: {
+          verdict: "recommend",
+          interest_rating: 3,
+          hook: "规则说明",
+          reason: "讲清比赛规则",
+          standalone: true,
+          boundary_status: "complete",
+          uncertainties: [],
+          evidence_ids: [],
+        },
+      },
+    });
+    await page.goto(url);
+    const model = page.getByText(/模型判断范围内独立理解：可以/);
+    const clip = page.getByText(/实际成片独立理解：尚未确认/);
+    const toggle = page.getByText("独立理解与成片边界");
+    await expect(model).toBeHidden();
+    await expect(clip).toBeHidden();
+    await toggle.click();
+    await expect(model).toBeVisible();
+    await expect(clip).toBeVisible();
+    await toggle.focus();
+    await page.keyboard.press("Enter");
+    await expect(model).toBeHidden();
+    await page.keyboard.press("Space");
+    await expect(clip).toBeVisible();
   });
 }
 
