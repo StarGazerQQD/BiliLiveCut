@@ -11,7 +11,11 @@ from app.analysis.editorial_contracts import (
     TimeRange,
     validate_review_evidence,
 )
-from app.analysis.editorial_provenance import CLIP_BOUNDS_POLICIES, ReviewProvenance, frozen_review_fingerprint
+from app.analysis.editorial_provenance import (
+    STRICT_CLIP_EVIDENCE_POLICIES,
+    ReviewProvenance,
+    frozen_review_fingerprint,
+)
 from app.analysis.editorial_review import confirmed_clip_result
 from app.analysis.timeline import datetime_epoch
 from app.db.entities import HighlightCandidate, HighlightEvent, HotspotEvent
@@ -85,7 +89,9 @@ def editorial_presentation(
             if source is None:
                 raise ValueError("编辑判断缺少原始证据")
             validate_review_evidence(
-                execution.result, source, require_complete_support=execution.policy_version in CLIP_BOUNDS_POLICIES
+                execution.result,
+                source,
+                require_complete_support=execution.policy_version in STRICT_CLIP_EVIDENCE_POLICIES,
             )
         direction = metadata.get("expanded_context")
         if direction is not None and (not isinstance(direction, str) or direction not in {"before", "after", "both"}):

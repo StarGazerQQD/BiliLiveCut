@@ -90,10 +90,9 @@ def _labels(
     )
 
 
-@pytest.mark.parametrize("policy_version", ["editorial-decision-v4-clip-bounds", "editorial-decision-v5-fixed-clip"])
-def test_historical_complete_review_still_requires_timed_in_clip_evidence(policy_version: str) -> None:
+def test_historical_fixed_clip_review_still_requires_timed_in_clip_evidence() -> None:
     source = _source(evidence=[_evidence(start_s=None, end_s=None, timing_precision="unknown", context_role="unknown")])
-    execution = _execution(policy_version=policy_version, result=_review(suggested_bounds=None))
+    execution = _execution(policy_version="editorial-decision-v5-fixed-clip", result=_review(suggested_bounds=None))
     with pytest.raises(ValueError, match="片内独立理解需要"):
         EvaluationRecord.model_validate({**_record().model_dump(), "input": source, "execution": execution})
 
