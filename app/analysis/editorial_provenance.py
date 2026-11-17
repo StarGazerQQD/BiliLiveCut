@@ -13,6 +13,9 @@ from app import __version__
 from app.analysis.editorial_contracts import EditorialReviewInputV1, ModelAttempt
 
 REVIEW_POLICY_VERSION = "editorial-decision-v6-clip-transcript"
+CLIP_BOUNDS_POLICIES = frozenset(
+    {REVIEW_POLICY_VERSION, "editorial-decision-v5-fixed-clip", "editorial-decision-v4-clip-bounds"}
+)
 
 
 def canonical_hash(value: object) -> str:
@@ -49,12 +52,7 @@ def frozen_review_fingerprint(
 ) -> str:
     """按记录自带的策略版本验证完整输入，保留历史字段的原始缺省形态。"""
     version = policy.get("policy")
-    if version in {
-        REVIEW_POLICY_VERSION,
-        "editorial-decision-v5-fixed-clip",
-        "editorial-decision-v4-clip-bounds",
-        "editorial-decision-v3",
-    }:
+    if isinstance(version, str) and (version in CLIP_BOUNDS_POLICIES or version == "editorial-decision-v3"):
         identity = semantic_policy_identity(policy)
     elif version in {"editorial-decision-v1", "editorial-decision-v2"}:
         identity = policy
