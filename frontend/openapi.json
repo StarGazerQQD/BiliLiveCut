@@ -2933,6 +2933,78 @@
         "title": "ScheduleRequest",
         "type": "object"
       },
+      "SessionDirectories": {
+        "description": "多个存储位置可分别选择，无桌面时仍提供路径。",
+        "properties": {
+          "directories": {
+            "items": {
+              "$ref": "#/components/schemas/SessionDirectory"
+            },
+            "title": "Directories",
+            "type": "array"
+          },
+          "opened": {
+            "default": false,
+            "title": "Opened",
+            "type": "boolean"
+          },
+          "selected": {
+            "anyOf": [
+              {
+                "enum": [
+                  "raw",
+                  "danmaku",
+                  "legacy_raw"
+                ],
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Selected"
+          }
+        },
+        "required": [
+          "directories"
+        ],
+        "title": "SessionDirectories",
+        "type": "object"
+      },
+      "SessionDirectory": {
+        "description": "场次已登记的目录位置及其当前可用性。",
+        "properties": {
+          "available": {
+            "title": "Available",
+            "type": "boolean"
+          },
+          "kind": {
+            "enum": [
+              "raw",
+              "danmaku",
+              "legacy_raw"
+            ],
+            "title": "Kind",
+            "type": "string"
+          },
+          "label": {
+            "title": "Label",
+            "type": "string"
+          },
+          "path": {
+            "title": "Path",
+            "type": "string"
+          }
+        },
+        "required": [
+          "kind",
+          "label",
+          "path",
+          "available"
+        ],
+        "title": "SessionDirectory",
+        "type": "object"
+      },
       "SessionSummaryPresentation": {
         "additionalProperties": true,
         "description": "兼容既有总结字段，并正式披露草稿和核验进度。",
@@ -7308,6 +7380,67 @@
           }
         },
         "summary": "Preview Editorial Reanalysis"
+      }
+    },
+    "/api/sessions/{session_id}/open-storage-directory": {
+      "post": {
+        "description": "打开唯一可用位置，或返回本场次的目录供选择。",
+        "operationId": "open_session_storage_directory_api_sessions__session_id__open_storage_directory_post",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "session_id",
+            "required": true,
+            "schema": {
+              "title": "Session Id",
+              "type": "integer"
+            }
+          },
+          {
+            "in": "query",
+            "name": "kind",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "enum": [
+                    "raw",
+                    "danmaku",
+                    "legacy_raw"
+                  ],
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "Kind"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/SessionDirectories"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "summary": "Open Session Storage Directory"
       }
     },
     "/api/sessions/{session_id}/reanalyze": {

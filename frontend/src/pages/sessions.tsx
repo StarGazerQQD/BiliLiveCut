@@ -5,6 +5,7 @@ import { useAction, useApi } from "@/api/client";
 import { EditorialResult } from "@/components/editorial-result";
 import { EditorialReanalysis } from "@/components/editorial-reanalysis";
 import { SessionSummary } from "@/components/session-summary";
+import { SessionDirectoryButton } from "@/components/session-directories";
 import { obj, rows, text, number, time, duration } from "@/lib/data";
 import {
   Page,
@@ -103,6 +104,7 @@ export function SessionsPage() {
                       >
                         查看场次时间线
                       </Button>
+                      <SessionDirectoryButton sessionId={String(id)} />
                     </CardContent>
                   </Card>
                 );
@@ -151,6 +153,7 @@ export function SessionsPage() {
                   ]}
                 />
                 <div className="flex flex-wrap gap-2">
+                  <SessionDirectoryButton key={session} sessionId={session} />
                   <ConfirmButton
                     title="重新生成整场总结？"
                     description="将提交后台总结任务。"

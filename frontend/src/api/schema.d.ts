@@ -1497,6 +1497,26 @@ export interface paths {
         patch?: never;
         trace?: never;
     };
+    "/api/sessions/{session_id}/open-storage-directory": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /**
+         * Open Session Storage Directory
+         * @description 打开唯一可用位置，或返回本场次的目录供选择。
+         */
+        post: operations["open_session_storage_directory_api_sessions__session_id__open_storage_directory_post"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
     "/api/sessions/{session_id}/reanalyze": {
         parameters: {
             query?: never;
@@ -3684,6 +3704,38 @@ export interface components {
             room_id: number;
             /** Scheduled At */
             scheduled_at: string;
+        };
+        /**
+         * SessionDirectories
+         * @description 多个存储位置可分别选择，无桌面时仍提供路径。
+         */
+        SessionDirectories: {
+            /** Directories */
+            directories: components["schemas"]["SessionDirectory"][];
+            /**
+             * Opened
+             * @default false
+             */
+            opened: boolean;
+            /** Selected */
+            selected?: ("raw" | "danmaku" | "legacy_raw") | null;
+        };
+        /**
+         * SessionDirectory
+         * @description 场次已登记的目录位置及其当前可用性。
+         */
+        SessionDirectory: {
+            /** Available */
+            available: boolean;
+            /**
+             * Kind
+             * @enum {string}
+             */
+            kind: "raw" | "danmaku" | "legacy_raw";
+            /** Label */
+            label: string;
+            /** Path */
+            path: string;
         };
         /**
          * SessionSummaryPresentation
@@ -6524,6 +6576,39 @@ export interface operations {
                 };
                 content: {
                     "application/json": components["schemas"]["EditorialPreview"];
+                };
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
+    open_session_storage_directory_api_sessions__session_id__open_storage_directory_post: {
+        parameters: {
+            query?: {
+                kind?: ("raw" | "danmaku" | "legacy_raw") | null;
+            };
+            header?: never;
+            path: {
+                session_id: number;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["SessionDirectories"];
                 };
             };
             /** @description Validation Error */
