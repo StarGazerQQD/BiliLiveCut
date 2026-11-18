@@ -16,7 +16,13 @@ import psutil
 import pytest
 
 from tests.integration.http_supervision_actor import LAUNCHER_HTTP_READY
-from tests.integration.test_frontend_console import _service_leaves, _service_snapshot, _service_tree, _stop_console
+from tests.integration.test_frontend_console import (
+    ProcessRoles,
+    _service_leaves,
+    _service_snapshot,
+    _service_tree,
+    _stop_console,
+)
 
 if TYPE_CHECKING:
     from typing import Literal
@@ -124,7 +130,8 @@ def test_alive_service_http_outage_recovers_without_overlapping_generations(
                 time.sleep(0.1)
             with opener.open(f"http://127.0.0.1:{port}/auth/status", timeout=2) as response:
                 assert response.status == 200
-            before = _service_snapshot(parent)
+            initial_roles: ProcessRoles = {}
+            before = _service_snapshot(parent, capture=initial_roles)
             leaves = _service_leaves(before)
             assert all(len(members) == 1 for members in leaves.values()), before
             owned = _service_tree(before)
@@ -177,12 +184,19 @@ def test_alive_service_http_outage_recovers_without_overlapping_generations(
 
                     def interrupted_cmdline(child: psutil.Process) -> list[str]:
                         nonlocal denied_reads
+                        if (
+                            snapshot_failure == "active"
+                            and denied_reads == 0
+                            and (child.pid, child.create_time()) in before
+                        ):
+                            denied_reads += 1
+                            raise psutil.AccessDenied(pid=child.pid)
                         command = original_cmdline(child)
                         if (
                             (denied_reads == 0 or snapshot_failure == "persistent")
                             and command[1:3] == ["-m", "app.cli"]
                             and command[3:4] in (["backend"], ["frontend"])
-                            and (snapshot_failure == "active" or not _active_members(owned))
+                            and not _active_members(owned)
                         ):
                             denied_reads += 1
                             raise psutil.AccessDenied(pid=child.pid)
@@ -200,7 +214,9 @@ def test_alive_service_http_outage_recovers_without_overlapping_generations(
                 else:
                     expected_failure = nullcontext()
                 # active 用例模拟无法证实角色的活体，必须拒绝不完整观测。
-                known = None if snapshot_failure == "active" else before
+                known = {
+                    key: role for key, role in initial_roles.items() if snapshot_failure != "active" or role is None
+                }
                 with expected_failure:
                     while True:
                         assert process.poll() is None, log_path.read_text(encoding="utf-8")

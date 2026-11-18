@@ -22,29 +22,35 @@ if TYPE_CHECKING:
 
 
 ServiceSnapshot = dict[tuple[int, float], tuple[psutil.Process, str, int]]
+ProcessRoles = dict[tuple[int, float], str | None]
 
 
-def _service_snapshot(parent: psutil.Process, known: ServiceSnapshot | None = None) -> ServiceSnapshot:
+def _service_snapshot(
+    parent: psutil.Process, known: ProcessRoles | None = None, *, capture: ProcessRoles | None = None
+) -> ServiceSnapshot:
     result = {}
     for child in parent.children(recursive=True):
         try:
-            command = child.cmdline()
-            if command[1:3] == ["-m", "app.cli"] and command[3:4] in (["backend"], ["frontend"]):
-                result[(child.pid, child.create_time())] = (child, command[3], child.ppid())
-        except psutil.AccessDenied:
-            # macOS 可能在旧服务退出过程中拒绝读取命令行；存活的旧身份仍须计入本次快照。
+            identity = (child.pid, child.create_time())
             try:
+                command = child.cmdline()
+            except psutil.AccessDenied:
                 if not child.is_running() or child.status() in (psutil.STATUS_ZOMBIE, psutil.STATUS_DEAD):
                     continue
-                if known:
-                    identity = (child.pid, child.create_time())
-                    previous = known.get(identity)
-                    if previous and child.ppid() == previous[2]:
-                        result[identity] = previous
-                        continue
-            except psutil.NoSuchProcess:
-                continue
-            raise
+                if known is None or identity not in known:
+                    raise
+                # 已就绪的旧树包含服务和辅助进程，PID 被复用时创建时间会改变。
+                role = known[identity]
+            else:
+                role = (
+                    command[3]
+                    if command[1:3] == ["-m", "app.cli"] and command[3:4] in (["backend"], ["frontend"])
+                    else None
+                )
+            if capture is not None:
+                capture[identity] = role
+            if role is not None:
+                result[identity] = (child, role, child.ppid())
         except psutil.NoSuchProcess:
             # 旧代正在退出，仍由保留的原进程对象和 wait_procs 验证最终回收。
             continue
@@ -57,7 +63,7 @@ def test_denied_known_service_is_counted_alongside_a_new_service(monkeypatch: Mo
     new = old.parent()
     assert new is not None
     known_time = old.create_time() if same_identity else old.create_time() - 1
-    known = {(old.pid, known_time): (old, "backend", old.ppid())}
+    known: ProcessRoles = {(old.pid, known_time): "backend"}
     monkeypatch.setattr(psutil.Process, "children", lambda self, recursive: [old, new])
 
     def cmdline(child: psutil.Process) -> list[str]:
@@ -67,10 +73,33 @@ def test_denied_known_service_is_counted_alongside_a_new_service(monkeypatch: Mo
 
     monkeypatch.setattr(psutil.Process, "cmdline", cmdline)
     if same_identity:
-        assert _service_snapshot(old, known) == {**known, (new.pid, new.create_time()): (new, "frontend", new.ppid())}
+        assert _service_snapshot(old, known) == {
+            (old.pid, known_time): (old, "backend", old.ppid()),
+            (new.pid, new.create_time()): (new, "frontend", new.ppid()),
+        }
     else:
         with pytest.raises(psutil.AccessDenied):
             _service_snapshot(old, known)
+
+
+def test_known_helper_denied_during_recovery_keeps_new_service_visible(monkeypatch: MonkeyPatch) -> None:
+    helper = psutil.Process()
+    new = helper.parent()
+    assert new is not None
+    known: ProcessRoles = {}
+    monkeypatch.setattr(psutil.Process, "children", lambda self, recursive: [helper])
+    monkeypatch.setattr(psutil.Process, "cmdline", lambda child: ["python", "process_guard.py"])
+    assert not _service_snapshot(helper, capture=known)
+    assert known == {(helper.pid, helper.create_time()): None}
+
+    def cmdline(child: psutil.Process) -> list[str]:
+        if child == helper:
+            raise psutil.AccessDenied(child.pid)
+        return [sys.executable, "-m", "app.cli", "backend"]
+
+    monkeypatch.setattr(psutil.Process, "children", lambda self, recursive: [helper, new])
+    monkeypatch.setattr(psutil.Process, "cmdline", cmdline)
+    assert _service_snapshot(helper, known) == {(new.pid, new.create_time()): (new, "backend", new.ppid())}
 
 
 @pytest.mark.parametrize("status", [psutil.STATUS_RUNNING, psutil.STATUS_SLEEPING, psutil.STATUS_STOPPED])
