@@ -5,7 +5,7 @@ import { ArrowDown, ArrowUp, FolderKanban } from "lucide-react";
 import { toast } from "sonner";
 import { send, useAction, useApi, type Row } from "@/api/client";
 import { useDraft } from "@/lib/drafts";
-import { obj, rows, text, number, duration } from "@/lib/data";
+import { obj, rows, text, number, duration, sessionSource } from "@/lib/data";
 import {
   Page,
   QueryState,
@@ -49,6 +49,7 @@ export function TopicsPage() {
                   </p>
                   <p className="text-xs text-muted-foreground">
                     场次 #{text(topic.session_id)} ·{" "}
+                    {sessionSource(obj(topic.source))} ·{" "}
                     {number(topic.event_count || topic.clip_count)} 个事件
                   </p>
                   <div className="flex flex-wrap gap-2">
@@ -182,7 +183,8 @@ export function CollectionPage() {
       <QueryState query={query}>
         <div className="flex flex-wrap items-center gap-3">
           <span className="mr-auto text-sm text-muted-foreground">
-            共 {events.length} 段 · {duration(query.data?.total_duration_s)}
+            {sessionSource(obj(obj(query.data?.topic).source))} · 共{" "}
+            {events.length} 段 · {duration(query.data?.total_duration_s)}
           </span>
           <label className="flex items-center gap-2 text-sm">
             <Checkbox

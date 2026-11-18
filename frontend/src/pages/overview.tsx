@@ -12,7 +12,7 @@ import { useApi } from "@/api/client";
 import { Button } from "@/components/ui/button";
 import { Card, CardContent } from "@/components/ui/card";
 import { Empty, Page, QueryState, Stat, Status } from "@/components/workbench";
-import { obj, rows, number, text, time } from "@/lib/data";
+import { obj, rows, number, text, time, sessionSource } from "@/lib/data";
 import { AddRoom, RoomCard } from "./rooms";
 
 export default function OverviewPage() {
@@ -190,11 +190,12 @@ export default function OverviewPage() {
                         <div className="min-w-0 flex-1">
                           <p className="truncate text-sm font-medium">
                             {text(
-                              session.session_title || session.uploader_name,
+                              session.session_title,
                               `录制会话 #${session.id}`,
                             )}
                           </p>
                           <p className="mt-1 text-xs text-muted-foreground">
+                            {sessionSource(session)} ·{" "}
                             {time(session.started_at)}
                           </p>
                         </div>

@@ -32,10 +32,12 @@ def get_collection_data(topic_id: int) -> dict:
     """获取合集编辑所需数据:主题+事件列表+重叠检测。"""
     from app.analysis.topic_cluster import get_topic as _gt
     from app.pipeline.collection import detect_overlap, get_collection_events
+    from app.web.services.source_identity import attach_session_sources
 
     topic = _gt(topic_id)
     if topic is None:
         raise HTTPException(status_code=404, detail="主题不存在")
+    attach_session_sources([topic])
     events = get_collection_events(topic_id)
     overlaps = detect_overlap(events)
     return {

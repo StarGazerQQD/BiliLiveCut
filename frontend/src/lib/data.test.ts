@@ -1,5 +1,38 @@
 import { describe, expect, it } from "vitest";
-import { duration, time } from "./data";
+import { duration, sessionSource, time } from "./data";
+
+describe("session source labels", () => {
+  it("distinguishes rooms with the same name and session title", () => {
+    const session = { uploader_name: " 同名主播 ", session_title: "周末直播" };
+    expect(sessionSource({ ...session, room_id: 12 })).toBe(
+      "主播：同名主播 · 房间 12",
+    );
+    expect(
+      sessionSource({
+        ...session,
+        platform: "example",
+        source_id: "stream-b",
+        room_id: 12,
+      }),
+    ).toBe("主播：同名主播 · example · 房间 stream-b");
+  });
+  it("preserves missing streamer names and local imports", () => {
+    expect(
+      sessionSource({
+        session_title: "片段标题",
+        source_label: "房间标题",
+        room_db_id: 99,
+        room_id: 2,
+      }),
+    ).toBe("主播未记录 · 房间 2");
+    expect(
+      sessionSource({ platform: "local", session_title: "我的视频" }),
+    ).toBe("本地录播");
+    expect(sessionSource({ platform: "local", uploader_name: "原作者" })).toBe(
+      "本地录播 · 主播：原作者",
+    );
+  });
+});
 
 describe("session times in GMT+8", () => {
   it.each([

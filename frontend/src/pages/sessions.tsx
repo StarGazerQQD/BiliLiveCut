@@ -6,7 +6,15 @@ import { EditorialResult } from "@/components/editorial-result";
 import { EditorialReanalysis } from "@/components/editorial-reanalysis";
 import { SessionSummary } from "@/components/session-summary";
 import { SessionDirectoryButton } from "@/components/session-directories";
-import { obj, rows, text, number, time, duration } from "@/lib/data";
+import {
+  obj,
+  rows,
+  text,
+  number,
+  time,
+  duration,
+  sessionSource,
+} from "@/lib/data";
 import {
   Page,
   QueryState,
@@ -78,12 +86,13 @@ export function SessionsPage() {
                       </div>
                       <h2 className="font-semibold">
                         {text(
-                          entry.session_title ||
-                            entry.title ||
-                            entry.uploader_name,
+                          entry.session_title || entry.title,
                           `场次 #${id}`,
                         )}
                       </h2>
+                      <p className="text-sm text-muted-foreground">
+                        {sessionSource(entry)}
+                      </p>
                       <p className="text-xs text-muted-foreground">
                         {time(entry.started_at, "GMT+8")} · 时长{" "}
                         {duration(entry.duration_s)}
@@ -129,10 +138,13 @@ export function SessionsPage() {
                   <div>
                     <h2 className="text-lg font-semibold">
                       {text(
-                        info.session_title || info.title || info.uploader_name,
+                        info.session_title || info.title,
                         `场次 #${session}`,
                       )}
                     </h2>
+                    <p className="mt-1 text-sm text-muted-foreground">
+                      {sessionSource(info)}
+                    </p>
                     <p className="mt-2 text-xs text-muted-foreground">
                       {time(info.started_at, "GMT+8")} · 时长{" "}
                       {duration(info.duration_s)}

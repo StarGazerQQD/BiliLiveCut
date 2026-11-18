@@ -147,6 +147,24 @@ def test_topic_cluster_links_real_event_ids(topic_media: Path) -> None:
         assert len(links) == 2
 
 
+async def test_topic_list_detail_and_collection_identify_the_source_room(topic_media: Path) -> None:
+    from app.db.entities import LiveRoom, RecordingSession
+    from app.web import main
+
+    with get_session() as db:
+        db.add(LiveRoom(id=7, input_url="fixture", room_id=247, uploader_name="示例主播"))
+        db.add(RecordingSession(id=1, room_id=7))
+    async with httpx.AsyncClient(transport=httpx.ASGITransport(app=main.app), base_url="http://127.0.0.1") as client:
+        topics = (await client.get("/api/topics")).json()["topics"]
+        first = next(item for item in topics if item["id"] == 1)
+        other = next(item for item in topics if item["id"] == 2)
+        detail = (await client.get("/api/topics/1")).json()
+        collection = (await client.get("/collection/api/1")).json()["topic"]
+    assert first["source"] == detail["source"] == collection["source"]
+    assert first["source"]["uploader_name"] == "示例主播" and first["source"]["room_id"] == 247
+    assert first["title"] == "已选主题" and other["source"]["uploader_name"] is None
+
+
 def test_collection_reads_and_renders_correct_candidates(topic_media: Path, monkeypatch: pytest.MonkeyPatch) -> None:
     from app.pipeline import collection
 
