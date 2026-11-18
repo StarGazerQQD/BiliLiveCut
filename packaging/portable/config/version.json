@@ -1,8 +1,8 @@
 {
   "release_version": "0.1.20.6-alpha",
   "version_label": "V0.1.20.6 Alpha",
-  "source_commit_short": "bd150fe",
-  "source_commit_full": "bd150fe93c16b05697afe2fac415da265b38e101",
+  "source_commit_short": "346d884",
+  "source_commit_full": "346d884e53b725753146097124be8dbf67d236e7",
   "engine_pack_version": "0.1.20.6-alpha",
   "runtime_schema": 5,
   "core_schema": 6,
