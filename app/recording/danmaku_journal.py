@@ -23,6 +23,7 @@ from app.recording.session_storage import (
     JournalHeader,
     check_archive_header,
     check_journal_header,
+    get_locations,
     session_identity,
     verify_storage,
 )
@@ -105,6 +106,8 @@ class DanmakuJournal:
             if self._failure is not None:
                 raise JournalWriteError("弹幕补做写入曾失败，已停止追加并保留原文件供恢复") from self._failure
             try:
+                if self._locations.source_session_id is not None:
+                    raise ValueError("历史引用场次的补做记录只读")
                 path = journal_path(self.session_id, self._locations)
                 if session_identity(path.parent) != self._storage_identity:
                     raise ValueError("弹幕补做写入目录的场次身份不一致")
@@ -158,7 +161,11 @@ class DanmakuJournal:
 
 def drain_journal(session_id: int, *, limit: int = 100, close: bool = False) -> bool:
     """消费一批；文件解析在事务外，并发消费者通过事务内游标复核避免重复。"""
-    path = journal_path(session_id)
+    with get_session() as db:
+        locations = get_locations(db, session_id)
+    if locations.source_session_id is not None:
+        raise ValueError("历史引用场次不能重放在线补做任务")
+    path = journal_path(session_id, locations)
     try:
         stream = path.open("rb")
     except FileNotFoundError:

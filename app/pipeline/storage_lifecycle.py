@@ -196,7 +196,7 @@ def _cleanup_old_raw_files(retention_days: int | None) -> int:
     )
     from app.db.session import get_session
     from app.recording.intents import terminal_settlement_pending
-    from app.recording.session_storage import managed_media_root
+    from app.recording.session_storage import get_locations, managed_media_root
 
     now = datetime.now(UTC).replace(tzinfo=None)
     days = retention_days if retention_days is not None else settings.raw_retention_days
@@ -222,6 +222,8 @@ def _cleanup_old_raw_files(retention_days: int | None) -> int:
         sources = db.exec(select(RawSegment.file_path, RawSegment.session_id)).all()
         recordings = db.exec(select(RecordingSession).where(RecordingSession.ended_at.is_not(None))).all()
         for recording in recordings:
+            if get_locations(db, recording.id).source_session_id is not None:
+                continue
             if recording.status not in {"stopped", "paused", "error"}:
                 continue
             if terminal_settlement_pending(db, recording.id):

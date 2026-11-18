@@ -40,6 +40,7 @@ def _open_offline_database(database: Path) -> Iterator[sqlite3.Connection]:
             uri = database.as_uri() + "?mode=ro&immutable=1"
             db = stack.enter_context(closing(sqlite3.connect(uri, uri=True)))
         db.execute("PRAGMA query_only=ON")
+        db.execute("PRAGMA trusted_schema=OFF")
         db.execute("BEGIN")
         yield db
 
@@ -132,6 +133,7 @@ def check_storage(
     danmaku_seen: set[int] = set()
     trees = {root / name for name in SESSION_TREES}
     positions: dict[int, tuple[Path | None, Path | None]] = {}
+    physical_ids: dict[tuple[Path, int], int] = {}
     for sid, location in locations.items():
         raw = _copy_path(location.raw, root, mappings)
         danmaku = _copy_path(location.danmaku, root, mappings)
@@ -141,6 +143,10 @@ def check_storage(
                 findings.append(f"场次 {sid} 的{kind}外置目录尚未映射到副本")
             else:
                 trees.add(base)
+                key = base, location.source_session_id or sid
+                if key in physical_ids and physical_ids[key] != sid:
+                    findings.append(f"同一物理场次目录关联多个数据库场次：{sid} 和 {physical_ids[key]}")
+                physical_ids[key] = sid
     for tree in sorted(trees):
         if tree.resolve() != tree:
             raise ValueError("副本目录重定向，无法核对")
@@ -150,7 +156,8 @@ def check_storage(
             match = re.fullmatch(r"session_([1-9][0-9]*)", directory.name)
             if match is None:
                 continue
-            sid = int(match[1])
+            physical = int(match[1])
+            sid = physical_ids.get((tree, physical), physical)
             label = directory.relative_to(root).as_posix() if directory.is_relative_to(root) else str(directory)
             if directory.resolve() != directory or not directory.is_dir():
                 findings.append(f"{label} 路径无效或重定向")
@@ -182,10 +189,10 @@ def check_storage(
                     with path.open("rb") as stream:
                         if name == "danmaku.jsonl":
                             check_archive_header(
-                                stream, sid, owners.get(sid), sessions[sid][1] if sid in sessions else None
+                                stream, physical, owners.get(sid), sessions[sid][1] if sid in sessions else None
                             )
                         else:
-                            header = check_journal_header(stream, sid, owners.get(sid))
+                            header = check_journal_header(stream, physical, owners.get(sid))
                             if sid in cursors:
                                 identity, offset = cursors[sid]
                                 if (

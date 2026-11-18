@@ -82,7 +82,7 @@ def archive_views(db: Session, session_ids: tuple[int, ...]) -> dict[int, dict[s
                 continue
             check_directory(sid, owner, error, locations)
             with path.open("rb") as stream:
-                check_archive_header(stream, sid, owner, started)
+                check_archive_header(stream, locations.source_session_id or sid, owner, started)
         except (ValueError, OSError):
             continue
         result[sid] = {"available": True}
@@ -140,6 +140,8 @@ class DanmakuArchive:
 
     def _write(self, records: list[dict[str, object]]) -> None:
         try:
+            if self._locations.source_session_id is not None:
+                raise ValueError("历史引用场次的弹幕原档只读")
             path = archive_path(self.session_id, self._locations)
             if session_identity(path.parent) != self._storage_identity:
                 raise ValueError("弹幕档案写入目录的场次身份不一致")
@@ -172,8 +174,9 @@ def _verify_archive(stream: BinaryIO, session_id: int) -> None:
 
     with get_session() as db:
         owner = verify_storage(db, session_id)
+        physical_id = get_locations(db, session_id).source_session_id or session_id
         row = db.get(RecordingSession, session_id) if owner is None else None
-    check_archive_header(stream, session_id, owner, row.started_at if row else None)
+    check_archive_header(stream, physical_id, owner, row.started_at if row else None)
 
 
 def open_archive_snapshot(session_id: int) -> tuple[BinaryIO, int]:

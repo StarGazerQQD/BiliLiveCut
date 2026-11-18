@@ -31,6 +31,9 @@ class RecordingStorage(BaseModel):
     raw: str = "raw"
     danmaku: str = "raw"
     import_id: str | None = Field(default=None, pattern=r"^[0-9a-f]{32}$")
+    source_session_id: int | None = Field(default=None, gt=0)
+    source_clips: str | None = None
+    detached_import: bool = False
 
     @classmethod
     def configured(cls, *, import_id: str | None = None) -> RecordingStorage:
@@ -61,7 +64,10 @@ class RecordingStorage(BaseModel):
         """只构造路径，查询历史场次不会创建丢失的目录。"""
         if type(session_id) is not int or session_id <= 0:
             raise ValueError("场次 ID 必须为正整数")
-        directory = self.base(self.danmaku if danmaku else self.raw, storage) / f"session_{session_id}"
+        if self.detached_import and self.import_id:
+            return self.import_dir(self.import_id, storage, danmaku=danmaku)
+        physical_id = self.source_session_id or session_id
+        directory = self.base(self.danmaku if danmaku else self.raw, storage) / f"session_{physical_id}"
         if directory.resolve() != directory:
             raise ValueError("场次目录不能通过链接重定向")
         return directory

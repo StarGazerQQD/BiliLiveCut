@@ -1721,6 +1721,26 @@ export interface paths {
         patch: operations["patch_web_port_api_settings_port_patch"];
         trace?: never;
     };
+    "/api/settings/storage-rebuild": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /**
+         * Create Storage Rebuild
+         * @description 管理员指定停写副本，通过后台作业生成独立的新库。
+         */
+        post: operations["create_storage_rebuild_api_settings_storage_rebuild_post"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
     "/api/tasks": {
         parameters: {
             query?: never;
@@ -3119,6 +3139,37 @@ export interface components {
             providers: components["schemas"]["LLMProviderIn"][];
         };
         /**
+         * LibraryRebuild
+         * @description 命令行和设置页共用的重建清单。
+         */
+        LibraryRebuild: {
+            /** Sources */
+            sources: components["schemas"]["LibrarySource"][];
+        };
+        /**
+         * LibrarySource
+         * @description 一个停写副本的数据库、存储根以及可选的外置目录。
+         */
+        LibrarySource: {
+            /** Danmaku */
+            danmaku?: string | null;
+            /** Database */
+            database?: string | null;
+            /** Directory Maps */
+            directory_maps?: {
+                [key: string]: string;
+            };
+            /** Original Storage */
+            original_storage?: string | null;
+            /** Raw */
+            raw?: string | null;
+            /**
+             * Storage
+             * Format: path
+             */
+            storage: string;
+        };
+        /**
          * MarkerRequest
          * @description 直播中人工高光打点请求体。
          */
@@ -3547,6 +3598,11 @@ export interface components {
              * @default raw
              */
             danmaku: string;
+            /**
+             * Detached Import
+             * @default false
+             */
+            detached_import: boolean;
             /** Import Id */
             import_id?: string | null;
             /**
@@ -3554,6 +3610,10 @@ export interface components {
              * @default raw
              */
             raw: string;
+            /** Source Clips */
+            source_clips?: string | null;
+            /** Source Session Id */
+            source_session_id?: number | null;
         };
         /**
          * RenderCollectionRequest
@@ -6808,6 +6868,41 @@ export interface operations {
         responses: {
             /** @description Successful Response */
             200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": {
+                        [key: string]: unknown;
+                    };
+                };
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
+    create_storage_rebuild_api_settings_storage_rebuild_post: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["LibraryRebuild"];
+            };
+        };
+        responses: {
+            /** @description Successful Response */
+            202: {
                 headers: {
                     [name: string]: unknown;
                 };

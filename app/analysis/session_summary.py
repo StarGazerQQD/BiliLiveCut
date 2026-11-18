@@ -203,7 +203,7 @@ def ensure_session_timeline_summary_requested(session_id: int) -> bool:
         if db.get_bind().dialect.name == "sqlite":
             db.connection().exec_driver_sql("BEGIN IMMEDIATE")
         recording = db.get(RecordingSession, session_id)
-        if recording is None or recording.ended_at is None:
+        if recording is None or recording.ended_at is None or recording.status == "archived":
             return False
         request = db.get(AppSetting, _request_key(session_id))
         request_payload = _decode_request(request.value if request is not None else None)

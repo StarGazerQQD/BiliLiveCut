@@ -1532,6 +1532,97 @@
         "title": "LLMProvidersRequest",
         "type": "object"
       },
+      "LibraryRebuild": {
+        "additionalProperties": false,
+        "description": "命令行和设置页共用的重建清单。",
+        "properties": {
+          "sources": {
+            "items": {
+              "$ref": "#/components/schemas/LibrarySource"
+            },
+            "minItems": 1,
+            "title": "Sources",
+            "type": "array"
+          }
+        },
+        "required": [
+          "sources"
+        ],
+        "title": "LibraryRebuild",
+        "type": "object"
+      },
+      "LibrarySource": {
+        "additionalProperties": false,
+        "description": "一个停写副本的数据库、存储根以及可选的外置目录。",
+        "properties": {
+          "danmaku": {
+            "anyOf": [
+              {
+                "format": "path",
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Danmaku"
+          },
+          "database": {
+            "anyOf": [
+              {
+                "format": "path",
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Database"
+          },
+          "directory_maps": {
+            "additionalProperties": {
+              "format": "path",
+              "type": "string"
+            },
+            "title": "Directory Maps",
+            "type": "object"
+          },
+          "original_storage": {
+            "anyOf": [
+              {
+                "format": "path",
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Original Storage"
+          },
+          "raw": {
+            "anyOf": [
+              {
+                "format": "path",
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Raw"
+          },
+          "storage": {
+            "format": "path",
+            "title": "Storage",
+            "type": "string"
+          }
+        },
+        "required": [
+          "storage"
+        ],
+        "title": "LibrarySource",
+        "type": "object"
+      },
       "MarkerRequest": {
         "additionalProperties": false,
         "description": "直播中人工高光打点请求体。",
@@ -2620,6 +2711,11 @@
             "title": "Danmaku",
             "type": "string"
           },
+          "detached_import": {
+            "default": false,
+            "title": "Detached Import",
+            "type": "boolean"
+          },
           "import_id": {
             "anyOf": [
               {
@@ -2636,6 +2732,29 @@
             "default": "raw",
             "title": "Raw",
             "type": "string"
+          },
+          "source_clips": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Source Clips"
+          },
+          "source_session_id": {
+            "anyOf": [
+              {
+                "exclusiveMinimum": 0.0,
+                "type": "integer"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Source Session Id"
           }
         },
         "title": "RecordingStorage",
@@ -7632,6 +7751,47 @@
           }
         },
         "summary": "Patch Web Port"
+      }
+    },
+    "/api/settings/storage-rebuild": {
+      "post": {
+        "description": "管理员指定停写副本，通过后台作业生成独立的新库。",
+        "operationId": "create_storage_rebuild_api_settings_storage_rebuild_post",
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/LibraryRebuild"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "202": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "additionalProperties": true,
+                  "title": "Response Create Storage Rebuild Api Settings Storage Rebuild Post",
+                  "type": "object"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "summary": "Create Storage Rebuild"
       }
     },
     "/api/tasks": {

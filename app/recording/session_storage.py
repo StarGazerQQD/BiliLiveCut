@@ -108,10 +108,10 @@ def managed_media_root(db: Session, session_id: int) -> Path:
     root = Path(settings.storage_root)
     locations = get_locations(db, session_id)
     owner = db.get(AppSetting, f"{OWNER_PREFIX}{session_id}")
-    if owner is None:
+    if owner is None and locations.source_session_id is None:
         return RecordingStorage.base("raw", root)
     directory = locations.session_dir(session_id, root)
-    if session_identity(directory) != owner.value:
+    if session_identity(directory) != (owner.value if owner else None):
         raise ValueError("原片存储目录身份与数据库不一致")
     allowed = locations.media_root(session_id, root)
     if allowed.resolve() != allowed:

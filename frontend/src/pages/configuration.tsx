@@ -16,6 +16,7 @@ import { Button } from "@/components/ui/button";
 import { Card, CardContent } from "@/components/ui/card";
 import { Input } from "@/components/ui/input";
 import { Switch } from "@/components/ui/switch";
+import { StorageRebuild } from "@/components/storage-rebuild";
 import { Label } from "@/components/ui/label";
 import { Badge } from "@/components/ui/badge";
 import {
@@ -571,6 +572,7 @@ export default function ConfigurationPage() {
               </div>
             </div>
           </form>
+          {(group === "all" || group === "storage") && <StorageRebuild />}
         </div>
       </QueryState>
     </Page>

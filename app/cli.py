@@ -55,6 +55,7 @@ class BLCCommand(click.Command):
             "version",
             "doctor",
             "storage-check",
+            "storage-rebuild",
             "serve",
             "console",
             "backend",
@@ -78,7 +79,7 @@ class BLCGroup(click.Group):
 @_diagnostic_command
 def app() -> None:
     """BiliLiveCut —— AI 直播实时切片系统 CLI。"""
-    if click.get_current_context().invoked_subcommand != "storage-check":
+    if click.get_current_context().invoked_subcommand not in {"storage-check", "storage-rebuild"}:
         setup_logging()
 
 
