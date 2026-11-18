@@ -14,6 +14,7 @@ from app.db.schema import CURRENT_SCHEMA_VERSION
 from app.recording.danmaku_journal import _MAX_LINE_BYTES, _Cursor, _Message, _record_adapter
 from app.recording.session_storage import (
     CURSOR_PREFIX,
+    LEGACY_FILE_PREFIX,
     LOCATION_PREFIX,
     OWNER_PREFIX,
     check_archive_header,
@@ -112,6 +113,49 @@ def _mapped_file(value: str, root: Path, mappings: dict[Path, Path]) -> Path:
     if path.resolve() != path or not any(path.is_relative_to(base) for base in (root, *mappings.values())):
         raise ValueError("媒体路径超出指定目录，请指定其实际原片或弹幕根目录")
     return path
+
+
+def _archive_summaries(db: sqlite3.Connection, target: sqlite3.Connection, old: int, new: int, offset: int) -> None:
+    """按新编号保留来源中已生成的正文，恢复后的界面可读取历史结果。"""
+    from app.analysis.segment_summary import _STEP, ARCHIVED_SEGMENTS_PREFIX, SummaryStep
+    from app.analysis.session_summary import _RESULT_PREFIX, ARCHIVED_SUMMARY_PREFIX, _decode_result
+
+    whole = _decode_result(_setting(db, f"{_RESULT_PREFIX}{old}")) or _decode_result(
+        _setting(db, f"{ARCHIVED_SUMMARY_PREFIX}{old}")
+    )
+    snapshots: dict[str, dict[str, object]] = json.loads(_setting(db, f"{ARCHIVED_SEGMENTS_PREFIX}{old}") or "{}")
+    for key, raw_value in db.execute("SELECT key,value FROM app_settings WHERE key GLOB ?", (f"{_STEP}{old}:*",)):
+        step = SummaryStep.model_validate_json(raw_value)
+        if step.session_id != old or key != f"{_STEP}{old}:{step.segment_id}":
+            raise ValueError(f"场次 {old} 的分段总结身份不一致")
+        if step.status in {"pending", "running"} and step.previous:
+            previous = SummaryStep.model_validate(step.previous)
+            if (previous.session_id, previous.segment_id, previous.signature) == (old, step.segment_id, step.signature):
+                step = previous
+        if step.status == "ready" and step.summary:
+            snapshots[str(step.segment_id)] = {
+                "summary_status": "archived",
+                "context_summary": step.summary,
+                "summary_needs_context": step.needs_context,
+            }
+    if not whole and not snapshots:
+        return
+    ids = {r[0] for r in db.execute("SELECT id FROM raw_segments WHERE session_id=?", (old,))}
+    if whole:
+        if whole["session_id"] != old:
+            raise ValueError(f"场次 {old} 的整场总结身份不一致")
+        whole["session_id"] = new
+        for gap in whole["coverage"].get("missing", []):
+            segment = gap.get("segment_id")
+            if segment in ids:
+                gap["segment_id"] = segment + offset
+            elif segment is not None:
+                gap["source_segment_id"] = segment
+                gap["segment_id"] = None
+        put_setting(target, f"{ARCHIVED_SUMMARY_PREFIX}{new}", json.dumps(whole, ensure_ascii=False))
+    mapped = {str(int(key) + offset): value for key, value in snapshots.items() if int(key) in ids}
+    if mapped:
+        put_setting(target, f"{ARCHIVED_SEGMENTS_PREFIX}{new}", json.dumps(mapped, ensure_ascii=False))
 
 
 def _settle(table: str, row: dict[str, Any], number: int) -> None:
@@ -299,7 +343,13 @@ def import_library(
             elif table == "recording_sessions":
                 sid = row["id"]
                 session_rooms[old_id] = original["room_id"]
-                layout = RecordingStorage.model_validate_json(_setting(db, f"{LOCATION_PREFIX}{old_id}") or "{}")
+                location_json = _setting(db, f"{LOCATION_PREFIX}{old_id}")
+                layout = RecordingStorage.model_validate_json(location_json or "{}")
+                local = _setting(db, f"local_source:{old_id}")
+                if not location_json and local and platforms[original["room_id"]] == "local":
+                    import_id = json.loads(local).get("import_id")
+                    if import_id:
+                        layout = RecordingStorage(import_id=import_id, detached_import=True)
                 physical = layout.source_session_id or old_id
                 original_raw, original_chat = root / layout.raw, root / layout.danmaku
                 raw_root = raw or _mapped_file(str(original_raw), root, directory_maps)
@@ -352,10 +402,11 @@ def import_library(
                     f"library_rebuild:session:{sid}",
                     json.dumps({"source": number, "session_id": old_id, "status": row["status"]}),
                 )
-                for prefix in ("session_metadata:", "session_danmaku:", "local_source:", "session_timeline_summary:"):
+                for prefix in ("session_metadata:", "session_danmaku:", "local_source:"):
                     value = _setting(db, f"{prefix}{old_id}")
                     if value:
                         put_setting(target, f"{prefix}{sid}", value)
+                _archive_summaries(db, target, old_id, sid, offsets["raw_segments"])
                 prefix = f"session_title_change:{old_id}:"
                 for key, value in db.execute(
                     "SELECT key,value FROM app_settings WHERE substr(key,1,?)=?", (len(prefix), prefix)
@@ -385,6 +436,8 @@ def import_library(
                             allowed, legacy_raw = media_roots[original["session_id"]]
                             if not path.is_relative_to(allowed) and path.parent != legacy_raw:
                                 raise ValueError(f"分段 {old_id} 的文件不属于登记的场次目录")
+                            if path.parent == legacy_raw:
+                                put_setting(target, f"{LEGACY_FILE_PREFIX}{row['session_id']}:{row['id']}", str(path))
                         row[field] = str(path)
                         missing += int(not path.is_file())
             _settle(table, row, number)

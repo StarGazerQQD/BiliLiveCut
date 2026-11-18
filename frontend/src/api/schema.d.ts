@@ -3724,7 +3724,7 @@ export interface components {
              * Status
              * @enum {string}
              */
-            status: "recording" | "waiting" | "pending" | "generating" | "unconfigured" | "failed" | "ready";
+            status: "recording" | "waiting" | "pending" | "generating" | "unconfigured" | "failed" | "ready" | "archived";
             /** Summary */
             summary?: string | null;
             /**

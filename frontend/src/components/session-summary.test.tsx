@@ -79,3 +79,16 @@ it("keeps a legacy ready summary readable without assuming verification", () => 
   expect(screen.getByText("核验状态未知")).toBeInTheDocument();
   expect(screen.queryByText("核验通过")).not.toBeInTheDocument();
 });
+
+it("displays a rebuilt summary with its historical verification status", () => {
+  render(
+    <SessionSummary
+      value={{ status: "archived", summary: "从原库读取的总结" }}
+    />,
+  );
+  expect(
+    screen.getByRole("article", { name: "历史总结正文" }),
+  ).toHaveTextContent("从原库读取的总结");
+  expect(screen.getByText("重建后未重新核验")).toBeInTheDocument();
+  expect(screen.queryByText("核验通过")).not.toBeInTheDocument();
+});

@@ -17,6 +17,7 @@ from sqlmodel import SQLModel
 from app.core.recording_storage import RecordingStorage
 from app.db.entities import Danmaku, LiveRoom, RawSegment, RecordingSession
 from app.plugins.live_source import DanmakuEvent, SourceRoom
+from app.recording.danmaku_evidence import DanmakuEvidence
 from app.recording.danmaku_journal import _MAX_LINE_BYTES, _Message, _record_adapter
 from app.recording.library_rebuild_rows import _setting, put_setting
 from app.recording.session_storage import (
@@ -81,8 +82,9 @@ def _events(
     session_id: int,
     room_id: int,
     platform: str,
-) -> Iterator[Danmaku]:
+) -> Iterator[tuple[str, Danmaku | DanmakuEvidence]]:
     if journal.is_file():
+        has_messages = False
         with _regular(journal).open("rb") as stream:
             check_journal_header(stream, physical_id, owner)
             for line in _records(stream):
@@ -90,12 +92,19 @@ def _events(
                 if isinstance(item, _Message):
                     if platform == "bilibili" and header and str(item.room_id) != header.source_id:
                         raise ValueError("补做弹幕的房间号与原档不一致")
-                    yield Danmaku(
-                        session_id=session_id,
-                        room_id=item.room_id if platform == "bilibili" else room_id,
-                        **item.model_dump(exclude={"kind", "room_id"}),
+                    has_messages = True
+                    yield (
+                        "journal",
+                        Danmaku(
+                            session_id=session_id,
+                            room_id=item.room_id if platform == "bilibili" else room_id,
+                            **item.model_dump(exclude={"kind", "room_id"}),
+                        ),
                     )
-        return
+                else:
+                    yield "journal", item.evidence
+        if has_messages:
+            return
     if header:
         with _regular(archive).open("rb") as stream:
             check_archive_header(stream, physical_id, owner)
@@ -111,23 +120,29 @@ def _events(
                     parsed = parse_message(event.payload)
                     if parsed:
                         kind, user, content, value = parsed
-                        yield Danmaku(
-                            session_id=session_id,
-                            room_id=int(header.source_id),
-                            ts=event.received_at,
-                            msg_type=kind,
-                            user=user,
-                            content=content,
-                            value=value,
+                        yield (
+                            "archive",
+                            Danmaku(
+                                session_id=session_id,
+                                room_id=int(header.source_id),
+                                ts=event.received_at,
+                                msg_type=kind,
+                                user=user,
+                                content=content,
+                                value=value,
+                            ),
                         )
                 elif event.kind == "normalized":
                     message = DanmakuEvent.model_validate(event.payload)
-                    yield Danmaku(
-                        session_id=session_id,
-                        room_id=room_id,
-                        ts=message.occurred_at,
-                        user=message.user_name,
-                        content=message.content,
+                    yield (
+                        "archive",
+                        Danmaku(
+                            session_id=session_id,
+                            room_id=room_id,
+                            ts=message.occurred_at,
+                            user=message.user_name,
+                            content=message.content,
+                        ),
                     )
                 else:
                     raise ValueError("原档含未支持的弹幕记录格式")
@@ -277,6 +292,18 @@ def index_files(
         put_setting(db, f"{LOCATION_PREFIX}{sid}", layout.model_dump_json())
         if owner:
             put_setting(db, f"{OWNER_PREFIX}{sid}", owner)
+        message_source = None
+        last_observation = None
+        for index, (source, item) in enumerate(_events(archive, journal, header, physical, owner, sid, room, platform)):
+            if check_cancelled and index % 1024 == 0:
+                check_cancelled()
+            if isinstance(item, DanmakuEvidence):
+                last_observation = item
+            else:
+                _insert(db, item)
+                message_source = source
+        if last_observation:
+            put_setting(db, f"session_danmaku:{sid}", last_observation.model_dump_json())
         put_setting(
             db,
             f"library_rebuild:session:{sid}",
@@ -286,7 +313,7 @@ def index_files(
                     "raw": str(raw),
                     "danmaku": str(chat),
                     "time_source": "archive_first_received" if header else "file_mtime",
-                    "message_source": "journal" if journal.is_file() else "archive" if header else None,
+                    "message_source": message_source,
                 }
             ),
         )
@@ -302,10 +329,6 @@ def index_files(
                     status="archived",
                 ),
             )
-        for index, message in enumerate(_events(archive, journal, header, physical, owner, sid, room, platform)):
-            if check_cancelled and index % 1024 == 0:
-                check_cancelled()
-            _insert(db, message)
     if not found:
         raise ValueError("场次目录中没有可引用的媒体或弹幕文件")
     return {"file_sessions": found, "missing_files": len(missing)}

@@ -687,13 +687,15 @@ export function TranscriptsPage() {
                         <p className="mt-2 text-xs text-muted-foreground">
                           {entry.summary_status === "ready"
                             ? "连续上下文摘要已生成"
-                            : entry.summary_status === "pending"
-                              ? "分段摘要等待前文或处理"
-                              : entry.summary_status === "running"
-                                ? "分段摘要生成中"
-                                : entry.summary_status === "stale"
-                                  ? "原文已变化，分段摘要待更新"
-                                  : "分段摘要生成失败"}
+                            : entry.summary_status === "archived"
+                              ? "从原库恢复的分段摘要"
+                              : entry.summary_status === "pending"
+                                ? "分段摘要等待前文或处理"
+                                : entry.summary_status === "running"
+                                  ? "分段摘要生成中"
+                                  : entry.summary_status === "stale"
+                                    ? "原文已变化，分段摘要待更新"
+                                    : "分段摘要生成失败"}
                           {entry.summary_needs_context
                             ? " · 后文到达后补充理解"
                             : ""}

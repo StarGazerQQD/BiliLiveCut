@@ -43,6 +43,7 @@ from app.db.session import get_session
 from app.recording.intents import terminal_settlement_pending
 
 _RESULT_PREFIX = "session_timeline_summary:"
+ARCHIVED_SUMMARY_PREFIX = "library_rebuild:session_summary:"
 _REQUEST_PREFIX = "session_timeline_summary_request:"
 _REANALYSIS_PREFIX = "session_reanalysis:"
 _SUMMARY_VERSION = 3
@@ -559,6 +560,10 @@ def session_timeline_summary_view(
         signature = _summary_input_signature(db, session_id, blocks)
         progress_row = db.get(AppSetting, f"summary_progress:v1:{session_id}")
         progress = _decode_object(progress_row.value if progress_row else None)
+        archived_row = (
+            db.get(AppSetting, f"{ARCHIVED_SUMMARY_PREFIX}{session_id}") if not result and not request else None
+        )
+        archived = _decode_result(archived_row.value if archived_row else None)
 
     base = {
         "analysis_basis": "full_session_asr",
@@ -573,6 +578,17 @@ def session_timeline_summary_view(
         "draft_generated_at": None,
         "verification": {"status": "not_run", "completed_nodes": 0, "total_nodes": 0, "error": None},
     }
+    if archived:
+        return {
+            **base,
+            "status": "archived",
+            "summary": archived["summary"],
+            "source": archived["source"],
+            "generated_at": _gmt8_iso(archived["generated_at"]),
+            "transcript_count": archived["transcript_count"],
+            "character_count": archived["character_count"],
+            "coverage": archived["coverage"],
+        }
     if (
         progress.get("version") == 1
         and progress.get("signature") == signature

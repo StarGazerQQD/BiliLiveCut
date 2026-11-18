@@ -19,7 +19,7 @@ from app.core.recording_storage import RecordingStorage
 from app.db.entities import Danmaku, LiveRoom, RawSegment, RecordingSession, Transcript
 from app.db.schema import create_schema
 from app.recording.library_rebuild import LibraryRebuild, LibrarySource, rebuild_library
-from app.recording.session_storage import LOCATION_PREFIX
+from app.recording.session_storage import LEGACY_FILE_PREFIX, LOCATION_PREFIX
 
 
 def _source(storage: Path, version: int, name: str) -> LibrarySource:
@@ -169,3 +169,143 @@ def test_database_replays_only_uncommitted_journal_suffix(tmp_path: Path) -> Non
     result = rebuild_library(LibraryRebuild(sources=[source]), tmp_path / "result")
     with closing(sqlite3.connect(result.database)) as db:
         assert db.execute("SELECT content FROM danmaku ORDER BY id").fetchall() == [("history",), ("remaining",)]
+
+
+def test_previous_schema_recovers_local_import_using_original_metadata(tmp_path: Path) -> None:
+    source = _source(tmp_path / "local", 5, "local")
+    assert source.database is not None and source.original_storage is not None
+    import_id = "b" * 32
+    relative = Path("raw", "imports", import_id, "segments", "part.ts")
+    original = source.storage / relative
+    original.parent.mkdir(parents=True)
+    (source.storage / "raw/session_1/part.ts").rename(original)
+    with closing(sqlite3.connect(source.database)) as db, db:
+        db.execute("UPDATE raw_segments SET file_path=?", (str(source.original_storage / relative),))
+        db.execute(
+            "INSERT INTO app_settings(key,value,updated_at) VALUES('local_source:1',?,CURRENT_TIMESTAMP)",
+            (json.dumps({"version": 1, "import_id": import_id, "has_comments": True}),),
+        )
+    result = rebuild_library(LibraryRebuild(sources=[source]), tmp_path / "result")
+    with closing(sqlite3.connect(result.database)) as db:
+        layout = RecordingStorage.model_validate_json(
+            db.execute("SELECT value FROM app_settings WHERE key=?", (f"{LOCATION_PREFIX}1",)).fetchone()[0]
+        )
+        assert layout.media_root(1, tmp_path) == original.parent
+        assert db.execute("SELECT file_path FROM raw_segments").fetchone() == (str(original),)
+
+
+def test_rebuilt_flat_raw_reference_is_limited_to_registered_file(tmp_path: Path) -> None:
+    source = _source(tmp_path / "source", 6, "flat")
+    assert source.database is not None
+    media = source.storage / "raw/part.ts"
+    (source.storage / "raw/session_1/part.ts").rename(media)
+    with closing(sqlite3.connect(source.database)) as db, db:
+        db.execute("UPDATE raw_segments SET file_path='raw/part.ts'")
+    result = rebuild_library(LibraryRebuild(sources=[source]), tmp_path / "result")
+    with closing(sqlite3.connect(result.database)) as db:
+        assert db.execute(
+            "SELECT key,value FROM app_settings WHERE key GLOB ?", (f"{LEGACY_FILE_PREFIX}*",)
+        ).fetchall() == [(f"{LEGACY_FILE_PREFIX}1:1", str(media))]
+
+
+@pytest.mark.parametrize("with_message", [False, True])
+def test_files_with_observations_choose_one_message_source(tmp_path: Path, with_message: bool) -> None:
+    storage = tmp_path / "original"
+    folder = storage / "raw/session_7"
+    folder.mkdir(parents=True)
+    stamp = "2026-01-01T01:00:00Z"
+    common = {"session_id": 7, "received_at": stamp, "platform": "fixture", "source_id": "room"}
+    event = {**common, "kind": "normalized", "payload": {"occurred_at": stamp, "content": "same"}}
+    archive = [{**common, "kind": "session"}, event, event]
+    journal = [
+        {"version": 1, "identity": "old-identity", "session_id": 7},
+        {"kind": "observation", "evidence": {"status": "available"}},
+    ]
+    if with_message:
+        journal.append(
+            {
+                "kind": "message",
+                "room_id": 9,
+                "ts": stamp,
+                "msg_type": "danmaku",
+                "user": None,
+                "content": "journal",
+                "value": 1,
+            }
+        )
+    for name, records in (("danmaku.jsonl", archive), ("danmaku-pending.jsonl", journal)):
+        (folder / name).write_bytes(b"".join(json.dumps(r).encode() + b"\n" for r in records))
+    result = rebuild_library(LibraryRebuild(sources=[LibrarySource(storage=storage)]), tmp_path / "result")
+    with closing(sqlite3.connect(result.database)) as db:
+        assert db.execute("SELECT content FROM danmaku ORDER BY id").fetchall() == (
+            [("journal",)] if with_message else [("same",), ("same",)]
+        )
+        assert (
+            json.loads(db.execute("SELECT value FROM app_settings WHERE key='session_danmaku:1'").fetchone()[0])[
+                "status"
+            ]
+            == "available"
+        )
+        evidence = db.execute("SELECT value FROM app_settings WHERE key='library_rebuild:session:1'").fetchone()[0]
+        assert json.loads(evidence)["message_source"] == ("journal" if with_message else "archive")
+
+
+def test_renumbered_summaries_are_readable_without_resuming_work(
+    tmp_path: Path, temp_db: None, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    from app.analysis.segment_summary import SummaryStep, segment_summary_views
+    from app.analysis.session_summary import session_timeline_summary_view
+    from app.db import session
+
+    sources = [_source(tmp_path / name, 6, name) for name in ("first", "second")]
+    assert sources[1].database is not None
+    with closing(sqlite3.connect(sources[1].database)) as db, db:
+        whole = {
+            "version": 3,
+            "session_id": 1,
+            "analysis_basis": "full_session_asr",
+            "transcript_signature": "a" * 64,
+            "transcript_count": 1,
+            "character_count": 6,
+            "source": "llm",
+            "summary": "saved whole",
+            "generated_at": "2026-01-01T00:00:00Z",
+            "coverage": {"mode": "degraded", "missing": [{"segment_id": 1}]},
+            "summary_mode": "degraded",
+        }
+        step = SummaryStep(
+            session_id=1,
+            segment_id=1,
+            signature="old",
+            generation="g",
+            operation_id="op",
+            lease="old",
+            status="ready",
+            summary="saved segment",
+        )
+        db.executemany(
+            "INSERT INTO app_settings(key,value,updated_at) VALUES(?,?,CURRENT_TIMESTAMP)",
+            [
+                ("session_timeline_summary:1", json.dumps(whole)),
+                ("segment_summary_step:v1:1:1", step.model_dump_json()),
+            ],
+        )
+    result = rebuild_library(LibraryRebuild(sources=sources), tmp_path / "result")
+    engine = create_engine(URL.create("sqlite", database=result.database))
+    session.install_database_telemetry(engine)
+    try:
+        monkeypatch.setattr(session, "engine", engine)
+        with Session(engine) as db:
+            summary = segment_summary_views(db, 2)[2]
+            assert (summary["summary_status"], summary["context_summary"]) == ("archived", "saved segment")
+        whole_view = session_timeline_summary_view(2, processing_state="completed", ended=True)
+        assert whole_view["status"] == "archived" and whole_view["summary"] == "saved whole"
+        assert whole_view["verification"]["status"] == "not_run"
+        assert whole_view["coverage"]["missing"] == [{"segment_id": 2}]
+        with closing(sqlite3.connect(result.database)) as db:
+            assert db.execute(
+                "SELECT count(*) FROM app_settings WHERE key GLOB 'segment_summary_queue:*' "
+                "OR key GLOB 'session_timeline_summary_request:*'"
+            ).fetchone() == (0,)
+    finally:
+        engine.dispose()

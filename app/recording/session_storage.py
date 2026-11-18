@@ -18,6 +18,7 @@ from app.db.entities import AppSetting, RecordingSession
 OWNER_PREFIX = "session_storage_owner:v1:"
 CURSOR_PREFIX = "session_danmaku_cursor:v1:"
 LOCATION_PREFIX = "session_storage_location:v1:"
+LEGACY_FILE_PREFIX = "library_rebuild:flat_raw:"
 OWNER_FILE = ".blc-session-id"
 SESSION_TREES = ("raw", "clips", "ready_to_upload")
 JOURNAL_COLLISION = "弹幕补做记录已存在，必须先完成原场次恢复"

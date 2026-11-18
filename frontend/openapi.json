@@ -3028,7 +3028,8 @@
               "generating",
               "unconfigured",
               "failed",
-              "ready"
+              "ready",
+              "archived"
             ],
             "title": "Status",
             "type": "string"

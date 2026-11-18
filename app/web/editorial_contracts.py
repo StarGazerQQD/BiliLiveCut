@@ -74,7 +74,7 @@ class SessionSummaryPresentation(BaseModel):
     """兼容既有总结字段，并正式披露草稿和核验进度。"""
 
     model_config = ConfigDict(extra="allow")
-    status: Literal["recording", "waiting", "pending", "generating", "unconfigured", "failed", "ready"]
+    status: Literal["recording", "waiting", "pending", "generating", "unconfigured", "failed", "ready", "archived"]
     analysis_basis: Literal["full_session_asr"] = "full_session_asr"
     transcript_count: int = Field(default=0, ge=0)
     character_count: int = Field(default=0, ge=0)
