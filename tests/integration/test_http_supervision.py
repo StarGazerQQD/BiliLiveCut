@@ -199,11 +199,13 @@ def test_alive_service_http_outage_recovers_without_overlapping_generations(
                     expected_failure = pytest.raises(psutil.AccessDenied)
                 else:
                     expected_failure = nullcontext()
+                # active 用例模拟无法证实角色的活体，必须拒绝不完整观测。
+                known = None if snapshot_failure == "active" else before
                 with expected_failure:
                     while True:
                         assert process.poll() is None, log_path.read_text(encoding="utf-8")
                         try:
-                            after = _service_snapshot(parent)
+                            after = _service_snapshot(parent, known)
                         except psutil.AccessDenied as exc:
                             # 旧树已停止后才允许重读，避免缺失观测掩盖代际重叠。
                             if _active_members(owned):
