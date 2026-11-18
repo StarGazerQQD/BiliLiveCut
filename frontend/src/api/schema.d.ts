@@ -3538,6 +3538,24 @@ export interface components {
             verdict: "recommend" | "reject" | "needs_review" | "unknown";
         };
         /**
+         * RecordingStorage
+         * @description 创建场次或导入时固定的目录；相对引用随完整 storage 副本迁移。
+         */
+        RecordingStorage: {
+            /**
+             * Danmaku
+             * @default raw
+             */
+            danmaku: string;
+            /** Import Id */
+            import_id?: string | null;
+            /**
+             * Raw
+             * @default raw
+             */
+            raw: string;
+        };
+        /**
          * RenderCollectionRequest
          * @description 渲染合集请求。
          */

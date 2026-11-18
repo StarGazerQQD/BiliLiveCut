@@ -1,7 +1,7 @@
 """存储路径管理。
 
 集中定义并按需创建运行产物目录,避免各模块硬编码路径。
-所有目录均位于 :data:`Settings.storage_root` 之下。
+原片与弹幕可独立指定存储位置，默认使用存储根下的 raw。
 """
 
 from __future__ import annotations
@@ -9,6 +9,7 @@ from __future__ import annotations
 from pathlib import Path, PurePosixPath, PureWindowsPath
 
 from app.core.config import settings
+from app.core.recording_storage import RecordingStorage
 
 
 def resolve_storage_path(value: str | Path) -> Path:
@@ -76,8 +77,10 @@ def _subdir(name: str) -> Path:
 
 
 def raw_dir() -> Path:
-    """原始录制片段目录 ``storage/raw``。"""
-    return _subdir("raw")
+    """当前新场次的原片根目录。"""
+    path = RecordingStorage.base(settings.storage_raw_dir or "raw", storage_root())
+    path.mkdir(parents=True, exist_ok=True)
+    return path
 
 
 def clips_dir() -> Path:

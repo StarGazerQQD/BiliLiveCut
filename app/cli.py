@@ -51,7 +51,17 @@ class BLCCommand(click.Command):
     @_diagnostic_command
     def invoke(self, ctx: click.Context) -> object:
         """为业务命令准备当前数据库，再调用实际实现。"""
-        if self.name not in {"version", "doctor", "serve", "console", "backend", "frontend", "start", "init"}:
+        if self.name not in {
+            "version",
+            "doctor",
+            "storage-check",
+            "serve",
+            "console",
+            "backend",
+            "frontend",
+            "start",
+            "init",
+        }:
             from app.db.session import init_db
 
             init_db()
@@ -68,7 +78,8 @@ class BLCGroup(click.Group):
 @_diagnostic_command
 def app() -> None:
     """BiliLiveCut —— AI 直播实时切片系统 CLI。"""
-    setup_logging()
+    if click.get_current_context().invoked_subcommand != "storage-check":
+        setup_logging()
 
 
 # ── 从子模块注册所有命令 ──────────────────────────────────

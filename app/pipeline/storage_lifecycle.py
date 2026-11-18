@@ -152,7 +152,17 @@ def should_stop_recording() -> bool:
     :returns: 是否应立即停止录制并释放资源。
     """
     level, _ = check_disk_level()
-    return level == "critical"
+    if level == "critical":
+        return True
+    from app.core.recording_storage import RecordingStorage
+    from app.core.runtime_settings import process_settings
+
+    roots = RecordingStorage.configured()
+    for reference in {roots.raw, roots.danmaku} - {"raw"}:
+        path = roots.base(reference, Path(settings.storage_root))
+        if not path.is_dir() or shutil.disk_usage(path).free / 1024**3 < process_settings().critical_disk_threshold_gb:
+            return True
+    return False
 
 
 def cleanup_old_raw_files(retention_days: int | None = None) -> int:
@@ -186,6 +196,7 @@ def _cleanup_old_raw_files(retention_days: int | None) -> int:
     )
     from app.db.session import get_session
     from app.recording.intents import terminal_settlement_pending
+    from app.recording.session_storage import managed_media_root
 
     now = datetime.now(UTC).replace(tzinfo=None)
     days = retention_days if retention_days is not None else settings.raw_retention_days
@@ -193,7 +204,7 @@ def _cleanup_old_raw_files(retention_days: int | None) -> int:
         raise ValueError("原始录像保留天数必须 >= 1")
     age_cutoff = now - timedelta(days=days)
     clip_cutoff = now - timedelta(hours=settings.clip_cleanup_delay_hours)
-    allowed_root = raw_dir()
+    allowed_roots: dict[int, Path] = {}
     cleaned = 0
     targets: list[tuple[str, int, bool, list[str]]] = []
     with get_session(operation="raw_cleanup_snapshot") as db:
@@ -244,6 +255,10 @@ def _cleanup_old_raw_files(retention_days: int | None) -> int:
             if any(has_review_draft(event.features_json) or claim_state(event)["active"] for event in review_events):
                 continue
             segments = db.exec(select(RawSegment).where(RawSegment.session_id == recording.id)).all()
+            try:
+                allowed_roots[recording.id] = managed_media_root(db, recording.id)
+            except (ValueError, OSError):
+                continue
             completed = bool(tasks) and all(task.stage == TaskStatus.COMPLETED for task in tasks)
             expired = recording.ended_at <= age_cutoff
             usable_clips = db.exec(
@@ -282,7 +297,7 @@ def _cleanup_old_raw_files(retention_days: int | None) -> int:
         if not file.is_file() or resolved in protected_paths or shared_sources.get(resolved, set()) - {session_id}:
             continue
         # 独占门保护引用快照；文件系统访问不再持有业务数据库事务。
-        if _safe_unlink(raw_path, allowed_root):
+        if _safe_unlink(raw_path, allowed_roots[session_id]):
             cleaned += 1
             if cleaned >= 100:
                 logger.info("本轮原片清理达到 100 个文件，余项在下轮继续。")

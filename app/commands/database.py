@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+from pathlib import Path
+
 import click
 from rich.console import Console
 
@@ -54,8 +56,30 @@ def cmd_trends_purge(
     console.print(f"[green]已清理 {n} 条过期条目。[/green]")
 
 
+@click.option("--database", type=click.Path(exists=True, dir_okay=False, path_type=Path), required=True)
+@click.option("--storage", type=click.Path(exists=True, file_okay=False, path_type=Path), required=True)
+@click.option(
+    "--map-dir",
+    "directory_maps",
+    type=(str, click.Path(exists=True, file_okay=False, path_type=Path)),
+    multiple=True,
+    help="外置目录的原路径和副本路径，可重复。",
+)
+def cmd_storage_check(database: Path, storage: Path, directory_maps: tuple[tuple[str, Path], ...]) -> None:
+    """只读核对数据库副本与 storage 中的场次身份、分段登记和历史弹幕时间。"""
+    from app.recording.storage_check import check_storage
+
+    count, findings = check_storage(database, storage, directory_maps)
+    click.echo(f"已核对 {count} 个数据库场次，待核对项 {len(findings)}")
+    for finding in findings:
+        click.echo(finding)
+    if findings:
+        raise click.exceptions.Exit(1)
+
+
 # 注册列表
 DATABASE_COMMANDS = [
     ("db-reset", cmd_db_reset, None),
+    ("storage-check", cmd_storage_check, None),
     ("trends-purge", cmd_trends_purge, None),
 ]

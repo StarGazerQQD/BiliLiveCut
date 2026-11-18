@@ -2611,6 +2611,36 @@
         "title": "ReanalysisTarget",
         "type": "object"
       },
+      "RecordingStorage": {
+        "additionalProperties": false,
+        "description": "创建场次或导入时固定的目录；相对引用随完整 storage 副本迁移。",
+        "properties": {
+          "danmaku": {
+            "default": "raw",
+            "title": "Danmaku",
+            "type": "string"
+          },
+          "import_id": {
+            "anyOf": [
+              {
+                "pattern": "^[0-9a-f]{32}$",
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Import Id"
+          },
+          "raw": {
+            "default": "raw",
+            "title": "Raw",
+            "type": "string"
+          }
+        },
+        "title": "RecordingStorage",
+        "type": "object"
+      },
       "RenderCollectionRequest": {
         "additionalProperties": false,
         "description": "渲染合集请求。",

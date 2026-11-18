@@ -19,6 +19,7 @@ from urllib.parse import urlsplit
 from pydantic import Field, field_validator, model_validator
 from pydantic_settings import BaseSettings, SettingsConfigDict
 
+from app.core.recording_storage import validate_location
 from app.models.capacity import DEFAULT_OUTPUT_TOKENS
 from app.models.contracts import MAX_CONFIGURABLE_TOKENS
 
@@ -63,6 +64,14 @@ class Settings(BaseSettings):
 
     # ---------- 存储 ----------
     storage_root: str = "./storage"
+    storage_raw_dir: str = Field(
+        default="",
+        description="新场次的原片目录。可填服务主机绝对路径或相对存储根的目录，留空使用 storage 根下的 raw。",
+    )
+    storage_danmaku_dir: str = Field(
+        default="",
+        description="新场次的弹幕档案、补做和导入弹幕目录。留空使用存储根下的 raw，历史和录制中场次沿用原位置。",
+    )
     database_url: str = "sqlite:///./storage/blc.db"
     plugin_dir: str = "./storage/plugins"
 
@@ -365,6 +374,12 @@ class Settings(BaseSettings):
     notify_on_disk_alert: bool = True  # 磁盘不足时通知
     notify_on_error: bool = True  # 任务永久失败时通知
     disk_alert_threshold_gb: int = 10  # 磁盘告警阈值(GB)
+
+    @field_validator("storage_raw_dir", "storage_danmaku_dir")
+    @classmethod
+    def validate_recording_location(cls, value: str) -> str:
+        """配置保存前检查路径格式。"""
+        return validate_location(value)
 
     @field_validator("frontend_trusted_proxy_ips")
     @classmethod

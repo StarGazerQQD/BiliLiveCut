@@ -128,6 +128,7 @@ async def test_collection_continues_through_database_outage_without_resampling(
     room = SourceRoom(platform=provider, source_id="123", canonical_url="https://fixture.invalid/123")
     capture = DanmakuCapture(BilibiliSource() if socket else feed, room, 1, 1)
     send = socket.message if socket else feed.queue.put_nowait
+    archive_file, journal_file = archive_path(1), journal_path(1)
     blocked = False
     faults = 0
 
@@ -153,13 +154,13 @@ async def test_collection_continues_through_database_outage_without_resampling(
         blocked = True
         send("same-message")
         send("same-message")
-        await until(lambda: archive_path(1).read_text(encoding="utf-8").count("same-message") == 2)
+        await until(lambda: archive_file.read_text(encoding="utf-8").count("same-message") == 2)
         await until(lambda: capture._database_failure)
         assert capture._task is not None and not capture._task.done()
         # 原始档案先于补做文件写入；等接收线程返回后核查完整持久记录。
         async with asyncio.timeout(5):
             async with capture._state_lock:
-                assert journal_path(1).read_text(encoding="utf-8").count("same-message") == 2
+                assert journal_file.read_text(encoding="utf-8").count("same-message") == 2
         if failure == "sqlite_busy":
             with get_session() as db:
                 assert read_evidence(db, 1).confirmed_until == baseline.confirmed_until
@@ -230,6 +231,12 @@ async def test_journal_write_failure_preserves_prefix_and_does_not_confirm_missi
         def __exit__(self, *args: object) -> None:
             self.stream.close()
 
+        def seek(self, offset: int, whence: int = 0) -> int:
+            return self.stream.seek(offset, whence)
+
+        def readline(self, size: int = -1) -> bytes:
+            return self.stream.readline(size)
+
         def write(self, data: bytes) -> int:
             nonlocal injected
             self.stream.write(data[: len(data) // 2])
@@ -246,7 +253,7 @@ async def test_journal_write_failure_preserves_prefix_and_does_not_confirm_missi
         newline: str | None = None,
     ) -> BinaryIO | TextIO | PartialWrite:
         nonlocal injected
-        if path == journal_path(1) and mode == "ab" and not injected:
+        if path == journal_path(1) and mode == "a+b" and not injected:
             if failure == "open":
                 injected = True
                 raise OSError("controlled file open failure")
@@ -326,12 +333,13 @@ async def test_stop_during_outage_leaves_durable_tail_for_recovery(
         if blocked:
             raise PoolTimeout("controlled outage through stop")
 
+    journal_file = journal_path(1)
     event.listen(engine, "checkout", checkout)
     try:
         await capture.start()
         blocked = True
         feed.queue.put_nowait("durable-tail")
-        await until(lambda: journal_path(1).exists() and "durable-tail" in journal_path(1).read_text(encoding="utf-8"))
+        await until(lambda: journal_file.exists() and "durable-tail" in journal_file.read_text(encoding="utf-8"))
         await asyncio.wait_for(capture.stop(), 2)
     finally:
         blocked = False

@@ -57,6 +57,8 @@ const common = new Set(
   ),
 );
 common.add("asr_remote_route_id");
+common.add("storage_raw_dir");
+common.add("storage_danmaku_dir");
 const effects: Record<string, string> = {
   new_room: "新建房间时生效",
   next_task: "下一任务生效",

@@ -95,7 +95,7 @@ async def test_archive_failure_reports_once_and_keeps_database_capture(
     original_open = Path.open
 
     def unavailable(path: Path, mode: str = "r", *args: object, **kwargs: object) -> object:
-        if path.name == "danmaku.jsonl" and mode == "ab":
+        if path.name == "danmaku.jsonl" and mode == "a+b":
             raise PermissionError("simulated read-only archive")
         return original_open(path, mode, *args, **kwargs)
 

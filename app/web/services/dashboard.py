@@ -125,7 +125,9 @@ def danmaku_overview(
         source_session_ids.update(row.session_id for row in recent_rows)
         sources = source_identities_for_sessions(db, source_session_ids)
 
-    from app.recording.danmaku_archive import archive_view
+        from app.recording.danmaku_archive import archive_views
+
+        archives = archive_views(db, page.session_ids)
 
     sessions = [
         {
@@ -136,7 +138,7 @@ def danmaku_overview(
             if sources.get(sid, unknown_source_identity())["platform"] == "bilibili"
             else "普通文本条数",
             "evidence": page.evidence[sid],
-            "archive": archive_view(sid),
+            "archive": archives[sid],
             **sources.get(sid, unknown_source_identity()),
         }
         for sid in page.session_ids

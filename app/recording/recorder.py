@@ -35,10 +35,11 @@ from loguru import logger
 from app.analysis.transcription.process_tree import ProcessTree
 from app.core.async_cleanup import complete_cleanup
 from app.core.config import settings
-from app.core.execution import run_sync
+from app.core.execution import run_sync, start_thread, wait_for_completion
 from app.core.ffmpeg_errors import FfmpegErrorType, classify_ffmpeg_error
 from app.core.paths import resolve_storage_path, session_raw_dir, storage_root
 from app.core.process_spawn import spawn_owned_async, terminate_owned_async, wait_process_exit
+from app.core.recording_storage import RecordingStorage
 from app.core.sanitize import sanitize_diagnostic
 from app.core.supervisor import remaining_shutdown
 from app.db.entities import (
@@ -59,6 +60,7 @@ from app.plugins.live_source import (
 )
 from app.recording import intents
 from app.recording.danmaku import DanmakuCapture
+from app.recording.session_storage import bind_new_storage
 from app.recording.stream_failover import StreamFailover
 from app.recording.stream_race import StreamAttempt, StreamRace, active_media_size
 from app.recording.writer_ownership import SessionWriter
@@ -153,6 +155,8 @@ class Recorder:
         self._writer: SessionWriter | None = None
         self._stop = asyncio.Event()
         self._session_id: int | None = None
+        self._storage_identity: str | None = None
+        self._locations = RecordingStorage()
         self._seq = 0  # 跨重连累加的全局片段序号
         self._paths: set[str] = set()  # 已登记片段路径缓存(避免每次查全表)
         self._tail_registration_pending = False
@@ -225,7 +229,14 @@ class Recorder:
     async def _start_danmaku(self) -> None:
         """独立启动可选弹幕，按场次保存能力与实际连接证据。"""
         if self._session_id is not None and self._source is not None:
-            self._danmaku = DanmakuCapture(self._source, self.source_room, self.db_room_id, self._session_id)
+            self._danmaku = DanmakuCapture(
+                self._source,
+                self.source_room,
+                self.db_room_id,
+                self._session_id,
+                storage_identity=self._storage_identity,
+                locations=self._locations,
+            )
             await self._danmaku.start()
 
     async def _stop_danmaku(self) -> None:
@@ -284,11 +295,15 @@ class Recorder:
             await refresh_room_metadata(self.db_room_id)
         if self._stopping():
             return
-        self._session_id = self._create_session()
+        creation = start_thread(self._create_session)
+        cancelled = await wait_for_completion(creation)
+        self._session_id = creation.result()
         begin_session_metadata(self._session_id)
         metadata_task = asyncio.create_task(self._refresh_metadata_loop())
         failed: str | None = None
         try:
+            if cancelled:
+                raise asyncio.CancelledError
             await self._run_session()
         except asyncio.CancelledError:
             failed = "录制任务被取消"
@@ -349,7 +364,11 @@ class Recorder:
         self._seq = 0  # 每次 run() 重新开始片段计数
         self._paths = set()  # 重置路径缓存
         self._stream_failover.reset()
-        out_dir = session_raw_dir(self._session_id)
+        out_dir = (
+            self._locations.session_dir(self._session_id, Path(settings.storage_root))
+            if self._storage_identity
+            else session_raw_dir(self._session_id)
+        )
         self._retry_backoff = 1.0
         self._reconnect_episode = False
         reconnect_budget = self._reconnect_budget = _ReconnectBudget()
@@ -1353,9 +1372,8 @@ class Recorder:
                     origin="manual",
                 )
                 self.intent_generation = intent.generation
-            db.add(session)
-            db.flush()
-            db.refresh(session)
+            self._locations = RecordingStorage.configured()
+            self._storage_identity = bind_new_storage(db, session, self._locations)
             sid = session.id
             intents.bind_session(
                 db,

@@ -22,6 +22,8 @@ LABELS: dict[str, str] = {
     "review_claim_ttl_s": "审核领取有效期",
     "review_blind_mode": "盲审",
     "storage_root": "存储根目录",
+    "storage_raw_dir": "原始录制文件目录",
+    "storage_danmaku_dir": "弹幕数据目录",
     "database_url": "数据库连接",
     "plugin_dir": "插件目录",
     "ffmpeg_path": "FFmpeg 程序路径",

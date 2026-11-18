@@ -89,7 +89,7 @@ def test_click_entrypoint_preserves_all_historical_commands() -> None:
         "trends-keywords",
         "version",
     }
-    assert historical | {"backend", "frontend", "start"} == set(app.commands)
+    assert historical | {"backend", "frontend", "start", "storage-check"} == set(app.commands)
 
 
 def test_every_command_help_works_without_database(monkeypatch: pytest.MonkeyPatch) -> None:

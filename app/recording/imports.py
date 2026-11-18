@@ -17,13 +17,15 @@ from sqlmodel import Session, select
 
 from app.core.config import settings
 from app.core.http_limits import MAX_VIDEO_BYTES as MAX_VIDEO_BYTES
-from app.core.paths import raw_dir, to_storage_relative
+from app.core.paths import to_storage_relative
 from app.core.process_control import run_cancellable
+from app.core.recording_storage import RecordingStorage
 from app.db.entities import AppSetting, Danmaku, LiveRoom, RawSegment, RecordingSession, SegmentTask, SessionStatus
 from app.db.session import get_session
 from app.jobs.context import JobContext
 from app.pipeline.stage_result import make_pipeline_key, make_stage_key
 from app.recording.import_comments import COMMENT_SUFFIXES, CommentReport, preprocess_comments
+from app.recording.session_storage import bind_new_storage
 
 VIDEO_SUFFIXES = {".mp4", ".mkv", ".flv", ".ts", ".mov", ".webm", ".m4v"}
 _INPUT_FORMATS = "mov,matroska,webm,flv,mpegts"
@@ -59,6 +61,7 @@ class ImportRecord(ImportRequest):
     comment_count: int | None = None
     duration_s: float | None = None
     warnings: list[str] = Field(default_factory=list)
+    locations: RecordingStorage = Field(default_factory=RecordingStorage, exclude=True)
 
 
 def import_lock(import_id: str) -> threading.Lock:
@@ -67,29 +70,28 @@ def import_lock(import_id: str) -> threading.Lock:
         return _LOCKS.setdefault(import_id, threading.Lock())
 
 
-def import_directory(import_id: str) -> Path:
+def import_directory(import_id: str, locations: RecordingStorage | None = None, *, danmaku: bool = False) -> Path:
     """只允许服务端 UUID，且拒绝通过符号链接逃逸媒体根目录。"""
     if len(import_id) != 32 or any(char not in "0123456789abcdef" for char in import_id):
         raise ValueError("导入编号无效")
-    root = raw_dir().resolve()
-    directory = (root / "imports" / import_id).resolve()
-    if not directory.is_relative_to(root):
-        raise ValueError("导入目录超出媒体根目录")
-    return directory
+    return (locations or RecordingStorage()).import_dir(import_id, Path(settings.storage_root), danmaku=danmaku)
 
 
 def save_import(db: Session, record: ImportRecord) -> None:
     """在调用方事务内保存清单。"""
     key = _PREFIX + record.id
     row = db.get(AppSetting, key) or AppSetting(key=key)
-    row.value = record.model_dump_json()
+    row.value = json.dumps(
+        {**record.model_dump(mode="json"), "locations": record.locations.model_dump()}, ensure_ascii=False
+    )
     row.updated_at = datetime.now(UTC)
     db.add(row)
 
 
 def get_import(import_id: str, db: Session | None = None) -> ImportRecord:
     """读取严格格式的导入记录，不对缺失或损坏数据伪造成功。"""
-    import_directory(import_id)
+    if len(import_id) != 32 or any(char not in "0123456789abcdef" for char in import_id):
+        raise ValueError("导入编号无效")
     if db is None:
         with get_session() as connection:
             return get_import(import_id, connection)
@@ -127,9 +129,15 @@ def create_import(request: ImportRequest, owner: str) -> ImportRecord:
             if existing.owner != owner or original != request:
                 raise ValueError("导入请求编号已使用，请新建导入")
             return existing
-        record = ImportRecord(**request.model_dump(), id=import_id, owner=owner, created_at=datetime.now(UTC))
-        directory = import_directory(record.id)
-        directory.mkdir(parents=True, exist_ok=True)
+        locations = RecordingStorage.configured(import_id=import_id)
+        record = ImportRecord(
+            **request.model_dump(), id=import_id, owner=owner, created_at=datetime.now(UTC), locations=locations
+        )
+        directories = {import_directory(record.id, locations)}
+        if record.comments_name:
+            directories.add(import_directory(record.id, locations, danmaku=True))
+        for directory in directories:
+            directory.mkdir(parents=True, exist_ok=False)
         save_import(db, record)
         return record
 
@@ -139,7 +147,9 @@ def upload_path(record: ImportRecord, kind: Literal["video", "comments"]) -> Pat
     name = record.video_name if kind == "video" else record.comments_name
     if name is None:
         raise ValueError("本次导入未声明弹幕文件")
-    return import_directory(record.id) / (kind + Path(name).suffix.lower())
+    return import_directory(record.id, record.locations, danmaku=kind == "comments") / (
+        kind + Path(name).suffix.lower()
+    )
 
 
 def _probe_video(path: Path, context: JobContext) -> float:
@@ -264,7 +274,7 @@ def prepare_import(context: JobContext, import_id: str) -> dict[str, object]:
         )
         context.report(10, f"弹幕预处理完成：{len(report.events)} 条有效事件")
         directory = video.parent / "segments"
-        _remove_unpublished_parts(directory)
+        _remove_unpublished_parts(directory, record)
         published = False
         try:
             if shutil.disk_usage(video.parent).free < video.stat().st_size + 256 * 1024**2:
@@ -281,14 +291,14 @@ def prepare_import(context: JobContext, import_id: str) -> dict[str, object]:
             published = True
         finally:
             if not published:
-                _remove_unpublished_parts(directory)
+                _remove_unpublished_parts(directory, record)
         video.unlink(missing_ok=True)
         return {"import_id": import_id, "session_id": record.session_id}
 
 
-def _remove_unpublished_parts(directory: Path) -> None:
+def _remove_unpublished_parts(directory: Path, record: ImportRecord) -> None:
     """只清理已验证导入目录中尚未发布的本次分段文件。"""
-    if directory.resolve() != directory or not directory.is_relative_to(raw_dir().resolve()):
+    if directory.resolve() != directory or directory != import_directory(record.id, record.locations) / "segments":
         raise ValueError("分段目录无效")
     if directory.exists():
         for path in directory.iterdir():
@@ -320,8 +330,7 @@ def _publish_import(
     session = RecordingSession(
         room_id=room.id, status=SessionStatus.STOPPED, started_at=origin, ended_at=origin + timedelta(seconds=duration)
     )
-    db.add(session)
-    db.flush()
+    bind_new_storage(db, session, record.locations.model_copy(update={"import_id": record.id}))
     assert session.id is not None
     for index, event in enumerate(report.events):
         if index % 1000 == 0:

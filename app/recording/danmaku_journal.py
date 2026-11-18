@@ -12,25 +12,28 @@ from loguru import logger
 from pydantic import BaseModel, ConfigDict, Field, TypeAdapter
 from sqlmodel import Session
 
-from app.db.entities import AppSetting, Danmaku
+from app.core.recording_storage import RecordingStorage
+from app.db.entities import AppSetting, Danmaku, LiveRoom, RecordingSession
 from app.db.session import get_session
 from app.recording.danmaku_archive import archive_path
 from app.recording.danmaku_evidence import DanmakuEvidence, freeze_evidence, read_evidence, save_evidence
+from app.recording.session_storage import (
+    CURSOR_PREFIX,
+    JOURNAL_COLLISION,
+    JournalHeader,
+    check_archive_header,
+    check_journal_header,
+    session_identity,
+    verify_storage,
+)
+from app.sources.rooms import room_source
 
-_PREFIX = "session_danmaku_cursor:v1:"
 _MAX_LINE_BYTES = 64 * 1024 * 1024
 _BATCH_BYTES = 1024 * 1024
 
 
 class JournalWriteError(OSError):
     """本地补做文件写入不确定，禁止作为上游网络故障重连。"""
-
-
-class _Header(BaseModel):
-    model_config = ConfigDict(extra="forbid")
-    version: Literal[1] = 1
-    identity: str
-    session_id: int
 
 
 class _Message(BaseModel):
@@ -63,16 +66,16 @@ class _Cursor(BaseModel):
     unconfirmed_tail_sha256: str | None = None
 
 
-def journal_path(session_id: int) -> Path:
+def journal_path(session_id: int, locations: RecordingStorage | None = None) -> Path:
     """独立保存已决定入库的数据，不改变原始弹幕档案协议。"""
-    expected = archive_path(session_id).with_name("danmaku-pending.jsonl")
+    expected = archive_path(session_id, locations).with_name("danmaku-pending.jsonl")
     if expected.resolve() != expected:
         raise ValueError("弹幕补做记录路径不能重定向")
     return expected
 
 
 def _cursor(db: Session, session_id: int) -> _Cursor | None:
-    row = db.get(AppSetting, f"{_PREFIX}{session_id}")
+    row = db.get(AppSetting, f"{CURSOR_PREFIX}{session_id}")
     return _Cursor.model_validate_json(row.value) if row is not None else None
 
 
@@ -85,10 +88,14 @@ def journal_closed(db: Session, session_id: int) -> bool:
 class DanmakuJournal:
     """场次内追加选中行和观测；游标与实际消息同事务提交，重放不重新采样。"""
 
-    def __init__(self, session_id: int) -> None:
+    def __init__(
+        self, session_id: int, *, storage_identity: str | None = None, locations: RecordingStorage | None = None
+    ) -> None:
         self.session_id = session_id
+        self._storage_identity = storage_identity
+        self._locations = locations or RecordingStorage()
         self._lock = Lock()
-        self._header: _Header | None = None
+        self._header: JournalHeader | None = None
         self._failure: OSError | ValueError | None = None
 
     def _append(self, records: list[_Message | _Observation]) -> None:
@@ -98,17 +105,27 @@ class DanmakuJournal:
             if self._failure is not None:
                 raise JournalWriteError("弹幕补做写入曾失败，已停止追加并保留原文件供恢复") from self._failure
             try:
-                path = journal_path(self.session_id)
+                path = journal_path(self.session_id, self._locations)
+                if session_identity(path.parent) != self._storage_identity:
+                    raise ValueError("弹幕补做写入目录的场次身份不一致")
                 path.parent.mkdir(parents=True, exist_ok=True)
                 if self._header is None:
                     if path.exists():
-                        raise RuntimeError("弹幕补做记录已存在，必须先完成原场次恢复")
-                    header = _Header(identity=uuid4().hex, session_id=self.session_id)
+                        raise RuntimeError(JOURNAL_COLLISION)
+                    header = JournalHeader(
+                        version=2 if self._storage_identity else 1,
+                        identity=self._storage_identity or uuid4().hex,
+                        session_id=self.session_id,
+                    )
                     with path.open("xb") as stream:
                         stream.write((header.model_dump_json() + "\n").encode())
                     self._header = header
                 # 写入或关闭失败后禁止再追加，避免污染未确认的半行尾部。
-                with path.open("ab") as stream:
+                with path.open("a+b") as stream:
+                    stream.seek(0)
+                    if check_journal_header(stream, self.session_id, self._storage_identity) != self._header:
+                        raise ValueError("已打开的弹幕补做记录被替换")
+                    stream.seek(0, 2)
                     for record in records:
                         data = (record.model_dump_json() + "\n").encode()
                         if len(data) > _MAX_LINE_BYTES:
@@ -146,16 +163,39 @@ def drain_journal(session_id: int, *, limit: int = 100, close: bool = False) -> 
         stream = path.open("rb")
     except FileNotFoundError:
         with get_session() as db:
+            verify_storage(db, session_id)
             if _cursor(db, session_id) is not None:
                 raise ValueError("已登记的弹幕补做记录缺失") from None
         return True
     with stream:
-        header_line = stream.readline(_MAX_LINE_BYTES + 1)
-        header = _Header.model_validate_json(header_line)
-        if header.session_id != session_id:
-            raise ValueError("弹幕补做记录场次身份不符")
         with get_session() as db:
+            owner = verify_storage(db, session_id)
+            header = check_journal_header(stream, session_id, owner)
             previous = _cursor(db, session_id)
+            legacy = db.get(RecordingSession, session_id) if owner is None else None
+            room = db.get(LiveRoom, legacy.room_id) if legacy else None
+        verified_external_source = previous is not None and room is not None and room.platform != "bilibili"
+        if legacy is not None and previous is None:
+            try:
+                archived = archive_path(session_id).open("rb")
+            except FileNotFoundError:
+                pass
+            else:
+                with archived:
+                    source = check_archive_header(archived, session_id, None, legacy.started_at)
+                    if room and (
+                        source.platform != room.platform
+                        or (
+                            room.platform == "bilibili"
+                            and room.room_id is not None
+                            and source.source_id != str(room.room_id)
+                        )
+                    ):
+                        raise ValueError("旧弹幕档案与数据库的直播来源不一致")
+                    if room and room.platform != "bilibili":
+                        if source.source_id != room_source(room).source_id:
+                            raise ValueError("旧弹幕档案与数据库的直播来源不一致")
+                        verified_external_source = True
         if previous is not None and previous.identity != header.identity:
             raise ValueError("弹幕补做记录已被替换")
         offset = previous.offset if previous is not None else stream.tell()
@@ -186,6 +226,20 @@ def drain_journal(session_id: int, *, limit: int = 100, close: bool = False) -> 
                 stream.seek(-len(line), 1)
                 break
             record = _record_adapter.validate_json(line)
+            if legacy is not None:
+                if isinstance(record, _Message):
+                    expected_room = room.room_id if room and room.platform == "bilibili" else legacy.room_id
+                    if room and expected_room is not None and record.room_id != expected_room:
+                        raise ValueError("旧弹幕补做记录的房间与原场次不符")
+                    # 外部源保存的是平台事件时间，缓冲消息可能早于本地开始接收。
+                    times = [] if verified_external_source else [record.ts]
+                else:
+                    evidence = record.evidence
+                    times = [item.start for item in evidence.intervals]
+                    times.extend(t for t in (evidence.confirmed_until, evidence.ended_at) if t is not None)
+                start = legacy.started_at.replace(tzinfo=legacy.started_at.tzinfo or UTC)
+                if any(t.replace(tzinfo=t.tzinfo or UTC) < start for t in times):
+                    raise ValueError("旧弹幕补做记录早于当前场次开始")
             records.append(record)
             messages += isinstance(record, _Message)
             size += len(line)
@@ -197,6 +251,8 @@ def drain_journal(session_id: int, *, limit: int = 100, close: bool = False) -> 
     with get_session(operation="danmaku_replay") as db:
         if db.get_bind().dialect.name == "sqlite":
             db.connection().exec_driver_sql("BEGIN IMMEDIATE")
+        if verify_storage(db, session_id) != owner:
+            raise ValueError("弹幕补做期间场次存储身份已改变")
         current = _cursor(db, session_id)
         if current != previous:
             return False
@@ -220,7 +276,7 @@ def drain_journal(session_id: int, *, limit: int = 100, close: bool = False) -> 
             evidence.archive_error = "弹幕补做末行写入中断，完整前缀已恢复；不完整原始字节已保留，不能确认该行消息。"
             evidence.interrupted = True
             save_evidence(db, session_id, evidence)
-        key = f"{_PREFIX}{session_id}"
+        key = f"{CURSOR_PREFIX}{session_id}"
         row = db.get(AppSetting, key) or AppSetting(key=key)
         row.value = _Cursor(
             identity=header.identity,

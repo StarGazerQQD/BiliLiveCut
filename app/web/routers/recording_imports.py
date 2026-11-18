@@ -195,9 +195,12 @@ def discard_import(import_id: str, request: Request) -> dict[str, str]:
         job = get_job(record.job_id) if record.job_id else None
         if record.session_id is not None or (job and job["status"] in {"queued", "running", "cancelling"}):
             raise HTTPException(409, "已登记场次或活动作业不能清理")
-        directory = import_directory(import_id)
-        if directory.exists():
-            shutil.rmtree(directory)
+        directories = {import_directory(import_id, record.locations)}
+        if record.comments_name:
+            directories.add(import_directory(import_id, record.locations, danmaku=True))
+        for directory in directories:
+            if directory.exists():
+                shutil.rmtree(directory)
         from app.db.entities import AppSetting
 
         with get_session() as db:
