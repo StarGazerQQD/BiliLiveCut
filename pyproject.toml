@@ -1,6 +1,6 @@
 [project]
 name = "bili-live-cut"
-version = "0.1.20.6-alpha"
+dynamic = ["version"]
 description = "AI 直播实时切片系统:监听 Bilibili 直播,自动录制、转写、识别高光、生成切片与文案"
 readme = "README.md"
 license = "MIT"
@@ -116,6 +116,9 @@ build-backend = "setuptools.build_meta"
 
 [tool.setuptools]
 include-package-data = true
+
+[tool.setuptools.dynamic]
+version = {attr = "app._build_identity.RELEASE_VERSION"}
 
 [tool.setuptools.packages.find]
 include = ["app", "app.*", "config"]

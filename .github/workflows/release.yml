@@ -20,6 +20,13 @@ on:
         required: true
         type: string
 
+env:
+  BLC_RELEASE_TAG: ${{ github.event.inputs.tag || github.ref_name }}
+
+concurrency:
+  group: release-${{ github.event.inputs.tag || github.ref_name }}
+  cancel-in-progress: false
+
 permissions:
   contents: read
   actions: read
@@ -38,52 +45,7 @@ jobs:
           fetch-depth: 0
 
       - name: Validate tag input
-        env:
-          EVENT_NAME: ${{ github.event_name }}
-          REQUESTED_TAG: ${{ github.event.inputs.tag }}
-        run: |
-          if [ "$EVENT_NAME" = "workflow_dispatch" ]; then
-            TAG_INPUT="$REQUESTED_TAG"
-          else
-            TAG_INPUT="${GITHUB_REF#refs/tags/}"
-          fi
-          echo "Validating tag: $TAG_INPUT"
-
-          TAG_VERSION="${TAG_INPUT#v}"
-          if [[ ! "$TAG_VERSION" =~ ^[0-9]+\.[0-9]+\.[0-9]+(\.[0-9]+)?(-(Alpha|Beta|RC)(\.[0-9]+)?)?$ ]]; then
-            echo "FAIL: tag '$TAG_INPUT' does not match the complete release version pattern"
-            echo "Example: v0.1.20.6-Alpha"
-            exit 1
-          fi
-
-          PROJECT_VERSION=$(python -c "import json; print(json.load(open('packaging/portable/config/version.json', encoding='utf-8'))['release_version'])")
-          EXPECTED_TAG_VERSION="${PROJECT_VERSION%-alpha}-Alpha"
-          if [ "$TAG_VERSION" != "$EXPECTED_TAG_VERSION" ]; then
-            echo "FAIL: tag version '$TAG_VERSION' does not match expected release tag '$EXPECTED_TAG_VERSION'"
-            exit 1
-          fi
-
-          # Must not be a branch name
-          if git show-ref --verify "refs/heads/$TAG_INPUT" >/dev/null 2>&1; then
-            echo "FAIL: '$TAG_INPUT' is a branch name, not a tag"
-            exit 1
-          fi
-
-          # Must point to current HEAD
-          TAG_SHA=$(git rev-list -n 1 "$TAG_INPUT" 2>/dev/null || echo "")
-          HEAD_SHA=$(git rev-parse HEAD)
-          if [ -z "$TAG_SHA" ]; then
-            echo "FAIL: tag '$TAG_INPUT' does not exist"
-            echo "Create it first: git tag $TAG_INPUT && git push origin $TAG_INPUT"
-            exit 1
-          fi
-          if [ "$TAG_SHA" != "$HEAD_SHA" ]; then
-            echo "FAIL: tag '$TAG_INPUT' ($TAG_SHA) does not point to current HEAD ($HEAD_SHA)"
-            echo "Ensure the tag is on the latest commit"
-            exit 1
-          fi
-
-          echo "PASS: $TAG_INPUT → $TAG_SHA ✓"
+        run: python packaging/portable/config/version_loader.py
 
   # ═══════════════════════════════════════════════════════════════════
   # Job 1: 全量测试 + release_audit
@@ -96,6 +58,7 @@ jobs:
       - uses: actions/checkout@v4
         with:
           persist-credentials: false
+          fetch-depth: 0
 
       - uses: actions/setup-python@v5
         with:
@@ -162,26 +125,13 @@ jobs:
       - name: Validate source manifest
         run: check-manifest --no-build-isolation --ignore ".cursor/*,.cursor/rules/*,.dockerignore"
 
-      - name: Extract tag version
-        id: tag
-        env:
-          EVENT_NAME: ${{ github.event_name }}
-          REQUESTED_TAG: ${{ github.event.inputs.tag }}
+      - name: Build tagged sdist and wheel
         run: |
-          if [ "$EVENT_NAME" = "workflow_dispatch" ]; then
-            TAG="$REQUESTED_TAG"
-          else
-            TAG="${GITHUB_REF#refs/tags/}"
-          fi
-          VERSION="${TAG#v}"
-          echo "tag=$TAG" >> $GITHUB_OUTPUT
-          echo "version=$VERSION" >> $GITHUB_OUTPUT
-
-      - name: Build sdist
-        run: python -m build --sdist --outdir dist/
-
-      - name: Build wheel
-        run: python -m build --wheel --outdir dist/
+          stage="$RUNNER_TEMP/release-source"
+          mkdir -p "$stage"
+          git archive "$GITHUB_SHA" | tar -x -C "$stage"
+          python packaging/portable/config/version_loader.py --stamp "$stage"
+          python -m build --outdir "$PWD/dist" "$stage"
 
       - name: Validate distribution metadata
         run: python -m twine check --strict dist/*
@@ -255,6 +205,7 @@ jobs:
         run: |
           @'
           import json
+          import os
           import zipfile
 
           manifest = json.load(open("packaging/portable/dist/payload/payload_manifest.json"))
@@ -268,9 +219,10 @@ jobs:
           assert zip_count == manifest_count == manifest_files, (
               f"Count mismatch: ZIP={zip_count} MF={manifest_count} files={manifest_files}"
           )
+          assert manifest["portable_release_version"] == os.environ["BLC_RELEASE_TAG"][1:].lower()
           assert manifest["format_version"] == version_config["payload_schema"]
-          assert manifest["core_source_commit"] == version_config["source_commit_full"]
-          assert manifest["core_source_commit_short"] == version_config["source_commit_short"]
+          assert manifest["core_source_commit"] == os.environ["GITHUB_SHA"]
+          assert manifest["core_source_commit_short"] == os.environ["GITHUB_SHA"][:7]
           assert manifest["target_platform"] == "win_x64"
           assert "generated_at" not in manifest, "manifest has generated_at (breaks reproducibility)"
           abi = manifest["python_abi"]
@@ -772,14 +724,15 @@ jobs:
           RELEASE_VERSION="$VERSION" python /tmp/extract_notes.py > /tmp/release_notes.md
           cat /tmp/release_notes.md
 
-      - name: Create GitHub Release
-        uses: softprops/action-gh-release@v2
-        with:
-          tag_name: ${{ steps.tag.outputs.tag }}
-          body_path: /tmp/release_notes.md
-          files: |
-            release-assets/*
-          draft: false
-          prerelease: ${{ steps.tag.outputs.prerelease == 'true' }}
+      - name: Publish verified release assets
         env:
-          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          GH_TOKEN: ${{ github.token }}
+          PRERELEASE: ${{ steps.tag.outputs.prerelease }}
+        run: |
+          # Resolve annotated as well as lightweight tags again before publishing.
+          git fetch --no-tags origin "refs/tags/$BLC_RELEASE_TAG"
+          test "$(git rev-parse 'FETCH_HEAD^{commit}')" = "$GITHUB_SHA"
+          flags=()
+          if [ "$PRERELEASE" = true ]; then flags+=(--prerelease); fi
+          gh release create "$BLC_RELEASE_TAG" --verify-tag --notes-file /tmp/release_notes.md \
+            "${flags[@]}" release-assets/*

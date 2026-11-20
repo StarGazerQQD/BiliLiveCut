@@ -25,7 +25,15 @@ _pathex = [str(_here / "src"), str(_project_root), str(_config_dir)]
 # Payload 资源
 _payload_zip = str(_here / "dist" / "payload" / "source_payload.zip")
 _manifest = str(_here / "dist" / "payload" / "payload_manifest.json")
-_version_config = str(_config_dir / "version.json")
+sys.path.insert(0, str(_config_dir))
+from version_loader import get_full_config, get_lite_exe_name
+import json
+
+# Both the frozen interpreter and its managed Python child receive this snapshot.
+_version_path = _here / "build" / "release-identity" / "version.json"
+_version_path.parent.mkdir(parents=True, exist_ok=True)
+_version_path.write_text(json.dumps(get_full_config(), indent=2), encoding="utf-8")
+_version_config = str(_version_path)
 _model_sources_lock = str(_config_dir / "model_sources.lock.json")
 _bootstrap_wheels_dir = _here / "dist" / "bootstrap-wheels"
 _project_license = _here.parent.parent / "LICENSE"
@@ -109,7 +117,7 @@ exe = EXE(
     a.binaries,
     a.datas,
     [],
-    name="BiliLiveCut-Portable-Lite-v0.1.20.6-alpha-x64",
+    name=Path(get_lite_exe_name()).stem,
     debug=False,
     bootloader_ignore_signals=False,
     strip=False,

@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import json
+import re
 from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any
@@ -261,12 +262,11 @@ def _load_raw_catalog() -> dict[str, Any]:
         version = _load_version_config()
         if catalog["schema_version"] != version["model_lock_schema"]:
             raise ValueError("模型锁 schema_version 与当前版本不一致")
-        if catalog["engine_pack_version"] != version["engine_pack_version"]:
-            raise ValueError("模型锁 engine_pack_version 与当前版本不一致")
-        if catalog["portable_release_version"] != version["release_version"]:
-            raise ValueError("模型锁 portable_release_version 与当前版本不一致")
-        if catalog["source_commit"] != version["source_commit_full"]:
-            raise ValueError("模型锁 source_commit 与当前源码基线不一致")
+        # The lock records the provenance of model definitions across application releases.
+        for field in ("engine_pack_version", "portable_release_version"):
+            _require_nonempty_string(catalog, field, "model_sources.lock.json")
+        if re.fullmatch(r"[0-9a-f]{40}", str(catalog["source_commit"])) is None:
+            raise ValueError("模型锁 source_commit 无效")
         if not isinstance(catalog["generated_at"], str) or not catalog["generated_at"]:
             raise ValueError("模型锁 generated_at 必须是非空字符串")
         if not isinstance(catalog["engines"], list) or not catalog["engines"]:

@@ -22,7 +22,7 @@ import psutil
 from fastapi import FastAPI, Request
 from loguru import logger
 
-from app import __version__, __version_label__
+from app import __version__
 from app.core.execution import run_sync
 from app.core.logging import setup_logging
 from app.core.supervisor import Service, Supervisor
@@ -205,7 +205,7 @@ async def _run_due_schedules() -> None:
 
 app = FastAPI(
     title="BiliLiveCut 控制台",
-    version=f"{__version_label__} ({__version__})",
+    version=__version__,
     lifespan=lifespan,
 )
 

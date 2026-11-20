@@ -26,7 +26,7 @@ export default function OverviewPage() {
     : rows(obj(jobs.data).jobs);
   return (
     <Page
-      eyebrow="YOUR CREATIVE WORKSPACE"
+      eyebrow={text(obj(dashboard.data).version, "")}
       title="工作台概览"
       description="从一段录播开始，把值得保留的瞬间整理成高光。"
       actions={<AddRoom />}

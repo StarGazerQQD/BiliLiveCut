@@ -18,6 +18,7 @@ import zlib
 from pathlib import Path
 
 from blc_portable.console import configure_console_encoding
+from blc_portable.payload.manifest import RELEASE_VERSION as RELEASE_VERSION
 from blc_portable.project_license import PROJECT_LICENSE_ID, PROJECT_LICENSE_PATH, project_license_sha256
 
 PORTABLE_DIR = Path(__file__).resolve().parent.parent.parent.parent
@@ -27,7 +28,6 @@ LITE_DIR = PORTABLE_DIR / "dist" / "lite"
 PAYLOAD_DIR = PORTABLE_DIR / "dist" / "payload"
 RESOURCES_DIR = PORTABLE_DIR / "resources"
 
-RELEASE_VERSION = "0.1.20.6-alpha"
 FULL_NAME = f"BiliLiveCut-Portable-Full-{RELEASE_VERSION}-x64"
 
 

@@ -7,6 +7,8 @@
 
 import os
 import sys
+from pathlib import Path
+from runpy import run_path
 
 from setuptools import Extension, setup
 
@@ -26,7 +28,7 @@ if not _skip:
 
 setup(
     name="bili_live_cut_c",
-    version="0.1.20.6",
+    version=run_path(str(Path(__file__).resolve().parent / "app/_build_identity.py"))["RELEASE_VERSION"],
     py_modules=[],
     ext_modules=_extensions,
 )

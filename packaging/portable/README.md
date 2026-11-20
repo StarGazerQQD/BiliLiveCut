@@ -499,4 +499,6 @@ BILIUP_UPLOAD_CMD=                          # 自定义上传命令模板
 
 Portable 构建机需要 Node.js 24 与 npm。Payload 从已冻结的源码提交提取 `frontend/`，执行 `npm ci` 和 `npm run build`，仅把 `frontend/dist/` 加入 Payload；不打包 node_modules 或前端开发源码。运行 Portable 无需 Node.js，Launcher 调用 `start` 启动独立前端和本机 API 进程。
 
-引入前端或后端源码修改后，需要先提交源码，再按已有发布流程同步 Payload 的源码基线并重新构建；旧基线不包含 React 入口，构建会明确拒绝混用。
+发布时在要交付的提交上创建并推送标签（例如 `v0.1.20.7-Alpha`）。工作流将标签解析为完整提交 SHA，从同一提交构建 Payload、启动器、wheel 和 sdist；无需改写仓库中的版本或源码指纹。启动器、`blc version` 和 Web 工作台显示标签与短 SHA，完整 SHA 随包保存。手动运行 Release 时选择同一提交并填写已有标签。本地从无发布标签的 HEAD 构建时使用开发版本。
+
+已发布的同名 Release 会阻止再次上传。可在仓库设置开启 immutable releases，锁定发布后的 tag 和附件。

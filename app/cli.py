@@ -17,7 +17,7 @@ from typing import ParamSpec, TypeVar
 import click
 from loguru import logger
 
-from app import __version__
+from app import __version__, __version_label__
 from app.core.logging import setup_logging
 from app.core.sanitize import safe_exception_summary
 
@@ -105,7 +105,7 @@ for cmd_name, cmd_func, _help in ALL_COMMANDS:
 @app.command()
 def version() -> None:
     """显示当前版本号。"""
-    print(f"BiliLiveCut {__version__}")
+    print(f"BiliLiveCut {__version__} · {__version_label__}")
 
 
 def main() -> None:

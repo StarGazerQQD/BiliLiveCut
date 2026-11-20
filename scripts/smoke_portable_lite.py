@@ -19,7 +19,8 @@ from pathlib import Path
 from typing import BinaryIO
 
 REPO_ROOT = Path(__file__).resolve().parent.parent
-VERSION_CONFIG = REPO_ROOT / "packaging" / "portable" / "config" / "version.json"
+sys.path.insert(0, str(REPO_ROOT / "packaging" / "portable" / "config"))
+from version_loader import get_full_config  # noqa: E402
 
 
 def _configure_console_encoding() -> None:
@@ -378,7 +379,7 @@ def main(argv: list[str] | None = None) -> int:
     _configure_console_encoding()
     args = parse_args(argv)
     try:
-        version_config = json.loads(VERSION_CONFIG.read_text(encoding="utf-8"))
+        version_config = get_full_config()
         version = str(version_config["release_version"])
         executable = _required_file(
             args.lite_dir.resolve(),
