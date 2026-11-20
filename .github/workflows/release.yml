@@ -154,7 +154,8 @@ jobs:
           "$RUNNER_TEMP/blc-wheel-smoke/bin/pip" install "${WHEEL}[web]"
           cd "$RUNNER_TEMP"
           "$RUNNER_TEMP/blc-wheel-smoke/bin/python" -I "$GITHUB_WORKSPACE/scripts/smoke_wheel_frontend.py"
-          "$RUNNER_TEMP/blc-wheel-smoke/bin/blc" version
+          version_output=$("$RUNNER_TEMP/blc-wheel-smoke/bin/blc" version)
+          grep -F -- "$BLC_RELEASE_TAG (${GITHUB_SHA:0:8})" <<< "$version_output"
 
       - name: Generate SHA256 checksums
         run: |
@@ -446,8 +447,10 @@ jobs:
         run: |
           $exe = Get-ChildItem smoke/lite/*.exe | Select-Object -First 1
           if (-not $exe) { Write-Error "Lite EXE not found"; exit 1 }
-          & $exe.FullName --version 2>&1 | Out-Host
-          if ($LASTEXITCODE -ne 0) { Write-Error "Lite EXE --version failed (exit=$LASTEXITCODE)"; exit 1 }
+          $output = & $exe.FullName --version
+          if ($LASTEXITCODE -ne 0) { throw "Lite version command failed" }
+          $expected = "$env:BLC_RELEASE_TAG ($($env:GITHUB_SHA.Substring(0, 8)))"
+          if ($output -notcontains "BiliLiveCut Portable $expected") { throw "Unexpected Lite version: $output" }
         timeout-minutes: 5
 
       - name: Lite EXE --doctor rejects incomplete environment

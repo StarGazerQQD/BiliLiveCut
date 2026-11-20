@@ -9,6 +9,7 @@
 - app_icon.ico (如有)
 """
 
+import json
 import os
 import sys
 from pathlib import Path
@@ -27,7 +28,6 @@ _payload_zip = str(_here / "dist" / "payload" / "source_payload.zip")
 _manifest = str(_here / "dist" / "payload" / "payload_manifest.json")
 sys.path.insert(0, str(_config_dir))
 from version_loader import get_full_config, get_lite_exe_name
-import json
 
 # Both the frozen interpreter and its managed Python child receive this snapshot.
 _version_path = _here / "build" / "release-identity" / "version.json"

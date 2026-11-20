@@ -108,7 +108,7 @@ def _load_version_config() -> dict[str, Any]:
         raw = json.loads(_VERSION_PATH.read_text(encoding="utf-8"))
     except (FileNotFoundError, json.JSONDecodeError) as exc:
         raise RuntimeError(f"无法加载版本配置 {_VERSION_PATH}: {exc}") from exc
-    if len(_VERSION_PATH.parents) > 3 and (_VERSION_PATH.parents[3] / ".git").exists():
+    if _VERSION_PATH.parts[-4:] == ("packaging", "portable", "config", "version.json"):
         identity = checkout_identity(_VERSION_PATH.parents[3], os.environ.get("BLC_RELEASE_TAG"))
         if not isinstance(raw, dict) or set(raw) != _VERSION_FIELDS - identity.keys():
             raise RuntimeError("The checkout version config must contain only packaging contracts")

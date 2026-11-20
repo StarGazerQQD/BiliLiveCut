@@ -855,7 +855,7 @@ def prepare_models(
         command.append("--repair")
 
     env = _python_environment()
-    import_roots = [str(source_root.resolve())]
+    import_roots = [str(source_root.resolve()), str(config_root.resolve())]
     if not getattr(sys, "frozen", False):
         import_roots.append(str(Path(shared_file_locks.__file__).resolve().parent.parent))
     env["PYTHONPATH"] = os.pathsep.join(import_roots)
