@@ -2,10 +2,12 @@
 
 from __future__ import annotations
 
+from pathlib import Path
+
 from fastapi import APIRouter, HTTPException
 
 from app.core.paths import resolve_storage_path
-from app.db.entities import FinalClip
+from app.db.entities import FinalClip, HighlightCandidate
 from app.db.session import get_session
 from app.web.media_response import MediaFileResponse
 
@@ -25,7 +27,7 @@ def clip_video(clip_id: int) -> MediaFileResponse:
         file_path = resolve_storage_path(clip.file_path)
     except ValueError as exc:
         raise HTTPException(status_code=403, detail="禁止访问") from exc
-    clips_root = _clips_dir().resolve()
+    clips_root = _clip_root(clip, _clips_dir().resolve())
     if not file_path.is_relative_to(clips_root):
         raise HTTPException(status_code=403, detail="禁止访问")
     if not file_path.is_file():
@@ -46,12 +48,25 @@ def clip_cover(clip_id: int) -> MediaFileResponse:
         file_path = resolve_storage_path(clip.cover_path)
     except ValueError as exc:
         raise HTTPException(status_code=403, detail="禁止访问") from exc
-    clips_root = _clips_dir().resolve()
+    clips_root = _clip_root(clip, _clips_dir().resolve())
     if not file_path.is_relative_to(clips_root):
         raise HTTPException(status_code=403, detail="禁止访问")
     if not file_path.is_file():
         raise HTTPException(status_code=404, detail="封面不存在")
     return MediaFileResponse(str(file_path), media_type="image/jpeg")
+
+
+def _clip_root(clip: FinalClip, default: Path) -> Path:
+    from app.core.recording_storage import RecordingStorage
+    from app.recording.session_storage import get_locations
+
+    with get_session() as db:
+        candidate = db.get(HighlightCandidate, clip.candidate_id)
+        if candidate:
+            location = get_locations(db, candidate.session_id)
+            if location.source_session_id and location.source_clips:
+                return RecordingStorage.base(location.source_clips, default)
+    return default
 
 
 def _get_clip(clip_id: int) -> FinalClip | None:

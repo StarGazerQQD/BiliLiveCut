@@ -679,6 +679,8 @@ test.describe("session timezone", () => {
     const session = {
       session_id: 1,
       session_title: "时区测试场次",
+      uploader_name: "时间线主播",
+      room_id: 125,
       started_at: "2026-10-20T14:39:08+00:00",
       duration_s: 774,
       status: "stopped",
@@ -694,9 +696,15 @@ test.describe("session timezone", () => {
     await page.goto("/sessions");
     const expected = "2026/10/20 22:39:08 GMT+8 · 时长 12:54";
     await expect(page.getByText(expected, { exact: true })).toBeVisible();
+    await expect(
+      page.getByText("主播：时间线主播 · 房间 125", { exact: true }),
+    ).toBeVisible();
     await page.getByRole("button", { name: "查看场次时间线" }).click();
     await expect(page).toHaveURL(/session=1/);
     await expect(page.getByText(expected, { exact: true })).toBeVisible();
+    await expect(
+      page.getByText("主播：时间线主播 · 房间 125", { exact: true }),
+    ).toBeVisible();
   });
 });
 
@@ -706,6 +714,9 @@ test("historical session cards send the real session_id", async ({ page }) => {
       json: [
         {
           session_id: 41,
+          session_title: "同名晚场",
+          uploader_name: "主播甲",
+          room_id: 1041,
           status: "stopped",
           started_at: "2026-10-16T00:00:00Z",
           transcript_count: 1,
@@ -713,6 +724,9 @@ test("historical session cards send the real session_id", async ({ page }) => {
         },
         {
           session_id: 7,
+          session_title: "同名晚场",
+          uploader_name: "主播乙",
+          room_id: 1007,
           status: "stopped",
           started_at: "2026-10-15T00:00:00Z",
           transcript_count: 1,
@@ -722,6 +736,8 @@ test("historical session cards send the real session_id", async ({ page }) => {
     }),
   );
   await page.goto("/transcripts");
+  await expect(page.getByText(/主播：主播甲 · 房间 1041/)).toBeVisible();
+  await expect(page.getByText(/主播：主播乙 · 房间 1007/)).toBeVisible();
   const request = page.waitForRequest(
     (request) =>
       new URL(request.url()).pathname === "/api/transcripts" &&

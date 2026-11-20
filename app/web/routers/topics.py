@@ -7,6 +7,8 @@ from typing import Any
 from fastapi import APIRouter, HTTPException
 from pydantic import BaseModel, ConfigDict, field_validator
 
+from app.web.services.source_identity import attach_session_sources
+
 
 class MergeTopicsRequest(BaseModel):
     """合并主题请求体（将 source_id 并入 target_id）。"""
@@ -60,7 +62,9 @@ def list_topics(session_id: int | None = None) -> dict[str, Any]:
     """获取主题列表。"""
     from app.analysis.topic_cluster import list_topics as _lt
 
-    return {"topics": _lt(session_id=session_id)}
+    topics = _lt(session_id=session_id)
+    attach_session_sources(topics)
+    return {"topics": topics}
 
 
 @router.get("/topics/{topic_id}")
@@ -71,6 +75,7 @@ def get_topic(topic_id: int) -> dict[str, Any]:
     t = _gt(topic_id)
     if t is None:
         raise HTTPException(status_code=404, detail="主题不存在")
+    attach_session_sources([t])
     return t
 
 

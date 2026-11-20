@@ -22,9 +22,27 @@ def register_job_handlers(manager: JobManager) -> None:
     manager.register("clip_upload", _upload_clip, recover=recover_upload_job)
     manager.register("upload_retry", _retry_upload, recover=recover_upload_job)
     manager.register("local_import", _import_recording)
+    manager.register("storage_rebuild", _rebuild_storage)
     from app.analysis.editorial_reanalysis import run_editorial_reanalysis
 
     manager.register("editorial_reanalysis", run_editorial_reanalysis)
+
+
+def _rebuild_storage(context: JobContext, payload: dict[str, Any]) -> dict[str, object]:
+    from pathlib import Path
+
+    from app.core.config import settings
+    from app.recording.library_rebuild import LibraryRebuild, rebuild_library
+
+    parent = Path(settings.storage_root).resolve() / "rebuilds"
+    if parent.resolve() != parent:
+        raise ValueError("重建输出目录不能重定向")
+    parent.mkdir(exist_ok=True)
+    context.report(5, "正在读取历史来源并核对场次关联")
+    output = parent / f"{context.job_id}-{context.attempt}"
+    return rebuild_library(
+        LibraryRebuild.model_validate(payload), output, check_cancelled=context.check_cancelled
+    ).model_dump(mode="json")
 
 
 def _import_recording(context: JobContext, payload: dict[str, Any]) -> dict[str, object]:

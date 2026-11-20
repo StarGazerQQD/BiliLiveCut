@@ -142,7 +142,10 @@ def test_hotspot_editorial_verdict_controls_candidate(
     assert execution["result"]["interest_rating"] == 3
     assert execution["attempt_offset"] == 2
     assert execution["attempts"][0]["number"] == 3
-    assert len(requests) == 3
+    assert len(requests) == (4 if verdict == "needs_review" else 3)
+    if verdict == "needs_review":
+        assert features["editorial_review"]["final_review"]["execution"]["result"]["standalone"] is None
+        assert features["editorial_review"]["clip_standalone"] is None
     assert "event_completeness" not in features["event_clip_score"]["components"]
     if candidate is not None:
         assert candidate.highlight_score < 0.8

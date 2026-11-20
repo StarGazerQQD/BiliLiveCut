@@ -38,7 +38,16 @@ import {
   ConfirmButton,
   DetailList,
 } from "@/components/workbench";
-import { duration, number, obj, rows, text, time, title } from "@/lib/data";
+import {
+  duration,
+  number,
+  obj,
+  rows,
+  sessionSource,
+  text,
+  time,
+  title,
+} from "@/lib/data";
 
 export async function download(path: string, filename: string) {
   const response = await fetch(path, {
@@ -82,11 +91,10 @@ export function SessionPicker({
       <option value="">全部场次</option>
       {rows(query.data).map((session) => (
         <option key={text(session.session_id)} value={text(session.session_id)}>
-          #{text(session.session_id)} ·{" "}
-          {text(
-            session.session_title || session.uploader_name || session.title,
-            "录制场次",
-          )}
+          #{text(session.session_id)} · {sessionSource(session)}
+          {session.session_title || session.title
+            ? ` · ${text(session.session_title || session.title)}`
+            : ""}
         </option>
       ))}
     </select>
@@ -190,6 +198,22 @@ function LibraryBrowser({
     !library.scoped,
   );
   const sessions = rows(groups.data);
+  const sessionRow = [...rows(library.query.data), ...sessions].find(
+    (item) => String(item.session_id) === library.session,
+  );
+  const sourceQuery = useApi(
+    `/api/sessions/timeline?session_id=${encodeURIComponent(library.session)}&limit=1`,
+    false,
+    Boolean(library.session) &&
+      !library.unknown &&
+      library.query.isSuccess &&
+      !sessionRow,
+  );
+  const selected =
+    sessionRow ||
+    rows(sourceQuery.data).find(
+      (row) => String(row.session_id) === library.session,
+    );
   const onPage = (offset: number) => library.update({ offset: String(offset) });
   if (library.scoped)
     return (
@@ -206,6 +230,11 @@ function LibraryBrowser({
           <span className="text-sm font-medium">
             {library.unknown ? "未关联场次" : `场次 #${library.session}`}
           </span>
+          {selected && !library.unknown && (
+            <span className="text-sm text-muted-foreground">
+              {sessionSource(selected)}
+            </span>
+          )}
           {!library.unknown && (
             <Button variant="outline" size="sm" asChild>
               <Link to={`/sessions?session=${library.session}`}>
@@ -235,7 +264,7 @@ function LibraryBrowser({
               <CardContent className="space-y-4">
                 <h2 className="font-semibold">
                   {text(
-                    session.session_title || session.source_label,
+                    session.session_title,
                     session.session_id == null
                       ? "未关联场次"
                       : `场次 #${session.session_id}`,
@@ -244,7 +273,7 @@ function LibraryBrowser({
                 <p className="text-xs text-muted-foreground">
                   {session.session_id == null
                     ? "历史记录缺少场次关联"
-                    : `场次 #${session.session_id} · ${time(session.started_at, "GMT+8")}`}
+                    : `场次 #${session.session_id} · ${sessionSource(session)} · ${time(session.started_at, "GMT+8")}`}
                 </p>
                 <Badge variant="secondary">
                   {number(session.matching_count)}{" "}
@@ -327,13 +356,11 @@ export function RecordingPage() {
                     </span>
                     <div className="min-w-0 flex-1">
                       <h2 className="text-sm font-semibold">
-                        {text(
-                          session.session_title || session.uploader_name,
-                          `录制会话 #${session.id}`,
-                        )}
+                        {text(session.session_title, `录制会话 #${session.id}`)}
                       </h2>
                       <p className="mt-2 text-xs text-muted-foreground">
-                        会话 #{text(session.id)} · {time(session.started_at)}
+                        会话 #{text(session.id)} · {sessionSource(session)} ·{" "}
+                        {time(session.started_at)}
                         {session.ended_at ? ` → ${time(session.ended_at)}` : ""}
                       </p>
                     </div>
@@ -687,13 +714,15 @@ export function TranscriptsPage() {
                         <p className="mt-2 text-xs text-muted-foreground">
                           {entry.summary_status === "ready"
                             ? "连续上下文摘要已生成"
-                            : entry.summary_status === "pending"
-                              ? "分段摘要等待前文或处理"
-                              : entry.summary_status === "running"
-                                ? "分段摘要生成中"
-                                : entry.summary_status === "stale"
-                                  ? "原文已变化，分段摘要待更新"
-                                  : "分段摘要生成失败"}
+                            : entry.summary_status === "archived"
+                              ? "从原库恢复的分段摘要"
+                              : entry.summary_status === "pending"
+                                ? "分段摘要等待前文或处理"
+                                : entry.summary_status === "running"
+                                  ? "分段摘要生成中"
+                                  : entry.summary_status === "stale"
+                                    ? "原文已变化，分段摘要待更新"
+                                    : "分段摘要生成失败"}
                           {entry.summary_needs_context
                             ? " · 后文到达后补充理解"
                             : ""}
@@ -858,7 +887,7 @@ export function DanmakuPage() {
                   <Status value={obj(entry.evidence).state || "unavailable"} />
                 </div>
                 <p className="text-sm text-muted-foreground">
-                  {text(entry.source_label, "未知来源")}
+                  {sessionSource(entry)}
                   {entry.session_title ? ` · ${text(entry.session_title)}` : ""}
                 </p>
                 <DetailList

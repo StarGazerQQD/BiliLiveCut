@@ -1497,6 +1497,26 @@ export interface paths {
         patch?: never;
         trace?: never;
     };
+    "/api/sessions/{session_id}/open-storage-directory": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /**
+         * Open Session Storage Directory
+         * @description 打开唯一可用位置，或返回本场次的目录供选择。
+         */
+        post: operations["open_session_storage_directory_api_sessions__session_id__open_storage_directory_post"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
     "/api/sessions/{session_id}/reanalyze": {
         parameters: {
             query?: never;
@@ -1719,6 +1739,26 @@ export interface paths {
          * @description 更新下次启动的端口。
          */
         patch: operations["patch_web_port_api_settings_port_patch"];
+        trace?: never;
+    };
+    "/api/settings/storage-rebuild": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /**
+         * Create Storage Rebuild
+         * @description 管理员指定停写副本，通过后台作业生成独立的新库。
+         */
+        post: operations["create_storage_rebuild_api_settings_storage_rebuild_post"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
         trace?: never;
     };
     "/api/tasks": {
@@ -3119,6 +3159,37 @@ export interface components {
             providers: components["schemas"]["LLMProviderIn"][];
         };
         /**
+         * LibraryRebuild
+         * @description 命令行和设置页共用的重建清单。
+         */
+        LibraryRebuild: {
+            /** Sources */
+            sources: components["schemas"]["LibrarySource"][];
+        };
+        /**
+         * LibrarySource
+         * @description 一个停写副本的数据库、存储根以及可选的外置目录。
+         */
+        LibrarySource: {
+            /** Danmaku */
+            danmaku?: string | null;
+            /** Database */
+            database?: string | null;
+            /** Directory Maps */
+            directory_maps?: {
+                [key: string]: string;
+            };
+            /** Original Storage */
+            original_storage?: string | null;
+            /** Raw */
+            raw?: string | null;
+            /**
+             * Storage
+             * Format: path
+             */
+            storage: string;
+        };
+        /**
          * MarkerRequest
          * @description 直播中人工高光打点请求体。
          */
@@ -3538,6 +3609,33 @@ export interface components {
             verdict: "recommend" | "reject" | "needs_review" | "unknown";
         };
         /**
+         * RecordingStorage
+         * @description 创建场次或导入时固定的目录；相对引用随完整 storage 副本迁移。
+         */
+        RecordingStorage: {
+            /**
+             * Danmaku
+             * @default raw
+             */
+            danmaku: string;
+            /**
+             * Detached Import
+             * @default false
+             */
+            detached_import: boolean;
+            /** Import Id */
+            import_id?: string | null;
+            /**
+             * Raw
+             * @default raw
+             */
+            raw: string;
+            /** Source Clips */
+            source_clips?: string | null;
+            /** Source Session Id */
+            source_session_id?: number | null;
+        };
+        /**
          * RenderCollectionRequest
          * @description 渲染合集请求。
          */
@@ -3608,6 +3706,38 @@ export interface components {
             scheduled_at: string;
         };
         /**
+         * SessionDirectories
+         * @description 多个存储位置可分别选择，无桌面时仍提供路径。
+         */
+        SessionDirectories: {
+            /** Directories */
+            directories: components["schemas"]["SessionDirectory"][];
+            /**
+             * Opened
+             * @default false
+             */
+            opened: boolean;
+            /** Selected */
+            selected?: ("raw" | "danmaku" | "legacy_raw") | null;
+        };
+        /**
+         * SessionDirectory
+         * @description 场次已登记的目录位置及其当前可用性。
+         */
+        SessionDirectory: {
+            /** Available */
+            available: boolean;
+            /**
+             * Kind
+             * @enum {string}
+             */
+            kind: "raw" | "danmaku" | "legacy_raw";
+            /** Label */
+            label: string;
+            /** Path */
+            path: string;
+        };
+        /**
          * SessionSummaryPresentation
          * @description 兼容既有总结字段，并正式披露草稿和核验进度。
          */
@@ -3646,7 +3776,7 @@ export interface components {
              * Status
              * @enum {string}
              */
-            status: "recording" | "waiting" | "pending" | "generating" | "unconfigured" | "failed" | "ready";
+            status: "recording" | "waiting" | "pending" | "generating" | "unconfigured" | "failed" | "ready" | "archived";
             /** Summary */
             summary?: string | null;
             /**
@@ -6459,6 +6589,39 @@ export interface operations {
             };
         };
     };
+    open_session_storage_directory_api_sessions__session_id__open_storage_directory_post: {
+        parameters: {
+            query?: {
+                kind?: ("raw" | "danmaku" | "legacy_raw") | null;
+            };
+            header?: never;
+            path: {
+                session_id: number;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["SessionDirectories"];
+                };
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
     reanalyze_session_api_sessions__session_id__reanalyze_post: {
         parameters: {
             query?: never;
@@ -6790,6 +6953,41 @@ export interface operations {
         responses: {
             /** @description Successful Response */
             200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": {
+                        [key: string]: unknown;
+                    };
+                };
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
+    create_storage_rebuild_api_settings_storage_rebuild_post: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["LibraryRebuild"];
+            };
+        };
+        responses: {
+            /** @description Successful Response */
+            202: {
                 headers: {
                     [name: string]: unknown;
                 };

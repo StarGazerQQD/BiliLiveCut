@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import asyncio
 from threading import Event
+from types import SimpleNamespace
 
 import psutil
 import pytest
@@ -215,9 +216,14 @@ async def test_supervisor_broadcast_failure_still_notifies_and_closes_every_serv
     assert not supervisor.shutdown_confirmed
 
 
-async def test_shutdown_budget_is_frozen_at_stop_and_visible_to_preexisting_tasks() -> None:
+async def test_shutdown_budget_is_frozen_at_stop_and_visible_to_preexisting_tasks(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    from app.core import supervisor as supervisor_module
     from app.core.supervisor import process_shutdown_control, remaining_shutdown, standalone_process
 
+    now = 100.0
+    monkeypatch.setattr(supervisor_module, "time", SimpleNamespace(monotonic=lambda: now))
     ready, stopping = asyncio.Event(), asyncio.Event()
     timeout = 30.0
     observed: list[float] = []
@@ -237,14 +243,15 @@ async def test_shutdown_budget_is_frozen_at_stop_and_visible_to_preexisting_task
         await ready.wait()
         timeout = 0.5
         control.begin(timeout)
-        expires = control.expires_at
+        now += 0.25
         control.begin(60)
-        assert control.expires_at == expires
-        await asyncio.sleep(0.02)
+        assert control.expires_at == 100.5
         stopping.set()
         await task
         assert process_shutdown_control() is control
-        assert 0 < observed[0] < timeout
+        assert observed == [0.25]
+        now += 0.5
+        assert remaining_shutdown(30) == 0.0
     assert process_shutdown_control() is None
 
 

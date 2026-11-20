@@ -189,7 +189,9 @@ def remux_transcript_source(transcript_id: int) -> Path:
     :raises TranscriptNotFoundError: 转写或片段不存在。
     :raises TranscriptMediaError: 源文件越界、缺失、探测或 FFmpeg 失败。
     """
-    from app.core.paths import raw_dir, resolve_storage_path, session_clips_dir
+    from app.core.paths import resolve_storage_path, session_clips_dir
+    from app.db.entities import AppSetting
+    from app.recording.session_storage import LEGACY_FILE_PREFIX, managed_media_root
 
     with get_session() as db:
         transcript = db.get(Transcript, transcript_id)
@@ -199,13 +201,18 @@ def remux_transcript_source(transcript_id: int) -> Path:
         if segment is None:
             raise TranscriptNotFoundError("转写对应的原始片段不存在")
         reference = segment.file_path
+        try:
+            raw_root = managed_media_root(db, segment.session_id)
+            registered = db.get(AppSetting, f"{LEGACY_FILE_PREFIX}{segment.session_id}:{segment.id}")
+            legacy_file = Path(registered.value) if registered else None
+        except (OSError, ValueError) as exc:
+            raise TranscriptMediaError("原片存储目录不可用或场次身份不符") from exc
 
     try:
         source = resolve_storage_path(reference)
     except ValueError as exc:
         raise TranscriptMediaError("原始片段路径无效") from exc
-    raw_root = raw_dir().resolve()
-    if not source.is_relative_to(raw_root):
+    if not source.is_relative_to(raw_root) and source != legacy_file:
         raise TranscriptMediaError("原始片段不在受控录像目录内")
     if not source.is_file():
         raise TranscriptMediaError("原始片段文件不存在")

@@ -177,7 +177,7 @@ def test_empty_plan_never_falls_back_to_file_access(temp_db: None, monkeypatch: 
             sources.media_file_identity(segment)
 
 
-@pytest.mark.parametrize("direction,expected_files", [("before", 11), ("after", 11), ("both", 21)])
+@pytest.mark.parametrize("direction,expected_files", [("before", 14), ("after", 14), ("both", 21)])
 def test_segment_review_preflights_actual_six_hundred_second_expansion(
     temp_db: None, monkeypatch: pytest.MonkeyPatch, direction: str, expected_files: int
 ) -> None:

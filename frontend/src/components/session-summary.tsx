@@ -8,6 +8,7 @@ const executionLabels: Record<string, string> = {
   unconfigured: "请在模型设置中启用整场总结路由，待处理请求会继续。",
   failed: "本次总结执行未完成",
   ready: "整场总结已完成",
+  archived: "从原库恢复的历史总结",
 };
 
 const verificationLabels: Record<string, string> = {
@@ -23,9 +24,16 @@ export function SessionSummary({ value }: { value: unknown }) {
   const summary = obj(value);
   const verification = obj(summary.verification);
   const ready = summary.status === "ready";
+  const archived = summary.status === "archived";
   const verified = ready && verification.status === "verified";
-  const body = ready ? summary.summary : summary.draft_summary;
-  const bodyLabel = verified ? "已核验总结" : ready ? "总结正文" : "总结草稿";
+  const body = ready || archived ? summary.summary : summary.draft_summary;
+  const bodyLabel = archived
+    ? "历史总结正文"
+    : verified
+      ? "已核验总结"
+      : ready
+        ? "总结正文"
+        : "总结草稿";
   const error = text(verification.error || summary.error, "");
   const total = Number(verification.total_nodes || 0);
   return (
@@ -36,8 +44,10 @@ export function SessionSummary({ value }: { value: unknown }) {
       <div className="text-sm">
         <span>事实核验：</span>
         <span>
-          {verificationLabels[text(verification.status)] ||
-            (ready ? "核验状态未知" : "尚未开始核验")}
+          {archived
+            ? "重建后未重新核验"
+            : verificationLabels[text(verification.status)] ||
+              (ready ? "核验状态未知" : "尚未开始核验")}
         </span>
         {total > 0 && (
           <span className="ml-2 text-muted-foreground">
@@ -48,11 +58,13 @@ export function SessionSummary({ value }: { value: unknown }) {
       {typeof body === "string" && body.trim() && (
         <article aria-label={bodyLabel}>
           <p className="mb-2 text-sm font-medium">
-            {verified
-              ? "已核验总结"
-              : ready
-                ? "总结正文（核验状态未知）"
-                : "总结草稿（尚未通过核验）"}
+            {archived
+              ? "历史总结正文"
+              : verified
+                ? "已核验总结"
+                : ready
+                  ? "总结正文（核验状态未知）"
+                  : "总结草稿（尚未通过核验）"}
           </p>
           <p className="whitespace-pre-wrap text-sm leading-7">{body}</p>
         </article>

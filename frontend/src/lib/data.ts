@@ -14,6 +14,24 @@ export const text = (value: unknown, fallback = "—") =>
       : String(value);
 export const number = (value: unknown) =>
   typeof value === "number" && Number.isFinite(value) ? value : 0;
+export function sessionSource(row: Row): string {
+  const name =
+    typeof row.uploader_name === "string" ? row.uploader_name.trim() : "";
+  const streamer = name ? `主播：${name}` : "主播未记录";
+  if (row.platform === "local")
+    return name ? `本地录播 · ${streamer}` : "本地录播";
+  const platform = text(row.platform, "");
+  const room = text(row.source_id ?? row.room_id, "");
+  return [
+    streamer,
+    platform && platform !== "bilibili" && platform !== "unknown"
+      ? platform
+      : "",
+    room ? `房间 ${room}` : "",
+  ]
+    .filter(Boolean)
+    .join(" · ");
+}
 export const time = (value: unknown, zone: "local" | "GMT+8" = "local") => {
   if (!value) return "—";
   const source = String(value);

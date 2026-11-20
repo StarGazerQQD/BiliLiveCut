@@ -41,7 +41,7 @@ def test_cli_module_entrypoint_dispatches_commands() -> None:
     )
 
     assert result.returncode == 0, result.stderr
-    assert "BiliLiveCut 0.1.20.5-alpha" in result.stdout
+    assert "BiliLiveCut 0.1.20.6-alpha" in result.stdout
 
 
 def test_cli_help_preserves_dependency_hints_and_current_doctor_text() -> None:
@@ -89,7 +89,7 @@ def test_click_entrypoint_preserves_all_historical_commands() -> None:
         "trends-keywords",
         "version",
     }
-    assert historical | {"backend", "frontend", "start"} == set(app.commands)
+    assert historical | {"backend", "frontend", "start", "storage-check", "storage-rebuild"} == set(app.commands)
 
 
 def test_every_command_help_works_without_database(monkeypatch: pytest.MonkeyPatch) -> None:

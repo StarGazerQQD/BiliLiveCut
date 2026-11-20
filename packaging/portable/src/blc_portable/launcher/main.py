@@ -37,8 +37,8 @@ if TYPE_CHECKING:
 
 # -- Constants ──────────────────────────────────────────────────
 APP_NAME = "BiliLiveCut"
-VERSION = "V0.1.20.5 Alpha"
-RELEASE_VERSION = "0.1.20.5-alpha"
+VERSION = "V0.1.20.6 Alpha"
+RELEASE_VERSION = "0.1.20.6-alpha"
 SOURCE_COMMIT_SHORT = "12a3ced"
 # NOTE: RELEASE_ID 将在获得 Payload SHA-256 后动态生成 (内容寻址)
 SUPPORTED_PYTHON_VERSIONS = frozenset({(3, 11), (3, 12)})

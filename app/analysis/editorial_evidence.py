@@ -32,7 +32,7 @@ from app.analysis.transcription.content import refined_transcript_text
 from app.analysis.transcription.quality import assess_transcript_quality
 from app.db.entities import HotspotEvent, RawSegment, RecordingSession, Transcript
 
-EVIDENCE_POLICY_VERSION = "bounded-evidence-v5-context-parts"
+EVIDENCE_POLICY_VERSION = "bounded-evidence-v6-segment-context"
 AUDIENCE_PROFILE = "面向不了解该场次前后经过的普通观众，证据不足时保留人工复核。"
 PREFERENCE_VERSION = "general-audience-v1"
 _TYPES = {"asr", "context_asr", "danmaku", "audio", "sensevoice", "trend", "visual"}
@@ -134,7 +134,14 @@ def _recording_ranges(segments: list[RawSegment], origin: float) -> list[TimeRan
 
 
 def _context_window(
-    db: Session, segments: list[RawSegment], origin: float, window: TimeRange, bounds: TimeRange, limit: int
+    db: Session,
+    segments: list[RawSegment],
+    origin: float,
+    window: TimeRange,
+    bounds: TimeRange,
+    limit: int,
+    *,
+    whole_words_only: bool = False,
 ) -> tuple[list[EditorialEvidence], bool]:
     result: list[EditorialEvidence] = []
     truncated = False
@@ -161,6 +168,7 @@ def _context_window(
                 start_s=lower - start,
                 end_s=upper - start,
                 duration_s=end - start,
+                whole_words_only=whole_words_only,
             )
         except ValueError:
             selected = None
@@ -179,7 +187,7 @@ def _context_window(
                 )
             else:
                 problem = "词条跨越输入窗口边界，无法精确定位窗口内全文"
-        elif selected is not None and lower == start and upper == end:
+        elif selected is not None and not selected.precise and lower == start and upper == end:
             text = refined_transcript_text(transcript) or transcript.final_text or ""
             timing = dict(start_s=start, end_s=end, timing_precision="segment", context_role=_role(start, end, bounds))
         elif problem is None:
@@ -201,6 +209,14 @@ def _context_window(
             )
         )
     return result, truncated
+
+
+def fixed_clip_transcripts(
+    db: Session, segments: list[RawSegment], origin: float, bounds: TimeRange
+) -> tuple[list[EditorialEvidence], bool]:
+    """重新读取成片范围内的转写，仅保留实际可定位的摘录。"""
+    items, truncated = _context_window(db, segments, origin, bounds, bounds, EXCERPT_MAX_CHARS, whole_words_only=True)
+    return [item for item in items if item.excerpts and item.start_s is not None and item.end_s is not None], truncated
 
 
 def _context(
@@ -449,11 +465,11 @@ def build_segment_input(
     window = TimeRange(
         start_s=max(
             block.start_s,
-            bounds.start_s - (EXPANDED_CONTEXT_SECONDS if context_direction in {"before", "both"} else 0.0),
+            bounds.start_s - (EXPANDED_CONTEXT_SECONDS if context_direction in {"before", "both"} else CONTEXT_SECONDS),
         ),
         end_s=min(
             block.end_s,
-            bounds.end_s + (EXPANDED_CONTEXT_SECONDS if context_direction in {"after", "both"} else 0.0),
+            bounds.end_s + (EXPANDED_CONTEXT_SECONDS if context_direction in {"after", "both"} else CONTEXT_SECONDS),
         ),
     )
     evidence, truncated = _context(db, segments, origin, window, bounds, EXCERPT_MAX_CHARS)

@@ -15,6 +15,7 @@ from app.web.media_response import MediaFileResponse
 from app.web.services import dashboard as dashboard_service
 from app.web.services import rooms as rooms_service
 from app.web.services import transcripts as transcripts_service
+from app.web.services.session_directories import DirectoryKind, SessionDirectories, session_directories
 from app.web.services.transcripts import (
     TranscriptMediaError,
     TranscriptNotFoundError,
@@ -88,6 +89,17 @@ def get_session_timeline(session_id: int, include_rejected: bool = False) -> dic
         return load_timeline(session_id, include_rejected=include_rejected)
     except ValueError as exc:
         raise HTTPException(status_code=404, detail=str(exc)) from exc
+
+
+@router.post("/sessions/{session_id}/open-storage-directory")
+def open_session_storage_directory(session_id: int, kind: DirectoryKind | None = None) -> SessionDirectories:
+    """打开唯一可用位置，或返回本场次的目录供选择。"""
+    try:
+        return session_directories(session_id, kind)
+    except LookupError as exc:
+        raise HTTPException(status_code=404, detail=str(exc)) from exc
+    except ValueError as exc:
+        raise HTTPException(status_code=409, detail=str(exc)) from exc
 
 
 @router.get("/sessions/{session_id}/titles")

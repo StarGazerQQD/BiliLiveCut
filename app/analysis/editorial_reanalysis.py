@@ -141,7 +141,7 @@ def _validate_computed(db: Session, draft: ReanalysisDraft) -> bool:
     ):
         raise ValueError("热点重评解释与评分来源不同")
     metadata = decode_features(clip.features_json).get("editorial_review")
-    if not isinstance(metadata, dict) or metadata.get("execution") != review.execution.model_dump(mode="json"):
+    if not review.matches_metadata(metadata):
         raise ValueError("热点重评结果的编辑执行记录不一致")
     return (
         event_review_is_current(db, target.source_id, review)

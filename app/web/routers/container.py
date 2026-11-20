@@ -7,6 +7,7 @@ from typing import Any
 from fastapi import APIRouter, HTTPException, Query, Request
 from pydantic import BaseModel, ConfigDict
 
+from app.recording.library_rebuild import LibraryRebuild
 from app.web.services import clips as clips_service
 from app.web.services import notifications as notifications_service
 from app.web.services import publishing as publishing_service
@@ -60,6 +61,22 @@ def patch_configuration(req: ConfigurationChange) -> dict[str, Any]:
 def get_settings() -> dict[str, Any]:
     """返回可切换的运行时开关与上传配置概览。"""
     return settings_service.get_settings_view()
+
+
+@router.post("/settings/storage-rebuild", status_code=202)
+async def create_storage_rebuild(req: LibraryRebuild, request: Request) -> dict[str, Any]:
+    """管理员指定停写副本，通过后台作业生成独立的新库。"""
+    from app.web.services.background_jobs import web_job_manager
+    from app.web.services.review_workflow import review_actor
+
+    actor, role = review_actor(request)
+    if role != "admin":
+        raise HTTPException(status_code=403, detail="只有管理员可以重建媒体库")
+    await web_job_manager.start()
+    job = await web_job_manager.enqueue(
+        "storage_rebuild", req.model_dump(mode="json"), label="重建历史媒体库", owner=actor
+    )
+    return {"job": job}
 
 
 @router.patch("/settings/port")

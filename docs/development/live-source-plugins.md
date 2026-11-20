@@ -126,7 +126,7 @@ async def collect_danmaku(
 `DanmakuSource.collect_danmaku(room, emit, state)` 为独立可选异步长任务协议。
 `emit` 接收 `DanmakuEvent(occurred_at, content, user_name=None)`，时间必须带时区，统一转 UTC。
 跨平台公共事件只表示普通文本计数，不直接接收礼物金额或平台人气。
-宿主在数据库写入前将校验通过的事件追加到 `storage/raw/session_<id>/danmaku.jsonl`，`kind=normalized`，`payload` 为公共事件 JSON；插件无需改接口或自行操作文件。内置 Bilibili 使用 `kind=raw` 保存采样前的解码消息。文件错误单独显示，数据库采集继续；协议版本仍为 `1`。
+宿主在数据库写入前将校验通过的事件追加到该场次弹幕目录的 `session_<id>/danmaku.jsonl`（默认位于 `storage/raw`），`kind=normalized`，`payload` 为公共事件 JSON；插件无需改接口或自行操作文件。内置 Bilibili 使用 `kind=raw` 保存采样前的解码消息。文件错误单独显示，数据库采集继续；协议版本仍为 `1`。
 宿主区分 `DanmakuStatus` 的 unsupported、disabled、connecting、available、failed。
 采集器只能向 `state` 报告 connecting、available、failed；是否支持和是否启用由宿主决定。
 available 必须在实际连接完成后报告，零条事件仍可 available；采集暂时失败与不支持能力不同。
@@ -297,7 +297,7 @@ $env:PYTHONPATH = $blcSource.Path
 Launcher 只核对其锁内依赖，不会替插件恢复额外包；环境重建或换安装目录后需重新安装插件依赖。
 与核心版本冲突的插件须由插件作者解决约束，不能靠修改宿主运行时锁绕过。
 
-`0.1.20.5-alpha` 的冻结源码包含本接口，具体 source_commit 以 Portable 的 version.json 和 Payload 清单为准。
+`0.1.20.6-alpha` 的冻结源码包含本接口，具体 source_commit 以 Portable 的 version.json 和 Payload 清单为准。
 发行维护者必须先提交业务源码，再冻结并构建、验证 Portable；构建器拒绝与冻结基线不同的工作区源码。
 旧 Portable 包缺少契约时，需要升级宿主；手工替换 Runtime 文件可能破坏清单校验。
 

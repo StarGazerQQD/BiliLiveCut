@@ -18,7 +18,7 @@ from app.analysis.editorial_contracts import (
     validate_review_evidence,
 )
 from app.analysis.editorial_provenance import (
-    REVIEW_POLICY_VERSION,
+    STRICT_CLIP_EVIDENCE_POLICIES,
     ReviewProvenance,
     canonical_hash,
     frozen_review_fingerprint,
@@ -56,7 +56,7 @@ class EvaluationRecord(_Contract):
             validate_review_evidence(
                 self.execution.result,
                 self.input,
-                require_complete_support=self.execution.policy_version == REVIEW_POLICY_VERSION,
+                require_complete_support=self.execution.policy_version in STRICT_CLIP_EVIDENCE_POLICIES,
             )
         if self.provenance is not None:
             if self.execution is None or self.revision is None:

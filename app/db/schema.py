@@ -247,7 +247,7 @@ def create_schema(db: Session) -> None:
     from app.db import entities  # noqa: F401
 
     # 创建全部表
-    SQLModel.metadata.create_all(_get_engine())
+    SQLModel.metadata.create_all(db.connection())
 
     # 计算指纹
     fingerprint = compute_schema_fingerprint()

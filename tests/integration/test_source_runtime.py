@@ -74,7 +74,7 @@ async def test_failed_danmaku_checkpoint_freezes_last_confirmed_coverage(
         newline: str | None = None,
     ) -> BinaryIO | TextIO:
         nonlocal calls
-        if path.name == "danmaku-pending.jsonl" and mode == "ab":
+        if path.name == "danmaku-pending.jsonl" and mode == "a+b":
             calls += 1
             if calls <= failures:
                 raise OSError("coverage journal unavailable")
@@ -122,7 +122,7 @@ async def test_danmaku_failure_waits_for_older_checkpoint_before_saving_final_st
         errors: str | None = None,
         newline: str | None = None,
     ) -> BinaryIO | TextIO:
-        if path.name == "danmaku-pending.jsonl" and mode == "ab" and not started.is_set():
+        if path.name == "danmaku-pending.jsonl" and mode == "a+b" and not started.is_set():
             started.set()
             assert release.wait(5), "test did not release pending write"
         return original(path, mode, buffering, encoding, errors, newline)
@@ -1761,7 +1761,7 @@ async def test_capture_stop_waits_for_started_journal_write(
         newline: str | None = None,
     ) -> BinaryIO | TextIO:
         nonlocal writes
-        if path.name == "danmaku-pending.jsonl" and mode == "ab":
+        if path.name == "danmaku-pending.jsonl" and mode == "a+b":
             writes += 1
             if writes == 2:
                 writing.set()
@@ -1852,7 +1852,7 @@ async def test_repeated_cancel_waits_for_initial_capture_write_before_releasing_
         errors: str | None = None,
         newline: str | None = None,
     ) -> BinaryIO | TextIO:
-        if path.name == "danmaku-pending.jsonl" and mode == "ab":
+        if path.name == "danmaku-pending.jsonl" and mode == "a+b":
             writing.set()
             assert release.wait(5)
         return original(path, mode, buffering, encoding, errors, newline)

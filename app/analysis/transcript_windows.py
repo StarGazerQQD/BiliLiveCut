@@ -96,6 +96,7 @@ def extract_transcript_window(
     duration_s: float,
     semantic_text: str | None = None,
     word_cache: TranscriptWindowCache | None = None,
+    whole_words_only: bool = False,
 ) -> TranscriptWindow:
     """只返回与指定片内时间窗重叠的转写内容。
 
@@ -107,6 +108,7 @@ def extract_transcript_window(
     :param start_s: 时间窗起点，相对原始片段起点的秒数。
     :param end_s: 时间窗终点，相对原始片段起点的秒数。
     :param duration_s: 原始片段时长。
+    :param whole_words_only: 仅保留起止时间都位于窗口内的词。
     :returns: 裁剪后的正文、词级条目及精确性标记。
     """
     duration = max(0.0, _finite_float(duration_s, 0.0))
@@ -124,6 +126,8 @@ def extract_transcript_window(
         index = word_cache.get(words_json)
         has_words = bool(index.words)
         selected = index.select(start, end)
+    if whole_words_only:
+        selected = [word for word in selected if start <= float(word["start"]) <= float(word["end"]) <= end]
     complete = duration > 0 and start <= 0 and end >= duration
     if semantic_text is not None and complete:
         # 整理正文没有词对齐信息：有词时间戳的局部窗口保留精确原文，

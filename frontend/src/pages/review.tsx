@@ -16,7 +16,15 @@ import { toast } from "sonner";
 import { useAction, useApi, type Row } from "@/api/client";
 import { useAuth } from "@/api/auth";
 import { useDraft } from "@/lib/drafts";
-import { obj, rows, text, number, duration, time } from "@/lib/data";
+import {
+  obj,
+  rows,
+  text,
+  number,
+  duration,
+  time,
+  sessionSource,
+} from "@/lib/data";
 import {
   Page,
   QueryState,
@@ -202,7 +210,8 @@ export function ReviewQueuePage() {
                       )}
                     </p>
                     <p className="mt-3 text-xs text-muted-foreground">
-                      场次 #{text(item.session_id)} · {time(item.start_ts)} ·{" "}
+                      场次 #{text(item.session_id)} · {sessionSource(item)} ·{" "}
+                      {time(item.start_ts)} ·{" "}
                       {duration(
                         (Date.parse(text(item.end_ts)) -
                           Date.parse(text(item.start_ts))) /
@@ -430,7 +439,7 @@ function ReviewEditor() {
           (event.target.matches(
             "input,textarea,select,button,a,[contenteditable]",
           ) ||
-            event.target.closest('[role="dialog"]')))
+            event.target.closest('summary,[role="dialog"]')))
       )
         return;
       const media = video.current;
@@ -500,7 +509,8 @@ function ReviewEditor() {
               />
               <div className="flex items-center justify-between px-5 py-3 text-xs text-slate-400">
                 <span>
-                  场次 #{text(candidate.session_id)} · 候选 #{id}
+                  场次 #{text(candidate.session_id)} ·{" "}
+                  {sessionSource(candidate)} · 候选 #{id}
                 </span>
                 <span>
                   {duration(

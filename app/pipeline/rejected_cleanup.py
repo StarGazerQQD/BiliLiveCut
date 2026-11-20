@@ -12,6 +12,7 @@ from app.core.cancellation import cancellation_requested
 from app.core.paths import storage_path_aliases
 from app.db.entities import AppSetting, CandidateStatus, ClipStatus, FinalClip, HighlightCandidate
 from app.db.session import get_session
+from app.recording.session_storage import get_locations
 
 _BATCH_SIZE = 32
 _CURSOR_KEY = "rejected_cleanup:cursor"
@@ -41,6 +42,9 @@ def _snapshot() -> list[tuple[int, FinalClip | None]]:
             .outerjoin(FinalClip, FinalClip.candidate_id == HighlightCandidate.id)
             .where(
                 HighlightCandidate.status == CandidateStatus.REJECTED,
+                ~select(AppSetting.key)
+                .where(AppSetting.key == "library_rebuild:session:" + cast(HighlightCandidate.session_id, String))
+                .exists(),
                 or_(
                     HighlightCandidate.id > cursor.candidate_id,
                     (HighlightCandidate.id == cursor.candidate_id) & (FinalClip.id > cursor.clip_id),
@@ -59,6 +63,7 @@ def _can_delete(db: Session, candidate_id: int, snapshot: FinalClip, aliases: tu
     current = db.get(FinalClip, snapshot.id)
     if (
         candidate is None
+        or get_locations(db, candidate.session_id).source_session_id is not None
         or candidate.status != CandidateStatus.REJECTED
         or current is None
         or current.candidate_id != candidate_id

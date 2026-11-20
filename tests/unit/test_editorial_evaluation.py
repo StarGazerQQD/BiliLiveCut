@@ -21,7 +21,7 @@ from app.analysis.editorial_evaluation import (
 )
 from app.analysis.editorial_evaluation_io import read_contract, write_result
 from app.analysis.editorial_provenance import ReviewProvenance, canonical_hash, capture_provenance
-from tests.unit.test_editorial_contracts import _attempt, _execution, _review, _source
+from tests.unit.test_editorial_contracts import _attempt, _evidence, _execution, _review, _source
 
 if TYPE_CHECKING:
     from pytest import MonkeyPatch
@@ -88,6 +88,13 @@ def _labels(
             )
         ],
     )
+
+
+def test_historical_fixed_clip_review_still_requires_timed_in_clip_evidence() -> None:
+    source = _source(evidence=[_evidence(start_s=None, end_s=None, timing_precision="unknown", context_role="unknown")])
+    execution = _execution(policy_version="editorial-decision-v5-fixed-clip", result=_review(suggested_bounds=None))
+    with pytest.raises(ValueError, match="片内独立理解需要"):
+        EvaluationRecord.model_validate({**_record().model_dump(), "input": source, "execution": execution})
 
 
 def test_fixed_candidates_never_report_full_session_recall() -> None:

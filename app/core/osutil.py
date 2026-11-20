@@ -14,7 +14,7 @@ from pathlib import Path
 from loguru import logger
 
 
-def open_path(path: str | Path) -> bool:
+def open_path(path: str | Path, *, existing_directory: bool = False) -> bool:
     """在系统文件管理器中打开一个目录或文件所在位置。
 
     * Windows:``os.startfile``;
@@ -22,13 +22,16 @@ def open_path(path: str | Path) -> bool:
     * Linux:``xdg-open``。
 
     :param path: 目录或文件路径。
+    :param existing_directory: 仅打开指定的现存目录。
     :returns: 成功发起打开返回 ``True``;失败返回 ``False``(不抛异常)。
     """
     if sys.platform.startswith("linux") and not (os.environ.get("DISPLAY") or os.environ.get("WAYLAND_DISPLAY")):
         logger.debug("无图形会话，跳过打开目录: {}", path)
         return False
     p = Path(path)
-    target = str(p if p.exists() else p.parent)
+    if existing_directory and not p.is_dir():
+        return False
+    target = str(p if existing_directory or p.exists() else p.parent)
     try:
         if sys.platform.startswith("win"):
             os.startfile(target)  # type: ignore[attr-defined]  # noqa: S606 - 仅打开本机目录

@@ -3,7 +3,15 @@ import { useState } from "react";
 import { Link } from "react-router";
 import { Activity, Cpu, HardDrive, ListTodo, Upload } from "lucide-react";
 import { useAction, useApi, type Row } from "@/api/client";
-import { obj, rows, text, number, time, duration } from "@/lib/data";
+import {
+  obj,
+  rows,
+  text,
+  number,
+  time,
+  duration,
+  sessionSource,
+} from "@/lib/data";
 import {
   Page,
   QueryState,
@@ -101,7 +109,9 @@ export function TasksPage() {
                         <p className="mt-2 text-xs text-muted-foreground">
                           #{text(id)} · {time(item.created_at)}
                           {item.segment_id ? ` · 分段 #${item.segment_id}` : ""}
-                          {item.session_id ? ` · 场次 #${item.session_id}` : ""}
+                          {item.session_id
+                            ? ` · 场次 #${item.session_id} · ${sessionSource(item)}`
+                            : ""}
                         </p>
                       </div>
                       <Status value={status} />

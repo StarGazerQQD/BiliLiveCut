@@ -5,7 +5,16 @@ import { useAction, useApi } from "@/api/client";
 import { EditorialResult } from "@/components/editorial-result";
 import { EditorialReanalysis } from "@/components/editorial-reanalysis";
 import { SessionSummary } from "@/components/session-summary";
-import { obj, rows, text, number, time, duration } from "@/lib/data";
+import { SessionDirectoryButton } from "@/components/session-directories";
+import {
+  obj,
+  rows,
+  text,
+  number,
+  time,
+  duration,
+  sessionSource,
+} from "@/lib/data";
 import {
   Page,
   QueryState,
@@ -77,12 +86,13 @@ export function SessionsPage() {
                       </div>
                       <h2 className="font-semibold">
                         {text(
-                          entry.session_title ||
-                            entry.title ||
-                            entry.uploader_name,
+                          entry.session_title || entry.title,
                           `场次 #${id}`,
                         )}
                       </h2>
+                      <p className="text-sm text-muted-foreground">
+                        {sessionSource(entry)}
+                      </p>
                       <p className="text-xs text-muted-foreground">
                         {time(entry.started_at, "GMT+8")} · 时长{" "}
                         {duration(entry.duration_s)}
@@ -103,6 +113,7 @@ export function SessionsPage() {
                       >
                         查看场次时间线
                       </Button>
+                      <SessionDirectoryButton sessionId={String(id)} />
                     </CardContent>
                   </Card>
                 );
@@ -127,10 +138,13 @@ export function SessionsPage() {
                   <div>
                     <h2 className="text-lg font-semibold">
                       {text(
-                        info.session_title || info.title || info.uploader_name,
+                        info.session_title || info.title,
                         `场次 #${session}`,
                       )}
                     </h2>
+                    <p className="mt-1 text-sm text-muted-foreground">
+                      {sessionSource(info)}
+                    </p>
                     <p className="mt-2 text-xs text-muted-foreground">
                       {time(info.started_at, "GMT+8")} · 时长{" "}
                       {duration(info.duration_s)}
@@ -151,6 +165,7 @@ export function SessionsPage() {
                   ]}
                 />
                 <div className="flex flex-wrap gap-2">
+                  <SessionDirectoryButton key={session} sessionId={session} />
                   <ConfirmButton
                     title="重新生成整场总结？"
                     description="将提交后台总结任务。"

@@ -279,19 +279,23 @@ def test_ts_to_mp4_starts_on_real_video_frame(tmp_path: Path) -> None:
 
 
 @pytest.mark.skipif(not _HAS_FFMPEG, reason="需要 FFmpeg")
+@pytest.mark.parametrize("rebuilt_flat_file", [False, True])
 def test_lossless_source_export_rebases_video_without_dropping_packets(
     temp_db: None,
     tmp_path: Path,
     monkeypatch: MonkeyPatch,
+    rebuilt_flat_file: bool,
 ) -> None:
     """源 TS 无损导出应校准首个画面，同时完整保留音视频包。"""
     from app.core import paths as path_module
-    from app.db.entities import Transcript
+    from app.core.recording_storage import RecordingStorage
+    from app.db.entities import AppSetting, Transcript
     from app.db.session import get_session
+    from app.recording.session_storage import LEGACY_FILE_PREFIX, LOCATION_PREFIX
     from app.web.services import transcripts as transcript_service
 
     storage_root = tmp_path / "storage"
-    source_dir = storage_root / "raw" / "session_1"
+    source_dir = tmp_path / "offline" / "raw" if rebuilt_flat_file else storage_root / "raw" / "session_1"
     source_dir.mkdir(parents=True)
     source = source_dir / "source.ts"
     assert _make_test_ts(source, duration=3), "生成测试 TS 失败"
@@ -301,6 +305,10 @@ def test_lossless_source_export_rebases_video_without_dropping_packets(
         segment = RawSegment(session_id=1, seq=0, file_path=str(source))
         db.add(segment)
         db.flush()
+        if rebuilt_flat_file:
+            layout = RecordingStorage(raw=str(source_dir), source_session_id=7)
+            db.add(AppSetting(key=f"{LOCATION_PREFIX}1", value=layout.model_dump_json()))
+            db.add(AppSetting(key=f"{LEGACY_FILE_PREFIX}1:{segment.id}", value=str(source)))
         transcript = Transcript(segment_id=segment.id, final_text="无损导出")
         db.add(transcript)
         db.flush()

@@ -89,6 +89,8 @@ def configuration_policy(key: str) -> ConfigurationPolicy:
         ("recording_", "segment_", "stream_", "preferred_stream", "reconnect_", "room_metadata_")
     ) or key in {
         "collect_danmaku",
+        "storage_raw_dir",
+        "storage_danmaku_dir",
         "danmaku_login_retry_max_attempts",
         "danmaku_login_retry_interval_s",
         "bilibili_cookie",

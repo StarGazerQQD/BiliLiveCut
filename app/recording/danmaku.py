@@ -13,6 +13,7 @@ from sqlalchemy.exc import SQLAlchemyError
 from app.core.async_cleanup import complete_cleanup
 from app.core.config import settings
 from app.core.execution import run_sync
+from app.core.recording_storage import RecordingStorage
 from app.core.sanitize import safe_exception_summary
 from app.db.entities import Danmaku, DanmakuType
 from app.db.errors import temporary_database_error
@@ -45,14 +46,23 @@ _COVERAGE_POLL_S = 5.0
 class DanmakuCapture:
     """只管理可选弹幕，失败不会中断音视频及后续分析。"""
 
-    def __init__(self, source: LiveSource, room: SourceRoom, db_room_id: int, session_id: int) -> None:
+    def __init__(
+        self,
+        source: LiveSource,
+        room: SourceRoom,
+        db_room_id: int,
+        session_id: int,
+        *,
+        storage_identity: str | None = None,
+        locations: RecordingStorage | None = None,
+    ) -> None:
         from app.sources.bilibili.source import BilibiliSource
 
         self.room = room
         self.db_room_id = db_room_id
         self.session_id = session_id
-        self.archive = DanmakuArchive(session_id, room)
-        self.journal = DanmakuJournal(session_id)
+        self.archive = DanmakuArchive(session_id, room, storage_identity=storage_identity, locations=locations)
+        self.journal = DanmakuJournal(session_id, storage_identity=storage_identity, locations=locations)
         self._state_lock = asyncio.Lock()
         # 内置适配保留原有礼物、SC、进场及采样单位；不向外部契约暴露数据库。
         self.collector: DanmakuSource | None = (

@@ -14,13 +14,15 @@ from loguru import logger
 from sqlmodel import Session, select
 
 from app.clipping.core import probe_media
+from app.core.config import settings
 from app.core.media_usage import media_operation
-from app.core.paths import resolve_storage_path, session_raw_dir
+from app.core.paths import resolve_storage_path
 from app.db.entities import LiveRoom, RawSegment, RecordingSession, SessionStatus, utcnow
 from app.db.session import get_session
 from app.recording import intents
 from app.recording.danmaku_journal import drain_journal
 from app.recording.segments import register_segment
+from app.recording.session_storage import OWNER_PREFIX, get_locations, session_identity
 from app.recording.writer_ownership import SessionWriter
 
 
@@ -77,8 +79,13 @@ def recover_owned_recording(
     """调用者持续持有原 writer 独占证明，一轮补一批弹幕并核验至多二十个尾片。"""
     if not drain_journal(record.session_id, close=True):
         return False
-    directory = session_raw_dir(record.session_id).resolve()
     with get_session() as db:
+        from app.db.entities import AppSetting
+
+        directory = get_locations(db, record.session_id).session_dir(record.session_id, Path(settings.storage_root))
+        owner = db.get(AppSetting, f"{OWNER_PREFIX}{record.session_id}")
+        if owner and session_identity(directory) != owner.value:
+            raise ValueError("原片目录不可用或场次身份不符，已保留待恢复记录")
         registered = {
             str(resolve_storage_path(value))
             for value in db.exec(select(RawSegment.file_path).where(RawSegment.session_id == record.session_id)).all()

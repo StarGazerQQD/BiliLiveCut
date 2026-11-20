@@ -79,5 +79,15 @@ time.sleep(30)
     finally:
         tree.terminate()
         process.wait(timeout=5)
-    owner = ServiceOwnership(root, engine)
+    # Windows 在强制终止后可能仍在回收子进程持有的文件锁。
+    deadline = time.monotonic() + 5
+    while True:
+        try:
+            owner = ServiceOwnership(root, engine)
+        except TimeoutError:
+            if time.monotonic() >= deadline:
+                raise
+            time.sleep(0.02)
+        else:
+            break
     owner.release()

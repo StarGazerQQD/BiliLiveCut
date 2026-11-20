@@ -11,6 +11,7 @@ export const statusLabels: Record<string, string> = {
   stopping: "正在停止",
   paused: "已暂停",
   interrupted: "已中断",
+  archived: "已归档",
   error: "异常",
   failed: "失败",
   running: "运行中",

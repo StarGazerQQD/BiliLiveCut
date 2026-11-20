@@ -26,6 +26,7 @@ from app.models.capacity import ModelCapacityError, output_budget
 
 _QUEUE = "segment_summary_queue:v1:"
 _STEP = "segment_summary_step:v1:"
+ARCHIVED_SEGMENTS_PREFIX = "library_rebuild:segment_summaries:"
 _POLICY = "rolling-asr-summary-v1"
 _MIN_RETRY_DELAY_S = 5.0
 _MAX_RETRY_DELAY_S = 60.0
@@ -669,7 +670,11 @@ def segment_summary_views(db: Session, session_id: int) -> dict[int, dict[str, o
     steps = _steps(db, session_id)
     row = db.get(AppSetting, f"{_QUEUE}{session_id}")
     if row is None:
-        return {c.segment_id: {"summary_status": "legacy", "context_summary": None} for c in chunks}
+        views = {c.segment_id: {"summary_status": "legacy", "context_summary": None} for c in chunks}
+        archived = db.get(AppSetting, f"{ARCHIVED_SEGMENTS_PREFIX}{session_id}")
+        if archived:
+            views.update({int(key): value for key, value in json.loads(archived.value).items()})
+        return views
     policy, prefix_digest = summary_policy(), ""
     parent: SummaryStep | None = None
     invalid = False

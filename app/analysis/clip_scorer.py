@@ -18,11 +18,12 @@ from app.analysis.editorial_review import (
     EditorialReviewDraft,
     editorial_auto_approvable,
     editorial_candidate,
-    final_bounds_metadata,
+    review_final_bounds,
     semantic_review_policy,
 )
 from app.analysis.editorial_review_sources import (
     event_review_is_current,
+    load_fixed_clip_input,
     media_bounds_accessible,
     media_file_identity,
     media_snapshot_is_current,
@@ -53,6 +54,7 @@ from app.db.session import get_session
 
 if TYPE_CHECKING:
     from app.analysis.audio import AudioFeatures
+    from app.analysis.model_execution import ModelCallBudget
 
 EVENT_CLIP_SCORER_VERSION = 2
 
@@ -228,6 +230,7 @@ def compute_hotspot_clip_draft(
     audio_segment_id: int | None = None,
     config: ClipScorerConfig | None = None,
     expected_candidate_id: int | None = None,
+    budget: ModelCallBudget | None = None,
 ) -> EventClipDraft:
     """在事务外按完整事件评分，并生成不跨断流缺口的动态候选边界。"""
     cfg = config or ClipScorerConfig.from_settings()
@@ -332,9 +335,15 @@ def compute_hotspot_clip_draft(
                 if source is not None and source.time_origin_epoch_s is not None
                 else None
             )
-            review_metadata.update(
-                final_bounds_metadata(review, actual_bounds, media_accessible=accessible, suggestion_applied=applied)
-            )
+        review_metadata = review_final_bounds(
+            review,
+            actual_bounds,
+            media_accessible=accessible,
+            suggestion_applied=applied,
+            budget=budget,
+            max_duration_s=cfg.max_duration_s,
+            load_clip_input=load_fixed_clip_input,
+        )
     initial_status = CandidateStatus.PENDING
     if (
         context.auto_approve
@@ -399,6 +408,8 @@ def validate_event_clip_draft(
 ) -> HotspotEvent | None:
     """提交前重算指纹，拒绝计算期间发生边界、证据或配置变化的结果。"""
     cfg = config or ClipScorerConfig.from_settings()
+    if review is not None and not review.matches_metadata(_json_mapping(draft.features_json).get("editorial_review")):
+        return None
     event = db.get(HotspotEvent, draft.hotspot_event_id)
     if (
         event is None

@@ -11,6 +11,7 @@ from typing import TypedDict
 from sqlmodel import Session, select
 
 from app.db.entities import AppSetting, LiveRoom, RecordingSession
+from app.db.session import get_session
 from app.recording.metadata import SessionMetadata, read_metadata, room_metadata_view
 from app.sources.rooms import room_source_view
 
@@ -113,3 +114,16 @@ def unknown_source_identity() -> SourceIdentity:
         "title_snapshot": None,
         "title_state": "unavailable",
     }
+
+
+def attach_session_sources(records: list[dict[str, object]]) -> None:
+    """给 Web 记录附上所属场次的来源，保留记录自身的标题和字段。"""
+    ids = {value for row in records if type(value := row.get("session_id")) is int}
+    if not ids:
+        return
+    with get_session() as db:
+        sources = source_identities_for_sessions(db, ids)
+    for row in records:
+        session_id = row.get("session_id")
+        if type(session_id) is int:
+            row["source"] = sources.get(session_id, unknown_source_identity())

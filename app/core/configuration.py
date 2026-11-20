@@ -6,6 +6,7 @@ import json
 import re
 from collections.abc import Iterator
 from contextlib import contextmanager
+from pathlib import Path
 from threading import RLock
 
 from pydantic import BaseModel, ConfigDict, Field, JsonValue, ValidationError, model_validator
@@ -15,6 +16,7 @@ from sqlmodel import Session, select
 from app.analysis.scoring_config import ScoringOptions, scoring_defaults
 from app.core.config import Settings, get_settings
 from app.core.configuration_policy import BOOTSTRAP, configuration_policy
+from app.core.recording_storage import RecordingStorage
 from app.core.runtime_settings import active_configuration_snapshots, process_configuration, publish_settings
 from app.db.entities import AppSetting
 from app.db.session import get_session
@@ -230,6 +232,11 @@ def save_configuration(change: ConfigurationChange) -> dict[str, JsonValue]:
                     "配置校验失败（类型、范围或关联约束）：" + json.dumps(errors, ensure_ascii=False)
                 ) from None
             validated = core.model_dump() | runtime.model_dump()
+            for key in requested & {"storage_raw_dir", "storage_danmaku_dir"}:
+                path = RecordingStorage.base(getattr(core, key) or "raw", Path(core.storage_root))
+                parent = next((item for item in (path, *path.parents) if item.exists()), None)
+                if parent is None or not parent.is_dir():
+                    raise ValueError("录制存储位置需要可用的卷和目录")
             from app.notify.email_verification import SMTP_KEYS, invalidate_verification
 
             if requested & SMTP_KEYS:
