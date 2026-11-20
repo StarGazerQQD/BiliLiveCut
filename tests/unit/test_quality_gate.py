@@ -55,11 +55,8 @@ def test_react_hooks_prepare_locked_dependencies_before_clean_checkout_checks(
 def test_frontend_distribution_jobs_prepare_compatible_node(workflow_name: str, job_name: str) -> None:
     workflow = yaml.safe_load((ci_gate.REPO_ROOT / ".github/workflows" / workflow_name).read_text(encoding="utf-8"))
     steps = workflow["jobs"][job_name]["steps"]
-    build = next(
-        i
-        for i, step in enumerate(steps)
-        if any(command in step.get("run", "") for command in ("python build_payload.py", "python -m build --wheel"))
-    )
+    command = "python -m build " if job_name == "build-sdist" else "python build_payload.py"
+    build = next(i for i, step in enumerate(steps) if command in step.get("run", ""))
     setups = [step for step in steps[:build] if step.get("uses", "").startswith("actions/setup-node@")]
     assert setups, f"{workflow_name}/{job_name}: Distribution includes a frontend build and requires Node"
     assert str(setups[-1]["with"]["node-version"]) == "24"

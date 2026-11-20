@@ -1,8 +1,8 @@
 """Payload 构建器 — 构建 source_payload.zip 和完整 Manifest。
 
 流程:
-1. 从配置中固定的发布基线提取源码 → staging/
-2. 校验源码快照版本与发布配置一致
+1. 从发布标签对应的 Git 提交提取源码 → staging/
+2. 注入同一提交的发布身份
 3. 构建 ZIP (收集 included_files 集合)
 4. 基于 included_files 生成 Manifest (文件数/Hash 与 ZIP 严格一致)
 5. 逐文件交叉校验 ZIP vs Manifest
@@ -32,7 +32,6 @@ from .manifest import (
 )
 from .source_snapshot import (
     extract_source,
-    validate_release_identity,
     verify_source_origin,
     verify_workspace_source_baseline,
 )
@@ -323,11 +322,9 @@ def build_payload(
     :param skip_reproducible: 跳过可复现性验证。
     :returns: 构建报告 dict。
     """
-    import subprocess
-
-    if builder_commit is None:
-        result = subprocess.run(["git", "rev-parse", "HEAD"], capture_output=True, text=True, check=True)
-        builder_commit = result.stdout.strip()
+    if builder_commit is not None and builder_commit != SOURCE_COMMIT_FULL:
+        raise ValueError("The builder and payload must use the same commit")
+    builder_commit = SOURCE_COMMIT_FULL
 
     verify_workspace_source_baseline(SOURCE_COMMIT_FULL)
 
@@ -343,9 +340,6 @@ def build_payload(
     _logger.info("Step 1: Extracting source from %s", SOURCE_COMMIT_SHORT)
     extract_report = extract_source(SOURCE_COMMIT_FULL, staging_dir)
 
-    # Step 2: 严格验证源码版本，不允许构建期改写旧源码
-    _logger.info("Step 2: Validating source release identity -> %s", RELEASE_VERSION)
-    validate_release_identity(staging_dir)
     # Step 2.5: 编译并注入原生加速模块
     _logger.info("Step 2.5: Compiling native extensions...")
     native_results = _compile_and_copy_native_modules(staging_dir)
@@ -355,6 +349,9 @@ def build_payload(
     _logger.info("Step 3: Verifying source origin")
     verify_source_origin(staging_dir, SOURCE_COMMIT_FULL)
 
+    from version_loader import stamp_distribution
+
+    stamp_distribution(staging_dir)
     _build_frontend(staging_dir)
 
     # Step 4: 收集统一文件集合
@@ -420,7 +417,7 @@ def build_payload(
 
         # 完全相同的构建流程
         extract_source(SOURCE_COMMIT_FULL, verify_staging)
-        validate_release_identity(verify_staging)
+        stamp_distribution(verify_staging)
         _compile_and_copy_native_modules(verify_staging)
         _build_frontend(verify_staging)
 

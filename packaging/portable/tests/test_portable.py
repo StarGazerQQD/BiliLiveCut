@@ -128,35 +128,6 @@ class TestSourceSnapshot:
         assert not (staging / "build").exists()
         assert not (staging / "dist").exists()
 
-    def test_source_snapshot_declares_current_release_identity(self, tmp_worktree: str) -> None:
-        """源码快照必须自行声明当前版本，构建阶段不再改写。"""
-        from blc_portable.payload.manifest import RELEASE_VERSION, SOURCE_COMMIT_FULL
-        from blc_portable.payload.source_snapshot import extract_source, validate_release_identity
-
-        staging = Path(tmp_worktree) / "test_identity"
-        staging.mkdir(parents=True)
-        extract_source(SOURCE_COMMIT_FULL, staging)
-        validate_release_identity(staging)
-        assert RELEASE_VERSION in (staging / "app" / "__init__.py").read_text(encoding="utf-8")
-        assert SOURCE_COMMIT_FULL
-
-    def test_release_identity_rejects_old_source_version(self, tmp_path: Path) -> None:
-        """构建器不得把旧版本源码伪装成当前发布版本。"""
-        from blc_portable.payload.source_snapshot import validate_release_identity
-
-        files = {
-            "app/__init__.py": '__version__ = "0.1.17.2-alpha"\n',
-            "pyproject.toml": 'version = "0.1.17.2-alpha"\n',
-            "setup_c.py": 'version="0.1.17.2"\n',
-        }
-        for rel_path, content in files.items():
-            path = tmp_path / rel_path
-            path.parent.mkdir(parents=True, exist_ok=True)
-            path.write_text(content, encoding="utf-8")
-
-        with pytest.raises(RuntimeError, match="禁止在构建阶段改写旧源码版本"):
-            validate_release_identity(tmp_path)
-
     def test_source_origin_rejects_business_file_tampering(self, tmp_worktree: str) -> None:
         """验证关键业务文件偏离固定 Commit 时构建失败。"""
         from blc_portable.payload.manifest import SOURCE_COMMIT_FULL
@@ -182,7 +153,7 @@ class TestSourceSnapshot:
 
         monkeypatch.setattr(source_snapshot.subprocess, "run", fake_run)
 
-        with pytest.raises(RuntimeError, match="app/cli.py.*更新 source_commit"):
+        with pytest.raises(RuntimeError, match="app/cli.py.*从该提交构建"):
             source_snapshot.verify_workspace_source_baseline("a" * 40)
 
     def test_workspace_baseline_rejects_release_metadata_drift(self, monkeypatch: MonkeyPatch) -> None:
@@ -196,7 +167,7 @@ class TestSourceSnapshot:
 
         monkeypatch.setattr(source_snapshot.subprocess, "run", fake_run)
 
-        with pytest.raises(RuntimeError, match="pyproject.toml.*更新 source_commit"):
+        with pytest.raises(RuntimeError, match="pyproject.toml.*从该提交构建"):
             source_snapshot.verify_workspace_source_baseline("a" * 40)
 
 

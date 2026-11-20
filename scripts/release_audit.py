@@ -267,18 +267,15 @@ def check_ci_bypass(audit: AuditResult) -> None:
             "发布前必须交叉校验 Payload/Lite/Full 的版本、基线、构建提交和哈希",
         )
         audit.check(
-            "release.yml tag 与项目版本严格匹配",
-            "PROJECT_VERSION=" in content
-            and 'EXPECTED_TAG_VERSION="${PROJECT_VERSION%-alpha}-Alpha"' in content
-            and 'if [ "$TAG_VERSION" != "$EXPECTED_TAG_VERSION" ]' in content
-            and "complete release version pattern" in content,
-            "tag 必须完整匹配语法，并由内部版本真源唯一映射为外部 -Alpha 标签",
+            "release.yml resolves the release tag against HEAD",
+            "BLC_RELEASE_TAG:" in content and "python packaging/portable/config/version_loader.py" in content,
+            "必须从此次构建的标签和提交派生发布身份",
         )
         audit.check(
             "release.yml 预发布标签严格使用当前 GitHub 格式",
             'if [[ "$TAG" =~ -(Alpha|Beta|RC)' in content
             and 'echo "prerelease=$PRERELEASE"' in content
-            and "prerelease: ${{ steps.tag.outputs.prerelease == 'true' }}" in content,
+            and "flags+=(--prerelease)" in content,
             "预发布标签必须使用唯一的 TitleCase GitHub 格式并保持 prerelease 属性",
         )
         audit.check(

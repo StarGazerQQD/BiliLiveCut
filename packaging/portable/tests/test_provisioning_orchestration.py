@@ -125,7 +125,10 @@ def test_relocated_frozen_provisioner_uses_explicit_config_root(
         source_root / "blc_portable",
         ignore=shutil.ignore_patterns("__pycache__", "*.pyc"),
     )
+    from version_loader import get_full_config
+
     shutil.copytree(_PORTABLE_DIR / "config", config_root)
+    (config_root / "version.json").write_text(json.dumps(get_full_config()), encoding="utf-8")
     shared_config = source_root / "config"
     shared_config.mkdir()
     for name in ("__init__.py", "file_locks.py"):

@@ -7,6 +7,7 @@ from typing import Any
 from sqlalchemy import func
 from sqlmodel import select
 
+from app import __version_label__
 from app.db.entities import (
     Danmaku,
     FinalClip,
@@ -50,6 +51,7 @@ def dashboard_state() -> dict[str, Any]:
         ).all()
 
     return {
+        "version": __version_label__,
         "rooms": [_room_dict(r, recorder_manager.status(r.id)) for r in rooms],
         "live_sources": [descriptor.model_dump(mode="json") for descriptor in source_registry.descriptors()],
         "counts": {"candidates": n_candidates, "clips": n_clips, "active_sessions": len(sessions)},

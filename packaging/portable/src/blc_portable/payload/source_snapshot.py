@@ -13,7 +13,6 @@ from pathlib import Path
 
 from .file_plan import PAYLOAD_ITEMS
 from .manifest import (
-    RELEASE_VERSION,
     SOURCE_COMMIT_FULL,
     SOURCE_COMMIT_SHORT,
 )
@@ -85,7 +84,7 @@ def verify_workspace_source_baseline(source_commit: str) -> None:
         suffix = f" 等 {len(stale_paths)} 个文件" if len(stale_paths) > 12 else ""
         raise RuntimeError(
             f"Payload 源码基线 {source_commit[:7]} 已落后于当前业务源码: {preview}{suffix}；"
-            "请先提交业务修复并更新 source_commit"
+            "请先提交业务修复，再从该提交构建"
         )
 
 
@@ -204,24 +203,6 @@ def extract_source(commit_ref: str, output_dir: Path) -> dict:
     finally:
         if tmp_tar.exists():
             tmp_tar.unlink()
-
-
-def validate_release_identity(staging_dir: Path) -> None:
-    """确认源码快照本身已经声明当前发布版本，不修改快照内容。"""
-    expected = {
-        "app/__init__.py": f'__version__ = "{RELEASE_VERSION}"',
-        "pyproject.toml": f'version = "{RELEASE_VERSION}"',
-        "setup_c.py": f'version="{RELEASE_VERSION.split("-", maxsplit=1)[0]}"',
-    }
-    mismatches: list[str] = []
-    for rel_path, marker in expected.items():
-        path = staging_dir / rel_path
-        if not path.is_file() or marker not in path.read_text(encoding="utf-8"):
-            mismatches.append(rel_path)
-    if mismatches:
-        raise RuntimeError(
-            f"Payload 源码版本与当前发布版本不一致: {', '.join(mismatches)}；禁止在构建阶段改写旧源码版本"
-        )
 
 
 def verify_source_origin(

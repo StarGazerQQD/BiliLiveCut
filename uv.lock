@@ -113,7 +113,6 @@ wheels = [
 
 [[package]]
 name = "bili-live-cut"
-version = "0.1.20.6a0"
 source = { editable = "." }
 dependencies = [
     { name = "anyio" },
@@ -205,9 +204,9 @@ dev = [
 requires-dist = [
     { name = "anyio", specifier = ">=4.0" },
     { name = "av", marker = "extra == 'asr-whisper'", specifier = ">=11,<19" },
+    { name = "bili-live-cut", extras = ["asr-funasr", "asr-whisper"], marker = "extra == 'asr-all'" },
     { name = "bili-live-cut", extras = ["asr-whisper"], marker = "extra == 'asr-funasr'" },
     { name = "bili-live-cut", extras = ["asr-whisper"], marker = "extra == 'dev'" },
-    { name = "bili-live-cut", extras = ["asr-whisper", "asr-funasr"], marker = "extra == 'asr-all'" },
     { name = "bili-live-cut", extras = ["llm"], marker = "extra == 'dev'" },
     { name = "brotli", specifier = ">=1.2.1" },
     { name = "build", marker = "extra == 'dev'", specifier = ">=1.2" },
