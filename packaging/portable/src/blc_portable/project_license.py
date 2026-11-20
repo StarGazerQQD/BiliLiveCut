@@ -8,8 +8,6 @@ from pathlib import Path
 
 PROJECT_LICENSE_ID = "MIT"
 PROJECT_COPYRIGHT = "Copyright (c) 2026 StarGazerQQD"
-PROJECT_ROOT = Path(__file__).resolve().parents[4]
-PROJECT_LICENSE_PATH = PROJECT_ROOT / "LICENSE"
 
 _REQUIRED_MARKERS = (
     "MIT License",
@@ -25,7 +23,11 @@ def _resolve_project_license_path() -> Path:
         bundle_root = getattr(sys, "_MEIPASS", None)
         if bundle_root:
             return Path(bundle_root) / "LICENSE"
-    return PROJECT_LICENSE_PATH
+    return Path(__file__).resolve().parents[4] / "LICENSE"
+
+
+PROJECT_LICENSE_PATH = _resolve_project_license_path()
+PROJECT_ROOT = PROJECT_LICENSE_PATH.parent
 
 
 def load_project_license(path: Path | None = None) -> bytes:

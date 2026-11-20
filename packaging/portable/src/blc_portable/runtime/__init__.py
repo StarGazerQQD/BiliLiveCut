@@ -9,11 +9,12 @@ import json
 import sys
 from pathlib import Path
 
+from blc_portable.payload.manifest import SOURCE_COMMIT_SHORT as SOURCE_COMMIT_SHORT
+
 # ── 常量 ──────────────────────────────────────────────────
 APP_NAME = "BiliLiveCut"
 VERSION = "V0.1.20.6 Alpha"
 RELEASE_VERSION = "0.1.20.6-alpha"
-SOURCE_COMMIT_SHORT = "12a3ced"
 
 
 def get_app_root() -> Path:
