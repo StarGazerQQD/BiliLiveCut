@@ -28,6 +28,7 @@ from typing import TYPE_CHECKING, Any
 
 from blc_portable.console import configure_console_encoding
 from blc_portable.diagnostics import exception_summary, redact_diagnostic
+from blc_portable.payload.manifest import SOURCE_COMMIT_SHORT
 from config import file_locks as shared_file_locks
 from config.file_locks import FileLock
 from config.launcher_settings import APP_ROOT_ENV, WEB_PORT_ENV, load_launcher_config, validate_web_port
@@ -39,7 +40,6 @@ if TYPE_CHECKING:
 APP_NAME = "BiliLiveCut"
 VERSION = "V0.1.20.6 Alpha"
 RELEASE_VERSION = "0.1.20.6-alpha"
-SOURCE_COMMIT_SHORT = "12a3ced"
 # NOTE: RELEASE_ID 将在获得 Payload SHA-256 后动态生成 (内容寻址)
 SUPPORTED_PYTHON_VERSIONS = frozenset({(3, 11), (3, 12)})
 

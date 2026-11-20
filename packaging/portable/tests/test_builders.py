@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import hashlib
 import json
+import runpy
 import sys
 from pathlib import Path
 
@@ -173,6 +174,8 @@ class TestLiteBuilder:
         monkeypatch.setattr(sys, "frozen", True, raising=False)
         monkeypatch.setattr(sys, "_MEIPASS", str(tmp_path), raising=False)
 
+        frozen = runpy.run_path(project_license.__file__)
+        assert frozen["PROJECT_LICENSE_PATH"] == embedded_license
         assert project_license.load_project_license() == embedded_content
         assert project_license.project_license_sha256() == hashlib.sha256(embedded_content).hexdigest()
 

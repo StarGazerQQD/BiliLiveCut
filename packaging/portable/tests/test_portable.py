@@ -10,8 +10,10 @@
 
 from __future__ import annotations
 
+import json
 import sys
 import tempfile
+import zipfile
 from pathlib import Path
 from types import SimpleNamespace
 from typing import TYPE_CHECKING
@@ -374,6 +376,43 @@ class TestPayload:
 
 class TestRuntimeInstall:
     """测试 Runtime 原子安装。"""
+
+    def test_launcher_installs_pinned_source_from_embedded_payload(
+        self, tmp_path: Path, monkeypatch: MonkeyPatch
+    ) -> None:
+        from blc_portable.launcher.main import install_source_from_payload
+        from blc_portable.runtime.activation import read_current_json
+
+        bundle = tmp_path / "bundle"
+        bundle.mkdir()
+        (bundle / "LICENSE").write_bytes((_proj_root / "LICENSE").read_bytes())
+        payload = bundle / "source_payload.zip"
+        with zipfile.ZipFile(payload, "w") as archive:
+            for filename in ("LICENSE", "app/cli.py", "pyproject.toml"):
+                archive.write(_proj_root / filename, filename)
+        manifest = manifest_for_zip(payload)
+        builder = "a" * 40
+        manifest["builder_commit"] = builder
+        manifest_path = bundle / "payload_manifest.json"
+        manifest_path.write_text(json.dumps(manifest), encoding="utf-8")
+        monkeypatch.setattr(sys, "frozen", True, raising=False)
+        monkeypatch.setattr(sys, "_MEIPASS", str(bundle), raising=False)
+
+        app_root = tmp_path / "install"
+        release = install_source_from_payload(app_root)
+        current = read_current_json(app_root)
+        assert current is not None
+        assert current["release_id"] == release.name
+        assert current["source_commit"] == manifest["core_source_commit"]
+        assert current["source_commit_short"] == manifest["core_source_commit_short"]
+        assert current["builder_commit"] == builder
+        assert (release / "app" / "cli.py").is_file()
+
+        manifest.update(core_source_commit=builder, core_source_commit_short=builder[:7])
+        manifest_path.write_text(json.dumps(manifest), encoding="utf-8")
+        with pytest.raises(RuntimeError, match="core_source_commit"):
+            install_source_from_payload(app_root)
+        assert read_current_json(app_root) == current
 
     @staticmethod
     def _install(app_root: Path, payload_zip: Path, payload_manifest: dict) -> Path:
