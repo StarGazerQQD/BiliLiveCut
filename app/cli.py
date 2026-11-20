@@ -105,7 +105,7 @@ for cmd_name, cmd_func, _help in ALL_COMMANDS:
 @app.command()
 def version() -> None:
     """显示当前版本号。"""
-    print(f"BiliLiveCut {__version__} · {__version_label__}")
+    print(f"BiliLiveCut {__version__} / {__version_label__}")
 
 
 def main() -> None:

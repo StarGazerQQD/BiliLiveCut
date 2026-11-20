@@ -35,15 +35,16 @@ def test_cli_module_entrypoint_dispatches_commands() -> None:
     """``python -m app.cli`` 必须执行 Click，而不是静默退出。"""
     result = subprocess.run(
         [sys.executable, "-m", "app.cli", "version"],
+        env={**os.environ, "PYTHONIOENCODING": "ascii"},
+        encoding="ascii",
         check=False,
         capture_output=True,
-        text=True,
     )
 
     assert result.returncode == 0, result.stderr
     from app import __version__, __version_label__
 
-    assert f"BiliLiveCut {__version__} · {__version_label__}" in result.stdout
+    assert f"BiliLiveCut {__version__} / {__version_label__}" in result.stdout
 
 
 def test_cli_help_preserves_dependency_hints_and_current_doctor_text() -> None:

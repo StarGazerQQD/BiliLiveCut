@@ -3,7 +3,6 @@
 from __future__ import annotations
 
 import io
-import json
 import sys
 from pathlib import Path
 from typing import TYPE_CHECKING
@@ -26,7 +25,7 @@ def test_required_file_rejects_missing_current_artifact(tmp_path: Path) -> None:
 def test_main_passes_resolved_artifacts_to_smoke(tmp_path: Path, monkeypatch: MonkeyPatch) -> None:
     lite_dir = tmp_path / "lite"
     lite_dir.mkdir()
-    version_config = json.loads(smoke_portable_lite.VERSION_CONFIG.read_text(encoding="utf-8"))
+    version_config = smoke_portable_lite.get_full_config()
     version = version_config["release_version"]
     executable = lite_dir / version_config["naming"]["lite_exe"].format(version=version)
     executable.write_bytes(b"exe")
@@ -45,7 +44,7 @@ def test_main_prints_utf8_launcher_log_on_legacy_console(tmp_path: Path, monkeyp
     """The Windows smoke driver must survive Chinese launcher diagnostics on cp1252 hosts."""
     lite_dir = tmp_path / "lite"
     lite_dir.mkdir()
-    version_config = json.loads(smoke_portable_lite.VERSION_CONFIG.read_text(encoding="utf-8"))
+    version_config = smoke_portable_lite.get_full_config()
     version = version_config["release_version"]
     (lite_dir / version_config["naming"]["lite_exe"].format(version=version)).write_bytes(b"exe")
     log_path = tmp_path / "launcher.log"
