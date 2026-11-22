@@ -25,7 +25,7 @@ def test_build_identity_follows_tag_and_is_readable_without_git(tmp_path: Path, 
     for name in ("version_loader.py", "version.json"):
         shutil.copy2(CONFIG / name, config / name)
     (checkout / "app").mkdir()
-    for name in ("__init__.py", "_build_identity.py", "_source_identity.py"):
+    for name in ("__init__.py", "_build_identity.py", "_source_identity.py", "_packaging_identity.py"):
         shutil.copy2(ROOT / "app" / name, checkout / "app" / name)
 
     def git(*args: str) -> str:
@@ -67,6 +67,17 @@ def test_build_identity_follows_tag_and_is_readable_without_git(tmp_path: Path, 
         text=True,
     )
     assert output.strip() == f"1.2.3.4-rc.2 {tag} ({commit[:8]}) {commit}"
+    scripts = stage / "scripts"
+    scripts.mkdir()
+    for name in ("audit_docker_runtime.py", "check_pip_audit_exemptions.py"):
+        shutil.copy2(ROOT / "scripts" / name, scripts / name)
+    audit_version = subprocess.check_output(
+        [sys.executable, "-c", "from audit_docker_runtime import PROJECT_VERSION; print(PROJECT_VERSION)"],
+        cwd=scripts,
+        env=dict(env, PATH=""),
+        text=True,
+    )
+    assert audit_version.strip() == "1.2.3.4rc2"
     git("-c", "user.name=Test", "-c", "user.email=test@example.org", "commit", "--allow-empty", "-qm", "another commit")
     with pytest.raises(ValueError, match="does not point to HEAD"):
         checkout_identity(checkout, tag)

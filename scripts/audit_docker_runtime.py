@@ -18,7 +18,7 @@ else:
     from check_pip_audit_exemptions import AuditReportError, canonicalize_name, parse_audit_report
 
 ROOT = Path(__file__).resolve().parents[1]
-PROJECT_VERSION = Version(run_path(str(ROOT / "packaging/portable/config/version_loader.py"))["RELEASE_VERSION"])
+PROJECT_VERSION = Version(run_path(str(ROOT / "app/_packaging_identity.py"))["RELEASE_VERSION"])
 APPLICATION_PACKAGES = frozenset({"bili-live-cut", "torch", "torchaudio"})
 SYSTEM_PACKAGES: frozenset[str] = frozenset()
 INVENTORY_COMMAND = (

@@ -232,7 +232,9 @@ uv pip compile packaging/docker/requirements-cpu.in \
 uv pip compile packaging/docker/requirements-system.in \
   --python-version 3.12 --generate-hashes --no-annotate \
   --output-file packaging/docker/requirements-system.lock
-docker build -t bili-live-cut:docker-test -f packaging/docker/Dockerfile .
+context="$(mktemp -d)"
+python packaging/portable/config/version_loader.py --docker-context "$context"
+docker build -t bili-live-cut:docker-test -f "$context/packaging/docker/Dockerfile" "$context"
 docker build -t bili-live-cut-frontend:docker-test -f frontend/Dockerfile .
 uv run --no-project --python 3.12 --with pip-audit==2.10.1 python scripts/audit_docker_runtime.py
 uv run --no-project --python 3.12 --with playwright==1.61.0 playwright install --with-deps chromium
