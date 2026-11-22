@@ -8,6 +8,8 @@ on:
       - '.github/workflows/release.yml'
       - 'tests/integration/check_installed_release_identity.py'
       - 'app/_build_identity.py'
+      - 'app/_source_identity.py'
+      - 'app/_packaging_identity.py'
       - 'app/__init__.py'
       - 'app/cli.py'
       - 'packaging/docker/Dockerfile'
@@ -72,7 +74,9 @@ jobs:
       - name: Build and check the installed Docker image
         if: matrix.method == 'docker'
         run: |
-          docker build -f packaging/docker/Dockerfile -t blc-tagged-check .
+          context="$RUNNER_TEMP/tagged-docker-context"
+          python3 packaging/portable/config/version_loader.py --docker-context "$context"
+          docker build -f "$context/packaging/docker/Dockerfile" -t blc-tagged-check "$context"
           docker run --rm -i --network none --workdir /tmp --entrypoint /app/.venv/bin/python \
             blc-tagged-check -I - "$TEST_TAG" "$CANDIDATE_SHA" < tests/integration/check_installed_release_identity.py
 

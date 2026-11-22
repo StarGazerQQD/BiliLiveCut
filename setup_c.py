@@ -28,7 +28,7 @@ if not _skip:
 
 setup(
     name="bili_live_cut_c",
-    version=run_path(str(Path(__file__).resolve().parent / "app/_build_identity.py"))["RELEASE_VERSION"],
+    version=run_path(str(Path(__file__).resolve().parent / "app/_packaging_identity.py"))["RELEASE_VERSION"],
     py_modules=[],
     ext_modules=_extensions,
 )

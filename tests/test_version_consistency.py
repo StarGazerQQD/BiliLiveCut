@@ -25,7 +25,7 @@ def test_build_identity_follows_tag_and_is_readable_without_git(tmp_path: Path, 
     for name in ("version_loader.py", "version.json"):
         shutil.copy2(CONFIG / name, config / name)
     (checkout / "app").mkdir()
-    for name in ("__init__.py", "_build_identity.py"):
+    for name in ("__init__.py", "_build_identity.py", "_source_identity.py"):
         shutil.copy2(ROOT / "app" / name, checkout / "app" / name)
 
     def git(*args: str) -> str:

@@ -1,6 +1,8 @@
 """BiliLiveCut 构建配置 — 含 C 加速模块编译 (V0.1.13.2)."""
 
+import json
 import os
+import runpy
 import shutil
 import subprocess
 import sys
@@ -10,6 +12,32 @@ from pathlib import Path
 from setuptools import Extension, find_packages, setup
 from setuptools.command.build_ext import build_ext
 from setuptools.command.build_py import build_py
+from setuptools.command.egg_info import egg_info
+from setuptools.command.sdist import sdist
+
+_build = runpy.run_path(str(Path(__file__).resolve().parent / "app/_packaging_identity.py"))
+identity = {key: _build[key] for key in ("RELEASE_VERSION", "VERSION_LABEL", "SOURCE_COMMIT")}
+
+
+class ReleaseEggInfo(egg_info):
+    """将同一份身份写入普通和 editable 安装的分发元数据。"""
+
+    def run(self) -> None:
+        """在 setuptools 生成元数据后记录构建身份。"""
+        super().run()
+        (Path(self.egg_info) / "blc-release.json").write_text(json.dumps(identity), encoding="utf-8")
+
+
+class ReleaseSdist(sdist):
+    """让从源码归档再次构建时仍能读取原提交的身份。"""
+
+    def make_release_tree(self, base_dir: str, files: list[str]) -> None:
+        """冻结源码包中的版本模块，供无 Git 的构建环境读取。"""
+        super().make_release_tree(base_dir, files)
+        module = Path(base_dir) / "app/_source_identity.py"
+        # setuptools 可以硬链接工作区文件；生成归档副本前先断开链接。
+        module.unlink()
+        module.write_text("".join(f"{key} = {value!r}\n" for key, value in identity.items()), encoding="utf-8")
 
 
 class FrontendBuildPy(build_py):
@@ -128,6 +156,11 @@ if not _skip_extensions:
 setup(
     packages=find_packages(include=["app", "app.*", "config"]),
     ext_modules=_extensions,
-    cmdclass={"build_ext": NativeBuildExt, "build_py": FrontendBuildPy},
+    cmdclass={
+        "build_ext": NativeBuildExt,
+        "build_py": FrontendBuildPy,
+        "egg_info": ReleaseEggInfo,
+        "sdist": ReleaseSdist,
+    },
     include_package_data=True,
 )

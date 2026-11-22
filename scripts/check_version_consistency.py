@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import runpy
 import sys
 import tomllib
 from pathlib import Path
@@ -15,8 +16,11 @@ def main() -> int:
     """Validate the package version source, selected release and native lockfile."""
     cfg = get_full_config()
     project = tomllib.loads((ROOT / "pyproject.toml").read_text(encoding="utf-8"))
-    if project["tool"]["setuptools"]["dynamic"]["version"]["attr"] != "app._build_identity.RELEASE_VERSION":
-        raise ValueError("Python package version must use the embedded release identity")
+    if project["tool"]["setuptools"]["dynamic"]["version"]["attr"] != "app._packaging_identity.RELEASE_VERSION":
+        raise ValueError("Python package version must use the build identity")
+    package = runpy.run_path(str(ROOT / "app/_packaging_identity.py"))
+    if (package["RELEASE_VERSION"], package["SOURCE_COMMIT"]) != (cfg["release_version"], cfg["source_commit_full"]):
+        raise ValueError("Python package version differs from the selected release")
     rust = ROOT / "tools/native/rust"
     crate = tomllib.loads((rust / "Cargo.toml").read_text(encoding="utf-8"))["package"]
     lock = tomllib.loads((rust / "Cargo.lock").read_text(encoding="utf-8"))

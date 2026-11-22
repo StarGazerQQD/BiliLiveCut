@@ -94,6 +94,11 @@ dev = ["bili-live-cut[dev,web]", "setuptools==84.1.0", "wheel==0.47.0"]
 [tool.uv]
 # 原生源文件或跳过开关变化后重新构建，避免复用不匹配的 editable wheel。
 cache-keys = [
+    { git = { commit = true, tags = true } },
+    { env = "BLC_RELEASE_TAG" },
+    { file = "app/_source_identity.py" },
+    { file = "app/_packaging_identity.py" },
+    { file = "packaging/portable/config/version_loader.py" },
     { file = "pyproject.toml" },
     { file = "setup.py" },
     { file = "frontend/*.json" },
@@ -118,7 +123,7 @@ build-backend = "setuptools.build_meta"
 include-package-data = true
 
 [tool.setuptools.dynamic]
-version = {attr = "app._build_identity.RELEASE_VERSION"}
+version = {attr = "app._packaging_identity.RELEASE_VERSION"}
 
 [tool.setuptools.packages.find]
 include = ["app", "app.*", "config"]

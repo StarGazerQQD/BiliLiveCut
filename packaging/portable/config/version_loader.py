@@ -70,7 +70,7 @@ def checkout_identity(root: Path, tag: str | None) -> dict[str, str]:
         version = tag[1:].lower()
     else:
         # Untagged CI builds exercise packaging without claiming a published tag.
-        version = runpy.run_path(str(root / "app/_build_identity.py"))["RELEASE_VERSION"]
+        version = runpy.run_path(str(root / "app/_source_identity.py"))["RELEASE_VERSION"]
     return {
         "release_version": version,
         "version_label": f"{tag or 'dev'} ({commit[:8]})",
@@ -86,7 +86,7 @@ def stamp_distribution(directory: Path) -> None:
         raise ValueError("Release metadata must be written to a staging tree")
     cfg = get_full_config()
     version = cfg["release_version"]
-    module = directory / "app" / "_build_identity.py"
+    module = directory / "app" / "_source_identity.py"
     module.write_text(
         f"RELEASE_VERSION = {version!r}\nVERSION_LABEL = {cfg['version_label']!r}\n"
         f"SOURCE_COMMIT = {cfg['source_commit_full']!r}\n",
@@ -251,8 +251,19 @@ if __name__ == "__main__":
     import argparse
 
     parser = argparse.ArgumentParser(description="Resolve the release tag and optionally stamp a staging tree")
-    parser.add_argument("--stamp", type=Path)
+    operations = parser.add_mutually_exclusive_group()
+    operations.add_argument("--stamp", type=Path)
+    operations.add_argument("--docker-context", type=Path, help="将当前提交及发行身份导出到空目录，供 Docker 构建")
     args = parser.parse_args()
+    if args.docker_context is not None:
+        import sys
+
+        sys.path.insert(0, str(_VERSION_PATH.parents[1] / "src"))
+        from blc_portable.payload.source_snapshot import extract_source
+
+        destination = args.docker_context.resolve()
+        extract_source(SOURCE_COMMIT_FULL, destination)
+        stamp_distribution(destination)
     if args.stamp is not None:
         stamp_distribution(args.stamp)
     print(VERSION_LABEL, SOURCE_COMMIT_FULL)
