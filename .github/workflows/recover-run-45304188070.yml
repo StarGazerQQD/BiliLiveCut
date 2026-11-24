@@ -1,0 +1,123 @@
+name: 恢复 v0.1.20.6-Alpha 原运行附件
+on:
+  push:
+    branches: [codex/recover-run-45304188070]
+    paths: [.github/workflows/recover-run-45304188070.yml]
+permissions:
+  actions: read
+  contents: write
+concurrency:
+  group: release-v0.1.20.6-Alpha
+  cancel-in-progress: false
+jobs:
+  recover:
+    runs-on: ubuntu-latest
+    timeout-minutes: 25
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: b8b7fb7dfdb450e0ea6f63221e3e535d26d0d4c5
+          persist-credentials: false
+      - uses: actions/download-artifact@v4
+        with:
+          github-token: ${{ github.token }}
+          run-id: 45304188070
+          path: original
+      - name: 核对原始制品、补传并复核发布页
+        shell: python
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          import hashlib
+          import json
+          import os
+          import shutil
+          import subprocess
+          import zlib
+          from pathlib import Path
+
+          repo = "repos/StarGazerQQD/BiliLiveCut"
+          tag = "v0.1.20.6-Alpha"
+          sha = "b8b7fb7dfdb450e0ea6f63221e3e535d26d0d4c5"
+          rid = 456193095
+          endpoint = f"https://uploads.github.com/{repo}/releases/{rid}/assets"
+          dest = Path("recovery-assets")
+          dest.mkdir()
+
+          def get(path):
+              return json.loads(subprocess.check_output(["gh", "api", f"{repo}/{path}"]))
+
+          def release():
+              ref = get(f"git/ref/tags/{tag}")["object"]
+              assert (ref["type"], ref["sha"]) == ("commit", sha)
+              record = get(f"releases/tags/{tag}")
+              assert (record["id"], record["tag_name"], record["draft"]) == (rid, tag, False)
+              assert record["upload_url"].split("{")[0] == endpoint
+              return record
+
+          before = release()
+          run = get("actions/runs/45304188070")
+          assert (run["head_sha"], run["run_attempt"], run["head_branch"]) == (sha, 1, tag)
+          expected = {
+              "LICENSE": ("LICENSE", "5bf6f6c8cf0f5c6ed72c283af74343374b13c2c75c928fc472ad32e8b5057b4e"),
+              "bili_live_cut-0.1.20.6a0.tar.gz": ("original/sdist/bili_live_cut-0.1.20.6a0.tar.gz", "37b52069e9c5e8c12d44c07e2cffc59ac167e43db7e709a574fdfbe1db2b9ba1"),
+              "bili_live_cut-0.1.20.6a0-cp312-cp312-linux_x86_64.whl": ("original/sdist/bili_live_cut-0.1.20.6a0-cp312-cp312-linux_x86_64.whl", "54488e24203e128ea3118a10105dee73edccc99015f3da4c1870744dd12f46fe"),
+              "BiliLiveCut-Portable-Lite-v0.1.20.6-alpha-x64.exe": ("original/windows-lite/BiliLiveCut-Portable-Lite-v0.1.20.6-alpha-x64.exe", "cc7be8f0f34ce9b425597b03de145ee03d86b3b8c987e3d3ac56feb896518e54"),
+              "BiliLiveCut-Portable-Full-0.1.20.6-alpha-x64.zip": ("original/windows-full/BiliLiveCut-Portable-Full-0.1.20.6-alpha-x64.zip", "62ead025d4fd72ec1063cd15dc3d3b7bc2eff121a6df4bd3df72d07aa0a66496"),
+              "full-build-manifest.json": ("original/windows-full/build-manifest.json", "0db3359ea2737d8fc17b36f7b3436412cb4f39710726b9ef2c8a7dc812f5c054"),
+              "lite-build-manifest.json": ("original/windows-lite/build-manifest.json", "b83b33b611219239b2494190f1b3fdea4eee1e1d8609b46d3ab5921180fcc4ac"),
+          }
+          hashes = {}
+          crc_lines = []
+          for name, (source, digest) in expected.items():
+              output = dest / name
+              shutil.copyfile(source, output)
+              with output.open("rb") as fh:
+                  assert hashlib.file_digest(fh, "sha256").hexdigest() == digest, name
+              hashes[name] = digest
+          for name in sorted(n for n in hashes if n.endswith((".exe", ".zip"))):
+              crc = 0
+              with (dest / name).open("rb") as fh:
+                  for chunk in iter(lambda: fh.read(1024 * 1024), b""):
+                      crc = zlib.crc32(chunk, crc)
+              assert f"{crc:08X}" == ("B448502F" if name.endswith(".zip") else "258855F2"), name
+              crc_lines.append(f"{crc:08X}  {name}\n")
+          summaries = {
+              "SHA256SUMS.txt": "".join(f"{h}  {n}\n" for n, h in hashes.items()),
+              "CRC32SUMS.txt": "".join(crc_lines),
+          }
+          for name, contents in summaries.items():
+              data = contents.encode("ascii")
+              (dest / name).write_bytes(data)
+              hashes[name] = hashlib.sha256(data).hexdigest()
+
+          def inventory():
+              return {a["name"]: a for a in get(f"releases/{rid}/assets?per_page=100")}
+
+          def verify(asset):
+              name = asset["name"]
+              assert asset["state"] == "uploaded" and asset["size"] == (dest / name).stat().st_size, name
+              assert asset["digest"] == "sha256:" + hashes[name], name
+
+          existing = inventory()
+          for asset in existing.values():
+              verify(asset)
+          for name in hashes:
+              if name in existing:
+                  continue
+              release()
+              print("Uploading", name, flush=True)
+              body = subprocess.check_output(
+                  ["curl", "--fail", "--silent", "--show-error", "--config", "-", "--request", "POST",
+                   "--header", "Content-Type: application/octet-stream", "--upload-file", str(dest / name),
+                   endpoint + "?name=" + name],
+                  input='header = "Authorization: Bearer ' + os.environ["GH_TOKEN"] + '"\n', text=True,
+              )
+              verify(json.loads(body))
+          after = release()
+          assert all(after[k] == before[k] for k in ("id", "name", "body", "published_at", "draft", "prerelease"))
+          assets = inventory()
+          assert set(assets) == set(hashes) and len(assets) == 9
+          for asset in assets.values():
+              verify(asset)
+              print(asset["name"], asset["size"], asset["digest"])
