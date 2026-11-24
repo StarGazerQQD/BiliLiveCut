@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import hashlib
 import os
 import re
 import shutil
@@ -141,11 +142,7 @@ def test_release_build_jobs_have_read_only_tokens_and_keep_tls_verification() ->
                     assert re.fullmatch(r"[0-9a-f]{40}", action.split("@", 1)[1])
 
 
-@pytest.mark.parametrize("tag", ['v0.1.19.3-Alpha"; touch injected; #', "$(touch injected)"])
-def test_release_rejects_injected_tag_without_executing_it(tmp_path: Path, tag: str) -> None:
-    workflow = yaml.safe_load((ci_gate.REPO_ROOT / ".github/workflows/release.yml").read_text(encoding="utf-8"))
-    step = next(item for item in workflow["jobs"]["validate-tag"]["steps"] if item.get("name") == "Validate tag input")
-    assert "${{ github.event.inputs.tag }}" not in step["run"]
+def _workflow_bash() -> str:
     bash = shutil.which("bash")
     if os.name == "nt":
         git = shutil.which("git")
@@ -153,11 +150,124 @@ def test_release_rejects_injected_tag_without_executing_it(tmp_path: Path, tag: 
         candidate = Path(git).resolve().parents[1] / "bin/bash.exe"
         if candidate.is_file():
             bash = str(candidate)
-    assert bash is not None, "Bash is required to exercise the actual Release tag validator"
+    assert bash is not None, "Bash is required to exercise the workflow"
+    return bash
+
+
+@pytest.mark.parametrize("tag", ['v0.1.19.3-Alpha"; touch injected; #', "$(touch injected)"])
+def test_release_rejects_injected_tag_without_executing_it(tmp_path: Path, tag: str) -> None:
+    workflow = yaml.safe_load((ci_gate.REPO_ROOT / ".github/workflows/release.yml").read_text(encoding="utf-8"))
+    step = next(item for item in workflow["jobs"]["validate-tag"]["steps"] if item.get("name") == "Validate tag input")
+    assert "${{ github.event.inputs.tag }}" not in step["run"]
     env = os.environ | {"EVENT_NAME": "workflow_dispatch", "REQUESTED_TAG": tag}
-    result = subprocess.run([bash, "-c", step["run"]], cwd=tmp_path, env=env, timeout=10, capture_output=True)
+    result = subprocess.run(
+        [_workflow_bash(), "-c", step["run"]], cwd=tmp_path, env=env, timeout=10, capture_output=True
+    )
     assert result.returncode != 0
     assert not (tmp_path / "injected").exists()
+
+
+@pytest.mark.parametrize(
+    ("scenario", "expected", "succeeds"),
+    [
+        ("new", ["create"], True),
+        ("empty", ["upload a.zip z.zip"], True),
+        ("partial", ["upload a.zip"], True),
+        ("complete", [], True),
+        ("draft", ["upload a.zip", "edit"], True),
+        ("conflict", [], False),
+        ("no-digest", [], False),
+        ("unfinished", [], False),
+        ("query-error", [], False),
+        ("upload-error", ["upload a.zip"], False),
+        ("moved-tag", [], False),
+    ],
+)
+def test_publish_verified_release_assets(tmp_path: Path, scenario: str, expected: list[str], succeeds: bool) -> None:
+    workflow = yaml.safe_load((ci_gate.REPO_ROOT / ".github/workflows/release.yml").read_text(encoding="utf-8"))
+    step = next(s for s in workflow["jobs"]["release"]["steps"] if s.get("name") == "Publish verified release assets")
+    assets = tmp_path / "release-assets"
+    assets.mkdir()
+    for name in ("a.zip", "z.zip"):
+        (assets / name).write_bytes(b"verified")
+    digest = "sha256:" + hashlib.sha256(b"verified").hexdigest()
+    tag = "v1.2.3-Alpha"
+    subprocess.run(["git", "init", "-q"], cwd=tmp_path, check=True)
+    subprocess.run(
+        [
+            "git",
+            "-c",
+            "user.name=Test",
+            "-c",
+            "user.email=test@example.com",
+            "commit",
+            "-q",
+            "--allow-empty",
+            "-m",
+            "tag",
+        ],
+        cwd=tmp_path,
+        check=True,
+    )
+    subprocess.run(["git", "tag", tag], cwd=tmp_path, check=True)
+    subprocess.run(["git", "remote", "add", "origin", "."], cwd=tmp_path, check=True)
+    sha = subprocess.check_output(["git", "rev-parse", "HEAD"], cwd=tmp_path, text=True).strip()
+    draft = "true" if scenario in ("draft", "upload-error") else "false"
+    (tmp_path / "releases").write_text("" if scenario == "new" else f"{tag}\t42\t{draft}\n", encoding="utf-8")
+    inventory = []
+    if scenario == "complete":
+        inventory.append(f"a.zip\tuploaded\t{digest}")
+    if scenario not in ("new", "empty"):
+        state = "starter" if scenario == "unfinished" else "uploaded"
+        remote_digest = {"conflict": "sha256:wrong", "no-digest": "-"}.get(scenario, digest)
+        inventory.append(f"z.zip\t{state}\t{remote_digest}")
+    (tmp_path / "inventory").write_text("\n".join(inventory) + "\n", encoding="utf-8")
+    gh_boundary = r"""
+gh() {
+  case "$1 $2" in
+    "api --paginate")
+      case "$3" in
+        */releases\?*) [[ "$SCENARIO" != query-error ]] && cat releases ;;
+        */releases/42/assets\?*) cat inventory ;;
+        *) return 90 ;;
+      esac ;;
+    "release create")
+      [[ "$*" == *" --verify-tag "* && "$*" == *" --prerelease "* ]] || return 91
+      echo create >> calls ;;
+    "release upload")
+      shift 3
+      printf 'upload' >> calls
+      printf ' %s' "${@#release-assets/}" >> calls
+      echo >> calls
+      [[ "$SCENARIO" != upload-error ]] ;;
+    "release edit")
+      [[ "$*" == *" --draft=false --prerelease=true" ]] || return 92
+      echo edit >> calls ;;
+    *) return 93 ;;
+  esac
+}
+"""
+    env = os.environ | {
+        "BLC_RELEASE_TAG": tag,
+        "GITHUB_SHA": "0" * 40 if scenario == "moved-tag" else sha,
+        "PRERELEASE": "true",
+        "SCENARIO": scenario,
+        "RUNNER_TEMP": ".",
+    }
+    assert step["shell"] == "bash"
+    result = subprocess.run(
+        [_workflow_bash(), "-eo", "pipefail", "-c", gh_boundary + step["run"]],
+        cwd=tmp_path,
+        env=env,
+        capture_output=True,
+        text=True,
+        timeout=20,
+    )
+    assert (result.returncode == 0) is succeeds, result.stderr
+    calls = tmp_path / "calls"
+    assert (calls.read_text(encoding="utf-8").splitlines() if calls.exists() else []) == expected
+    if scenario in ("conflict", "unfinished", "no-digest"):
+        assert "z.zip" in result.stdout
 
 
 @pytest.mark.parametrize(
@@ -179,15 +289,9 @@ def test_ci_status_requires_macos_for_all_source_events(
 ) -> None:
     workflow = yaml.safe_load((ci_gate.REPO_ROOT / ".github/workflows/ci.yml").read_text(encoding="utf-8"))
     step = workflow["jobs"]["ci-status"]["steps"][0]
-    bash = shutil.which("bash")
-    if os.name == "nt":
-        git = shutil.which("git")
-        assert git is not None
-        candidate = Path(git).resolve().parents[1] / "bin/bash.exe"
-        if candidate.is_file():
-            bash = str(candidate)
-    assert bash is not None
     results = {key: "success" for key in step["env"] if key.endswith("_RESULT")}
     env = os.environ | results | {"EVENT_NAME": event_name, "MACOS_RESULT": macos_result}
-    result = subprocess.run([bash, "-c", step["run"]], cwd=tmp_path, env=env, timeout=10, capture_output=True)
+    result = subprocess.run(
+        [_workflow_bash(), "-c", step["run"]], cwd=tmp_path, env=env, timeout=10, capture_output=True
+    )
     assert (result.returncode == 0) is succeeds, result.stderr

@@ -731,11 +731,43 @@ jobs:
         env:
           GH_TOKEN: ${{ github.token }}
           PRERELEASE: ${{ steps.tag.outputs.prerelease }}
+        shell: bash
         run: |
           # Resolve annotated as well as lightweight tags again before publishing.
           git fetch --no-tags origin "refs/tags/$BLC_RELEASE_TAG"
           test "$(git rev-parse 'FETCH_HEAD^{commit}')" = "$GITHUB_SHA"
-          flags=()
-          if [ "$PRERELEASE" = true ]; then flags+=(--prerelease); fi
-          gh release create "$BLC_RELEASE_TAG" --verify-tag --notes-file /tmp/release_notes.md \
-            "${flags[@]}" release-assets/*
+          existing=$(gh api --paginate 'repos/{owner}/{repo}/releases?per_page=100' \
+            --jq '.[] | [.tag_name, .id, .draft] | @tsv' |
+            awk -F '\t' -v tag="$BLC_RELEASE_TAG" '$1 == tag {print $2, $3}')
+          if [[ -z "$existing" ]]; then
+            flags=()
+            if [ "$PRERELEASE" = true ]; then flags+=(--prerelease); fi
+            gh release create "$BLC_RELEASE_TAG" --verify-tag --notes-file /tmp/release_notes.md \
+              "${flags[@]}" release-assets/*
+            exit 0
+          fi
+
+          read -r release_id is_draft <<< "$existing"
+          inventory="$RUNNER_TEMP/release-assets.tsv"
+          gh api --paginate "repos/{owner}/{repo}/releases/$release_id/assets?per_page=100" \
+            --jq '.[] | [.name, .state, (.digest // "-")] | @tsv' > "$inventory"
+          missing=()
+          for file in release-assets/*; do
+            name=${file##*/}
+            remote=$(awk -F '\t' -v name="$name" '$1 == name {print $2, $3}' "$inventory")
+            if [[ -z "$remote" ]]; then
+              missing+=("$file")
+              continue
+            fi
+            checksum=$(openssl dgst -sha256 -r "$file")
+            if [[ "$remote" != "uploaded sha256:${checksum%% *}" ]]; then
+              echo "::error::Existing release asset has a conflicting digest or upload state: $name"
+              exit 1
+            fi
+          done
+          if (( ${#missing[@]} )); then
+            gh release upload "$BLC_RELEASE_TAG" "${missing[@]}"
+          fi
+          if [[ "$is_draft" = true ]]; then
+            gh release edit "$BLC_RELEASE_TAG" --draft=false --prerelease="$PRERELEASE"
+          fi
