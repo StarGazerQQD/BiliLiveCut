@@ -4,6 +4,16 @@
 
 ## 前后端服务
 
+从发布标签构建后端镜像时，在检出了该标签的仓库根目录导出源码，再将导出目录交给 Docker。脚本核对标签和提交，构建上下文只包含该提交的文件以及发行身份。未提交的本地修改保留在原工作区。
+
+```bash
+export BLC_DOCKER_CONTEXT="$(mktemp -d)"
+python packaging/portable/config/version_loader.py --docker-context "$BLC_DOCKER_CONTEXT"
+docker build -t bili-live-cut:latest -f "$BLC_DOCKER_CONTEXT/packaging/docker/Dockerfile" "$BLC_DOCKER_CONTEXT"
+```
+
+同一终端运行下方的 Compose 命令也会使用该目录。直接用开发工作区作为上下文时，Docker 按上下文自带的版本信息构建。
+
 Compose 同时构建后端 `app` 和前端 `frontend`。浏览器访问宿主机 `8000`，由 Nginx 提供 React 静态页面，并同源代理 API 和媒体到仅在容器网络暴露的 `app:8000`。前端镜像在构建阶段使用 Node.js 24，运行阶段只有 Nginx；后端保持 FastAPI，不返回业务页面。
 
 不要额外发布后端 8000 端口。`FORWARDED_ALLOW_IPS=*` 仅用于这个封闭的后端网络，让认证与限流取得前端传递的真实来源；后端单独对外发布时必须收紧可信代理配置。自配 HTTPS 入口时，应让后端接收到正确的 Host、Origin 与协议，保持认证 Cookie 和 CSRF 校验一致。
@@ -222,7 +232,9 @@ uv pip compile packaging/docker/requirements-cpu.in \
 uv pip compile packaging/docker/requirements-system.in \
   --python-version 3.12 --generate-hashes --no-annotate \
   --output-file packaging/docker/requirements-system.lock
-docker build -t bili-live-cut:docker-test -f packaging/docker/Dockerfile .
+context="$(mktemp -d)"
+python packaging/portable/config/version_loader.py --docker-context "$context"
+docker build -t bili-live-cut:docker-test -f "$context/packaging/docker/Dockerfile" "$context"
 docker build -t bili-live-cut-frontend:docker-test -f frontend/Dockerfile .
 uv run --no-project --python 3.12 --with pip-audit==2.10.1 python scripts/audit_docker_runtime.py
 uv run --no-project --python 3.12 --with playwright==1.61.0 playwright install --with-deps chromium

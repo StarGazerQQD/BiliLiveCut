@@ -9,4 +9,11 @@
 - ``util``: 底层工具 (归档、原子操作、Git、哈希、路径)
 """
 
-__version__ = "0.1.20.6-alpha"
+
+def __getattr__(name: str) -> str:
+    """Load the package version only when requested by a caller."""
+    if name == "__version__":
+        from .payload.manifest import RELEASE_VERSION
+
+        return RELEASE_VERSION
+    raise AttributeError(name)

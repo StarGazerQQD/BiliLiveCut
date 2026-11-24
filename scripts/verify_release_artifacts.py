@@ -14,7 +14,9 @@ from pathlib import Path
 from typing import Any
 
 REPO_ROOT = Path(__file__).resolve().parent.parent
-VERSION_CONFIG = REPO_ROOT / "packaging" / "portable" / "config" / "version.json"
+sys.path.insert(0, str(REPO_ROOT / "packaging" / "portable" / "config"))
+from version_loader import get_full_config  # noqa: E402
+
 BOOTSTRAP_CONFIG = REPO_ROOT / "packaging" / "portable" / "locks" / "bootstrap-wheels.json"
 PROJECT_LICENSE = REPO_ROOT / "LICENSE"
 PROJECT_LICENSE_ID = "MIT"
@@ -121,7 +123,7 @@ def verify_release_artifacts(
     expected_builder_commit: str,
 ) -> None:
     """Verify that Payload, Lite, and Full are one coherent release build."""
-    version_config = _load_json(VERSION_CONFIG)
+    version_config = get_full_config()
     payload = _load_json(payload_dir / "payload_manifest.json")
     version = str(version_config["release_version"])
     source_commit = str(version_config["source_commit_full"])
@@ -131,10 +133,11 @@ def verify_release_artifacts(
 
     if not COMMIT_RE.fullmatch(expected_builder_commit):
         raise RuntimeError(f"Expected builder commit is not a full lowercase Git SHA: {expected_builder_commit!r}")
+    _require_equal("payload.builder_commit", payload.get("builder_commit"), expected_builder_commit)
+    _require_equal("tag source commit", source_commit, expected_builder_commit)
     _require_equal("payload.portable_release_version", payload.get("portable_release_version"), version)
     _require_equal("payload.core_source_commit", payload.get("core_source_commit"), source_commit)
     _require_equal("payload.core_source_commit_short", payload.get("core_source_commit_short"), source_short)
-    _require_equal("payload.builder_commit", payload.get("builder_commit"), expected_builder_commit)
     _require_equal("payload.project_license", payload.get("project_license"), PROJECT_LICENSE_ID)
     _require_equal("payload.project_license_sha256", payload.get("project_license_sha256"), license_sha256)
 

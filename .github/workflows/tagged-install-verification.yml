@@ -1,0 +1,178 @@
+name: Tagged installation verification
+
+on:
+  pull_request:
+    branches: [main]
+    paths:
+      - '.github/workflows/tagged-install-verification.yml'
+      - '.github/workflows/release.yml'
+      - 'tests/integration/check_installed_release_identity.py'
+      - 'app/_build_identity.py'
+      - 'app/_source_identity.py'
+      - 'app/_packaging_identity.py'
+      - 'app/__init__.py'
+      - 'app/cli.py'
+      - 'packaging/docker/Dockerfile'
+      - 'packaging/portable/**'
+      - 'pyproject.toml'
+      - 'setup.py'
+      - 'scripts/smoke_portable_lite.py'
+      - 'scripts/verify_release_artifacts.py'
+
+permissions:
+  contents: read
+
+concurrency:
+  group: tagged-install-${{ github.event.pull_request.number }}
+  cancel-in-progress: true
+
+env:
+  CANDIDATE_SHA: ${{ github.event.pull_request.head.sha }}
+  TEST_TAG: v0.0.1-RC.${{ github.run_number }}
+
+jobs:
+  source-install:
+    name: Tagged install / ${{ matrix.method }}
+    runs-on: ubuntu-latest
+    timeout-minutes: 45
+    strategy:
+      fail-fast: false
+      matrix:
+        method: [uv, pip-editable, docker]
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+        with:
+          ref: ${{ github.event.pull_request.head.sha }}
+          persist-credentials: false
+      - name: Tag the exact candidate locally
+        run: |
+          test "$(git rev-parse HEAD)" = "$CANDIDATE_SHA"
+          git tag "$TEST_TAG" "$CANDIDATE_SHA"
+      - uses: actions/setup-python@a26af69be951a213d495a4c3e4e4022e16d87065 # v5
+        if: matrix.method != 'docker'
+        with:
+          python-version: '3.12'
+      - uses: astral-sh/setup-uv@c771a70e6277c0a99b617c7a806ffedaca235ff9 # v9.0.0
+        if: matrix.method == 'uv'
+        with:
+          version: '0.12.18'
+          enable-cache: false
+      - name: Install with uv from the tagged checkout
+        if: matrix.method == 'uv'
+        run: uv sync --locked --no-dev --extra web
+      - name: Install editable with pip from the tagged checkout
+        if: matrix.method == 'pip-editable'
+        run: |
+          python -m venv .venv
+          .venv/bin/python -m pip install -e '.[web]'
+      - name: Check the installed package outside the repository
+        if: matrix.method != 'docker'
+        working-directory: ${{ runner.temp }}
+        run: |
+          "$GITHUB_WORKSPACE/.venv/bin/python" -I "$GITHUB_WORKSPACE/tests/integration/check_installed_release_identity.py" \
+            "$TEST_TAG" "$CANDIDATE_SHA"
+      - name: Build and check the installed Docker image
+        if: matrix.method == 'docker'
+        run: |
+          context="$RUNNER_TEMP/tagged-docker-context"
+          python3 packaging/portable/config/version_loader.py --docker-context "$context"
+          docker build -f "$context/packaging/docker/Dockerfile" -t blc-tagged-check "$context"
+          docker run --rm -i --network none --workdir /tmp --entrypoint /app/.venv/bin/python \
+            blc-tagged-check -I - "$TEST_TAG" "$CANDIDATE_SHA" < tests/integration/check_installed_release_identity.py
+
+  windows-install:
+    name: Tagged Windows Lite and Full
+    runs-on: windows-latest
+    timeout-minutes: 120
+    env:
+      BLC_RELEASE_TAG: v0.0.1-RC.${{ github.run_number }}
+      PYTHONUTF8: '1'
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+        with:
+          ref: ${{ github.event.pull_request.head.sha }}
+          persist-credentials: false
+      - name: Tag the exact candidate locally
+        shell: bash
+        run: |
+          test "$(git rev-parse HEAD)" = "$CANDIDATE_SHA"
+          git tag "$TEST_TAG" "$CANDIDATE_SHA"
+      - uses: actions/setup-python@a26af69be951a213d495a4c3e4e4022e16d87065 # v5
+        with:
+          python-version: '3.12.8'
+      - uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4
+        with:
+          node-version: '24'
+      - name: Prepare the bundled interpreter and build tools
+        run: |
+          $PSNativeCommandUseErrorActionPreference = $true
+          $pythonRoot = Split-Path -Parent (Get-Command python).Source
+          New-Item -ItemType Directory portable-python | Out-Null
+          Get-ChildItem -LiteralPath $pythonRoot -Force | Copy-Item -Destination portable-python -Recurse -Force
+          python -m pip install pyinstaller setuptools==84.1.0 wheel==0.47.0 Cython==3.2.9
+          python -m pip install -e ".[dev,web]"
+      - name: Build the Payload and frozen Lite launcher
+        run: |
+          $PSNativeCommandUseErrorActionPreference = $true
+          python scripts/build_portable_runtime_wheels.py --output-dir packaging/portable/dist/bootstrap-wheels --cache-dir "$env:RUNNER_TEMP/runtime-sdists"
+          Set-Location packaging/portable
+          python build_payload.py
+          python build_exe.py --without-engine-pack
+      - name: Build the Full offline bundle from locked wheels
+        run: |
+          $PSNativeCommandUseErrorActionPreference = $true
+          python scripts/download_release_ffmpeg.py --output-dir bin
+          foreach ($abi in '311','312') {
+            $minor = $abi.Substring(1)
+            python -m pip download --require-hashes -r "packaging/portable/locks/requirements-runtime-py$abi-win-x64.lock" --dest vendor/wheels --only-binary=:all: --platform win_amd64 --python-version "3.$minor" --implementation cp --abi "cp$abi" --find-links packaging/portable/dist/bootstrap-wheels
+          }
+          Set-Location packaging/portable
+          python build_full_bundle.py
+      - name: Verify release manifests, payload and artifact hashes
+        id: artifacts
+        run: |
+          python scripts/verify_release_artifacts.py --payload-dir packaging/portable/dist/payload --lite-dir packaging/portable/dist/lite --full-dir packaging/portable/dist/full --expected-builder-commit $env:CANDIDATE_SHA
+      - name: Check Lite version and install into an empty directory
+        timeout-minutes: 45
+        run: |
+          $PSNativeCommandUseErrorActionPreference = $true
+          $exe = (Get-Item packaging/portable/dist/lite/*.exe).FullName
+          $label = "$env:TEST_TAG ($($env:CANDIDATE_SHA.Substring(0, 8)))"
+          $output = & $exe --version
+          $output | Out-Host
+          if ($output -cnotcontains "BiliLiveCut Portable $label") { throw "Expected Lite $label" }
+          python scripts/smoke_portable_lite.py --lite-dir packaging/portable/dist/lite --work-parent $env:RUNNER_TEMP
+      - name: Check Full version and install offline from the ZIP
+        if: "!cancelled() && steps.artifacts.outcome == 'success'"
+        timeout-minutes: 30
+        env:
+          PIP_NO_INDEX: '1'
+          HTTP_PROXY: http://127.0.0.1:9
+          HTTPS_PROXY: http://127.0.0.1:9
+          NO_PROXY: localhost,127.0.0.1
+        run: |
+          $PSNativeCommandUseErrorActionPreference = $true
+          $destination = Join-Path $env:RUNNER_TEMP 'full-tagged-install'
+          Expand-Archive -LiteralPath (Get-Item packaging/portable/dist/full/*.zip).FullName -DestinationPath $destination
+          $bundle = (Get-Item "$destination/BiliLiveCut-Portable-Full-*").FullName
+          Set-Location $bundle
+          $launcher = Join-Path $bundle 'BiliLiveCut-Portable.exe'
+          $label = "$env:TEST_TAG ($($env:CANDIDATE_SHA.Substring(0, 8)))"
+          $output = & $launcher --version
+          $output | Out-Host
+          if ($output -cnotcontains "BiliLiveCut Portable $label") { throw "Expected Full $label" }
+          & ./portable-python/python.exe -m venv .venv
+          & $launcher --offline --torch-runtime cpu
+          & ./.venv/Scripts/python.exe -m pip check
+          $active = Get-Content -Raw runtime/current.json | ConvertFrom-Json
+          if ($active.source_commit -cne $env:CANDIDATE_SHA -or $active.builder_commit -cne $env:CANDIDATE_SHA) {
+            throw "Installed Full source or builder differs from $env:CANDIDATE_SHA"
+          }
+          if ($active.release_version -cne $env:TEST_TAG.Substring(1).ToLowerInvariant()) {
+            throw "Unexpected installed Full version $($active.release_version)"
+          }
+          $python = (Get-Item .venv/Scripts/python.exe).FullName
+          Set-Location (Join-Path 'runtime/releases' $active.release_id)
+          $cli = & $python -m app.cli version
+          $cli | Out-Host
+          if ($cli -cnotcontains "BiliLiveCut $($active.release_version) / $label") { throw "Installed Full CLI identity mismatch" }

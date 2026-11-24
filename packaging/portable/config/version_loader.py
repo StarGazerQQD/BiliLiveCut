@@ -1,11 +1,6 @@
 """读取 Portable 同步版本、冻结源码身份与构建契约。
 
-用法:
-    from version_loader import get_version, RELEASE_VERSION
-    print(RELEASE_VERSION)
-
-应用版本以 app.__version__ 为真源；独立 Portable 工具读取 version.json，
-副本的一致性由版本门禁校验，冻结发布中无需导入业务应用。
+构建时从 tag 和 HEAD 解析，冻结启动器读取内嵌的版本清单。
 """
 
 from __future__ import annotations
@@ -13,6 +8,8 @@ from __future__ import annotations
 import json
 import os
 import re
+import runpy
+import subprocess
 from pathlib import Path
 from typing import Any
 
@@ -50,6 +47,54 @@ _CURRENT_NAMING = {
 _cache: dict[str, Any] | None = None
 
 
+TAG_PATTERN = re.compile(r"v[0-9]+(?:\.[0-9]+){2,3}(?:-(?:Alpha|Beta|RC)(?:\.[0-9]+)?)?")
+
+
+def checkout_identity(root: Path, tag: str | None) -> dict[str, str]:
+    """Resolve the release tag to the checked-out commit, including annotated tags."""
+
+    def git(*args: str) -> str:
+        return subprocess.check_output(["git", *args], cwd=root, text=True).strip()
+
+    commit = git("rev-parse", "HEAD^{commit}")
+    if tag is None:
+        tags = [name for name in git("tag", "--points-at", commit).splitlines() if TAG_PATTERN.fullmatch(name)]
+        if len(tags) > 1:
+            raise ValueError("Multiple release tags at HEAD; select one with BLC_RELEASE_TAG")
+        tag = next(iter(tags), None)
+    if tag is not None:
+        if not TAG_PATTERN.fullmatch(tag):
+            raise ValueError(f"Invalid release tag: {tag!r}")
+        if git("rev-parse", "--verify", f"refs/tags/{tag}^{{commit}}") != commit:
+            raise ValueError(f"Release tag {tag!r} does not point to HEAD")
+        version = tag[1:].lower()
+    else:
+        # Untagged CI builds exercise packaging without claiming a published tag.
+        version = runpy.run_path(str(root / "app/_source_identity.py"))["RELEASE_VERSION"]
+    return {
+        "release_version": version,
+        "version_label": f"{tag or 'dev'} ({commit[:8]})",
+        "source_commit_full": commit,
+        "source_commit_short": commit[:7],
+        "engine_pack_version": version,
+    }
+
+
+def stamp_distribution(directory: Path) -> None:
+    """Embed reproducible metadata in a disposable source distribution or Payload staging tree."""
+    if directory.resolve() == _VERSION_PATH.parents[3]:
+        raise ValueError("Release metadata must be written to a staging tree")
+    cfg = get_full_config()
+    version = cfg["release_version"]
+    module = directory / "app" / "_source_identity.py"
+    module.write_text(
+        f"RELEASE_VERSION = {version!r}\nVERSION_LABEL = {cfg['version_label']!r}\n"
+        f"SOURCE_COMMIT = {cfg['source_commit_full']!r}\n",
+        encoding="utf-8",
+        newline="\n",
+    )
+
+
 def _load_version_config() -> dict[str, Any]:
     """加载并严格校验当前版本配置（带缓存）。
 
@@ -63,6 +108,11 @@ def _load_version_config() -> dict[str, Any]:
         raw = json.loads(_VERSION_PATH.read_text(encoding="utf-8"))
     except (FileNotFoundError, json.JSONDecodeError) as exc:
         raise RuntimeError(f"无法加载版本配置 {_VERSION_PATH}: {exc}") from exc
+    if _VERSION_PATH.parts[-4:] == ("packaging", "portable", "config", "version.json"):
+        identity = checkout_identity(_VERSION_PATH.parents[3], os.environ.get("BLC_RELEASE_TAG"))
+        if not isinstance(raw, dict) or set(raw) != _VERSION_FIELDS - identity.keys():
+            raise RuntimeError("The checkout version config must contain only packaging contracts")
+        raw.update(identity)
     if not isinstance(raw, dict) or set(raw) != _VERSION_FIELDS:
         raise RuntimeError("version.json 字段不符合当前格式")
     for field_name in (
@@ -195,3 +245,25 @@ ENGINE_PACK_VERSION = get_engine_pack_version()
 
 # 确保环境变量也可用
 os.environ.setdefault("BLC_VERSION", RELEASE_VERSION)
+
+
+if __name__ == "__main__":
+    import argparse
+
+    parser = argparse.ArgumentParser(description="Resolve the release tag and optionally stamp a staging tree")
+    operations = parser.add_mutually_exclusive_group()
+    operations.add_argument("--stamp", type=Path)
+    operations.add_argument("--docker-context", type=Path, help="将当前提交及发行身份导出到空目录，供 Docker 构建")
+    args = parser.parse_args()
+    if args.docker_context is not None:
+        import sys
+
+        sys.path.insert(0, str(_VERSION_PATH.parents[1] / "src"))
+        from blc_portable.payload.source_snapshot import extract_source
+
+        destination = args.docker_context.resolve()
+        extract_source(SOURCE_COMMIT_FULL, destination)
+        stamp_distribution(destination)
+    if args.stamp is not None:
+        stamp_distribution(args.stamp)
+    print(VERSION_LABEL, SOURCE_COMMIT_FULL)

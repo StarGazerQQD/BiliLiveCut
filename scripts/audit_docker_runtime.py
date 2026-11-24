@@ -7,8 +7,8 @@ import json
 import re
 import subprocess
 import sys
-import tomllib
 from pathlib import Path
+from runpy import run_path
 
 from packaging.version import Version
 
@@ -18,7 +18,7 @@ else:
     from check_pip_audit_exemptions import AuditReportError, canonicalize_name, parse_audit_report
 
 ROOT = Path(__file__).resolve().parents[1]
-PROJECT_VERSION = Version(tomllib.loads((ROOT / "pyproject.toml").read_text(encoding="utf-8"))["project"]["version"])
+PROJECT_VERSION = Version(run_path(str(ROOT / "app/_packaging_identity.py"))["RELEASE_VERSION"])
 APPLICATION_PACKAGES = frozenset({"bili-live-cut", "torch", "torchaudio"})
 SYSTEM_PACKAGES: frozenset[str] = frozenset()
 INVENTORY_COMMAND = (

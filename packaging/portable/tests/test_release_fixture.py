@@ -90,29 +90,11 @@ def test_release_workflow_cross_verifies_artifact_identity() -> None:
     assert "--expected-builder-commit $env:GITHUB_SHA" in content
 
 
-def test_release_tag_is_exact_and_matches_project_version() -> None:
-    """Release tag 必须从内部版本真源得到唯一的外部标签。"""
-    release_yml = _PROJ_ROOT / ".github" / "workflows" / "release.yml"
-    content = release_yml.read_text(encoding="utf-8")
-
-    assert "complete release version pattern" in content
-    assert "PROJECT_VERSION=" in content
-    assert 'TAG_VERSION="${TAG_INPUT#v}"' in content
-    assert "NORMALIZED_TAG_VERSION" not in content
-    assert 'EXPECTED_TAG_VERSION="${PROJECT_VERSION%-alpha}-Alpha"' in content
-    assert 'if [ "$TAG_VERSION" != "$EXPECTED_TAG_VERSION" ]' in content
-
-
-def test_release_only_accepts_canonical_title_case_github_tag() -> None:
-    """当前 GitHub Release 标签只能使用项目文档规定的 TitleCase 后缀。"""
-    release_yml = _PROJ_ROOT / ".github" / "workflows" / "release.yml"
-    content = release_yml.read_text(encoding="utf-8")
-
-    assert 'if [[ "$TAG" =~ -(Alpha|Beta|RC)' in content
-    assert 'echo "prerelease=$PRERELEASE"' in content
-    assert "prerelease: ${{ steps.tag.outputs.prerelease == 'true' }}" in content
-    assert "NORMALIZED_TAG_VERSION" not in content
-    assert "contains(steps.tag.outputs.tag, 'alpha')" not in content
+def test_publish_creates_a_new_release_after_rechecking_the_tag() -> None:
+    content = (_PROJ_ROOT / ".github/workflows/release.yml").read_text(encoding="utf-8")
+    assert "FETCH_HEAD^{commit}" in content
+    assert 'gh release create "$BLC_RELEASE_TAG" --verify-tag' in content
+    assert "--clobber" not in content
 
 
 def test_release_smoke_checkout_includes_source_baseline_history() -> None:
@@ -260,8 +242,8 @@ def test_release_payload_contract_uses_version_config_source_baseline() -> None:
     release_yml = _PROJ_ROOT / ".github" / "workflows" / "release.yml"
     content = release_yml.read_text(encoding="utf-8")
     assert 'version_config = json.load(open("packaging/portable/config/version.json"))' in content
-    assert 'manifest["core_source_commit"] == version_config["source_commit_full"]' in content
-    assert 'manifest["core_source_commit_short"] == version_config["source_commit_short"]' in content
+    assert 'manifest["core_source_commit"] == os.environ["GITHUB_SHA"]' in content
+    assert 'manifest["core_source_commit_short"] == os.environ["GITHUB_SHA"][:7]' in content
 
 
 def test_release_payload_contract_uses_current_schema_source() -> None:

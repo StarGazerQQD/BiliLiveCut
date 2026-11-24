@@ -1,130 +1,85 @@
-"""版本一致性测试 — 确保所有组件版本统一。
-
-检查所有模块、配置文件和构建脚本的版本号一致性。
-"""
+"""Behavioral checks of release identity across Git, packaging and Git-free runtimes."""
 
 from __future__ import annotations
 
 import json
+import os
+import shutil
+import subprocess
+import sys
 from pathlib import Path
 
-REPO_ROOT = Path(__file__).resolve().parent.parent
+import pytest
+
+ROOT = Path(__file__).resolve().parents[1]
+CONFIG = ROOT / "packaging/portable/config"
+sys.path.insert(0, str(CONFIG))
+from version_loader import checkout_identity  # noqa: E402
 
 
-def _load_version_json() -> dict:
-    """加载权威版本配置。"""
-    p = REPO_ROOT / "packaging" / "portable" / "config" / "version.json"
-    return json.loads(p.read_text(encoding="utf-8"))
+@pytest.mark.parametrize("annotated", [False, True])
+def test_build_identity_follows_tag_and_is_readable_without_git(tmp_path: Path, annotated: bool) -> None:
+    checkout = tmp_path / "repo"
+    config = checkout / "packaging/portable/config"
+    config.mkdir(parents=True)
+    for name in ("version_loader.py", "version.json"):
+        shutil.copy2(CONFIG / name, config / name)
+    (checkout / "app").mkdir()
+    for name in ("__init__.py", "_build_identity.py", "_source_identity.py", "_packaging_identity.py"):
+        shutil.copy2(ROOT / "app" / name, checkout / "app" / name)
 
+    def git(*args: str) -> str:
+        return subprocess.check_output(["git", *args], cwd=checkout, text=True).strip()
 
-def test_all_declared_versions_match_release_metadata() -> None:
-    """验证所有版本引用与权威配置一致。"""
-    cfg = _load_version_json()
-    expected_version = cfg["release_version"]
-    expected_label = cfg["version_label"]
+    git("init", "-q")
+    git("add", ".")
+    git("-c", "user.name=Test", "-c", "user.email=test@example.org", "commit", "-qm", "source")
+    commit = git("rev-parse", "HEAD")
+    tag = "v1.2.3.4-RC.2"
+    git(
+        "-c",
+        "user.name=Test",
+        "-c",
+        "user.email=test@example.org",
+        "tag",
+        *(["-am", "release"] if annotated else []),
+        tag,
+    )
+    assert checkout_identity(checkout, None) == checkout_identity(checkout, tag)
 
-    # app/__init__.py
-    init_path = REPO_ROOT / "app" / "__init__.py"
-    init_content = init_path.read_text(encoding="utf-8")
-    line = [line_text for line_text in init_content.split("\n") if "__version__ =" in line_text and '"' in line_text]
-    assert line, "app/__init__.py 缺少 __version__"
-    assert expected_version in line[0], f"app/__init__.py 版本不匹配: {line[0]} 期望包含 {expected_version}"
-    assert "__version_label__ = version_label()" in init_content, "app/__init__.py 展示标签必须从版本真源动态生成"
-
-    # pyproject.toml
-    toml_path = REPO_ROOT / "pyproject.toml"
-    toml_content = toml_path.read_text(encoding="utf-8")
-    assert f'version = "{expected_version}"' in toml_content, "pyproject.toml 版本不匹配"
-
-    # setup_c.py
-    setup_c_path = REPO_ROOT / "setup_c.py"
-    setup_c_content = setup_c_path.read_text(encoding="utf-8")
-    base = expected_version.split("-")[0]
-    assert f'version="{base}"' in setup_c_content, "setup_c.py 版本不匹配"
-
-    # blc_portable/__init__.py
-    blc_init = REPO_ROOT / "packaging" / "portable" / "src" / "blc_portable" / "__init__.py"
-    blc_init_content = blc_init.read_text(encoding="utf-8")
-    assert f'__version__ = "{expected_version}"' in blc_init_content, "blc_portable/__init__.py 版本不匹配"
-
-    # manifest.py
-    manifest_path = REPO_ROOT / "packaging" / "portable" / "src" / "blc_portable" / "payload" / "manifest.py"
-    manifest_content = manifest_path.read_text(encoding="utf-8")
-    assert f'RELEASE_VERSION = "{expected_version}"' in manifest_content, "manifest.py 版本不匹配"
-
-    # builders/lite.py
-    lite_path = REPO_ROOT / "packaging" / "portable" / "src" / "blc_portable" / "builders" / "lite.py"
-    lite_content = lite_path.read_text(encoding="utf-8")
-    assert f'RELEASE_VERSION = "{expected_version}"' in lite_content, "builders/lite.py 版本不匹配"
-
-    # builders/full.py
-    full_path = REPO_ROOT / "packaging" / "portable" / "src" / "blc_portable" / "builders" / "full.py"
-    full_content = full_path.read_text(encoding="utf-8")
-    assert f'RELEASE_VERSION = "{expected_version}"' in full_content, "builders/full.py 版本不匹配"
-
-    # engine_pack/builder.py：不得重复硬编码版本，必须复用 Manifest 的当前版本真源。
-    ep_builder_path = REPO_ROOT / "packaging" / "portable" / "src" / "blc_portable" / "engine_pack" / "builder.py"
-    ep_builder_content = ep_builder_path.read_text(encoding="utf-8")
-    assert "from blc_portable.engine_pack.manifest import (" in ep_builder_content
-    assert "    ENGINE_PACK_VERSION," in ep_builder_content
-    assert 'ENGINE_PACK_VERSION = "' not in ep_builder_content
-
-    # engine_pack/manifest.py 使用统一版本加载器。
-    ep_manifest_path = REPO_ROOT / "packaging" / "portable" / "src" / "blc_portable" / "engine_pack" / "manifest.py"
-    ep_manifest_content = ep_manifest_path.read_text(encoding="utf-8")
-    assert "    get_engine_pack_version," in ep_manifest_content
-    assert "ENGINE_PACK_VERSION = get_engine_pack_version()" in ep_manifest_content
-    assert 'ENGINE_PACK_VERSION = "' not in ep_manifest_content
-
-    # launcher/main.py
-    launcher_path = REPO_ROOT / "packaging" / "portable" / "src" / "blc_portable" / "launcher" / "main.py"
-    launcher_content = launcher_path.read_text(encoding="utf-8")
-    assert f'RELEASE_VERSION = "{expected_version}"' in launcher_content, "launcher/main.py 版本不匹配"
-    assert f'VERSION = "{expected_label}"' in launcher_content, "launcher/main.py 版本标签不匹配"
-
-    # Engine Pack spec
-    spec_path = REPO_ROOT / "packaging" / "portable" / "specs" / "portable_launcher.spec"
-    spec_content = spec_path.read_text(encoding="utf-8")
-    assert expected_version in spec_content, "portable_launcher.spec 版本不匹配"
-
-
-def test_version_json_is_valid() -> None:
-    """验证 version.json 格式有效。"""
-    cfg = _load_version_json()
-    assert "release_version" in cfg
-    assert "source_commit_short" in cfg
-    assert "source_commit_full" in cfg
-    assert len(cfg["source_commit_short"]) == 7
-    assert len(cfg["source_commit_full"]) == 40
-    assert cfg["python_abis"] == ["cp311", "cp312"]
-    assert "compatible_python" not in cfg
-
-
-def test_portable_source_identity_matches_version_metadata() -> None:
-    """Payload、模型锁与运行时发布元数据必须引用同一源码基线。"""
-    cfg = _load_version_json()
-    source_full = cfg["source_commit_full"]
-    source_short = cfg["source_commit_short"]
-    portable_dir = REPO_ROOT / "packaging" / "portable"
-
-    assert source_short == source_full[:7]
-
-    model_lock = json.loads((portable_dir / "config" / "model_sources.lock.json").read_text(encoding="utf-8"))
-    assert model_lock["source_commit"] == source_full
-
-    manifest_content = (portable_dir / "src" / "blc_portable" / "payload" / "manifest.py").read_text(encoding="utf-8")
-    assert f'SOURCE_COMMIT_FULL = "{source_full}"' in manifest_content
-    assert f'SOURCE_COMMIT_SHORT = "{source_short}"' in manifest_content
-
-    engine_pack_info = json.loads((portable_dir / "resources" / "engine_pack_info.json").read_text(encoding="utf-8"))
-    assert engine_pack_info["source_commit"] == source_full
-
-    assert not (REPO_ROOT / "app" / "_portable_release.py").exists()
-
-
-def test_runtime_release_id_contains_payload_hash() -> None:
-    """验证 Runtime installer 支持内容寻址 Release ID。"""
-    installer_path = REPO_ROOT / "packaging" / "portable" / "src" / "blc_portable" / "runtime" / "installer.py"
-    content = installer_path.read_text(encoding="utf-8")
-    assert "build_release_id" in content, "runtime installer must use content-addressed Release ID"
-    assert "payload_hash" in content, "runtime installer must use payload hash"
+    stage = tmp_path / "distribution"
+    shutil.copytree(checkout / "app", stage / "app")
+    env = dict(os.environ, BLC_RELEASE_TAG=tag)
+    subprocess.run([sys.executable, str(config / "version_loader.py"), "--stamp", str(stage)], env=env, check=True)
+    cfg = checkout_identity(checkout, tag)
+    frozen = tmp_path / "bundle"
+    frozen.mkdir()
+    shutil.copy2(CONFIG / "version_loader.py", frozen)
+    (frozen / "version.json").write_text(json.dumps(json.loads((CONFIG / "version.json").read_text()) | cfg))
+    output = subprocess.check_output(
+        [
+            sys.executable,
+            "-c",
+            "import app, version_loader as v; print(app.__version__, app.__version_label__, v.SOURCE_COMMIT_FULL)",
+        ],
+        cwd=stage,
+        env=dict(env, PYTHONPATH=str(frozen), PATH=""),
+        text=True,
+    )
+    assert output.strip() == f"1.2.3.4-rc.2 {tag} ({commit[:8]}) {commit}"
+    scripts = stage / "scripts"
+    scripts.mkdir()
+    for name in ("audit_docker_runtime.py", "check_pip_audit_exemptions.py"):
+        shutil.copy2(ROOT / "scripts" / name, scripts / name)
+    audit_version = subprocess.check_output(
+        [sys.executable, "-c", "from audit_docker_runtime import PROJECT_VERSION; print(PROJECT_VERSION)"],
+        cwd=scripts,
+        env=dict(env, PATH=""),
+        text=True,
+    )
+    assert audit_version.strip() == "1.2.3.4rc2"
+    git("-c", "user.name=Test", "-c", "user.email=test@example.org", "commit", "--allow-empty", "-qm", "another commit")
+    with pytest.raises(ValueError, match="does not point to HEAD"):
+        checkout_identity(checkout, tag)
+    with pytest.raises(ValueError, match="Invalid release tag"):
+        checkout_identity(checkout, "main")

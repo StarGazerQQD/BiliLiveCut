@@ -5,21 +5,13 @@
 publishing / pipeline / web),通过数据库与任务队列解耦。
 """
 
-# 版本号以此处为唯一真源；构建、Portable 与文档副本由版本一致性门禁校验。
-__version__ = "0.1.20.6-alpha"
+from app._build_identity import RELEASE_VERSION as __version__
+from app._build_identity import VERSION_LABEL as __version_label__
 
 
 def version_label(version: str | None = None) -> str:
-    """动态生成版本展示标签 (V0.1.12.7 — 统一版本真源)。
-
-    :param version: 版本字符串, 默认使用 __version__。
-    :returns: 格式化的版本标签, 如 "V0.1.12.9 Alpha"。
-    """
-    ver = version or __version__
-    # 去掉 "-alpha"/"-beta" 等后缀, 转大写前缀
-    base = ver.split("-")[0] if "-" in ver else ver
-    return f"V{base} Alpha"
-
-
-# 展示标签从版本真源动态生成，避免升级时残留旧标签。
-__version_label__ = version_label()
+    """Return the build label, or format an explicitly supplied version."""
+    if version is None or version == __version__:
+        return __version_label__
+    base, _, suffix = version.partition("-")
+    return f"V{base} {suffix.title()}".rstrip()

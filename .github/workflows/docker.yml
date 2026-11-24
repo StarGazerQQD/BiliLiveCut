@@ -30,7 +30,10 @@ jobs:
           version: "0.12.18"
           enable-cache: false
       - name: Build CPU image
-        run: docker build --tag bili-live-cut:docker-test --file packaging/docker/Dockerfile .
+        run: |
+          context="$RUNNER_TEMP/docker-context"
+          python packaging/portable/config/version_loader.py --docker-context "$context"
+          docker build --tag bili-live-cut:docker-test --file "$context/packaging/docker/Dockerfile" "$context"
       - name: Build independent frontend image
         run: docker build --tag bili-live-cut-frontend:docker-test --file frontend/Dockerfile .
       - name: Audit installed Python dependencies

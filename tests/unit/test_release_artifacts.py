@@ -23,12 +23,12 @@ def _write_sums(directory: Path, artifact: Path) -> tuple[str, str]:
 
 
 def _build_release_fixture(tmp_path: Path) -> tuple[Path, Path, Path, str]:
-    version_config = json.loads(verify_release_artifacts.VERSION_CONFIG.read_text(encoding="utf-8"))
+    version_config = verify_release_artifacts.get_full_config()
     bootstrap_entries = json.loads(verify_release_artifacts.BOOTSTRAP_CONFIG.read_text(encoding="utf-8"))
     version = version_config["release_version"]
     source_commit = version_config["source_commit_full"]
     source_short = version_config["source_commit_short"]
-    builder_commit = "a" * 40
+    builder_commit = source_commit
     license_content = verify_release_artifacts.PROJECT_LICENSE.read_bytes()
     license_sha256 = hashlib.sha256(license_content).hexdigest()
 
@@ -160,7 +160,7 @@ def test_release_artifact_identity_rejects_tampered_full_license(tmp_path: Path)
     """Full ZIP 中的 LICENSE.txt 被替换后必须阻止发布。"""
     payload_dir, lite_dir, full_dir, builder_commit = _build_release_fixture(tmp_path)
     full = next(full_dir.glob("*.zip"))
-    version_config = json.loads(verify_release_artifacts.VERSION_CONFIG.read_text(encoding="utf-8"))
+    version_config = verify_release_artifacts.get_full_config()
     root = f"BiliLiveCut-Portable-Full-{version_config['release_version']}-x64"
 
     replacement = full.with_name("tampered.zip")

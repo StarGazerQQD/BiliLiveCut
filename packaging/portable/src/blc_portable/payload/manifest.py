@@ -24,9 +24,6 @@ from typing import Any
 
 from blc_portable.project_license import PROJECT_LICENSE_ID, project_license_sha256
 
-SOURCE_COMMIT_SHORT = "7f14680"
-SOURCE_COMMIT_FULL = "7f146804fa4597a0eaa62aecddcb469935d847fa"
-RELEASE_VERSION = "0.1.20.6-alpha"
 MANIFEST_FORMAT_VERSION = 7
 _MANIFEST_FIELDS = {
     "format_version",
@@ -98,40 +95,39 @@ def validate_manifest_schema(manifest: object) -> list[str]:
     return errors
 
 
-# Cached version.json values
-_VERSION_JSON: dict[str, Any] | None = None
-
-
-def _load_version_json() -> dict[str, Any]:
-    """Load version.json, cached.
-
-    :returns: version.json dict.
-    """
-    global _VERSION_JSON
-    if _VERSION_JSON is None:
-        vp = Path(__file__).resolve().parent.parent.parent.parent / "config" / "version.json"
-        config_dir = str(vp.parent)
-        if config_dir not in sys.path:
-            sys.path.insert(0, config_dir)
-        from version_loader import get_full_config
-
-        _VERSION_JSON = get_full_config()
-    return _VERSION_JSON
+_config_dir = str(Path(__file__).resolve().parents[3] / "config")
+if _config_dir not in sys.path:
+    sys.path.insert(0, _config_dir)
+from version_loader import (  # noqa: E402
+    RELEASE_VERSION as RELEASE_VERSION,
+)
+from version_loader import (
+    SOURCE_COMMIT_FULL as SOURCE_COMMIT_FULL,
+)
+from version_loader import (
+    SOURCE_COMMIT_SHORT as SOURCE_COMMIT_SHORT,
+)
+from version_loader import (
+    VERSION_LABEL as VERSION_LABEL,
+)
+from version_loader import (
+    get_full_config,
+)
 
 
 def _get_engine_pack_api_version() -> int:
     """Get engine_pack_schema from version.json."""
-    return int(_load_version_json()["engine_pack_schema"])
+    return int(get_full_config()["engine_pack_schema"])
 
 
 def _get_model_set_version() -> int:
     """Get model_lock_schema from version.json."""
-    return int(_load_version_json()["model_lock_schema"])
+    return int(get_full_config()["model_lock_schema"])
 
 
 def _get_core_api_level() -> int:
     """Get the business database schema, independent of the runtime manifest format."""
-    return int(_load_version_json()["core_schema"])
+    return int(get_full_config()["core_schema"])
 
 
 def _get_python_abi() -> str:

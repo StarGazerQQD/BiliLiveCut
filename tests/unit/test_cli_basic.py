@@ -28,20 +28,23 @@ def test_cli_app_version_present() -> None:
     """app.cli has version command and __version__."""
     from app import __version__
 
-    assert __version__.startswith("0.1")
+    assert __version__
 
 
 def test_cli_module_entrypoint_dispatches_commands() -> None:
     """``python -m app.cli`` 必须执行 Click，而不是静默退出。"""
     result = subprocess.run(
         [sys.executable, "-m", "app.cli", "version"],
+        env={**os.environ, "PYTHONIOENCODING": "ascii"},
+        encoding="ascii",
         check=False,
         capture_output=True,
-        text=True,
     )
 
     assert result.returncode == 0, result.stderr
-    assert "BiliLiveCut 0.1.20.6-alpha" in result.stdout
+    from app import __version__, __version_label__
+
+    assert f"BiliLiveCut {__version__} / {__version_label__}" in result.stdout
 
 
 def test_cli_help_preserves_dependency_hints_and_current_doctor_text() -> None:

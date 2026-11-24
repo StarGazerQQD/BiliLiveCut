@@ -13,7 +13,7 @@
 services:
   app:
     build:
-      context: ../..
+      context: ${BLC_DOCKER_CONTEXT:-../..}
       dockerfile: packaging/docker/Dockerfile
     image: bili-live-cut:latest
     container_name: bili-live-cut

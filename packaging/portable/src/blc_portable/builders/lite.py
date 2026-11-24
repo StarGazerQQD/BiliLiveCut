@@ -23,6 +23,7 @@ from blc_portable.console import configure_console_encoding
 from blc_portable.engine_pack.schema import SCHEMA_VERSION as ENGINE_PACK_SCHEMA_VERSION
 from blc_portable.engine_pack.schema import ExternalMetadata
 from blc_portable.model_lock import compute_model_lock_sha256
+from blc_portable.payload.manifest import RELEASE_VERSION as RELEASE_VERSION
 from blc_portable.project_license import PROJECT_LICENSE_ID, project_license_sha256
 
 PORTABLE_DIR = Path(__file__).resolve().parent.parent.parent.parent
@@ -35,8 +36,6 @@ RESOURCES_DIR = PORTABLE_DIR / "resources"
 ENGINE_PACK_INFO_PATH = RESOURCES_DIR / "engine_pack_info.json"
 BOOTSTRAP_WHEELS_DIR = PORTABLE_DIR / "dist" / "bootstrap-wheels"
 BOOTSTRAP_WHEELS_CONFIG = PORTABLE_DIR / "locks" / "bootstrap-wheels.json"
-
-RELEASE_VERSION = "0.1.20.6-alpha"
 
 
 def check_bootstrap_wheels(wheel_dir: Path = BOOTSTRAP_WHEELS_DIR) -> dict[str, str]:
